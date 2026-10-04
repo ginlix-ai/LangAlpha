@@ -80,10 +80,15 @@ class _Firing:
     # The run ledger holds ``run_id`` and the firing records it: the turn went
     # ahead, and the firing now ends however that run ends.
     admitted: bool = False
-    # The targets of a firing whose run the messaging service holds, which
-    # its agent sends to and its settle ends there; None while it delivers
-    # through the webhook.
-    delivery: Optional[list[automation_delivery.Target]] = None
+    # How the firing's start left its delivery: a run the messaging service
+    # holds, whose agent sends to its targets and whose settle ends it
+    # there, or one left to the webhook; None while nothing was asked.
+    delivery: Optional[automation_delivery.Delivery] = None
+
+    @property
+    def held(self) -> bool:
+        """The messaging service holds the run's delivery."""
+        return self.delivery is not None and self.delivery.held
 
     @property
     def workspace_id(self) -> Optional[str]:
@@ -463,7 +468,7 @@ class AutomationExecutor:
             if (
                 await _link_run(execution_id, firing.run_id)
                 and run["status"] == "in_progress"
-                and firing.delivery is None
+                and not firing.held
             ):
                 await WebhookClient().fire_event(
                     "automation.started", firing.automation, execution_id,
@@ -555,16 +560,17 @@ class AutomationExecutor:
             # Tools read the turn from the graph's config: ``send_message``
             # names the firing, so its sends reach the run's targets.
             extra_configurable = None
-            if firing.delivery is not None:
+            if firing.held:
                 additional_context = [
                     *(additional_context or []),
                     {
                         "type": "directive",
-                        "content": automation_delivery.reminder(firing.delivery),
+                        "content": automation_delivery.reminder(firing.delivery.targets),
                     },
                 ]
+                extra_configurable = {"automation_execution_id": firing.delivery.id}
+            if firing.delivery is not None:
                 run_metadata.update(automation_delivery.run_metadata(firing.delivery))
-                extra_configurable = {"automation_execution_id": execution_id}
             request = ChatRequest(
                 agent_mode=firing.route.agent,
                 workspace_id=firing.workspace_id,

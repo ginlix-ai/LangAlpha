@@ -19,7 +19,7 @@ import pytest
 
 from src.server.services import automation_delivery
 from src.server.services import automation_settlement as settlement_mod
-from src.server.services.automation_delivery import Finish, Target
+from src.server.services.automation_delivery import Delivery, Finish, Target
 from src.server.services.automation_excerpt import RunAnswer
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
@@ -86,6 +86,7 @@ _TARGETS = [
     Target(entry="slack:T/C", address="slack:T/C", name="#demo", ok=True),
     Target(entry="telegram", address=None, name=None, ok=False, message="Not linked"),
 ]
+_HELD = Delivery(_EID, _TARGETS)
 # The real finish, which ``_settlement`` stands in for.
 _FINISH_RUN = automation_delivery.finish_run
 _LANDED = [
@@ -191,7 +192,7 @@ async def test_a_held_run_ends_with_the_messaging_service(outcome):
     with _settlement(_row()) as fx:
         assert await settle(
             _automation(), _EID, outcome, error="boom",
-            delivery=_TARGETS, final_text="The brief.",
+            delivery=_HELD, final_text="The brief.",
         )
 
     # The run's thread, as its row records it, so the posts link back to it.
@@ -207,7 +208,7 @@ async def test_a_held_run_ends_with_the_messaging_service(outcome):
 @pytest.mark.asyncio
 async def test_a_held_run_skipped_in_its_wait_ends_nowhere():
     with _settlement(_row(settled_from="waiting")) as fx:
-        assert await settle(_automation(), _EID, Outcome.SKIPPED, delivery=_TARGETS)
+        assert await settle(_automation(), _EID, Outcome.SKIPPED, delivery=_HELD)
 
     fx.finish.assert_not_awaited()
     fx.fire.assert_not_awaited()
@@ -219,11 +220,68 @@ async def test_a_repeated_refusal_of_a_held_run_is_not_announced_again():
     row = _row(run=None, previous_failure_reason="usage_limit")
     with _settlement(row) as fx:
         assert await settle(
-            _automation(), _EID, Outcome.LIMITED, error="Refused.", delivery=_TARGETS
+            _automation(), _EID, Outcome.LIMITED, error="Refused.", delivery=_HELD
         )
 
     fx.finish.assert_not_awaited()
     fx.fire.assert_not_awaited()
+
+
+# A start the messaging service didn't take, left to the webhook: once with
+# no answer, once with the service's own refusal.
+_NO_ANSWER = Delivery(_EID, [
+    Target(entry="slack:T/C", address=None, name=None, ok=False,
+           message="The messaging service could not be reached."),
+])
+_REFUSED = Delivery(_EID, [
+    Target(entry="telegram", address=None, name=None, ok=False, message="Not linked"),
+])
+
+
+def _undelivered(entry, error):
+    return {"method": entry, "address": None, "name": None, "success": False, "via": None, "error": error}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "left, recorded",
+    [
+        (_NO_ANSWER, [_undelivered("slack:T/C", "The messaging service could not be reached.")]),
+        (_REFUSED, [_undelivered("telegram", "Not linked")]),
+    ],
+    ids=["no_answer", "refused"],
+)
+@pytest.mark.parametrize("outcome", [Outcome.COMPLETED, Outcome.FAILED])
+async def test_a_run_the_service_did_not_take_records_why_when_the_webhook_cannot_post(
+    outcome, left, recorded
+):
+    """No webhook URL: rather than record nothing, each entry went
+    undelivered, for the reason the start gave."""
+    with _settlement(_row()) as fx:
+        fx.fire.return_value = None
+        assert await settle(_automation(), _EID, outcome, error="boom", delivery=left)
+
+    fx.fire.assert_awaited_once()
+    fx.finish.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, recorded)
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_service_did_not_take_records_the_webhooks_own_delivery():
+    with _settlement(_row()) as fx:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_NO_ANSWER)
+
+    fx.finish.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, [{"method": "slack", "success": True}])
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_asked_nothing_records_nothing_without_a_webhook():
+    with _settlement(_row()) as fx:
+        fx.fire.return_value = None
+        assert await settle(_automation(), _EID, Outcome.COMPLETED)
+
+    fx.db.record_delivery.assert_not_awaited()
 
 
 _GatewayError = automation_delivery.messaging.GatewayError
@@ -294,7 +352,7 @@ async def test_a_finish_never_answered_records_every_target_failed():
         patch.object(settlement_mod.asyncio, "sleep", new=slept),
     ):
         assert await settle(
-            _automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS, final_text="x"
+            _automation(), _EID, Outcome.COMPLETED, delivery=_HELD, final_text="x"
         )
         await drain_tails()
 
@@ -319,7 +377,7 @@ async def test_a_finish_never_answered_records_every_target_failed():
 async def test_a_finish_asked_again_records_the_answer_that_lands():
     with _settlement(_row()) as fx, _asking(_UNREACHABLE, _FINISHED, _FINISHED) as ask:
         assert await settle(
-            _automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS, final_text="x"
+            _automation(), _EID, Outcome.COMPLETED, delivery=_HELD, final_text="x"
         )
         await drain_tails()
 
@@ -362,7 +420,7 @@ async def test_a_finish_asked_again_records_the_answer_that_lands():
 async def test_a_refused_finish_is_not_asked_again(refusal, why):
     with _settlement(_row()) as fx, _asking(refusal, _FINISHED) as ask:
         assert await settle(
-            _automation(), _EID, Outcome.FAILED, delivery=_TARGETS, error="boom"
+            _automation(), _EID, Outcome.FAILED, delivery=_HELD, error="boom"
         )
         await drain_tails()
 
@@ -380,7 +438,7 @@ def _records(fx):
 @pytest.mark.asyncio
 async def test_a_record_still_being_posted_stands_until_the_final_one():
     with _settlement(_row()) as fx, _asking(_STILL_POSTING, _FINISHED, _FINISHED) as ask:
-        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
         await drain_tails()
 
     assert ask.await_count == 2
@@ -393,7 +451,7 @@ async def test_rows_still_being_posted_when_the_asks_run_out_are_unconfirmed():
         _settlement(_row()) as fx,
         _asking(_STILL_POSTING, _STILL_POSTING, _STILL_POSTING) as ask,
     ):
-        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
         await drain_tails()
 
     assert ask.await_count == 3
@@ -409,7 +467,7 @@ async def test_rows_still_being_posted_when_the_asks_run_out_are_unconfirmed():
 )
 async def test_an_answer_still_being_posted_outranks_a_later_failure(later):
     with _settlement(_row()) as fx, _asking(_STILL_POSTING, *later) as ask:
-        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
         await drain_tails()
 
     assert ask.await_count == (3 if later[0] is _UNREACHABLE else 2)
@@ -419,7 +477,7 @@ async def test_an_answer_still_being_posted_outranks_a_later_failure(later):
 @pytest.mark.asyncio
 async def test_a_retry_answered_still_posting_outranks_a_later_refusal():
     with _settlement(_row()) as fx, _asking(_UNREACHABLE, _STILL_POSTING, _NOT_FOUND) as ask:
-        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
         await drain_tails()
 
     assert ask.await_count == 3
@@ -430,7 +488,7 @@ async def test_a_retry_answered_still_posting_outranks_a_later_refusal():
 @pytest.mark.asyncio
 async def test_a_refusal_outranks_a_record_no_answer_made():
     with _settlement(_row()) as fx, _asking(_UNREACHABLE, _NOT_FOUND, _FINISHED) as ask:
-        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS)
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
         await drain_tails()
 
     assert ask.await_count == 2
@@ -450,7 +508,7 @@ async def test_the_settle_does_not_wait_for_a_finish_to_be_asked_again():
         _asking(_UNREACHABLE, _FINISHED, delays=(3600.0,)) as ask,
     ):
         assert await asyncio.wait_for(
-            settle(_automation(), _EID, Outcome.COMPLETED, delivery=_TARGETS), timeout=5
+            settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD), timeout=5
         )
         fx.db.record_delivery.assert_awaited_once()
         fx.metric.assert_called_once()
@@ -816,7 +874,7 @@ async def test_a_finished_run_settles_the_firing_it_ran_for(run, to, strike, fai
 
 @pytest.mark.asyncio
 async def test_a_finished_held_run_hands_its_answer_to_the_messaging_service():
-    run = _ended("completed", **automation_delivery.run_metadata(_TARGETS))
+    run = _ended("completed", **automation_delivery.run_metadata(_HELD))
     with _finished(run, _automation("cron")) as fx:
         fx.excerpt.return_value = RunAnswer("**Markets** rose.\n\nDetails follow.")
         await _settle_finished_run(_finalize_job())
@@ -838,7 +896,7 @@ async def test_a_finished_held_run_hands_its_answer_to_the_messaging_service():
 async def test_a_held_run_that_sent_its_result_hands_over_what_it_sent():
     """Its last words are a sign-off saying where it sent the result; a chat
     it didn't reach gets the result."""
-    run = _ended("completed", **automation_delivery.run_metadata(_TARGETS))
+    run = _ended("completed", **automation_delivery.run_metadata(_HELD))
     with _finished(run, _automation("cron")) as fx:
         fx.excerpt.return_value = RunAnswer(
             "Sent the brief to #demo.", sent="**Markets** rose."
@@ -861,7 +919,7 @@ async def test_a_held_run_that_sent_its_result_hands_over_what_it_sent():
     ids=["failed", "user_stop"],
 )
 async def test_a_held_run_that_did_not_complete_hands_over_no_answer(run, status):
-    run["metadata"].update(automation_delivery.run_metadata(_TARGETS))
+    run["metadata"].update(automation_delivery.run_metadata(_HELD))
     with _finished(run, _automation("cron")) as fx:
         await _settle_finished_run(_finalize_job())
 
@@ -871,6 +929,18 @@ async def test_a_held_run_that_did_not_complete_hands_over_no_answer(run, status
         thread_id=_THREAD,
     )
     fx.fire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_the_service_did_not_take_records_why_without_a_webhook():
+    """The start's reasons ride on the run row, for the worker that settles."""
+    run = _ended("completed", **automation_delivery.run_metadata(_REFUSED))
+    with _finished(run, _automation("cron")) as fx:
+        fx.fire.return_value = None
+        await _settle_finished_run(_finalize_job())
+
+    fx.finish.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, [_undelivered("telegram", "Not linked")])
 
 
 @pytest.mark.asyncio
@@ -965,11 +1035,11 @@ async def test_sweep_completes_by_the_ledger():
 
 @pytest.mark.asyncio
 async def test_sweep_ends_a_held_run_as_its_start_chose():
-    run = {"status": "completed", "metadata": automation_delivery.run_metadata(_TARGETS)}
+    run = {"status": "completed", "metadata": automation_delivery.run_metadata(_HELD)}
     with _sweep(run) as fx:
         assert await settle_abandoned(_automation(), _abandoned(), 300) is Outcome.COMPLETED
     kwargs = fx.settle.await_args.kwargs
-    assert kwargs["delivery"] == _TARGETS
+    assert kwargs["delivery"] == _HELD
     assert kwargs["final_text"] == "The answer"
 
 

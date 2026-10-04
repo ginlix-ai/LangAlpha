@@ -211,7 +211,11 @@ events such a run fires. Same two headers:
   to the thread and a reply there continues it), and answers `{"targets":
   [{"entry", "address", "name", "ok", "message"}]}`; a refused entry has `ok` false and a null
   `address`. The same `execution_id` again answers the same run. When the call fails or no entry
-  is `ok`, the run delivers by webhook as before. Otherwise the run's agent is told the `ok`
+  is `ok`, the run delivers by webhook as before, and its run row keeps each entry's reason: the
+  service's own `message`, else why the call failed (`The messaging service could not be
+  reached.`, `... failed (503).`). With no `AUTOMATION_WEBHOOK_URL` either, the settle records
+  each entry as a failed `delivery_result` item with that reason as its `error`, rather than
+  nothing. Otherwise the run's agent is told the `ok`
   targets, its `send_message` calls carry `automation_execution_id`, and the targets are stamped
   on the run row, so the settle ends the run the same way on whichever worker drains it.
 - `POST {base}/agent/automation-runs/{execution_id}/finish` takes `{"status", "final_text",

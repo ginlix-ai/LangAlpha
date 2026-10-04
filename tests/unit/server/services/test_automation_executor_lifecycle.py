@@ -25,7 +25,7 @@ from src.server.handlers.chat.admission_gate import (
 )
 from src.server.services import automation_delivery
 from src.server.services import automation_executor as executor_mod
-from src.server.services.automation_delivery import Target
+from src.server.services.automation_delivery import Delivery, Target
 from src.server.services.automation_executor import AutomationExecutor
 from src.server.services.automation_settlement import INTERRUPTED_ERROR
 from src.server.services.runs.admission import BUSY_STATES
@@ -351,16 +351,21 @@ async def test_a_stop_before_admission_interrupts_the_firing():
 
 # ─── Delivery through the messaging service ──────────────────────────
 
-_HELD = [Target(entry="slack:T/C", address="slack:T/C", name="#demo", ok=True)]
+_HELD = Delivery(_EXEC, [Target(entry="slack:T/C", address="slack:T/C", name="#demo", ok=True)])
+# A start the service didn't take, which leaves the run to the webhook.
+_LEFT = Delivery(
+    _EXEC,
+    [Target(entry="slack:T/C", address=None, name=None, ok=False, message="Not linked")],
+)
 _DELIVERING = {"delivery_config": {"methods": ["slack:T/C"]}}
 
 
 @contextmanager
-def _delivery(targets):
-    """The messaging service's start, answering ``targets`` (None: the run
-    delivers through the webhook), and its finish."""
+def _delivery(*starts):
+    """The messaging service's start, answering each of ``starts`` in turn
+    (None: it asked nothing), and its finish."""
     fx = SimpleNamespace(
-        start=AsyncMock(return_value=targets),
+        start=AsyncMock(side_effect=list(starts)),
         finish=AsyncMock(
             return_value=automation_delivery.Finish([{"method": "slack:T/C", "success": False}])
         ),
@@ -394,7 +399,7 @@ async def test_a_held_run_tells_its_agent_where_to_send():
     contexts = [(c.type, c.content) for c in args["request"].additional_context]
     assert contexts == [
         ("directive", "Be brief."),
-        ("directive", automation_delivery.reminder(_HELD)),
+        ("directive", automation_delivery.reminder(_HELD.targets)),
     ]
     # Its sends name the firing, and its run row says how it delivers.
     assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
@@ -422,6 +427,37 @@ async def test_a_run_the_messaging_service_did_not_take_runs_as_before():
 
 
 @pytest.mark.asyncio
+async def test_a_start_the_service_did_not_take_leaves_the_run_to_the_webhook():
+    """Its agent is told nothing, and its run row carries why, for a settle
+    whose webhook has nowhere to post."""
+    with _firing([_streams]) as fx, _delivery(_LEFT):
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    args = _turn_args(fx)
+    assert args["request"].additional_context is None
+    assert args["extra_configurable"] is None
+    assert args["run_metadata"] == {
+        "automation_execution_id": _EXEC,
+        "automation_id": "auto-1",
+        **automation_delivery.run_metadata(_LEFT),
+    }
+    fx.started.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_run_left_to_a_webhook_with_nowhere_to_post_records_why_it_failed():
+    with (
+        _firing([_loses(WriterGuardUnavailable("budget"))], runs={0: None}) as fx,
+        _delivery(_LEFT) as dx,
+    ):
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    dx.finish.assert_not_awaited()
+    fx.settled_webhook.assert_awaited_once()
+    fx.db.record_delivery.assert_awaited_once_with(_EXEC, automation_delivery.unsent(_LEFT))
+
+
+@pytest.mark.asyncio
 async def test_a_held_run_that_fails_before_admission_ends_with_the_service():
     with (
         _firing([_loses(WriterGuardUnavailable("budget"))], runs={0: None}) as fx,
@@ -432,7 +468,7 @@ async def test_a_held_run_that_fails_before_admission_ends_with_the_service():
     assert _settled(fx)["to"] == "failed"
     dx.finish.assert_awaited_once()
     assert dx.finish.await_args.args[2] == "failed"
-    assert dx.finish.await_args.kwargs["targets"] == _HELD
+    assert dx.finish.await_args.kwargs["targets"] == _HELD.targets
     fx.settled_webhook.assert_not_awaited()
 
 
@@ -455,7 +491,7 @@ async def test_a_held_run_stopped_before_admission_ends_with_the_service():
     assert _settled(fx)["error_message"] == INTERRUPTED_ERROR
     dx.finish.assert_awaited_once()
     assert dx.finish.await_args.args[2] == "failed"
-    assert dx.finish.await_args.kwargs["targets"] == _HELD
+    assert dx.finish.await_args.kwargs["targets"] == _HELD.targets
     fx.settled_webhook.assert_not_awaited()
 
 

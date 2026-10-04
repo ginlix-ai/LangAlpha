@@ -319,7 +319,7 @@ async def settle(
     skip_reason: Optional[SkipReason] = None,
     excerpt: Optional[str] = None,
     quiet_for: Optional[int] = None,
-    delivery: Optional[list[automation_delivery.Target]] = None,
+    delivery: Optional[automation_delivery.Delivery] = None,
     final_text: Optional[str] = None,
 ) -> bool:
     """End a firing as ``outcome``; False when it was no longer in a state
@@ -328,10 +328,12 @@ async def settle(
     The execution must belong to ``automation``, which keeps the skip
     endpoint to its own automation's firings. ``quiet_for`` is the sweep's:
     settle only while the heartbeat is still that many seconds quiet.
-    ``delivery`` is the targets of a firing the messaging service holds,
-    which it ends there instead of firing the webhook; ``final_text`` is the
-    answer a completed one hands over. What follows the settled row never
-    raises.
+    ``delivery`` is how the firing's start left its delivery: one the
+    messaging service holds ends there instead of firing the webhook, and
+    ``final_text`` is the result a completed one hands over; one the service
+    didn't take fires the webhook, and records why each entry went
+    undelivered when the webhook has nowhere to post. What follows the
+    settled row never raises.
     """
     policy = _POLICIES[outcome]
     error = error or policy.error
@@ -421,16 +423,16 @@ async def _after_settling(
     run_id: Optional[str],
     workspace_id: Optional[str],
     error: Optional[str],
-    delivery: Optional[list[automation_delivery.Target]],
+    delivery: Optional[automation_delivery.Delivery],
     final_text: Optional[str],
 ) -> None:
     """The delivery, the chat's wait line and the metric a settle sets off."""
     policy = _POLICIES[outcome]
     if policy.webhook and not _repeats_a_refusal(policy.failure_reason, run_id, row):
-        if delivery is not None and policy.finish is not None:
+        if delivery is not None and delivery.held and policy.finish is not None:
             ask = functools.partial(
-                automation_delivery.finish_run, automation, execution_id, policy.finish,
-                targets=delivery, final_text=final_text, thread_id=thread_id,
+                automation_delivery.finish_run, automation, delivery.id, policy.finish,
+                targets=delivery.targets, final_text=final_text, thread_id=thread_id,
             )
             finish = await ask()
             await _record_delivery(execution_id, finish.result)
@@ -447,6 +449,10 @@ async def _after_settling(
                 policy.webhook, automation, execution_id, thread_id, workspace_id,
                 error=error, run_id=run_id, failure_reason=policy.failure_reason,
             )
+            if delivery_result is None and delivery is not None and not delivery.held:
+                # The messaging service didn't take the run and the webhook
+                # has nowhere to post: each entry went undelivered, and why.
+                delivery_result = automation_delivery.unsent(delivery) or None
             if delivery_result is not None:
                 await _record_delivery(execution_id, delivery_result)
     if row["settled_from"] == "waiting" and thread_id:
@@ -572,7 +578,8 @@ async def settle_by_run(
         automation, execution_id, outcome,
         thread_id=thread_id, run_id=run_id, workspace_id=workspace_id,
         error=error, excerpt=excerpt, quiet_for=quiet_for,
-        delivery=automation_delivery.targets_of_run(run), final_text=final_text,
+        delivery=automation_delivery.delivery_of_run(run, execution_id),
+        final_text=final_text,
     )
     return outcome if settled else None
 

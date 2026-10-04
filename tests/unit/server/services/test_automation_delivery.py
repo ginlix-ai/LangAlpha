@@ -15,7 +15,7 @@ import pytest
 
 from src.config import env
 from src.server.services import automation_delivery as delivery
-from src.server.services.automation_delivery import Target
+from src.server.services.automation_delivery import Delivery, Target
 from src.tools.messaging import tools as messaging
 
 SERVICE = "http://messaging.test/api/prefix"
@@ -82,11 +82,12 @@ class TestStart:
     async def test_it_hands_the_run_over_and_answers_every_target(self, service):
         service.reply = _started(DEMO, DISCORD_DM, UNLINKED)
 
-        targets = await delivery.start_run(
+        held = await delivery.start_run(
             AUTOMATION, EXECUTION_ID, "ws-1", thread_id="thread-1"
         )
 
-        assert targets == [DEMO, DISCORD_DM, UNLINKED]
+        assert held == Delivery(EXECUTION_ID, [DEMO, DISCORD_DM, UNLINKED])
+        assert held.held
         (request,) = service.requests
         assert request.method == "POST"
         assert str(request.url) == f"{SERVICE}/agent/automation-runs"
@@ -127,29 +128,63 @@ class TestStart:
 
     @pytest.mark.asyncio
     async def test_no_entry_resolved_leaves_the_run_to_the_webhook(self, service):
+        """With each entry's reason: the service's own where it gave one."""
         service.reply = _started(UNLINKED)
 
-        assert await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1") is None
+        left = await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1")
+
+        assert not left.held
+        assert [(t.entry, t.ok, t.message) for t in left.targets] == [
+            ("slack:T/C", False, "The messaging service didn't resolve it to a chat."),
+            ("discord", False, "The messaging service didn't resolve it to a chat."),
+            ("telegram", False, "Telegram isn't linked"),
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "reply",
+        "reply, why",
         [
-            httpx.ConnectError("refused"),
-            httpx.ReadTimeout("slow"),
-            httpx.Response(401, json={}),
-            httpx.Response(503, json={"code": "unavailable", "message": "down"}),
+            (httpx.ConnectError("refused"), "The messaging service could not be reached."),
+            (httpx.ReadTimeout("slow"), "The messaging service did not answer in time."),
+            (
+                httpx.Response(401, json={}),
+                "The messaging service refused this server's credentials.",
+            ),
+            (
+                httpx.Response(503, json={"code": "unavailable", "message": "down"}),
+                "The messaging service failed (503).",
+            ),
             # Only a 200 is an answer, whatever the body says.
-            httpx.Response(500, json={"targets": [DEMO.as_dict()]}),
-            httpx.Response(200, json={"targets": "nope"}),
-            httpx.Response(200, text="not json"),
-            RuntimeError("anything else"),
+            (
+                httpx.Response(500, json={"targets": [DEMO.as_dict()]}),
+                "The messaging service failed (500).",
+            ),
+            (
+                httpx.Response(200, json={"targets": "nope"}),
+                "The messaging service sent an answer that could not be read.",
+            ),
+            (
+                httpx.Response(200, text="not json"),
+                "The messaging service sent an answer that could not be read.",
+            ),
+            (RuntimeError("anything else"), "The messaging service could not be reached."),
         ],
     )
-    async def test_a_start_that_fails_leaves_the_run_to_the_webhook(self, service, reply):
+    async def test_a_start_that_fails_leaves_the_run_to_the_webhook(
+        self, service, reply, why
+    ):
         service.reply = reply
 
-        assert await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1") is None
+        left = await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1")
+
+        assert left == Delivery(
+            EXECUTION_ID,
+            [
+                Target(entry=e, address=None, name=None, ok=False, message=why)
+                for e in ["slack:T/C", "discord", "telegram"]
+            ],
+        )
+        assert not left.held
 
     @pytest.mark.asyncio
     async def test_an_unreadable_target_is_dropped(self, service):
@@ -157,21 +192,58 @@ class TestStart:
             200, json={"targets": [DEMO.as_dict(), {"address": "x"}, "junk"]}
         )
 
-        assert await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1") == [DEMO]
+        assert (await delivery.start_run(AUTOMATION, EXECUTION_ID, "ws-1")).targets == [DEMO]
 
 
 class TestTheRunRowStamp:
-    def test_the_targets_come_back_from_the_run_row(self):
-        run = {"metadata": {"other": 1, **delivery.run_metadata([DEMO, UNLINKED])}}
+    def test_the_delivery_comes_back_from_the_run_row(self):
+        held = Delivery("exec-1.2", [DEMO, UNLINKED])
+        run = {"metadata": {"other": 1, **delivery.run_metadata(held)}}
 
-        assert delivery.targets_of_run(run) == [DEMO, UNLINKED]
+        assert delivery.delivery_of_run(run, EXECUTION_ID) == held
+
+    def test_a_stamp_naming_no_id_is_the_executions(self):
+        run = {"metadata": {delivery.DELIVERY_KEY: {"targets": [DEMO.as_dict()]}}}
+
+        assert delivery.delivery_of_run(run, EXECUTION_ID) == Delivery(EXECUTION_ID, [DEMO])
 
     @pytest.mark.parametrize(
         "run",
-        [None, {}, {"metadata": None}, {"metadata": {"other": 1}}, {"metadata": "x"}],
+        [
+            None,
+            {},
+            {"metadata": None},
+            {"metadata": {"other": 1}},
+            {"metadata": "x"},
+            {"metadata": {delivery.DELIVERY_KEY: {"targets": "x"}}},
+        ],
     )
-    def test_a_run_with_no_stamp_delivers_by_webhook(self, run):
-        assert delivery.targets_of_run(run) is None
+    def test_a_run_with_no_stamp_asked_nothing(self, run):
+        assert delivery.delivery_of_run(run, EXECUTION_ID) is None
+
+
+class TestUnsent:
+    def test_each_entry_fails_for_the_reason_its_start_gave(self):
+        refused = Target(entry="slack:T/C", address=None, name=None, ok=False)
+
+        assert delivery.unsent(Delivery(EXECUTION_ID, [UNLINKED, refused])) == [
+            {
+                "method": "telegram",
+                "address": None,
+                "name": None,
+                "success": False,
+                "via": None,
+                "error": "Telegram isn't linked",
+            },
+            {
+                "method": "slack:T/C",
+                "address": None,
+                "name": None,
+                "success": False,
+                "via": None,
+                "error": "The messaging service could not be reached.",
+            },
+        ]
 
 
 # -- what the agent is told ------------------------------------------------------

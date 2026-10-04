@@ -15,9 +15,11 @@ continues it.
 
 A run the service never took (no service, no entries, the start failed, or
 no entry resolved) delivers through the webhook (``webhook_client``) instead,
-exactly as before. Which way a run delivers is decided once, at its start,
-and stamped on its run row (``DELIVERY_KEY``), so the settle, which may run on
-another worker, follows the same way.
+exactly as before; when the webhook has nowhere to post either, a start that
+failed records each entry as undelivered, with why (``unsent``). Which way a
+run delivers is decided once, at its start, and stamped on its run row
+(``DELIVERY_KEY``), so the settle, which may run on another worker, follows
+the same way.
 
 Nothing here raises: a delivery problem is never worth failing a run or a
 settle for, and each failure falls back or is recorded as one.
@@ -36,8 +38,8 @@ from src.tools.messaging import tools as messaging
 
 logger = logging.getLogger(__name__)
 
-#: The run-row metadata key a run delivering through the messaging service
-#: carries, holding the targets its start resolved.
+#: The run-row metadata key a run whose start asked the messaging service
+#: carries: the id the run is filed under and the targets its start resolved.
 DELIVERY_KEY = "automation_delivery"
 
 FinishStatus = Literal["completed", "failed", "stopped"]
@@ -114,19 +116,61 @@ def _entries(automation: Dict[str, Any]) -> list[str]:
 # -- start ------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Delivery:
+    """How a run's start left its delivery.
+
+    The messaging service holds the run (``held``) once any of its entries
+    resolved to a chat: the service files the run under ``id``, the run's
+    agent sends to the ``ok`` targets naming ``id``, and the settle ends the
+    run there. A start the service didn't take leaves the run to the
+    webhook, and its ``targets`` say why each entry wasn't taken, which the
+    run records when the webhook has nowhere to post either (``unsent``).
+    """
+
+    id: str
+    targets: list[Target]
+
+    @property
+    def held(self) -> bool:
+        return any(t.ok for t in self.targets)
+
+
+# Why an entry went undelivered when the start got no answer to give one.
+_NO_ANSWER = "The messaging service could not be reached."
+_NOT_RESOLVED = "The messaging service didn't resolve it to a chat."
+
+
+def _not_taken(
+    execution_id: str, entries: list[str], why: str, answered: Optional[list[Target]] = None
+) -> Delivery:
+    """A start the service didn't take: every entry refused, for the reason
+    the service gave it, else ``why``."""
+    reasons = {t.entry: t.message for t in answered or [] if t.message}
+    return Delivery(
+        id=execution_id,
+        targets=[
+            Target(entry=e, address=None, name=None, ok=False, message=reasons.get(e) or why)
+            for e in dict.fromkeys(entries)
+        ],
+    )
+
+
 async def start_run(
     automation: Dict[str, Any],
     execution_id: str,
     workspace_id: Optional[str],
     thread_id: Optional[str] = None,
-) -> Optional[list[Target]]:
-    """The run's targets once the messaging service holds the run; None when
-    the run delivers through the webhook instead.
+) -> Optional[Delivery]:
+    """How the run delivers: through the messaging service once it holds the
+    run (``Delivery.held``), else through the webhook. None when nothing was
+    asked.
 
     Only a run with delivery entries on a server with a messaging service
     asks. A start that fails, or one that resolved no entry to a chat, is
-    left to the webhook. The service files the run under ``execution_id``, so
-    asking again for the same firing answers the targets it already holds.
+    left to the webhook, with each entry's reason. The service files the run
+    under ``execution_id``, so asking again for the same firing answers the
+    targets it already holds.
     """
     entries = _entries(automation)
     if not entries or not messaging.messaging_enabled():
@@ -152,48 +196,75 @@ async def start_run(
             f"[AUTOMATION_DELIVERY] Start failed, delivering by webhook: "
             f"execution_id={execution_id} error={e.message}"
         )
-        return None
+        return _not_taken(execution_id, entries, e.message)
     except Exception as e:
         logger.error(
             f"[AUTOMATION_DELIVERY] Start failed, delivering by webhook: "
             f"execution_id={execution_id} error={e!r}"
         )
-        return None
+        return _not_taken(execution_id, entries, _NO_ANSWER)
     raw = (answer.data or {}).get("targets")
     if answer.status != 200 or not isinstance(raw, list):
         logger.warning(
             f"[AUTOMATION_DELIVERY] Start answered {answer.status}, delivering by "
             f"webhook: execution_id={execution_id}"
         )
-        return None
+        why = (
+            f"The messaging service failed ({answer.status})."
+            if answer.status != 200
+            else "The messaging service sent an answer that could not be read."
+        )
+        return _not_taken(execution_id, entries, why)
     targets = [t for t in (Target.read(item) for item in raw) if t is not None]
     if not any(t.ok for t in targets):
         logger.info(
             f"[AUTOMATION_DELIVERY] No entry resolved to a chat, delivering by "
             f"webhook: execution_id={execution_id}"
         )
-        return None
+        return _not_taken(execution_id, entries, _NOT_RESOLVED, targets)
     logger.info(
         f"[AUTOMATION_DELIVERY] The run sends its own results: "
         f"execution_id={execution_id} targets={sum(t.ok for t in targets)}/{len(targets)}"
     )
-    return targets
+    return Delivery(id=execution_id, targets=targets)
 
 
-def run_metadata(targets: list[Target]) -> Dict[str, Any]:
+def run_metadata(delivery: Delivery) -> Dict[str, Any]:
     """The run-row stamp a settle reads to follow this run's way of delivery."""
-    return {DELIVERY_KEY: {"targets": [t.as_dict() for t in targets]}}
+    return {
+        DELIVERY_KEY: {"id": delivery.id, "targets": [t.as_dict() for t in delivery.targets]}
+    }
 
 
-def targets_of_run(run: Optional[Dict[str, Any]]) -> Optional[list[Target]]:
-    """The targets a run's start resolved, by its run row; None when the run
-    delivers through the webhook."""
+def delivery_of_run(run: Optional[Dict[str, Any]], execution_id: str) -> Optional[Delivery]:
+    """How a run's start left its delivery, by its run row; None when the
+    start asked nothing. A stamp naming no id is filed under the
+    execution's."""
     metadata = (run or {}).get("metadata") or {}
     stamp = metadata.get(DELIVERY_KEY) if isinstance(metadata, dict) else None
-    if not isinstance(stamp, dict):
+    if not isinstance(stamp, dict) or not isinstance(stamp.get("targets"), list):
         return None
-    raw = stamp.get("targets")
-    return [t for t in (Target.read(i) for i in raw or []) if t is not None]
+    return Delivery(
+        id=_text(stamp.get("id")) or execution_id,
+        targets=[t for t in (Target.read(i) for i in stamp["targets"]) if t is not None],
+    )
+
+
+def unsent(delivery: Delivery) -> list[Dict[str, Any]]:
+    """The ``delivery_result`` of a run the service didn't take, when the
+    webhook has nowhere to post either: every entry failed, for the reason
+    its start gave."""
+    return [
+        {
+            "method": t.entry,
+            "address": None,
+            "name": None,
+            "success": False,
+            "via": None,
+            "error": t.message or _NO_ANSWER,
+        }
+        for t in delivery.targets
+    ]
 
 
 def _app_name(address: str) -> str:
