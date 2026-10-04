@@ -26,6 +26,7 @@ settle for, and each failure falls back or is recorded as one.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional
 
@@ -206,12 +207,42 @@ def _is_dm(address: str) -> bool:
     return rest in ("", "@me") or (app.lower() == "slack" and "/" not in rest)
 
 
+# A chat's name as the reminder shows it: enough to recognise the chat.
+_NAME_CHARS = 80
+
+
+def _shown_name(name: Optional[str]) -> Optional[str]:
+    """A chat's name fit for the run's reminder, or None when nothing is left.
+
+    The name is free text whoever runs the chat can set (a Telegram group's
+    title, an iMessage group's name), and the reminder is a directive the
+    agent trusts. So it stays one short line of plain words: control and
+    format characters, line breaks included, become spaces, backticks go,
+    since they would close the code span the address sits in, whitespace
+    collapses and a long name is cut.
+    """
+    if not name:
+        return None
+    text = "".join(
+        " " if c.isspace() or unicodedata.category(c) in ("Cc", "Cf", "Cs") else c
+        for c in name.replace("`", "")
+    )
+    text = " ".join(text.split())
+    if len(text) > _NAME_CHARS:
+        text = text[: _NAME_CHARS - 1].rstrip() + "…"
+    return text or None
+
+
 def _describe(target: Target, address: str) -> str:
+    """One target as the reminder names it. The address is given as the
+    service resolved it, since the agent passes it to ``send_message``; a
+    chat whose name has nothing left to show goes by its app."""
     app = _app_name(address)
     if _is_dm(address):
         return f"your {app} DM `{address}`"
-    if target.name:
-        return f"{target.name} ({app}) `{address}`"
+    name = _shown_name(target.name)
+    if name:
+        return f"{name} ({app}) `{address}`"
     return f"{app} `{address}`"
 
 
