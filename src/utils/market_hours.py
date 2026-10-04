@@ -314,3 +314,16 @@ def expected_latest_bar_ms(interval: str, now: datetime | None = None) -> int:
             return floored * 1000
         candidate -= timedelta(days=1)
     return 0
+
+
+from market_protocol.enums import MarketPhase as _ProtocolPhase  # noqa: E402
+
+# Protocol phase -> legacy envelope string (pinned in the regression suite).
+LEGACY_PHASE: dict = {
+    _ProtocolPhase.PRE: "pre",
+    _ProtocolPhase.REGULAR: "open",
+    _ProtocolPhase.LUNCH: "open",
+    _ProtocolPhase.POST: "post",
+    _ProtocolPhase.CLOSED: "closed",
+    _ProtocolPhase.HALTED: "closed",
+}
