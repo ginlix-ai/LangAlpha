@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/use-toast';
 import { useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
 import type { Automation, AutomationPayload, AutomationUpdatePayload } from '@/types/automation';
+import { type DeliveryProblem, deliveryProblems } from '../utils/delivery';
 import { PANE_ENTER } from '../utils/motion';
 import {
   type FormPatch,
@@ -33,7 +34,8 @@ export interface AutomationInlineFormProps {
   initialValues: FormState;
   /** The automation being edited, or null for a new one. */
   original: Automation | null;
-  onSubmit: (submission: FormSubmission) => void;
+  /** Rejects with the refusal when the save is refused. */
+  onSubmit: (submission: FormSubmission) => Promise<void> | void;
   onCancel: () => void;
   /** Told whether the form now differs from what it opened with. */
   onDirtyChange?: (dirty: boolean) => void;
@@ -55,11 +57,17 @@ export default function AutomationInlineForm({
   const isEdit = !!opened.automation;
   const [form, setForm] = useState<FormState>(initialValues);
   const [moreOpen, setMoreOpen] = useState(false);
+  // The delivery entries the last save was refused over, until the delivery
+  // changes.
+  const [refused, setRefused] = useState<DeliveryProblem[]>([]);
   const uid = useId();
   const ids = { name: `${uid}-name`, instruction: `${uid}-instruction` };
   const allWorkspaces = useAllWorkspacesAgent();
 
-  const patch: FormPatch = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const patch: FormPatch = (key, value) => {
+    if (key === 'delivery_methods') setRefused([]);
+    setForm((f) => ({ ...f, [key]: value }));
+  };
 
   const dirty = isFormChanged(opened.values, form);
   useEffect(() => {
@@ -76,11 +84,17 @@ export default function AutomationInlineForm({
       toast({ variant: 'destructive', description: t(problem.messageKey) });
       return;
     }
-    onSubmit(
-      opened.automation
-        ? { kind: 'edit', payload: formStateToUpdatePayload(form, opened.values, opened.automation) }
-        : { kind: 'create', payload: formStateToPayload(form) },
-    );
+    const submission: FormSubmission = opened.automation
+      ? { kind: 'edit', payload: formStateToUpdatePayload(form, opened.values, opened.automation) }
+      : { kind: 'create', payload: formStateToPayload(form) };
+    // The refusal itself was already announced; one naming delivery entries
+    // is also shown beside them, unfolded.
+    void Promise.resolve(onSubmit(submission)).catch((err: unknown) => {
+      const problems = deliveryProblems(err);
+      if (problems.length === 0) return;
+      setRefused(problems);
+      setMoreOpen(true);
+    });
   };
 
   return (
@@ -116,7 +130,14 @@ export default function AutomationInlineForm({
             />
           </FormRow>
 
-          <MoreOptions form={form} patch={patch} open={moreOpen} onOpenChange={setMoreOpen} />
+          <MoreOptions
+            form={form}
+            patch={patch}
+            open={moreOpen}
+            onOpenChange={setMoreOpen}
+            deliveryAttempts={opened.automation?.last_execution?.delivery_result}
+            deliveryProblems={refused}
+          />
         </div>
 
         <div className="automation-form-actions">

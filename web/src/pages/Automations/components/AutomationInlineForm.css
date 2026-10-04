@@ -180,6 +180,98 @@
   color: var(--color-text-secondary);
 }
 
+/* Where results go: the picked chats as chips above the list they come from. */
+.automation-delivery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.automation-delivery-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.automation-delivery-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0 2px 0 8px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+}
+
+.automation-delivery-chip[data-invalid] {
+  border-color: var(--color-icon-danger);
+}
+
+.automation-delivery-chip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 4px;
+  outline: none;
+}
+
+.automation-delivery-chip-label[data-hovered],
+.automation-delivery-chip-label[data-pressed] {
+  color: var(--color-text-secondary);
+}
+
+.automation-delivery-chip-label[data-focus-visible] {
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+.automation-delivery-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--color-text-tertiary);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.automation-delivery-chip-remove:hover {
+  background-color: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+/* Which way a default was reached, beside the app's Default in the list. */
+.automation-delivery-tag {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.automation-delivery-error,
+.automation-delivery-problems {
+  font-size: 0.8125rem;
+  color: var(--color-icon-danger);
+  overflow-wrap: anywhere;
+}
+
+.automation-delivery-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.automation-delivery > .automation-delivery-problems {
+  margin-top: 0;
+}
+
 /* The folded options, a row of their own that still says what they are
    set to. */
 .automation-form-more-toggle {

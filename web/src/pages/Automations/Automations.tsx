@@ -185,20 +185,17 @@ export default function Automations() {
 
   const editing = form?.kind === 'edit' ? byId.get(form.automationId) ?? null : null;
 
+  // A refused save rejects to the form, which stays open with what was
+  // typed; the mutation hook has already told the user why.
   const handleSubmit = useCallback(
     async (submission: FormSubmission) => {
-      try {
-        if (submission.kind === 'edit' && form?.kind === 'edit') {
-          await updateAutomation({ id: form.automationId, data: submission.payload });
-          setForm(null);
-        } else if (submission.kind === 'create') {
-          const created = await createAutomation(submission.payload);
-          setForm(null);
-          if (created?.automation_id) navigateTo('manage', created.automation_id);
-        }
-      } catch {
-        // The mutation hook already told the user; the form stays open with
-        // what they typed.
+      if (submission.kind === 'edit' && form?.kind === 'edit') {
+        await updateAutomation({ id: form.automationId, data: submission.payload });
+        setForm(null);
+      } else if (submission.kind === 'create') {
+        const created = await createAutomation(submission.payload);
+        setForm(null);
+        if (created?.automation_id) navigateTo('manage', created.automation_id);
       }
     },
     [form, createAutomation, updateAutomation, navigateTo],

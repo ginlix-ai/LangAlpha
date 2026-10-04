@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight } from 'lucide-react';
 import {
@@ -14,11 +14,14 @@ import { Input } from '@/components/ui/input';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import { useAgentModeLabels } from '../hooks/useAgentModeLabels';
+import type { DeliveryAttempt } from '@/types/automation';
+import { useDeliveryOptions } from '../hooks/useDeliveryOptions';
 import { useWorkspaceOptions, workspaceNameOf } from '../hooks/useWorkspaceOptions';
-import { deliveryMethodName } from '../utils/delivery';
+import { type DeliveryProblem, deliveryEntryName, deliveryMethodName, deliveryNames } from '../utils/delivery';
 import type { FormPatch, FormState } from '../utils/form';
 import { MIN_COOLDOWN_MINUTES, RETRIGGER_MODES } from '../utils/price';
 import CountInput from './CountInput';
+import DeliveryPicker, { DeliveryProblems } from './DeliveryPicker';
 import FormRow from './FormRow';
 
 type DeliveryChoice = 'none' | 'slack' | 'discord';
@@ -37,11 +40,25 @@ interface MoreOptionsProps {
   patch: FormPatch;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The edited automation's last deliveries, which name chats the apps may
+   *  no longer list. */
+  deliveryAttempts?: DeliveryAttempt[] | null;
+  /** The delivery entries the last save was refused over. */
+  deliveryProblems?: DeliveryProblem[];
 }
+
+const NO_PROBLEMS: DeliveryProblem[] = [];
 
 /** The settings most automations keep at their defaults, folded under one
  *  line that says what they are set to. */
-export default function MoreOptions({ form, patch, open, onOpenChange }: MoreOptionsProps) {
+export default function MoreOptions({
+  form,
+  patch,
+  open,
+  onOpenChange,
+  deliveryAttempts,
+  deliveryProblems = NO_PROBLEMS,
+}: MoreOptionsProps) {
   const { t } = useTranslation();
   const uid = useId();
   const ids = {
@@ -58,13 +75,19 @@ export default function MoreOptions({ form, patch, open, onOpenChange }: MoreOpt
   const workspaces = useWorkspaceOptions();
   const workspaceName = workspaceNameOf(workspaces, form.workspace_id);
   const agentModes = useAgentModeLabels();
+  const delivery = useDeliveryOptions({ agentMode: form.agent_mode, workspaceId: form.workspace_id });
+  // With no messaging service, or before its chats load, the form offers the
+  // apps alone, as it always has.
+  const picker = delivery.options?.enabled ? delivery.options : null;
+  const names = useMemo(() => deliveryNames(picker, deliveryAttempts ?? []), [picker, deliveryAttempts]);
+  const entryName = (entry: string) => deliveryEntryName(entry, t, picker, names);
 
   // What the folded options are set to, so they can stay folded.
   const summary = [
     agentModes.label(form.agent_mode, workspaceName),
     t(form.thread_strategy === 'continue' ? 'automation.continueExisting' : 'automation.newThreadEachRun'),
     form.delivery_methods.length
-      ? t('automation.deliversTo', { method: form.delivery_methods.map((m) => deliveryMethodName(m, t)).join(', ') })
+      ? t('automation.deliversTo', { method: form.delivery_methods.map(entryName).join(', ') })
       : t('automation.noDelivery'),
     t('automation.stopsAfter', { count: form.max_failures }),
   ].join(' · ');
@@ -136,16 +159,32 @@ export default function MoreOptions({ form, patch, open, onOpenChange }: MoreOpt
         </FormRow>
 
         <FormRow label={t('automation.delivery')} labelId={ids.delivery}>
-          <SegmentedControl<DeliveryChoice>
-            labelledBy={ids.delivery}
-            value={deliveryChoice(form.delivery_methods)}
-            onChange={(choice) => patch('delivery_methods', choice === 'none' ? [] : [choice])}
-            options={[
-              { value: 'none', label: t('automation.deliverNone') },
-              { value: 'slack', label: deliveryMethodName('slack', t) },
-              { value: 'discord', label: deliveryMethodName('discord', t) },
-            ]}
-          />
+          {picker ? (
+            <DeliveryPicker
+              methods={form.delivery_methods}
+              onChange={(methods) => patch('delivery_methods', methods)}
+              options={picker}
+              workspaceId={delivery.workspaceId}
+              names={names}
+              problems={deliveryProblems}
+              labelledBy={ids.delivery}
+            />
+          ) : (
+            <>
+              <SegmentedControl<DeliveryChoice>
+                labelledBy={ids.delivery}
+                value={deliveryChoice(form.delivery_methods)}
+                onChange={(choice) => patch('delivery_methods', choice === 'none' ? [] : [choice])}
+                options={[
+                  { value: 'none', label: t('automation.deliverNone') },
+                  { value: 'slack', label: deliveryMethodName('slack', t) },
+                  { value: 'discord', label: deliveryMethodName('discord', t) },
+                ]}
+              />
+              {!!delivery.error && <p className="automation-form-readout">{t('automation.deliveryOptionsUnavailable')}</p>}
+              <DeliveryProblems problems={deliveryProblems} nameOf={entryName} />
+            </>
+          )}
         </FormRow>
 
         {form.trigger_type === 'price' && (
