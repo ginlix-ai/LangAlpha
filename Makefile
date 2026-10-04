@@ -1,4 +1,4 @@
-.PHONY: help configup down clean dev dev-web install test test-sandbox test-web test-market-protocol test-all lint setup-db migrate
+.PHONY: help configup down clean dev dev-web install test test-sandbox test-web test-market-protocol test-all lint data-probe setup-db migrate
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -69,6 +69,12 @@ test-all: test test-web test-market-protocol ## Run all tests (backend + fronten
 lint: ## Run all linters (Ruff + ESLint)
 	uv run ruff check src/ libs/market-protocol/
 	cd web && pnpm lint
+
+# ---------------------------------------------------------------------------
+# Market data
+# ---------------------------------------------------------------------------
+data-probe: ## Probe provider entitlements and write data_routing.yaml (ARGS="--market cn --dry-run")
+	uv run python -m scripts.data_probe run $(ARGS)
 
 # ---------------------------------------------------------------------------
 # Database
