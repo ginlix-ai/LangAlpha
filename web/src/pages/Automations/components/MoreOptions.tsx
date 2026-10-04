@@ -79,6 +79,10 @@ export default function MoreOptions({
   // With no messaging service, or before its chats load, the form offers the
   // apps alone, as it always has.
   const picker = delivery.options?.enabled ? delivery.options : null;
+  // Until the chats are known, entries the old control cannot show stay as
+  // they are: it would replace them all with the one segment pressed.
+  const unread = !delivery.options && (delivery.isPending || !!delivery.error);
+  const hold = unread && form.delivery_methods.length > 0 && deliveryChoice(form.delivery_methods) === null;
   const names = useMemo(() => deliveryNames(picker, deliveryAttempts ?? []), [picker, deliveryAttempts]);
   const entryName = (entry: string) => deliveryEntryName(entry, t, picker, names);
 
@@ -164,11 +168,26 @@ export default function MoreOptions({
               methods={form.delivery_methods}
               onChange={(methods) => patch('delivery_methods', methods)}
               options={picker}
+              stale={delivery.isPlaceholderData}
               workspaceId={delivery.workspaceId}
               names={names}
               problems={deliveryProblems}
               labelledBy={ids.delivery}
             />
+          ) : hold ? (
+            <>
+              <ul className="automation-delivery-chips">
+                {form.delivery_methods.map((entry) => (
+                  <li key={entry} className="automation-delivery-chip">
+                    <span className="automation-delivery-chip-label">
+                      <span className="truncate">{entryName(entry)}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {!!delivery.error && <p className="automation-form-readout">{t('automation.deliveryOptionsUnavailable')}</p>}
+              <DeliveryProblems problems={deliveryProblems} nameOf={entryName} />
+            </>
           ) : (
             <>
               <SegmentedControl<DeliveryChoice>

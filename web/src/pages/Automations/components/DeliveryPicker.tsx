@@ -57,6 +57,13 @@ function orderedChats(chats: DeliveryChat[] | undefined): DeliveryChat[] {
   return [...(chats ?? [])].sort((a, b) => Number(b.kind === 'dm') - Number(a.kind === 'dm'));
 }
 
+function withoutDefaults(options: DeliveryOptions): DeliveryOptions {
+  return {
+    ...options,
+    apps: Object.fromEntries(Object.entries(options.apps ?? {}).map(([app, data]) => [app, { ...data, default: null }])),
+  };
+}
+
 function AppMark({ app }: { app: string | null }) {
   const domain = messagingAppDomain(app);
   return domain ? (
@@ -87,6 +94,9 @@ interface DeliveryPickerProps {
   methods: string[];
   onChange: (methods: string[]) => void;
   options: DeliveryOptions;
+  /** The options are another workspace's, shown while this one's load: its
+   *  defaults are not this workspace's, so none is shown or changed. */
+  stale?: boolean;
   /** The workspace the runs deliver from. Without one there is no default to set. */
   workspaceId: string | null;
   names: DeliveryNames;
@@ -104,7 +114,8 @@ interface DeliveryPickerProps {
 export default function DeliveryPicker({
   methods,
   onChange,
-  options,
+  options: loaded,
+  stale = false,
   workspaceId,
   names,
   problems,
@@ -114,6 +125,7 @@ export default function DeliveryPicker({
   const queryClient = useQueryClient();
   const [defaultError, setDefaultError] = useState<string | null>(null);
 
+  const options = useMemo(() => (stale ? withoutDefaults(loaded) : loaded), [loaded, stale]);
   const apps = useMemo(() => orderedApps(options.apps ?? {}), [options.apps]);
   const known = useMemo(() => {
     const keys = new Set<string>();
@@ -128,13 +140,27 @@ export default function DeliveryPicker({
 
   const setDefault = useMutation({
     ...FAIL_FAST_OFFLINE,
-    mutationFn: (vars: { platform: string; address: string | null }) =>
-      setDeliveryDefault({ workspace_id: workspaceId as string, ...vars }),
+    mutationFn: (vars: { workspace_id: string; platform: string; address: string | null }) =>
+      setDeliveryDefault(vars),
     onMutate: () => setDefaultError(null),
-    // Pending until the options are read again, so the chips never show the
-    // default from before the change as current.
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.automationDelivery.options(workspaceId as string) }),
+    // The workspace the change was made for, not the one the form is on now.
+    onSuccess: (res, vars) => {
+      const key = queryKeys.automationDelivery.options(vars.workspace_id);
+      const saved = res.data;
+      // Write the answer in, so a refetch that fails leaves the new default
+      // and not the old one. A cleared default is unknown until the refetch.
+      queryClient.setQueryData<DeliveryOptions>(key, (old) => {
+        const app = old?.apps?.[vars.platform];
+        if (!old || !app) return old;
+        const address = saved?.address ?? vars.address;
+        const chat = app.chats?.find((c) => c.address === address);
+        const next: DeliveryDefault | null = address
+          ? { address, name: saved?.name ?? chat?.name ?? address, via: 'workspace' }
+          : null;
+        return { ...old, apps: { ...old.apps, [vars.platform]: { ...app, default: next } } };
+      });
+      return queryClient.invalidateQueries({ queryKey: key });
+    },
     onError: (err) => setDefaultError(deliveryDefaultError(err, t)),
   });
 
@@ -142,7 +168,7 @@ export default function DeliveryPicker({
     const app = platformOf(entry);
     const def = app ? options.apps?.[app]?.default : null;
     // Only a chat the app lists now can become the default.
-    if (!workspaceId || !app || !known.has(entry)) return [];
+    if (stale || !workspaceId || !app || !known.has(entry)) return [];
     const isWorkspaceDefault = def?.via === 'workspace';
     if (!namesChat(entry)) return isWorkspaceDefault ? ['clear'] : [];
     return isWorkspaceDefault && def?.address === entry ? ['clear'] : ['use'];
@@ -150,8 +176,8 @@ export default function DeliveryPicker({
 
   const runAction = (entry: string, action: ChipAction) => {
     const platform = platformOf(entry);
-    if (!platform) return;
-    setDefault.mutate({ platform, address: action === 'use' ? entry : null });
+    if (!platform || !workspaceId) return;
+    setDefault.mutate({ workspace_id: workspaceId, platform, address: action === 'use' ? entry : null });
   };
 
   const problemOf = new Map(problems.map((p) => [p.entry, p.message]));

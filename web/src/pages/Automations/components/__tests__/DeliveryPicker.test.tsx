@@ -329,6 +329,110 @@ describe('the workspace default', () => {
   });
 });
 
+describe('the workspace default across a workspace switch', () => {
+  const OTHER: DeliveryOptions = {
+    enabled: true,
+    apps: { slack: { ...OPTIONS.apps.slack, default: { address: 'slack:T1/C2', name: '#research', via: 'workspace' } } },
+  };
+
+  function Switcher({ methods }: { methods: string[] }) {
+    const [form, setForm] = useState<FormState>({ ...PTC, delivery_methods: methods });
+    const patch: FormPatch = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+    return (
+      <>
+        <MoreOptions form={form} patch={patch} open onOpenChange={vi.fn()} />
+        <button type="button" onClick={() => patch('workspace_id', 'ws-2')}>
+          switch
+        </button>
+      </>
+    );
+  }
+
+  it('offers no default, pin or default name while another workspace’s chats show', async () => {
+    let release: (v: unknown) => void = () => {};
+    vi.mocked(api.getDeliveryOptions).mockImplementation(async (id: string) =>
+      id === 'ws-1' ? ({ data: OPTIONS } as never) : new Promise((r) => (release = r)),
+    );
+    renderWithProviders(<Switcher methods={['slack', 'slack:T1/C1']} />);
+    await waitFor(() => expect(chips().map((c) => c.textContent)).toEqual(['Slack (#demo)', '#demo']));
+    expect(within(chips()[1]).getAllByRole('button')).toHaveLength(2);
+
+    fireEvent.click(screen.getByText('switch'));
+    await waitFor(() => expect(api.getDeliveryOptions).toHaveBeenCalledWith('ws-2'));
+
+    // Still ws-1's chats, but none of its defaults.
+    expect(chips().map((c) => c.textContent)).toEqual(['Slack', '#demo']);
+    expect(document.querySelector('.automation-delivery-chip svg.lucide-pin')).toBeNull();
+    for (const c of chips()) expect(within(c).getAllByRole('button')).toHaveLength(1);
+
+    release({ data: OTHER });
+    await waitFor(() => expect(chips().map((c) => c.textContent)).toEqual(['Slack (#research)', '#demo']));
+  });
+
+  it('invalidates the workspace the change was made for when it lands after a switch', async () => {
+    let finish: (v: unknown) => void = () => {};
+    serve();
+    vi.mocked(api.setDeliveryDefault).mockImplementation(() => new Promise((r) => (finish = r)));
+    const { queryClient } = renderWithProviders(<Switcher methods={['slack:T1/C2']} />);
+    fireEvent.click(await screen.findByRole('button', { name: '#research' }));
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: label('automation.deliveryUseAsDefault') }));
+    await waitFor(() => expect(api.setDeliveryDefault).toHaveBeenCalled());
+    expect(api.setDeliveryDefault).toHaveBeenCalledWith({ workspace_id: 'ws-1', platform: 'slack', address: 'slack:T1/C2' });
+
+    fireEvent.click(screen.getByText('switch'));
+    await waitFor(() => expect(api.getDeliveryOptions).toHaveBeenCalledWith('ws-2'));
+    const spy = vi.spyOn(queryClient, 'invalidateQueries');
+    finish({ data: { address: 'slack:T1/C2', name: '#research' } });
+
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.automationDelivery.options('ws-1') });
+    expect(spy).not.toHaveBeenCalledWith({ queryKey: queryKeys.automationDelivery.options('ws-2') });
+  });
+
+  it('shows the new default when the read after the change fails', async () => {
+    vi.mocked(api.getDeliveryOptions).mockResolvedValueOnce({ data: OPTIONS } as never);
+    vi.mocked(api.getDeliveryOptions).mockRejectedValue(refusal(503, { detail: 'down' }));
+    vi.mocked(api.setDeliveryDefault).mockResolvedValue({ data: { address: 'slack:T1/C2', name: '#research' } } as never);
+    renderPicker(['slack', 'slack:T1/C2']);
+
+    fireEvent.click(await screen.findByRole('button', { name: '#research' }));
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: label('automation.deliveryUseAsDefault') }));
+
+    await waitFor(() => expect(api.getDeliveryOptions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(chips().map((c) => c.textContent)).toEqual(['Slack (#research)', '#research']));
+  });
+});
+
+describe('entries the old control cannot show', () => {
+  it('keeps them, read-only, while the chats load', async () => {
+    vi.mocked(api.getDeliveryOptions).mockReturnValue(new Promise(() => {}));
+    renderPicker(['slack:T1/C', 'telegram:@me']);
+
+    await waitFor(() => expect(chips()).toHaveLength(2));
+    expect(screen.queryByRole('group', { name: label('automation.delivery') })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Slack' })).not.toBeInTheDocument();
+    expect(picked()).toEqual(['slack:T1/C', 'telegram:@me']);
+  });
+
+  it('keeps them, read-only, when the chats fail to load', async () => {
+    serve(refusal(503, { detail: 'down' }));
+    renderPicker(['slack:T1/C', 'telegram:@me']);
+
+    expect(await screen.findByText(label('automation.deliveryOptionsUnavailable'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Slack' })).not.toBeInTheDocument();
+    expect(chips()).toHaveLength(2);
+    expect(picked()).toEqual(['slack:T1/C', 'telegram:@me']);
+  });
+
+  it('still offers the control for an entry it can show', async () => {
+    vi.mocked(api.getDeliveryOptions).mockReturnValue(new Promise(() => {}));
+    renderPicker(['slack']);
+
+    const group = await screen.findByRole('group', { name: label('automation.delivery') });
+    expect(within(group).getByRole('button', { name: 'Slack' })).toHaveAttribute('aria-pressed', 'true');
+  });
+});
+
 describe('a save refused over delivery', () => {
   function renderForm(onSubmit: () => Promise<void>) {
     serve();

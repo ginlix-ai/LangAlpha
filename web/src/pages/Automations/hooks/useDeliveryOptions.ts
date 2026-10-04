@@ -16,6 +16,10 @@ interface DeliveryOptionsArgs {
 export interface DeliveryOptionsState {
   options: DeliveryOptions | undefined;
   error: unknown;
+  /** The options are still the previous workspace's, until this one's load. */
+  isPlaceholderData: boolean;
+  /** No answer yet, for this workspace or any before it. */
+  isPending: boolean;
   /** The workspace the run delivers from: a Flash run's is the Flash workspace. */
   workspaceId: string | null;
 }
@@ -42,5 +46,11 @@ export function useDeliveryOptions({ agentMode, workspaceId, enabled = true }: D
     retry: (count, err) => count < 1 && apiErrorStatus(err) === null,
   });
 
-  return { options: query.data, error: query.error, workspaceId: runWorkspace };
+  return {
+    options: query.data,
+    error: query.error,
+    isPlaceholderData: query.isPlaceholderData,
+    isPending: query.isPending,
+    workspaceId: runWorkspace,
+  };
 }
