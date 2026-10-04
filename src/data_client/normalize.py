@@ -14,22 +14,20 @@ chain, so conversion happens exactly once per path.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
+from zoneinfo import ZoneInfo
 
 from market_protocol import (
     InstrumentRef,
-    OhlcvBar,
     Series,
-    SeriesHeader,
-    display_decimals_for,
+    market_home,
     to_canonical,
 )
-from market_protocol.enums import PriceTreatment, Tier
-
-from .market_data_provider import symbol_timezone
+from market_protocol import build_series as _build_series
+from market_protocol.enums import AssetClass, PriceTreatment, Tier
+from market_protocol.symbology import UNKNOWN_MIC
 
 # Snapshot fields whose values carry a price and therefore scale with the
 # quote's minor-currency unit. change_percent (and pre/post percents) are
@@ -38,33 +36,140 @@ _SNAPSHOT_PRICE_FIELDS = (
     "price", "change", "previous_close", "open", "high", "low",
 )
 
-# Publisher-declared series lineage: the (price_treatment, tier) each provider's
-# feed carries. Declared next to the providers, ONE source of truth — the cache
-# header builder (``_ohlcv_envelope``) and the router both import ``publisher_lineage``
-# so no layer re-mirrors these constants.
-PUBLISHER_LINEAGE: dict[str, tuple[PriceTreatment, Tier]] = {
-    "ginlix-data": (PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME),
-    "fmp": (PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME),
-    "yfinance": (PriceTreatment.SPLIT_ADJUSTED, Tier.DELAYED_15M),
+
+class _Declared(NamedTuple):
+    treatment: PriceTreatment
+    tier: Tier  # bars
+    quote_tier: Tier  # snapshots
+
+
+# What each publisher's feed declares, ONE source of truth: the cache header
+# builder, every boundary and the snapshot stamp resolve it through
+# ``series_lineage`` / ``snapshot_tier``, so no layer re-mirrors these.
+_DECLARED: dict[str, _Declared] = {
+    "ginlix-data": _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME, Tier.REALTIME),
+    "fmp": _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME, Tier.REALTIME),
+    "yfinance": _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.DELAYED_15M, Tier.DELAYED_15M),
+    # CN daily is qfq (前复权): raw `daily` scaled by adj_factor/latest_factor,
+    # so the series is dividend/split continuous. Minute path is near-realtime
+    # (rt_min); the bar tier is the conservative floor across both. Its
+    # ``rt_k`` quote is a realtime print.
+    "tushare": _Declared(PriceTreatment.DIVIDEND_ADJUSTED, Tier.DELAYED_15M, Tier.REALTIME),
 }
 
-# Conservative default for an unknown/absent publisher (matches the legacy
-# hardcoded header fallback).
-_DEFAULT_LINEAGE: tuple[PriceTreatment, Tier] = (PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME)
+# An unknown/absent publisher: bars keep the legacy hardcoded header fallback;
+# a quote reads delayed, since a wrong "realtime" is the one label the header
+# must never show.
+_UNDECLARED = _Declared(PriceTreatment.SPLIT_ADJUSTED, Tier.REALTIME, Tier.DELAYED_15M)
+
+# Publishers realtime only on the US consolidated tape and 15 minutes delayed on
+# every other venue, bars and quotes alike.
+_REALTIME_ON_US_TAPE_ONLY = frozenset({"fmp"})
+
+# Publishers whose intraday bars cover only the regular session: FMP's
+# ``historical-chart`` without ``extended`` and yfinance's history without
+# ``prepost``. ginlix-data's aggregates carry pre-market and after-hours bars.
+_REGULAR_SESSION_BARS = frozenset({"fmp", "yfinance"})
+
+# Venues are keyed by :func:`declared_venue`: XNYS for the US tape, XSHG for
+# all three CN exchanges. FMP's CN bars are the exchange's unadjusted prints:
+# measured on 600519.SH across the June 2024 dividend, FMP's daily closes equal
+# Tushare's raw ``daily``, not its qfq series.
+_US_TAPE = market_home("us")[0]
+_CN_CALENDAR = market_home("cn")[0]
+
+# US dotted class-share suffixes (BRK.B, BF.B), kept from the pre-CMDP
+# classifier. They live here, not in the instrument clock that also reads them,
+# because this module ships to the sandbox, which has no ``src`` package.
+_US_CLASS_SUFFIXES = {"A", "B", "C"}
 
 
-def publisher_lineage(publisher: str | None) -> tuple[PriceTreatment, Tier]:
-    """(price_treatment, tier) declared for *publisher*; conservative default."""
-    return PUBLISHER_LINEAGE.get(publisher or "", _DEFAULT_LINEAGE)
+def is_us_class_share(ref: InstrumentRef) -> bool:
+    """A dotted US class share (BRK.B, BF.B). The protocol knows no such
+    suffix, so the listing parses to the unknown venue; any other suffix there
+    (NOVO-B.CO, PETR4.SA) is a foreign venue it does not know either."""
+    stem, dot, suffix = ref.symbol.rpartition(".")
+    return ref.mic == UNKNOWN_MIC and bool(dot and stem) and suffix.upper() in _US_CLASS_SUFFIXES
 
 
-def served_display_unit(display_unit: str | None) -> str | None:
-    """Wire ``display_unit`` describing the SERVED values.
+def declared_venue(ref: InstrumentRef | None) -> str | None:
+    """The venue key a declaration ranks *ref* on; None for no instrument.
 
-    Every serving path converts GBX (pence) to major units before emitting, so
-    the pence hint would misdescribe the values — cleared to None for GBX venues.
+    A listing on a venue the protocol does not know takes XNYS as its default
+    home, which would read as the US tape and earn a US-only realtime grant.
+    It keys as the unknown venue instead, except a US class share.
     """
-    return None if display_unit == "GBX" else display_unit
+    if ref is None:
+        return None
+    if ref.mic == UNKNOWN_MIC and not is_us_class_share(ref):
+        return UNKNOWN_MIC
+    return ref.calendar_id
+
+
+def _declared(publisher: str | None, venue: str | None) -> _Declared:
+    declared = _DECLARED.get(publisher or "", _UNDECLARED)
+    if publisher in _REALTIME_ON_US_TAPE_ONLY and venue and venue != _US_TAPE:
+        return declared._replace(tier=Tier.DELAYED_15M, quote_tier=Tier.DELAYED_15M)
+    return declared
+
+
+def bars_regular_only(publisher: str | None) -> bool:
+    """Whether *publisher*'s intraday bars stop at the regular session's edges."""
+    return publisher in _REGULAR_SESSION_BARS
+
+
+def snapshot_tier(publisher: str | None, venue: str | None = None) -> Tier:
+    """Freshness of *publisher*'s quote on *venue* (a :func:`declared_venue`; None = publisher-wide)."""
+    return _declared(publisher, venue).quote_tier
+
+
+def publisher_lineage(
+    publisher: str | None,
+    asset_class: AssetClass | None = None,
+    venue: str | None = None,
+) -> tuple[PriceTreatment, Tier]:
+    """(price_treatment, tier) declared for *publisher*'s bars; conservative default.
+
+    The per-class rule behind :func:`series_lineage`, kept for a caller that
+    knows an asset class but has no instrument (the data probe declaring a
+    whole routing cell). Tushare's qfq join exists only for equities
+    (``adj_factor``). *venue* is a :func:`declared_venue`; None keeps the
+    publisher-wide declaration.
+    """
+    treatment, tier, _ = _declared(publisher, venue)
+    if publisher == "tushare" and asset_class in (AssetClass.INDEX, AssetClass.FUND):
+        treatment = PriceTreatment.RAW
+    elif publisher == "fmp" and venue == _CN_CALENDAR:
+        treatment = PriceTreatment.RAW
+    if publisher == "ginlix-data" and asset_class is AssetClass.INDEX:
+        # Its index feed is the 15-minute delayed one (the live index stream is
+        # delayed-only too); declared realtime, a daily series would settle at
+        # 16:05 ET on a pre-close value and be held until the next open.
+        tier = Tier.DELAYED_15M
+    return treatment, tier
+
+
+def series_lineage(
+    publisher: str | None, ref: InstrumentRef | None
+) -> tuple[PriceTreatment, Tier]:
+    """(price_treatment, tier) of *publisher*'s series for *ref*.
+
+    Lineage is per series, not per publisher. None (an unresolvable symbol)
+    keeps the publisher-wide declaration.
+    """
+    if ref is None:
+        return publisher_lineage(publisher)
+    return publisher_lineage(publisher, ref.asset_class, declared_venue(ref))
+
+
+def ref_for_key(instrument_key: str | None) -> InstrumentRef | None:
+    """The ref an instrument key names, or None when it does not parse."""
+    if not instrument_key:
+        return None
+    try:
+        return to_canonical(instrument_key)
+    except ValueError:
+        return None
 
 
 def build_series(
@@ -75,45 +180,16 @@ def build_series(
     publisher: str,
     ts_of: Callable[[dict[str, Any]], int],
 ) -> Series:
-    """Canonical raw-rows → protocol :class:`Series`. The one series/header builder.
+    """Canonical raw-rows to a protocol :class:`Series`, lineage from :func:`series_lineage`.
 
-    Providers supply their publisher name and a timestamp extractor (FMP parses
-    exchange-local wall-clock strings; others read epoch-ms ``time``). Lineage
-    comes from :func:`publisher_lineage`; GBX-quoted venues convert to major
-    units and the served ``display_unit`` hint is cleared. Records with a
-    non-positive timestamp are dropped and the rest sorted ascending.
+    The builder itself is the protocol's; this layer only knows which lineage
+    each langalpha publisher declares.
     """
-    treatment, tier = publisher_lineage(publisher)
-    scale = 0.01 if ref.display_unit == "GBX" else 1.0
-    records = []
-    for row in rows:
-        ts = ts_of(row)
-        if ts <= 0:
-            continue
-        records.append(OhlcvBar(
-            ts_event=ts,
-            open=float(row.get("open", 0.0)) * scale,
-            high=float(row.get("high", 0.0)) * scale,
-            low=float(row.get("low", 0.0)) * scale,
-            close=float(row.get("close", 0.0)) * scale,
-            volume=float(row["volume"]) if row.get("volume") is not None else None,
-        ))
-    records.sort(key=lambda r: r.ts_event)
-    now_ms = int(time.time() * 1000)
-    header = SeriesHeader(
-        instrument_key=ref.instrument_key,
-        schema_id=schema,
-        price_treatment=treatment,
-        publisher=publisher,
-        tier=tier,
-        price_currency=ref.currency,
-        display_decimals=display_decimals_for(ref.currency, ref.asset_class),
-        display_unit=served_display_unit(ref.display_unit),
-        asof=now_ms,
-        fetched_at=now_ms,
-        watermark=records[-1].ts_event if records else None,
+    treatment, tier = series_lineage(publisher, ref)
+    return _build_series(
+        rows, ref=ref, schema=schema, publisher=publisher,
+        price_treatment=treatment, tier=tier, ts_of=ts_of,
     )
-    return Series(header=header, records=records)
 
 
 def minor_unit_scale(symbol: str) -> float:
@@ -151,6 +227,24 @@ def scale_snapshot_prices(snap: dict, scale: float) -> dict:
     return snap
 
 
+def change_from(
+    price: float, prev_close: Any, ndigits: int | None = None
+) -> tuple[float | None, float | None]:
+    """``(change, change_percent)`` of *price* against *prev_close*.
+
+    Both None without a previous close. With *ndigits* the percent derives from
+    the rounded change, the way a synthesized quote row has always reported it.
+    """
+    if not prev_close:
+        return None, None
+    prev = float(prev_close)
+    change = price - prev
+    if ndigits is None:
+        return change, change / prev * 100
+    change = round(change, ndigits)
+    return change, round(change / prev * 100, ndigits)
+
+
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -158,6 +252,27 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def populated(data: Any) -> bool:
+    """Whether a provider answer is worth serving; ``{"results": []}`` is a miss.
+
+    The rule a routed source and the CN MCP branches share, so an empty answer
+    falls through to the default provider the same way everywhere.
+    """
+    return any(data.values()) if isinstance(data, dict) else bool(data)
+
+
+def symbol_timezone(symbol: str) -> ZoneInfo:
+    """Exchange-local timezone for a symbol, via the canonical instrument.
+
+    Falls back to ET for anything unresolvable — offset-identical to the old
+    region map, but per-venue accurate for European suffixes.
+    """
+    try:
+        return ZoneInfo(to_canonical(symbol).tz)
+    except Exception:
+        return ZoneInfo("America/New_York")
 
 
 def normalize_bars(

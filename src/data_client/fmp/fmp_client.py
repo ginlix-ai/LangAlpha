@@ -12,8 +12,45 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
+from market_protocol import display_spelling, vendor_spelling
 
 _CACHE_MAX_SIZE = 512
+
+
+def _vendor_symbol_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Respell the symbol params in FMP's form.
+
+    Every FMP request passes here, so callers hold our spelling (``600519.SH``)
+    and FMP still receives the ``600519.SS`` it resolves. A blank entry in a
+    list (``AAPL,,MSFT``) names nothing and is dropped; a symbol that cannot be
+    spelled raises :class:`FMPRequestError` rather than reaching FMP.
+    """
+    out = dict(params)
+    try:
+        if isinstance(out.get("symbol"), str):
+            out["symbol"] = vendor_spelling(out["symbol"])
+        if isinstance(out.get("symbols"), str):
+            out["symbols"] = ",".join(
+                vendor_spelling(s) for s in out["symbols"].split(",") if s.strip()
+            )
+    except ValueError as exc:
+        # 400, the status FMP gives a malformed request: callers that map
+        # statuses report it as a bad argument, with the reason.
+        raise FMPRequestError(f"Invalid symbol for FMP: {exc}", status_code=400) from exc
+    return out
+
+
+def _own_symbol_rows(data: Any) -> Any:
+    """Respell the ``symbol`` of each returned row in our spelling, in place.
+
+    The inbound half of :func:`_vendor_symbol_params`: FMP answers a Shanghai
+    listing as ``600519.SS``, and nothing past this client should see that.
+    """
+    rows = data if isinstance(data, list) else [data]
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("symbol"), str):
+            row["symbol"] = display_spelling(row["symbol"])
+    return data
 
 
 class FMPRequestError(Exception):
@@ -111,7 +148,7 @@ class FMPClient:
         version: Optional[str] = None,
         use_cache: bool = True,
     ) -> Union[Dict, List]:
-        params = params or {}
+        params = _vendor_symbol_params(params or {})
 
         cache_key = f"{endpoint}:{json.dumps(params, sort_keys=True)}"
 
@@ -127,7 +164,7 @@ class FMPClient:
                 url, params=params, headers={"apikey": self.api_key}
             )
             response.raise_for_status()
-            data = response.json()
+            data = _own_symbol_rows(response.json())
 
             if use_cache and data:
                 self._cache[cache_key] = data

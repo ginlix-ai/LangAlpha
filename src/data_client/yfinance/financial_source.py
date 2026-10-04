@@ -15,6 +15,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
+from market_protocol import display_spelling
+
+from .yahoo import yahoo_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +152,7 @@ _EXCHANGE_TO_YF: dict[str, list[str]] = {
 
 
 def _get_profile(symbol: str) -> list[dict[str, Any]]:
-    ticker = yf.Ticker(symbol)
+    ticker = yahoo_ticker(symbol)
     fi = ticker.fast_info
     info = ticker.info or {}
     if not info:
@@ -176,7 +179,7 @@ def _get_profile(symbol: str) -> list[dict[str, Any]]:
 
 
 def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
-    ticker = yf.Ticker(symbol)
+    ticker = yahoo_ticker(symbol)
     fi = ticker.fast_info
     info = ticker.info or {}
     price = float(fi.get("lastPrice", 0) or 0)
@@ -205,7 +208,7 @@ def _get_realtime_quote(symbol: str) -> list[dict[str, Any]]:
 def _get_income_statements(
     symbol: str, period: str, limit: int
 ) -> list[dict[str, Any]]:
-    ticker = yf.Ticker(symbol)
+    ticker = yahoo_ticker(symbol)
     df = ticker.quarterly_income_stmt if period == "quarter" else ticker.income_stmt
     result = []
     # `limit` is applied after the placeholder filter below, not in
@@ -230,13 +233,33 @@ def _get_income_statements(
         result.append(mapped)
         if len(result) >= limit:
             break
-    return result
+    return _stamp_reported_currency(ticker, result)
 
 
 def _get_cash_flows(symbol: str, period: str, limit: int) -> list[dict[str, Any]]:
-    ticker = yf.Ticker(symbol)
+    ticker = yahoo_ticker(symbol)
     df = ticker.quarterly_cashflow if period == "quarter" else ticker.cashflow
-    return [_remap_keys(r, _CASHFLOW_KEY_MAP) for r in _dataframe_to_records(df, limit)]
+    rows = [_remap_keys(r, _CASHFLOW_KEY_MAP) for r in _dataframe_to_records(df, limit)]
+    return _stamp_reported_currency(ticker, rows)
+
+
+def _stamp_reported_currency(ticker: yf.Ticker, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Label statement rows with the issuer's reporting currency, as FMP's rows are.
+
+    A HK listing of a mainland issuer quotes in HKD but reports in CNY, so the
+    listing currency cannot stand in. Unknown stays absent rather than guessed.
+    """
+    if not rows:
+        return rows
+    try:
+        code = (ticker.info or {}).get("financialCurrency")
+    except Exception as exc:
+        logger.debug("yfinance financialCurrency lookup failed: %s", exc)
+        return rows
+    if isinstance(code, str) and code:
+        for row in rows:
+            row["reportedCurrency"] = code
+    return rows
 
 
 def _percent_to_fraction(val: Any) -> float | None:
@@ -249,7 +272,7 @@ def _percent_to_fraction(val: Any) -> float | None:
 # carries the names and fraction units of its FMP counterpart; the TTM overview
 # table reads one shape whichever provider served it.
 def _get_key_metrics(symbol: str) -> list[dict[str, Any]]:
-    ticker = yf.Ticker(symbol)
+    ticker = yahoo_ticker(symbol)
     fi = ticker.fast_info
     info = ticker.info or {}
     if not info:
@@ -270,7 +293,7 @@ def _get_key_metrics(symbol: str) -> list[dict[str, Any]]:
 
 
 def _get_financial_ratios(symbol: str) -> list[dict[str, Any]]:
-    info = yf.Ticker(symbol).info or {}
+    info = yahoo_ticker(symbol).info or {}
     if not info:
         return []
     ratios = {
@@ -299,12 +322,13 @@ _PERF_CACHE_TTL = 300  # 5 minutes
 
 def _get_price_performance(symbol: str) -> list[dict[str, Any]]:
     """Compute price returns over standard periods from daily history."""
+    symbol = display_spelling(symbol)
     now_ts = time.monotonic()
     cached = _perf_cache.get(symbol)
     if cached and (now_ts - cached[0]) < _PERF_CACHE_TTL:
         return cached[1]
 
-    ticker = yf.Ticker(symbol)
+    ticker = yahoo_ticker(symbol)
     now = datetime.now(_ET)
     try:
         df = ticker.history(start=(now - timedelta(days=3650)).strftime("%Y-%m-%d"), interval="1d")
@@ -345,7 +369,7 @@ def _get_price_performance(symbol: str) -> list[dict[str, Any]]:
 
 def _get_analyst_price_targets(symbol: str) -> list[dict[str, Any]]:
     try:
-        targets = yf.Ticker(symbol).analyst_price_targets
+        targets = yahoo_ticker(symbol).analyst_price_targets
     except Exception:
         return []
     if not targets:
@@ -366,7 +390,7 @@ def _get_analyst_price_targets(symbol: str) -> list[dict[str, Any]]:
 
 def _get_analyst_ratings(symbol: str) -> list[dict[str, Any]]:
     try:
-        recs = yf.Ticker(symbol).recommendations_summary
+        recs = yahoo_ticker(symbol).recommendations_summary
     except Exception:
         return []
     if recs is None or (hasattr(recs, "empty") and recs.empty):
@@ -398,7 +422,7 @@ def _get_analyst_ratings(symbol: str) -> list[dict[str, Any]]:
 
 def _get_earnings_history(symbol: str, limit: int) -> list[dict[str, Any]]:
     try:
-        dates = yf.Ticker(symbol).earnings_dates
+        dates = yahoo_ticker(symbol).earnings_dates
     except Exception:
         return []
     if dates is None or dates.empty:
@@ -417,7 +441,7 @@ def _get_earnings_history(symbol: str, limit: int) -> list[dict[str, Any]]:
 def _get_single_sector_perf(sector_name: str, etf_symbol: str) -> dict[str, Any] | None:
     """Fetch daily change for one sector via its representative ETF."""
     try:
-        fi = yf.Ticker(etf_symbol).fast_info
+        fi = yahoo_ticker(etf_symbol).fast_info
         price = float(fi.get("lastPrice", 0) or 0)
         prev = float(fi.get("previousClose", 0) or 0)
         if not prev:
@@ -489,7 +513,7 @@ def _screen_stocks_sync(**filters: Any) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for q in quotes:
         output.append({
-            "symbol": q.get("symbol", ""),
+            "symbol": display_spelling(q.get("symbol") or ""),
             "companyName": q.get("shortName") or q.get("longName", ""),
             "price": _clean_value(q.get("regularMarketPrice")),
             "marketCap": _clean_value(q.get("marketCap")),
@@ -510,7 +534,7 @@ def _search_stocks(query: str, limit: int) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for q in quotes[:limit]:
         out.append({
-            "symbol": q.get("symbol", ""),
+            "symbol": display_spelling(q.get("symbol") or ""),
             "name": q.get("shortname") or q.get("longname", ""),
             "currency": q.get("currency"),
             "stockExchange": q.get("exchange"),

@@ -30,6 +30,7 @@ from market_protocol import (
     to_legacy_api,
 )
 
+from ..financial_data_provider import PartialSearch
 from .v2_routes import GinlixDataV2Routes
 
 logger = logging.getLogger(__name__)
@@ -281,7 +282,9 @@ class GinlixDataCnFinancialSource:
         """Name search over the CN and HK directories (中文 / pinyin / English / code).
 
         A directory that fails while the other finds nothing raises: ``[]``
-        would be cached upstream as "no such name".
+        would be cached upstream as "no such name". While the other finds
+        names it raises :class:`PartialSearch` with them, so they are served
+        but not cached as the whole answer.
         """
         markets = ("cn", "hk")
         answers = await asyncio.gather(
@@ -314,8 +317,10 @@ class GinlixDataCnFinancialSource:
                     "stockExchange": exchange,
                     "exchangeShortName": exchange,
                 })
-        if failure is not None and not out:
-            raise failure
+        if failure is not None:
+            if not out:
+                raise failure
+            raise PartialSearch(out[:limit])
         return out[:limit]
 
     async def close(self) -> None:

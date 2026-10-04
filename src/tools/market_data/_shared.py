@@ -9,7 +9,7 @@ import logging
 from langchain_core.runnables import RunnableConfig
 
 from .utils import finite_or_none
-from src.data_client.market_data_provider import symbol_timezone
+from src.data_client.normalize import symbol_timezone
 
 logger = logging.getLogger(__name__)
 

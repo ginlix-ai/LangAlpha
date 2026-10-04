@@ -15,7 +15,10 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src.data_client.market_data_provider import _SUFFIX_MAP
+_SUFFIX_MAP = dict.fromkeys(
+    ("HK", "SS", "SZ", "L", "T", "TO", "AX", "PA", "DE", "AS",
+     "MI", "MC", "SW", "KS", "KQ", "TW", "SI", "BO", "NS")
+)
 from src.server.services.cache._instrument_clock import (
     _US_CLASS_SUFFIXES,
     CalendarClock,

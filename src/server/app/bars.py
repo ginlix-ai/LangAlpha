@@ -18,7 +18,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from src.data_client.normalize import publisher_lineage, served_display_unit
+from market_protocol import served_display_unit
+from src.data_client.normalize import publisher_lineage
 from market_protocol import (
     OHLCV_SCHEMAS,
     AssetClass,

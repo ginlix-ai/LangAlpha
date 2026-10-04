@@ -194,3 +194,36 @@ class TestKeyMetricsAndRatiosShape:
         info = {k: v for k, v in self._INFO.items() if k != "trailingPegRatio"}
         r = self._run("_get_financial_ratios", info)
         assert r["priceToEarningsGrowthRatioTTM"] is None
+
+
+class TestReportedCurrency:
+    """Statement rows carry the issuer's reporting currency, not the listing's."""
+
+    def _df(self):
+        return _make_income_stmt_df(
+            rows=[("Total Revenue", [100.0]), ("Net Income", [10.0])],
+            dates=["2025-12-31"],
+        )
+
+    def _run(self, fn_name, info):
+        from src.data_client.yfinance import financial_source
+
+        with patch("src.data_client.yfinance.financial_source.yf.Ticker") as ticker_cls:
+            ticker = MagicMock()
+            ticker.quarterly_income_stmt = ticker.income_stmt = self._df()
+            ticker.quarterly_cashflow = ticker.cashflow = _make_income_stmt_df(
+                rows=[("Free Cash Flow", [5.0])], dates=["2025-12-31"]
+            )
+            ticker.info = info
+            ticker_cls.return_value = ticker
+            return getattr(financial_source, fn_name)("0700.HK", "quarter", 4)
+
+    @pytest.mark.parametrize("fn_name", ["_get_income_statements", "_get_cash_flows"])
+    def test_rows_take_financial_currency(self, fn_name):
+        rows = self._run(fn_name, {"currency": "HKD", "financialCurrency": "CNY"})
+        assert rows and all(r["reportedCurrency"] == "CNY" for r in rows)
+
+    @pytest.mark.parametrize("fn_name", ["_get_income_statements", "_get_cash_flows"])
+    def test_unknown_currency_left_absent(self, fn_name):
+        rows = self._run(fn_name, {"currency": "HKD"})
+        assert rows and all("reportedCurrency" not in r for r in rows)

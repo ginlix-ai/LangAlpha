@@ -8,8 +8,12 @@ config + credentials.  All three use double-checked locking via
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .base import (
@@ -69,6 +73,15 @@ async def _build_fmp_source() -> MarketDataSource:
     return FMPDataSource()
 
 
+async def _build_tushare_source() -> MarketDataSource:
+    # CN bars and quotes come from ginlix-data. The entry keeps the ``tushare``
+    # name because that is still the publisher.
+    from .ginlix_data import get_ginlix_data_client
+    from .ginlix_data.cn_source import GinlixDataCnSource
+
+    return GinlixDataCnSource(await get_ginlix_data_client())
+
+
 async def _build_ginlix_data_news_source() -> NewsDataSource:
     from .ginlix_data import get_ginlix_data_client
     from .ginlix_data.news_source import GinlixDataNewsSource
@@ -101,26 +114,132 @@ async def _build_tickertick_news_source() -> NewsDataSource:
     return TickerTickNewsSource()
 
 
+async def _build_tushare_news_source() -> NewsDataSource:
+    from .ginlix_data import get_ginlix_data_client
+    from .ginlix_data.cn_financial import GinlixDataCnNewsSource
+
+    return GinlixDataCnNewsSource(await get_ginlix_data_client())
+
+
 # ---------------------------------------------------------------------------
 # Source registries — map config name → (availability_check, async_constructor)
 # ---------------------------------------------------------------------------
 
 _SOURCE_REGISTRY: dict[str, tuple[Any, Any]] = {
     "ginlix-data": (_ginlix_data_available, _build_ginlix_data_source),
+    "tushare": (_ginlix_data_available, _build_tushare_source),
     "fmp": (_fmp_available, _build_fmp_source),
     "yfinance": (_yfinance_available, _build_yfinance_source),
 }
 
-_NEWS_SOURCE_REGISTRY: dict[str, tuple[Any, Any]] = {
-    "ginlix-data": (_ginlix_data_available, _build_ginlix_data_news_source),
-    "fmp": (_fmp_available, _build_fmp_news_source),
-    "yfinance": (_yfinance_available, _build_yfinance_news_source),
-    "tickertick": (_tickertick_available, _build_tickertick_news_source),
+@dataclass(frozen=True)
+class NewsGate:
+    """Who may target a news source by name: a feature flag plus a locale prefix."""
+
+    feature: str
+    locale: str
+
+
+@dataclass(frozen=True)
+class NewsSourceSpec:
+    """A named news source, and what a caller targeting it by name may do.
+
+    ``owns_article`` marks a source outside the default chain that can resolve
+    an article id it may have issued; ``gate`` marks one whose feed is served
+    only to eligible users (everyone else gets the chain).
+    """
+
+    available: Callable[[], bool]
+    build: Callable[[], Awaitable[NewsDataSource]]
+    owns_article: Callable[[str], bool] | None = None
+    gate: NewsGate | None = None
+
+
+def _any_article(_: str) -> bool:
+    return True
+
+
+_NEWS_SOURCE_REGISTRY: dict[str, NewsSourceSpec] = {
+    "ginlix-data": NewsSourceSpec(_ginlix_data_available, _build_ginlix_data_news_source),
+    "fmp": NewsSourceSpec(_fmp_available, _build_fmp_news_source),
+    "yfinance": NewsSourceSpec(_yfinance_available, _build_yfinance_news_source),
+    "tickertick": NewsSourceSpec(
+        _tickertick_available, _build_tickertick_news_source, owns_article=_any_article
+    ),
+    # CN market news — targeted via ?provider=tushare (bypass path, like
+    # tickertick); deliberately NOT in the default news_data.providers chain.
+    # Its article ids are ``ts-`` content hashes, so no other id costs a
+    # fetch of its whole window.
+    "tushare": NewsSourceSpec(
+        _ginlix_data_available,
+        _build_tushare_news_source,
+        owns_article=lambda article_id: article_id.startswith("ts-"),
+        gate=NewsGate(feature="a_share_pack", locale="zh"),
+    ),
 }
+
+
+def news_gate(name: str | None) -> NewsGate | None:
+    """The eligibility gate on targeting news source *name*, if it has one."""
+    spec = _NEWS_SOURCE_REGISTRY.get(name or "")
+    return spec.gate if spec else None
+
+
+def news_source_available(name: str) -> bool:
+    """Whether news source *name* can be built here, as ``get_news_source`` would."""
+    spec = _NEWS_SOURCE_REGISTRY.get(name)
+    return spec is not None and spec.available()
+
+
+def news_article_owners(article_id: str) -> list[str]:
+    """Named sources to ask for *article_id* after the default chain misses."""
+    return [
+        name for name, spec in _NEWS_SOURCE_REGISTRY.items()
+        if spec.owns_article is not None and spec.owns_article(article_id)
+    ]
 
 # ---------------------------------------------------------------------------
 # Market data provider factory
 # ---------------------------------------------------------------------------
+
+
+RULESET_PATH_ENV = "DATA_ROUTING_RULESET"
+
+
+def default_ruleset_path() -> Path:
+    """``$DATA_ROUTING_RULESET``, else ``data_routing.yaml`` in the working directory.
+
+    Deployment configuration, like ``.env``: generated per deployment against
+    its own tokens, so it is not committed.
+    """
+    override = os.environ.get(RULESET_PATH_ENV)
+    return Path(override) if override else Path.cwd() / "data_routing.yaml"
+
+
+def _load_routing_table():
+    """The generated routing ruleset, or ``None`` when this deployment has none.
+
+    Absence is the normal case (the file is produced by the entitlement probe
+    against a deployment's own tokens), but which routing is live should be
+    readable from the log, so the fallback says so once per process.
+    """
+    from market_protocol.routing import RoutingTable, load_ruleset
+
+    path = default_ruleset_path()
+    ruleset = load_ruleset(path)
+    if ruleset is None:
+        logger.info(
+            "market_data.routing.no_ruleset | path=%s using the static market_data "
+            "chain from config.yaml", path,
+        )
+        return None
+    logger.info(
+        "market_data.routing.loaded | cells=%s generated_at=%s",
+        len(ruleset.cells),
+        ruleset.generated_at.isoformat(),
+    )
+    return RoutingTable(ruleset)
+
 
 _market_data_provider: MarketDataSource | None = None
 _market_data_provider_lock = asyncio.Lock()
@@ -183,7 +302,11 @@ async def get_market_data_provider() -> MarketDataSource:
                 "No market data source available — check config and credentials"
             )
 
-        _market_data_provider = MarketDataProvider(entries)
+        from .ginlix_data.directory import fill_quote_names
+
+        _market_data_provider = MarketDataProvider(
+            entries, routing=_load_routing_table(), name_rows=fill_quote_names,
+        )
 
         return _market_data_provider
 
@@ -221,8 +344,8 @@ async def get_news_data_provider():
         for cfg in provider_configs:
             name = cfg["name"]
             reg = _NEWS_SOURCE_REGISTRY.get(name)
-            if reg and reg[0]():  # availability check
-                source = await reg[1]()
+            if reg and reg.available():  # availability check
+                source = await reg.build()
                 sources.append((name, source))
                 logger.debug("news_data.source.registered | name=%s", name)
             else:
@@ -261,10 +384,10 @@ async def get_news_source(name: str) -> NewsDataSource:
             return cached
 
         reg = _NEWS_SOURCE_REGISTRY.get(name)
-        if not reg or not reg[0]():
+        if not reg or not reg.available():
             raise ValueError(f"News source '{name}' is not available")
 
-        source = await reg[1]()
+        source = await reg.build()
         _news_sources[name] = source
         return source
 
@@ -320,6 +443,41 @@ async def get_financial_data_provider() -> FinancialDataProvider:
             intel = GinlixMarketIntelSource(client)
             logger.debug(
                 "financial_data.source.registered | name=ginlix-data (MarketIntelSource)"
+            )
+
+        if _ginlix_data_available():
+            # CN fundamentals come from ginlix-data (vendor: Tushare).
+            from .financial_data_provider import (
+                MarketRoute,
+                RoutedFinancialSource,
+                RoutedMarketIntelSource,
+            )
+            from .ginlix_data import get_ginlix_data_client
+            from .ginlix_data.cn_financial import (
+                GinlixDataCnFinancialSource,
+                GinlixDataCnIntelSource,
+                has_cjk,
+                is_cn_option,
+                screens_cn,
+            )
+            from .ginlix_data.directory import attach_names
+
+            client = await get_ginlix_data_client()
+            financial = RoutedFinancialSource(
+                default=financial,
+                by_market={"cn": MarketRoute(
+                    GinlixDataCnFinancialSource(client), screens=screens_cn, claims_query=has_cjk,
+                )},
+                name_rows=functools.partial(attach_names, local="nameLocal", english="nameEn"),
+            )
+            intel = RoutedMarketIntelSource(
+                default=intel,
+                by_market={"cn": MarketRoute(
+                    GinlixDataCnIntelSource(client), claims_option=is_cn_option,
+                )},
+            )
+            logger.debug(
+                "financial_data.source.registered | name=ginlix-data (cn routing)"
             )
 
         _financial_data_provider = FinancialDataProvider(

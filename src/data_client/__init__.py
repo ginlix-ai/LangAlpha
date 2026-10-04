@@ -20,8 +20,8 @@ from .base import (  # noqa: F401 — re-export
     PriceDataProvider,
 )
 from .financial_data_provider import FinancialDataProvider  # noqa: F401 — re-export
-from .market_data_provider import is_us_symbol, symbol_timezone  # noqa: F401 — re-export
-from .normalize import normalize_bars  # noqa: F401 — re-export
+from .market_data_provider import is_us_symbol  # noqa: F401 — re-export
+from .normalize import normalize_bars, symbol_timezone  # noqa: F401 — re-export
 from .registry import (  # noqa: F401 — re-export
     get_financial_data_provider,
     get_market_data_provider,

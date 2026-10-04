@@ -161,6 +161,25 @@ class TestFMPFinancialSource:
         assert result == [{"Americas": 2e9}]
 
     @pytest.mark.asyncio
+    async def test_get_revenue_by_segment_flattens_stable_rows(self, source):
+        # Stable answers {date, data} rows; the overview reads the first key as the date.
+        src, client = source
+        client.get_revenue_product_segmentation.return_value = [
+            {"symbol": "ACME", "period": "Q3", "date": "2026-06-27", "data": {"Widgets": 5.0}},
+        ]
+        result = await src.get_revenue_by_segment("ACME", period="quarter", structure="flat")
+        client.get_revenue_product_segmentation.assert_awaited_once_with(
+            "ACME", period="quarter", structure="flat"
+        )
+        assert result == [{"2026-06-27": {"Widgets": 5.0}}]
+
+    @pytest.mark.asyncio
+    async def test_get_revenue_by_segment_empty_answer_is_a_list(self, source):
+        src, client = source
+        client.get_revenue_geographic_segmentation.return_value = None
+        assert await src.get_revenue_by_segment("ACME", segment_type="geography") == []
+
+    @pytest.mark.asyncio
     async def test_get_sector_performance(self, source):
         src, client = source
         client.get_sector_performance.return_value = [{"sector": "Tech"}]
@@ -343,8 +362,10 @@ class TestGetFinancialDataProviderFactory:
 
             provider = await get_financial_data_provider()
 
-        assert provider.financial is None
-        assert provider.intel is not None
+        # ginlix-data serves CN fundamentals: routed wrappers with no default fundamentals.
+        assert provider.financial._default is None
+        assert "cn" in provider.financial._by_market
+        assert provider.intel._default is MockIntel.return_value
         MockIntel.assert_called_once_with(mock_client)
         self._reset_singleton()
 
@@ -371,8 +392,8 @@ class TestGetFinancialDataProviderFactory:
 
             provider = await get_financial_data_provider()
 
-        assert provider.financial is not None
-        assert provider.intel is not None
+        assert provider.financial._default is MockFMP.return_value
+        assert provider.intel._default is MockIntel.return_value
         MockFMP.assert_called_once_with(mock_fmp_client)
         MockIntel.assert_called_once()
         self._reset_singleton()
@@ -413,6 +434,34 @@ class TestGetFinancialDataProviderFactory:
 
         assert provider.financial is None
         assert provider.intel is None
+        self._reset_singleton()
+
+    @pytest.mark.asyncio
+    async def test_ginlix_data_wraps_sources_in_routing_proxies(self):
+        """With ginlix-data configured, both sources get the per-market routing wrapper."""
+        self._reset_singleton()
+        mock_fmp_client = AsyncMock()
+
+        with (
+            patch("src.data_client.registry._fmp_available", return_value=True),
+            patch("src.data_client.registry._ginlix_data_available", return_value=True),
+            patch("src.data_client.fmp.get_fmp_client", return_value=mock_fmp_client),
+            patch("src.data_client.fmp.financial_source.FMPFinancialSource") as MockFMP,
+            patch("src.data_client.ginlix_data.get_ginlix_data_client", return_value=AsyncMock()),
+        ):
+            from src.data_client import get_financial_data_provider
+            from src.data_client.financial_data_provider import (
+                RoutedFinancialSource,
+                RoutedMarketIntelSource,
+            )
+
+            provider = await get_financial_data_provider()
+
+        assert isinstance(provider.financial, RoutedFinancialSource)
+        assert provider.financial._default is MockFMP.return_value
+        assert "cn" in provider.financial._by_market
+        assert isinstance(provider.intel, RoutedMarketIntelSource)
+        assert "cn" in provider.intel._by_market
         self._reset_singleton()
 
 
