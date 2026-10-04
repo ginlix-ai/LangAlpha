@@ -15,6 +15,7 @@ import pytest
 from src.tools.market_data.currency import (
     DisplaySpec,
     currency_symbol,
+    fmt_count,
     fmt_money,
     fmt_price,
 )
@@ -24,7 +25,6 @@ from src.tools.market_data.prices import (
     _format_price_summary,
 )
 from src.tools.market_data.screener import fetch_stock_screener
-from src.tools.market_data.utils import format_number
 from market_protocol import to_canonical
 
 _SCREEN_MOD = "src.tools.market_data.screener"
@@ -71,8 +71,19 @@ class TestFmtPrice:
         assert fmt_price(100.0, None) == "$100.00"
 
     def test_usd_byte_identical_to_legacy(self):
-        for v in (0.0, 1.5, 247.92, -3.25, 1234.5):
+        for v in (0.0, 1.5, 247.92, 1234.5):
             assert fmt_price(v, "USD") == f"${v:.2f}"
+
+    def test_sign_leads_the_symbol(self):
+        assert fmt_price(-3.25, "USD") == "-$3.25"
+        assert fmt_price(-3.25, "CNY") == "-CN¥3.25"
+        # A value that rounds to zero prints unsigned.
+        assert fmt_price(-0.001, "USD") == "$0.00"
+
+    def test_bare_spec_drops_the_symbol(self):
+        # An index level is points: no currency prefix.
+        assert fmt_price(4521.5, DisplaySpec("CNY", 2, bare=True)) == "4521.50"
+        assert fmt_price(-12.25, DisplaySpec("USD", 2, bare=True)) == "-12.25"
 
     def test_none_value(self):
         assert fmt_price(None, "USD") == "N/A"
@@ -109,13 +120,17 @@ class TestFmtMoney:
     def test_none_value(self):
         assert fmt_money(None, "USD") == "N/A"
 
-    def test_no_suffix_drops_prefix(self):
-        # Mirrors format_number(suffix=False): plain number, no currency.
-        assert fmt_money(1e9, "HKD", suffix=False) == "1,000,000,000.00"
+    def test_negative_sign_leads_the_symbol(self):
+        assert fmt_money(-3e9, "CNY") == "-CN¥3.00B"
+        assert fmt_money(-12.5, "USD") == "-$12.50"
 
-    def test_usd_byte_identical_to_format_number(self):
-        for v in (0.0, 247.92, 150e6, 2.5e9, 3.68e12, -1.5e12):
-            assert fmt_money(v, "USD") == format_number(v)
+    def test_no_currency_reads_as_dollars(self):
+        assert fmt_money(-1.5e12) == "-$1.50T"
+
+    def test_count_is_the_money_ladder_without_a_symbol(self):
+        for v in (0.0, 247.92, 150e6, 2.5e9, 3.68e12, -1.5e12, -0.001):
+            assert fmt_count(v) == fmt_money(v, "USD").replace("$", "")
+        assert fmt_count(None) == "N/A"
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +298,38 @@ class TestScreenerPerRowCurrency:
         assert "$235.50" in content
         assert "HK$318.20" in content
         assert "HK$3.00T" in content
+
+    @pytest.mark.asyncio
+    async def test_cn_screen_echoes_its_thresholds_in_cny(self):
+        # The CN screen compares price and cap in CNY; the filter line must
+        # not restate those thresholds as dollars.
+        results = [
+            {"symbol": "600519.SH", "companyName": "Alpha Co.", "price": 1712.40,
+             "marketCap": 2.1e12},
+            {"symbol": "000858.SZ", "companyName": "Beta Co.", "price": 128.30,
+             "marketCap": 5.0e11},
+        ]
+        provider = _screener_provider(results)
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, artifact = await fetch_stock_screener(
+                country="CN", market_cap_more_than=1e11, price_more_than=100.0,
+            )
+
+        assert "Mkt Cap >: CN¥100.00B" in content
+        assert "Price >: CN¥100.00" in content
+        assert "$100" not in content
+        assert artifact["filters"]["Price >"] == "CN¥100.00"
+
+    @pytest.mark.asyncio
+    async def test_mixed_screen_keeps_dollar_thresholds(self):
+        results = [
+            {"symbol": "AAPL", "price": 235.50, "marketCap": 3.5e12},
+            {"symbol": "0700.HK", "price": 318.20, "marketCap": 3.0e12},
+        ]
+        provider = _screener_provider(results)
+
+        with patch(f"{_SCREEN_MOD}.get_financial_data_provider", return_value=provider):
+            content, _ = await fetch_stock_screener(price_more_than=10.0)
+
+        assert "Price >: $10.00" in content

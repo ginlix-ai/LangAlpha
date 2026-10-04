@@ -305,7 +305,7 @@ async def get_sec_filing(
     """Fetch an SEC filing (10-K, 10-Q or 8-K) with its financial statements,
     essential sections and the matching earnings call.
 
-    US SEC filers only — a non-US listing ("0700.HK", "600519.SS") has no
+    US SEC filers only — a non-US listing ("0700.HK", "600519.SH") has no
     10-K, 10-Q or 8-K to fetch.
 
     Args:

@@ -49,9 +49,9 @@ from ptc_agent.agent.provenance.types import (
     fingerprint_result_with_body,
 )
 from src.config.settings import get_market_watch_min_interval
+from src.data_client.instrument_clock import clock_for_ref
 from src.data_client.registry import get_market_data_provider
-from market_protocol import MarketPhase
-from market_protocol.calendars import get_calendar
+from market_protocol import AssetClass, MarketPhase
 from src.tools.market_data.display import resolve_ref
 from src.tools.market_data.quote_format import current_price, format_quote_block
 from src.utils.market_watch import get_watchlist
@@ -63,6 +63,11 @@ _STAMP_CLOSE = "</market-watch>"
 _STAMP_NOTE = "Automated live-price feed (not a user message)."
 # Bump when the block's shape changes: a row outlives the code that wrote it.
 _STAMP_SCHEMA_VERSION = 1
+
+# Phases in which a watched price can move. A lunch break holds the morning
+# close and an index's extended hours hold the regular close, so a stamp then
+# would only repeat a price the venue is not changing.
+_MOVING_PHASES = (MarketPhase.PRE, MarketPhase.REGULAR, MarketPhase.POST)
 
 # Direct tools whose call already puts a fresh price for the symbol in front of
 # the model; when the current batch has one for a watched ticker we skip the
@@ -79,20 +84,21 @@ def _configurable() -> dict:
 
 
 def _any_venue_open(symbols: list[str]) -> bool:
-    """True if any watched symbol's listing venue is not CLOSED.
+    """True if any watched symbol's price can be moving now.
 
-    Each symbol is priced against its own exchange calendar, so a watchlist of
-    only ``0700.HK`` stamps during Hong Kong hours even while US markets are
-    shut. An unresolvable symbol counts as open (fail-open → proceed to fetch);
-    a calendar lookup that raises propagates to the injection guard, which
-    degrades to injecting nothing.
+    Each symbol is read on its own instrument clock, so a watchlist of only
+    ``0700.HK`` stamps during Hong Kong hours even while US markets are shut,
+    and goes quiet over its lunch break. An unresolvable symbol counts as open
+    (fail-open → proceed to fetch); a clock lookup that raises propagates to
+    the injection guard, which degrades to injecting nothing. Symbols read as
+    the stocks they are fetched as, so a watched COMP is the company.
     """
     now = datetime.now(timezone.utc)
     for sym in symbols:
-        ref = resolve_ref(sym)
+        ref = resolve_ref(sym, AssetClass.EQUITY)
         if ref is None:
             return True
-        if get_calendar(ref.calendar_id).phase_at(now) != MarketPhase.CLOSED:
+        if clock_for_ref(ref).phase(now) in _MOVING_PHASES:
             return True
     return False
 
@@ -240,7 +246,7 @@ class MarketWatchMiddleware(AgentMiddleware):
         # turn. Inner `return None`s below are normal control flow.
         try:
             # Venue gate: stamp when ANY watched symbol's exchange is open. Pure
-            # CPU (symbol resolve + calendar phase). Above the throttle so a
+            # CPU (symbol resolve + clock phase). Above the throttle so a
             # mid-window venue close stops the cached replay.
             if not _any_venue_open(symbols):
                 return None
@@ -305,7 +311,9 @@ class MarketWatchMiddleware(AgentMiddleware):
             )
             if not snaps:
                 return None
-            block = format_quote_block(snaps, prev_prices=self._last_prices)
+            block = format_quote_block(
+                snaps, prev_prices=self._last_prices, asset_class=AssetClass.EQUITY
+            )
         except Exception:
             logger.warning("[MarketWatch] snapshot fetch failed", exc_info=True)
             return None

@@ -13,12 +13,13 @@ import hashlib
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytz
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from ptc_agent.agent.middleware.market_watch import MarketWatchMiddleware
+from ptc_agent.agent.middleware.market_watch import MarketWatchMiddleware, _any_venue_open
 from ptc_agent.agent.middleware.runtime_context import REQUEST_CALL_UPDATES
 from market_protocol import MarketPhase
 
@@ -74,11 +75,11 @@ class _FakeRequest:
         )
 
 
-def _fake_calendar(phase):
-    """A calendar whose phase_at returns a fixed MarketPhase for the venue gate."""
-    cal = MagicMock()
-    cal.phase_at = MagicMock(return_value=phase)
-    return cal
+def _fake_clock(phase):
+    """An instrument clock whose phase is a fixed MarketPhase for the venue gate."""
+    clock = MagicMock()
+    clock.phase = MagicMock(return_value=phase)
+    return clock
 
 
 def _mw(interval=25, **kwargs):
@@ -107,7 +108,7 @@ def _patched(watchlist, snaps=_SNAPS, phase=MarketPhase.REGULAR, cfg=_CFG):
                   return_value=("REGULAR_HOURS", _FIXED_ET))
         )
         stack.enter_context(
-            patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(phase))
+            patch(f"{_MOD}.clock_for_ref", return_value=_fake_clock(phase))
         )
         stack.enter_context(patch(f"{_MOD}.get_config", MagicMock(return_value=cfg)))
         yield SimpleNamespace(provider=provider)
@@ -280,7 +281,7 @@ async def test_watchlist_change_mid_window_refetches(recording_handler):
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
          patch("src.tools.market_data.quote_format.get_market_session",
                return_value=("REGULAR_HOURS", _FIXED_ET)), \
-         patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(MarketPhase.REGULAR)), \
+         patch(f"{_MOD}.clock_for_ref", return_value=_fake_clock(MarketPhase.REGULAR)), \
          patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
         first = _human_request()
         await mw.awrap_model_call(first, recording_handler)
@@ -306,9 +307,9 @@ async def test_venue_close_mid_window_stops_injection(recording_handler):
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
          patch("src.tools.market_data.quote_format.get_market_session",
                return_value=("REGULAR_HOURS", _FIXED_ET)), \
-         patch(f"{_MOD}.get_calendar",
-               side_effect=[_fake_calendar(MarketPhase.REGULAR),
-                            _fake_calendar(MarketPhase.CLOSED)]), \
+         patch(f"{_MOD}.clock_for_ref",
+               side_effect=[_fake_clock(MarketPhase.REGULAR),
+                            _fake_clock(MarketPhase.CLOSED)]), \
          patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
         first = _human_request()
         await mw.awrap_model_call(first, recording_handler)
@@ -348,21 +349,38 @@ async def test_stamps_when_hk_open_while_us_closed(recording_handler):
     provider.get_snapshots = AsyncMock(return_value=hk_snaps)
     request = _human_request()
 
-    def _by_venue(calendar_id):
+    def _by_venue(ref):
         # XNYS closed, XHKG open.
-        return _fake_calendar(
-            MarketPhase.REGULAR if calendar_id == "XHKG" else MarketPhase.CLOSED
+        return _fake_clock(
+            MarketPhase.REGULAR if ref.calendar_id == "XHKG" else MarketPhase.CLOSED
         )
 
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["AAPL", "0700.HK"])), \
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
          patch("src.tools.market_data.quote_format.get_market_session",
                return_value=("CLOSED", _FIXED_ET)), \
-         patch(f"{_MOD}.get_calendar", side_effect=_by_venue), \
+         patch(f"{_MOD}.clock_for_ref", side_effect=_by_venue), \
          patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
         await mw.awrap_model_call(request, recording_handler)
 
     _assert_stamped(request, recording_handler.seen[0])
+
+
+@pytest.mark.parametrize(
+    "symbol,at,expected",
+    [
+        # A lunch break holds the morning close: nothing to stamp.
+        ("0700.HK", datetime(2026, 7, 2, 12, 30, tzinfo=ZoneInfo("Asia/Hong_Kong")), False),
+        ("0700.HK", datetime(2026, 7, 2, 10, 30, tzinfo=ZoneInfo("Asia/Hong_Kong")), True),
+        # After-hours moves a stock but not an index, which settled at 16:00.
+        ("AAPL", datetime(2026, 10, 1, 17, 30, tzinfo=ZoneInfo("America/New_York")), True),
+        ("^GSPC", datetime(2026, 10, 1, 17, 30, tzinfo=ZoneInfo("America/New_York")), False),
+    ],
+)
+def test_venue_gate_reads_each_instrument_clock(symbol, at, expected):
+    with patch(f"{_MOD}.datetime") as clock:
+        clock.now.return_value = at
+        assert _any_venue_open([symbol]) is expected
 
 
 @pytest.mark.asyncio
@@ -374,7 +392,7 @@ async def test_provider_failure_is_silent(recording_handler):
     provider.get_snapshots = AsyncMock(side_effect=RuntimeError("down"))
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["NVDA"])), \
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
-         patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(MarketPhase.REGULAR)), \
+         patch(f"{_MOD}.clock_for_ref", return_value=_fake_clock(MarketPhase.REGULAR)), \
          patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
         result = await mw.awrap_model_call(request, recording_handler)
 
@@ -390,7 +408,7 @@ async def test_post_throttle_failure_is_silent(recording_handler):
     request = _human_request()
 
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["NVDA"])), \
-         patch(f"{_MOD}.get_calendar", side_effect=RuntimeError("boom")), \
+         patch(f"{_MOD}.clock_for_ref", side_effect=RuntimeError("boom")), \
          patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
         result = await mw.awrap_model_call(request, recording_handler)
 

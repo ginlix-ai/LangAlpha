@@ -10,7 +10,7 @@ anywhere in it costs the row, never the turn.
 """
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -854,14 +854,21 @@ class TestTheFactFormOfTheSessionLine:
         )
 
     def test_the_viewer_clock_and_the_holiday_caveat_survive_the_fact_form(self):
+        # A Monday past the published CN calendar, so the caveat is owed. It
+        # follows the calendar's horizon, which each release moves, and stays
+        # in September so the viewer's clock is on daylight time.
+        from market_protocol.calendars import calendar_range
+
+        day = date(calendar_range("XSHG")[1].year + 3, 9, 1)
+        day += timedelta(days=-day.weekday() % 7)
         line = MARKET_CLOCK.describe(
             "CN",
-            datetime(2026, 9, 9, 2, 0, tzinfo=UTC),
+            datetime(day.year, day.month, day.day, 2, 0, tzinfo=UTC),
             viewer_tz="America/New_York",
             relative=False,
         )
 
         assert line == (
-            "CN: regular hours, closes Wed 15:00 CST (Wed 03:00 local), "
+            "CN: regular hours, closes Mon 15:00 CST (Mon 03:00 local), "
             "holidays unverified"
         )

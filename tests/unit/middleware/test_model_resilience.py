@@ -355,6 +355,20 @@ class TestBuildFallbackPairs:
     def test_empty_config_returns_empty(self):
         assert build_fallback_pairs(self._Cfg()) == []
 
+    def test_unresolvable_name_is_skipped(self, monkeypatch):
+        # A fallback is insurance for the primary: a stale or unkeyed name in
+        # the list is dropped, never what takes the turn down.
+        good = _FakeModel("good")
+
+        def factory(name):
+            if name == "gone-model":
+                raise ValueError("Model gone-model not found in models.json")
+            return good
+
+        monkeypatch.setattr("src.llms.get_llm_by_type", factory)
+        cfg = self._Cfg(fallback=["gone-model", "good"])
+        assert build_fallback_pairs(cfg) == [("good", good)]
+
 
 class TestReasoningPayloadEscalation:
     """The one non-retryable status the middleware retries in place.

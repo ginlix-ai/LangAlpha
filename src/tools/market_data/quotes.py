@@ -10,13 +10,19 @@ from langchain_core.runnables import RunnableConfig
 from .currency import fmt_price
 from .display import (
     _symbol_currency,
+    resolve_listing,
     resolve_ref,
 )
-from .quote_format import format_quote_block, venue_clock
-from .utils import get_market_session
+from .quote_format import (
+    block_clock,
+    format_quote_block,
+    stamp_quote,
+)
 from src.data_client import get_financial_data_provider, get_market_data_provider
+from src.data_client.freshness import is_live
+from src.data_client.market_data_provider import snapshot_key
 from src.data_client.ginlix_data.pagination import paginate_cursor
-from market_protocol import to_legacy_api
+from market_protocol import AssetClass, display_spelling
 
 from ._shared import _get_user_id
 
@@ -48,9 +54,7 @@ async def fetch_options_chain(
         user_id = _get_user_id(config)
         # Resolve once: normalize the agent-supplied underlying to the legacy form
         # provider calls use, and reuse the ref for currency display.
-        ref = resolve_ref(underlying)
-        if ref is not None:
-            underlying = to_legacy_api(ref)
+        ref, underlying = resolve_listing(underlying)
         cur = _symbol_currency(ref)
         if provider.intel is None:
             return (
@@ -235,7 +239,8 @@ async def fetch_quote(
     # the two documented values so it can't smuggle path segments.
     if asset_type not in ("stocks", "indices"):
         asset_type = "stocks"
-    syms = [s.strip().upper() for s in (symbols or []) if s and s.strip()][:20]
+    asset_class = AssetClass.INDEX if asset_type == "indices" else AssetClass.EQUITY
+    syms = [display_spelling(s) for s in (symbols or []) if s and s.strip()][:20]
     if not syms:
         return "No symbols provided.", empty
     try:
@@ -243,41 +248,57 @@ async def fetch_quote(
         user_id = _get_user_id(config)
         # Canonicalize each symbol to the legacy REST spelling the snapshot
         # provider chain expects (e.g. "0700.HK", index "^GSPC" -> "GSPC").
-        resolved = []
-        for s in syms:
-            ref = resolve_ref(s)
-            resolved.append(to_legacy_api(ref) if ref is not None else s)
+        # The class decides a bare alias: on the stocks path COMP is Compass,
+        # not the Nasdaq Composite.
+        listings = [resolve_listing(s, asset_class) for s in syms]
+        resolved = [spelling for _, spelling in listings]
+        asked = {snapshot_key(spelling): ref for ref, spelling in listings if ref is not None}
         snaps = await provider.get_snapshots(resolved, asset_type=asset_type, user_id=user_id)
         if not snaps:
             return f"No quote data available for {', '.join(syms)}.", empty
-        # Stamp non-US listings with their market-local retrieval clock — the
-        # artifact's ET as_of doesn't locate a foreign price in venue time.
+        # Stamp each row with what it actually is: the declared tier, the
+        # measured freshness, and a venue-local clock at the PRINT time when the
+        # provider gave one (retrieval time otherwise) — the artifact's ET as_of
+        # doesn't locate a foreign price in venue time, and a delayed print is
+        # not located by the retrieval clock at all.
         retrieved_at = datetime.now(timezone.utc)
+        all_realtime = True
         for snap in snaps:
-            local = venue_clock(snap.get("symbol"), retrieved_at)
-            if local:
-                snap["as_of_local"] = local
-        content = format_quote_block(snaps)
+            # Each row is the listing it was asked as and is measured on that
+            # listing's clock; the vendor's caret-free echo (GSPC) cannot tell
+            # an index from a stock, and a stock read as an index has its
+            # after-hours print called closed.
+            ref = asked.get(snapshot_key(snap.get("symbol"))) or resolve_ref(
+                snap.get("symbol"), asset_class
+            )
+            if ref is not None:
+                snap["asset_class"] = ref.asset_class.value
+            snap.update(stamp_quote(snap, retrieved_at, ref=ref))
+            # The card prints each row in its listing currency; an index level
+            # is a bare number, so index rows carry none.
+            if asset_type == "stocks" and ref is not None and not snap.get("currency"):
+                snap["currency"] = ref.price_currency
+            all_realtime = all_realtime and is_live(snap["freshness"])
+        content = format_quote_block(snaps, at=retrieved_at)
         # Diff on the RESOLVED spelling the provider actually saw (an alias like
         # "SPX" is requested as "GSPC"), but report under the caller's input
-        # label. removeprefix("^") matches the provider's own normalize_symbol
-        # contract — FMP returns indices caret-stripped ("^GSPC" -> "GSPC").
-        returned = {(s.get("symbol") or "").removeprefix("^").upper() for s in snaps}
+        # label, matched as the provider chain matches its rows.
+        returned = {snapshot_key(s.get("symbol")) for s in snaps}
         missing = sorted(
-            syms[i]
-            for i, r in enumerate(resolved)
-            if r.removeprefix("^").upper() not in returned
+            syms[i] for i, r in enumerate(resolved) if snapshot_key(r) not in returned
         )
         if missing:
             content += f"\n(no data: {', '.join(missing)})"
-        _, now_et = get_market_session()
         return content, {
             "type": "quote",
             "quotes": snaps,
-            "as_of": now_et.strftime("%Y-%m-%d %H:%M:%S ET"),
+            "as_of": block_clock(snaps, retrieved_at),
             # Epoch ms so the frontend can offer the user-local time (tooltip)
             # without parsing the display strings.
             "as_of_ts": int(retrieved_at.timestamp() * 1000),
+            # One flag for the card header: every quote in the artifact is
+            # current, so the header may say so without reading each row.
+            "all_realtime": all_realtime,
         }
     except Exception as e:
         logger.error(f"Error fetching quotes for {syms}: {e}")
