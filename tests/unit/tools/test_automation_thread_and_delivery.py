@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from src.config import env
 from src.tools.automation import tools
 
 AUTOMATION_ID = "00000000-0000-4000-8000-0000000000a1"
@@ -28,6 +29,14 @@ def _row(**overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+@pytest.fixture(autouse=True)
+def _no_gateway(monkeypatch):
+    """No messaging service, whatever the environment says: with one, a
+    run's agent sends the results and nothing is warned about."""
+    monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "")
+    monkeypatch.delenv("INTERNAL_SERVICE_TOKEN", raising=False)
 
 
 @pytest.fixture

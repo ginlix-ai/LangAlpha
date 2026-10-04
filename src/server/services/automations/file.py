@@ -737,15 +737,16 @@ class AutomationFile(DbJsonFile[dict[str, Any] | None, Document, FilePlan]):
     async def _check_delivery(
         self, user_id: str, written: dict[str, Any], shown: dict[str, Any] | None
     ) -> tuple[list[str] | None, list[str]]:
-        """The written delivery with each chat it names checked, here rather
-        than in the lifecycle, since a check is a call to the messaging
-        service the save's locks would wait on. A chat the writer was shown
-        is the stored one and isn't checked again."""
+        """The written delivery with each entry it newly names checked
+        (``lifecycle.check_delivery``), here rather than in the lifecycle,
+        since a check is a call to the messaging service the save's locks
+        would wait on. An entry the writer was shown is the stored one and
+        isn't checked again."""
         try:
             methods = parse_delivery(written.get("delivery") or [])["methods"]
         except ValueError:
             return None, []  # the plan refuses the shape
-        if not any(lifecycle.names_chat(m) for m in methods):
+        if not any(lifecycle.checks_entry(m) for m in methods):
             return None, []
         if shown is not None:
             stored = shown.get("delivery")

@@ -53,11 +53,17 @@ class AutomationRefusal(ValueError):
 
 
 class DeliveryRefused(AutomationRefusal):
-    """Delivery entries naming chats that can't be used, each with why."""
+    """Delivery entries that can't be used, each with why.
 
-    def __init__(self, problems: list[str]) -> None:
-        super().__init__("; ".join(problems), field="delivery_config")
-        self.problems = problems
+    ``refusals`` pairs each entry with its reason, which REST answers entry by
+    entry; ``problems`` are the same as one line each, which the message
+    joins.
+    """
+
+    def __init__(self, refusals: list[tuple[str, str]]) -> None:
+        self.refusals = refusals
+        self.problems = [f"{entry!r}: {why}" for entry, why in refusals]
+        super().__init__("; ".join(self.problems), field="delivery_config")
 
 
 class TargetRefused(HTTPException):
@@ -128,8 +134,9 @@ async def _check_model(user_id: str, name: str, pref: dict[str, Any] | None) -> 
 
 def delivery_warning(methods: Sequence[str] | None) -> str | None:
     """What to tell whoever gave an automation a channel the server can't
-    post to yet."""
-    if not methods or settings.AUTOMATION_WEBHOOK_URL:
+    post to yet. With a messaging service, a run's agent sends the results
+    itself."""
+    if not methods or settings.AUTOMATION_WEBHOOK_URL or messaging.messaging_enabled():
         return None
     return (
         "Delivery was saved, but AUTOMATION_WEBHOOK_URL is not configured, so runs "
@@ -146,9 +153,16 @@ def names_chat(method: str) -> bool:
     return ":" in method
 
 
+def checks_entry(method: str) -> bool:
+    """Whether saving ``method`` anew asks the messaging service about it: a
+    chat always, and with a service, an app too, which it refuses while the
+    user hasn't linked that app."""
+    return names_chat(method) or messaging.messaging_enabled()
+
+
 async def _check_chat(user_id: str, address: str) -> tuple[str | None, str | None]:
-    """The chat's address as the messaging service files it, or why it
-    can't take an automation's results."""
+    """The entry as the messaging service files it, or why it can't take an
+    automation's results."""
     try:
         answer = await messaging.gateway_request(
             "POST",
@@ -174,28 +188,36 @@ async def check_delivery(
     user_id: str, methods: Sequence[str], *, stored: Sequence[str] = ()
 ) -> list[str]:
     """``methods`` with each chat address as the messaging service files it.
-    An app name is kept as written, and so is an address already in
-    ``stored``, which was checked when it was saved.
+    An app name is kept as written, and so is an entry already in
+    ``stored``, which was checked when it was saved. With a messaging
+    service, a new app name is checked too, so one the user hasn't linked is
+    refused; it still follows the app's chain, so it is never replaced by the
+    chat the service answers.
 
     Raises:
         DeliveryRefused: naming every entry that can't be used, and why
     """
-    fresh = [m for m in dict.fromkeys(methods) if names_chat(m) and m not in stored]
+    fresh = [m for m in dict.fromkeys(methods) if checks_entry(m) and m not in stored]
     if not fresh:
         return list(methods)
     if not messaging.messaging_enabled():
         raise DeliveryRefused(
             [
-                f"{m!r}: naming a chat needs a connected messaging service, and this "
-                'server has none; name an app such as "slack" instead'
+                (
+                    m,
+                    "naming a chat needs a connected messaging service, and this "
+                    'server has none; name an app such as "slack" instead',
+                )
                 for m in fresh
             ]
         )
     answers = await asyncio.gather(*(_check_chat(user_id, m) for m in fresh))
-    problems = [f"{m!r}: {why}" for m, (_, why) in zip(fresh, answers) if why]
-    if problems:
-        raise DeliveryRefused(problems)
-    canonical = {m: address for m, (address, _) in zip(fresh, answers)}
+    refusals = [(m, why) for m, (_, why) in zip(fresh, answers) if why]
+    if refusals:
+        raise DeliveryRefused(refusals)
+    canonical = {
+        m: address for m, (address, _) in zip(fresh, answers) if names_chat(m)
+    }
     return list(dict.fromkeys(canonical.get(m, m) for m in methods))
 
 

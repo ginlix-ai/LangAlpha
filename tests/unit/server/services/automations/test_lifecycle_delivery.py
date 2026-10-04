@@ -1,5 +1,6 @@
 """An automation's delivery may name one chat, which the channel gateway
-checks on every save that newly names it, through every surface."""
+checks on every save that newly names it, through every surface. With a
+messaging service, a newly named app is checked too, and kept as written."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -21,6 +22,8 @@ from tests.unit.server.services.automations._check_target import (  # noqa: F401
     REFUSAL,
     REFUSED_CHAT,
     SLACK_DM,
+    UNLINKED,
+    UNLINKED_APP,
 )
 
 OWNER = "user-owner"
@@ -58,7 +61,7 @@ class TestCheckDelivery:
     @pytest.mark.asyncio
     async def test_a_chat_is_stored_as_the_gateway_files_it(self, check_target):
         assert await check_delivery(OWNER, ["slack", CHAT_SPELLED]) == ["slack", CHAT]
-        assert check_target.asked == [CHAT_SPELLED]
+        assert check_target.asked == ["slack", CHAT_SPELLED]
 
     @pytest.mark.asyncio
     async def test_two_spellings_of_one_chat_are_one_entry(self, check_target):
@@ -76,6 +79,11 @@ class TestCheckDelivery:
             f"{REFUSED_CHAT!r}: {REFUSAL}",
             f"'slack:T1/CNOPE2': {REFUSAL}",
         ]
+        assert exc.value.refusals == [
+            (REFUSED_CHAT, REFUSAL),
+            ("slack:T1/CNOPE2", REFUSAL),
+        ]
+        assert str(exc.value) == "; ".join(exc.value.problems)
 
     @pytest.mark.asyncio
     async def test_a_gateway_that_does_not_answer_refuses_the_chat(self, check_target):
@@ -89,12 +97,12 @@ class TestCheckDelivery:
         ]
 
     @pytest.mark.asyncio
-    async def test_a_stored_chat_is_not_checked_again(self, check_target):
+    async def test_a_stored_entry_is_not_checked_again(self, check_target):
         assert await check_delivery(
-            OWNER, [REFUSED_CHAT, "slack"], stored=[REFUSED_CHAT]
+            OWNER, [REFUSED_CHAT, UNLINKED_APP], stored=[REFUSED_CHAT, UNLINKED_APP]
         ) == [
             REFUSED_CHAT,
-            "slack",
+            UNLINKED_APP,
         ]
         assert check_target.asked == []
 
@@ -107,16 +115,26 @@ class TestCheckDelivery:
         methods = ["discord", DISCORD_DM, "slack", SLACK_DM]
 
         assert await check_delivery(OWNER, methods) == methods
-        assert check_target.asked == [DISCORD_DM, SLACK_DM]
+        assert check_target.asked == methods
 
     @pytest.mark.asyncio
-    async def test_app_names_are_kept_as_written(self, check_target):
+    async def test_a_new_app_name_is_checked_once_and_kept_as_written(
+        self, check_target
+    ):
+        """It follows the app's chain at each run, so the chat the messaging
+        service answers for it today is never stored in its place."""
         assert await check_delivery(OWNER, ["slack", "slack", "email"]) == [
-            "slack",
             "slack",
             "email",
         ]
-        assert check_target.asked == []
+        assert check_target.asked == ["slack", "email"]
+
+    @pytest.mark.asyncio
+    async def test_an_app_the_user_has_not_linked_is_refused(self, check_target):
+        with pytest.raises(DeliveryRefused) as exc:
+            await check_delivery(OWNER, ["slack", UNLINKED_APP])
+
+        assert exc.value.refusals == [(UNLINKED_APP, UNLINKED)]
 
     @pytest.mark.asyncio
     async def test_without_a_gateway_a_chat_is_refused_and_an_app_is_not(

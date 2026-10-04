@@ -1,6 +1,8 @@
 """A file's ``delivery`` may name one chat. The save checks each chat it
 newly names with the channel gateway before it locks anything, lists every
-refusal with the file's other problems, and stores the gateway's spelling."""
+refusal with the file's other problems, and stores the gateway's spelling.
+With a messaging service, an app it newly names is checked too and kept as
+written."""
 
 from __future__ import annotations
 
@@ -14,6 +16,8 @@ from tests.unit.server.services.automations._check_target import (  # noqa: F401
     REFUSAL,
     REFUSED_CHAT,
     SLACK_DM,
+    UNLINKED,
+    UNLINKED_APP,
 )
 from tests.unit.server.services.automations.file._support import (
     BRIEF,
@@ -43,9 +47,9 @@ class TestDeliveryChats:
 
         assert report.startswith('Saved new.json: created "A"')
         assert db.rows[CREATED]["delivery_config"] == {"methods": ["slack", CHAT]}
-        assert gateway.asked == [CHAT_SPELLED]
+        assert gateway.asked == ["slack", CHAT_SPELLED]
         # Checked before the save opened its transaction, and not again inside it.
-        assert gateway.seen == [0]
+        assert gateway.seen == [0, 0]
         assert lifecycle.create_automation.await_args.kwargs["delivery_checked"] is True
 
     @pytest.mark.asyncio
@@ -55,7 +59,7 @@ class TestDeliveryChats:
         await _create(backend, {**NEW, "delivery": delivery})
 
         assert db.rows[CREATED]["delivery_config"] == {"methods": delivery}
-        assert gateway.asked == [DISCORD_DM, SLACK_DM]
+        assert gateway.asked == delivery
 
     @pytest.mark.asyncio
     async def test_an_update_stores_the_canonical_chat(self, db, backend, gateway):
@@ -109,6 +113,31 @@ class TestDeliveryChats:
         """It was checked when it was saved; a chat gone since must not
         block an edit to anything else."""
         db.add(_row(delivery_config={"methods": [REFUSED_CHAT]}))
+
+        await _write(backend, {**_shown(db.list()[0]), "description": "renamed"})
+
+        assert gateway.asked == []
+        assert db.rows[BRIEF]["description"] == "renamed"
+
+    @pytest.mark.asyncio
+    async def test_an_app_alone_is_checked_and_an_unlinked_one_refused(
+        self, db, backend, gateway
+    ):
+        error = await _refusal(
+            backend,
+            db,
+            {**NEW, "delivery": ["slack", UNLINKED_APP]},
+            path=f"{backend.root_prefix}new.json",
+        )
+
+        assert gateway.asked == ["slack", UNLINKED_APP]
+        assert error.problems == [("delivery", f"{UNLINKED_APP!r}: {UNLINKED}")]
+
+    @pytest.mark.asyncio
+    async def test_an_app_the_writer_was_shown_is_not_checked_again(
+        self, db, backend, gateway
+    ):
+        db.add(_row(delivery_config={"methods": [UNLINKED_APP]}))
 
         await _write(backend, {**_shown(db.list()[0]), "description": "renamed"})
 
