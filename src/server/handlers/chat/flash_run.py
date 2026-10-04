@@ -126,14 +126,15 @@ async def astream_flash_workflow(
     flash_workspace: dict | None = None,
     steerable: bool = True,
     run_metadata: dict | None = None,
+    extra_configurable: dict | None = None,
     named_model: NamedModel | None = None,
 ):
     """Async generator that streams Flash agent workflow events.
 
     Flash mode: no sandbox, no MCP, external tools only (web search, market
     data, SEC filings). State keyed by ``(thread_id, run_id)``; same
-    contract as PTC, ``steerable``, ``run_metadata`` and ``named_model``
-    included.
+    contract as PTC, ``steerable``, ``run_metadata``, ``extra_configurable``
+    and ``named_model`` included.
     """
     start_time = time.time()
     handler = None
@@ -513,6 +514,7 @@ async def astream_flash_workflow(
             run_id=run_id,
             turn_index=run_handle.turn_index,
             surface=turn_surface(request, prior_thread),
+            extra_configurable=extra_configurable,
         )
         graph_config["run_id"] = run_id
 

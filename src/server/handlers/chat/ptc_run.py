@@ -180,6 +180,7 @@ async def astream_ptc_workflow(
     dispatched: bool = False,
     steerable: bool = True,
     run_metadata: dict | None = None,
+    extra_configurable: dict | None = None,
     named_model: NamedModel | None = None,
     role: AgentRole = "analyst",
 ):
@@ -195,6 +196,9 @@ async def astream_ptc_workflow(
     and ``steerable=False`` all make a running turn a 409 instead of a
     steer; see ``steer_allowed``. ``run_metadata`` is the caller's own START
     stamp on the run row, which the run's finalize hooks read.
+    ``extra_configurable`` joins the graph config's ``configurable``, where
+    the turn's tools read it.
+
     ``named_model`` is the model a client named for this thread, kept on it
     once the turn is admitted; automations never pass one. ``role`` is the
     turn route's, so the flag decides it in one place.
@@ -834,6 +838,7 @@ async def astream_ptc_workflow(
             run_id=run_id,
             turn_index=run_handle.turn_index,
             surface=turn_surface(request, prior_thread),
+            extra_configurable=extra_configurable,
         )
         # Propagate run_id to LangGraph via the top-level config key; it
         # lands on ExecutionInfo.run_id and CheckpointMetadata.run_id so

@@ -63,6 +63,8 @@ def _turn(config: RunnableConfig | None) -> dict[str, Any]:
         "run_id": configurable.get("run_id"),
         "workspace_id": configurable.get("workspace_id"),
         "turn_platform": configurable.get("platform"),
+        # Set on an automation's turn whose delivery the messaging service holds.
+        "automation_execution_id": configurable.get("automation_execution_id"),
     }
 
 
@@ -405,6 +407,9 @@ async def _send(
         "reply": bool(reply),
         "new_thread": bool(new_thread),
     }
+    # An automation's turn names its run, so the send may reach the run's targets.
+    if turn["automation_execution_id"]:
+        body["automation_execution_id"] = str(turn["automation_execution_id"])
     try:
         data = await _call(
             "POST",
