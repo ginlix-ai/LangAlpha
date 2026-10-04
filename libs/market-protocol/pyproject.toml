@@ -1,0 +1,42 @@
+[project]
+name = "langalpha-market-protocol"
+version = "0.1.0"
+description = "Common Market Data Protocol (CMDP): instrument identity, venue calendars, series envelopes and provider routing rules"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2",
+    "pyyaml>=6.0.0",
+    # Calendar semantics are part of the contract, so a new major is adopted
+    # deliberately rather than picked up by a consumer's resolver.
+    "exchange-calendars>=4.13.2,<5",
+    "pandas>=2.2.2",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["market_protocol"]
+
+[tool.hatch.build.targets.sdist]
+include = ["market_protocol", "README.md", "LICENSE", "pyproject.toml"]
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
+# A table of its own stops uv from walking up to the backend's [tool.uv] in
+# the repository root, so the package resolves without the backend's
+# overrides, the way a consumer installing it from git resolves it.
+[tool.uv]
+required-version = ">=0.6.15"
+# A non-editable install is rebuilt only when a cache key changes. The default
+# key is pyproject.toml alone, so a source edit would leave the suite testing
+# the previous build.
+cache-keys = [{ file = "pyproject.toml" }, { file = "market_protocol/**/*" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

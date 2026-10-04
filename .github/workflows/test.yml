@@ -22,6 +22,39 @@ jobs:
           name: backend-unit-results
           path: test-results/
 
+  # libs/market-protocol installs as a package of its own, so its suite runs in
+  # its own environment: inside the backend's, a dependency it forgot to
+  # declare would still import. It runs on the package's Python floor and on
+  # the backend's version, against an installed copy rather than the checkout,
+  # so a file the wheel leaves out fails here instead of in a consumer.
+  market-protocol:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    defaults:
+      run:
+        working-directory: libs/market-protocol
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --locked --no-editable
+      - run: uv run --locked --no-editable pytest -v --tb=short
+      # A consumer resolves its own versions, so the declared lower bounds
+      # have to hold as well as the locked set.
+      - name: Lowest declared versions
+        if: matrix.python == '3.11'
+        run: |
+          uv venv "$RUNNER_TEMP/floors"
+          uv pip install --python "$RUNNER_TEMP/floors" --resolution lowest-direct . "pytest>=8"
+          "$RUNNER_TEMP/floors/bin/pytest" -v --tb=short -p no:cacheprovider
+
   backend-integration:
     runs-on: ubuntu-latest
     needs: backend-unit

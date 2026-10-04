@@ -1,4 +1,4 @@
-.PHONY: help configup down clean dev dev-web install test test-sandbox test-web test-all lint setup-db migrate
+.PHONY: help configup down clean dev dev-web install test test-sandbox test-web test-market-protocol test-all lint setup-db migrate
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -57,14 +57,17 @@ test-sandbox: _sandbox-prepare ## Run sandbox integration tests (PROVIDER=memory
 test-web: ## Run frontend unit tests
 	cd web && pnpm vitest run
 
-test-all: test test-web ## Run all tests (backend + frontend)
+test-market-protocol: ## Run the market-protocol package suite in its own environment
+	cd libs/market-protocol && uv run pytest -v --tb=short
+
+test-all: test test-web test-market-protocol ## Run all tests (backend + frontend + market-protocol)
 	$(MAKE) test-sandbox PROVIDER=memory
 
 # ---------------------------------------------------------------------------
 # Linting
 # ---------------------------------------------------------------------------
 lint: ## Run all linters (Ruff + ESLint)
-	uv run ruff check src/
+	uv run ruff check src/ libs/market-protocol/
 	cd web && pnpm lint
 
 # ---------------------------------------------------------------------------

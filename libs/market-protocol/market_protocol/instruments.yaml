@@ -1,0 +1,78 @@
+# Seed registry: per-instrument overrides applied on top of the suffix/MIC
+# heuristic in symbology.py. Keys are legacy spellings (bare US tickers or
+# suffixed foreign tickers), read on load in their display spelling: uppercased,
+# Shanghai's .SS as .SH and an HKEX code padded to four digits (700.HK is
+# 0700.HK). Two keys that read the same are duplicates, and the load fails.
+#
+# Supported override fields: mic, name, currency, price_currency, display_unit,
+# calendar_id. The load also fails on a mic or calendar_id the package does not
+# know, a currency that is not a three-letter code, or a display_unit other
+# than GBX or null.
+#
+# Bare US tickers default to XNYS (calendar-equivalent to XNAS); pin known
+# Nasdaq listings here so their instrument keys carry the true listing MIC.
+#
+# display_unit is the unit the venue quotes in, and build_series scales rows
+# by it. An XLON listing priced in another currency (price_currency: USD) must
+# also set display_unit: null, or its prices get the pence scaling.
+instruments:
+  AAPL:
+    mic: XNAS
+    name: Apple Inc.
+  MSFT:
+    mic: XNAS
+    name: Microsoft Corporation
+  GOOGL:
+    mic: XNAS
+    name: Alphabet Inc.
+  AMZN:
+    mic: XNAS
+    name: "Amazon.com, Inc."
+  META:
+    mic: XNAS
+    name: "Meta Platforms, Inc."
+  NVDA:
+    mic: XNAS
+    name: NVIDIA Corporation
+  TSLA:
+    mic: XNAS
+    name: "Tesla, Inc."
+  AVGO:
+    mic: XNAS
+    name: Broadcom Inc.
+  NFLX:
+    mic: XNAS
+    name: "Netflix, Inc."
+  AMD:
+    mic: XNAS
+    name: "Advanced Micro Devices, Inc."
+  INTC:
+    mic: XNAS
+    name: Intel Corporation
+  QCOM:
+    mic: XNAS
+    name: QUALCOMM Incorporated
+  CSCO:
+    mic: XNAS
+    name: "Cisco Systems, Inc."
+  ADBE:
+    mic: XNAS
+    name: Adobe Inc.
+  PEP:
+    mic: XNAS
+    name: "PepsiCo, Inc."
+  COST:
+    mic: XNAS
+    name: Costco Wholesale Corporation
+  TMUS:
+    mic: XNAS
+    name: "T-Mobile US, Inc."
+  MU:
+    mic: XNAS
+    name: "Micron Technology, Inc."
+  PLTR:
+    mic: XNAS
+    name: Palantir Technologies Inc.
+  COIN:
+    mic: XNAS
+    name: "Coinbase Global, Inc."
