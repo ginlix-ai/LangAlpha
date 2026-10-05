@@ -178,12 +178,13 @@ async def fetch_stock_screener(
 
         for stock in results:
             sym = stock.get("symbol", "N/A")
-            name = stock.get("companyName", "N/A")
+            # A CN row carries these keys as null, which .get's default misses.
+            name = stock.get("companyName") or "N/A"
             if len(name) > 25:
                 name = name[:22] + "..."
             price = stock.get("price")
             mkt_cap = stock.get("marketCap")
-            sect = stock.get("sector", "N/A")
+            sect = stock.get("sector") or "N/A"
             beta = stock.get("beta")
             volume = stock.get("volume")
             change = stock.get("change")

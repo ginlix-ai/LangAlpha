@@ -305,9 +305,9 @@ class TestScreenerPerRowCurrency:
         # not restate those thresholds as dollars.
         results = [
             {"symbol": "600519.SH", "companyName": "Alpha Co.", "price": 1712.40,
-             "marketCap": 2.1e12},
-            {"symbol": "000858.SZ", "companyName": "Beta Co.", "price": 128.30,
-             "marketCap": 5.0e11},
+             "marketCap": 2.1e12, "sector": None},
+            {"symbol": "000858.SZ", "companyName": None, "price": 128.30,
+             "marketCap": 5.0e11, "sector": None},
         ]
         provider = _screener_provider(results)
 
@@ -319,6 +319,7 @@ class TestScreenerPerRowCurrency:
         assert "Mkt Cap >: CN¥100.00B" in content
         assert "Price >: CN¥100.00" in content
         assert "$100" not in content
+        assert "None" not in content  # the CN screen sends sector and name as null
         assert artifact["filters"]["Price >"] == "CN¥100.00"
 
     @pytest.mark.asyncio
