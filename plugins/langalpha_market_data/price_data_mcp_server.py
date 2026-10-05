@@ -235,7 +235,7 @@ async def _fetch_stock_bars(
                 end = datetime.now(_tz.utc)
             cn_start = (end - timedelta(days=_CN_DEFAULT_DAILY_DAYS)).strftime("%Y-%m-%d")
         try:
-            bars = await _cn.get_daily(legacy, cn_start, end_date)
+            bars = (await _cn.get_daily(legacy, cn_start, end_date)).bars
         except httpx.HTTPError as exc:
             # An upstream miss (a 503, a 429, a dropped connection) is expected and
             # the chain answers instead, so one line is enough.

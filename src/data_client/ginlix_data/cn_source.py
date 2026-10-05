@@ -12,16 +12,23 @@ outage raises, so the chain falls back rather than caching an empty answer.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from market_protocol import OhlcvBar, market_home, market_of, to_canonical
+from market_protocol import InstrumentRef, OhlcvBar, market_home, market_of, to_canonical
 from market_protocol.intervals import schema_for_legacy
+
+from src.data_client.base import FetchResult
+from src.data_client.normalize import series_lineage
 
 from .v2_routes import GinlixDataV2Routes
 
 _CN_TZ = ZoneInfo(market_home("cn")[1])
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_ONE_MS = timedelta(milliseconds=1)
+# The chain name this source publishes under; see the module docstring.
+_PUBLISHER = "tushare"
 # Widths ginlix-data aggregates CN minutes into; it has no 4-hour or seconds bars.
 _INTRADAY_SCHEMAS = frozenset({"ohlcv-1m", "ohlcv-5m", "ohlcv-15m", "ohlcv-30m", "ohlcv-1h"})
 # A daily fetch without a start runs back this far from its end, as on the US
@@ -30,8 +37,8 @@ _INTRADAY_SCHEMAS = frozenset({"ohlcv-1m", "ohlcv-5m", "ohlcv-15m", "ohlcv-30m",
 _DAILY_LOOKBACK_DAYS = 365 * 2
 
 
-def _cn_key(symbol: str) -> str | None:
-    """The ``instrument_key`` of a CN listing; ``None`` for any other symbol.
+def _cn_ref(symbol: str) -> InstrumentRef | None:
+    """The ref of a CN listing; ``None`` for any other symbol.
 
     ginlix-data's v2 routes also serve other markets, so a chain or probe that
     reaches this source with a US symbol would otherwise get a US answer
@@ -41,20 +48,45 @@ def _cn_key(symbol: str) -> str | None:
         ref = to_canonical(symbol)
     except ValueError:
         return None
-    return ref.instrument_key if market_of(ref) == "cn" else None
+    return ref if market_of(ref) == "cn" else None
+
+
+def _check_lineage(header: dict[str, Any], ref: InstrumentRef) -> None:
+    """Refuse a series whose header declares another publisher or price treatment.
+
+    Every cache and envelope reads a series' lineage from the name it was
+    published under, so a raw series served under ``tushare`` would be cached
+    as qfq. A header without the fields keeps that declaration.
+    """
+    publisher = header.get("publisher")
+    treatment = header.get("price_treatment")
+    declared = series_lineage(_PUBLISHER, ref)[0]
+    if (publisher and publisher != _PUBLISHER) or (treatment and treatment != declared):
+        raise ValueError(
+            f"ginlix-data served {ref.instrument_key} as {publisher}/{treatment}, "
+            f"not {_PUBLISHER}/{declared.value}"
+        )
 
 
 def _day_bounds_ms(from_date: str | None, to_date: str | None) -> tuple[int | None, int | None]:
-    """``YYYY-MM-DD`` bounds as Shanghai-day ms: start of the first, end of the last."""
+    """``YYYY-MM-DD`` bounds as Shanghai-day ms: start of the first, end of the last.
 
-    def parse(d: str) -> datetime:
-        return datetime.strptime(d[:10], "%Y-%m-%d").replace(tzinfo=_CN_TZ)
+    The end is the day's own last millisecond (the later one, where the clock
+    fell back at midnight), not the next midnight less one: 9999-12-31 has no
+    next day, and its OverflowError would send the chain to another vendor.
+    The route clamps a bound that far out.
+    """
 
-    start = int(parse(from_date).timestamp() * 1000) if from_date else None
-    end = (
-        int((parse(to_date) + timedelta(days=1)).timestamp() * 1000) - 1 if to_date else None
+    def ms(d: str, *, last: bool = False) -> int:
+        day = datetime.strptime(d[:10], "%Y-%m-%d").replace(tzinfo=_CN_TZ)
+        if last:
+            day = day.replace(hour=23, minute=59, second=59, microsecond=999_000, fold=1)
+        return (day - _EPOCH) // _ONE_MS
+
+    return (
+        ms(from_date) if from_date else None,
+        ms(to_date, last=True) if to_date else None,
     )
-    return start, end
 
 
 class GinlixDataCnSource:
@@ -66,18 +98,20 @@ class GinlixDataCnSource:
     async def _bars(
         self, symbol: str, schema: str, from_date: str | None, to_date: str | None,
         user_id: str | None,
-    ) -> list[dict[str, Any]]:
-        key = _cn_key(symbol)
-        if key is None:
-            return []
+    ) -> FetchResult:
+        ref = _cn_ref(symbol)
+        if ref is None:
+            return FetchResult(bars=[])
         start, end = _day_bounds_ms(from_date, to_date)
         # Only a 404 (no vendor has the series) is empty. Anything else raises,
         # so a series pinned to this source falls back instead of caching [].
         wire = await self.client.get_bars_v2(
-            key, schema, start_ms=start, end_ms=end, user_id=user_id
+            ref.instrument_key, schema, start_ms=start, end_ms=end, user_id=user_id
         )
         if not wire:
-            return []
+            return FetchResult(bars=[])
+        header = wire.get("header") or {}
+        _check_lineage(header, ref)
         # A record the protocol refuses (a missing or null price) fails the whole
         # series, so the chain falls back instead of caching a bar every reader
         # of it would refuse.
@@ -85,7 +119,7 @@ class GinlixDataCnSource:
             OhlcvBar.model_validate({**r, "volume": r.get("volume")})
             for r in wire.get("records") or []
         ]
-        return [
+        rows = [
             {
                 "time": b.ts_event,
                 "open": b.open,
@@ -96,6 +130,11 @@ class GinlixDataCnSource:
             }
             for b in bars
         ]
+        # A series short of its window (a vendor refetch that failed, a session
+        # missing from the minute archive) is cached for a shorter time and
+        # refilled whole rather than from its last bar.
+        coverage = header.get("coverage") or {}
+        return FetchResult(bars=rows, truncated=bool(coverage.get("truncated")))
 
     async def get_daily(
         self,
@@ -104,7 +143,7 @@ class GinlixDataCnSource:
         to_date: str | None = None,
         is_index: bool = False,
         user_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> FetchResult:
         if not from_date:
             end = (
                 datetime.strptime(to_date[:10], "%Y-%m-%d") if to_date else datetime.now(_CN_TZ)
@@ -120,7 +159,7 @@ class GinlixDataCnSource:
         to_date: str | None = None,
         is_index: bool = False,
         user_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> FetchResult:
         try:
             schema = schema_for_legacy(interval)
         except ValueError:
@@ -139,8 +178,8 @@ class GinlixDataCnSource:
         if asset_type == "indices":
             return []
         wanted = {
-            s: key for s in dict.fromkeys(str(s).strip() for s in symbols)
-            if s and (key := _cn_key(s)) is not None
+            s: ref.instrument_key for s in dict.fromkeys(str(s).strip() for s in symbols)
+            if s and (ref := _cn_ref(s)) is not None
         }
         if not wanted:
             return []

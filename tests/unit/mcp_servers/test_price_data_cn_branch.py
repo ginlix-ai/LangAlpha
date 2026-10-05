@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from src.data_client.base import FetchResult
+
 from .conftest import assert_ok_envelope
 
 _MOD = "plugins.langalpha_market_data.price_data_mcp_server"
@@ -24,7 +26,7 @@ def _ms(y: int, m: int, d: int) -> int:
     return int(datetime(y, m, d, 9, 30, tzinfo=_CN_TZ).timestamp() * 1000)
 
 
-# Legacy chart bars as GinlixDataCnSource.get_daily returns them (ascending).
+# Legacy chart bars as GinlixDataCnSource.get_daily carries them (ascending).
 _CN_BARS = [
     {"time": _ms(2025, 1, 2), "open": 100.0, "high": 105.0, "low": 99.0, "close": 103.0, "volume": 1000},
     {"time": _ms(2025, 1, 3), "open": 103.0, "high": 108.0, "low": 102.0, "close": 107.0, "volume": 1200},
@@ -55,7 +57,7 @@ class TestCnDailyBranch:
     async def test_cn_daily_served_from_ginlix_data(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        with patch.object(mod._cn, "get_daily", return_value=_CN_BARS) as daily:
+        with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=_CN_BARS)) as daily:
             result = await mod.get_stock_data("600519.SS", interval="1day")
 
         assert_ok_envelope(
@@ -74,7 +76,7 @@ class TestCnDailyBranch:
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
         before = datetime.now(_tz.utc).date()
-        with patch.object(mod._cn, "get_daily", return_value=_CN_BARS) as daily:
+        with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=_CN_BARS)) as daily:
             await mod.get_stock_data("600519.SS", interval="1day")
         after = datetime.now(_tz.utc).date()
 
@@ -87,7 +89,7 @@ class TestCnDailyBranch:
     async def test_a_given_start_date_is_never_overridden(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        with patch.object(mod._cn, "get_daily", return_value=_CN_BARS) as daily:
+        with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=_CN_BARS)) as daily:
             await mod.get_stock_data(
                 "600519.SS", interval="1day",
                 start_date="2001-09-07", end_date="2025-01-03",
@@ -99,7 +101,7 @@ class TestCnDailyBranch:
     async def test_cn_daily_envelope_carries_chinese_name(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 
-        with patch.object(mod._cn, "get_daily", return_value=_CN_BARS), \
+        with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=_CN_BARS)), \
                 patch.object(mod._names, "display_names", new=AsyncMock(return_value=("甲公司", None))):
             result = await mod.get_stock_data("600519.SS", interval="1day")
 
@@ -124,7 +126,7 @@ class TestCnDailyBranch:
 
         client = AsyncMock()
         client.get_intraday_chart = AsyncMock(return_value=_RAW_FMP_ROWS)
-        with patch.object(mod._cn, "get_daily", return_value=_CN_BARS) as daily, \
+        with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=_CN_BARS)) as daily, \
                 _force_fmp_path(mod), \
                 patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data(
@@ -141,7 +143,7 @@ class TestCnDailyBranch:
 
         client = AsyncMock()
         client.get_stock_price = AsyncMock(return_value=list(reversed(_RAW_FMP_ROWS)))
-        with patch.object(mod._cn, "get_daily", return_value=[]), \
+        with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=[])), \
                 _force_fmp_path(mod), \
                 patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await mod.get_stock_data("600519.SS", interval="1day")
@@ -200,7 +202,7 @@ class TestCnDailyBranch:
             {"date": "2025-01-03", "open": 103, "high": 108, "low": 102, "close": 107, "volume": 1200},
             {"date": "2025-01-02", "open": 100, "high": 105, "low": 99, "close": 103, "volume": 1000},
         ]
-        with patch.object(mod._cn, "get_daily", return_value=_CN_BARS) as daily, \
+        with patch.object(mod._cn, "get_daily", return_value=FetchResult(bars=_CN_BARS)) as daily, \
                 patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=ginlix_rows)):
             result = await mod.get_stock_data("AAPL", interval="1day")
 

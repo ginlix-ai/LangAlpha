@@ -15,7 +15,7 @@ import pytest
 
 from market_protocol import PriceTreatment, Quote, Tier, build_series, to_canonical
 from src.data_client.ginlix_data.cn_source import GinlixDataCnSource
-from src.data_client.ginlix_data.v2_routes import GinlixDataV2Routes
+from src.data_client.ginlix_data.v2_routes import MAX_BAR_MS, GinlixDataV2Routes
 from src.data_client.market_data_provider import MarketDataProvider, ProviderEntry
 from src.data_client.normalize import snapshot_tier
 
@@ -68,10 +68,12 @@ async def test_daily_bars_map_the_series_records():
     wire = _bars_wire()
     routes = _Routes(body=wire)
 
-    bars = await GinlixDataCnSource(routes).get_daily(
+    result = await GinlixDataCnSource(routes).get_daily(
         "600519.SH", "2026-03-02", "2026-03-03", user_id="u-1"
     )
 
+    bars = result.bars
+    assert not result.truncated
     assert [b["time"] for b in bars] == [r["ts_event"] for r in wire["records"]]
     assert bars[0] == {"time": _ms(2026, 3, 2), "open": 1500.0, "high": 1520.0,
                        "low": 1490.0, "close": 1510.0, "volume": 1200.0}
@@ -81,6 +83,20 @@ async def test_daily_bars_map_the_series_records():
     # Whole Shanghai days: the end bound is the next midnight less one ms.
     assert params == {"schema": "ohlcv-1d", "start": _ms(2026, 3, 2),
                       "end": _ms(2026, 3, 4) - 1}
+
+
+@pytest.mark.asyncio
+async def test_a_series_short_of_its_window_reaches_the_chain_as_truncated():
+    # The series cache refreshes a truncated entry sooner and refills it whole.
+    wire = _bars_wire()
+    wire["header"]["coverage"]["truncated"] = True
+    chain = MarketDataProvider(
+        [ProviderEntry("tushare", GinlixDataCnSource(_Routes(body=wire)), {"all"})]
+    )
+
+    bars, source, truncated = await chain.get_daily_with_source("600519.SH")
+
+    assert (len(bars), source, truncated) == (2, "tushare", True)
 
 
 @pytest.mark.asyncio
@@ -96,7 +112,7 @@ async def test_intraday_asks_for_the_minute_schema():
 async def test_uncovered_series_is_empty():
     routes = _Routes(status=404, body={"detail": "no vendor covers 600519.XSHG"})
 
-    assert await GinlixDataCnSource(routes).get_daily("600519.SH") == []
+    assert (await GinlixDataCnSource(routes).get_daily("600519.SH")).bars == []
 
 
 @pytest.mark.asyncio
@@ -106,6 +122,43 @@ async def test_a_record_with_a_null_price_fails_the_series_so_the_chain_falls_ba
 
     with pytest.raises(ValueError, match="close"):
         await GinlixDataCnSource(_Routes(body=wire)).get_daily("600519.SH")
+
+
+@pytest.mark.asyncio
+async def test_a_series_declaring_another_lineage_fails_so_the_chain_falls_back():
+    # Caches read a series' lineage from the name it was published under, so a
+    # raw series served as tushare's would be cached as qfq.
+    for declared in ({"price_treatment": "raw"}, {"publisher": "massive"}):
+        wire = _bars_wire()
+        wire["header"].update(declared)
+        with pytest.raises(ValueError, match="600519.XSHG"):
+            await GinlixDataCnSource(_Routes(body=wire)).get_daily("600519.SH")
+
+    # An index is raw under tushare's declaration too, so its series stands.
+    index = build_series(
+        [{"time": _ms(2026, 3, 2), "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+          "volume": 1.0}],
+        ref=to_canonical("000300.SH"), schema="ohlcv-1d", publisher="tushare",
+        price_treatment=PriceTreatment.RAW, tier=Tier.DELAYED_15M,
+    ).to_wire()
+    assert (await GinlixDataCnSource(_Routes(body=index)).get_daily("000300.SH")).bars
+
+    # A header without the fields keeps the declared lineage.
+    wire = _bars_wire()
+    del wire["header"]["publisher"], wire["header"]["price_treatment"]
+    assert len((await GinlixDataCnSource(_Routes(body=wire)).get_daily("600519.SH")).bars) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_window_past_what_the_route_accepts_is_clamped_not_refused():
+    # Refused (a 422, or an OverflowError on 9999-12-31), the request would go
+    # to FMP's raw bars; no CN bar lies outside the route's window anyway.
+    routes = _Routes(body=_bars_wire())
+
+    result = await GinlixDataCnSource(routes).get_daily("600519.SH", "1900-01-01", "9999-12-31")
+
+    assert len(result.bars) == 2
+    assert routes.calls[0][1] == {"schema": "ohlcv-1d", "start": 0, "end": MAX_BAR_MS}
 
 
 @pytest.mark.asyncio
@@ -169,8 +222,8 @@ async def test_other_markets_are_never_asked():
     routes = _Routes(body={"quotes": {"600519.XSHG": _quote_wire()}})
     source = GinlixDataCnSource(routes)
 
-    assert await source.get_daily("AAPL", "2026-03-02", "2026-03-03") == []
-    assert await source.get_intraday("AAPL", "5min") == []
+    assert (await source.get_daily("AAPL", "2026-03-02", "2026-03-03")).bars == []
+    assert (await source.get_intraday("AAPL", "5min")).bars == []
     rows = await source.get_snapshots(["AAPL", "600519.SH"])
 
     assert [r["symbol"] for r in rows] == ["600519.SH"]
