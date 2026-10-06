@@ -219,6 +219,7 @@ def test_live_place_request():
     assert order.mode is OrderMode.LIVE
     assert order.asset_class == "equity"
     assert order.instrument == EquityRef(symbol="AAPL", venue="US")
+    assert order.currency == "USD"
     assert order.side == "buy"
     assert order.qty == Decimal("1")
     assert order.order_type == "limit"
@@ -320,9 +321,115 @@ def test_option_venue_parses_occ_and_falls_back_to_opaque():
         strike=Decimal("150"),
         right="C",
         vendor_instrument_id="CBOE.AAPL260116C00150000",
+        multiplier=100,
     )
+    assert parsed.currency == "USD"
     assert opaque.asset_class == "option"
     assert opaque.instrument == OpaqueRef(raw_code="CBOE.SOMETHING-ELSE")
+
+
+def _live_place(code):
+    return MOOMOO.parse_request("trading_order_place", {**LIVE_PLACE_ARGS, "code": code})
+
+
+def test_a_live_order_is_priced_in_its_venues_currency():
+    assert _live_place("US.AAPL").currency == "USD"
+    assert _live_place("SSE.600519").currency == "CNY"
+    # Hong Kong lists RMB counters beside its HKD ones, so the venue alone
+    # names no currency there.
+    assert _live_place("HK.00700").currency is None
+    assert _live_place("HK.80700").currency is None
+    # A future is priced in points.
+    assert _live_place("CME.ESmain").currency is None
+    assert _live_place("MARS.XYZ").currency is None
+    assert _live_place("NOVENUE").currency is None
+
+
+# The codes below are the shapes moomoo's own quotes hand out for each kind of
+# contract, so an agent copying one into an order sends exactly these.
+@pytest.mark.parametrize(
+    ("code", "underlying", "strike", "multiplier"),
+    [
+        ("US.AAPL261016C130000", "AAPL", "130", 100),
+        # A strike under ten is four digits, still in thousandths.
+        ("US.F261016C1000", "F", "1", 100),
+        # A US index's contracts carry the index's second dot, as moomoo documents.
+        ("US..SPXW260330C6330000", "SPXW", "6330", 100),
+        ("HK.XBC261029C3600", "XBC", "3.6", None),
+        ("HK.HSI261009C19150000", "HSI", "19150", None),
+        # An index option is listed on the futures exchange.
+        ("HKFE.HSI261009C19150000", "HSI", "19150", None),
+        # Japan's root is the stock code and its strike is in plain yen.
+        ("JP.7203261008C1950", "7203", "1950", None),
+    ],
+)
+def test_an_option_code_is_read_as_its_contract(code, underlying, strike, multiplier):
+    order = _live_place(code)
+
+    assert order.asset_class == "option"
+    assert order.instrument.underlying == underlying
+    assert order.instrument.strike == Decimal(strike)
+    # Outside the US a contract's size is set per underlying.
+    assert order.instrument.multiplier == multiplier
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["HK.HSImain", "US.EScurrent", "US.ESnext", "HK.HSIday", "HK.HSI2612", "US.6Emain",
+     "JP.NK225main", "JP.NK2252612"],
+)
+def test_a_futures_code_under_a_markets_prefix_is_a_future(code):
+    assert _live_place(code).asset_class == "future"
+    assert _live_place(code).currency is None
+
+
+def test_a_code_shaped_like_no_share_is_named_as_sent():
+    order = _live_place("US.E1C2610C2100x0")
+
+    assert order.asset_class == "other"
+    assert order.instrument == OpaqueRef(raw_code="US.E1C2610C2100x0")
+    assert order.currency is None
+
+
+@pytest.mark.parametrize(
+    "code", ["US.MAIN", "US.BRK.B", "US.F", "HK.00700", "JP.7203", "KR.005930", "SG.C38U"]
+)
+def test_a_share_is_still_a_share(code):
+    assert _live_place(code).asset_class == "equity"
+
+
+def test_a_paper_option_on_the_us_book_is_an_option():
+    order = MOOMOO.parse_request(
+        "sim_trade_input_order",
+        {**PAPER_PLACE_ARGS, "market": 2, "symbol": "AAPL261016C130000"},
+    )
+
+    assert order.asset_class == "option"
+    assert order.instrument.multiplier == 100
+    assert order.currency == "USD"
+
+
+def test_a_figure_no_market_deals_in_is_not_read():
+    order = MOOMOO.parse_request(
+        "trading_order_place",
+        {**LIVE_PLACE_ARGS, "qty": "1e100000000", "price": "NaN", "aux_price": "1E-7"},
+    )
+
+    # Written out in plain digits, that size alone would be a hundred million.
+    assert order.qty is None
+    assert order.limit_price is None
+    assert order.to_json()["stop_price"] == "0.0000001"
+
+
+def test_a_paper_order_outside_one_currency_names_none():
+    def paper(market):
+        return MOOMOO.parse_request(
+            "sim_trade_input_order", {**PAPER_PLACE_ARGS, "market": market, "symbol": "00700"}
+        )
+
+    assert paper(1).currency is None
+    assert paper(11).currency is None
+    assert paper(2).currency == "USD"
 
 
 def test_live_cancel_and_confirm_requests():
@@ -370,6 +477,7 @@ def test_paper_place_request():
     assert order.mode is OrderMode.PAPER
     assert order.asset_class == "equity"
     assert order.instrument == EquityRef(symbol="AAPL", venue="US")
+    assert order.currency == "USD"
     assert order.side == "buy"
     assert order.order_type == "limit"
     assert order.qty == Decimal("1")
@@ -724,6 +832,20 @@ def test_live_amend_answered_with_no_payload_stays_open_and_keeps_its_route():
         assert outcome.raw_status == "no data", tool
         assert outcome.vendor_order_id == "7654321", tool
         assert outcome.route == {"exchange": "US"}, tool
+        # ``US`` lists ``US.ESmain`` too, and a future is priced in points.
+        assert request.currency is None, tool
+
+
+def test_live_option_answered_with_no_payload_keeps_its_route():
+    request = MOOMOO.parse_request(
+        "trading_order_place", {**LIVE_PLACE_ARGS, "code": "US.AAPL261016C130000"}
+    )
+    outcome = MOOMOO.parse_result(
+        "trading_order_place", LIVE_NO_PAYLOAD, tool_status="success", request=request
+    )
+
+    assert request.asset_class == "option"
+    assert outcome.route == {"exchange": "US"}
 
 
 def test_live_confirm_answered_with_no_payload_claims_no_order():
@@ -970,6 +1092,8 @@ def test_live_status_query_maps_the_exchange_onto_a_trading_market():
     assert market("SGX.D05") == "SG"
     assert market("SSE.600519") == "HKCC"
     assert market("CME.ESmain") == "FUTURES"
+    # An option keeps no venue of its own, so its book is read off the code.
+    assert market("US.AAPL261016C130000") == "US"
     # No trd_market names an options book, so an options venue asks nothing
     # rather than reading the wrong one and calling the order missing.
     assert market("CBOE.AAPL260116C00150000") is None

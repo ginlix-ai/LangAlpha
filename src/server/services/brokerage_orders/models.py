@@ -140,8 +140,14 @@ def _amount(value: Any) -> Any:
     return as_decimal(value) or Decimal(0)
 
 
+#: Decimals are written out in plain digits, because ``str`` turns a crypto
+#: price below a millionth into ``1.2E-7`` and every reader past this one
+#: expects plain digits.
+_PLAIN_DIGITS = PlainSerializer(
+    lambda value: format(value, "f"), return_type=str, when_used="json-unless-none"
+)
 #: A Decimal a vendor may have typed as a string, an int or a float.
-Number = Annotated[Decimal | None, BeforeValidator(as_decimal)]
+Number = Annotated[Decimal | None, BeforeValidator(as_decimal), _PLAIN_DIGITS]
 Text = Annotated[str, BeforeValidator(_string)]
 OptionalText = Annotated[str | None, BeforeValidator(_optional_string)]
 #: Serialized by hand because Pydantic writes UTC as ``Z`` and every row in the
@@ -191,7 +197,7 @@ class _Record(BaseModel):
 
 
 class Money(_Value):
-    amount: Annotated[Decimal, BeforeValidator(_amount)] = Decimal(0)
+    amount: Annotated[Decimal, BeforeValidator(_amount), _PLAIN_DIGITS] = Decimal(0)
     currency: Text = ""
 
 

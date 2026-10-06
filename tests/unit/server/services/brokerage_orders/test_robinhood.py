@@ -224,6 +224,7 @@ def test_answered_option_leg_resolves_to_an_option_ref():
         strike=Decimal("150.0000"),
         right="C",
         vendor_instrument_id=OPTION_ID,
+        multiplier=100,
     )
 
 
@@ -1015,4 +1016,5 @@ def test_the_chain_symbol_above_the_legs_names_the_contract():
         strike=Decimal("150.0000"),
         right="C",
         vendor_instrument_id=OPTION_ID,
+        multiplier=100,
     )

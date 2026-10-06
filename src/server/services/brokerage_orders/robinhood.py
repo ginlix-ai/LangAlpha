@@ -283,6 +283,7 @@ def _leg_option(
             strike=strike,
             right=right,
             vendor_instrument_id=option_id,
+            multiplier=100,
         )
     return OpaqueRef(raw_code=option_id) if option_id else None
 
