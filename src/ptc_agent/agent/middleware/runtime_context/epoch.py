@@ -187,6 +187,11 @@ class ObservationCursor:
 
     observed: dict[str, str] = field(default_factory=dict)
     drift_updates: int = 0
+    # The profile behind ``observed["profile"]``. A turn whose profile reads
+    # did not answer still knows the trading rule, and a row stating it has
+    # to restate everything else as last seen, since a later profile row
+    # supersedes the earlier ones whole.
+    profile: ProfileSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +259,9 @@ class BaselineEpoch:
             compaction_seen=seen if isinstance(seen, str) else None,
             incomplete=bool(data.get("incomplete")),
             cursor=ObservationCursor(
-                observed=observed, drift_updates=int(data.get("drift_updates") or 0)
+                observed=observed,
+                drift_updates=int(data.get("drift_updates") or 0),
+                profile=ProfileSnapshot.from_state(data.get("profile_seen")),
             ),
             files_mounted=mounted if isinstance(mounted, bool) else None,
             stored=bool(data),
@@ -281,6 +288,9 @@ class BaselineEpoch:
             state["agent_md"] = self.agent_md.to_state()
         if self.files_mounted is not None:
             state["files_mounted"] = self.files_mounted
+        if self.cursor.profile is not None and self.cursor.profile != self.profile:
+            # Left out when it is the frozen copy, which the hash then names.
+            state["profile_seen"] = self.cursor.profile.to_state()
         return state
 
     def source_entry(self, kind: str) -> FileEntry | None:
@@ -331,7 +341,9 @@ class Observations:
     # False when the platform read behind ``profile`` or ``workspace`` did not
     # answer this turn. A failed read is not a cleared profile or an unnamed
     # workspace, so the change detector skips the source and a rebuild keeps
-    # the previous copy, the way ``_entry`` does for a file.
+    # the previous copy, the way ``_entry`` does for a file. The trading rule
+    # in ``profile`` is the exception: it comes off the binding plans, so it
+    # is measured either way.
     profile_available: bool = True
     workspace_available: bool = True
     # False for a build with no workspace to read at all (Flash). Such a build
@@ -372,18 +384,43 @@ def advance_epoch(
         # not answer is measured again by the change detector next turn.
         carried = _carried_row_kinds(observations)
         folded = [kind for kind in observations.retained_rows if kind not in carried]
-        if not folded:
-            return rebuilt, []
-        still = sorted({kind for kind in observations.retained_rows if kind in carried})
-        return rebuilt, [_rebuilt_row(observations.now, folded, still)]
+        rows: list[DurableUpdate] = []
+        if folded:
+            still = sorted(
+                {kind for kind in observations.retained_rows if kind in carried}
+            )
+            rows.append(_rebuilt_row(observations.now, folded, still))
+        if not observations.profile_available:
+            # The rebuilt block states this turn's trading rule, but a profile
+            # row it leaves in force can still state the one before it.
+            profile_row, seen = _profile_step(rebuilt, observations)
+            if profile_row is not None and seen is not None:
+                rows.append(profile_row)
+                rebuilt = replace(
+                    rebuilt,
+                    cursor=ObservationCursor(
+                        observed={**rebuilt.cursor.observed, "profile": seen.sha()},
+                        drift_updates=rebuilt.cursor.drift_updates + 1,
+                        profile=seen,
+                    ),
+                )
+        return rebuilt, rows
     rows, cursor = _observe(epoch, observations)
+    # An epoch stored before the cursor kept the profile has a hash that a row
+    # since may have moved off the frozen copy. A read that answers says what
+    # it names; kept, a later turn whose read does not answer can still
+    # measure the trading rule against it.
+    backfilled = (
+        epoch.profile is not None
+        and _seen_profile(epoch) is None
+        and cursor.profile is not None
+    )
     if epoch.files_mounted is None and observations.files_mounted is not None:
         # An epoch stored before it froze the value takes this turn's, as its
         # rebuild would have: no row, since no prompt stated another.
         epoch = replace(epoch, files_mounted=observations.files_mounted)
-        if not rows:
-            return epoch, []
-    if not rows:
+        backfilled = True
+    if not rows and not backfilled:
         return None, []
     return replace(epoch, cursor=cursor), rows
 
@@ -545,7 +582,7 @@ def _freeze(
     identity = obs.identity
     profile_carried = not obs.profile_available and previous.profile is not None
     if profile_carried:
-        profile = previous.profile
+        profile = previous.profile.with_trading_of(obs.profile)
         # The identity block is derived from the same read, so a read that
         # did not answer keeps both: the defaults it would render otherwise
         # are nobody's name, zone or market.
@@ -573,6 +610,9 @@ def _freeze(
     ):
         if carried and kind in retained and key in previous.cursor.observed:
             observed[key] = previous.cursor.observed[key]
+    # The loop above may have kept the previous cursor's hash, and with it the
+    # profile behind that hash.
+    seen = profile if observed["profile"] == profile.sha() else _seen_profile(previous)
 
     return BaselineEpoch(
         epoch=previous.epoch + 1,
@@ -587,7 +627,7 @@ def _freeze(
         blocks=blocks,
         compaction_seen=obs.compaction,
         incomplete=incomplete,
-        cursor=ObservationCursor(observed=observed, drift_updates=0),
+        cursor=ObservationCursor(observed=observed, drift_updates=0, profile=seen),
         files_mounted=obs.files_mounted,
         stored=True,
     )
@@ -616,17 +656,19 @@ def _observe(
             rows.append(workspace_row)
         observed["workspace"] = obs.workspace.sha()
 
-    if obs.profile_available:
-        profile_row = _profile_row(epoch, obs, observed.get("profile"))
-        if profile_row is not None:
-            rows.append(profile_row)
+    profile_row, seen = _profile_step(epoch, obs)
+    if profile_row is not None:
+        rows.append(profile_row)
+    if seen is not None:
         # Advanced whether or not a row was written: a change the rows cannot
         # describe still counts as seen, and a later return to the frozen
         # values has to read as a change from what was seen last.
-        observed["profile"] = obs.profile.sha()
+        observed["profile"] = seen.sha()
 
     return rows, ObservationCursor(
-        observed=observed, drift_updates=epoch.cursor.drift_updates + len(rows)
+        observed=observed,
+        drift_updates=epoch.cursor.drift_updates + len(rows),
+        profile=seen or epoch.cursor.profile,
     )
 
 
@@ -722,8 +764,44 @@ def _workspace_row(
     )
 
 
+def _seen_profile(epoch: BaselineEpoch) -> ProfileSnapshot | None:
+    """The profile the cursor last measured, or None when the epoch cannot say.
+
+    An epoch stored before the cursor kept it has the hash alone, which names
+    the frozen copy only when no row has moved it since.
+    """
+    if epoch.cursor.profile is not None:
+        return epoch.cursor.profile
+    frozen = epoch.profile
+    if (
+        frozen is not None
+        and epoch.cursor.observed.get("profile", frozen.sha()) == frozen.sha()
+    ):
+        return frozen
+    return None
+
+
+def _profile_step(
+    epoch: BaselineEpoch, obs: Observations
+) -> tuple[DurableUpdate | None, ProfileSnapshot | None]:
+    """The profile row this turn owes, if any, and the profile the cursor moves to.
+
+    A turn whose profile reads did not answer still stamps its order tools off
+    the binding plans the trading rule comes from, so the rule is measured
+    against the rest of the profile as last seen rather than skipped with it.
+    """
+    if obs.profile_available:
+        current = obs.profile
+    else:
+        seen = _seen_profile(epoch)
+        if seen is None:
+            return None, None
+        current = seen.with_trading_of(obs.profile)
+    return _profile_row(epoch, current, obs.now), current
+
+
 def _profile_row(
-    epoch: BaselineEpoch, obs: Observations, last: str | None
+    epoch: BaselineEpoch, current: ProfileSnapshot, now: datetime
 ) -> DurableUpdate | None:
     """A row when the profile or the data counts moved since they were last seen.
 
@@ -736,22 +814,22 @@ def _profile_row(
         # An epoch from before profiles were frozen: nothing to measure against
         # until the next rebuild carries a snapshot.
         return None
-    current_sha = obs.profile.sha()
+    current_sha = current.sha()
     frozen_sha = frozen.sha()
-    if (last or frozen_sha) == current_sha:
+    if (epoch.cursor.observed.get("profile") or frozen_sha) == current_sha:
         return None
     if current_sha == frozen_sha:
         # Back to what the block already says. Still a row: it supersedes an
         # earlier "changed" notice that is now wrong.
         text = "Every field is back to the value in <user_profile>."
     else:
-        text = "\n".join(profile_diff_lines(frozen, obs.profile))
+        text = "\n".join(profile_diff_lines(frozen, current))
     return DurableUpdate(
         kind="profile_changed",
         schema_version=UPDATE_SCHEMA_VERSION,
         text=text,
         provenance={"source": "platform", "tier": "profile"},
-        created_at=obs.now,
+        created_at=now,
     )
 
 

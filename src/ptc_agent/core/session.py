@@ -100,6 +100,10 @@ class Session:
         # server layer's, which this library does not import. Execution
         # context, like the composite.
         self.direct_mcp_tools: dict[str, Any] = {}
+        # The trading rule the same resolve derived from the user's settings,
+        # mirrored beside those tools so a view rebuilt from this session
+        # keeps it. Opaque here for the same reason.
+        self.trading_rule: Any = None
 
         # Egress-relay binding for OAuth-connected servers: what THIS process
         # last pushed to the sandbox. Execution context only — grant truth is
@@ -362,6 +366,7 @@ class Session:
         self.mcp_config_version = None
         self.mcp_config_workspace_id = None
         self.direct_mcp_tools = {}
+        self.trading_rule = None
         # The binding records what the (now gone) sandbox held; keeping it
         # would violate that invariant and read as a teardown trigger on the
         # next sync.
@@ -408,6 +413,7 @@ class Session:
         self.mcp_config_version = None
         self.mcp_config_workspace_id = None
         self.direct_mcp_tools = {}
+        self.trading_rule = None
         self.egress_binding = None
         # Restore the pristine server list so a restart re-enters PTCSandbox with
         # the unresolved built-ins, not the stale per-workspace resolution.

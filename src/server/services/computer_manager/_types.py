@@ -14,6 +14,7 @@ from src.server.services.livefs.tracker import MountTracker
 
 if TYPE_CHECKING:
     from src.server.services.computer_manager._bringup import BringUp
+    from src.server.services.trading_rule import TradingRule
 
 
 # This cache stores which projects this process has already materialised on a
@@ -102,6 +103,10 @@ class WorkspaceToolView:
     mcp_config_version: Optional[int]
     mcp_servers: tuple[Any, ...] = ()
     mcp_settled_servers: frozenset[str] = frozenset()
+    # Off the same resolve as the direct tools but not out of them: a server
+    # whose tools no snapshot or grant lets bind still has the settings the
+    # rule describes.
+    trading_rule: Optional["TradingRule"] = None
     built_at: float = field(default_factory=time.monotonic)
 
     @classmethod
@@ -118,6 +123,7 @@ class WorkspaceToolView:
             mcp_settled_servers=frozenset(
                 getattr(session, "mcp_settled_servers", ()) or ()
             ),
+            trading_rule=getattr(session, "trading_rule", None),
         )
 
     @classmethod

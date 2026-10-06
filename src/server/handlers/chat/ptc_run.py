@@ -598,6 +598,7 @@ async def astream_ptc_workflow(
             bind_direct_mcp_tools,
             direct_tools_for_turn,
         )
+        from src.server.services.trading_rule import with_trading_rule
 
         # Resolved once and used three times: the agent build mounts the
         # workspace's memory off it, the post-turn reconcile materialises that
@@ -628,6 +629,8 @@ async def astream_ptc_workflow(
             run_id=run_id,
             turn_index=run_handle.turn_index,
         )
+        # Off the resolve, not the bind, so it moves only when a setting does.
+        user_profile = with_trading_rule(user_profile, tool_view.trading_rule)
 
         ptc_graph = await build_ptc_graph_with_session(
             session=session,

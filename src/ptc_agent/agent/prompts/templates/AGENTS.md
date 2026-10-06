@@ -147,6 +147,23 @@ sees — move it outside the fence, or register it as an either/or.
   can select a section instead of printing. Model-scoped settings (the guidance level
   among them) live in the sibling `model_preference` bucket, which the template
   never iterates.
+- **`trading_permission` is not a preference.** The agent can write
+  `agent_preference` (its profile files, its preference tool), so a level that
+  lets orders skip approval cannot live there. It has its own table and
+  endpoint, and the turn runner adds it to the profile when a server the
+  workspace is configured with can place a live order or stage an instruction
+  as a direct tool (`src/server/services/trading_rule.py`). The rule follows
+  the user's settings, not this turn's binding: a lapsed grant, a connection
+  waiting on re-auth or order tools the turn budget dropped leave it as it
+  was, since a profile that moved with them would reach the model as a
+  `profile_changed` row saying its rule changed when the user changed nothing.
+  It is read off the same binding plans that stamp each order tool's
+  approval, never a second read, so it cannot promise an approval step the
+  turn did not wire.
+  Subagents are bound no order tools, so their copy of the profile drops it.
+  Beside it, `trading_asks_on` names the brokerages (by server) whose switch
+  still asks at a level that skips approval, so the rule does not tell the
+  model those orders go straight out.
 - **The static prompt excludes every per-request value.** The clock, the user's
   identity, the surface this turn is running on, and anything that changes
   between turns are rendered from `templates/envelope/` and appended after the

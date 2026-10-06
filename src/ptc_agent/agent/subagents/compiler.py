@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ptc_agent.agent.middleware.runtime_context.profile import TRADING_KEYS
 from ptc_agent.agent.middleware.skills.content import load_skill_content
 from ptc_agent.agent.middleware.skills.registry import SKILL_REGISTRY, SkillDefinition
 from ptc_agent.agent.prompts import (
@@ -91,7 +92,17 @@ class SubagentCompiler:
         self._default_model = default_model
         self._mcp_registry = mcp_registry
         self._tool_sets: dict[str, list[Any]] = tool_sets or {}
-        self._user_profile = user_profile
+        # A subagent is bound no order tools, so the main agent's trading
+        # permission would describe calls it cannot make.
+        self._user_profile = (
+            {
+                k: v
+                for k, v in user_profile.items()
+                if k not in TRADING_KEYS
+            }
+            if user_profile
+            else user_profile
+        )
         self._current_time = current_time
         self._thread_id = thread_id
         self._config = config

@@ -21,6 +21,7 @@ from ptc_agent.agent.middleware.runtime_context import (
     TurnContextMiddleware,
     resolve_preferred_market,
 )
+from ptc_agent.agent.middleware.runtime_context.profile import profile_read_answered
 from ptc_agent.agent.roles import AgentRole
 
 
@@ -79,7 +80,7 @@ def build_context_middleware(
     # default its tools fall back to is ``tool_timezone`` and never comes here.
     preferred_market = (
         resolve_preferred_market(user_profile, user_data_counts)
-        if user_profile is not None and user_data_counts is not None
+        if profile_read_answered(user_profile) and user_data_counts is not None
         else None
     )
     return ContextMiddleware(

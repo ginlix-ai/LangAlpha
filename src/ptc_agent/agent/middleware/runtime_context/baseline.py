@@ -61,7 +61,10 @@ from ptc_agent.agent.middleware.runtime_context.harness_blocks import (
     HARNESS_BLOCKS,
     harness_update_kind,
 )
-from ptc_agent.agent.middleware.runtime_context.profile import ProfileSnapshot
+from ptc_agent.agent.middleware.runtime_context.profile import (
+    ProfileSnapshot,
+    profile_read_answered,
+)
 from ptc_agent.agent.middleware.runtime_context.state import STATE_BASELINE, state_get
 from ptc_agent.agent.middleware.runtime_context.templates import render_template
 from ptc_agent.agent.middleware.runtime_context.turn import NON_CHANGE_ROW_KINDS
@@ -255,7 +258,9 @@ class BaselineContextMiddleware(AgentMiddleware):
         }
         # Both platform reads answer with a dict or None, and None is either
         # a failure or no user at all; neither is a profile the user cleared.
-        self._profile_available = user_profile is not None and user_data_counts is not None
+        self._profile_available = (
+            profile_read_answered(user_profile) and user_data_counts is not None
+        )
         self._user_profile = user_profile or {}
         self._user_data_counts = user_data_counts
         self._sandbox_enabled = sandbox_enabled

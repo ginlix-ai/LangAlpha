@@ -236,8 +236,9 @@ class DirectMCPBinding:
     reads the server's own row again rather than the set bound at turn start:
     consent withdrawn on the Plugins page mid-turn, a connection that went to
     ``needs_reauth``, a row or its plugin switched off, a tool moved back to
-    the sandbox, or an order gate switched on, refuses the next call instead
-    of the next turn.
+    the sandbox, or an order gate switched on (on the row, or by the user
+    lowering their trading permission), refuses the next call instead of the
+    next turn.
     """
 
     user_id: str | None = None

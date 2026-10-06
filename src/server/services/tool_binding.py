@@ -142,6 +142,9 @@ class BindingPlan:
     #: relay (``direct`` only).
     sandbox_excluded: frozenset[str] = frozenset()
     by_tool: Mapping[str, Resolved] = field(default_factory=dict)
+    #: The trading permission the approvals in ``by_tool`` were resolved under,
+    #: so the prompt that names the level reads the answer the stamps did.
+    trading: TradingPermission = DEFAULT_TRADING_PERMISSION
 
 
 @dataclass(frozen=True)
@@ -434,7 +437,12 @@ def resolve_plan(
     by_tool = {tool: resolve_tool(vendor, tool, inputs) for tool in sorted(names)}
     direct = frozenset(t for t, r in by_tool.items() if r.binding in ("direct", "both"))
     excluded = frozenset(t for t, r in by_tool.items() if r.binding == "direct")
-    return BindingPlan(direct=direct, sandbox_excluded=excluded, by_tool=by_tool)
+    return BindingPlan(
+        direct=direct,
+        sandbox_excluded=excluded,
+        by_tool=by_tool,
+        trading=inputs.trading,
+    )
 
 
 _PATH_WORDS: dict[str, str] = {
