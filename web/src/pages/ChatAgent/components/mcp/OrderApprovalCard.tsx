@@ -4,6 +4,7 @@ import { Check, ChevronRight, MinusCircle, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { OrderStatusPill } from '@/components/orders/OrderStatusPill';
 import { OrdersPageLink } from '@/components/orders/OrdersPageLink';
+import { useLocale } from '@/hooks/useLocale';
 import { useOrder } from '@/hooks/useOrders';
 import { useNoteOrderExists } from '@/hooks/useOrdersVisible';
 import type { ToolApprovalState } from '@/types/chat';
@@ -13,7 +14,8 @@ import { ArgsTable } from './ArgsTable';
 import { StatusPill } from '@/components/mcp/McpPrimitives';
 import { OrderModeBadge } from '@/components/orders/OrderModeBadge';
 import { OrderCard } from './OrderCard';
-import { ORDER_ACTION_KEY, orderSummaryRows } from './orderSummary';
+import { maskAccountId } from '@/pages/ChatAgent/utils/directTools';
+import { ORDER_ACTION_KEY, orderTicket } from './orderSummary';
 import { SettledStep } from '../SettledStep';
 import { useDirectToolVendorLabel } from './useDirectToolVendor';
 
@@ -22,8 +24,8 @@ import { useDirectToolVendorLabel } from './useDirectToolVendor';
  * the receipt it becomes.
  *
  * An order has one card in a thread and it is the receipt, so the card that
- * asks looks like the record that answers: the same header, the same field
- * list, the same footer line. Only the pill and the footer change as the order
+ * asks looks like the record that answers: the same header, the same ticket,
+ * the same footer line. Only the pill and the footer change as the order
  * moves, which is what makes approving feel like watching one thing settle
  * rather than one card being replaced by another.
  *
@@ -60,6 +62,7 @@ export function OrderApprovalCard({
   resultLost?: boolean;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const locale = useLocale();
   const [reason, setReason] = useState('');
   const [argsOpen, setArgsOpen] = useState(false);
   // The order names its own vendor; the server row is the fallback for a
@@ -133,11 +136,11 @@ export function OrderApprovalCard({
       <OrderCard
         vendor={order.vendor || data.server || ''}
         action={order.action}
-        targetRef={order.target_ref}
         mode={order.mode}
         vendorLabel={vendorLabel}
+        account={order.account_ref ? maskAccountId(order.account_ref) : null}
         pill={pill}
-        rows={orderSummaryRows(order)}
+        ticket={orderTicket(order, { hidden: false, locale })}
         testid="order-approval"
         footer={
           canAct && !isApproved ? (

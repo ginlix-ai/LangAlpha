@@ -1,6 +1,8 @@
+import { HIDDEN, orderAmount, orderCurrency } from '@/components/orders/format';
 import { instrumentLabel } from '@/components/orders/instrument';
 import { ORDER_STATUS_KEY, ORDER_STATUS_STAGED_KEYS } from '@/components/orders/status';
 import { readValuesHidden } from '@/components/orders/valuesHidden';
+import { useLocale } from '@/hooks/useLocale';
 import { useOrder } from '@/hooks/useOrders';
 import { maskAccountId } from '@/pages/ChatAgent/utils/directTools';
 import { fillFigure, isOrderOpen, type OrderAttempt } from '@/pages/ChatAgent/utils/api';
@@ -12,12 +14,12 @@ import type {
   OrderReceipt,
   OrderStatus,
 } from '@/types/sse';
-import { ACCOUNT_KEY, orderSummaryRows, type OrderSummaryRow } from './orderSummary';
+import { orderTicket, type OrderPart, type OrderTicketView } from './orderSummary';
 import { useDirectToolVendorLabel } from './useDirectToolVendor';
 
 /**
  * One order's receipt, resolved: the artifact the tool answered with, the
- * ledger row it has moved to since, and the fields worth drawing from both.
+ * ledger row it has moved to since, and what is worth drawing from both.
  *
  * The artifact was written the moment the tool answered, so a fill, a cancel
  * or a broker rejection that reconciliation records afterwards never reaches
@@ -27,57 +29,25 @@ import { useDirectToolVendorLabel } from './useDirectToolVendor';
  * the row is a summary of it.
  */
 
-const OUTCOME_LABEL = {
-  orderId: 'toolArtifact.directTool.orderOutcome.orderId',
+const FILL_LABEL = {
   filled: 'toolArtifact.directTool.orderOutcome.filled',
   avgFillPrice: 'toolArtifact.directTool.orderOutcome.avgFillPrice',
   fees: 'toolArtifact.directTool.orderOutcome.fees',
-  failure: 'toolArtifact.directTool.orderOutcome.failure',
-  decisionMessage: 'toolArtifact.directTool.orderOutcome.decisionMessage',
-  /** The label over a fill written as a sentence rather than as a figure. */
+  /** The label a fill sentence keeps when values are hidden and the sentence,
+   *  which is all figures, goes. */
   fill: 'toolArtifact.directTool.orderOutcome.fill',
   filledOf: 'toolArtifact.directTool.orderOutcome.filledOf',
   filledAt: 'toolArtifact.directTool.orderOutcome.filledAt',
 };
 
-/** What the order's own note row is labelled. Reached here only to tell it
- *  apart from the reason a person rejected with, when an order carries both. */
-const NOTE_LABEL = 'toolArtifact.directTool.orderField.note';
-
-/** Every locale key this card can ask for. The status verdicts and the outcome
- *  labels reach `t()` through a map, so the tree-wide sweep cannot see them;
- *  this is what one test holds against both catalogs. */
+/** Every locale key this card can ask for through a map. The status verdicts
+ *  and the fill labels reach `t()` through one, so the tree-wide sweep cannot
+ *  see them; this is what one test holds against both catalogs. */
 export const ORDER_RECEIPT_KEYS: readonly string[] = [
   ...Object.values(ORDER_STATUS_KEY),
   ...ORDER_STATUS_STAGED_KEYS,
-  ...Object.values(OUTCOME_LABEL),
-  NOTE_LABEL,
+  ...Object.values(FILL_LABEL),
 ];
-
-/** What a shoulder should not read: sizes, prices and fees. Not the side, the
- *  instrument or the verdict, which are the point of the card. */
-const VALUE_FIELDS = new Set([
-  'qty',
-  'notional',
-  'limit_price',
-  'stop_price',
-  'filled_qty',
-  'avg_fill_price',
-  'fees',
-]);
-
-const HIDDEN = '******';
-
-function hide(rows: OrderSummaryRow[], hidden: boolean): OrderSummaryRow[] {
-  if (!hidden) return rows;
-  return rows.map((row) =>
-    VALUE_FIELDS.has(row.field)
-      // The sentence goes with the figures: "Filled 4 of 10" is the number the
-      // toggle was asked to hide, spelled out.
-      ? { ...row, value: HIDDEN, valueKey: undefined, valueParams: undefined }
-      : row,
-  );
-}
 
 function text(value: unknown): string | null {
   if (value == null) return null;
@@ -86,103 +56,93 @@ function text(value: unknown): string | null {
   return null;
 }
 
-function failureText(outcome: OrderOutcome): string | null {
-  const failure = outcome.failure;
-  if (!failure) return null;
-  const parts = [text(failure.code), text(failure.message) || text(failure.kind)];
-  const joined = parts.filter(Boolean).join(' ');
-  return joined || null;
+/** What the brokerage answered and what the person said, ready to draw. */
+export interface OrderOutcomeView {
+  /** The reason a person typed when they rejected. Always under its own label:
+   *  it answers what the card asked, and it is not the order's note. */
+  decisionMessage: string | null;
+  /** The vendor's sentence (or, without one, the kind of failure) and its code. */
+  failure: { message: string | null; code: string | null } | null;
+  fill: OrderPart[];
+  orderId: string | null;
 }
 
 /**
- * The rows the vendor's answer adds under the order: its id for the order, what
- * filled, what it cost, and why it did not. Each is drawn only when there is
- * one, for the same reason the order fields are.
+ * The part of the receipt that is the answer rather than the order: why it did
+ * not go through, what filled and what it cost, and the vendor's id for it.
+ * Each is drawn only when there is one, for the same reason the order's own
+ * fields are.
  *
  * A fill is the one answer that is a fact about progress rather than a figure,
  * so where the order says how much was asked for it is written as a sentence:
  * "Filled 4 of 10" answers the question a partial fill actually raises, which
  * a bare 4 under "Filled quantity" does not. When the pieces for a sentence
- * are not all there, the figures go back to a row each.
+ * are not all there, the figures go back to a part each.
  */
-export function orderOutcomeRows(
+export function orderOutcomeView(
   outcome: OrderOutcome,
-  order?: OrderProposal | null,
-): OrderSummaryRow[] {
-  const rows: OrderSummaryRow[] = [];
-  const orderId = text(outcome.vendor_order_id);
-  if (orderId) {
-    rows.push({ field: 'vendor_order_id', labelKey: OUTCOME_LABEL.orderId, value: orderId });
-  }
+  order: OrderProposal | null | undefined,
+  opts: { hidden: boolean; locale: string },
+): OrderOutcomeView {
+  const { hidden } = opts;
+  const currency = order ? orderCurrency(order) : null;
   const filled = fillFigure(outcome.filled_qty);
   const avg = fillFigure(outcome.avg_fill_price);
   const qty = text(order?.qty);
-  const partial =
-    filled && qty && outcome.status === 'partially_filled'
-      ? {
-          field: 'filled_qty',
-          labelKey: OUTCOME_LABEL.fill,
-          value: `${filled} / ${qty}`,
-          valueKey: OUTCOME_LABEL.filledOf,
-          valueParams: { filled, qty },
-        }
-      : null;
-  const whole =
-    filled && avg && outcome.status === 'filled'
-      ? {
-          field: 'filled_qty',
-          labelKey: OUTCOME_LABEL.fill,
-          value: `${filled} @ ${avg}`,
-          valueKey: OUTCOME_LABEL.filledAt,
-          valueParams: { filled, price: avg },
-        }
-      : null;
-  if (whole) {
-    rows.push(whole);
+  // The sentence goes with the figures when they are hidden: "Filled 4 of 10"
+  // is the number the toggle was asked to hide, spelled out.
+  const masked: OrderPart = { field: 'fill', labelKey: FILL_LABEL.fill, value: HIDDEN };
+  const fill: OrderPart[] = [];
+  if (filled && avg && outcome.status === 'filled') {
+    const price = orderAmount(avg, currency, opts);
+    fill.push(
+      hidden
+        ? masked
+        : {
+            field: 'fill',
+            value: `${filled} @ ${price}`,
+            valueKey: FILL_LABEL.filledAt,
+            valueParams: { filled, price },
+          },
+    );
   } else {
-    if (partial) rows.push(partial);
-    else if (filled) {
-      rows.push({ field: 'filled_qty', labelKey: OUTCOME_LABEL.filled, value: filled });
+    if (filled && qty && outcome.status === 'partially_filled') {
+      fill.push(
+        hidden
+          ? masked
+          : {
+              field: 'fill',
+              value: `${filled} / ${qty}`,
+              valueKey: FILL_LABEL.filledOf,
+              valueParams: { filled, qty },
+            },
+      );
+    } else if (filled) {
+      fill.push({ field: 'filled_qty', labelKey: FILL_LABEL.filled, value: hidden ? HIDDEN : filled });
     }
     if (avg) {
-      rows.push({ field: 'avg_fill_price', labelKey: OUTCOME_LABEL.avgFillPrice, value: avg });
+      fill.push({
+        field: 'avg_fill_price',
+        labelKey: FILL_LABEL.avgFillPrice,
+        value: orderAmount(avg, currency, opts),
+      });
     }
   }
-  const fees = text(outcome.fees?.amount);
-  if (fees) {
-    const currency = text(outcome.fees?.currency);
-    rows.push({
-      field: 'fees',
-      labelKey: OUTCOME_LABEL.fees,
-      value: currency ? `${fees} ${currency}` : fees,
-    });
-  }
-  const failure = failureText(outcome);
-  if (failure) {
-    rows.push({ field: 'failure', labelKey: OUTCOME_LABEL.failure, value: failure });
-  }
-  return rows;
-}
+  // In the currency the vendor charged it in, which is not always the order's.
+  const fees = orderAmount(text(outcome.fees?.amount), text(outcome.fees?.currency), opts);
+  if (fees) fill.push({ field: 'fees', labelKey: FILL_LABEL.fees, value: fees });
 
-/**
- * The reason a person gave when they rejected, as the last field row.
- *
- * It sits with the order rather than with the outcome because it is the answer
- * to what the card asked, not something the brokerage said. An order that
- * already carries its own note gets the reason under a label of its own, so
- * two different sentences never appear as two rows both called Note.
- */
-function decisionRow(outcome: OrderOutcome, orderRows: OrderSummaryRow[]): OrderSummaryRow[] {
-  const message = text(outcome.decision_message);
-  if (!message) return [];
-  const collides = orderRows.some((row) => row.field === 'note');
-  return [
-    {
-      field: 'decision_message',
-      labelKey: collides ? OUTCOME_LABEL.decisionMessage : NOTE_LABEL,
-      value: message,
-    },
-  ];
+  const message = text(outcome.failure?.message) ?? text(outcome.failure?.kind);
+  const code = text(outcome.failure?.code);
+  const orderId = text(outcome.vendor_order_id);
+  return {
+    decisionMessage: text(outcome.decision_message),
+    failure: message || code ? { message, code } : null,
+    fill,
+    // A cancel answers with the id of the order it cancelled, which the ticket
+    // already names; saying it a second time reads as a second order.
+    orderId: orderId && orderId !== text(order?.target_ref) ? orderId : null,
+  };
 }
 
 /**
@@ -244,16 +204,18 @@ export interface OrderReceiptView {
   vendorLabel: string;
   action: OrderAction;
   mode: OrderMode | null;
-  targetRef: string | null;
+  /** Already masked. */
+  account: string | null;
   status: OrderStatus;
-  rows: OrderSummaryRow[];
-  outcomeRows: OrderSummaryRow[];
+  ticket: OrderTicketView | null;
+  outcome: OrderOutcomeView;
   actionUrl: string | null;
 }
 
 export function useOrderReceipt(artifact: Record<string, unknown>): OrderReceiptView | null {
   const frozen = orderReceiptOf(artifact);
   const vendorLabel = useDirectToolVendorLabel(frozen?.vendor || '');
+  const locale = useLocale();
   // A public thread never gets here: the share route strips the receipt
   // fragment, `orderReceiptOf` then returns null, and the query stays disabled.
   // A receipt the artifact already froze at a terminal verdict still reads the
@@ -267,21 +229,13 @@ export function useOrderReceipt(artifact: Record<string, unknown>): OrderReceipt
   if (!receipt) return null;
 
   const order = receipt.order ?? null;
-  const hidden = readValuesHidden();
-  const account = receipt.account_ref ?? order?.account_ref ?? null;
+  const shown = { hidden: readValuesHidden(), locale };
+  const account = text(receipt.account_ref) ?? text(order?.account_ref);
   // The instrument is the one part of the order itself that moves: a vendor
   // addressed by an opaque contract id is all the adapter could name at the
   // time, and reconciliation reads the vendor's own listing later.
-  const instrument =
-    (row?.attempt_id === receipt.attempt_id ? instrumentLabel(row?.order?.instrument) : '') ||
-    instrumentLabel(order?.instrument);
-  // An action with no order to normalize (an exercise, say) still has an
-  // account, and that is the row worth keeping.
-  const orderRows = order
-    ? orderSummaryRows(order, instrument)
-    : account
-      ? [{ field: 'account_ref', labelKey: ACCOUNT_KEY, value: maskAccountId(account) }]
-      : [];
+  const reconciled = row?.attempt_id === receipt.attempt_id ? row.order?.instrument : null;
+  const instrument = instrumentLabel(reconciled) ? reconciled : order?.instrument;
 
   return {
     attemptId: receipt.attempt_id,
@@ -289,10 +243,10 @@ export function useOrderReceipt(artifact: Record<string, unknown>): OrderReceipt
     vendorLabel,
     action: receipt.action ?? order?.action ?? 'place',
     mode: receipt.mode ?? order?.mode ?? null,
-    targetRef: order?.target_ref ?? null,
+    account: account && maskAccountId(account),
     status: receipt.outcome.status,
-    rows: [...hide(orderRows, hidden), ...decisionRow(receipt.outcome, orderRows)],
-    outcomeRows: hide(orderOutcomeRows(receipt.outcome, order), hidden),
+    ticket: order ? orderTicket({ ...order, instrument }, { ...shown, fill: receipt.outcome }) : null,
+    outcome: orderOutcomeView(receipt.outcome, order, shown),
     actionUrl: receipt.outcome.action_url ?? null,
   };
 }

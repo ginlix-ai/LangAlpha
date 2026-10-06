@@ -2903,18 +2903,16 @@
         "cancelExercise": "Cancel exercise"
       },
       "orderField": {
-        "account": "Account",
-        "instrument": "Instrument",
-        "assetClass": "Asset class",
-        "side": "Side",
         "quantity": "Quantity",
         "notional": "Amount",
         "orderType": "Order type",
         "limitPrice": "Limit price",
+        "price": "Price",
         "stopPrice": "Stop price",
-        "timeInForce": "Time in force",
-        "session": "Session",
         "note": "Note"
+      },
+      "orderTicket": {
+        "order": "Order"
       },
       "orderStatus": {
         "proposed": "Awaiting your approval",
@@ -2959,8 +2957,13 @@
         "filledOf": "Filled {{filled}} of {{qty}}",
         "filledAt": "Filled {{filled}} at {{price}}",
         "fees": "Fees",
-        "failure": "Reason",
+        "failureCode": "code {{code}}",
         "decisionMessage": "Your reason"
+      },
+      "orderTotal": {
+        "estimated": "Estimated total",
+        "filled": "Filled total",
+        "partial": "Filled so far"
       },
       "orderApproval": {
         "notAnswered": "Not answered",
@@ -3767,11 +3770,17 @@
       "auction_limit": "Auction limit"
     },
     "timeInForce": {
-      "day": "Day",
+      "day": "Day order",
       "gtc": "Good till cancelled",
       "overnight": "Overnight",
       "overnight_next_day": "Overnight into the next day",
       "at_the_open": "At the open"
+    },
+    "session": {
+      "rth": "Regular hours",
+      "rth_plus_ext": "Regular and extended hours",
+      "overnight": "Overnight",
+      "all_day": "24 hours"
     },
     "assetClass": {
       "equity": "Equity",
@@ -3781,6 +3790,10 @@
       "crypto": "Crypto",
       "warrant": "Warrant",
       "other": "Other"
+    },
+    "optionRight": {
+      "C": "Call",
+      "P": "Put"
     },
     "detail": {
       "title": "Order",

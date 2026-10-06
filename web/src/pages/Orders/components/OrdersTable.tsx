@@ -12,7 +12,8 @@ import {
   orderSize,
   orderStopPrice,
 } from '../utils/format';
-import { ORDER_ACTION_KEY, ORDER_SIDE_KEY, ORDER_TYPE_KEY } from '../utils/labels';
+import { ORDER_SIDE_KEY, ORDER_TYPE_KEY } from '@/components/orders/labels';
+import { ORDER_ACTION_KEY } from '../utils/labels';
 
 /**
  * The column plan, as shares of the table rather than of the content.

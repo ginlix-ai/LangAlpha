@@ -2870,18 +2870,16 @@
         "cancelExercise": "撤销行权"
       },
       "orderField": {
-        "account": "账户",
-        "instrument": "标的",
-        "assetClass": "资产类别",
-        "side": "方向",
         "quantity": "数量",
         "notional": "金额",
         "orderType": "订单类型",
         "limitPrice": "限价",
+        "price": "价格",
         "stopPrice": "止损价",
-        "timeInForce": "有效期",
-        "session": "交易时段",
         "note": "备注"
+      },
+      "orderTicket": {
+        "order": "订单"
       },
       "orderStatus": {
         "proposed": "等待你批准",
@@ -2926,8 +2924,13 @@
         "filledOf": "已成交 {{filled}} / {{qty}}",
         "filledAt": "已成交 {{filled}}，成交价 {{price}}",
         "fees": "费用",
-        "failure": "原因",
+        "failureCode": "错误码 {{code}}",
         "decisionMessage": "你的原因"
+      },
+      "orderTotal": {
+        "estimated": "预计总额",
+        "filled": "成交总额",
+        "partial": "已成交总额"
       },
       "orderApproval": {
         "notAnswered": "未获回应",
@@ -3733,6 +3736,12 @@
       "overnight_next_day": "夜盘至次日",
       "at_the_open": "开盘时执行"
     },
+    "session": {
+      "rth": "常规时段",
+      "rth_plus_ext": "含盘前盘后",
+      "overnight": "夜盘",
+      "all_day": "全天"
+    },
     "assetClass": {
       "equity": "股票",
       "option": "期权",
@@ -3741,6 +3750,10 @@
       "crypto": "加密货币",
       "warrant": "权证",
       "other": "其他"
+    },
+    "optionRight": {
+      "C": "看涨",
+      "P": "看跌"
     },
     "detail": {
       "title": "订单",

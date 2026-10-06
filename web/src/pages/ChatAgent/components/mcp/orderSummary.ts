@@ -1,16 +1,29 @@
+import { HIDDEN, orderAmount, orderCurrency } from '@/components/orders/format';
 import { instrumentLabel } from '@/components/orders/instrument';
-import { maskAccountId } from '@/pages/ChatAgent/utils/directTools';
-import type { OrderAction, OrderMoney, OrderProposal } from '@/types/sse';
+import {
+  ORDER_ASSET_CLASS_KEY,
+  ORDER_SESSION_KEY,
+  ORDER_SIDE_KEY,
+  ORDER_TIME_IN_FORCE_KEY,
+  ORDER_TYPE_KEY,
+  orderWordKey,
+} from '@/components/orders/labels';
+import {
+  LIMIT_BOUND_TYPES,
+  orderTotal,
+  type OrderTotalFill,
+  type OrderTotalKind,
+} from '@/components/orders/total';
+import type { OrderAction, OrderInstrument, OrderProposal } from '@/types/sse';
 
 /**
  * What a call would do at the broker, read off the server's normalized summary
- * rather than off the raw arguments and drawn as one line per field.
+ * rather than off the raw arguments.
  *
  * This is the question a person actually has in front of a live order (which
- * account, which instrument, which side, how much), with the account masked
- * because it is the one field here worth nothing to the reader and everything
- * to anyone else looking at the screen. The arguments stay reachable elsewhere,
- * unmasked, because that is the exact frame the vendor will see.
+ * way, on what, how much, at what price), so the card leads with those and
+ * says the rest in a quieter line under them. The arguments stay reachable
+ * under the card, because they are the exact frame the vendor will see.
  */
 
 /** Written out rather than built from the action, so the locale sweep and a
@@ -26,125 +39,181 @@ export const ORDER_ACTION_KEY: Record<OrderAction, string> = {
   cancel_exercise: 'toolArtifact.directTool.orderAction.cancelExercise',
 };
 
-function text(value: string | null | undefined): string | null {
-  return typeof value === 'string' ? value.trim() || null : null;
-}
+const FIELD_KEY = {
+  quantity: 'toolArtifact.directTool.orderField.quantity',
+  notional: 'toolArtifact.directTool.orderField.notional',
+  stopPrice: 'toolArtifact.directTool.orderField.stopPrice',
+  limitPrice: 'toolArtifact.directTool.orderField.limitPrice',
+  price: 'toolArtifact.directTool.orderField.price',
+  orderType: 'toolArtifact.directTool.orderField.orderType',
+  note: 'toolArtifact.directTool.orderField.note',
+};
 
-/** An amount and the currency it is in, which the order may carry either on
- *  the money itself or beside it. */
-function money(
-  amount: OrderMoney | null | undefined,
-  fallbackCurrency: string | null | undefined,
-): string | null {
-  const value = text(amount?.amount);
-  if (!value) return null;
-  const currency = text(amount?.currency) ?? text(fallbackCurrency);
-  return currency ? `${value} ${currency}` : value;
-}
+/** The total column is named for what it adds up: an estimate says so, and a
+ *  fill still moving does not read as the final cost. */
+export const ORDER_TOTAL_KEY: Record<OrderTotalKind, string> = {
+  estimated: 'toolArtifact.directTool.orderTotal.estimated',
+  filled: 'toolArtifact.directTool.orderTotal.filled',
+  partial: 'toolArtifact.directTool.orderTotal.partial',
+};
 
-export const ACCOUNT_KEY = 'toolArtifact.directTool.orderField.account';
+/** The word in front of the vendor id an amend acts on. */
+export const ORDER_REF_KEY = 'toolArtifact.directTool.orderTicket.order';
 
-/**
- * The fields drawn, in the order a person reads them: whose money, on what,
- * which way, how much, and only then how the order is priced and timed. Each
- * reads itself off the order, because the account is masked, the instrument is
- * a whole algorithm and money carries its own currency.
- */
-const FIELDS: ReadonlyArray<{
-  field: string;
-  labelKey: string;
-  read: (order: OrderProposal, instrument: string) => string | null;
-}> = [
-  {
-    field: 'account_ref',
-    labelKey: ACCOUNT_KEY,
-    read: (o) => {
-      const value = text(o.account_ref);
-      return value && maskAccountId(value);
-    },
-  },
-  {
-    field: 'instrument',
-    labelKey: 'toolArtifact.directTool.orderField.instrument',
-    read: (_, instrument) => instrument || null,
-  },
-  {
-    field: 'asset_class',
-    labelKey: 'toolArtifact.directTool.orderField.assetClass',
-    read: (o) => text(o.asset_class),
-  },
-  { field: 'side', labelKey: 'toolArtifact.directTool.orderField.side', read: (o) => text(o.side) },
-  { field: 'qty', labelKey: 'toolArtifact.directTool.orderField.quantity', read: (o) => text(o.qty) },
-  {
-    field: 'notional',
-    labelKey: 'toolArtifact.directTool.orderField.notional',
-    read: (o) => money(o.notional, o.currency),
-  },
-  {
-    field: 'order_type',
-    labelKey: 'toolArtifact.directTool.orderField.orderType',
-    read: (o) => text(o.order_type),
-  },
-  {
-    field: 'limit_price',
-    labelKey: 'toolArtifact.directTool.orderField.limitPrice',
-    read: (o) => text(o.limit_price),
-  },
-  {
-    field: 'stop_price',
-    labelKey: 'toolArtifact.directTool.orderField.stopPrice',
-    read: (o) => text(o.stop_price),
-  },
-  {
-    field: 'time_in_force',
-    labelKey: 'toolArtifact.directTool.orderField.timeInForce',
-    read: (o) => text(o.time_in_force),
-  },
-  {
-    field: 'session',
-    labelKey: 'toolArtifact.directTool.orderField.session',
-    read: (o) => text(o.session),
-  },
-  { field: 'note', labelKey: 'toolArtifact.directTool.orderField.note', read: (o) => text(o.note) },
-];
-
-/** Every locale key these rows can ask for, so one test can hold them all
- *  against both catalogs. */
+/** Every locale key the ticket can ask for through a map, so one test can hold
+ *  them all against both catalogs. The order's own words (side, type and the
+ *  rest) are bare `orders.*` keys, which the tree-wide sweep already reads. */
 export const ORDER_SUMMARY_KEYS: readonly string[] = [
   ...Object.values(ORDER_ACTION_KEY),
-  ...FIELDS.map((f) => f.labelKey),
+  ...Object.values(FIELD_KEY),
+  ...Object.values(ORDER_TOTAL_KEY),
+  ORDER_REF_KEY,
 ];
 
-export interface OrderSummaryRow {
+/**
+ * One labelled piece of an order as drawn: a figure column, an item on the
+ * line under the headline, a part of the fill line.
+ */
+export interface OrderPart {
+  /** Which fact this is. Unique within its list, so it is also the React key. */
   field: string;
-  labelKey: string;
+  labelKey?: string;
+  /** The plain reading: the formatted figure, or the raw value when the
+   *  catalog has no word for it. */
   value: string;
-  /** For a value that is a sentence rather than a figure ("Filled 4 of 10"):
-   *  the locale key and what to put in it, interpolated where the row is
-   *  drawn. `value` stays the plain reading, and anything that rewrites the
-   *  value has to clear these two with it. */
+  /** The catalog's word or sentence for the value, interpolated with
+   *  `valueParams` where it is drawn. Anything that rewrites `value` has to
+   *  clear these two with it. */
   valueKey?: string;
   valueParams?: Record<string, string>;
 }
 
+/** What the card draws for one order, with no wire shapes left in it. */
+export interface OrderTicketView {
+  side: OrderPart | null;
+  /** Kept whole rather than flattened to a label, so the headline can set an
+   *  option's contract one step lighter than its underlying. */
+  instrument: OrderInstrument | null;
+  /** The vendor id an amend acts on, set here only when there is no
+   *  instrument to name: then it is the subject of the headline. Beside an
+   *  instrument it leads the meta line instead. */
+  targetRef: string | null;
+  meta: OrderPart[];
+  figures: OrderPart[];
+}
+
+function text(value: string | null | undefined): string | null {
+  return typeof value === 'string' ? value.trim() || null : null;
+}
+
+function word(
+  field: string,
+  map: Readonly<Record<string, string>>,
+  value: string,
+): OrderPart {
+  return { field, value, valueKey: orderWordKey(map, value) ?? undefined };
+}
+
 /**
- * The rows to draw for one order. A field the adapter could not fill is not
+ * Whether the price columns already say what kind of order this is: a limit
+ * price alone is a limit order, a stop price alone a stop, both a stop-limit.
+ * Anything else has its type said beside them. A market order can carry a
+ * price too (moomoo takes one on every order and ignores it on a market
+ * order), and drawn without its type that price reads as a limit.
+ */
+function typeShownByPrices(type: string, prices: { stop: boolean; limit: boolean }): boolean {
+  switch (type) {
+    case 'limit':
+      return prices.limit && !prices.stop;
+    case 'stop':
+      return prices.stop && !prices.limit;
+    case 'stop_limit':
+      return prices.stop && prices.limit;
+    default:
+      return false;
+  }
+}
+
+/**
+ * The ticket to draw for one order. A field the adapter could not fill is not
  * drawn at all rather than drawn empty: on this surface a blank price reads as
  * a market order and a placeholder dash reads as zero.
  *
- * `instrument` is passed in by a caller that knows a better name for the same
- * instrument than the order itself carries, which is what a receipt following
- * the ledger has once reconciliation reads the vendor's own listing.
+ * `fill` is what the order has done so far, for a receipt; the approval card
+ * has none, so its total is the estimate. `hidden` masks the amounts and
+ * nothing else: the side, the instrument and the words are the point of the
+ * card, and they are not what a shoulder should not read.
  */
-export function orderSummaryRows(
+export function orderTicket(
   order: OrderProposal,
-  instrument?: string | null,
-): OrderSummaryRow[] {
-  const named = instrument || instrumentLabel(order.instrument);
-  const rows: OrderSummaryRow[] = [];
-  for (const { field, labelKey, read } of FIELDS) {
-    const value = read(order, named);
-    if (value) rows.push({ field, labelKey, value });
+  opts: { fill?: OrderTotalFill | null; hidden: boolean; locale: string },
+): OrderTicketView {
+  const shown = { hidden: opts.hidden, locale: opts.locale };
+  const instrument = instrumentLabel(order.instrument) ? (order.instrument ?? null) : null;
+  const ref = text(order.target_ref);
+  const type = order.order_type ?? null;
+
+  const figures: OrderPart[] = [];
+  const qty = text(order.qty);
+  const notional = orderAmount(
+    text(order.notional?.amount),
+    order.notional?.currency ?? order.currency,
+    shown,
+  );
+  // Both when both were sent: which one the vendor goes by is its rule, and
+  // a card that drew one would be asking about an order of the other size.
+  if (qty) figures.push({ field: 'qty', labelKey: FIELD_KEY.quantity, value: opts.hidden ? HIDDEN : qty });
+  if (notional) figures.push({ field: 'notional', labelKey: FIELD_KEY.notional, value: notional });
+  const stop = orderAmount(text(order.stop_price), orderCurrency(order), shown);
+  const limit = orderAmount(text(order.limit_price), orderCurrency(order), shown);
+  // The type sits ahead of the prices unless they already say it. With no
+  // price to read it is the price: "Market" where the limit column would be,
+  // rather than a blank a reader takes for a market order.
+  if (type && !typeShownByPrices(type, { stop: !!stop, limit: !!limit })) {
+    figures.push({ ...word('order_type', ORDER_TYPE_KEY, type), labelKey: FIELD_KEY.orderType });
   }
-  return rows;
+  if (stop) figures.push({ field: 'stop_price', labelKey: FIELD_KEY.stopPrice, value: stop });
+  if (limit) {
+    // A price on a type that takes no limit is not one: moomoo wants a price
+    // on a market order and ignores it.
+    const limitPriced = !type || LIMIT_BOUND_TYPES.has(type);
+    figures.push({
+      field: 'limit_price',
+      labelKey: limitPriced ? FIELD_KEY.limitPrice : FIELD_KEY.price,
+      value: limit,
+    });
+  }
+  const total = orderTotal(order, opts.fill);
+  if (total) {
+    figures.push({
+      field: 'total',
+      labelKey: ORDER_TOTAL_KEY[total.kind],
+      value: orderAmount(total.amount, total.currency, shown),
+    });
+  }
+
+  const meta: OrderPart[] = [];
+  if (instrument && ref) meta.push({ field: 'target_ref', labelKey: ORDER_REF_KEY, value: ref });
+  // The server defaults the class to "other" on an order that names no
+  // instrument, and on a cancel that word describes nothing.
+  if (instrument && order.asset_class) {
+    meta.push(word('asset_class', ORDER_ASSET_CLASS_KEY, order.asset_class));
+  }
+  const venue =
+    instrument?.kind === 'equity' || instrument?.kind === 'future' ? text(instrument.venue) : null;
+  if (venue) meta.push({ field: 'venue', value: venue });
+  if (order.time_in_force) {
+    meta.push(word('time_in_force', ORDER_TIME_IN_FORCE_KEY, order.time_in_force));
+  }
+  if (order.session) meta.push(word('session', ORDER_SESSION_KEY, order.session));
+  const note = text(order.note);
+  if (note) meta.push({ field: 'note', labelKey: FIELD_KEY.note, value: note });
+
+  return {
+    side: order.side ? word('side', ORDER_SIDE_KEY, order.side) : null,
+    instrument,
+    targetRef: instrument ? null : ref,
+    meta,
+    figures,
+  };
 }

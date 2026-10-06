@@ -1,12 +1,14 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useInRouterContext, useNavigate } from 'react-router';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { useRouteLeaveGuard } from '@/pages/ChatAgent/contexts/RouteLeaveGuardContext';
 
 /**
  * The one way off a card in a thread: the same attempt on the Orders page,
- * opened in its detail overlay.
+ * opened in its detail overlay. Its arrow points across rather than out,
+ * because it stays in the app; the out-arrow is the vendor link's, which
+ * leaves it.
  *
  * Stops its click at the link so a transcript surface that wraps the block can
  * never read it as a click on the card. Falls back to a plain anchor outside a
@@ -23,11 +25,11 @@ export function OrdersPageLink({ attemptId }: { attemptId: string }): React.Reac
   const label = (
     <>
       {t('toolArtifact.directTool.orderReceipt.viewInOrders')}
-      <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
+      <ArrowRight className="w-3 h-3" aria-hidden="true" />
     </>
   );
   return (
-    <div className="shrink-0 pb-0.5">
+    <div className="shrink-0">
       {inRouter ? (
         <GuardedLink href={href} className={className} style={style}>
           {label}
