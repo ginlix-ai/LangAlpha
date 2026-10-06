@@ -3940,7 +3940,7 @@
     },
     "oauth": {
       "abandonedDesc": "\"{{server}}\" never came back from the provider's sign-in page.",
-      "abandonedDescNeedsDesktop": "\"{{server}}\" never came back from the provider's sign-in page. Some providers only accept desktop apps. Open the LangAlpha desktop app to connect this one.",
+      "abandonedDescNeedsDesktop": "\"{{server}}\" never came back from the provider's sign-in page. Some providers only accept desktop apps. Open the LangAlpha desktop app to connect this one. <download>Download the desktop app</download>",
       "abandonedTitle": "Connection did not finish",
       "callbackError": {
         "blocked_endpoint": "The provider asked for a token from an address this app will not call.",
@@ -3973,8 +3973,10 @@
         "not-bound": "Another connection was started before this one finished. Try connecting again.",
         "shell-outdated": "This version of the desktop app cannot receive the provider's reply. Update the desktop app, then try again."
       },
-      "nativeHint": "Some providers only accept desktop apps and cannot be connected from a browser.",
+      "nativeHint": "Some providers only accept desktop apps and cannot be connected from a browser. <download>Download the desktop app</download>",
       "nativeOnlyNote": "Needs the desktop app",
+      "desktopDownload": "Download",
+      "desktopDownloadFull": "Download the desktop app",
       "registryUnavailableNote": "Broker requirements could not be checked, so connecting is on hold.",
       "needsReauth": "Reconnect needed",
       "reconnect": "Reconnect",

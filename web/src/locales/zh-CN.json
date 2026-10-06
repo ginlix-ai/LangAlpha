@@ -3900,7 +3900,7 @@
     },
     "oauth": {
       "abandonedDesc": "“{{server}}”未从服务商的登录页面返回。",
-      "abandonedDescNeedsDesktop": "“{{server}}”未从服务商的登录页面返回。部分服务商仅接受桌面应用，请使用 LangAlpha 桌面应用连接。",
+      "abandonedDescNeedsDesktop": "“{{server}}”未从服务商的登录页面返回。部分服务商仅接受桌面应用，请使用 LangAlpha 桌面应用连接。<download>下载桌面应用</download>",
       "abandonedTitle": "连接未完成",
       "callbackError": {
         "blocked_endpoint": "服务商要求从本应用不会访问的地址获取令牌。",
@@ -3933,8 +3933,10 @@
         "not-bound": "在本次连接完成前，又发起了另一个连接。请重新连接。",
         "shell-outdated": "当前版本的桌面应用无法接收提供方的回调。请更新桌面应用后重试。"
       },
-      "nativeHint": "部分服务商仅接受桌面应用，无法在浏览器中连接。",
+      "nativeHint": "部分服务商仅接受桌面应用，无法在浏览器中连接。<download>下载桌面应用</download>",
       "nativeOnlyNote": "需要桌面应用",
+      "desktopDownload": "下载",
+      "desktopDownloadFull": "下载桌面应用",
       "registryUnavailableNote": "无法获取券商要求，连接暂时不可用。",
       "needsReauth": "需要重新连接",
       "reconnect": "重新连接",

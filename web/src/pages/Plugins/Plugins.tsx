@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { AnimatePresence, motion, useReducedMotion } from '@/lib/framer';
 import { ChevronDown, Plus } from 'lucide-react';
 import {
@@ -26,6 +26,7 @@ import { useToggleBrokerage } from '@/hooks/useMcpServers';
 import { canBeginMcpOAuth } from '@/lib/desktop';
 import { readConnectOutcome } from './connectOutcome';
 import { useConnectReturn } from './connectReturn';
+import { DesktopDownloadLink } from './components/DesktopDownloadLink';
 
 /**
  * /plugins — user-level MCP servers, skills and the user vault. An enabled
@@ -136,9 +137,17 @@ function Plugins() {
       toast({
         variant: 'destructive',
         title: t('plugins.oauth.abandonedTitle'),
-        description: canBeginMcpOAuth()
-          ? t('plugins.oauth.abandonedDesc', { server })
-          : t('plugins.oauth.abandonedDescNeedsDesktop', { server }),
+        description: canBeginMcpOAuth() ? (
+          t('plugins.oauth.abandonedDesc', { server })
+        ) : (
+          <Trans
+            i18nKey="plugins.oauth.abandonedDescNeedsDesktop"
+            values={{ server }}
+            // Not `link`: the Trans parser reads that as the void HTML
+            // element and drops the words inside it.
+            components={{ download: <DesktopDownloadLink /> }}
+          />
+        ),
       });
     },
     // Silent on purpose, the same way the in-page rollback is: the refusal is

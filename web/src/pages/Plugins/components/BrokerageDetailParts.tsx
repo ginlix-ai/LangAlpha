@@ -1,8 +1,9 @@
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Check, Minus, Monitor } from 'lucide-react';
+import { AlertTriangle, Check, Minus } from 'lucide-react';
 import type { Brokerage, CapabilityGroup } from '../brokerages';
 import { DetailField } from './DetailOverlay';
 import { RowNote } from './RowNote';
+import { NativeOnlyNote } from './DesktopDownloadLink';
 
 /**
  * The two sections a brokerage detail has that no other server does: what the
@@ -158,7 +159,7 @@ export function BrokerFacts({
             </RowNote>
           )}
           {vendor.native_callback_only && (
-            <RowNote icon={Monitor}>{t('plugins.oauth.nativeOnlyNote')}</RowNote>
+            <NativeOnlyNote />
           )}
         </div>
       )}
