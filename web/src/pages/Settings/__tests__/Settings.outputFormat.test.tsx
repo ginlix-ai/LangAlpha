@@ -84,6 +84,16 @@ vi.mock('@/pages/Dashboard/utils/api', () => ({
   disconnectClaudeOAuth: vi.fn(async () => ({})),
 }));
 
+vi.mock('@/api/tradingPermission', () => ({
+  getTradingPermission: vi.fn(async () => ({
+    level: 'approve_each',
+    agreement_version: 1,
+    agreed_at: null,
+    updated_at: null,
+  })),
+  updateTradingPermission: vi.fn(async () => ({})),
+}));
+
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getFlashWorkspace: vi.fn(async () => ({ workspace_id: 'ws-flash' })),
 }));

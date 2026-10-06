@@ -95,6 +95,7 @@ function makeCatalog(
     plugin_enabled: pluginEnabled,
     created_at: null,
     updated_at: null,
+    trading_permission: 'approve_each',
     probe: verdict
       ? {
           verdict,

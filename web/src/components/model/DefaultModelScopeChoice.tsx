@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Check } from 'lucide-react';
+import { CheckboxChoice, RadioChoice } from '@/components/ui/choice';
 import { cn } from '@/lib/utils';
 import type { ApplyDefaultTo } from '@/lib/modelPreferences';
 import { namePhrase, type DefaultModelQuestion } from '@/hooks/useDefaultModelChange';
@@ -21,34 +21,20 @@ function ScopeOption({ name, value, checked, label, disabled, autoFocus, onSelec
   autoFocus?: boolean;
   onSelect: (value: ApplyDefaultTo) => void;
 }) {
-  // The native input is what takes focus and arrow keys; `rings-within`
-  // rings the row on its behalf, since the input itself is visually hidden.
   return (
-    <label className={cn(
-      'rings-within flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm',
-      disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-(--color-bg-hover)',
-    )}>
-      <input
-        type="radio"
-        name={name}
-        value={value}
-        checked={checked}
-        disabled={disabled}
-        autoFocus={autoFocus}
-        onChange={() => onSelect(value)}
-        className="sr-only"
-      />
-      <span
-        aria-hidden="true"
-        className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border"
-        style={{ borderColor: checked ? 'var(--color-btn-primary-bg)' : 'var(--color-text-quaternary)' }}
-      >
-        {checked && <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: 'var(--color-btn-primary-bg)' }} />}
-      </span>
+    <RadioChoice
+      name={name}
+      value={value}
+      checked={checked}
+      disabled={disabled}
+      autoFocus={autoFocus}
+      onSelect={onSelect}
+      className={cn('items-center gap-2.5 rounded-md px-2 py-1.5 text-sm', !disabled && 'hover:bg-(--color-bg-hover)')}
+    >
       <span className="min-w-0" style={{ color: checked ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
         {label}
       </span>
-    </label>
+    </RadioChoice>
   );
 }
 
@@ -103,28 +89,14 @@ export function DefaultModelScopeChoice({
         />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <label className={cn(
-          'rings-within flex items-center gap-2 rounded-md text-xs',
-          saving ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-        )}>
-          <input
-            type="checkbox"
-            checked={remember}
-            disabled={saving}
-            onChange={(e) => setRemember(e.target.checked)}
-            className="sr-only"
-          />
-          <span
-            aria-hidden="true"
-            className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border"
-            style={remember
-              ? { backgroundColor: 'var(--color-btn-primary-bg)', borderColor: 'var(--color-btn-primary-bg)' }
-              : { borderColor: 'var(--color-text-quaternary)' }}
-          >
-            {remember && <Check className="h-2.5 w-2.5" strokeWidth={3} style={{ color: 'var(--color-btn-primary-text)' }} />}
-          </span>
+        <CheckboxChoice
+          checked={remember}
+          disabled={saving}
+          onCheckedChange={setRemember}
+          className="items-center gap-2 rounded-md text-xs"
+        >
           <span style={{ color: 'var(--color-text-tertiary)' }}>{t('settings.defaultModelChange.remember')}</span>
-        </label>
+        </CheckboxChoice>
         <div className="flex items-center gap-1.5">
           <button
             type="button"

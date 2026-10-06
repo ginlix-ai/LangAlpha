@@ -4,6 +4,7 @@
 import { api } from '@/api/client';
 import { foldToolName } from '@/pages/ChatAgent/utils/directTools';
 import type { OrderAction, OrderMode } from '@/types/orders';
+import type { TradingLevel } from '@/types/api';
 
 //
 // Servers are installed on the account and selected per workspace: the
@@ -98,15 +99,16 @@ export interface McpOrderApproval {
   staged: boolean;
 }
 
-/** What a mode falls back to on a row nobody has set, mirroring the server's
- *  own defaults so the switch never draws a state the backend disagrees with. */
+/** The gate on a backend that predates the map: live orders and staged
+ *  instructions asked, paper did not. A current server always sends the
+ *  whole map, already folded under the trading permission. */
 export const ORDER_APPROVAL_DEFAULTS: Readonly<McpOrderApproval> = {
   live: true,
   paper: false,
   staged: true,
 };
 
-/** The gate as it stands, filling in whatever the row has never been asked. */
+/** The gate as it stands, filling in a map an older backend did not send. */
 export function orderApprovalOf(
   stored: McpOrderApproval | null | undefined,
 ): McpOrderApproval {
@@ -332,10 +334,16 @@ export interface CatalogServer {
    */
   probe_kicked_at?: string | null;
   binding_preset?: McpBindingPreset | null;
-  /** Whether an order stops for confirmation, per kind of order. Absent on a
-   *  backend that predates the map; `ORDER_APPROVAL_DEFAULTS` is the answer
-   *  then, and it is the answer for a key the row has never been asked. */
+  /** Whether an order stops for confirmation, per kind of order, with every
+   *  mode answered under `trading_permission`. Absent on a backend that
+   *  predates the map; `ORDER_APPROVAL_DEFAULTS` is the answer then. */
   order_approval?: McpOrderApproval;
+  /** The user's trading permission as it stood when this row was read. On the
+   *  row so its order switches are drawn from the same answer as the
+   *  `order_approval` the server folded with it, never from a second read
+   *  that may not have landed. Absent on a backend that predates the level;
+   *  the row then reads as the default. */
+  trading_permission?: TradingLevel;
   /** Host-side discovered tool count for the current config (OAuth servers). */
   tool_count?: number | null;
   /** Path on this origin to the mark the server declared in its handshake.
