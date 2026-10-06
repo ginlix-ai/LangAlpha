@@ -32,6 +32,7 @@ import { BrokerageConsentDialog } from './BrokerageConsentDialog';
 import { BrokerageRow } from './BrokerageRow';
 import { DesktopDownloadLink } from './DesktopDownloadLink';
 import { ServerDetail, type ServerDetailData } from './ServerDetail';
+import { TradingPermissionLine } from './TradingPermissionLine';
 
 /**
  * The Plugins → Brokerages tab: every broker this build ships, listed whether
@@ -286,6 +287,8 @@ export function Brokerages() {
           </>
         )}
       </p>
+
+      <TradingPermissionLine />
 
       {listError ? (
         <ListError>

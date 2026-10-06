@@ -77,6 +77,13 @@ vi.mock('@/lib/desktop', () => ({
   beginMcpOAuth: async () => undefined,
 }));
 
+let tradingLevel: string | undefined;
+vi.mock('@/hooks/useTradingPermission', () => ({
+  useTradingPermission: () => ({
+    data: tradingLevel ? { level: tradingLevel, agreement_version: 1 } : undefined,
+  }),
+}));
+
 const toggleBrokerage = vi.fn(async () => ({}));
 let shipped: Brokerage[] = [];
 let catalogServers: CatalogServer[] = [];
@@ -151,6 +158,7 @@ afterAll(() => {
 
 beforeEach(() => {
   shell = undefined;
+  tradingLevel = undefined;
   shipped = [RH, IBKR];
   catalogServers = [];
   toggleBrokerage.mockClear();
@@ -677,6 +685,16 @@ describe('the brokerages tab', () => {
       expect(startConnect).not.toHaveBeenCalled();
       expect(toggleBrokerage).not.toHaveBeenCalled();
       expect(screen.getByText('Needs the desktop app')).toBeInTheDocument();
+    });
+
+    it('names the trading permission and links to where it is changed', async () => {
+      tradingLevel = 'autonomous';
+      await renderTab();
+
+      expect(screen.getByText('Trading permission: Full autonomy')).toBeInTheDocument();
+      expect(
+        screen.getByRole('link', { name: 'Manage trading permission' }),
+      ).toHaveAttribute('href', '/settings?tab=preferences#trading-permission');
     });
 
     it('links to the download beside the note, without opening the row', async () => {

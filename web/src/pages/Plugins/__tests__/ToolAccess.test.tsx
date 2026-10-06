@@ -479,7 +479,7 @@ describe('the order gates under a trading permission', () => {
 
     expect(toggle).toHaveAttribute('aria-checked', 'false');
     expect(
-      screen.getByText(/Your trading permission lets the agent place live orders without asking/),
+      screen.getByText(/Your trading permission lets live orders go out without your approval/),
     ).toBeInTheDocument();
     fireEvent.click(toggle);
     await waitFor(() =>
