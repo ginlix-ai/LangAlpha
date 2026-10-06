@@ -813,11 +813,14 @@ async def set_binding(
         apply_consent_to_active_grants,
         lock_user_egress_state,
     )
+    from src.server.database.order_attempts import refuse_unasked_attempts
     from src.server.services.brokerage_capabilities import vendor_for_url
     from src.server.services.mcp_discovery import MAX_TOOLS_PER_SERVER
     from src.server.services.tool_binding import (
+        inputs_from_row,
         merge_overrides,
-        order_approval_overrides,
+        order_approval_refusal,
+        order_approval_to_store,
         strip_disallowed_overrides,
         validate_overrides,
     )
@@ -848,12 +851,19 @@ async def set_binding(
         # Merged under the same lock as the map, and for the same reason: the
         # body names the modes it changes, so a page flipping live cannot put
         # another tab's paper answer back to what this worker last read. Only
-        # the modes someone set are stored, so the rest follow their defaults.
+        # the modes someone set are stored, and live or staged only while they
+        # ask, so the rest follow the level.
         if body.order_approval is not None:
-            updates["order_approval"] = {
-                **order_approval_overrides(row.get("order_approval")),
-                **{k: bool(v) for k, v in body.order_approval.items()},
-            }
+            refusal = order_approval_refusal(
+                body.order_approval, inputs_from_row(row).trading
+            )
+            if refusal:
+                raise HTTPException(status_code=422, detail=refusal)
+            updates["order_approval"] = order_approval_to_store(
+                row.get("order_approval"), body.order_approval
+            )
+            if turned_on := [mode for mode, asks in body.order_approval.items() if asks]:
+                await refuse_unasked_attempts(user_id, turned_on, server=name, conn=db)
         # The relay dials streamable HTTP, so only an ``http`` row has an
         # address it can reach: a legacy ``sse`` row keeps its sandbox
         # discovery and never earns a grant, so no tool on it can take the

@@ -26,9 +26,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
+from src.server.database.mcp_config_version import bump_user_versions
 from src.server.database.mcp_oauth import SERVABLE, ConnectionStatus, get_connection
 from src.server.database.mcp_servers import (
-    bump_user_versions,
     claim_probe_kick,
     get_catalog_server,
 )

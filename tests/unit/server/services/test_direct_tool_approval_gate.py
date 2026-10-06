@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.server.services.egress.direct_tools import DirectMCPBinding
+from src.server.services.trading_permission import TRADING_AGREEMENT_VERSION
 
 MOOMOO_URL = "https://mcp.moomoo.com/mcp"
 HEADER_URL = "https://example.com/mcp"
@@ -19,6 +20,11 @@ def _row(url: str, **fields) -> dict:
     the relay dials streamable HTTP, so anything else clamps every tool back to
     the sandbox."""
     return {"transport": "http", "url": url, "enabled": True, **fields}
+
+
+def _level(level: str) -> dict:
+    """The trading permission columns the catalog read joins onto a row."""
+    return {"trading_level": level, "trading_agreement_version": TRADING_AGREEMENT_VERSION}
 
 
 def _connected(
@@ -118,13 +124,43 @@ async def test_a_paper_order_is_ungated_by_default_and_gated_when_asked(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_a_live_order_the_row_stopped_asking_about_is_not_refused(monkeypatch):
-    """Turning the mode's switch off is the one way to stop being asked, and
-    it has to reach the per-call re-read too, or the call the turn bound
-    ungated would be refused for not having been gated."""
-    _connected(monkeypatch, [], order_approval={"live": False})
+@pytest.mark.parametrize("level", ["plan_first", "autonomous"])
+async def test_a_live_order_the_trading_permission_stopped_asking_about_is_not_refused(
+    monkeypatch, level
+):
+    """A level that skips approval is the one way to stop being asked, and it
+    has to reach the per-call re-read too, or the call the turn bound ungated
+    would be refused for not having been gated."""
+    _connected(monkeypatch, [], **_level(level))
     binding = DirectMCPBinding(user_id="u1")
     assert await binding.check("moomoo", LIVE, False) is None
+
+
+@pytest.mark.asyncio
+async def test_lowering_the_trading_permission_mid_turn_refuses_the_ungated_call(
+    monkeypatch,
+):
+    """The turn bound the tool ungated under a level that has since been
+    lowered; a ``false`` the row still stores does not keep it ungated."""
+    _connected(
+        monkeypatch,
+        [],
+        order_approval={"live": False},
+        **_level("approve_each"),
+    )
+    binding = DirectMCPBinding(user_id="u1")
+    reason = await binding.check("moomoo", LIVE, False)
+    assert reason and "now needs your approval" in reason
+
+
+@pytest.mark.asyncio
+async def test_a_connection_can_keep_asking_under_a_level_that_does_not(monkeypatch):
+    _connected(
+        monkeypatch, [], order_approval={"live": True}, **_level("autonomous")
+    )
+    binding = DirectMCPBinding(user_id="u1")
+    reason = await binding.check("moomoo", LIVE, False)
+    assert reason and "now needs your approval" in reason
 
 
 @pytest.mark.asyncio

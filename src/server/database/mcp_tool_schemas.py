@@ -20,8 +20,8 @@ from typing import Any
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from src.server.database.mcp_config_version import bump_user_versions
 from src.server.database.mcp_oauth import SERVABLE_PARAM, ConnectionStatus
-from src.server.database.mcp_servers import bump_user_versions
 from src.server.database.pool import get_db_connection
 
 

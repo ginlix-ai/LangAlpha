@@ -6,7 +6,6 @@ import pytest
 
 from src.server.services.brokerage_capabilities import (
     ALL_BINDINGS,
-    ORDER_APPROVAL_DEFAULTS,
     _CURATION,
     _ORDER_TOOLS,
     GROUPS,
@@ -16,6 +15,10 @@ from src.server.services.brokerage_capabilities import (
     order_modes,
 )
 from src.server.services.egress import fold_tool_name
+from src.server.services.trading_permission import (
+    TRADING_AGREEMENT_VERSION,
+    TradingPermission,
+)
 from src.server.services.tool_binding import (
     BindingInputs,
     PRESET_PTC_ONLY,
@@ -47,6 +50,8 @@ PAPER_READ = "sim_trade_position_list"
 
 ASKS_ALL = {"live": True, "paper": True, "staged": True}
 ASKS_NOTHING = {"live": False, "paper": False, "staged": False}
+#: An untouched row under the default level: real money asks, paper does not.
+UNTOUCHED = {"live": True, "paper": False, "staged": True}
 
 
 def _answer(resolved) -> tuple[str, str, bool]:
@@ -119,7 +124,14 @@ def test_both_keeps_a_wrapper_and_a_json_tool():
 
 
 @pytest.mark.parametrize(
-    "approval", [None, ASKS_ALL, ASKS_NOTHING, {"live": False}, {"paper": True}]
+    "approval",
+    [
+        None,
+        ASKS_ALL,
+        ASKS_NOTHING,
+        {**UNTOUCHED, "live": False},
+        {**UNTOUCHED, "paper": True},
+    ],
 )
 @pytest.mark.parametrize("preset", [None, PRESET_PTC_ONLY])
 @pytest.mark.parametrize("stored", ["direct", "both", "ptc", None])
@@ -218,23 +230,29 @@ def test_the_write_path_refuses_an_order_override_off_the_direct_path(
     assert validate_overrides(MOOMOO, {PAPER_READ: stored}) is None
 
 
-def test_a_live_order_asks_and_only_the_row_switch_for_its_mode_stops_it():
-    """The gate rides on the order map and is keyed by mode, so a switch that
-    stops being asked about live orders leaves paper exactly where it was. The
-    binding is unaffected either way: the pin keeps the tool on the direct
-    path, so turning a switch off removes the stop without opening a sandbox
-    way around it."""
+def test_a_live_order_asks_and_at_a_level_that_skips_only_its_own_switch_stops_it():
+    """The gate rides on the order map and is keyed by mode, so at a level that
+    lets real money skip approval, a switch that stops asking about live orders
+    leaves paper exactly where it was. The binding is unaffected either way:
+    the pin keeps the tool on the direct path, so turning a switch off removes
+    the stop without opening a sandbox way around it."""
     plan = resolve_plan(MOOMOO, ALL, BindingInputs())
     live = frozenset(_CURATION[MOOMOO]["trading"])
     assert _asks(plan) == live
     assert _asks(plan) <= plan.direct
 
-    off = resolve_plan(MOOMOO, ALL, BindingInputs(order_approval={"live": False}))
+    off = resolve_plan(
+        MOOMOO,
+        ALL,
+        BindingInputs(
+            order_approval={**UNTOUCHED, "live": False}, trading=TradingPermission.PLAN_FIRST
+        ),
+    )
     assert _asks(off) == frozenset()
     assert off.direct == plan.direct
     assert off.sandbox_excluded == plan.sandbox_excluded
 
-    paper_on = resolve_plan(MOOMOO, ALL, BindingInputs(order_approval={"paper": True}))
+    paper_on = resolve_plan(MOOMOO, ALL, BindingInputs(order_approval={**UNTOUCHED, "paper": True}))
     assert _asks(paper_on) == live | frozenset(
         t for t, e in _ORDER_TOOLS[MOOMOO].items() if e.mode is OrderMode.PAPER
     )
@@ -260,36 +278,36 @@ def test_a_paper_order_is_direct_and_asks_only_when_the_row_says_so():
     assert "sim_trade_input_order" in plan.direct
     assert "sim_trade_input_order" in plan.sandbox_excluded
     assert "sim_trade_input_order" not in _asks(plan)
-    asked = resolve_plan(MOOMOO, ALL, BindingInputs(order_approval={"paper": True}))
+    asked = resolve_plan(MOOMOO, ALL, BindingInputs(order_approval={**UNTOUCHED, "paper": True}))
     assert "sim_trade_input_order" in _asks(asked)
 
 
 def test_a_staged_instruction_is_direct_and_asks_by_default():
     """IBKR calls an instruction not a live order, and it is not one, but it
-    is written into the real account. The mode asks by default and the row can
-    say otherwise; nothing on the row moves the binding."""
+    is written into the real account. The mode asks by default, and at a level
+    that skips approval the row can say otherwise; nothing on the row moves the
+    binding."""
     vendor, tool = STAGED_ORDER
     plan = resolve_plan(vendor, group_keys_for(vendor), BindingInputs())
     assert _answer(plan.by_tool[tool]) == ("direct", "policy", True)
     assert tool in _asks(plan) and tool in plan.sandbox_excluded
     off = resolve_plan(
-        vendor, group_keys_for(vendor), BindingInputs(order_approval={"staged": False})
+        vendor,
+        group_keys_for(vendor),
+        BindingInputs(
+            order_approval={**UNTOUCHED, "staged": False}, trading=TradingPermission.PLAN_FIRST
+        ),
     )
     assert _asks(off) == frozenset()
     assert off.direct == plan.direct
 
 
-def test_the_mode_defaults_are_what_each_order_tool_declares():
-    """One source for "what does this mode ask by default", so a row missing a
-    key and a tool whose vendor map names it cannot answer differently."""
-    assert set(ORDER_APPROVAL_DEFAULTS) == {m.value for m in OrderMode}
+def test_an_untouched_row_asks_for_real_money_and_not_for_paper():
     for vendor, tools in _ORDER_TOOLS.items():
         for tool, entry in tools.items():
-            assert ORDER_APPROVAL_DEFAULTS[entry.mode.value] is entry.approval, (
-                f"{vendor}.{tool}"
-            )
-            asked = order_policy(vendor, tool, order_approval={})
-            assert asked is not None and asked.approval is entry.approval
+            untouched = resolve_tool(vendor, tool, BindingInputs())
+            assert untouched.order is not None, f"{vendor}.{tool}"
+            assert untouched.order.approval is UNTOUCHED[entry.mode.value], f"{vendor}.{tool}"
 
 
 def test_only_the_modes_a_vendor_has_are_offered():
@@ -301,25 +319,109 @@ def test_only_the_modes_a_vendor_has_are_offered():
 
 
 class TestOrderApprovalMap:
-    """What the column holds, filled out from the mode defaults."""
+    """What the column holds, filled out under the user's level."""
 
-    def test_an_absent_column_is_every_mode_default(self):
-        assert order_approval_map(None) == ORDER_APPROVAL_DEFAULTS
-        assert inputs_from_row({}).order_approval == ORDER_APPROVAL_DEFAULTS
+    def test_an_absent_column_is_an_untouched_row(self):
+        assert order_approval_map(None) == UNTOUCHED
+        assert inputs_from_row({}).order_approval == UNTOUCHED
+        assert BindingInputs().order_approval == UNTOUCHED
 
     def test_the_boolean_the_column_used_to_hold_answers_for_live_alone(self):
-        assert order_approval_map(False) == {**ORDER_APPROVAL_DEFAULTS, "live": False}
-        assert order_approval_map(True) == ORDER_APPROVAL_DEFAULTS
-
-    def test_a_mode_the_map_does_not_name_keeps_its_default(self):
-        assert order_approval_map({"live": False}) == {
-            "live": False, "paper": False, "staged": True
+        skips = TradingPermission.AUTONOMOUS
+        assert order_approval_map(False, skips) == {
+            "live": False, "paper": False, "staged": False
+        }
+        assert order_approval_map(True, skips) == {
+            "live": True, "paper": False, "staged": False
         }
 
-    def test_a_key_nothing_declares_is_dropped(self):
-        assert order_approval_map({"live": True, "futures": True}) == (
-            ORDER_APPROVAL_DEFAULTS
+    def test_a_mode_the_map_does_not_name_keeps_its_default(self):
+        assert order_approval_map({"paper": True}) == {
+            "live": True, "paper": True, "staged": True
+        }
+
+    @pytest.mark.parametrize(
+        "level", [TradingPermission.NO_TRADING, TradingPermission.APPROVE_EACH]
+    )
+    def test_a_level_that_asks_holds_real_money_whatever_the_row_stored(self, level):
+        assert order_approval_map(
+            {"live": False, "staged": False, "paper": False}, level
+        ) == {"live": True, "paper": False, "staged": True}
+
+    @pytest.mark.parametrize(
+        "level", [TradingPermission.PLAN_FIRST, TradingPermission.AUTONOMOUS]
+    )
+    def test_a_level_that_skips_leaves_only_what_the_row_adds(self, level):
+        assert order_approval_map({}, level) == {
+            "live": False, "paper": False, "staged": False
+        }
+        assert order_approval_map({"staged": True, "paper": True}, level) == {
+            "live": False, "paper": True, "staged": True
+        }
+
+    def test_a_row_reads_its_owners_level_and_an_unjoined_row_asks(self):
+        row = {
+            "order_approval": {},
+            "trading_level": "autonomous",
+            "trading_agreement_version": TRADING_AGREEMENT_VERSION,
+        }
+        assert inputs_from_row(row).order_approval["live"] is False
+        assert inputs_from_row({"order_approval": {}}).order_approval["live"] is True
+        garbled = {**row, "trading_level": "yolo"}
+        assert inputs_from_row(garbled).order_approval["live"] is True
+
+    def test_a_catalog_row_accepted_under_a_stale_agreement_asks(self):
+        """The catalog read hands the joined level and agreement over raw, and
+        ``inputs_from_row`` is where they are judged: an acceptance of an
+        agreement that is no longer current grants nothing past approving
+        each order."""
+        from datetime import UTC, datetime
+
+        from src.server.database.mcp_servers import _catalog_row_to_dict
+
+        now = datetime.now(UTC)
+        raw = {
+            "user_mcp_server_id": "00000000-0000-0000-0000-000000000001",
+            "user_id": "u1",
+            "name": "moomoo",
+            "plugin_id": None,
+            "plugin_server_key": None,
+            "plugin_name": None,
+            "plugin_enabled": None,
+            "transport": "http",
+            "command": None,
+            "args": [],
+            "url": "https://mcp.moomoo.com/mcp",
+            "env": {},
+            "headers": {},
+            "description": "",
+            "instruction": "",
+            "tool_exposure_mode": "summary",
+            "discovery_uses_secrets": False,
+            "enabled": True,
+            "enabled_in_new_workspaces": True,
+            "tool_binding": {},
+            "binding_preset": None,
+            "order_approval": {},
+            "probe_kicked_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "trading_level": "autonomous",
+            "trading_agreement_version": TRADING_AGREEMENT_VERSION - 1,
+        }
+        stale = inputs_from_row(_catalog_row_to_dict(raw))
+        assert stale.trading is TradingPermission.APPROVE_EACH
+        assert stale.order_approval == UNTOUCHED
+        current = inputs_from_row(
+            _catalog_row_to_dict(
+                {**raw, "trading_agreement_version": TRADING_AGREEMENT_VERSION}
+            )
         )
+        assert current.trading is TradingPermission.AUTONOMOUS
+        assert current.order_approval == ASKS_NOTHING
+
+    def test_a_key_nothing_declares_is_dropped(self):
+        assert order_approval_map({"live": True, "futures": True}) == UNTOUCHED
 
     def test_overrides_hold_only_what_the_row_names(self):
         assert order_approval_overrides(None) == {}
@@ -336,11 +438,11 @@ def test_row_inputs_read_the_untouched_defaults():
     inputs = inputs_from_row(row)
     assert inputs.overrides == {"x": "direct"}
     assert inputs.preset is None
-    # Absent means the mode defaults: a row written before the column was a
-    # map is gated exactly where a fresh one is.
-    assert inputs.order_approval == ORDER_APPROVAL_DEFAULTS
+    # Absent means an untouched row: one written before the column was a map
+    # is gated exactly where a fresh one is.
+    assert inputs.order_approval == UNTOUCHED
     assert inputs_from_row({**row, "order_approval": {"paper": True}}).order_approval == (
-        {**ORDER_APPROVAL_DEFAULTS, "paper": True}
+        {**UNTOUCHED, "paper": True}
     )
 
 

@@ -49,9 +49,9 @@ from mcp.shared.auth import (
 
 from src.config.env import MCP_CLIENT_METADATA_URL
 from src.server.database.egress_grants import apply_consent_to_active_grants
+from src.server.database.mcp_config_version import bump_user_workspaces_mcp_version
 from src.server.database.mcp_oauth import Secrets, get_connection, upsert_connection
 from src.server.database.mcp_servers import (
-    bump_user_workspaces_mcp_version,
     get_catalog_server,
     list_catalog_servers,
 )

@@ -23,9 +23,12 @@ after we classified them is still reachable but cannot be bound past a policy
 that has never read it.
 
 Approval is a separate axis, not a rung. It rides on the order map rather than
-on the group, keyed by mode, and the row carries one switch per mode
-(``order_approval``): live orders and staged instructions ask by default, a
-simulated account does not.
+on the group, keyed by mode, and one rule answers it (``order_approval_map``):
+for live orders and staged instructions the user's trading permission decides
+and the row's per-mode switch (``order_approval``) can only add a question,
+while a simulated account asks only when its own switch does. Every catalog
+read joins the stored level onto the row, and ``inputs_from_row`` resolves it,
+once, beside the switches it governs.
 
 The preset has one value. A null preset is not a second setting but the
 absence of one: each group's own default applies, which is what the row does
@@ -42,9 +45,9 @@ from typing import Literal
 from src.server.services.brokerage_capabilities import (
     ALL_BINDINGS,
     BINDINGS,
-    ORDER_APPROVAL_DEFAULTS,
     Binding,
     CapabilityGroup,
+    OrderMode,
     OrderTool,
     curates,
     denied_tools,
@@ -54,6 +57,11 @@ from src.server.services.brokerage_capabilities import (
     tools_for,
 )
 from src.server.services.egress import fold_tool_name, folded_contains
+from src.server.services.trading_permission import (
+    DEFAULT_TRADING_PERMISSION,
+    TradingPermission,
+    effective_permission,
+)
 
 __all__ = [
     "ALL_BINDINGS",
@@ -65,11 +73,13 @@ __all__ = [
     "OrderPolicy",
     "PRESETS",
     "PRESET_PTC_ONLY",
+    "REAL_MONEY_MODES",
     "Resolved",
     "allowed_bindings",
     "inputs_from_row",
     "merge_overrides",
     "order_approval_map",
+    "order_approval_refusal",
     "order_payload",
     "order_policy",
     "resolve_plan",
@@ -92,9 +102,9 @@ class OrderPolicy:
     """What a call does to an order, and whether it stops for the user first.
 
     ``action`` and ``mode`` carry the vendor-neutral words the ledger, the tool
-    stamp and the tools page all read. ``approval`` is the row's answer for
-    that mode rather than the mode's own default, which is what an unset switch
-    resolves to.
+    stamp and the tools page all read. ``approval`` is the answer for that
+    mode under the row's switches and the user's level, as
+    ``order_approval_map`` resolved it.
     """
 
     action: str
@@ -146,11 +156,11 @@ class BindingInputs:
 
     overrides: Mapping[str, str] = field(default_factory=dict)
     preset: str | None = None
-    #: One switch per order mode. A mode the map does not name falls back to
-    #: that mode's own default, so a row written before a mode existed is
-    #: gated the way a fresh one is rather than silently ungated.
+    #: One answer per order mode, already resolved under ``trading`` by
+    #: ``order_approval_map``; the default is an untouched row's under the
+    #: default permission.
     order_approval: Mapping[str, bool] = field(
-        default_factory=lambda: dict(ORDER_APPROVAL_DEFAULTS)
+        default_factory=lambda: order_approval_map(None)
     )
     #: Whether the relay has an address to dial for this row at all. The relay
     #: dials streamable HTTP, so every other transport (stdio, which has no URL
@@ -158,6 +168,11 @@ class BindingInputs:
     #: direct path cannot exist for such a row however it or its group is
     #: configured.
     relayable: bool = True
+    #: The owner's trading permission, resolved from what the catalog read
+    #: joined on. Kept beside ``order_approval``, which is already resolved
+    #: under it, so a reader that names the level cannot pair it with another
+    #: read's switches.
+    trading: TradingPermission = DEFAULT_TRADING_PERMISSION
     folded_overrides: Mapping[str, str] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
@@ -176,10 +191,17 @@ def inputs_from_row(row: Mapping[str, object] | None) -> BindingInputs:
     if not row:
         return BindingInputs()
     overrides = row.get("tool_binding") or {}
+    # The one place the joined level is judged, so every reader of it, the
+    # catalog echo included, reads the answer the switches were resolved
+    # under. A row read without the join carries neither column, and asks.
+    trading = effective_permission(
+        row.get("trading_level"), row.get("trading_agreement_version")
+    )
     return BindingInputs(
         overrides=dict(overrides) if isinstance(overrides, Mapping) else {},
         preset=row.get("binding_preset") or None,  # type: ignore[arg-type]
-        order_approval=order_approval_map(row.get("order_approval")),
+        order_approval=order_approval_map(row.get("order_approval"), trading),
+        trading=trading,
         # ``http`` only: the relay dials streamable HTTP, so a legacy ``sse``
         # row keeps its sandbox discovery and never earns a grant, and a tool
         # bound direct on one would vanish from both agents.
@@ -187,27 +209,93 @@ def inputs_from_row(row: Mapping[str, object] | None) -> BindingInputs:
     )
 
 
-def order_approval_map(stored: object) -> dict[str, bool]:
-    """A row's per-mode approval switches, filled out from the mode defaults."""
-    return {**ORDER_APPROVAL_DEFAULTS, **order_approval_overrides(stored)}
+#: The modes the user's trading permission speaks for. Paper spends nothing,
+#: so its switch is the connection's alone at every level.
+REAL_MONEY_MODES = tuple(m.value for m in OrderMode if m is not OrderMode.PAPER)
+
+
+def order_approval_map(
+    stored: object, trading: TradingPermission = DEFAULT_TRADING_PERMISSION
+) -> dict[str, bool]:
+    """A row's per-mode approval switches as they hold under the user's level.
+
+    For live orders and staged instructions the level answers first. One that
+    asks holds both on whatever the row stored, and one that skips approval
+    leaves them off unless the row asks for this connection. So a connection's
+    switch can add a question but never take one away: only the agreement
+    behind the level does that, and a ``false`` stored before the level
+    existed no longer lets an order through unasked. Paper asks only when its
+    own switch does.
+    """
+    overrides = order_approval_overrides(stored)
+    return {
+        mode: (trading.asks and mode in REAL_MONEY_MODES)
+        or overrides.get(mode, False)
+        for mode in (m.value for m in OrderMode)
+    }
+
+
+def order_approval_refusal(
+    changes: Mapping[str, bool], trading: TradingPermission
+) -> str | None:
+    """Why a change to a row's approval switches cannot be stored, or None.
+
+    Turning a switch on is always allowed, since it can only add a question.
+    Turning live or staged off is refused while the level asks: taking a
+    question away from real money is the trading permission's to do, behind
+    its agreement.
+    """
+    if not trading.asks:
+        return None
+    unasked = sorted(
+        mode for mode, asks in changes.items() if mode in REAL_MONEY_MODES and not asks
+    )
+    if not unasked:
+        return None
+    return (
+        f"{', '.join(unasked)} orders ask under your trading permission; "
+        "change it in Settings to let them run without asking"
+    )
 
 
 def order_approval_overrides(stored: object) -> dict[str, bool]:
-    """The modes a row answers for itself, and nothing a default decides.
+    """The modes a row answers for itself, and nothing the rule fills in.
 
     ``stored`` is whatever the column holds: the map, nothing at all, or the
     single boolean rows carried before the modes were split apart, which reads
-    as the answer for live orders alone. This is what a write stores back, so a
-    later change to a default reaches every row that never set that mode.
+    as the answer for live orders alone. This is what a write merges onto, so a
+    mode the row never set keeps following the level rather than a value
+    nobody chose.
     """
     if isinstance(stored, bool):
         return {"live": stored}
     if not isinstance(stored, Mapping):
         return {}
     return {
-        mode: bool(stored[mode])
-        for mode in ORDER_APPROVAL_DEFAULTS
-        if stored.get(mode) is not None
+        mode.value: bool(stored[mode.value])
+        for mode in OrderMode
+        if stored.get(mode.value) is not None
+    }
+
+
+def order_approval_to_store(
+    stored: object, changes: Mapping[str, bool]
+) -> dict[str, bool]:
+    """The map a write stores once ``changes`` land on ``stored``.
+
+    A live or staged switch is kept only while it asks. Off is what the level
+    answers anyway, and a build from before the level reads a stored ``false``
+    as never asking, so a rollback, or the old build finishing its turns during
+    a deploy, would send those orders unasked.
+    """
+    merged = {
+        **order_approval_overrides(stored),
+        **{k: bool(v) for k, v in changes.items()},
+    }
+    return {
+        mode: asks
+        for mode, asks in merged.items()
+        if asks or mode not in REAL_MONEY_MODES
     }
 
 
@@ -256,12 +344,10 @@ def _policy(
 ) -> OrderPolicy | None:
     if entry is None:
         return None
-    asked = order_approval.get(entry.mode.value)
-    return OrderPolicy(
-        entry.action.value,
-        entry.mode.value,
-        entry.approval if asked is None else bool(asked),
-    )
+    # Indexed: every map here came out of ``order_approval_map``, which
+    # answers for each mode.
+    mode = entry.mode.value
+    return OrderPolicy(entry.action.value, mode, order_approval[mode])
 
 
 def order_policy(

@@ -2252,7 +2252,7 @@ def disconnect_db(monkeypatch) -> FakeDisconnectDb:
         fake.write("purge_user_tier_only"),
     )
     monkeypatch.setattr(
-        "src.server.database.mcp_servers.bump_user_workspaces_mcp_version",
+        "src.server.database.mcp_config_version.bump_user_workspaces_mcp_version",
         fake.write("bump_versions"),
     )
     return fake

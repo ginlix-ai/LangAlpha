@@ -533,13 +533,6 @@ class OrderMode(StrEnum):
     STAGED = "staged"
 
 
-#: What each mode asks for when a row says nothing. Live money and a write into
-#: the real account stop for the user; a simulated account does not.
-ORDER_APPROVAL_DEFAULTS: dict[str, bool] = {
-    mode.value: mode is not OrderMode.PAPER for mode in OrderMode
-}
-
-
 @dataclass(frozen=True)
 class OrderTool:
     """One order-mutating tool, as the gate and the vendor adapter both read it.
@@ -553,14 +546,6 @@ class OrderTool:
     mode: OrderMode
     asset_class: AssetClass = "other"
 
-    @property
-    def approval(self) -> bool:
-        """The default for the mode rather than the setting in force.
-
-        A connection carries its own per-mode map, and this is what an absent
-        key there resolves to.
-        """
-        return ORDER_APPROVAL_DEFAULTS[self.mode.value]
 
 # Vendor names verbatim, the spelling the relay compares against. Every name
 # here is also in ``_CURATION`` under a rung group, which is what keeps consent
