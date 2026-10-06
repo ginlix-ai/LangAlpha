@@ -945,20 +945,23 @@ async def get_workspace_names(
 ) -> Dict[str, str]:
     """Name by canonical id of the user's live workspaces, the flash one
     aside, in name order: all of them, or those of ``workspace_ids``."""
-    params: tuple[Any, ...] = (user_id,)
+    params: dict[str, Any] = {"user_id": user_id, "flash_id": get_flash_workspace_id(user_id)}
     only = ""
     if workspace_ids is not None:
         ids = sorted({n for w in workspace_ids if (n := normalize_uuid(w))})
         if not ids:
             return {}
-        params, only = (user_id, ids), "AND workspace_id = ANY(%s::uuid[])"
+        params["ids"] = ids
+        only = "AND workspace_id = ANY(%(ids)s::uuid[])"
     async with _ws_cursor() as cur:
+        # The flash row by its id too: bound as Home it reads its computer's status.
         await cur.execute(
             f"""
             SELECT workspace_id, name
             FROM workspaces
-            WHERE user_id = %s {only}
+            WHERE user_id = %(user_id)s {only}
               AND status NOT IN ('deleted', 'flash')
+              AND workspace_id <> %(flash_id)s
             ORDER BY name, workspace_id
             """,
             params,
