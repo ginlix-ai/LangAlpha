@@ -348,21 +348,23 @@ class TestWorkspaceNames:
         ]
 
     async def test_home_bound_to_a_computer_stays_out(
-        self, seed_user, patched_get_db_connection
+        self, seed_user, patched_get_db_connection, test_db_pool
     ):
         """Bound as Home, the flash row takes its computer's status, so only its
         id still marks it."""
-        from src.server.database.home_workspace import get_flash_workspace_id
         from src.server.database.workspace import (
             create_workspace,
+            get_or_create_flash_workspace,
             get_workspace_names,
         )
 
         owner = seed_user["user_id"]
-        home = get_flash_workspace_id(owner)
-        await create_workspace(
-            user_id=owner, name="Home", status="running", workspace_id=home
-        )
+        home = str((await get_or_create_flash_workspace(owner))["workspace_id"])
+        async with test_db_pool.connection() as conn:
+            await conn.execute(
+                "UPDATE workspaces SET status = 'running' WHERE workspace_id = %s",
+                (home,),
+            )
         beta = await create_workspace(user_id=owner, name="Beta", status="running")
 
         assert await get_workspace_names(owner) == {str(beta["workspace_id"]): "Beta"}
