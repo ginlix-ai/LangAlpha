@@ -8,7 +8,8 @@ import { attachmentsToContexts, widgetSnapshotsToContexts } from '../../ChatAgen
 import { warmWorkspace } from '../../ChatAgent/utils/warmWorkspace';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { FLASH_ROUTE_STATE, flashWorkspaceQuery } from '@/hooks/useFlashWorkspace';
-import { useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
+import { ALL_WORKSPACES_AGENT, useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
+import { featuresQuery, isFeatureEnabled } from '@/hooks/useFeatures';
 import { ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '../widgets/framework/contextSnapshot';
 
@@ -166,15 +167,21 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
         }
       }
 
+      // Until the flags answer, the composer shows Flash's controls. A send
+      // made then waits for them, so it goes to the user's default rather
+      // than where those point; a read that fails leaves the flag off, as the
+      // controls show.
+      const flags = await queryClient.ensureQueryData(featuresQuery).catch(() => undefined);
+      const onAllWorkspaces = isFeatureEnabled(flags, ALL_WORKSPACES_AGENT);
       // The flash row is Home under the all-workspaces agent, which runs the
       // full agent, so the Subagents pick rides there as to any workspace. A
       // Flash composer names none.
-      const toFlashRow = allWorkspaces ? scope === 'all' : mode === 'fast';
+      const toFlashRow = onAllWorkspaces ? scope === 'all' : mode === 'fast';
       const workspaceId = toFlashRow
         ? (await queryClient.ensureQueryData(flashWorkspaceQuery(queryClient))).workspace_id
         : selectedWorkspaceId;
       if (!workspaceId) {
-        toast(allWorkspaces
+        toast(onAllWorkspaces
           ? { variant: 'destructive', title: t('agents.workspaceRequired') }
           : {
             variant: 'destructive',
