@@ -86,7 +86,7 @@ Key information to capture:
    - Conclusions reached from analysis
    - URLs crawled, APIs used, files created
 
-4. **Decisions**: Any methodology choices or user preferences that affect ongoing work.
+4. **Decisions and Instructions**: Methodology choices that affect ongoing work, and every instruction the user gave beyond the task itself, such as how to work, what to deliver or how to present it. Keep each in the user's words, whichever turn it came from, unless a later message replaced it.
 
 5. **Skills and Procedures**: If the work follows a skill (its instructions arrived in a `<loaded-skill name="...">` block, a LoadSkill result, or a SKILL.md that was read) or another multi-step procedure, name it exactly as it was loaded, the stage reached, and the next step. Do not list or paraphrase its steps, not even in short: the skill is loaded again to read them.
 
