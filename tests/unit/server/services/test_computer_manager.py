@@ -2249,12 +2249,44 @@ class TestJoiningARunningMachine(_Base):
         recover.assert_not_awaited()
         assert session.initialize.await_args.kwargs["sandbox_id"] == "sandbox-live"
 
+    @staticmethod
+    @contextmanager
+    def _rereading(workspace, *, computer_ref, workspace_ref):
+        """The rows read again under the lock, the refs from one statement."""
+        with (
+            patch(
+                f"{_LIFECYCLE}.db_get_workspace_identity",
+                AsyncMock(
+                    return_value={
+                        "status": "running",
+                        "sandbox_id": workspace_ref,
+                        "provider_ref": computer_ref,
+                        "computer_status": "running",
+                    }
+                ),
+            ),
+            patch(
+                f"{_LIFECYCLE}.get_computer",
+                AsyncMock(
+                    return_value=_make_computer(
+                        status="running", provider_ref=computer_ref
+                    )
+                ),
+            ),
+            patch(
+                f"{_LIFECYCLE}.db_get_workspace",
+                AsyncMock(return_value={**workspace, "sandbox_id": workspace_ref}),
+            ),
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_a_project_naming_another_sandbox_is_still_a_split(self):
         """Two non-null ids is the disagreement neither table can settle, and
         the losing bind's own sandbox is already deleted."""
         manager = _make_manager()
         recovered = _make_session()
+        handle = _make_session()
         workspace = {
             "workspace_id": "ws-new",
             "sandbox_id": "sandbox-other",
@@ -2263,8 +2295,8 @@ class TestJoiningARunningMachine(_Base):
         }
 
         with (
-            patch.object(manager, "_session_handle", return_value=_make_session()),
-            patch.object(manager, "_clear_session", AsyncMock()),
+            patch.object(manager, "_session_handle", return_value=handle),
+            patch.object(manager, "_clear_session", AsyncMock()) as clear,
             patch.object(
                 manager, "_recover_sandbox", AsyncMock(return_value=recovered)
             ) as recover,
@@ -2272,6 +2304,9 @@ class TestJoiningARunningMachine(_Base):
                 f"{_LIFECYCLE}.adopt_computer_sandbox_into_workspaces",
                 AsyncMock(),
             ) as adopt,
+            self._rereading(
+                workspace, computer_ref="sandbox-live", workspace_ref="sandbox-other"
+            ),
         ):
             got, did_init = await manager._attach_running_session(
                 self._running_binding(), workspace, "user-1", None, lambda _p: None
@@ -2279,7 +2314,47 @@ class TestJoiningARunningMachine(_Base):
 
         assert got is recovered and did_init is True
         recover.assert_awaited_once()
+        # The rebuild is fenced on the ref read now, not the one the binding
+        # was resolved with.
+        assert recover.await_args.args[0].provider_ref == "sandbox-live"
+        clear.assert_awaited_once_with("comp-1", evict_session=handle)
         adopt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_bind_landing_after_the_binding_was_resolved_is_not_a_split(self):
+        """The binding is read before the machine lock and the row under it, so
+        a recover's bind between the two reads shows the old ref beside the new
+        one. Rebuilding on that made a sandbox the bind fence refused, and on
+        the worker that recovered it tore down the sandbox just bound."""
+        manager = _make_manager()
+        session = _make_session()
+        session.sandbox.sandbox_id = "sandbox-new"
+        workspace = {
+            "workspace_id": "ws-new",
+            "sandbox_id": "sandbox-new",
+            "status": "running",
+            "computer_id": "comp-1",
+        }
+
+        with (
+            patch.object(manager, "_session_handle", return_value=session),
+            patch.object(manager, "_clear_session", AsyncMock()) as clear,
+            patch.object(manager, "_recover_sandbox", AsyncMock()) as recover,
+            self._rereading(
+                workspace, computer_ref="sandbox-new", workspace_ref="sandbox-new"
+            ),
+        ):
+            got, did_init = await manager._attach_running_session(
+                _make_binding("ws-new", provider_ref="sandbox-old"),
+                workspace,
+                "user-1",
+                None,
+                lambda _p: None,
+            )
+
+        assert got is session and did_init is False
+        recover.assert_not_awaited()
+        clear.assert_not_awaited()
 
     def test_a_cached_handle_is_not_stale_merely_for_an_unbound_row(self):
         """The warm path retires on it once, when the row is repaired; reading
@@ -2981,7 +3056,8 @@ class TestReviewProviderAndCapacityRegressions(_Base):
             patch.object(manager, '_assert_machine_disk_fits', AsyncMock()) as disk,
         ):
             assert await manager._entitled_tier(binding, 'user-1') == 'standard'
-            disk.assert_awaited_once_with('comp-1', 8)
+            # Measured on the mirror before the backup, and again after it.
+            assert [c.args for c in disk.await_args_list] == [('comp-1', 8)] * 2
 
 
 @pytest.mark.asyncio

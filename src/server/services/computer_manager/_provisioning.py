@@ -568,7 +568,9 @@ class ProvisioningMixin:
         # Warm-path recovery may lack user_id. Use the NOT NULL row owner or
         # provisioning resolves the owner's MCP/OAuth tier as empty.
         user_id = user_id or (workspace or {}).get("user_id")
-        tier = await self._entitled_tier(binding, user_id)
+        # The sandbox being replaced is gone or about to be, so the mirror is
+        # what the new one restores from and what its tier has to fit.
+        tier = await self._entitled_tier(binding, user_id, mirror_only=True)
         always_on = await self._entitled_always_on(binding, user_id)
         auto_stop_minutes = 0 if always_on else None
 
@@ -659,6 +661,21 @@ class ProvisioningMixin:
                 f"Skipping file backup for {workspace_id}: no attached session "
                 "on this worker"
             )
+            return False
+
+        # A lazy start names its sandbox at once and attaches the runtime only
+        # when the start lands, so the id check below passes on a handle nothing
+        # can run on yet. The start never takes the machine lock, so a caller
+        # holding it can wait, and a failed start surfaces as its own error.
+        try:
+            await session.sandbox.ensure_sandbox_ready()
+        except Exception as e:
+            message = f"Sandbox for workspace {workspace_id} is not ready to back up: {e}"
+            if strict:
+                raise BackupIncomplete(
+                    f"{message}; aborting before sandbox teardown"
+                ) from e
+            logger.warning(message)
             return False
 
         if expected_sandbox_id is None:

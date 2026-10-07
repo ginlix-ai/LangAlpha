@@ -41,6 +41,7 @@ from ptc_agent.core.sandbox._shared import (
 )
 from ptc_agent.core.sandbox.wsfiles_transfer_runtime import RESULT_MARKER
 from ptc_agent.core.sandbox.retry import RetryPolicy
+from ptc_agent.core.sandbox.runtime import SandboxTransientError
 from src.server.database.blob_keys import INLINE_MAX_BYTES, RELAY_MAX_BYTES
 from src.utils.storage import get_blob_transfer_mode
 
@@ -425,6 +426,11 @@ async def run_transfer_op(
     """
     script = _script_path(sandbox)
     runtime = sandbox.runtime
+    if runtime is None:
+        # A lazy start names its sandbox before the runtime that reaches it is
+        # attached. Typed, so a caller that did not wait for readiness meets a
+        # sandbox condition rather than an AttributeError the funnel calls a bug.
+        raise SandboxTransientError("Sandbox runtime is not attached yet")
     payload = json.dumps(spec, separators=(",", ":")).encode("utf-8")
     encoded = base64.b64encode(payload).decode("ascii")
     started = time.monotonic()

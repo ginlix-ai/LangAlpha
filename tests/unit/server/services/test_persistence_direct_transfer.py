@@ -608,6 +608,19 @@ async def test_transfer_op_without_a_result_line_is_a_runtime_error():
         await transfer.run_transfer_op(sandbox, "scan", {"root": "/home/workspace"}, timeout_s=30)
 
 
+@pytest.mark.asyncio
+async def test_transfer_op_on_an_unattached_runtime_is_a_sandbox_error():
+    """A lazy start names its sandbox before attaching the runtime; reaching
+    it then raised an AttributeError, which the error funnel calls a bug."""
+    from ptc_agent.core.sandbox.runtime import SandboxTransientError
+    from src.server.services.persistence import transfer
+
+    sandbox = _exec_sandbox()
+    sandbox.runtime = None
+    with pytest.raises(SandboxTransientError):
+        await transfer.run_transfer_op(sandbox, "scan", {"root": "/home/workspace"}, timeout_s=30)
+
+
 # --- multipart assembly -------------------------------------------------------
 
 _SHA = "a" * 64

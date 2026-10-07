@@ -34,6 +34,7 @@ from src.server.database.computer import (
 from src.server.database.workspace import (
     adopt_computer_sandbox_into_workspaces,
     get_workspace as db_get_workspace,
+    get_workspace_identity as db_get_workspace_identity,
     SandboxIdentityLostError,
     update_workspace_activity,
     update_workspace_status,
@@ -917,6 +918,31 @@ class SessionLifecycleMixin:
             f"Computer {computer_id} changed while finishing its start"
         )
 
+    async def _reread_suspected_split(
+        self, binding: ComputerBinding
+    ) -> tuple[ComputerBinding, Dict[str, Any]]:
+        """Read both rows again, taking the two refs from one statement.
+
+        The binding is resolved before the machine lock and the row under it,
+        so a recover's bind landing between the reads looks like a split, and
+        rebuilding on it makes a sandbox the bind fence refuses. Any two
+        separate reads can straddle a bind the same way, so only the joined
+        identity read decides the refs; the full rows supply the rest."""
+        workspace_id = binding.workspace_id
+        identity = await db_get_workspace_identity(workspace_id)
+        computer = await get_computer(binding.computer_id)
+        row = await db_get_workspace(workspace_id)
+        if identity is None or computer is None or row is None:
+            raise SandboxTransientError(
+                f"Workspace {workspace_id} or its computer went away while attaching"
+            )
+        fresh = replace(
+            self._binding_from_computer(workspace_id, computer),
+            dir_name=binding.dir_name,
+            provider_ref=identity.get("provider_ref"),
+        )
+        return fresh, {**row, "sandbox_id": identity.get("sandbox_id")}
+
     async def _attach_running_session(
         self,
         binding: ComputerBinding,
@@ -930,13 +956,21 @@ class SessionLifecycleMixin:
         A false did_init requires Phase 2 sync of the already-initialized session."""
         workspace_id = binding.workspace_id
         computer_id = binding.computer_id
+        # Ahead of the handle, which takes its tier from the binding.
+        sandbox_id = workspace.get("sandbox_id")
+        if (
+            binding.provider_ref is not None
+            and sandbox_id is not None
+            and binding.provider_ref != sandbox_id
+        ):
+            binding, workspace = await self._reread_suspected_split(binding)
+            sandbox_id = workspace.get("sandbox_id")
         core_config = self._core_config_for(binding)
         session = self._session_handle(binding, core_config)
         did_init = False
 
         # A joining project with no ref adopts its running machine's ref; rebuilding
         # would disrupt siblings already using that sandbox.
-        sandbox_id = workspace.get("sandbox_id")
         if sandbox_id is None and binding.provider_ref is not None:
             await adopt_computer_sandbox_into_workspaces(computer_id)
             sandbox_id = binding.provider_ref
@@ -951,7 +985,9 @@ class SessionLifecycleMixin:
                 "recreating the sandbox",
                 extra={"workspace_id": workspace_id},
             )
-            await self._clear_session(computer_id)
+            # A recover outside the machine lock (a tier reclaim, a spec change)
+            # can publish its session while this cleanup awaits.
+            await self._clear_session(computer_id, evict_session=session)
             recovered = await self._recover_sandbox(
                 binding, workspace_user_id, core_config
             )

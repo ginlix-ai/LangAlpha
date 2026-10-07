@@ -1060,6 +1060,51 @@ class TestBackupFilesStrict:
 
     @pytest.mark.asyncio
     @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_lazy_start_is_waited_out_before_the_sync(self, mock_file_svc):
+        """A lazy start names its sandbox before attaching the runtime, so the
+        identity check alone let the sync reach a runtime that was still None."""
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        session = _make_mock_session()
+        session.sandbox.runtime = None
+
+        async def start_lands():
+            session.sandbox.runtime = MagicMock()
+
+        session.sandbox.ensure_sandbox_ready = AsyncMock(side_effect=start_lands)
+        wm._machine(_STUB_COMPUTER_ID).session = session
+
+        async def sync(_workspace_id, sandbox, **_kw):
+            assert sandbox.runtime is not None
+            return SyncResult(synced=1)
+
+        mock_file_svc.sync_to_db = AsyncMock(side_effect=sync)
+
+        with _patch_backup_identity():
+            assert await self._backup(wm, ws_id, strict=True) is True
+        mock_file_svc.sync_to_db.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_failed_lazy_start_is_reported_without_a_sync(self, mock_file_svc):
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        session = _make_mock_session()
+        session.sandbox.runtime = None
+        session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError("sandbox-abc", "not found")
+        )
+        wm._machine(_STUB_COMPUTER_ID).session = session
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_backup_identity():
+            assert await self._backup(wm, ws_id) is False
+            with pytest.raises(BackupIncomplete, match="not ready"):
+                await self._backup(wm, ws_id, strict=True)
+        mock_file_svc.sync_to_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
     async def test_default_stays_best_effort(self, mock_file_svc):
         wm = WorkspaceManager(_make_config())
         ws_id = str(uuid.uuid4())
@@ -4249,7 +4294,8 @@ class TestEntitledTier:
             binding.computer_id, strict=True, expected_sandbox_id=binding.provider_ref, session=session,
         )
         write.assert_not_awaited()
-        manager._assert_machine_disk_fits.assert_not_awaited()
+        # Only the mirror's measurement ahead of the backup ran.
+        manager._assert_machine_disk_fits.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lost_but_files_overflow_keeps_size(self):
