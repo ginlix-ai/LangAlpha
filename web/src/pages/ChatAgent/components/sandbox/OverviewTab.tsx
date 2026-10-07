@@ -193,6 +193,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
             <button
               onClick={() => onStartStop('archive')}
               disabled={isTransitioning}
+              data-computer-power
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
               style={{ color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border-muted)' }}
             >
@@ -204,6 +205,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
             <button
               onClick={() => onStartStop('stop')}
               disabled={isTransitioning}
+              data-computer-power
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
               style={{ color: 'var(--color-loss)', border: '1px solid var(--color-border-loss)' }}
             >
@@ -214,6 +216,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
             <button
               onClick={() => onStartStop('start')}
               disabled={isTransitioning}
+              data-computer-power
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
               style={{ color: 'var(--color-profit)', border: '1px solid var(--color-profit-border)' }}
             >

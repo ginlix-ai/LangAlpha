@@ -18,6 +18,7 @@ import { AUTH_BROADCAST_CHANNEL, type AuthBroadcastMessage } from './lib/oauthPo
 import { inAppPath } from './lib/inAppPath';
 import { OnboardingProvider, OnboardingHostGate } from './pages/Onboarding';
 import { ThreadLifecycleFeed } from './lib/threadLifecycle/ThreadLifecycleFeed';
+import { WarmHome } from './components/WarmHome';
 import { markBooted, watchStaleBuild } from './lib/staleBuild';
 import { lazyWithMotion } from './lib/lazyWithMotion';
 import './App.css';
@@ -288,6 +289,7 @@ function AuthenticatedShell() {
   return (
     <OnboardingProvider>
       <ThreadLifecycleFeed />
+      <WarmHome />
       <div className="app-layout">
         {!isMobile && (
           <AppSidebar

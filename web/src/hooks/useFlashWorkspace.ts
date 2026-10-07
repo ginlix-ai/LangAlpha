@@ -28,6 +28,9 @@ export function flashWorkspaceQuery(queryClient: QueryClient) {
     // first start or turn, which re-read them into the detail query; read
     // them there.
     staleTime: Infinity,
+    // Kept with no reader too, since the app shell reads it only on a click:
+    // a fetch on an empty cache counts as the first and refetches the catalog.
+    gcTime: Infinity,
   });
 }
 
