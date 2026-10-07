@@ -166,9 +166,11 @@ it). `channels.json` is the user's settings and `available.json` the choices the
 gateway holds both, with the same two headers:
 
 - `GET {base}/agent/settings` answers `{"version", "settings"}`. `settings` has `default`
-  (`mode`, `workspace_id`) and one key per linked app: `preferred` (an address, or null for the
-  user's direct messages), `chats` (address → `mode`, `workspace_id`, `workspace`, `name`),
+  (`workspace_id`, `workspace`) and one key per linked app: `preferred` (an address, or null for
+  the user's direct messages), `chats` (address → `workspace_id`, `workspace`, `name`),
   `automation_output` (workspace id → address) and `agent_messages` (`enabled`, `allowed`). A
+  binding's `workspace_id` is null for All workspaces, where the Chief of Staff answers, or a
+  workspace, where its Analyst answers; a chat with no entry in `chats` follows `default`. A
   preferred chat counts as allowed, and `name` is the gateway's read-only label.
 - `PUT {base}/agent/settings` takes `{"version", "settings"}` and answers 200
   `{"version", "settings", "changes"}`, 409 `{"code": "version_conflict"}` when the settings moved
@@ -176,10 +178,10 @@ gateway holds both, with the same two headers:
   `{"code": "unavailable", "message"}`. A 503 whose `applied` lists change lines saved those and
   not the rest: langalpha reports them with the message and drops the agent's Read, so it reads
   the file again before retrying. langalpha checks the shape first (`default` is an object, never
-  null) and that every workspace id the save sets or moves (in `default`, `chats` and the
-  `automation_output` keys) is one of the user's non-flash workspaces; an id the settings already
-  hold at that place passes as it is, so a binding left on a deleted workspace doesn't block other
-  edits. It fills each binding's `workspace` with that workspace's name, null when it no longer
+  null, and every binding has a `workspace_id`) and that every workspace id the save sets or
+  moves (in `default`, `chats` and the `automation_output` keys) is one of the user's workspaces,
+  never Home; an id the settings already hold at that place passes as it is, so a binding left
+  on a deleted workspace doesn't block other edits. It fills each binding's `workspace` with that workspace's name, null when it no longer
   exists. On a read it renders the names from its own workspaces, since the gateway's copy may be
   stale. A key it doesn't model goes to the gateway as written, at every level: the gateway owns
   the schema, so it refuses a key it doesn't know with a 400 problem naming that field.

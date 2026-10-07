@@ -39,7 +39,8 @@ GATEWAY = "http://gateway.test/api/prefix"
 
 RESEARCH = "9f2c0000-0000-4000-8000-000000000001"
 MACRO = "9f2c0000-0000-4000-8000-000000000002"
-FLASH = "9f2c0000-0000-4000-8000-000000000003"
+# The user's Home, which langalpha's table leaves out of their workspaces.
+HOME = "9f2c0000-0000-4000-8000-000000000003"
 STRANGERS = "9f2c0000-0000-4000-8000-000000000004"
 # One of the user's workspaces, since deleted.
 GONE = "9f2c0000-0000-4000-8000-000000000005"
@@ -47,12 +48,11 @@ GONE = "9f2c0000-0000-4000-8000-000000000005"
 NAMES = {RESEARCH: "Research", MACRO: "Macro"}
 
 SETTINGS = {
-    "default": {"mode": "ptc", "workspace_id": RESEARCH},
+    "default": {"workspace_id": RESEARCH},
     "slack": {
         "preferred": "slack:T1/C0456",
         "chats": {
             "slack:T1/C0456": {
-                "mode": "ptc",
                 "workspace_id": RESEARCH,
                 "workspace": "Old name",
                 "name": "#research",
@@ -146,7 +146,7 @@ def gateway(monkeypatch):
 
 @pytest.fixture
 def names(monkeypatch) -> AsyncMock:
-    """langalpha's workspaces table: the user's live, non-flash ones."""
+    """langalpha's workspaces table: the user's live ones, Home aside."""
 
     async def get_workspace_names(user_id, workspace_ids=None):
         assert user_id == USER
@@ -222,16 +222,25 @@ class TestRead:
         chat = settings["slack"]["chats"]["slack:T1/C0456"]
         # The gateway's copy said "Old name"; the table says "Research".
         assert chat == {
-            "mode": "ptc",
             "workspace_id": RESEARCH,
             "workspace": "Research",
             "name": "#research",
         }
-        assert list(chat) == ["mode", "workspace_id", "workspace", "name"]
-        assert settings["default"] == {
-            "mode": "ptc",
-            "workspace_id": RESEARCH,
-            "workspace": "Research",
+        assert list(chat) == ["workspace_id", "workspace", "name"]
+        assert settings["default"] == {"workspace_id": RESEARCH, "workspace": "Research"}
+
+    @pytest.mark.asyncio
+    async def test_all_workspaces_reads_with_no_workspace(self, backend, gateway):
+        gateway.settings["default"] = {"workspace_id": None}
+        gateway.settings["slack"]["chats"]["slack:T1/C0456"]["workspace_id"] = None
+
+        settings = await _read(backend)
+
+        assert settings["default"] == {"workspace_id": None, "workspace": None}
+        assert settings["slack"]["chats"]["slack:T1/C0456"] == {
+            "workspace_id": None,
+            "workspace": None,
+            "name": "#research",
         }
 
     @pytest.mark.asyncio
@@ -294,9 +303,9 @@ class TestSave:
         def change(settings):
             _prefer_macro(settings)
             settings["slack"]["chats"]["slack:T1/C0789"] = {
-                "mode": "ptc",
                 "workspace_id": MACRO.upper(),
             }
+            settings["slack"]["chats"]["slack:T1/C0999"] = {"workspace_id": None}
 
         message = await _write(backend, change)
 
@@ -304,26 +313,16 @@ class TestSave:
         (put,) = gateway.puts
         assert put["version"] == "v1"
         assert put["settings"] == {
-            "default": {
-                "mode": "ptc",
-                "workspace_id": RESEARCH,
-                "workspace": "Research",
-            },
+            "default": {"workspace_id": RESEARCH, "workspace": "Research"},
             "slack": {
                 "preferred": "slack:T1/C0789",
                 "chats": {
                     # The gateway's label is dropped; langalpha names the workspace.
-                    "slack:T1/C0456": {
-                        "mode": "ptc",
-                        "workspace_id": RESEARCH,
-                        "workspace": "Research",
-                    },
+                    "slack:T1/C0456": {"workspace_id": RESEARCH, "workspace": "Research"},
                     # A workspace id is sent canonical.
-                    "slack:T1/C0789": {
-                        "mode": "ptc",
-                        "workspace_id": MACRO,
-                        "workspace": "Macro",
-                    },
+                    "slack:T1/C0789": {"workspace_id": MACRO, "workspace": "Macro"},
+                    # All workspaces names none.
+                    "slack:T1/C0999": {"workspace_id": None},
                 },
                 "automation_output": {RESEARCH: "slack:T1/C0123"},
                 "agent_messages": {"enabled": True, "allowed": ["slack:T1/C0456"]},
@@ -335,12 +334,9 @@ class TestSave:
         self, backend, gateway
     ):
         def change(settings):
-            settings["default"]["workspace_id"] = FLASH
+            settings["default"]["workspace_id"] = HOME
             settings["slack"]["chats"]["slack:T1/C0456"]["workspace_id"] = STRANGERS
-            settings["slack"]["chats"]["slack:T1/C0789"] = {
-                "mode": "ptc",
-                "workspace_id": GONE,
-            }
+            settings["slack"]["chats"]["slack:T1/C0789"] = {"workspace_id": GONE}
             settings["slack"]["automation_output"] = {"not-a-uuid": "slack:T1/C0123"}
 
         exc = await _refused(backend, change)
@@ -372,11 +368,7 @@ class TestSave:
         await _write(backend, change)
 
         (put,) = gateway.puts
-        assert put["settings"]["default"] == {
-            "mode": "ptc",
-            "workspace_id": GONE,
-            "workspace": None,
-        }
+        assert put["settings"]["default"] == {"workspace_id": GONE, "workspace": None}
         slack = put["settings"]["slack"]
         assert slack["chats"]["slack:T1/C0456"]["workspace_id"] == GONE
         assert slack["automation_output"] == {GONE: "slack:T1/C0123"}
@@ -404,22 +396,20 @@ class TestSave:
 
         exc = await _refused(backend, change)
 
-        assert exc.problems == [
-            ("default", "must be an object with mode and workspace_id")
-        ]
+        assert exc.problems == [("default", "must be an object with workspace_id")]
         assert gateway.puts == []
 
     @pytest.mark.asyncio
     async def test_every_shape_problem_is_listed_at_once(self, backend, gateway):
         def change(settings):
-            settings["default"]["mode"] = "fast"
+            del settings["default"]["workspace_id"]
             settings["slack"]["agent_messages"]["enabled"] = "yes"
             del settings["slack"]["chats"]
 
         exc = await _refused(backend, change)
 
         assert dict(exc.problems) == {
-            "default.mode": "Input should be 'ptc' or 'flash'",
+            "default.workspace_id": "missing",
             "slack.chats": "missing",
             "slack.agent_messages.enabled": "must be true or false",
         }
@@ -509,7 +499,6 @@ class TestKeysLangalphaDoesNotModel:
         (put,) = gateway.puts
         assert put["settings"] == {
             "default": {
-                "mode": "ptc",
                 "workspace_id": RESEARCH,
                 "workspace": "Research",
                 "note": "kept",
@@ -518,7 +507,6 @@ class TestKeysLangalphaDoesNotModel:
                 "preferred": "slack:T1/C0789",
                 "chats": {
                     "slack:T1/C0456": {
-                        "mode": "ptc",
                         "workspace_id": RESEARCH,
                         "workspace": "Research",
                         "colour": "blue",
@@ -608,7 +596,7 @@ class TestGatewayAnswers:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("applied", [None, [], "default: mode is now flash"])
+    @pytest.mark.parametrize("applied", [None, [], "Default: All workspaces"])
     async def test_unavailable_saved_nothing(self, backend, gateway, applied):
         body = {"code": "unavailable", "message": "storage down"}
         if applied is not None:
@@ -638,7 +626,7 @@ class TestGatewayAnswers:
             json={
                 "code": "unavailable",
                 "message": "The default was saved and the rest was not; try again shortly.",
-                "applied": ["default: mode is now flash", 7, ""],
+                "applied": ["Default: All workspaces", 7, ""],
             },
         )
 
@@ -649,7 +637,7 @@ class TestGatewayAnswers:
             "server_error:channels.json: The default was saved and the rest was not; "
             "try again shortly.\n"
             "What was saved:\n"
-            "- default: mode is now flash\n"
+            "- Default: All workspaces\n"
             "Read channels.json again before you retry; it shows what saved, so reapply "
             "only the rest. If that fails again, stop and tell the user."
         )
@@ -686,7 +674,7 @@ class TestGatewayAnswers:
             await backend.awrite_text(
                 CHANNELS,
                 json.dumps(
-                    {**SETTINGS, "default": {"mode": "flash", "workspace_id": None}}
+                    {**SETTINGS, "default": {"workspace_id": None}}
                 ),
             )
 

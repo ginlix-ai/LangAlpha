@@ -14,7 +14,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any, Literal, NamedTuple
+from typing import Any, NamedTuple
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -58,8 +58,8 @@ class _Model(BaseModel):
 
 
 class _Binding(_Model):
-    mode: Literal["ptc", "flash"]
-    workspace_id: str | None = None
+    # Null is All workspaces, where the Chief of Staff answers.
+    workspace_id: str | None
     # Labels for the reader, ignored on input: the workspace's name, which
     # this server fills, and the chat's, which the gateway keeps.
     workspace: Any = None
@@ -83,7 +83,7 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _field(*parts: Any) -> str:
-    """``slack.chats["slack:T1/C2"].mode`` for the parts of a field's path."""
+    """``slack.chats["slack:T1/C2"].workspace_id`` for the parts of a field's path."""
     out = ""
     for part in parts:
         if isinstance(part, int):
@@ -242,7 +242,7 @@ def _stored(models: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
     as written."""
 
     def binding(b: _Binding) -> dict[str, Any]:
-        out: dict[str, Any] = {"mode": b.mode, "workspace_id": None}
+        out: dict[str, Any] = {"workspace_id": None}
         if b.workspace_id is not None:
             ws = normalize_uuid(b.workspace_id) or b.workspace_id
             out.update(workspace_id=ws, workspace=names.get(ws))
@@ -278,7 +278,7 @@ def _validate(value: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, st
     for key, raw in value.items():
         if key == _DEFAULT and not isinstance(raw, dict):
             problems.append(
-                (_field(key), "must be an object with mode and workspace_id")
+                (_field(key), "must be an object with workspace_id")
             )
             continue
         try:
