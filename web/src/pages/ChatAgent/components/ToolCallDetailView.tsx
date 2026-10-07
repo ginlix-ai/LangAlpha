@@ -22,7 +22,6 @@ import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import { parseDisplayableResults, buildRichResultMap, resolveSnippet } from './webSearchUtils';
 import { isDirectToolName } from '../utils/directTools';
 import { DirectToolDetail } from './mcp/DirectToolDetail';
-import { OrderReceiptCard } from './mcp/OrderReceiptCard';
 
 // --- Public types ---
 
@@ -366,24 +365,12 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
         return <SecFilingViewer data={artifact} />;
       case 'automations':
         return <AutomationDetailPanel data={artifact} />;
-      case 'order_receipt':
-        // The receipt answers what happened; the frame that was sent and the
-        // body that came back stay below it, unmasked, as for any direct tool.
-        return (
-          <div className="space-y-5">
-            <OrderReceiptCard artifact={artifact} />
-            <DirectToolDetail
-              toolName={toolName}
-              args={toolCallProcess.toolCall?.args}
-              content={content}
-              artifact={artifact}
-              isFailed={toolCallProcess.isFailed}
-            />
-          </div>
-        );
     }
   }
 
+  // An order call lands here too, with no receipt above it: the receipt is the
+  // card this panel was opened from, still in the thread beside it, and a
+  // second copy of it reads as a second order.
   if (isDirectToolName(toolName)) {
     return (
       <DirectToolDetail

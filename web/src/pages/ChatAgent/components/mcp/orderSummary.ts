@@ -14,6 +14,7 @@ import {
   type OrderTotalFill,
   type OrderTotalKind,
 } from '@/components/orders/total';
+import type { OrderType } from '@/types/orders';
 import type { OrderAction, OrderInstrument, OrderProposal } from '@/types/sse';
 
 /**
@@ -216,4 +217,74 @@ export function orderTicket(
     meta,
     figures,
   };
+}
+
+/**
+ * Whether the adapter read what a person needs in order to know what they are
+ * answering. When a vendor renames a field, the value lands in `extras`, and
+ * the ticket comes out shorter while still looking whole: a buy with no size
+ * reads as a complete order. So the card has to be told what is missing rather
+ * than just drawing less.
+ */
+export function orderReadFully(order: OrderProposal): boolean {
+  const named = instrumentNamed(order.instrument);
+  // An option known only by the vendor's id is exact to the vendor and says
+  // nothing a person can check: no underlying, expiry, strike or right. It is
+  // enough to address a cancel, not to approve a position on.
+  const checkable =
+    named && !(order.asset_class === 'option' && order.instrument?.kind === 'opaque');
+  const target = !!text(order.target_ref);
+  const limit = !!text(order.limit_price);
+  const stop = !!text(order.stop_price);
+  switch (order.action) {
+    case 'place':
+    case 'stage':
+      return (
+        checkable &&
+        // A spread states its side on each leg, so it has no one side to read.
+        (!!order.side || order.instrument?.kind === 'combo') &&
+        !!(text(order.qty) || text(order.notional?.amount)) &&
+        // A limit order with no limit drawn reads as one with no ceiling.
+        (!order.order_type || !LIMIT_BOUND_TYPES.has(order.order_type) || limit) &&
+        (!order.order_type || !STOP_PRICED_TYPES.has(order.order_type) || stop)
+      );
+    case 'exercise':
+      return checkable && !!text(order.qty);
+    // An exercise is addressed by its contract rather than by an order id.
+    case 'cancel_exercise':
+      return named || target;
+    // A replace that draws nothing new reads as one that changes nothing.
+    case 'replace':
+      return target && !!(text(order.qty) || text(order.notional?.amount) || limit || stop);
+    default:
+      return target;
+  }
+}
+
+const STOP_PRICED_TYPES: ReadonlySet<OrderType> = new Set([
+  'stop',
+  'stop_limit',
+  'market_if_touched',
+  'limit_if_touched',
+]);
+
+/** Whether the instrument says what is traded, not just where: a venue alone
+ *  names no stock, and an option short of its expiry, strike or right is a
+ *  different contract from the one being approved. */
+function instrumentNamed(instrument: OrderInstrument | null | undefined): boolean {
+  if (!instrument) return false;
+  switch (instrument.kind) {
+    case 'equity':
+    case 'future':
+      return !!text(instrument.symbol);
+    case 'option':
+      return !!(
+        text(instrument.underlying) &&
+        text(instrument.expiration) &&
+        text(instrument.strike) &&
+        (instrument.right === 'C' || instrument.right === 'P')
+      );
+    default:
+      return !!instrumentLabel(instrument);
+  }
 }

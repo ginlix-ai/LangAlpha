@@ -9,6 +9,7 @@ import { useDirectToolVendorLabel } from './useDirectToolVendor';
 import {
   directToolRejectionReason,
   directToolIdentity,
+  maskAccountIdsDeep,
   parseDirectToolResult,
   type DirectToolResult,
 } from '../../utils/directTools';
@@ -37,7 +38,13 @@ function Notice({ icon, title, body }: { icon: React.ReactNode; title: string; b
   );
 }
 
-/** The result body of a direct tool call: refused, rejected, JSON, or raw text. */
+/**
+ * The result body of a direct tool call: refused, rejected, JSON, or raw text.
+ *
+ * Account ids in a JSON body are masked as the arguments above it are: a
+ * brokerage echoes the account back in its answer, and the panel would
+ * otherwise print in full the number the Input and the receipt both mask.
+ */
 export function DirectToolResultView({ result }: { result: DirectToolResult }): React.ReactElement {
   const { t } = useTranslation();
   switch (result.kind) {
@@ -64,7 +71,7 @@ export function DirectToolResultView({ result }: { result: DirectToolResult }): 
         <div className="sibling-space-y-3">
           {result.blocks.map((b, i) =>
             b.json !== undefined ? (
-              <JsonTree key={i} value={b.json} />
+              <JsonTree key={i} value={maskAccountIdsDeep(b.json)} />
             ) : (
               <CodeBlock key={i} language="text" code={b.text} />
             ),
@@ -72,7 +79,7 @@ export function DirectToolResultView({ result }: { result: DirectToolResult }): 
         </div>
       );
     case 'json':
-      return <JsonTree value={result.json} />;
+      return <JsonTree value={maskAccountIdsDeep(result.json)} />;
     case 'text':
       return <CodeBlock language="text" code={result.text} />;
     case 'empty':

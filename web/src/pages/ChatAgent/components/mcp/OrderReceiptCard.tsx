@@ -18,15 +18,20 @@ import { useOrderReceipt, type OrderReceiptView } from './useOrderReceipt';
  * success-or-not: "you rejected this" and "the brokerage rejected this" are
  * different facts and a person reading back a thread needs to tell them apart.
  *
- * Nothing here is a JSON tree, and the card opens nothing on click: an order is
- * not a thing to click by accident, and the two ways off it, the vendor's own
- * client and the same attempt on the Orders page, are stated as links.
+ * Nothing here is a JSON tree. A click opens the call in the panel, where the
+ * frame that was sent and the body that came back are, as it does for every
+ * other card in a thread; the card is a settled record, so a stray click costs
+ * nothing. The two ways off it, the vendor's own client and the same attempt
+ * on the Orders page, are links and keep their own clicks.
  * `useOrderReceipt` decides what is on it; this draws that.
  */
 export function OrderReceiptCard({
   artifact,
+  onClick,
 }: {
   artifact: Record<string, unknown>;
+  /** Opens the call's detail in the panel beside the thread. */
+  onClick?: () => void;
 }): React.ReactElement | null {
   const receipt = useOrderReceipt(artifact);
   if (!receipt) return null;
@@ -50,6 +55,7 @@ export function OrderReceiptCard({
       }
       ticket={receipt.ticket}
       footer={answered ? <OrderOutcomeBlock receipt={receipt} /> : null}
+      onOpen={onClick}
       testid="order-receipt"
     />
   );

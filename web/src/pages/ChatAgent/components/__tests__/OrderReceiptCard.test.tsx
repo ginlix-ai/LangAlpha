@@ -226,6 +226,44 @@ describe('OrderReceiptCard', () => {
     expect(screen.getByTestId('order-headline')).toHaveTextContent('orders.side.buy AAPL');
   });
 
+  // The card is a settled record, so it opens the call like every other card
+  // in a thread. The links on it go where they say, and only there.
+  it('opens the call on a click, and leaves the links to their own', () => {
+    const onClick = vi.fn();
+    renderWithProviders(
+      <OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} onClick={onClick} />,
+    );
+    fireEvent.click(screen.getByRole('link'));
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('order-headline'));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the call from the keyboard, and leaves keys on its links to them', () => {
+    const onClick = vi.fn();
+    renderWithProviders(
+      <OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} onClick={onClick} />,
+    );
+    const card = screen.getByTestId('order-receipt');
+    expect(card).toHaveAttribute('role', 'button');
+    expect(card).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(screen.getByRole('link'), { key: 'Enter' });
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(card, { key: 'Enter' });
+    fireEvent.keyDown(card, { key: ' ' });
+    expect(onClick).toHaveBeenCalledTimes(2);
+  });
+
+  it('is not a control when nothing opens it', () => {
+    renderWithProviders(<OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} />);
+    const card = screen.getByTestId('order-receipt');
+    expect(card).not.toHaveAttribute('role');
+    expect(card).not.toHaveAttribute('tabindex');
+  });
+
   it('shows the vendor order id, the fills and the fees when there are any', () => {
     renderWithProviders(
       <OrderReceiptCard

@@ -1,14 +1,15 @@
 /**
- * Which inline cards are a door, and which are the answer.
+ * Every inline card is a door to the tool detail beside it: the frame that was
+ * sent, the body that came back.
  *
- * A card in the transcript normally opens the tool detail beside it, the frame
- * that was sent, the body that came back. An order receipt does not: it already
- * says in words what happened to the order, and a card about money that moves
- * under the pointer invites a click nobody meant to make.
+ * An order receipt is one too. It says in words what happened to the order,
+ * but it is the only row its call has in the turn, so without the click the
+ * vendor's own answer is nowhere a person can reach. It is a settled record,
+ * so a stray click opens a panel and moves nothing. Its links still go where
+ * they say.
  *
  * Both kinds run here through the REAL registry on the surface that actually
- * draws them: the receipt is inert because nothing wires a click to it, and
- * only the surface that draws it can say whether that is still true.
+ * draws them, since only that surface can say whether a click reaches the card.
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -104,19 +105,20 @@ function renderTranscript(onToolCallDetailClick: () => void) {
 }
 
 describe('clicking an inline artifact card', () => {
-  it('does not open the detail panel for an order receipt', () => {
+  it('opens the detail panel for an order receipt, but not from its links', () => {
     const onToolCallDetailClick = vi.fn();
     renderTranscript(onToolCallDetailClick);
 
     const card = screen.getByTestId('order-receipt');
-    fireEvent.click(card);
-
+    expect(card.className).toContain('cursor-pointer');
+    fireEvent.click(screen.getByRole('link'));
     expect(onToolCallDetailClick).not.toHaveBeenCalled();
-    expect(card.className).not.toContain('cursor-pointer');
-    expect(card.getAttribute('role')).toBeNull();
+
+    fireEvent.click(card);
+    expect(onToolCallDetailClick).toHaveBeenCalledWith(RECEIPT_ID);
   });
 
-  it('still opens the detail panel for every other card kind', () => {
+  it('opens the detail panel for every other card kind', () => {
     const onToolCallDetailClick = vi.fn();
     renderTranscript(onToolCallDetailClick);
 

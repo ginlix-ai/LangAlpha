@@ -2937,7 +2937,8 @@
         "reasonPlaceholder": "拒绝原因（可选）",
         "arguments": "参数",
         "approved": "已批准",
-        "rejected": "已拒绝"
+        "rejected": "已拒绝",
+        "incomplete": "无法完整读取这笔订单，批准前请检查参数。"
       },
       "orderReceipt": {
         "viewInOrders": "在订单页查看",

@@ -2970,7 +2970,8 @@
         "reasonPlaceholder": "Reason for rejecting, optional",
         "arguments": "Arguments",
         "approved": "Approved",
-        "rejected": "Rejected"
+        "rejected": "Rejected",
+        "incomplete": "Couldn't read all of this order. Check the arguments before you approve."
       },
       "orderReceipt": {
         "viewInOrders": "View in Orders",
