@@ -45,7 +45,7 @@ class TestIsNotificationTurn:
             ChatRequest(platform="slack"),
             ChatRequest(hitl_response=RESUME),
             ChatRequest(origin=ThreadOrigin(type="automation", id="a-1")),
-            ChatRequest(origin=ThreadOrigin(type="agent", id="flash-t")),
+            ChatRequest(origin=ThreadOrigin(type="agent", id="home-t")),
         ],
     )
     def test_anything_a_client_or_a_dispatch_sends_is_not(self, request_):
@@ -82,7 +82,7 @@ class TestTurnSurface:
     def test_a_dispatched_run_has_no_surface(self):
         """A background run another agent dispatched is in no conversation;
         its thread was created by that dispatch and carries no surface."""
-        request = ChatRequest(origin=ThreadOrigin(type="agent", id="flash-t"))
+        request = ChatRequest(origin=ThreadOrigin(type="agent", id="home-t"))
         assert turn_surface(request, PriorThread()) is None
 
     def test_a_notification_on_an_unbound_thread_has_no_surface(self):
@@ -150,7 +150,7 @@ class TestTheThreadBindingIsReadWithThePriorTurn:
                 return_value=None,
             ),
         ):
-            prior = await ensure_thread(request, "t-1", "ws-1", "u-1", msg_type="flash")
+            prior = await ensure_thread(request, "t-1", "ws-1", "u-1", msg_type="ptc")
 
         assert prior.platform == "imessage"
 
@@ -174,7 +174,7 @@ class TestTheThreadBindingIsReadWithThePriorTurn:
                 return_value=None,
             ),
         ):
-            prior = await ensure_thread(request, "t-1", "ws-1", "u-1", msg_type="flash")
+            prior = await ensure_thread(request, "t-1", "ws-1", "u-1", msg_type="ptc")
 
         assert prior.platform is None
 
@@ -213,7 +213,7 @@ class TestTheGraphConfigCarriesRunAndSurface:
                 thread_id="t-1",
                 user_id="u-1",
                 workspace_id="ws-1",
-                mode="flash",
+                mode="ptc",
                 timezone_str="UTC",
                 token_callback=None,
                 request=ChatRequest(),

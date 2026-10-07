@@ -474,6 +474,19 @@ async def test_an_analysts_run_names_its_workspace_to_the_service():
 
 
 @pytest.mark.asyncio
+async def test_a_run_on_flash_gets_flashs_own_arguments():
+    """Flash has no messaging tools, so its turn carries nothing for them,
+    and its workflow takes no argument for it."""
+    with _firing([_streams]) as fx, _delivery(_HELD, home=False) as dx:
+        await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)
+
+    args = _turn_args(fx)
+    assert args["flash_workspace"] == {"workspace_id": "ws-1"}
+    assert "extra_configurable" not in args
+    assert dx.start.await_args.args[2] is None
+
+
+@pytest.mark.asyncio
 async def test_a_run_the_messaging_service_did_not_take_runs_as_before():
     with _firing([_streams]) as fx, _delivery(None) as dx:
         await AutomationExecutor().execute(_automation(**_DELIVERING), _EXEC)

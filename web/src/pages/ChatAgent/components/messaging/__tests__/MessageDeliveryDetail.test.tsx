@@ -78,12 +78,12 @@ describe('the send_message detail panel', () => {
 
   it("opens a file from the workspace the call read it from", () => {
     const onOpenFile = vi.fn();
-    const args = { text: TEXT, files: ['out/a.png'], workspace_id: 'ws-flash-1' };
+    const args = { text: TEXT, files: ['out/a.png'], workspace_id: 'ws-nvda' };
     const files = [{ path: 'out/a.png', status: 'sent', reason: null }];
     render(<ToolCallDetailView toolCallProcess={proc(delivery({ files }), args)} onOpenFile={onOpenFile} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'out/a.png' }));
-    expect(onOpenFile).toHaveBeenCalledWith('out/a.png', 'ws-flash-1');
+    expect(onOpenFile).toHaveBeenCalledWith('out/a.png', 'ws-nvda');
   });
 
   it('leaves out an address that only repeats the app', () => {

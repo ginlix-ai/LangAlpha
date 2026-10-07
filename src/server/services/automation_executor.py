@@ -643,8 +643,6 @@ class AutomationExecutor:
                 "automation_execution_id": execution_id,
                 "automation_id": str(automation["automation_id"]),
             }
-            # Tools read the turn from the graph's config: ``send_message``
-            # names the run the service holds, so its sends reach its targets.
             extra_configurable = None
             if firing.held:
                 additional_context = [
@@ -684,7 +682,6 @@ class AutomationExecutor:
                 # firing whichever worker is left to drain the job, and
                 # delivers the way its start chose.
                 run_metadata=run_metadata,
-                extra_configurable=extra_configurable,
             )
             if firing.route.agent == "flash":
                 turn = astream_flash_workflow(
@@ -695,6 +692,10 @@ class AutomationExecutor:
                     **turn_args,
                     workspace_id=firing.workspace_id,
                     role=firing.route.role,
+                    # Tools read the turn from the graph's config:
+                    # ``send_message`` names the run the service holds, so
+                    # its sends reach its targets.
+                    extra_configurable=extra_configurable,
                 )
 
             # Drain the async generator: no HTTP client to consume SSE

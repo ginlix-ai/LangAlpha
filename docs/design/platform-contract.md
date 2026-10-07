@@ -118,9 +118,11 @@ lands there, and a notification never counts as the attended turn that follows a
 ## Messaging tools
 
 With `CHANNEL_GATEWAY_URL` (the gateway's API base, path prefix included) and
-`INTERNAL_SERVICE_TOKEN` both set, both agents get `send_message` and `list_message_targets`.
-Unset, neither exists. Delivery is the gateway's: it decides who may be reached and re-checks
-every address on every send, so an address the model passes is a claim, not a credential.
+`INTERNAL_SERVICE_TOKEN` both set, the agent gets `send_message` and `list_message_targets` in
+either role. Unset, neither exists. An Analyst attaches files from its workspace; the Chief of
+Staff attaches them from Home, or from a workspace whose id it passes. Delivery is the
+gateway's: it decides who may be reached and re-checks every address on every send, so an
+address the model passes is a claim, not a credential.
 
 Both calls carry `X-Service-Token` and `X-User-Id`, and name the conversation the turn is in by
 `thread_id`, `run_id` and `turn_platform`. `turn_platform` is the turn's surface name, without
@@ -160,10 +162,10 @@ told to claim nothing as sent unless the status says so.
 
 ### Channel settings
 
-With the same configuration, the PTC agent also gets `.agents/user/channels/`, reached only
-through the file tools (never the file mount, and Bash and ExecuteCode refuse a command naming
-it). `channels.json` is the user's settings and `available.json` the choices they may name; the
-gateway holds both, with the same two headers:
+With the same configuration, the agent in either role also gets `.agents/user/channels/`,
+reached only through the file tools (never the file mount, and Bash and ExecuteCode refuse a
+command naming it). `channels.json` is the user's settings and `available.json` the choices
+they may name; the gateway holds both, with the same two headers:
 
 - `GET {base}/agent/settings` answers `{"version", "settings"}`. `settings` has `default`
   (`workspace_id`, `workspace`) and one key per linked app: `preferred` (an address, or null for

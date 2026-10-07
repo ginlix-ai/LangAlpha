@@ -21,6 +21,8 @@ from src.tools.messaging import tools as messaging
 GATEWAY = "http://gateway.test/api/prefix"
 TOKEN = "svc-token"
 
+NVDA = "6f1c2a9e-3b7d-4e5f-9a0b-1c2d3e4f5a6b"
+
 CONFIGURABLE = {
     "user_id": "user-1",
     "thread_id": "thread-1",
@@ -64,11 +66,8 @@ def gateway(monkeypatch, configured):
     return fake
 
 
-def _tool(name: str, *, has_workspace_files: bool = True):
-    tools = {
-        t.name: t
-        for t in build_messaging_tools(has_workspace_files=has_workspace_files)
-    }
+def _tool(name: str, role: str = "analyst"):
+    tools = {t.name: t for t in build_messaging_tools(role)}
     return tools[name]
 
 
@@ -99,40 +98,42 @@ class TestTheToolsExistOnlyWithAGateway:
         monkeypatch.delenv("INTERNAL_SERVICE_TOKEN", raising=False)
 
         assert not messaging_enabled()
-        assert build_messaging_tools(has_workspace_files=True) == []
+        assert build_messaging_tools("analyst") == []
 
     def test_a_gateway_without_a_token_is_not_enough(self, monkeypatch):
         monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", GATEWAY)
         monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "  ")
 
-        assert build_messaging_tools(has_workspace_files=False) == []
+        assert build_messaging_tools("chief_of_staff") == []
 
     def test_a_token_without_a_gateway_is_not_enough(self, monkeypatch):
         monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "")
         monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
 
-        assert build_messaging_tools(has_workspace_files=False) == []
+        assert build_messaging_tools("chief_of_staff") == []
 
     @pytest.mark.usefixtures("configured")
-    def test_both_set_gives_both_tools(self):
-        names = [t.name for t in build_messaging_tools(has_workspace_files=True)]
+    @pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
+    def test_both_set_gives_both_tools(self, role):
+        names = [t.name for t in build_messaging_tools(role)]
         assert names == ["send_message", "list_message_targets"]
 
     @pytest.mark.usefixtures("configured")
-    def test_only_an_agent_without_workspace_files_names_a_workspace(self):
-        """PTC attaches its own files by path; Flash has none, so it says
-        where a file lives."""
-        ptc = _tool("send_message", has_workspace_files=True).tool_call_schema
-        flash = _tool("send_message", has_workspace_files=False).tool_call_schema
+    def test_only_the_chief_of_staff_names_a_workspace(self):
+        """An analyst attaches its own workspace's files; the Chief of Staff
+        reads every workspace, so it says which one a file is in when it is
+        not in Home."""
+        analyst = _tool("send_message").tool_call_schema
+        chief = _tool("send_message", "chief_of_staff").tool_call_schema
 
-        assert set(ptc.model_json_schema()["properties"]) == {
+        assert set(analyst.model_json_schema()["properties"]) == {
             "text",
             "files",
             "target",
             "reply",
             "new_thread",
         }
-        assert set(flash.model_json_schema()["properties"]) == {
+        assert set(chief.model_json_schema()["properties"]) == {
             "text",
             "files",
             "workspace_id",
@@ -142,36 +143,15 @@ class TestTheToolsExistOnlyWithAGateway:
         }
 
     @pytest.mark.usefixtures("configured")
-    def test_the_turn_identity_never_reaches_the_schema(self):
-        for tool in build_messaging_tools(has_workspace_files=False):
+    @pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
+    def test_the_turn_identity_never_reaches_the_schema(self, role):
+        for tool in build_messaging_tools(role):
             props = tool.tool_call_schema.model_json_schema().get("properties", {})
             assert not {"config", "tool_call_id"} & set(props)
 
 
-class TestBothAgentsBindThem:
-    def _flash_tools(self, monkeypatch):
-        from unittest.mock import MagicMock
-
-        from ptc_agent.agent.flash import agent as flash_module
-
-        monkeypatch.setattr(
-            flash_module, "get_web_search_tool", lambda **_: MagicMock(name="WebSearch")
-        )
-        return [
-            getattr(t, "name", None)
-            for t in flash_module.FlashAgent._build_tools(MagicMock())
-        ]
-
-    def test_flash_binds_them_when_configured(self, monkeypatch, configured):
-        names = self._flash_tools(monkeypatch)
-        assert {"send_message", "list_message_targets"} <= set(names)
-
-    def test_flash_has_neither_by_default(self, monkeypatch):
-        monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "")
-        names = self._flash_tools(monkeypatch)
-        assert not {"send_message", "list_message_targets"} & set(names)
-
-    def _ptc_build(self):
+class TestBothRolesBindThem:
+    def _ptc_build(self, role: str = "analyst"):
         """Build the PTC agent far enough to see the tools it binds, and the
         tools its subagents inherit."""
         from unittest.mock import MagicMock, patch
@@ -214,8 +194,9 @@ class TestBothAgentsBindThem:
                 mcp_registry=MagicMock(),
                 tool_summary="",
                 user_id="u",
+                role=role,
             )
-        main = [getattr(t, "name", None) for t in captured["tools"]]
+        main = {getattr(t, "name", None): t for t in captured["tools"]}
         inherited = [
             getattr(t, "name", None)
             for t in subagents.call_args.kwargs["default_tools"]
@@ -234,6 +215,20 @@ class TestBothAgentsBindThem:
         main, _ = self._ptc_build()
 
         assert not {"send_message", "list_message_targets"} & set(main)
+
+    def test_the_chief_of_staff_binds_them_and_names_a_files_workspace(
+        self, configured
+    ):
+        main, inherited = self._ptc_build("chief_of_staff")
+
+        assert {"send_message", "list_message_targets"} <= set(main)
+        assert "workspace_id" in main["send_message"].args
+        assert not {"send_message", "list_message_targets"} & set(inherited)
+
+    def test_an_analyst_attaches_only_its_own_files(self, configured):
+        main, _ = self._ptc_build()
+
+        assert "workspace_id" not in main["send_message"].args
 
 
 # -- what goes out --------------------------------------------------------------
@@ -271,10 +266,10 @@ class TestTheSendRequest:
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("has_workspace_files", [True, False])
-    async def test_an_automations_turn_names_its_run(self, gateway, has_workspace_files):
+    @pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
+    async def test_an_automations_turn_names_its_run(self, gateway, role):
         await _call(
-            _tool("send_message", has_workspace_files=has_workspace_files),
+            _tool("send_message", role),
             {"text": "Done.", "target": "slack:T1/C2"},
             {**CONFIGURABLE, "automation_execution_id": "exec-9"},
         )
@@ -302,12 +297,10 @@ class TestTheSendRequest:
         assert body["new_thread"] is False
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("has_workspace_files", [True, False])
-    async def test_a_new_thread_is_asked_for_by_name(
-        self, gateway, has_workspace_files
-    ):
+    @pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
+    async def test_a_new_thread_is_asked_for_by_name(self, gateway, role):
         await _call(
-            _tool("send_message", has_workspace_files=has_workspace_files),
+            _tool("send_message", role),
             {"text": "hi", "target": "slack:T1/C2", "new_thread": True},
         )
 
@@ -322,31 +315,63 @@ class TestTheSendRequest:
         assert json.loads(gateway.requests[0].content)["turn_platform"] is None
 
     @pytest.mark.asyncio
-    async def test_flash_names_the_workspace_on_every_file(self, gateway):
+    async def test_the_chief_of_staff_sends_homes_files_by_default(self, gateway):
         await _call(
-            _tool("send_message", has_workspace_files=False),
-            {"text": "", "files": ["a.csv", "b.csv"], "workspace_id": "ws-ptc"},
+            _tool("send_message", "chief_of_staff"),
+            {"text": "x", "files": ["nvda_amd/digest.md"]},
+            {**CONFIGURABLE, "workspace_id": "ws-home"},
         )
 
         body = json.loads(gateway.requests[0].content)
-        assert body["workspace_id"] == "ws-1"
+        assert body["workspace_id"] == "ws-home"
+        # Null is the request's own workspace: Home.
+        assert body["files"] == [{"path": "nvda_amd/digest.md", "workspace_id": None}]
+
+    @pytest.mark.asyncio
+    async def test_the_chief_of_staff_names_a_workspace_on_every_file(self, gateway):
+        await _call(
+            _tool("send_message", "chief_of_staff"),
+            {"text": "", "files": ["a.csv", "b.csv"], "workspace_id": f" {NVDA} "},
+            {**CONFIGURABLE, "workspace_id": "ws-home"},
+        )
+
+        body = json.loads(gateway.requests[0].content)
+        assert body["workspace_id"] == "ws-home"
         assert body["files"] == [
-            {"path": "a.csv", "workspace_id": "ws-ptc"},
-            {"path": "b.csv", "workspace_id": "ws-ptc"},
+            {"path": "a.csv", "workspace_id": NVDA},
+            {"path": "b.csv", "workspace_id": NVDA},
         ]
 
     @pytest.mark.asyncio
-    async def test_flash_files_without_a_workspace_are_refused_before_any_call(
-        self, gateway
-    ):
-        content = await _call(
-            _tool("send_message", has_workspace_files=False),
-            {"text": "x", "files": ["a.csv"]},
+    async def test_a_workspace_id_is_sent_in_its_own_form(self, gateway):
+        await _call(
+            _tool("send_message", "chief_of_staff"),
+            {"text": "", "files": ["a.csv"], "workspace_id": NVDA.upper().replace("-", "")},
+        )
+
+        body = json.loads(gateway.requests[0].content)
+        assert body["files"] == [{"path": "a.csv", "workspace_id": NVDA}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "workspace_id",
+        [
+            "x/../../mcp/vault/secrets/NAME/reveal#",
+            f"{NVDA}/../other",
+            f"{NVDA}?x=1",
+            "ws-nvda",
+        ],
+    )
+    async def test_anything_but_a_workspace_id_sends_nothing(self, gateway, workspace_id):
+        message = await _message(
+            _tool("send_message", "chief_of_staff"),
+            {"text": "hi", "files": ["a.csv"], "workspace_id": workspace_id},
         )
 
         assert gateway.requests == []
-        assert content.startswith("status: failed\ncode: invalid_request")
-        assert "workspace_id" in content
+        assert message.content.startswith("status: failed\ncode: invalid_request")
+        assert "Nothing was sent." in message.content
+        assert message.artifact["status"] == "failed"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -738,14 +763,12 @@ class TestTheDeliveryArtifact:
 
         assert artifact["platform"] == platform
 
-    @pytest.mark.parametrize("has_workspace_files", [True, False])
-    def test_the_schema_the_model_sees_has_no_new_args(
-        self, configured, has_workspace_files
-    ):
-        tool = _tool("send_message", has_workspace_files=has_workspace_files)
+    @pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
+    def test_the_schema_the_model_sees_has_no_new_args(self, configured, role):
+        tool = _tool("send_message", role)
 
         expected = {"text", "files", "target", "reply", "new_thread"}
-        if not has_workspace_files:
+        if role == "chief_of_staff":
             expected.add("workspace_id")
         assert set(tool.args) == expected
         assert tool.response_format == "content_and_artifact"

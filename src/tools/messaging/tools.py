@@ -14,12 +14,14 @@ model has to know whether anything went out before it tells the user so.
 import logging
 import os
 import time
+import uuid
 from typing import Annotated, Any, NamedTuple
 
 import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 
+from ptc_agent.agent.roles import AgentRole
 from src.config import env
 
 try:
@@ -364,7 +366,6 @@ async def _send(
     files_workspace_id: str | None,
     config: RunnableConfig | None,
     tool_call_id: str,
-    files_need_workspace: bool,
 ) -> tuple[str, dict[str, Any]]:
     turn = _turn(config)
     if not turn["user_id"]:
@@ -393,13 +394,18 @@ async def _send(
             f"{len(paths)} files given; a message carries at most {MAX_FILES}.",
         )
     files_workspace_id = (files_workspace_id or "").strip() or None
-    if paths and files_need_workspace and not files_workspace_id:
-        return _refusal(
-            "failed",
-            "invalid_request",
-            "Pass workspace_id: the workspace the files are in, such as the one a "
-            "dispatched run used.",
-        )
+    if files_workspace_id is not None:
+        # The messaging service fetches each file from this workspace by its
+        # id, so only a workspace id may go: anything else is a path.
+        try:
+            files_workspace_id = str(uuid.UUID(files_workspace_id))
+        except ValueError:
+            return _refusal(
+                "failed",
+                "invalid_request",
+                "workspace_id is not a workspace id; take it from manage_workspaces. "
+                "Nothing was sent.",
+            )
 
     body = {
         "thread_id": turn["thread_id"],
@@ -485,22 +491,22 @@ async def _send_from_workspace(
         files_workspace_id=None,
         config=config,
         tool_call_id=tool_call_id,
-        files_need_workspace=False,
     )
 
 
-async def _send_without_workspace(
+async def _send_from_home(
     text: _TEXT_ARG,
     config: RunnableConfig,
     files: Annotated[
         list[str] | None,
-        f"Up to {MAX_FILES} file paths to attach, such as results/report.xlsx, from the "
-        "workspace named in workspace_id.",
+        f"Up to {MAX_FILES} file paths to attach: in Home, such as nvda_amd/digest.md, "
+        "or inside the folder of the workspace named in workspace_id, such as "
+        "dcf/report.md.",
     ] = None,
     workspace_id: Annotated[
         str | None,
-        "The workspace the files are in, such as the one a dispatched run used. "
-        "Required with files: you have no files of your own.",
+        "The id of the workspace the files are in, from manage_workspaces, when they "
+        "are not in Home. Omit it for Home's files.",
     ] = None,
     target: _TARGET_ARG = None,
     reply: _REPLY_ARG = False,
@@ -516,7 +522,6 @@ async def _send_without_workspace(
         files_workspace_id=workspace_id,
         config=config,
         tool_call_id=tool_call_id,
-        files_need_workspace=True,
     )
 
 
@@ -566,8 +571,8 @@ _SEND_MESSAGE = StructuredTool.from_function(
     description=SEND_MESSAGE_DESCRIPTION,
     response_format="content_and_artifact",
 )
-_SEND_MESSAGE_NO_WORKSPACE = StructuredTool.from_function(
-    coroutine=_send_without_workspace,
+_SEND_FROM_HOME = StructuredTool.from_function(
+    coroutine=_send_from_home,
     name="send_message",
     description=SEND_MESSAGE_DESCRIPTION,
     response_format="content_and_artifact",
@@ -579,14 +584,14 @@ _LIST_MESSAGE_TARGETS = StructuredTool.from_function(
 )
 
 
-def build_messaging_tools(*, has_workspace_files: bool) -> list[BaseTool]:
+def build_messaging_tools(role: AgentRole) -> list[BaseTool]:
     """The messaging tools for one agent build, or none when unconfigured.
 
-    ``has_workspace_files`` picks the ``send_message`` shape: an agent working
-    in a workspace attaches its own files by path, and one without (Flash)
-    names the workspace a file lives in, since it has none of its own.
+    ``role`` picks the ``send_message`` shape: an analyst attaches files from
+    its workspace, and the Chief of Staff from Home or from the workspace it
+    names, since it reads every workspace.
     """
     if not messaging_enabled():
         return []
-    send = _SEND_MESSAGE if has_workspace_files else _SEND_MESSAGE_NO_WORKSPACE
+    send = _SEND_FROM_HOME if role == "chief_of_staff" else _SEND_MESSAGE
     return [send, _LIST_MESSAGE_TARGETS]

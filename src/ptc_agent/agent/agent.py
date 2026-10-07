@@ -889,7 +889,7 @@ class PTCAgent:
         # Messaging the user (send_message, list_message_targets), present only
         # when a channel gateway is configured. Main agent only, added after the
         # subagent snapshot: a subagent reports to its parent, never to a person.
-        tools.extend(build_messaging_tools(has_workspace_files=True))
+        tools.extend(build_messaging_tools(role))
 
         # Main agent middleware (includes SubAgentMiddleware + main_only)
         # Ordering matters for prompt caching:

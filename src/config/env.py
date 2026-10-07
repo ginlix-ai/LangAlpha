@@ -91,7 +91,7 @@ AUTOMATION_WEBHOOK_URL: str = os.getenv("AUTOMATION_WEBHOOK_URL", "")
 AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")
 
 # Base URL of a channel gateway's API, path prefix included. Set together with
-# INTERNAL_SERVICE_TOKEN, it gives both agents send_message and
+# INTERNAL_SERVICE_TOKEN, it gives the agent send_message and
 # list_message_targets, which deliver to the messaging channels connected to
 # the user's account. Unset, neither tool exists.
 CHANNEL_GATEWAY_URL: str = os.getenv("CHANNEL_GATEWAY_URL", "").strip().rstrip("/")
