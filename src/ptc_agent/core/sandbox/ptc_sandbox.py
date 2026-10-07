@@ -1156,8 +1156,13 @@ class PTCSandbox:
         policy failing is no answer, and waiting is the default.
         """
         try:
+            # Only reconnect calls this, and a reconnect from inside it would
+            # wait on the lock its own caller holds.
             await self._runtime_call(
-                start, timeout=timeout, retry_policy=RetryPolicy.SAFE
+                start,
+                timeout=timeout,
+                retry_policy=RetryPolicy.SAFE,
+                allow_reconnect=False,
             )
         except SandboxGoneError:
             raise

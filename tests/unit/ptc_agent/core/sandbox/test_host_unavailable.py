@@ -343,3 +343,20 @@ async def test_a_replaced_sandbox_is_stopped_through_a_transport_blip():
 
     assert runtime.stop.await_count == 2
 
+
+@pytest.mark.asyncio
+async def test_a_transient_start_inside_a_reconnect_retries_the_start():
+    """Reconnecting again from inside the reconnect waited on its own lock."""
+    sandbox, runtime = _sandbox(None)
+    sandbox.sandbox_id = SANDBOX
+    sandbox.runtime = runtime
+    runtime.start = AsyncMock(side_effect=[ConnectionResetError("reset"), None])
+
+    with patch(
+        "ptc_agent.core.sandbox.ptc_sandbox.create_provider",
+        return_value=_Provider(runtime),
+    ):
+        await asyncio.wait_for(sandbox._ensure_sandbox_connected(), timeout=10)
+
+    assert runtime.start.await_count == 2
+    assert sandbox.is_ready() is True
