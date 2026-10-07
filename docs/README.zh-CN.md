@@ -1,481 +1,416 @@
 <p align="center">
-  <img src="../web/public/logo_words.png" alt="LangAlpha" height="120" />
-  <br>
-  <strong>面向 vibe investing 的 agent harness</strong>
-  <br>
-  LangAlpha 帮你解读金融市场，辅助投资决策。
-  <br><br>
-  <img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" />
-  <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?logo=langchain&logoColor=white" alt="LangChain" /></a>
-  <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License" />
+  <img src="../web/public/logo_words.png" alt="LangAlpha" height="110" />
+</p>
+
+<h3 align="center">面向 Agent 交易的 harness。</h3>
+
+<p align="center">
+  开源 AI Agent，研究市场、形成投资假设，<br>
+  并在你设定的权限范围内，用你自己的券商账户交易。
 </p>
 
 <p align="center">
-  <a href="../README.md">English</a> ｜ <strong>简体中文</strong> ｜ <a href="README.ja-JP.md">日本語</a>
+  <a href="https://langalpha.ai"><strong>试用 LangAlpha ↗</strong></a> ·
+  <a href="#快速开始"><strong>快速开始</strong></a> ·
+  <a href="#agent-交易"><strong>Agent 交易</strong></a> ·
+  <a href="#harness-设计"><strong>Harness 设计</strong></a> ·
+  <a href="#全栈架构"><strong>全栈架构</strong></a> ·
+  <a href="#安全"><strong>安全</strong></a>
+  <br />
+  <a href="../README.md">English</a> · 简体中文 · <a href="README.ja-JP.md">日本語</a>
 </p>
 
 <p align="center">
-  <a href="#快速开始">快速开始</a> &bull;
-  <a href="api/README.md">API 文档</a> &bull;
-  <a href="../src/ptc_agent/">Agent 核心</a> &bull;
-  <a href="../src/server/">后端</a> &bull;
-  <a href="../web/">前端</a> &bull;
-  <a href="../libs/ptc-cli/">TUI</a> &bull;
-  <a href="../skills/">Skills</a> &bull;
-  <a href="../mcp_servers/">MCP</a>
+  <a href="https://github.com/ginlix-ai/langalpha/stargazers"><img src="https://img.shields.io/github/stars/ginlix-ai/langalpha?style=flat-square" alt="GitHub 星标数" /></a>
+  <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="许可证：Apache 2.0" />
+  <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square" alt="Python 3.13+" />
+  <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?style=flat-square&logo=langchain&logoColor=white" alt="LangChain" /></a>
+  <a href="https://github.com/ginlix-ai/langalpha/releases"><img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat-square" alt="桌面应用" /></a>
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/56ec23b5-e9af-46ab-8505-66a7dff822a4" autoplay loop muted playsinline width="900"></video>
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/hero-cbrs-research-dashboard.webp" alt="demo-cbrs 工作区：左侧是 Agent 查询 CBRS 报价、拉取披露文件并派出两个分析师，右侧是基于这些研究搭建的 CBRS 仪表盘，当前显示 IPO 以来的股价和事件标记，以及选中事件的注释和来源" width="900" />
 </p>
-<p align="center"><em>把 dashboard 里的精选新闻简报 pin 给 agent，让多个并行 subagent 扫描市场并生成选股思路——结果会回到对话内嵌的交互式 dashboard 里，给出五组贴合你持仓风格的多空配对交易思路。</em></p>
 
 ## 为什么选择 LangAlpha
 
-如今的 AI 金融工具大多把投资当成一次性问答：问一个问题，得到一个答案，然后结束。但真实的投资更像持续更新判断——先有一个投资假设，每天有新数据进来，再据此调整信心。这个过程往往以周、月为单位展开：修正假设、复盘仓位、在已有分析之上叠加新分析。单靠一句 prompt，很难承载这些。
+大多数 AI 金融工具只负责回答问题。我们认为投资研究是贝叶斯式的：先写下投资假设，以及什么情况能证伪它；之后每一份财报、每一份披露文件、每一次股价变动，都会提高或降低你的信心，仓位也随之调整。这个循环要持续数周乃至数月，单靠一条提示词无法承载。
 
-### *从 vibe coding 到 vibe investing*
+编程 Agent 是在有了专为代码设计的 harness 之后才变得好用的：一个持续存在的代码库，每次 commit 都建立在上一次之上，再加上围绕模型的工具、记忆和运行时。LangAlpha 把这套 harness 带到市场，从 vibe coding 走向 vibe investing。它适配任何模型，所以模型每进步一次，它也跟着变强。两条理念决定了它的设计：
 
-灵感来自软件工程：一个 codebase 会一直留存，每一次 commit 都建立在此前的基础上。Claude Code、OpenCode 这类代码 agent harness 之所以有效，正是因为它们让 agent 先理解已有上下文，再基于已有工作继续推进。LangAlpha 把同样的思路带到投资里：给 agent 一个持久的 workspace，让研究可以持续积累。
+- **一笔交易是一个循环，不是一次工具调用**。投资假设保存在工作区里，研究、仓位测算、下单以及之后的盯盘，每一步都会把新证据反馈回去。
+- **自主需要由你划定边界**。Agent 只在你授予的权限内行动，每一笔订单都走同一条受控路径。
 
-具体来说，你为每个研究目标建一个 workspace（比如“二季度再平衡”“数据中心需求深挖”“能源板块轮动”）。agent 会先了解你的目标和风格，生成第一份交付物，并把相关文件保存到 workspace 文件系统里。第二天回来，你的文件、thread 和此前积累的研究都还在。
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/loop.webp" alt="一笔交易是一个循环：一个直觉引出研究和保存在工作区里的投资假设，接着是仓位与风险、下单和盯盘，盯盘再把新证据反馈给投资假设，改变对它的信心" width="880" />
+</p>
 
 ## 功能亮点
 
-- **渐进式工具发现（Progressive Tool Discovery）** — MCP 工具只以摘要形式进上下文，完整文档则落到 workspace 里，让 agent 真正按需去发现和调用工具。还支持把 JSON 工具绑定到 skill 上，只有 skill 激活时才暴露给 agent。
-- **Programmatic Tool Calling（PTC）** — agent 直接写 Python 并执行代码，处理来自 MCP server 的金融数据，而不是把原始数据直接放进 LLM 上下文窗口。这样既能做多步复杂分析，又能减少 token 浪费。
-- **金融数据生态** — 多层级的数据 provider 体系：native 工具负责快速查询，MCP server 负责在 sandbox 里做批量数据处理、画图和多年跨度的分析。
-- **持久化 workspace** — 每个 workspace 对应一个专属 sandbox，有结构化的目录，还有一份 workspace 笔记文件（`agent.md`），让研究在多次 session 和多个 thread 之间不断累积。另有一套独立的长期 memory 存储（`.agents/user/memory/`、`.agents/workspace/memory/`），保存长期有效的用户偏好和跨 sandbox 的知识；还有一套用户自管的 memo 存储（`.agents/user/memo/`），你可以上传 PDF 和 markdown 研究笔记，agent 按需读取。
-- **金融研究 Skills** — 预置的工作流，涵盖 DCF 模型、首次覆盖报告、财报分析、晨报、文档生成等等——可以用 slash command 触发，也能自动识别激活。
-- **金融研究工作台** — Web 界面集成了内嵌金融图表、多格式文件查看器、TradingView 图表、实时 WebSocket 行情、agent 手绘图表标注、按轮次展示的数据来源面板、可分享的对话，以及 subagent 监控。
-- **多 provider 模型层** — 与具体 provider 解耦的 LLM 抽象，出错时自动 failover。
-- **自动化（Automations）** — 可以排定周期性或一次性的任务，也能设置价格触发的自动化——当某只股票或指数触及实时价格条件时自动执行。
-- **Secretary（事务助理）** — Flash agent 还能处理事务性工作：建立和管理 workspace、在后台派发深度 PTC 分析、跟踪运行中的任务、取回结果——这些都通过对话式指令完成，并带 human-in-the-loop 审批。
-- **Agent 集群** — 并行的异步 subagent，各自拥有隔离的上下文窗口、预加载的工具集与 skill，支持执行中途 steering、基于 checkpoint 的恢复，以及界面上的实时进度监控。
-- **实时 steering** — agent 或 subagent 运行时，你可以随时追加消息来纠偏、澄清或改变方向，不用等任务结束。
-- **Middleware 栈** — 一套深层、可组合的 middleware stack，负责 skill 加载、多模态输入、自动 compaction 和上下文管理，支撑长时间运行的 agent session。
-- **安全与 vault** — 用 pgcrypto 做静态加密，自动检测并脱敏泄露的 credential；代码在 sandbox 里执行，每个账户都有独立的 secret 存储，供 agent 安全取用。
-- **渠道集成** — 在 Slack、Discord、飞书、Telegram 里直接用 LangAlpha，定时结果还能通过邮件送达。
-- **生产级基础设施** — agent 活动通过 SSE 流式输出，断线重连时靠 Redis 缓冲回放，后台执行与 HTTP 连接解耦，状态由 PostgreSQL 持久化。
+下面的示例大多出自同一个研究 Cerebras（CBRS）的工作区。可以通过[这段分享的对话](https://app.langalpha.ai/s/z7rvgK3P9vZN)看它的实际运行过程，从第一个问题一直到发往 Slack 的首次覆盖报告。
 
-## 技术内核
+### 🔎 用 Agent 团队做研究
 
-**系统架构**
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-
-flowchart TB
-    Web["Web UI<br/>React 19 · Vite · Tailwind"] -- "REST · SSE" --> API
-    Web -- "WebSocket" --> WSP
-    CLI["CLI / TUI"] -- "REST · SSE" --> API
-
-    subgraph Server ["FastAPI Backend"]
-        API["API Routers<br/>Threads · Workspaces · Market Data<br/>OAuth · Automations · Skills"]
-        WSP["WebSocket Proxy"]
-        API --> ChatHandler["Chat Handler<br/>LLM Resolution · Workflow Dispatch"]
-        ChatHandler --> BTM["Background Task Manager<br/>Decoupled Execution · Workflow Lifecycle"]
-    end
-
-    subgraph PostgreSQL ["PostgreSQL — Dual Pool"]
-        AppPool[("App Data<br/>Users · Workspaces · Threads<br/>Turns · BYOK Keys · Automations")]
-        CheckPool[("LangGraph Checkpointer<br/>Agent State · Checkpoints")]
-    end
-
-    subgraph Redis ["Redis"]
-        EventBuf[("SSE Event Buffer<br/>150K events · Reconnect Replay")]
-        DataCache[("API Cache<br/>Market Data · SWR")]
-        Steering[("Steering Queue<br/>User Messages Mid-workflow")]
-    end
-
-    BTM --> AppPool
-    BTM --> CheckPool
-    BTM --> EventBuf
-    BTM --> Steering
-    API --> DataCache
-
-    BTM -. "Sandbox API" .-> Daytona["Daytona<br/>Cloud Sandboxes"]
-    API -. "REST" .-> FinAPIs["Financial APIs<br/>FMP · SEC EDGAR"]
-    WSP -. "WebSocket" .-> GData["ginlix-data<br/>Polygon.io · Massive"]
-```
-
-
-
-### 多 Provider 模型层
-
-LangAlpha 运行在与具体 provider 解耦的模型层上，统一封装多个 LLM 后端。不管底层由哪个模型驱动，同一套 middleware、工具和工作流都可以照常运行。内置两种模式：
-
-- **PTC 模式**：用于深度、多步骤的投资研究。强推理模型负责规划分析路径、梳理金融数据，并写代码完成复杂分析。长上下文让它能在一次处理中交叉比对 SEC 文件和研报。
-- **Flash 模式**：用于快速的对话响应和 workspace 调度——快速查行情、在 MarketView 里边看图边聊、轻量问答，还有一个秘书角色，帮你管理 workspace、在后台派发深度 PTC 分析，再用自然对话把结果带回来。
-
-**使用你自己的模型和 API key（BYOK）** — 直接用你已有的 AI 订阅和 API key。通过 OAuth 接入 ChatGPT 或 Claude 订阅（OpenAI Codex OAuth、Claude Code OAuth），使用 Kimi（月之暗面）、GLM（智谱）、MiniMax 或豆包（火山引擎）的 coding plan，或者通过 BYOK 为任何受支持的 provider 填入自己的 API key。所有 key 都用 PostgreSQL 的 pgcrypto 做静态加密（详见[安全](#安全与-vault)）。
-
-**模型容错** — 遇到瞬时错误自动重试，之后 failover 到配置好的备用模型。推理力度（`low`/`medium`/`high`）会在各家 provider 之间自动对齐。
-
-### Programmatic Tool Calling（PTC）与 Workspace 架构
-
-大多数 AI agent 通过一次性的 JSON 工具调用处理数据，并把结果直接放进上下文窗口。Programmatic Tool Calling 的做法不同：agent 不把原始数据交给 LLM，而是在 [Daytona](https://www.daytona.io/) 云 sandbox 里写代码、执行代码，就地处理数据，只返回最终结果。这样既减少 token 浪费，也能完成原本会超出上下文上限的分析。
-
-**PTC 执行流程**
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-
-flowchart LR
-    LLM["LLM"] -- "1 — Writes Python" --> EC["ExecuteCode Tool"]
-    EC -- "2 — Sends to sandbox" --> Run["Code Runner"]
-
-    subgraph Sandbox ["Daytona Cloud Sandbox"]
-        Run -- "3 — import tools.*" --> Wrappers["Generated Wrappers<br/>One module per MCP server"]
-        Wrappers -- "4 — JSON-RPC stdio" --> MCP["MCP Servers<br/>Subprocesses in sandbox"]
-    end
-
-    MCP -- "5 — REST / WS" --> APIs["Financial APIs<br/>FMP · Yahoo · Polygon"]
-    APIs -- "6 — Data" --> MCP
-    Run -- "7 — stdout · charts · files" --> EC
-    EC -- "8 — Result" --> LLM
-```
-
-
-
-除此之外，workspace 环境让数据不再局限于单次 session。每个 sandbox 都有一套结构化目录：`work/<task>/` 放各任务的工作区（数据、图表、代码），`results/` 放定稿报告，`data/` 放共享数据集，中间结果因此可以跨 session 留存。根目录下的 `agent.md` 是 agent 跨 thread 维护的 workspace 笔记，记录 workspace 目标、关键发现、thread 索引和重要产物的文件索引。一层 middleware 会把 `agent.md` 注入每一次模型调用，因此 agent 不必反复重读文件，也能掌握此前工作的完整上下文。另有一套基于 store 的长期 memory 系统（`.agents/user/memory/`、`.agents/workspace/memory/`），记录长期有效的用户偏好和跨 sandbox 的知识；用户自管的 memo 存储（`.agents/user/memo/`）则用于存放你上传的文档。PDF 会在服务端抽取文本，元数据由 LLM 异步生成，方便 agent 按主题找到并引用。每个 workspace 支持多个对话 thread，并共同服务于同一个研究目标。
+提出一个问题，LangAlpha 会把它拆给多个并行的分析师：阅读披露文件，拉取价格、期权和宏观数据，再用代码完成计算。运行途中随时可以追加消息，调整它们的方向。在 CBRS 这个例子里，这次运行最终产出了[一份 HTML 入门报告](https://app.langalpha.ai/a/lep06ly8Qjfa)，讲清 Cerebras 卖什么、增长有多快、谁在付钱。
 
 <p align="center">
-  <img src="images/workspaces-list-page.png" alt="Workspaces page with research workspace cards" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-research-subagents-primer.webp" alt="一个 CBRS 问题分派给四个子 Agent，在侧边栏中列于主 Agent 之下，旁边是入门报告中关于谁在为 Cerebras 付费的章节" width="800" />
+  <br />
+  <sub><b>子 Agent</b>：四个分析师在主 Agent 之下分头处理这个问题，每张卡片统计各自的工具调用和 token 用量，一条 <code>/html-report</code> 把它们的发现整理成右侧的入门报告</sub>
 </p>
-<p align="center"><em>每个 workspace 对应一个持久 sandbox——按主题、投资组合或论点来组织研究。</em></p>
 
-<p align="center">
-  <img src="images/chat-mag7-catalyst-calendar-dashboard.png" alt="PTC agent generating a Mag 7 + Semiconductors catalyst calendar dashboard" width="800" />
-</p>
-<p align="center"><em>agent 写代码生成交互式 dashboard——这里是一份“七巨头 + 半导体”的催化剂日历。</em></p>
+### 🗂️ 每个想法都放进工作区
 
-### 金融数据生态
+每个投资假设、行业或投资组合各用一个工作区。文件、对话和 Agent 自己的笔记第二天都还在，每次使用都能接着上一次继续，不必从头开始。
 
-PTC 擅长多步数据处理、金融建模、画图这类复杂任务，但每查一次数据就启动代码执行没有必要。所以我们还做了一套 native 金融数据工具，把常用数据转成适合 LLM 读取的格式。这些工具自带能在前端直接渲染的 artifact，让使用者在查看 agent 分析的同时，立刻有直观的视觉参照。
+> *“根据这个工作区目前的研究成果，给我做一个 CBRS 的交互式仪表盘：带关键事件的股价、营收增长、客户集中度，以及有多少押在 OpenAI 身上。我想能点来点去地看。”*
 
-**Native 工具**，通过直接工具调用做快速查询：
-
-- **公司概览**：实时报价、价格表现、关键财务指标、分析师一致预期和营收构成
-- **SEC 文件**（10-K、10-Q、8-K）：附带财报电话会记录，并格式化成便于引用的 markdown
-- **市场指数**与**板块表现**：提供大盘层面的背景
-- **网页搜索**（Tavily、Serper、博查、Exa、Parallel）——由 manifest 驱动的 provider 选择，深度分层（从快速查询到深度研究），还有图片搜索和 AI research 模式，每个用户可各自选择——以及**网页抓取**：内置爬虫零密钥即用，可选接入第三方 provider（Firecrawl 等），并由每个 provider 独立的熔断器守护，另有可选开启的**站点爬取**（WebCrawl/WebMap）
-
-**MCP server**，提供经由 PTC 代码执行消费的原始数据：
-
-- **价格数据**：股票、大宗商品、加密货币和外汇的 OHLCV 时间序列，外加空头持仓和卖空成交量分析
-- **基本面**：多年财务报表、财务比率、增长指标、估值、内部人交易、分红与拆股、流通股、核心高管，以及技术指标
-- **宏观经济**：GDP、CPI、失业率、联邦基金利率、国债收益率曲线（1M–30Y）、国家风险溢价、经济日历和财报日历
-- **期权**：可筛选的期权链、期权合约的历史 OHLCV，以及实时买卖盘快照
-- **Yahoo Finance 套件**（价格、基本面、分析、市场）：无需 key，就能覆盖报表、分析师评级、持股人、选股和各类日历
-- **X（Twitter）**：只读的帖子搜索、用户/推文查询和 thread 抓取，用于情绪和事件跟踪；另有一个**爬取** server，用于处理 JS 渲染和有反爬保护的页面
-
-agent 会自动选择合适的层级：能快速查询且适合放进上下文的任务使用 native 工具；需要在 sandbox 里做批量数据处理、画图或多年趋势分析时，则使用 MCP 工具。
-
-MCP server 在账户里安装一次，再按 workspace 选择启用。内置 server 能逐个禁用，自定义的 HTTP 或 stdio server（包括从 [vault](#vault) 读取凭据的）可以通过 API 或界面添加，并在每个 workspace 里单独开关，几秒内生效，无需重启。
-
-#### 数据 Provider 回退链
-
-LangAlpha 支持三层数据 provider 体系。每一层都是可选的——高层不可用时，系统会平滑降级：
-
-
-| 层级 | Provider                          | 所需 Key          | 提供什么                                                                                     |
-| ---- | --------------------------------- | ----------------- | ------------------------------------------------------------------------------------------ |
-| 1    | **ginlix-data**（托管代理）       | `GINLIX_DATA_URL` | 实时 WebSocket 价格流、盘中数据、盘前盘后数据、期权数据                                       |
-| 2    | **FMP**（Financial Modeling Prep）| `FMP_API_KEY`     | 高质量基本面、财务报表、宏观数据、分析师数据                                                 |
-| 3    | **Yahoo Finance**（yfinance）     | *无——免费*        | 价格历史、基础基本面、财报、持仓、内部人交易、ESG、选股器                                     |
-
-
-所有层级默认开启。若只想用**免费数据**（Yahoo Finance），运行 `make config` 并按提示选择即可。你也可以手动编辑 `agent_config.yaml`。
-
-> [!NOTE]
-> Yahoo Finance 数据来自社区，存在一些限制：没有 1 小时以下的盘中数据、报价有延迟、宏观覆盖有限，偶尔还会限流。建议配置 `FMP_API_KEY`（[有免费额度](https://site.financialmodelingprep.com/)）。
-
-### 金融研究 Skills
-
-agent 内置 23 个金融研究 skill，每个都能用 slash command 触发，也可以自动识别激活。skill 遵循 [Agent Skills Spec](https://agentskills.io/specification)，把 `SKILL.md` 文件放进 workspace 就能扩展。
-
-
-| 类别                     | Skills                                                                                    |
-| ------------------------ | ----------------------------------------------------------------------------------------- |
-| **估值与建模**           | DCF 模型、可比公司分析、三表模型、模型更新、模型审计                                       |
-| **股票研究**             | 首次覆盖（30–50 页报告）、财报前瞻、财报分析、论点跟踪                                     |
-| **市场情报**             | 晨报、催化剂日历、板块概览、竞争分析、选股思路生成、X 研究                                 |
-| **文档生成**             | PDF、DOCX、PPTX、XLSX、HTML——创建、编辑、抽取                                              |
-| **运营**                 | 投资 deck 质检、定时自动化、用户画像与投资组合                                            |
-
-
-致谢：部分 skill 改编自 [anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins)。
-
-<p align="center">
-  <img src="images/chat-nvda-amd-googl-comps-implied-valuation.png" alt="Comps Analysis skill delivering an Excel model and PDF valuation report with implied price ranges for NVDA, AMD, and GOOGL" width="800" />
-</p>
-<p align="center"><em>可比公司分析 skill 交付一个 Excel 模型和一份 PDF 报告——附带由同业倍数推算出的隐含价格区间。</em></p>
-
-### 多模态能力
-
-agent 原生就能读图片（PNG、JPG、GIF、WebP）和 PDF——多模态 middleware 拦下文件读取，从 sandbox 或 URL 下载内容，再以 base64 注入对话，供 agent 直接做视觉解读。在 MarketView 里，可以截取用户当前的 K 线图，作为多模态上下文发给 agent——截取的内容既有图表图像，也有结构化元数据（ticker、周期、OHLCV、均线、RSI、52 周区间），让 agent 既能看图形态，也能推敲背后的数据。
-
-<p align="center">
-  <img src="images/marketview-nvda-support-resistance-analysis.png" alt="MarketView showing NVDA candlestick chart with AI support and resistance analysis" width="800" />
-</p>
-<p align="center"><em>MarketView 把实时图表发给 agent，做实时技术分析。</em></p>
-
-### Agent 手绘图表标注
-
-在应用里的任何对话中让 agent 标注某只股票的图表，它就直接画在实时图表上：价格位、趋势线、斐波那契回撤、事件标记、矩形和文字标注。标注通过 SSE 实时流入，按 workspace 和 `symbol:timeframe` 组合分别保存（画在 `NVDA:1day` 上的和 `NVDA:1hour` 上的互不干扰），重连时还会重放。在 MarketView 里，标注直接落在你眼前的图表上；在其他对话中，聊天记录里会显示一张图表卡片，列出代码、周期和标注，点一下就在聊天旁的标签页里打开同一张实时图表。从 MarketView 发出的消息会带上屏幕上的 ticker 和周期，所以 agent 始终清楚“这张图”指的是哪一张。
-
-### 自动化
-
-agent 能在对话里直接安排任务——不需要另开界面。用户也可以在专门的 Automations 页面管理自动化，支持完整的增删改查、执行历史和手动触发。所有自动化类型共用同一个 `AutomationExecutor`、可配置的 agent 模式（PTC 或 Flash），连续失败若干次后会自动停用。
-
-**按时间** — 用标准 cron 表达式排周期性任务（“每周一早上 9 点跑这份分析”），也支持一次性的定时执行（指定未来某个时间点跑一次）。
-
-**按价格触发** — 给任意股票或主要指数设一个价格目标或涨跌幅，条件一旦满足，agent 就立刻执行你的指令。`PriceMonitorService` 通过一条共享的上游 WebSocket 连接，从 [ginlix-data](https://github.com/ginlix-ai/ginlix-data) 订阅实时逐笔数据（股票使用 realtime 层，指数使用 delayed 层）。基于 Redis 的去重能防止多个 server 实例重复触发。
-
-
-| 条件                         | 示例                                           |
-| ---------------------------- | ---------------------------------------------- |
-| 价格突破 / 跌破              | AAPL 突破 $200 时触发                           |
-| 涨跌幅超过 / 低于            | SPX 较前收盘 +2% 时触发                         |
-
-
-条件可以组合（AND 逻辑），每个价格自动化都支持**一次性**（触发一次）或**周期性**模式，冷却时间可配置（最短 4 小时，默认每个交易日一次）。
-
-> [!NOTE]
-> 按价格触发的自动化需要来自 ginlix-data 的实时 WebSocket 数据源。beta 期间，此功能仅在[托管平台](https://langalpha.ai)上提供。更广泛的 WebSocket 数据源支持已在后续版本的规划中。
-
-<p align="center">
-  <img src="images/automations-page-mag7-pre-earnings.png" alt="Automations page with template gallery and Mag 7 pre-earnings schedule" width="800" />
-</p>
-<p align="center"><em>排定周期性研究——这里，“七巨头”的财报前分析会在每次财报前自动运行。</em></p>
-
-**Agent 架构**
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-
-flowchart TB
-    subgraph Orchestrator ["BackgroundSubagentOrchestrator"]
-        direction TB
-        Agent["Main Agent · LangGraph ReAct"]
-    end
-
-    Agent -- "Task(init · update · resume)" --> SubPool
-    SubPool -- "results" --> Orchestrator
-
-    subgraph SubPool ["Subagent Pool — Parallel Async"]
-        direction LR
-        S1["general-purpose"]
-        S2["research"]
-        S3["user-defined"]
-    end
-
-    subgraph Middleware ["Middleware Stack"]
-        direction LR
-        MW1["Tool Safety<br/>Leak Detection<br/>Protected Paths<br/>Error Handling"]
-        MW2["Context & Skills<br/>agent.md Injection<br/>Skill Loading<br/>Multimodal"]
-        MW3["Coordination<br/>HITL<br/>Steering<br/>Subagent Dispatch"]
-        MW4["Resilience<br/>Compaction<br/>Retry + Fallback<br/>Prompt Caching"]
-    end
-
-    Agent -- "wraps model + tool calls" --> Middleware
-    Middleware --> LLM["Multi-Provider LLM<br/>OpenAI · Anthropic · Gemini · DeepSeek<br/>Qwen · Kimi · Doubao · GLM · MiniMax · ..."]
-
-    Agent <--> Tools
-
-    subgraph Tools ["Tool Layer"]
-        direction LR
-        T1["execute_code<br/>bash"]
-        T2["Filesystem<br/>read · write · edit<br/>glob · grep"]
-        T3["Finance<br/>Market Data · SEC<br/>Options · Screener"]
-        T4["Web<br/>Search · Fetch"]
-        T5["ShowWidget<br/>Inline HTML"]
-    end
-
-    T1 <--> Workspace
-    T2 <--> Workspace
-
-    subgraph Workspace ["Workspace — Daytona Sandbox"]
-        direction LR
-        W1["agent.md<br/>Workspace Notes"]
-        W2["work/‹task›/<br/>data · charts"]
-        W3["results/<br/>Reports"]
-        W4["tools/<br/>MCP Wrappers"]
-    end
-```
-
-
-
-### Agent 集群
-
-核心 agent 基于 [LangGraph](https://github.com/langchain-ai/langgraph) 运行，通过 `Task()` 工具派生并行的异步 subagent。subagent 各自在隔离的上下文窗口里并发执行，避免长推理链跑偏。每个 subagent 把综合后的结果交回主 agent，让编排层保持精简。主 agent 可以选择等待某个 subagent 的结果，也可以继续处理其他待办。你还能在界面里切到 **Subagents** 视图，实时查看它们的进度（仅 Web 前端）。
-
-除了简单派发，主 agent 还可以给仍在运行的 subagent 追加指令，也可以带着完整上下文恢复一个已完成的 subagent，用于迭代修改。若 server 重启，subagent 状态会从最后一个 checkpoint 自动重建。
-
-<p align="center">
-  <img src="images/chat-data-center-moat-ai-compute-timeline.png" alt="Parallel subagents researching the data center compute chain with an interactive AI compute timeline" width="800" />
-</p>
-<p align="center"><em>研究 subagent 沿着算力链并行分析——结果汇成一条交互式的 AI 算力时间线，覆盖 NVIDIA、Google、AMD、AWS 以及行业里的其他玩家。</em></p>
-
-### Middleware 栈
-
-agent 内置一套 middleware 栈，包括：
-
-- **实时 steering** — agent 可能走错方向、追踪无关数据，或者在分析中途误解你的意图。steering 让你不用等待任务结束就能纠偏。agent 运行时，你随时可以追加消息——更新指令、补充说明，或者提出新的问题——agent 会在下一步之前接收这些信息，就像实时对话一样。steering 在每一层都适用：给主 agent 改方向、给某个后台 subagent 追加指令，或者当工作流先结束时，让系统把尚未消费的消息退回输入框。任务不会丢失，也不用重启。
-- **动态 skill 加载**：通过 `LoadSkill` 工具，agent 按需发现并激活 skill 工具集；默认工具面保持精简，需要时再启用专门能力
-- **多模态**：拦下对图片和 PDF 的文件读取，从 sandbox 或 URL 下载内容，以 base64 注入对话，让多模态模型直接解读
-- **自动 compaction**：接近 token 上限时压缩对话历史，保留关键上下文并释放空间
-- **上下文管理**：自动把大块工具结果卸载到 workspace 文件系统，上下文里只保留简短预览；对话变长时随之 compaction——概括较早轮次，同时把完整记录留在 workspace 里随时可取回。研究 session 可以长期运行，不会轻易触及上下文上限。
-
-完整清单见 [`src/ptc_agent/agent/middleware/`](../src/ptc_agent/agent/middleware/)。
-
-致谢：部分 middleware 组件改编自 [LangChain DeepAgents](https://github.com/langchain-ai/deepagents) 的实现，或受其启发。
-
-### 流式传输与基础设施
-
-server 通过 SSE 流式输出 agent 的所有活动：文本分片、带参数和结果的工具调用、subagent 状态更新、文件操作产物，以及 human-in-the-loop 中断。agent 的每个决定都能在界面里完整追溯。
-
-工作流作为独立的后台任务运行，与 HTTP/SSE 连接完全解耦。即使浏览器标签页关闭或网络中断，agent 也会继续执行。重连时，最多 15 万条缓冲事件会重放，让客户端从断点处继续接上。
-
-PostgreSQL 承载 LangGraph 的 checkpoint、对话历史和用户数据（自选股、投资组合、偏好设置），因此 agent 状态和用户上下文能跨 session 留存。Redis 缓冲 SSE 事件，让浏览器刷新和断网都不会丢掉传输中的消息：客户端会自动重连、重放。用户数据以虚拟 JSON 文件的形式暴露给 agent，直接由数据库支撑——读取时按需把数据库中的当前行序列化，写入时在单个校验过的事务里落库，无需再同步到 sandbox——而 skill 则在 session 初始化时通过基于 manifest 的缓存同步到 sandbox，只有变更时才重新上传。细节见完整的 [API 参考](api/README.md)。
-
-### 数据溯源
-
-agent 访问过的每个外部数据源都会被记录并呈现。一层溯源 middleware 会记录每一次网页搜索、页面抓取、SEC 文件、行情调用、MCP 工具调用和 workspace 文件读取——包括后台 subagent 的访问——并为每个来源发出一个 `provenance` 流事件；这些事件不会进入 LLM 上下文。界面会把它们渲染成每轮旁边的 Sources 面板：来源按类型分组，网页来源配 favicon，详情视图里展示 provider、时间戳、捕获的参数、内容指纹和一段摘录。一个 *本轮 / 全部来源* 开关可以展开整个 thread 的完整数据足迹；点击文件或 memo 来源，就会直接在 workspace 文件面板里打开。每一份研究成果背后的数据，都保留可审计的记录。
-
-## 安全与 Vault
-
-LangAlpha 围绕凭据、代码执行和用户提供的 secret 采用分层安全模型。
-
-**静态加密** — 所有敏感数据（BYOK API key、OAuth token、vault secret）都在 PostgreSQL 内用 `pgcrypto` 加密。数据库里从不存明文。
-
-**凭据泄露检测** — 每一份工具输出在进入 LLM 上下文前都会被扫描。middleware 会解析所有已知的 secret 值（MCP server key、sandbox token、vault secret），命中就脱敏为 `[REDACTED:KEY_NAME]`。面向人的界面也一样——文件读取和下载在到达客户端前都会先清洗。
-
-**沙箱化代码执行** — 每个 workspace 都运行在自己的 [Daytona](https://www.daytona.io/) 云 sandbox 里，有专属的文件系统和网络边界。受保护路径的守卫会阻止 agent 访问内部系统目录——工具输入侧会在执行前短路调用，工具输出侧会脱敏泄露路径。
-
-### Vault
-
-每个账户都有一个内置的 secret vault，用来存放 agent 在代码执行时会用到的 API key 和凭据。无论是访问第三方数据源（券商 API、外部数据供应商等），还是在 workspace 里构建由 LLM 驱动的工作流，都用得上。在界面里存一次 secret，就能通过一个简单的 Python API，供你每个 workspace 里的 agent session 取用：
-
-```python
-from vault import get, list_names, load_env
-
-api_key = get("MY_API_KEY")       # 取出单个 secret
-names = list_names()               # 列出所有可用的 secret 名称
-load_env()                         # 把所有 secret 批量加载为环境变量
-```
-
-vault secret 继承上面的每一层防护：静态加密、从所有面向 agent 和面向人的输出里脱敏，并禁止直接文件访问。只有账户的拥有者能创建、更新、查看或删除 secret。
-
-## 前端
-
-Web 界面不只是聊天窗口，而是一套完整的研究工作台：
-
-- **可配置 dashboard** — 从预设布局起步（Morning Brief、Trader、Researcher、Agent Desk、Trader (TradingView) 或 Portfolio Steward），或者从涵盖行情、情报、个人上下文、agent 入口和 workspace 快捷方式的 widget 库里自行组合
-- **内嵌金融图表** — 工具结果直接在聊天 thread 里渲染成交互式迷你走势图、柱状图和概览卡片
-- **内嵌 HTML widget** — agent 能通过 `ShowWidget` 工具，直接在聊天里渲染交互式的 HTML/SVG 可视化（Chart.js 图表、指标卡、数据表），带主题自适应样式和沙箱化的 iframe
-- **HTML 研究报告** — agent 把完整自包含的 HTML 文档写到 `results/`，以真实浏览器语义呈现（脚本会执行、CDN 库会加载、相对资源能解析），可全屏查看、可导出 PDF——有别于内嵌 widget 和实时 dashboard
-- **多格式文件查看器** — PDF（分页、可缩放）、Excel、CSV、HTML 预览和源代码（带 diff 模式的 Monaco 编辑器）——全都无需下载，就地查看
-- **TradingView 图表** — 完整的 TradingView Advanced Chart，带绘图工具、指标和专业的 K 线样式
-- **实时行情** — 实时 WebSocket 价格流，逐笔精度到 1 秒（美股），盘前盘后可视化，多条均线叠加
-- **Agent 手绘图表标注** — agent 在股票的实时图表上标出价格位、趋势线、斐波那契回撤和事件标记，按 `symbol:timeframe` 保存，直接显示在 MarketView 上，也可从聊天里的图表卡片一键打开
-- **可分享对话** — 一键分享，权限可细粒度控制（开关文件浏览和下载权限），并通过公开 URL 回放
-- **实时 subagent 监控** — 实时查看每个后台任务的流式输出和工具调用，也能在执行途中下达指令
-- **数据溯源面板** — 每一轮都列出 agent 访问过的外部来源（网页、SEC 文件、行情、MCP 工具、文件），包含 favicon、内容指纹，以及按 thread 切换范围的开关
-- **自动化** — 增删改查管理，带 cron 构建器、执行历史、手动触发，以及在股票或指数触及实时价格条件时触发的价格自动化
-
-<p align="center">
-  <img src="images/dashboard-market-overview-news-watchlist.png" alt="Dashboard with market index strip, market news brief, and watchlist — with a news brief dropped into the agent chat as context" width="800" />
-</p>
-<p align="center"><em>dashboard 展示市场指数、个性化简报和你的自选股——任意一块面板都能 pin 给 agent 作为聊天上下文，用来开启一条研究 thread。</em></p>
+新开的一段对话会基于之前各段对话留在工作区里的研究和文件把它做出来：[一个可以上手操作的实时仪表盘](https://app.langalpha.ai/a/DB8NBmVeudB1)。
 
 <table align="center">
   <tr>
-    <td width="50%">
-      <img src="images/dashboard-preset-picker-morning-brief.png" alt="Dashboard preset picker with Morning Brief, Agent Desk, Researcher, and Trader templates" />
-    </td>
-    <td width="50%">
-      <img src="images/dashboard-widget-gallery-add-widget.png" alt="Dashboard widget gallery with markets, intelligence, personal, agent, and workspace categories" />
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><em>从精选预设起步——Morning Brief、Agent Desk、Researcher 或 Trader。</em></td>
-    <td align="center"><em>或者从 widget 库里自行组合——行情、情报、个人、agent 和 workspace。</em></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-workspace-data-files.webp" alt="研究进行中的 demo-cbrs 工作区：Agent 正在加载 xlsx 和 dcf-model 技能并运行代码获取市场输入数据，旁边打开的是 overview 任务 data 文件夹里的 revenue_history.json，文件树中每个任务各占一个文件夹" /><br /><sub><b>工作区文件</b>：大批量数据落在文件里，而不是 Agent 的上下文中。价格、披露文件和模型输入都放进文件树里各个任务的 data/ 文件夹</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dashboard-openai-exposure.webp" alt="仪表盘对话：搭建请求，以及一条合并另一段对话事件文件的追加消息，旁边是实时 CBRS 仪表盘中关于 OpenAI 依赖程度的页面，含敞口明细和在手订单压力测试" /><br /><sub><b>运行中的应用</b>：Agent 会搭建交互式仪表盘。点击柱子、标记或表格行可以查看来源，可以拖动 OpenAI 在手订单压力测试，也可以用 @ 引用另一段对话的文件，把它们合并进来</sub></td>
   </tr>
 </table>
 
-## 渠道集成
+### ⏰ 替你盯盘的 Agent
 
-在你日常使用的工具里直接使用 LangAlpha。集成网关在各消息平台和核心 agent 之间转发消息，每个渠道都会以自己的原生格式收到回复。渠道集成仅在我们的托管服务上提供，支持一键配置和快速账号绑定——访问 [integrations](https://platform.langalpha.ai/integrations) 即可开始。
+可以安排开盘前的简报，也可以在股价突破某个价位，或单日涨跌达到设定幅度时唤醒 Agent。结果都汇总在同一个动态流里；如果连接了 Slack、Discord 或 iMessage，也会推送到那里。
 
+> *“帮我盯着 CBRS。每周一检查一遍模型假设，Q3 财报出来后更新模型，股价突破我们的乐观情景估值或跌破 $95 时告诉我。”*
 
-| 功能                           | Slack | Discord | 飞书   | Telegram | WhatsApp |
-| ------------------------------ | ----- | ------- | ------ | -------- | -------- |
-| 富文本 / markdown              | ✅     | ✅       | ✅      | ✅        | 🔜       |
-| 文件上传（用户 → agent）       | ✅     | ✅       | ✅      | ❌        | ➖        |
-| 文件下载（agent → 用户）       | ✅     | ✅       | ✅      | ❌        | ➖        |
-| 图片渲染                       | ✅     | ✅       | ✅      | ❌        | ➖        |
-| Human-in-the-loop 中断         | ✅     | ✅       | ✅      | ⚠️       | ➖        |
-| Subagent 跟踪                  | ✅     | ✅       | ✅      | ✅        | 🔜       |
-| Workspace / 模型选择           | ✅     | ✅       | ✅      | ✅        | 🔜       |
-| 自动化推送（出站）             | ✅     | ✅       | ❌      | ➖        | ➖        |
-| 简化账号绑定                   | ✅     | ✅       | ❌      | ❌        | ➖        |
-| Slash command                  | ✅     | ✅       | ✅      | ✅        | ➖        |
+Agent 在工作区里创建了四个自动化：每周一次的假设检查，Q3 财报次日早上执行一次的模型更新，以及两个价格触发，一个设在 DCF 模型的乐观情景估值，一个设在 $95，也就是会改变评级的价位。每次运行都从工作区里的模型和笔记出发，结果发到 Slack。
 
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-schedules-price-watches.webp" alt="自动化页面，包含每周一次的 CBRS 检查、一次财报后的模型更新和两个价格触发" /><br /><sub><b>自动化</b>：所有定时任务和价格监控集中在一个页面，显示每个监控离触发还差多少，以及结果发往哪里</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-new-price-move.webp" alt="一个新的自动化：CBRS 较前收盘价上涨 15% 时唤醒 Agent，附带指令，结果推送到 Slack 私信" /><br /><sub><b>价格触线时</b>：股价相对前收盘价或当日开盘价的涨跌幅达到设定百分比时唤醒 Agent，并显示今日涨跌幅与你设定阈值的对比</sub></td>
+  </tr>
+</table>
 
-Slack 和 Discord 提供原生的频道和 thread 级分组，天然对应到 LangAlpha 的 workspace 和 thread——上下文由原生机制管理。Telegram 和 WhatsApp 没有这些基础结构，因此走一种简化的编排模式。飞书具备完整的消息和卡片式 UI，OAuth 即将到来。Telegram 目前部分支持，完整覆盖正在推进中。WhatsApp 尚在规划中。
+### 📑 拿到交付物，而不只是一个回答
+
+公式联动的 Excel 模型、PDF 和 HTML 报告、幻灯片和交互式仪表盘。内置技能覆盖 DCF、可比公司分析、财报前瞻、首次覆盖、晨报和交易推介。
+
+> *“按卖方首次覆盖报告的格式把 CBRS 写出来：评级、目标价、投资逻辑、市场已经计入了什么、情景分析、可比公司、主要风险，还有图表。用我们已有的研究和模型。”*
+
+首次覆盖技能基于这段对话前面的研究和反向 DCF 工作簿，写出十页报告：卖出评级、目标价 $130，加上情景分析、可比公司、风险和七张图表，输出为 PDF，另附 [HTML 版本](https://app.langalpha.ai/a/eedVW2kllALZ)。在表格面板里选中一个区域，可以把它发回给 Agent 提问。连接 Slack 后，让它把所有内容发过来，每个文件都会出现在你的私信里，直接就能打开。
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-report.webp" alt="对话旁打开的十页 CBRS 首次覆盖报告，含营收和客户集中度图表" /><br /><sub><b>文件面板</b>：HTML 报告既可以看渲染效果，也可以看源码，背后引用的披露文件和新闻稿以内联方式标注</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dcf-comps-workbook.webp" alt="表格面板中的 CBRS 反向 DCF 工作簿，选中的单元格可以直接加入对话" /><br /><sub><b>表格</b>：一份真实的工作簿，DCF、WACC、Comps 和 Checks 各表公式联动，旁边是为可比公司部分提供数据的研究过程</sub></td>
+  </tr>
+</table>
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-peers.webp" alt="首次覆盖请求旁边是 PDF 查看器中的 CBRS 报告，停在用可比公司估值和利润率检验乐观情景的那一页" /><br /><sub><b>PDF 查看器</b>：在对话旁翻页、缩放查看成品 PDF，图中是用可比公司估值倍数和利润率检验乐观情景的那一页</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/slack-cbrs-deliverables-dm.webp" alt="Agent 把首次覆盖报告、工作簿、仪表盘和研究笔记发到 Slack 私信，报告已在 Slack 中打开" /><br /><sub><b>Slack</b>：整套材料分两条消息发送，先是交付物，再是研究笔记，每个文件都是消息下的一条单独回复</sub></td>
+  </tr>
+</table>
+
+### 📈 和 Agent 一起看图
+
+Agent 在任意对话中都能读取实时行情图表，并在上面绘制支撑位和阻力位、趋势线、斐波那契位和事件标记，按代码和周期分别保存。在行情中心之外，绘制结果会以图表卡片的形式出现，点开即可在对话旁打开同一张图表。
+
+> *“画出 CBRS 上市以来的走势，标出推动股价的事件：财报、重大合作、分析师观点和解禁。”*
+
+Agent 先弄清每个大幅波动日的驱动因素，再把它画到实时图表上：18 个事件徽标、4 个解禁标记，以及 $185 IPO 价和一致预期目标价两条线。鼠标悬停在徽标上即可查看注释。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chart-cbrs-post-ipo-event-annotations.webp" alt="CBRS 实时日线图，带有 Agent 绘制的 IPO 以来事件徽标、解禁标记和参考线" width="800" />
+  <br />
+  <sub><b>实时图表</b>：每条注释都标在股价有反应的那一天，对话中再用表格列出每次波动及其来源</sub>
+</p>
+
+### 🧾 每个回答背后的证据都看得到
+
+数据来源面板会列出 Agent 在一轮中访问过的每份披露文件、每个网页、每次数据调用和每个文件，连它在自己的 Python 和 Bash 里发起的数据调用也包括在内。你可以核查它的工作，而不只是选择相信。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-sources-panel.webp" alt="数据来源面板，列出一轮背后的子 Agent 读取、SEC 文件、市场数据和数据工具调用" width="800" />
+  <br />
+  <sub><b>数据来源</b>：在本轮的 14 个来源和整段对话的 560 个来源之间切换，按网页搜索与抓取、SEC 文件、市场数据和数据工具分组，每条都附有当时使用的提示词或参数</sub>
+</p>
+
+## Agent 交易
+
+我们致力于把 LangAlpha 做成最好的 Agent 交易 harness。券商如今已经允许 AI Agent 操作真实账户交易，而接入的 Agent 都是通用型的，下单只是众多工具调用中的又一个。在 LangAlpha 里，整个 harness 正是围绕下单这一个调用设计的：
+
+- **无论模型怎么做，限制都成立**。每个连接能做什么、哪些订单要等你批准，以及“批准后的订单只执行一次”这条规则，都在主机端强制执行，落在每笔订单都必须经过的那条[受控路径](#受控订单)上。任何提示词、任何 Agent 写的脚本都无法放宽这些限制，换用哪个模型也都一样。
+- **下单路径可供审阅**。一笔订单从模型发起调用到券商收到请求，途经的每一道检查都是这个仓库里的代码。把钱交给它之前，你可以先读一遍代码，也可以在自己的机器上以同样的管控运行它。
+
+目前已支持四家券商，适用同一套管控：
+
+| | Robinhood | Interactive Brokers | moomoo | Webull |
+| --- | :---: | :---: | :---: | :---: |
+| 账户、持仓、历史记录 | ✅ | ✅ | ✅ | ✅ |
+| 行情与自选列表 | ✅ | ✅ | ✅ | ✅ |
+| 订单预览 | ✅ | | | |
+| 模拟交易 | | | ✅ | |
+| 预设订单，在券商 App 内确认 | | ✅ | | |
+| 实盘下单 | ✅ | | ✅ | |
+
+Robinhood 需要通过桌面应用连接，因为 Robinhood 只接受回跳到本地应用的登录。moomoo 覆盖美国、大中华区、日本和东南亚市场。
+
+连接券商时，由你决定它能做什么：只读、模拟交易，还是实盘下单。
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-brokerages-capabilities.webp" alt="插件页面的券商标签页，显示每个券商连接能做什么" /><br /><sub><b>券商</b>：连接你的券商账户；关联之前，每张卡片都会列出 Agent 在该券商能做什么</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-robinhood-connect-capabilities.webp" alt="连接 Robinhood 时，Agent 可做的每件事都有一个开关，从行情数据到实盘下单，其中实盘下单保持关闭" /><br /><sub><b>能力</b>：只开启你信任的功能。根据你的持仓确定数量的订单会停在审批卡片上，你同意之前，什么都不会发到券商</sub></td>
+  </tr>
+</table>
 
 ## 快速开始
 
-> [!TIP]
-> **不想自己部署？** 试试[托管版本](https://langalpha.ai)——开箱即带完整的数据基础设施（FMP、实时行情、云 sandbox）。接入你自己的 LLM key（BYOK）即可开始。
+**用你已经付费的模型**。可以用 Claude 或 ChatGPT 订阅登录，使用 Kimi、GLM 或 MiniMax 的 coding plan，接入任意 API key，自托管时还可以运行本地模型。
 
-只靠 **Docker** 就能启动 LangAlpha——不需要数据 API key，也不需要云 sandbox。基础设施用 Docker，AI 模型用你自己的 LLM 订阅即可。
+**在你习惯的地方使用**。可以用浏览器、适用于 macOS、Windows 和 Linux 的[桌面应用](https://github.com/ginlix-ai/langalpha/releases)，在 [LangAlpha.ai](https://langalpha.ai) 上还能用 Slack、Discord、Telegram、飞书和 iMessage。
+
+**托管版（beta）**。在 [LangAlpha.ai](https://langalpha.ai) 注册，可以免费开始，也可以试用我们的某个套餐。行情数据、云端沙箱、券商连接和渠道都已为你配置好。beta 期间，套餐和功能可能调整。
+
+**自托管**。只需要 Docker：
 
 ```bash
-git clone https://github.com/ginlix-ai/langalpha.git
-cd langalpha
-make config   # 交互式向导——创建 .env，配置 LLM、数据源、sandbox 和搜索
-make up       # 启动 PostgreSQL、Redis、后端和前端
+git clone https://github.com/ginlix-ai/langalpha.git && cd langalpha
+make config   # wizard: model, data sources, sandbox, web search
+make up       # Postgres, Redis, backend and web app
 ```
 
-- **前端：** [http://localhost:5173](http://localhost:5173)
-- **后端 API：** [http://localhost:8000](http://localhost:8000)（交互式文档在 `/docs`）
-- **验证：** `curl http://localhost:8000/health`
+打开 [http://localhost:5173](http://localhost:5173)。API 监听 8000 端口，交互式文档位于 `/docs`。
 
-想要完整体验，向导会提示你填写一些可选 key；也可以稍后再加到 `.env` 里：
+**自托管有哪些不同**。Agent、工作区、自动化、技能和受控订单的运行方式完全相同，其余部分有差异：
 
+| | 托管版 | 自托管 |
+| --- | --- | --- |
+| 行情数据 | 美股及期权实时报价，含盘前盘后。中国 A 股即将上线 | Yahoo Finance 或 FMP 报价，每 60 秒刷新一次，标记为延迟行情 |
+| 期权与市场结构 | 期权链和快照、空头持仓、流通股和涨跌幅榜 | 不可用 |
+| 价格触发 | 基于实时逐笔数据触发 | 每 30 秒针对延迟报价轮询一次 |
+| 渠道 | 在 Slack、Discord、Telegram、飞书和 iMessage 中对话，自动化结果可发到 Slack、Discord 和 iMessage | Web 应用和桌面应用。自动化结果发送到你自己运行的 webhook（`AUTOMATION_WEBHOOK_URL`） |
+| 账户 | 需要登录，每个用户的数据相互独立 | 只有一个无需登录的本地用户，任何能访问它的人都以你的身份操作，包括已连接的券商。请只在本机或私有网络中运行 |
+| 模型 | 套餐内含的模型、你自己的 key，或 Claude 和 ChatGPT 登录 | 你自己的 key、coding plan、本地模型，或 Claude 和 ChatGPT 登录 |
+| 可用性 | 在 AWS 美国东部全天候运行，你的电脑休眠时，自动化和价格触发也会照常执行 | 只在你的机器及其 Docker 栈运行时可用 |
+| 远程访问 | 随时随地通过浏览器、桌面应用和渠道使用 | Web 应用和 API 监听所有网络接口，因此你的局域网可以访问。要从外部访问，需要你自己把服务暴露出去，并放在 VPN 或带认证的代理之后 |
+| 运维 | 升级、迁移、备份和沙箱容量都已替你处理 | 升级、数据库迁移和备份由你自己负责。Docker 沙箱与你的机器共享 CPU、内存和磁盘 |
 
-| Key                                  | 解锁什么                                                                                                                |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `DAYTONA_API_KEY`                    | 持久的云 sandbox，支持跨 session 的 workspace（[daytona.io](https://www.daytona.io/)）                                   |
-| `FMP_API_KEY`                        | 高质量的基本面、宏观、SEC 文件、期权（[有免费额度](https://site.financialmodelingprep.com/)）                            |
-| `SERPER_API_KEY`、`TAVILY_API_KEY`、`EXA_API_KEY` 或 `PARALLEL_API_KEY` | 网页搜索（任一即可启用）                                                            |
-| `FIRECRAWL_API_KEY`                  | 升级网页抓取与站点爬取（内置爬虫无需密钥）                                                                              |
-| `LANGSMITH_API_KEY`                  | 为 LangGraph 运行提供 LangSmith 追踪                                                                                    |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`        | 把 OpenTelemetry 的 trace 和 metric 发到任意 OTLP 后端（Jaeger、Grafana Tempo、Datadog、Honeycomb 等）                  |
-| `SANDBOX_PROVIDER`                   | 覆盖 sandbox provider（`daytona` 或 `docker`）；未设置时会根据 `DAYTONA_API_KEY` 自动判定                               |
+<details>
+<summary><b>可选 key 及其解锁的功能</b></summary>
 
+| Key | 解锁内容 |
+| --- | --- |
+| `FMP_API_KEY` | 基本面、财务报表、宏观和分析师数据（[有免费额度](https://site.financialmodelingprep.com/)） |
+| `DAYTONA_API_KEY` | 来自 [Daytona](https://www.daytona.io/) 的云端沙箱。没有它时，沙箱运行在本地 Docker 中 |
+| `R2_*`、`S3_*` 或 `OSS_*`，配合 `storage.provider` | Cloudflare R2、AWS S3、阿里云 OSS 或 MinIO 上的对象存储。用于保存工作区文件快照、备忘录、附件、技能归档、大型对话记录和对话小组件数据，并通过签名链接提供下载。没有存储桶时，这些数据保存在 Postgres 中，图表截图功能也会关闭 |
+| `TAVILY_API_KEY`、`SERPER_API_KEY`、`EXA_API_KEY`、`PARALLEL_API_KEY`、`BOCHA_API_KEY` | 网页搜索。搜索引擎由 `agent_config.yaml` 中的 `search_api` 决定（默认 `tavily`），也可以由每个用户在设置中自行选择 |
+| `FIRECRAWL_API_KEY` | 增强的网页抓取和站点爬取。内置爬虫不需要 key |
+| `X_BEARER_TOKEN` | X 帖子搜索和推文串查询。在插件页面把它存入密钥库 |
+| `LANGSMITH_API_KEY`、`OTEL_EXPORTER_OTLP_ENDPOINT` | 追踪和指标 |
 
-> [!NOTE]
-> 没有外部服务 key 也可以使用，只是功能会少一些：Yahoo Finance 免费提供价格历史、基本面、财报和分析师数据，但没有实时报价、盘中逐笔数据、宏观经济和期权分析。Docker sandbox 会替代 Daytona 云 sandbox——完整的 PTC 代码执行照常可用，但安全性和隔离性会下降。逐步添加 key，就能解锁更多能力。
+即使不配置任何数据 key，你仍然可以使用 Yahoo Finance 的价格、基本面、分析师数据和选股，SEC EDGAR 文件，以及本地 Docker 沙箱。运行 `make help` 查看全部命令，或参阅 [CONTRIBUTING.md](../CONTRIBUTING.md#quick-start) 在本机直接运行后端和 Web 应用。
 
-运行 `make help` 查看所有可用命令。不使用 Docker 的手动部署方式，见 [CONTRIBUTING.md](../CONTRIBUTING.md#manual-setup)。
+</details>
 
-## 文档
+## Harness 设计
 
-- **[API 参考](api/README.md)**：涵盖聊天流式传输、workspace、工作流状态等接口
-- **交互式 API 文档**：server 运行时访问 `http://localhost:8000/docs`
+**送给模型哪些上下文、以什么形式送达、模型能对什么采取行动，这些定义了 harness。**
 
-## 联系我们
+凡是已有惯例的地方，LangAlpha 都沿用前沿实验室在自家 Agent 中采用的做法：能读、写、编辑和搜索的文件工具，一个 Bash shell，以 `SKILL.md` 文件形式提供的技能，以及仿照 `AGENTS.md` 风格的工作区 `agent.md`。这些形式很可能已经出现在模型的训练数据里，模型一上手就知道怎么用。
 
-商务合作、共建或一般咨询，请联系 [contact@ginlix.ai](mailto:contact@ginlix.ai)。
+### 工作区与记忆
+
+一个投资假设要跟踪数周、数月甚至更久，远远超出任何上下文窗口。让 Agent 在这么长的时间里始终盯住同一个目标，靠的是工作区和记忆，所以它从一开始就拥有完整的工作区和文件系统：其余一切都建立在这个基础之上。
+
+一台**计算机**对应一个沙箱。每个**工作区**是其中的一个文件夹，有自己的对话、文件和笔记，所以开启第二个想法只需几秒钟，不用再启动一台新机器。同一台计算机上的工作区共用一个操作系统用户；需要隔离时，请使用不同的计算机。
+
+每个文件夹里有一份由 Agent 维护的 `agent.md`（目标、发现、对话和文件的索引）、一个共享的 `data/` 目录，以及每个任务各自的文件夹。记忆、设置和历史记录保存在服务器上，不属于任何一个沙箱。通过 FUSE 挂载，它们在每台计算机上都显示为普通文件，因此能跨计算机、跨沙箱重建保留下来，Bash、代码和文件工具也都以同样的方式访问它们：
+
+| 存储 | 内容 |
+| --- | --- |
+| 记忆 | 按用户和按工作区保存的长期偏好与发现。Agent 会主动管理这些内容：记下它了解到的关于你和你工作的信息，并更新或删除过时的条目 |
+| 用户资料 | 你的投资组合、自选股和偏好设置，以 JSON 文件形式供 Agent 读取和更新 |
+| 自动化 | 每个自动化对应一个 JSON 文件。Agent 通过写入文件来创建、编辑或暂停自动化；服务器会先校验每次保存再让它生效，被拒绝的保存会在工具结果中报告 |
+| 工作流 | 已保存的工作流脚本，Agent 可以按名称运行、编辑或新增 |
+| 备忘录 | 你上传的 PDF 和笔记，经过提取和索引，供 Agent 引用。对 Agent 只读 |
+| 对话记录 | 以往的每段对话，均可搜索，Agent 能查到上周自己做了什么。只读 |
+
+### 程序化工具调用
+
+LangAlpha 从 2026 年 1 月首次发布起，就围绕程序化工具调用（programmatic tool calling）构建。Agent 不是逐个通过 JSON 调用工具，而是编写导入这些工具的 Python 代码：LangAlpha 把任意 [MCP](https://modelcontextprotocol.io) server 转换成附带文档的 Python 模块，代码在沙箱中运行。这样做有两个原因：
+
+- **工具还没用上，就已经占用了上下文**。如果以 JSON 工具的形式绑定，每个 server 的 schema 会随每次调用一起发送，不管这一轮用不用得到。在 LangAlpha 中，提示词里每个 server 只占一行，Agent 第一次需要某个 server 时，再从文件里读取它的完整文档。这样既节省 token，又减少干扰，新增一个 server 也只多一行。
+- **金融数据是表格，不是文字**。十来只股票十年的日线数据大约有 30,000 行。模型没法把这些当作文本来处理，直接贴进去也会占满上下文窗口。在代码里，Agent 可以对数据做聚合和转换、绘制图表，再输入估值模型或回测，只有结果会回到上下文中。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/ptc.webp" alt="程序化工具调用：模型编写代码，在沙箱中把 MCP server 作为 Python 模块导入，原始数据行留在沙箱里，只有结果返回给模型" width="880" />
+</p>
+
+代码是默认路径，但不是唯一路径。任何 MCP 工具都可以改为普通的 JSON 工具调用，在插件页面按工具设置。这适合账户操作这类敏感操作，每次调用都应该单独可见；下单工具则始终以这种方式运行，走[受控路径](#受控订单)。
+
+### 数据与工具
+
+批量数据通过 Python 模块在代码中处理，快速查询则以**直接**方式绑定：一次报价、一份公司概况、一份披露文件或一次选股，都是单个 JSON 工具调用，并在对话中显示为卡片。无论走哪条路径，结果大到放不进上下文时，都会存成文件，原位只留一段预览；预览不够用时，Agent 会在代码里打开这个文件。
+
+数据源涵盖三类数据：
+
+- **市场数据**：报价，股票、指数、加密货币、外汇和大宗商品的历史价格，期权链，选股器，以及市场和板块概览。
+- **基本面与宏观**：财务报表和财务比率、分析师数据、内部人交易、财报日历和经济日历、宏观数据序列以及收益率曲线。
+- **披露文件与文本**：SEC 文件和财报电话会记录、X 帖子以及网页。
+
+LangAlpha 自己的数据 server 专为代码处理而设计：每个市场数据工具都返回同样的外层结构（`symbol`、`currency`、`timezone`、`count`、`data`、`source`），时间序列按从旧到新排列，失败时返回带类型的错误码，因此 Agent 代码直接按索引取用结果，不必解析文字。
+
+数据服务商按市场逐级回退：美股数据用 LangAlpha.ai 上的实时数据源，基本面和宏观用 FMP，Yahoo Finance 作为免费兜底。网页搜索支持 Tavily、Serper、Exa、Parallel 和博查；网页抓取使用内置爬虫，可选择交给 Firecrawl 处理，每个服务商都有各自的熔断器保护。
+
+除了数据，Agent 还能使用以下工具：
+
+| 分组 | Agent 能做什么 |
+| --- | --- |
+| 代码与文件 | 运行 Python 和 shell 命令，长任务可放到后台；读取、写入、编辑和搜索文件；为它在沙箱中运行的应用分享预览链接 |
+| 网页 | 搜索、抓取页面，配合 Firecrawl 还能爬取整个站点或生成站点地图 |
+| 输出 | 在对话中渲染交互式小组件，在股票的实时图表上绘制标注 |
+| 协调 | 派发[子 Agent 和工作流](#子-agent-与-agent-团队)，以结构化问题向你提问，开启后还能维护待办清单 |
+| 你的连接 | 通过 OAuth 或 header 认证接入的券商和远程 MCP server，以及 Agent Plugins |
+| 消息 | 在 LangAlpha.ai 上，通过已连接的渠道给你发消息，可附带文件 |
+
+**数据溯源**层在模型上下文之外，记录 Agent 接触过的每个来源：市场数据和 MCP 调用（无论是模型直接调用工具，还是 Agent 的 Python 或 Bash 在沙箱里调用），网页搜索和抓取的页面，SEC 文件，以及 Agent 读取的文件、备忘录和记忆。每条记录都包含服务商、脱敏后的参数、时间戳和结果指纹，保留不超过 64 KB 的结果本身，并关联到发起调用的那一轮和那个 Agent（主 Agent 或子 Agent）。数据来源面板按轮次列出这些记录，API 也返回同样的记录，因此每个回答都可以对照它所依据的材料来核查。
+
+### 子 Agent 与 Agent 团队
+
+主 Agent 会把工作交给**子 Agent**，每个子 Agent 都有自己的上下文窗口。这样做有三个原因：
+
+- **同时做更多的事**。子 Agent 在后台运行，可以多个并行，主 Agent 则继续工作，或继续和你对话。
+- **研究更广、更深**。一个问题可以拆开分派，每家公司、每个业务分部或每个数据源交给一个子 Agent，各自按需要深挖。
+- **主 Agent 始终把握全局**。子 Agent 交回的是发现，而不是背后的搜索和工具调用，所以主 Agent 的上下文里保留的是投资假设和计划，不会偏离方向。
+
+内置五个子 Agent（`research`、`general-purpose`、`data-prep`、`equity-analyst`、`report-builder`），你也可以在 `agent_config.yaml` 中定义更多。它们始终可以联系上：主 Agent 可以给运行中的子 Agent 发送新指令，也可以带着完整历史恢复一个已完成的子 Agent。每个子 Agent 的工具调用和输出都会实时显示在界面上，你也可以直接给某个子 Agent 发消息。
+
+**工作流**让规模更进一步。遇到大型研究时，Agent 会运行一个工作流：一段简短的 JavaScript 程序，在服务器上沙箱化的 QuickJS 运行时中，用 `agent()`、`parallel()` 和 `pipeline()` 把工作分发给子 Agent。它可以按名称运行已保存的工作流，也可以当场写一个新的。驱动循环的是程序而不是对话，所以筛选一百家公司不需要一百轮对话，不过仍然要消耗一百个子 Agent 的 token。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/teams.webp" alt="主 Agent 的上下文中只有投资假设、计划和发现，它把工作交给子 Agent，以及一个分发出一百个 agent() 调用的工作流；每个都只交回发现而不是工具调用，子 Agent 之间共享工作区文件" width="880" />
+</p>
+
+### 上下文如何构建
+
+每次模型调用都按层组装，从最稳定到最易变依次排列，因此长时间的会话也能持续命中服务商的提示词缓存。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/context.webp" alt="一次模型调用由五层组成，从最稳定到最易变依次为：工具、系统提示词、冻结的对话基线、历史记录和行情时间戳尾部，前四层之后各有一个缓存点" width="880" />
+</p>
+
+- **系统提示词**。只有一份模板，按当前所用模型的提示词档位渲染。
+- **对话基线**。在一轮开始时读取一次，随后冻结：工作区、你的偏好资料、MCP server 列表、技能清单、`agent.md`、两层记忆以及备忘录索引。之后其中任何一项发生变化，Agent 会收到一行简短的记录说明改了什么，基线本身保持逐字节不变。上下文压缩之后，或累积满 20 行记录时，基线会重建。
+- **运行时信息行**。每一轮开头都有一行信息，给出当前时间、市场交易时段（在它变化时）以及距上一轮过去了多久，按每家服务商期望的方式发送。
+- **引导**。Agent 工作期间你发送的消息，无论发给主 Agent 还是子 Agent，都会在它下一次调用模型之前送达。
+- **上下文压缩**。先裁剪旧的工具参数，原始内容保存为文件。接近模型上限时，较早的轮次会折叠成摘要，完整的对话记录另存下来，摘要会告诉 Agent 去哪里读取。
+
+### 模型
+
+LangAlpha 并非只为前沿模型调优。所有模型都由同一套工具和中间件驱动，因此开放权重模型也能以低得多的成本取得相近的效果。可以在对话中途切换服务商；调用失败时会先重试，再回退到你配置的备用模型。
+
+大多数服务商都支持 Chat Completions 格式，但对其中一些来说，这只是一层兼容层，会丢掉关键信息。LangAlpha 为每家服务商选择最适合其模型的 API 格式，例如 OpenAI 和 Codex 使用 OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses)，Claude、Kimi、MiniMax 和 DeepSeek 使用 Anthropic [Messages API](https://docs.anthropic.com/en/api/messages)。选择依据有两点：
+
+- **保留思考内容**。推理内容会在一轮之内和跨轮次回传给模型，并保持各服务商自己的格式：Anthropic 的签名 thinking block、OpenAI 的加密 reasoning item、GLM 的推理文本。
+- **运行时上下文走正确的通道**。harness 会向模型提供大量运行时上下文。在 OpenAI 风格的 API 上，它以 `developer` 消息发送；Anthropic 和 GLM 支持对话中途的 `system` 消息，就以这种形式发送；其他服务商则放进用户消息里。
+
+每个模型都有三项可调设置，可以在设置中按账户统一配置，也可以按模型单独配置：
+
+- **提示词档位**。前沿模型使用精简的提示词；较小的模型使用完整的提示词，附带示例和分步操作流程。两者出自同一份模板，因此始终保持一致。
+- **推理强度**。从 `none` 到 `max` 的统一档位，会写入各厂商自己的参数，模型不支持的档位则降到最接近的可用档位。在输入框中可以为单条消息单独调整。
+- **压缩预设**。从激进到宽松共四档，决定长对话多早开始压缩。默认根据模型的上下文窗口自动选择。
+
+| 接入方式 | 服务商 |
+| --- | --- |
+| 订阅登录 | Claude（Claude Code）、ChatGPT（Codex） |
+| Coding plan | Kimi、GLM、MiniMax |
+| API key | OpenAI、Anthropic、Gemini、DeepSeek、Qwen（DashScope）、Kimi（月之暗面）、GLM（智谱）、MiniMax、OpenRouter、Groq、Cerebras |
+| 本地 | Ollama、LM Studio、vLLM |
+
+Key 和 OAuth token 都使用 pgcrypto 静态加密存储。
+
+### 技能与插件
+
+技能遵循 [Agent Skills](https://agentskills.io/specification) 规范，插件遵循 [Agent Plugins 1.0.0](https://agent-plugins.org) 格式。内置的 MCP server 和技能以插件包的形式放在 [`plugins/`](../plugins/) 中，和你在插件页面上传或通过 git URL 安装的格式完全相同。在这些标准之上，LangAlpha 还增加了：
+
+- **技能按需加载**。提示词中每个技能只占一行清单条目，完整技能在使用斜杠命令或 Agent 读取其 `SKILL.md` 时才加载。技能自带的工具（例如自动化工具）在技能加载前保持隐藏。
+- **你的技能，你的命令**。把技能打包成 zip 上传，为它指定你想要的斜杠命令；也可以让 Agent 从 GitHub 安装技能到某个工作区。
+- **插件只有一个扩展块**。`mcp.json` 只接受该格式自身定义的字段。LangAlpha 增加的所有内容都放在 `plugin.json` 的 `extensions["ai.langalpha"]` 下，这是该格式唯一的扩展点：每个 server 的 `description` 和 `instruction`，会进入提示词；`tool_exposure_mode`，取值 `summary` 或 `detailed`，决定 Agent 预先能看到每个工具的多少信息；以及 `secrets`，列出 server 需要的每项凭据及其绑定位置。去掉这个扩展块，包仍然可以安装到任何 Agent Plugins 宿主中。详见 [`plugins/README.md`](../plugins/README.md)。
+- **第三方 server 隔离运行**。代码不归 LangAlpha 所有的 server 通过 `uvx` 或 `npx` 以固定版本启动，从不使用应用自身的环境，因此一侧的 SDK 升级不会影响另一侧。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-builtin-packages.webp" alt="插件页面的软件包标签页，列出六个内置插件包" width="720" />
+  <br />
+  <sub><b>软件包</b>：六个内置的 MCP server 与技能组合包，每个包整体开启或关闭，另外还能添加最多 50 个你自己的包</sub>
+</p>
+
+内置 38 个技能：
+
+| 包 | 技能 |
+| --- | --- |
+| 研究 | DCF 模型、可比公司分析、三表模型、模型更新与检查、首次覆盖、财报前瞻与分析、投资假设跟踪、交易推介、公司概况、竞争分析、板块概览、影响分析、催化剂日历、选股思路生成、晨报、盯盘、演示文稿检查 |
+| 交付物 | Excel、Word、PowerPoint、PDF、HTML 报告、交互式仪表盘、内嵌小组件、图表标注、UI 设计 |
+| 服务 | 自动化、新手引导、用户资料与投资组合、秘书、工作流、产品帮助、自我改进 |
+| 另类数据 | X 研究、网页抓取 |
+
+致谢：部分研究技能改编自 [anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins)。
+
+## 全栈架构
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/architecture.webp" alt="架构：Web、桌面端和聊天渠道连接到多 worker 的 FastAPI 后端，由后端的运行生命周期驱动 Agent；Agent 在沙箱化的计算机中工作，其文件持久化到 Postgres 和对象存储，券商和远程 MCP 调用经由出口中继发出，由中继附加凭据" width="880" />
+</p>
+
+每一轮都作为后台运行执行，与发起它的 HTTP 连接相互独立。事件经由每次运行专属的 Redis stream，通过 SSE 推送，所以关掉标签页或网络中断都不会丢失任何内容：客户端重新连接后会补上进度，已完成的轮次则从 LangGraph checkpoint 回放。Postgres 是唯一可信的数据源，Redis 只负责传输，因此后端可以运行多个 worker，任何一个都能提供事件流、消费队列或接管孤立的运行。完成配置后，Agent 的运行会追踪到 LangSmith，后端也会通过 OpenTelemetry 导出 trace 和指标。
+
+**文件不随沙箱消失**。每一轮结束后以及每次计算机停止时，所有发生变化的工作区文件夹都会生成快照。清单（manifest）在 Postgres 中按路径记录，每个路径一行。文件内容从沙箱直接写入兼容 S3 的对象存储；没有配置对象存储时，则保存在 Postgres 中。计算机关机时，文件浏览器和下载功能照常可用，重新创建的沙箱会从快照恢复。停止满一周的 Daytona 计算机还会把整块磁盘归档到冷存储，下次启动时从中恢复。
+
+**渠道网关**是 LangAlpha.ai 的一部分。它把 Slack、Discord、Telegram、飞书和 iMessage 中的对话接入 Web 应用所用的同一个聊天 API，并把自动化结果发到你选定的渠道。
+
+### 受控订单
+
+订单动用的是真金白银，所以它有自己专属的路径。下单工具固定为直接的 JSON 调用：一次调用就是一笔订单，系统可以看到、展示，也可以拦下。沙箱脚本一次执行就可能下任意多笔订单，因此下单工具从不在沙箱中开放。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/orders.webp" alt="一笔受控订单：模型的下单调用会记录下来并展示给你审批，批准后签发一个执行令牌，出口中继验证令牌、占用唯一一次发送机会，再用已存储的凭据发出订单" width="880" />
+</p>
+
+- **按连接授权**。连接券商时，由你选择它具备哪些能力组。不管模型请求什么，中继都会拒绝这些能力组之外的调用。
+- **按订单审批**。实盘订单和预设订单默认都要等你批准，模拟订单则不需要。每种模式都是一个由你控制的开关。
+- **只执行一次**。一次批准会签发一个短时有效的令牌，绑定到这次尝试、这个工具以及这组参数的哈希。改动任何参数、重放请求或第二次调用，都会在中继处失败。
+- **券商凭据不进沙箱**。券商 OAuth token 和远程 MCP 凭据由主机端的中继附加，Agent 写的代码永远接触不到。
+- **可审阅的账本**。每一次尝试、批准、拒绝和成交都会记录在订单页面上，对账程序会对照券商自己的记录确认订单的最终状态。
+
+### 安全
+
+- **密钥库**。API key 只需存一次，就能在任意工作区的代码中通过 `from vault import get` 使用。密钥静态加密存储，只有所有者能查看或修改。
+- **泄露脱敏**。每个工具结果送达模型之前，都会扫描其中是否包含已知的密钥值，命中的部分替换为 `[REDACTED:NAME]`。下载和分享的文件也做同样处理。
+- **沙箱化执行**。Agent 代码在 Daytona 或 Docker 沙箱中运行，受保护路径守卫会拒绝触及系统目录的工具调用。
+
+## 路线图
+
+- [x] 研究 harness：在代码中处理数据、持久化工作区、Agent 团队
+- [x] LangAlpha.ai 和桌面应用
+- [x] 券商连接与受控订单
+- [ ] 针对加密货币和预测市场调优的 Agent
+- [ ] 让你自己的 AI Agent（ChatGPT、Claude）把交易交给 LangAlpha
+
+## 参与贡献
+
+欢迎提交 issue 和 pull request，详见 [CONTRIBUTING.md](../CONTRIBUTING.md)。仓库包含后端和 Agent 核心（[`src/`](../src/)）、Web 应用（[`web/`](../web/)）、桌面端外壳（[`desktop/`](../desktop/)）以及内置插件（[`plugins/`](../plugins/)）。商务合作请发邮件至 [contact@ginlix.ai](mailto:contact@ginlix.ai)。
+
+<a href="https://star-history.com/#ginlix-ai/langalpha&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ginlix-ai/langalpha&type=Date&theme=dark" />
+    <img alt="Star 历史" src="https://api.star-history.com/svg?repos=ginlix-ai/langalpha&type=Date" width="600" />
+  </picture>
+</a>
 
 ## 免责声明
 
-LangAlpha 是一个研究工具，不是投资顾问。本软件产出的任何内容都不构成投资建议、推荐，也不构成买卖任何证券的招揽。所有输出仅供参考和学习之用。请自行判断——做投资决策前，务必自己完成尽职调查。
+LangAlpha 是软件，不是投资顾问。它产出的任何内容都不构成投资建议，也不构成买卖任何证券的推荐。Agent 只在你授予的权限内行动，你需要为账户中下的每一笔订单负责。请自行做好尽职调查。
 
 ## 许可证
 
-Apache License 2.0
+[Apache 2.0](../LICENSE)
