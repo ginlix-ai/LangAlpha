@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { useInRouterContext } from 'react-router';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import remarkMath from 'remark-math';
@@ -10,6 +11,8 @@ import 'katex/dist/katex.min.css';
 import SyntaxHighlighter, { oneDark, oneLight } from './SyntaxHighlighter';
 import { Copy, Check } from 'lucide-react';
 import { useTheme } from '@/contexts/ThemeContext';
+import { GuardedLink } from '@/components/GuardedLink';
+import { appRoutePath } from '@/lib/appRoutes';
 import WorkspaceImage from './WorkspaceImage';
 import { isFilePath, isImagePath, normalizeFilePath, parseSiblingHref, parseWsPath } from '../utils/filePaths';
 import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
@@ -329,8 +332,16 @@ const chatBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
     {...props}
   />
 );
+// A page of this app opens in place, through the router and past the host's
+// leave guard; anything else opens in a new tab so the conversation survives
+// the detour.
+function MarkdownLink({ href, ...props }: MarkdownComponentProps) {
+  const route = useInRouterContext() ? appRoutePath(href) : null;
+  if (route !== null) return <GuardedLink to={route} {...props} />;
+  return <a href={href} target="_blank" rel="noopener noreferrer" {...props} />;
+}
 const chatA = ({ node: _node, ...props }: MarkdownComponentProps) => (
-  <a className="underline hover:opacity-80 transition-opacity break-all" style={{ color: 'var(--color-accent-primary)' }} target="_blank" rel="noopener noreferrer" {...props} />
+  <MarkdownLink className="underline hover:opacity-80 transition-opacity break-all" style={{ color: 'var(--color-accent-primary)' }} {...props} />
 );
 const chatHr = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <hr className="my-4 border-0" style={{ borderTop: '1px solid var(--color-border-muted)' }} {...props} />
@@ -407,7 +418,7 @@ const panelCode = ({ node: _node, className, children, ...props }: MarkdownCompo
   return <code className={className} {...props}>{children}</code>;
 };
 const panelA = ({ node: _node, ...props }: MarkdownComponentProps) => (
-  <a className="underline" style={{ color: 'var(--color-accent-primary)' }} target="_blank" rel="noopener noreferrer" {...props} />
+  <MarkdownLink className="underline" style={{ color: 'var(--color-accent-primary)' }} {...props} />
 );
 const panelBlockquote = ({ node: _node, ...props }: MarkdownComponentProps) => (
   <blockquote
@@ -887,7 +898,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
         // No onOpenFile handler -- render as non-clickable text
         return <span {...props}>{children}</span>;
       }
-      // External URL -- default behavior
+      // A web link, or a page of this app -- default behavior
       const DefaultA = result.a;
       return <DefaultA node={_node} href={href} {...props}>{children}</DefaultA>;
     };

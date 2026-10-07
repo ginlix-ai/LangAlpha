@@ -1,8 +1,8 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, useInRouterContext, useNavigate } from 'react-router';
+import { useInRouterContext } from 'react-router';
 import { ArrowRight } from 'lucide-react';
-import { useRouteLeaveGuard } from '@/pages/ChatAgent/contexts/RouteLeaveGuardContext';
+import { GuardedLink } from '@/components/GuardedLink';
 
 /**
  * The one way off a card in a thread: the same attempt on the Orders page,
@@ -31,7 +31,7 @@ export function OrdersPageLink({ attemptId }: { attemptId: string }): React.Reac
   return (
     <div className="shrink-0">
       {inRouter ? (
-        <GuardedLink href={href} className={className} style={style}>
+        <GuardedLink to={href} className={className} style={style} onClick={(e) => e.stopPropagation()}>
           {label}
         </GuardedLink>
       ) : (
@@ -40,24 +40,5 @@ export function OrdersPageLink({ attemptId }: { attemptId: string }): React.Reac
         </a>
       )}
     </div>
-  );
-}
-
-function GuardedLink({ href, className, style, children }: {
-  href: string; className: string; style: React.CSSProperties; children: React.ReactNode;
-}): React.ReactElement {
-  const navigate = useNavigate();
-  const guardLeave = useRouteLeaveGuard();
-  const onClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.stopPropagation();
-    // Modified clicks open a new tab and leave nothing behind; the Link keeps those.
-    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.altKey || e.ctrlKey || e.shiftKey) return;
-    e.preventDefault();
-    guardLeave(() => navigate(href));
-  };
-  return (
-    <Link to={href} className={className} style={style} onClick={onClick}>
-      {children}
-    </Link>
   );
 }

@@ -7,10 +7,12 @@ import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
 import NetworkBanner from '@/components/NetworkBanner/NetworkBanner';
 import { StaleBuildBoundary } from '@/components/StaleBuildBoundary';
 import { lazyWithMotion } from '@/lib/lazyWithMotion';
+import type { AppSection } from '@/lib/appRoutes';
 
 // Chunk thunks shared by the lazy components and preloadRouteChunk — import()
 // is deduped by the module system, so a preload and the lazy mount share one
-// network fetch.
+// network fetch. Keyed by every section `APP_SECTIONS` names, so a link the
+// chat routes in place always has a page here.
 const routeChunks = {
   dashboard: () => import('../../pages/Dashboard/DashboardRouter'),
   chat: () => import('../../pages/ChatAgent/ChatAgent'),
@@ -22,7 +24,7 @@ const routeChunks = {
   settings: () => import('../../pages/Settings/Settings'),
   // Alias so preloading /connectors (the legacy path) warms the right chunk.
   connectors: () => import('../../pages/Plugins/Plugins'),
-};
+} satisfies Record<AppSection, () => Promise<unknown>>;
 
 const Dashboard = lazyWithMotion(routeChunks.dashboard);
 const ChatAgent = lazyWithMotion(routeChunks.chat);
