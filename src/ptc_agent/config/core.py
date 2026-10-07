@@ -102,6 +102,9 @@ class DaytonaConfig(ResourceTieredConfig):
     auto_stop_interval: int = 3600  # 1 hour
     auto_archive_interval: int = 604800  # 7 days, keep stopped (fast restart) before cold storage
     auto_delete_interval: int = 7776000  # 90 days, total dormant lifetime
+    # How long a computer's starts may be refused by a recovering host before
+    # it is rebuilt from its backup instead; the old sandbox is kept. 0 waits.
+    host_unavailable_rebuild_after_minutes: int = Field(default=60, ge=0)
     python_version: str = "3.12"
 
     # Snapshot configuration for faster sandbox initialization

@@ -118,7 +118,13 @@ def create_daytona_config(data: dict[str, Any]) -> DaytonaConfig:
     # Optional operator-tunable fields: only forward when present so the
     # DaytonaConfig defaults (and their validators) apply otherwise.
     optional_kwargs = {
-        key: data[key] for key in ("default_tier", "resource_tiers") if key in data
+        key: data[key]
+        for key in (
+            "default_tier",
+            "resource_tiers",
+            "host_unavailable_rebuild_after_minutes",
+        )
+        if key in data
     }
     return DaytonaConfig(
         api_key=os.getenv("DAYTONA_API_KEY", ""),
