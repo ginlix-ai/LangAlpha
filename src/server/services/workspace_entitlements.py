@@ -36,7 +36,12 @@ class WorkspaceEntitlementsMixin:
     """Tier reclaim, always-on, duplicate, and entitlement-reconciliation methods for WorkspaceManager."""
 
     async def _entitled_tier(
-        self, binding: ComputerBinding, user_id: str | None, *, session: Session | None = None
+        self,
+        binding: ComputerBinding,
+        user_id: str | None,
+        *,
+        session: Session | None = None,
+        mirror_only: bool = False,
     ) -> str:
         """Resolve the tier to provision, lazily reclaiming a lapsed elevated tier.
 
@@ -44,7 +49,8 @@ class WorkspaceEntitlementsMixin:
         row: reading a project's shadow is how one lagging row provisions a
         sandbox at a size the machine has left. Keeps the elevated size when the
         check is inconclusive (fail-safe / OSS) or the backed-up files would not
-        fit the standard disk (data safety over enforcement).
+        fit the standard disk (data safety over enforcement). ``mirror_only``
+        is for a recovery, which has no sandbox left to back up from.
         """
         from src.server.dependencies.usage_limits import spec_entitlement_lost
 
@@ -62,14 +68,19 @@ class WorkspaceEntitlementsMixin:
             logger.warning("No standard tier for computer %s; keeping %s", computer_id, tier)
             return tier
         try:
-            if binding.provider_ref:
+            # The mirror is measured before the strict backup that refreshes
+            # it: one that already overflows standard keeps the size without a
+            # full backup on every start, and space freed since counts from the
+            # next mirror.
+            await self._assert_machine_disk_fits(computer_id, standard.disk)
+            if binding.provider_ref and not mirror_only:
                 await self._backup_machine_files_to_db(
                     computer_id,
                     strict=True,
                     expected_sandbox_id=binding.provider_ref,
                     session=session,
                 )
-            await self._assert_machine_disk_fits(computer_id, standard.disk)
+                await self._assert_machine_disk_fits(computer_id, standard.disk)
         except RuntimeError as e:
             logger.warning(
                 f"Spec entitlement lost for computer {computer_id} "

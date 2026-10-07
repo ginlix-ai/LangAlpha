@@ -1060,6 +1060,51 @@ class TestBackupFilesStrict:
 
     @pytest.mark.asyncio
     @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_lazy_start_is_waited_out_before_the_sync(self, mock_file_svc):
+        """A lazy start names its sandbox before attaching the runtime, so the
+        identity check alone let the sync reach a runtime that was still None."""
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        session = _make_mock_session()
+        session.sandbox.runtime = None
+
+        async def start_lands():
+            session.sandbox.runtime = MagicMock()
+
+        session.sandbox.ensure_sandbox_ready = AsyncMock(side_effect=start_lands)
+        wm._machine(_STUB_COMPUTER_ID).session = session
+
+        async def sync(_workspace_id, sandbox, **_kw):
+            assert sandbox.runtime is not None
+            return SyncResult(synced=1)
+
+        mock_file_svc.sync_to_db = AsyncMock(side_effect=sync)
+
+        with _patch_backup_identity():
+            assert await self._backup(wm, ws_id, strict=True) is True
+        mock_file_svc.sync_to_db.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_failed_lazy_start_is_reported_without_a_sync(self, mock_file_svc):
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        session = _make_mock_session()
+        session.sandbox.runtime = None
+        session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError("sandbox-abc", "not found")
+        )
+        wm._machine(_STUB_COMPUTER_ID).session = session
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_backup_identity():
+            assert await self._backup(wm, ws_id) is False
+            with pytest.raises(BackupIncomplete, match="not ready"):
+                await self._backup(wm, ws_id, strict=True)
+        mock_file_svc.sync_to_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
     async def test_default_stays_best_effort(self, mock_file_svc):
         wm = WorkspaceManager(_make_config())
         ws_id = str(uuid.uuid4())
@@ -2563,6 +2608,7 @@ class TestHasFailed:
         sandbox = MagicMock()
         sandbox._ready_event = None
         sandbox._init_error = None
+        sandbox._lost = None
         # Call the real has_failed logic
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
@@ -2574,6 +2620,7 @@ class TestHasFailed:
         sandbox = MagicMock()
         sandbox._ready_event = asyncio.Event()
         sandbox._init_error = None
+        sandbox._lost = None
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
         result = PTCSandbox.has_failed(sandbox)
@@ -2585,6 +2632,7 @@ class TestHasFailed:
         sandbox._ready_event = asyncio.Event()
         sandbox._ready_event.set()
         sandbox._init_error = None
+        sandbox._lost = None
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
         result = PTCSandbox.has_failed(sandbox)
@@ -2596,10 +2644,26 @@ class TestHasFailed:
         sandbox._ready_event = asyncio.Event()
         sandbox._ready_event.set()
         sandbox._init_error = SandboxGoneError("sb-1", "not found")
+        sandbox._lost = None
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
         result = PTCSandbox.has_failed(sandbox)
         assert result is True
+
+    def test_lost_after_init(self):
+        """A reconnect that found the sandbox gone fails a handle that was ready,
+        so the next acquisition recovers instead of reusing it."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        sandbox = MagicMock()
+        sandbox._ready_event = None
+        sandbox._init_error = None
+        sandbox.runtime = object()
+        sandbox._lost = SandboxGoneError("sb-1", "replaced")
+
+        assert PTCSandbox.has_failed(sandbox) is True
+        assert PTCSandbox.is_ready(sandbox) is False
+        assert PTCSandbox.init_error.fget(sandbox) is sandbox._lost
 
 
 # ---------------------------------------------------------------------------
@@ -2885,6 +2949,59 @@ class TestSandboxRecovery:
         mock_session_mgr.cleanup_session.assert_awaited_with(_STUB_COMPUTER_ID)
         new_session.initialize.assert_called_once()
         assert result is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lazy", [True, False], ids=["lazy-start", "running"])
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    async def test_phase2_failed_recovery_releases_the_lazy_claim(
+        self,
+        mock_activity,
+        mock_ws_status,
+        mock_computer_status,
+        mock_session_mgr,
+        mock_get_ws,
+        lazy,
+    ):
+        """The clear before the recovery forgets the claim; without the release
+        the row stays starting until the reaper. It releases only while the row
+        is still this start's, since a recovery on another worker may have
+        bound its own sandbox meanwhile."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+        session = _make_mock_session()
+        claimed = session.sandbox.sandbox_id
+        session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError(claimed, "not found")
+        )
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
+        manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = lazy
+        mock_session_mgr.cleanup_session = AsyncMock()
+        manager._recover_sandbox = AsyncMock(side_effect=RuntimeError("restore failed"))
+
+        with _patch_identity(workspace), pytest.raises(RuntimeError):
+            await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        if lazy:
+            mock_computer_status.assert_awaited_once_with(
+                _STUB_COMPUTER_ID,
+                "stopped",
+                expected="starting",
+                expected_provider_ref=claimed,
+                require_provider_ref=True,
+            )
+        else:
+            mock_computer_status.assert_not_awaited()
+        assert not any(
+            c.kwargs.get("status") == "stopped"
+            for c in mock_ws_status.await_args_list
+        )
 
     @pytest.mark.asyncio
     @cm_patch("db_get_workspace")
@@ -4233,6 +4350,22 @@ class TestEntitledTier:
         mock_set_tier.assert_awaited_once_with(_STUB_COMPUTER_ID, "standard")
 
     @pytest.mark.asyncio
+    async def test_mirror_only_never_runs_the_strict_backup(self):
+        manager = self._make_manager()
+        binding = _binding("ws-1", resource_tier="max")
+        manager._backup_machine_files_to_db = AsyncMock()
+        manager._assert_machine_disk_fits = AsyncMock()
+
+        with (
+            patch(self._LOST, new_callable=AsyncMock, return_value=True),
+            patch(self._SET_TIER, AsyncMock()),
+        ):
+            tier = await manager._entitled_tier(binding, "user-1", mirror_only=True)
+
+        assert tier == "standard"
+        manager._backup_machine_files_to_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("attached", [True, False])
     async def test_incomplete_backup_retains_tier_before_any_destruction(self, attached):
         manager = self._make_manager()
@@ -4249,7 +4382,8 @@ class TestEntitledTier:
             binding.computer_id, strict=True, expected_sandbox_id=binding.provider_ref, session=session,
         )
         write.assert_not_awaited()
-        manager._assert_machine_disk_fits.assert_not_awaited()
+        # Only the mirror's measurement ahead of the backup ran.
+        manager._assert_machine_disk_fits.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lost_but_files_overflow_keeps_size(self):
@@ -4875,6 +5009,35 @@ class TestRecoverSandboxEntitledTier:
         assert result is session
         manager._entitled_tier.assert_awaited_once()
         assert session.initialize.await_args.kwargs["tier"] == "standard"
+
+    @pytest.mark.asyncio
+    @cm_patch("update_workspace_activity")
+    @cm_patch("SessionManager")
+    @cm_patch("db_get_workspace")
+    async def test_recovery_asks_for_a_mirror_only_entitlement_check(
+        self, mock_get_ws, mock_session_mgr, mock_activity
+    ):
+        """The sandbox being replaced is gone, so a strict backup from it would fail."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(
+            workspace_id=ws_id, status="stopped", resource_tier="max"
+        )
+        mock_get_ws.return_value = workspace
+        mock_session_mgr.get_session.return_value = _make_mock_session()
+
+        manager._entitled_tier = AsyncMock(return_value="standard")
+        manager._mint_sandbox_tokens = AsyncMock(return_value={})
+        manager._apply_session_mcp = AsyncMock(return_value=None)
+        manager._sync_sandbox_assets = AsyncMock()
+        manager._restore_files = AsyncMock()
+
+        with _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID):
+            await manager._recover_sandbox(
+                _binding(ws_id, resource_tier="max"), "user-1", MagicMock()
+            )
+
+        assert manager._entitled_tier.await_args.kwargs["mirror_only"] is True
 
 
 class TestRecoverSandboxOwnerBackfill:
@@ -6142,6 +6305,7 @@ class TestPlatformSecretWiring:
             provider_ref="sandbox-abc",
             expected_previous_provider_ref="sb-old",
             platform_secret_version=0,
+            expected_host_unavailable_since=None,
         )
         status.assert_not_awaited()
 

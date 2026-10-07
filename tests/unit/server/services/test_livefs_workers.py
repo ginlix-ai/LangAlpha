@@ -692,6 +692,9 @@ async def test_a_reconnect_that_boots_the_sandbox_marks_it_with_no_mount():
         def is_transient_error(self, exc):
             return False
 
+        def is_host_unavailable(self, exc):
+            return False
+
     sandbox = PTCSandbox(_config(), None)
     sandbox.provider = _Provider()
     sandbox.livefs = object()

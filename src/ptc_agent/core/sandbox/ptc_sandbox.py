@@ -6,6 +6,7 @@ import secrets
 import shlex
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
+from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -24,10 +25,13 @@ from ptc_agent.core.sandbox.providers import create_provider
 from ptc_agent.core.sandbox.livefs_mount import MountHandle
 from ptc_agent.core.sandbox.retry import RetryPolicy, async_retry_with_backoff
 from ptc_agent.core.sandbox.runtime import (
+    HostUnavailablePolicy,
     PreviewInfo,
     RuntimeState,
     SandboxFailureKind,
     SandboxGoneError,
+    SandboxHostLostError,
+    SandboxHostUnavailableError,
     SandboxRuntime,
     SandboxTransientError,
 )
@@ -73,10 +77,15 @@ class PTCSandbox:
     def __init__(
         self, config: CoreConfig, mcp_registry: MCPRegistry | None = None,
         *, resource_tier: str | None = None,
+        host_unavailable_policy: HostUnavailablePolicy | None = None,
     ) -> None:
-        """``mcp_registry`` may be None when reconnecting to an existing sandbox."""
+        """``mcp_registry`` may be None when reconnecting to an existing sandbox.
+
+        ``host_unavailable_policy`` decides when a start refused by a recovering
+        host stops being worth waiting for; without one it never is."""
         self.config = config
         self.resource_tier = resource_tier
+        self.host_unavailable_policy = host_unavailable_policy
         self.mcp_registry = mcp_registry
 
         # Provider-based sandbox management
@@ -122,6 +131,12 @@ class PTCSandbox:
         # a sandbox no reconnect has completed on: an errored one may hold the
         # only copy of files its backup lacks.
         self._reconnect_incomplete = False
+        # Set once a rebuild elsewhere is authorized: the host may come back,
+        # and with it files the backup lacks, so cleanup never deletes this one.
+        self._kept_for_salvage = False
+        # A reconnect after a transient found the sandbox gone. The handle then
+        # reads as failed, so the next acquisition recovers instead of reusing it.
+        self._lost: SandboxGoneError | None = None
 
         # Cached skills manifest (populated after sync_sandbox_assets)
         self._skills_manifest: dict[str, Any] | None = None
@@ -235,6 +250,8 @@ class PTCSandbox:
         Returns:
             True if sandbox is ready for operations, False if still initializing.
         """
+        if self._lost is not None:
+            return False
         if self._ready_event is None:
             # Not using lazy init - check if runtime exists
             return self.runtime is not None
@@ -243,15 +260,17 @@ class PTCSandbox:
         return self._ready_event.is_set() and self._init_error is None
 
     def has_failed(self) -> bool:
-        """Check if lazy initialization completed with an error."""
+        """Check if lazy initialization completed with an error, or the sandbox was lost since."""
+        if self._lost is not None:
+            return True
         if self._ready_event is None:
             return False
         return self._ready_event.is_set() and self._init_error is not None
 
     @property
     def init_error(self) -> Exception | None:
-        """The error from lazy initialization, if any."""
-        return self._init_error
+        """The error from lazy initialization, or the loss of the sandbox since."""
+        return self._lost or self._init_error
 
     @property
     def skills_manifest(self) -> dict[str, Any] | None:
@@ -768,11 +787,7 @@ class PTCSandbox:
             logger.debug(
                 "Starting stopped sandbox", sandbox_id=sandbox_id, state=state_value
             )
-            await self._runtime_call(
-                self.runtime.start,
-                timeout=60,
-                retry_policy=RetryPolicy.SAFE,
-            )
+            await self._start_runtime(sandbox_id, self.runtime.start, timeout=60)
             _mark_rc("start")
         elif state_value == "starting":
             # Sandbox is already transitioning — wait for it to reach 'running'.
@@ -828,11 +843,7 @@ class PTCSandbox:
                     "Sandbox finished stopping, starting it",
                     sandbox_id=sandbox_id,
                 )
-                await self._runtime_call(
-                    self.runtime.start,
-                    timeout=60,
-                    retry_policy=RetryPolicy.SAFE,
-                )
+                await self._start_runtime(sandbox_id, self.runtime.start, timeout=60)
             else:
                 # Same reasoning as the 'starting' wait above: still mid-stop is
                 # a sandbox that exists, so this is a retry, not a replacement.
@@ -852,11 +863,7 @@ class PTCSandbox:
                 "Starting archived sandbox (restore may take longer)",
                 sandbox_id=sandbox_id,
             )
-            await self._runtime_call(
-                self.runtime.start,
-                timeout=300,
-                retry_policy=RetryPolicy.SAFE,
-            )
+            await self._start_runtime(sandbox_id, self.runtime.start, timeout=300)
             _mark_rc("start_archived")
         elif state_value == "error":
             # Restarting an errored sandbox the provider will not recover fails
@@ -867,10 +874,8 @@ class PTCSandbox:
                 "Sandbox in error state, attempting recovery",
                 sandbox_id=sandbox_id,
             )
-            await self._runtime_call(
-                self.runtime.recover_from_error,
-                timeout=300,
-                retry_policy=RetryPolicy.SAFE,
+            await self._start_runtime(
+                sandbox_id, self.runtime.recover_from_error, timeout=300
             )
             _mark_rc("start_error_recovery")
         else:
@@ -878,6 +883,7 @@ class PTCSandbox:
                 sandbox_id,
                 f"unrecoverable state: {state_value}",
             )
+        await self._confirm_host_back(sandbox_id)
 
         # Fetch the actual working dir from the sandbox. The config default
         # may differ from the real dir (e.g. /home/workspace vs /home/daytona)
@@ -1140,6 +1146,90 @@ class PTCSandbox:
             stderr_msg = f"Sandbox execution error: {error_detail}"
         return is_timeout, error_detail, stderr_msg
 
+    async def _start_runtime(
+        self, sandbox_id: str, start: Callable[..., Any], *, timeout: int
+    ) -> None:
+        """Start the sandbox, telling a recovering host apart from other failures.
+
+        Such a host refuses every start until it is back, so the policy decides
+        between waiting for it (transient) and rebuilding elsewhere (gone). The
+        policy failing is no answer, and waiting is the default.
+        """
+        try:
+            # Only reconnect calls this, and a reconnect from inside it would
+            # wait on the lock its own caller holds.
+            await self._runtime_call(
+                start,
+                timeout=timeout,
+                retry_policy=RetryPolicy.SAFE,
+                allow_reconnect=False,
+            )
+        except SandboxGoneError:
+            raise
+        except Exception as e:
+            if not self.provider.is_host_unavailable(e):
+                raise
+            outage_since = None
+            if self.host_unavailable_policy is not None:
+                try:
+                    outage_since = await self.host_unavailable_policy.rebuild_now(
+                        sandbox_id
+                    )
+                except Exception:
+                    logger.warning(
+                        "Host-unavailable policy failed; waiting for the host",
+                        sandbox_id=sandbox_id,
+                        exc_info=True,
+                    )
+            if isinstance(outage_since, datetime):
+                self._kept_for_salvage = True
+                raise SandboxHostLostError(
+                    sandbox_id,
+                    f"host unavailable: {e}",
+                    outage_since=outage_since,
+                ) from e
+            raise SandboxHostUnavailableError(sandbox_id, str(e)) from e
+
+    async def _confirm_host_back(self, sandbox_id: str) -> None:
+        """End the outage clock the moment the sandbox is up, before anything runs on it.
+
+        Later setup can fail and leave the sandbox up anyway, and a clock left
+        running cuts the next outage short. A rebuild authorized meanwhile may
+        already have replaced the sandbox; then it is no longer the machine's
+        and must be neither used nor deleted, and is stopped so it does not
+        run unowned. Still the machine's, it is deleted with the machine again,
+        even after this handle once gave it up. Without the answer neither is
+        known, so the reconnect fails and is retried.
+        """
+        if self.host_unavailable_policy is None:
+            return
+        try:
+            current = await self.host_unavailable_policy.reconnected(sandbox_id)
+        except Exception as e:
+            raise SandboxTransientError(
+                f"Could not record that the host of sandbox {sandbox_id} is back"
+            ) from e
+        if current is False:
+            self._kept_for_salvage = True
+            try:
+                # Nothing else stops it: no row names it any more.
+                await self._runtime_call(
+                    self.runtime.stop,
+                    retry_policy=RetryPolicy.SAFE,
+                    allow_reconnect=False,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not stop a sandbox a rebuild replaced",
+                    sandbox_id=sandbox_id,
+                    exc_info=True,
+                )
+            raise SandboxGoneError(
+                sandbox_id, "replaced by a rebuild while its host was unavailable"
+            )
+        if current is True:
+            self._kept_for_salvage = False
+
     async def _ensure_sandbox_connected(self) -> None:
         if self.sandbox_id is None:
             raise SandboxTransientError(
@@ -1158,7 +1248,12 @@ class PTCSandbox:
             except Exception:
                 pass
             self.provider = create_provider(self.config)
-            await self.reconnect(self.sandbox_id)
+            try:
+                await self.reconnect(self.sandbox_id)
+            except SandboxGoneError as e:
+                self._lost = e
+                raise
+            self._lost = None
 
     async def _runtime_call(
         self,
@@ -1257,7 +1352,11 @@ class PTCSandbox:
                 self._preview_sessions.clear()
                 self._preview_owners.clear()
 
-                if self._reconnect_incomplete:
+                if self._kept_for_salvage:
+                    logger.info(
+                        "Keeping sandbox left for salvage", sandbox_id=self.sandbox_id
+                    )
+                elif self._reconnect_incomplete:
                     logger.info(
                         "Keeping sandbox no reconnect completed on",
                         sandbox_id=self.sandbox_id,

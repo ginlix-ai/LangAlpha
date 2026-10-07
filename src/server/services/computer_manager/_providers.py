@@ -6,15 +6,22 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxRuntime
+from ptc_agent.core.sandbox.runtime import (
+    HostUnavailablePolicy,
+    SandboxGoneError,
+    SandboxHostLostError,
+    SandboxRuntime,
+)
 
 from src.server.database.computer import (
     DEFAULT_ROOT_DIR,
+    clear_computer_host_unavailable,
     get_computer,
     record_computer_disk,
+    stamp_computer_host_unavailable,
 )
 from src.server.models.computer import ComputerStatus
 from src.server.services.computer_disk import (
@@ -28,6 +35,62 @@ from src.server.services.computer_manager._types import ComputerBinding
 from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
+
+
+class HostOutageClock(HostUnavailablePolicy):
+    """Rebuild a computer once its sandbox's host has refused starts too long.
+
+    The clock lives on the computer row, so every worker and every restart
+    measures the same outage. A handle only calls a sandbox replaced once the
+    row has named it: the ref the handle was opened on, or one the row
+    confirmed since. A sandbox still being built is named nowhere yet.
+    """
+
+    def __init__(
+        self, computer_id: str, threshold: timedelta, sandbox_id: str | None = None
+    ):
+        self.computer_id = computer_id
+        self.threshold = threshold
+        self._named = {sandbox_id} if sandbox_id else set()
+
+    async def rebuild_now(self, sandbox_id: str) -> Optional[datetime]:
+        clock = await stamp_computer_host_unavailable(self.computer_id, sandbox_id)
+        if clock is None:
+            return None
+        self._named.add(sandbox_id)
+        since, unavailable_for = clock
+        if unavailable_for < self.threshold:
+            return None
+        logger.warning(
+            f"Host of sandbox {sandbox_id} has refused starts of computer "
+            f"{self.computer_id} for {unavailable_for}; rebuilding it from the "
+            "backup and keeping the old sandbox for salvage",
+            extra={
+                "computer_id": self.computer_id,
+                "sandbox_id": sandbox_id,
+                "unavailable_seconds": int(unavailable_for.total_seconds()),
+            },
+        )
+        return since
+
+    def bound(self, sandbox_id: str) -> None:
+        """A sandbox this handle built and published is the row's from then on,
+        so a later replacement of it reads as one."""
+        self._named.add(sandbox_id)
+
+    async def reconnected(self, sandbox_id: str) -> Optional[bool]:
+        current = await clear_computer_host_unavailable(self.computer_id, sandbox_id)
+        if current == sandbox_id:
+            self._named.add(sandbox_id)
+            return True
+        if current is None or sandbox_id not in self._named:
+            return None
+        return False
+
+
+def host_outage_of(exc: BaseException) -> Optional[datetime]:
+    """The outage that authorized replacing a sandbox, which its rebuild binds on."""
+    return exc.outage_since if isinstance(exc, SandboxHostLostError) else None
 
 
 class ProviderMixin:
@@ -63,6 +126,25 @@ class ProviderMixin:
             working_dir=(
                 binding.root_dir or self.config.filesystem.working_directory
             ),
+        )
+
+    def _host_unavailable_policy(
+        self, computer_id: str, core_config: Any, sandbox_id: str | None = None
+    ) -> Optional[HostUnavailablePolicy]:
+        """The threshold comes from the config the session's provider is built
+        from, overrides included. None when the backend sets none, which leaves
+        the computer waiting for its host. *sandbox_id* is the ref the session
+        is opened on."""
+        sandbox = core_config.sandbox
+        minutes = getattr(
+            getattr(sandbox, str(sandbox.provider), None),
+            "host_unavailable_rebuild_after_minutes",
+            0,
+        )
+        if not isinstance(minutes, int) or minutes <= 0:
+            return None
+        return HostOutageClock(
+            computer_id, timedelta(minutes=minutes), sandbox_id=sandbox_id
         )
 
     async def provider_for_workspace(self, workspace_id: str):

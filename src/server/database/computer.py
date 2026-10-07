@@ -11,7 +11,7 @@ the single-table path.
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
 from psycopg.rows import dict_row
@@ -109,23 +109,37 @@ def computer_advisory_key(computer_id: str) -> int:
 
 
 def bind_provider_ref_statement(
-    *, authority: str, returning: str, guard_always_on: bool = False
+    *,
+    authority: str,
+    returning: str,
+    guard_always_on: bool = False,
+    guard_host_outage: bool = False,
 ) -> str:
     """Share identity and lifecycle fences so computer and workspace binds cannot diverge.
 
     IS NOT DISTINCT FROM fences the previous ref; lifecycle fencing prevents a
-    racing bind from reviving a stopped machine.
+    racing bind from reviving a stopped machine. A bind is a sandbox that
+    started, so it ends any host outage the row was timing. A rebuild a host
+    outage authorized also fences on that outage still running: the old
+    sandbox resuming meanwhile ends it, and then the old one is kept.
     """
     always_on_guard = (
         "\n                  AND c.is_always_on = %(expected_always_on)s"
         if guard_always_on
         else ""
     )
+    outage_guard = (
+        "\n                  AND c.host_unavailable_since"
+        " = %(expected_host_unavailable_since)s"
+        if guard_host_outage
+        else ""
+    )
     common = {
         "computer_set": (
             "status = 'running',\n"
             "                    provider_ref = %(provider_ref)s,\n"
-            "                    platform_secret_version = %(platform_secret_version)s"
+            "                    platform_secret_version = %(platform_secret_version)s,\n"
+            "                    host_unavailable_since = NULL"
         ),
         "workspace_set": (
             "status = 'running',\n"
@@ -137,7 +151,7 @@ def bind_provider_ref_statement(
         "computer_guard": (
             "\n                  AND c.provider_ref IS NOT DISTINCT FROM"
             " %(expected_previous)s"
-            f"{always_on_guard}"
+            f"{always_on_guard}{outage_guard}"
         ),
     }
     if authority == "computer":
@@ -483,6 +497,8 @@ async def update_computer_status(
     expected: Optional[str | Sequence[str]] = None,
     expected_always_on: Optional[bool] = None,
     updated_before=None,
+    expected_provider_ref: Optional[str] = None,
+    require_provider_ref: bool = False,
     conn=None,
 ) -> Optional[Dict[str, Any]]:
     """Only try_bind_computer_provider_ref may change the durable machine binding.
@@ -504,8 +520,18 @@ async def update_computer_status(
         expected_clause += (
             "\n                  AND c.is_always_on = %(expected_always_on)s"
         )
+    if require_provider_ref:
+        expected_clause += (
+            "\n                  AND c.provider_ref IS NOT DISTINCT FROM"
+            " %(expected_ref)s"
+        )
     stopped_clause = ", stopped_at = NOW()" if status == "stopped" else ""
     primary_clause = ", is_primary = FALSE" if status == "deleted" else ""
+    # Running is a start that succeeded, which ends any host outage; a revert
+    # to stopped after a refused start keeps the clock going.
+    running_clause = (
+        ", host_unavailable_since = NULL" if status == "running" else ""
+    )
 
     params: Dict[str, Any] = {
         "computer_id": computer_id,
@@ -513,12 +539,16 @@ async def update_computer_status(
         "expected": [expected] if isinstance(expected, str) else list(expected or ()),
         "updated_before": updated_before,
         "expected_always_on": expected_always_on,
+        "expected_ref": expected_provider_ref,
     }
     async with _computer_cursor(conn) as cur:
         await cur.execute(
             shadowed_write(
                 authority="computer",
-                computer_set=f"status = %(status)s{stopped_clause}{primary_clause}",
+                computer_set=(
+                    f"status = %(status)s{stopped_clause}{primary_clause}"
+                    f"{running_clause}"
+                ),
                 workspace_set=f"status = %(status)s{stopped_clause}",
                 computer_guard=expected_clause,
                 computer_returning=_COMPUTER_COLS,
@@ -597,6 +627,7 @@ async def try_bind_computer_provider_ref(
     expected_previous_provider_ref: Optional[str],
     platform_secret_version: int,
     expected_always_on: Optional[bool] = None,
+    expected_host_unavailable_since: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
     """The sole provider_ref writer uses CAS to prevent orphaned concurrent provisions.
 
@@ -610,6 +641,7 @@ async def try_bind_computer_provider_ref(
                 authority="computer",
                 returning=_COMPUTER_COLS,
                 guard_always_on=expected_always_on is not None,
+                guard_host_outage=expected_host_unavailable_since is not None,
             ),
             {
                 "computer_id": computer_id,
@@ -617,6 +649,7 @@ async def try_bind_computer_provider_ref(
                 "expected_previous": expected_previous_provider_ref,
                 "platform_secret_version": platform_secret_version,
                 "expected_always_on": expected_always_on,
+                "expected_host_unavailable_since": expected_host_unavailable_since,
             },
         )
         row = await cur.fetchone()
@@ -625,6 +658,68 @@ async def try_bind_computer_provider_ref(
         return None
     await _publish_shadowed(row, "running")
     return dict(row)
+
+
+async def stamp_computer_host_unavailable(
+    computer_id: str, sandbox_id: str
+) -> Optional[tuple[datetime, timedelta]]:
+    """Start the outage clock for the sandbox the row names, and read it.
+
+    The first refused start stamps and every later one keeps that stamp, so the
+    answer is when the host started refusing and for how long, whichever worker
+    asked. None when the row names another sandbox, or none: a replacement has
+    its own clock, and this failure says nothing about it.
+    """
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE computers
+            SET host_unavailable_since = COALESCE(host_unavailable_since, NOW())
+            WHERE computer_id = %(computer_id)s
+              AND provider_ref = %(sandbox_id)s
+              AND status != 'deleted'
+            RETURNING host_unavailable_since,
+                      NOW() - host_unavailable_since AS unavailable_for
+            """,
+            {"computer_id": computer_id, "sandbox_id": sandbox_id},
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return row["host_unavailable_since"], row["unavailable_for"]
+
+
+async def clear_computer_host_unavailable(
+    computer_id: str, sandbox_id: str
+) -> Optional[str]:
+    """End the outage clock: the sandbox the row names came up.
+
+    The sandbox the row names now, *sandbox_id* when it is still this one. A
+    rebuild the outage authorized binds only while the clock it started on is
+    still running, so ending the clock here refuses that bind, and a bind that
+    already landed shows here as another sandbox. The row is written even with
+    no clock running, because only the row lock orders this against that bind.
+    """
+    params = {"computer_id": computer_id, "sandbox_id": sandbox_id}
+    async with _computer_cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE computers
+            SET host_unavailable_since = NULL
+            WHERE computer_id = %(computer_id)s
+              AND provider_ref = %(sandbox_id)s
+            RETURNING provider_ref
+            """,
+            params,
+        )
+        if await cur.fetchone() is not None:
+            return sandbox_id
+        await cur.execute(
+            "SELECT provider_ref FROM computers WHERE computer_id = %(computer_id)s",
+            params,
+        )
+        row = await cur.fetchone()
+    return row["provider_ref"] if row else None
 
 
 async def set_computer_resource_tier(

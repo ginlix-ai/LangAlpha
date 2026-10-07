@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING
 
 import psycopg
 from fastapi import HTTPException
-from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
+from ptc_agent.core.sandbox.runtime import (
+    SandboxGoneError,
+    SandboxHostUnavailableError,
+    SandboxTransientError,
+)
 
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
@@ -40,6 +44,10 @@ def _classify_non_recoverable_error_type(e: Exception) -> str:
     of opaque tracebacks. Defaults to ``"workflow_error"`` for unrecognized
     cases so existing consumers keep working.
     """
+    if isinstance(e, SandboxHostUnavailableError):
+        # Gateways answer this label with "try again", which is the whole
+        # remedy until the host is back or the computer is rebuilt.
+        return "workspace_unavailable"
     if isinstance(e, (ValueError, RuntimeError)):
         msg = str(e)
         if "Workspace" in msg:
@@ -60,6 +68,15 @@ def classify_error(e: Exception) -> dict:
     ``error_type`` is one of ``"connection_error"``, ``"timeout_error"``,
     ``"api_error"``, ``"transient_error"``, or ``None`` for non-recoverable.
     """
+    # A recovering host refuses starts for minutes, longer than the immediate
+    # retry offered here, so the turn ends on the provider's own words asking
+    # the person to retry in a few moments.
+    if isinstance(e, SandboxHostUnavailableError):
+        return {
+            "is_recoverable": False,
+            "is_non_recoverable": False,
+            "error_type": None,
+        }
     # Non-recoverable error types (code bugs, config issues)
     non_recoverable_types = (
         AttributeError,

@@ -1063,6 +1063,10 @@ async def update_workspace_status(
 
         stopped_at_clause = ", stopped_at = %(now)s" if status == "stopped" else ""
         if _mirrors_to_computer(status):
+            # As in update_computer_status: running ends any host outage.
+            running_clause = (
+                ", host_unavailable_since = NULL" if status == "running" else ""
+            )
             always_on_guard = (
                 "\n                  AND c.is_always_on = %(expected_always_on)s"
                 if expected_computer_always_on is not None
@@ -1075,7 +1079,7 @@ async def update_workspace_status(
             )
             query = shadowed_write(
                 authority="workspace",
-                computer_set=f"status = %(status)s{stopped_at_clause}",
+                computer_set=f"status = %(status)s{stopped_at_clause}{running_clause}",
                 workspace_set=f"status = %(status)s{stopped_at_clause}",
                 workspace_fence=FENCE_NOT_DELETED,
                 computer_guard=always_on_guard,

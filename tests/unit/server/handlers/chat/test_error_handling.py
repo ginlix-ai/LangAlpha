@@ -13,7 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import psycopg
 import pytest
 
-from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
+from ptc_agent.core.sandbox.runtime import (
+    SandboxGoneError,
+    SandboxHostUnavailableError,
+    SandboxTransientError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +112,33 @@ class TestClassifyError:
         result = self._classify(SandboxGoneError("sandbox-placeholder", "not found"))
         assert result["is_recoverable"] is True
         assert result["error_type"] == "transient_error"
+
+    def test_a_recovering_host_ends_the_turn_on_the_providers_words(self):
+        """The outage lasts minutes, so it takes the error path the person
+        sees and retries from, as the raw provider error did, rather than the
+        immediate retry a transport blip gets."""
+        result = self._classify(
+            SandboxHostUnavailableError(
+                "sandbox-placeholder",
+                "Failed to start sandbox: Sandbox start is temporarily "
+                "unavailable while the sandbox's host recovers. Please retry "
+                "in a few moments.",
+            )
+        )
+        assert result["is_recoverable"] is False
+        assert result["error_type"] is None
+
+    def test_a_recovering_host_is_labelled_for_gateways_as_unavailable(self):
+        """Channel gateways turn this label into "try again"; the default
+        label reads as a failed turn with nothing to do about it."""
+        from src.server.handlers.chat.error_handling import (
+            _classify_non_recoverable_error_type,
+        )
+
+        error = SandboxHostUnavailableError(
+            "sandbox-placeholder", "the sandbox's host recovers"
+        )
+        assert _classify_non_recoverable_error_type(error) == "workspace_unavailable"
 
     def test_generic_runtime_error_not_recoverable(self):
         result = self._classify(RuntimeError("something went wrong"))

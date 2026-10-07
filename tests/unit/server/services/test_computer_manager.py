@@ -452,7 +452,49 @@ class TestMachineKeying(_Base):
             label="ws-a",
             computer_id="comp-1",
             resource_tier="performance",
+            host_unavailable_policy=ANY,
         )
+
+    @cm_patch("SessionManager")
+    def test_the_session_handle_passes_an_outage_clock_for_the_computer(
+        self, mock_session_mgr
+    ):
+        from datetime import timedelta
+
+        from src.server.services.computer_manager._providers import HostOutageClock
+        from tests.unit.server.services.test_host_unavailable_policy import _core_config
+
+        manager = _make_manager()
+
+        manager._session_handle(_make_binding("ws-a"), _core_config(minutes=60))
+
+        policy = mock_session_mgr.get_session.call_args.kwargs["host_unavailable_policy"]
+        assert isinstance(policy, HostOutageClock)
+        assert policy.computer_id == "comp-1"
+        assert policy.threshold == timedelta(minutes=60)
+
+    @pytest.mark.asyncio
+    async def test_publishing_a_session_names_its_sandbox_to_its_outage_clock(self):
+        """A handle opened on no sandbox built and bound this one, so a later
+        replacement of it must read as replaced, not as one still being built."""
+        from datetime import timedelta
+
+        from src.server.services.computer_manager._providers import HostOutageClock
+
+        manager = _make_manager()
+        clock = HostOutageClock("comp-1", timedelta(minutes=60))
+        session = _make_session()
+        session.sandbox.sandbox_id = "sb-built"
+        session.host_unavailable_policy = clock
+
+        manager._put_session("comp-1", session, workspace_id="ws-a")
+
+        with patch(
+            "src.server.services.computer_manager._providers."
+            "clear_computer_host_unavailable",
+            AsyncMock(return_value="sb-newer"),
+        ):
+            assert await clock.reconnected("sb-built") is False
 
     def test_dropping_a_session_drops_its_bookkeeping(self):
         manager = _make_manager()
@@ -2249,12 +2291,48 @@ class TestJoiningARunningMachine(_Base):
         recover.assert_not_awaited()
         assert session.initialize.await_args.kwargs["sandbox_id"] == "sandbox-live"
 
+    @staticmethod
+    @contextmanager
+    def _rereading(workspace, *, computer_ref, workspace_ref, computer_row_ref=None):
+        """The rows read again under the lock, the refs from one statement.
+
+        ``computer_row_ref`` is what the separate computer read says, which a
+        bind landing between the reads can make disagree with the join."""
+        with (
+            patch(
+                f"{_LIFECYCLE}.db_get_workspace_identity",
+                AsyncMock(
+                    return_value={
+                        "status": "running",
+                        "sandbox_id": workspace_ref,
+                        "provider_ref": computer_ref,
+                        "computer_status": "running",
+                    }
+                ),
+            ),
+            patch(
+                f"{_LIFECYCLE}.get_computer",
+                AsyncMock(
+                    return_value=_make_computer(
+                        status="running",
+                        provider_ref=computer_row_ref or computer_ref,
+                    )
+                ),
+            ),
+            patch(
+                f"{_LIFECYCLE}.db_get_workspace",
+                AsyncMock(return_value={**workspace, "sandbox_id": workspace_ref}),
+            ),
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_a_project_naming_another_sandbox_is_still_a_split(self):
         """Two non-null ids is the disagreement neither table can settle, and
         the losing bind's own sandbox is already deleted."""
         manager = _make_manager()
         recovered = _make_session()
+        handle = _make_session()
         workspace = {
             "workspace_id": "ws-new",
             "sandbox_id": "sandbox-other",
@@ -2263,8 +2341,8 @@ class TestJoiningARunningMachine(_Base):
         }
 
         with (
-            patch.object(manager, "_session_handle", return_value=_make_session()),
-            patch.object(manager, "_clear_session", AsyncMock()),
+            patch.object(manager, "_session_handle", return_value=handle),
+            patch.object(manager, "_clear_session", AsyncMock()) as clear,
             patch.object(
                 manager, "_recover_sandbox", AsyncMock(return_value=recovered)
             ) as recover,
@@ -2272,14 +2350,64 @@ class TestJoiningARunningMachine(_Base):
                 f"{_LIFECYCLE}.adopt_computer_sandbox_into_workspaces",
                 AsyncMock(),
             ) as adopt,
+            self._rereading(
+                workspace,
+                computer_ref="sandbox-live",
+                workspace_ref="sandbox-other",
+                computer_row_ref="sandbox-row-read",
+            ),
         ):
             got, did_init = await manager._attach_running_session(
-                self._running_binding(), workspace, "user-1", None, lambda _p: None
+                _make_binding("ws-new", provider_ref="sandbox-resolved-earlier"),
+                workspace,
+                "user-1",
+                None,
+                lambda _p: None,
             )
 
         assert got is recovered and did_init is True
         recover.assert_awaited_once()
+        # The rebuild is fenced on the ref the joined read returned, not the
+        # one the binding was resolved with nor the separate computer read.
+        assert recover.await_args.args[0].provider_ref == "sandbox-live"
+        clear.assert_awaited_once_with("comp-1", evict_session=handle)
         adopt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_bind_landing_after_the_binding_was_resolved_is_not_a_split(self):
+        """The binding is read before the machine lock and the row under it, so
+        a recover's bind between the two reads shows the old ref beside the new
+        one. Rebuilding on that made a sandbox the bind fence refused, and on
+        the worker that recovered it tore down the sandbox just bound."""
+        manager = _make_manager()
+        session = _make_session()
+        session.sandbox.sandbox_id = "sandbox-new"
+        workspace = {
+            "workspace_id": "ws-new",
+            "sandbox_id": "sandbox-new",
+            "status": "running",
+            "computer_id": "comp-1",
+        }
+
+        with (
+            patch.object(manager, "_session_handle", return_value=session),
+            patch.object(manager, "_clear_session", AsyncMock()) as clear,
+            patch.object(manager, "_recover_sandbox", AsyncMock()) as recover,
+            self._rereading(
+                workspace, computer_ref="sandbox-new", workspace_ref="sandbox-new"
+            ),
+        ):
+            got, did_init = await manager._attach_running_session(
+                _make_binding("ws-new", provider_ref="sandbox-old"),
+                workspace,
+                "user-1",
+                None,
+                lambda _p: None,
+            )
+
+        assert got is session and did_init is False
+        recover.assert_not_awaited()
+        clear.assert_not_awaited()
 
     def test_a_cached_handle_is_not_stale_merely_for_an_unbound_row(self):
         """The warm path retires on it once, when the row is repaired; reading
@@ -2687,6 +2815,36 @@ class TestStartAnswersToEntitlement(_Base):
         )
 
     @pytest.mark.asyncio
+    @patch("src.server.services.platform_secret_rollout.certify_platform_secrets")
+    @patch(f"{_MACHINES}.update_computer_activity")
+    @patch(f"{_MACHINES}.try_bind_computer_provider_ref")
+    @patch(f"{_MACHINES}.SessionManager")
+    async def test_a_bare_start_hands_its_session_an_outage_clock(
+        self, mock_sm, mock_bind, mock_activity, mock_certify
+    ):
+        from datetime import timedelta
+
+        from src.server.services.computer_manager._providers import HostOutageClock
+        from tests.unit.server.services.test_host_unavailable_policy import _core_config
+
+        manager = self._manager(tier="standard")
+        manager._core_config_for = MagicMock(return_value=_core_config(minutes=60))
+        mock_sm.get_session.return_value = self._session()
+        mock_bind.return_value = {"computer_id": "comp-1"}
+        mock_certify.return_value = 3
+        computer = _make_computer(status="starting", provider_ref=None)
+
+        with patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=computer)):
+            await manager._build_machine_session(
+                computer, user_id="user-1", on_state_observed=None
+            )
+
+        policy = mock_sm.get_session.call_args.kwargs["host_unavailable_policy"]
+        assert isinstance(policy, HostOutageClock)
+        assert policy.computer_id == "comp-1"
+        assert policy.threshold == timedelta(minutes=60)
+
+    @pytest.mark.asyncio
     @patch(f"{_MACHINES}.SessionManager")
     async def test_a_lapsed_tier_does_not_replace_an_undeleted_sandbox(
         self, mock_sm
@@ -2981,7 +3139,8 @@ class TestReviewProviderAndCapacityRegressions(_Base):
             patch.object(manager, '_assert_machine_disk_fits', AsyncMock()) as disk,
         ):
             assert await manager._entitled_tier(binding, 'user-1') == 'standard'
-            disk.assert_awaited_once_with('comp-1', 8)
+            # Measured on the mirror before the backup, and again after it.
+            assert [c.args for c in disk.await_args_list] == [('comp-1', 8)] * 2
 
 
 @pytest.mark.asyncio
@@ -3165,6 +3324,30 @@ async def test_stopped_replacement_does_not_delete_after_incomplete_backup():
     session.stop.assert_awaited_once()
     assert manager._backup_machine_files_to_db.await_args.kwargs["strict"] is True
     status.assert_awaited_once_with(binding.computer_id, "stopped", expected="starting")
+
+
+@pytest.mark.asyncio
+async def test_stopped_replacement_session_gets_no_host_policy():
+    """A resize backs up from the sandbox, so an unreachable host must not read as gone."""
+    manager = _make_manager()
+    from tests.unit.server.services.test_host_unavailable_policy import _core_config
+
+    # A configured threshold, so a policy would be built if the resize asked for one.
+    manager._core_config_for = MagicMock(return_value=_core_config(minutes=60))
+    binding = _make_binding(provider_ref="original")
+    session = SimpleNamespace(initialize=AsyncMock(), stop=AsyncMock(), sandbox=object())
+    manager._sync_machine_assets = AsyncMock()
+    manager._backup_machine_files_to_db = AsyncMock()
+    manager._destroy_sandbox = AsyncMock()
+    with (
+        patch("src.server.services.computer_manager._spec.Session", return_value=session) as session_cls,
+        patch("src.server.services.computer_manager._spec.clear_computer_disk", AsyncMock()),
+        patch("src.server.services.computer_manager._spec.try_claim_computer_for_start", AsyncMock(return_value={"status": "starting"})),
+        patch("src.server.services.computer_manager._spec.update_computer_status", AsyncMock()),
+        patch("src.server.services.computer_manager._spec.heartbeat_computer_spec_change", AsyncMock(return_value=True)),
+    ):
+        await manager._replace_stopped_sandbox(binding, "original", claim_id="c-1", disk_guard=None, origin_workspace_id=None, user_id="user-1")
+    assert session_cls.call_args.kwargs.get("host_unavailable_policy") is None
 
 
 @pytest.mark.asyncio

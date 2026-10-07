@@ -138,6 +138,7 @@ class TestBindingThroughTheMachine(_Base):
             provider_ref="sandbox-abc",
             expected_previous_provider_ref=None,
             platform_secret_version=4,
+            expected_host_unavailable_since=None,
         )
         assert bound is row
 

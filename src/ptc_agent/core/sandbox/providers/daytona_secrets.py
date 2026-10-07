@@ -1,7 +1,7 @@
 """Daytona organization-Secret reconciliation, split from the provider proper."""
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from typing import Any
 
 import structlog
@@ -35,13 +35,21 @@ def daytona_error_code(exc: Exception) -> str | None:
     return _walk_chain_attrs(exc, ("code",))
 
 
-def _walk_chain_attrs(exc: Exception, attrs: tuple[str, ...]) -> Any | None:
-    """First truthy *attrs* value found walking the ``__cause__``/``__context__`` chain."""
+def _chain(exc: BaseException) -> Iterator[BaseException]:
+    """Each exception of the ``__cause__``/``__context__`` chain once, outermost first."""
 
     current: BaseException | None = exc
     seen: set[int] = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _walk_chain_attrs(exc: Exception, attrs: tuple[str, ...]) -> Any | None:
+    """First truthy *attrs* value found walking the ``__cause__``/``__context__`` chain."""
+
+    for current in _chain(exc):
         for attr in attrs:
             value = getattr(current, attr, None)
             if attr in ("status", "status_code"):
@@ -54,8 +62,20 @@ def _walk_chain_attrs(exc: Exception, attrs: tuple[str, ...]) -> Any | None:
                     return value
             elif value:
                 return value
-        current = current.__cause__ or current.__context__
     return None
+
+
+def is_daytona_host_unavailable(exc: Exception) -> bool:
+    """A start Daytona refused because the sandbox's host is recovering.
+
+    A 503 alone is any overload, so the wording is the only thing that tells
+    this one apart. If Daytona rewords it, nothing matches and the start stays
+    an ordinary failure, which never replaces a sandbox.
+    """
+
+    if daytona_error_status(exc) != 503:
+        return False
+    return any("host recovers" in str(current).lower() for current in _chain(exc))
 
 
 def is_transient_daytona_error(exc: Exception) -> bool:

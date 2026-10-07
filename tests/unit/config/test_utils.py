@@ -67,6 +67,15 @@ class TestValidateSectionFields:
 # ---------------------------------------------------------------------------
 
 
+_REQUIRED = {
+    "base_url": "https://test.daytona.io/api",
+    "auto_stop_interval": 1800,
+    "auto_archive_interval": 43200,
+    "auto_delete_interval": 302400,
+    "python_version": "3.11",
+}
+
+
 class TestCreateDaytonaConfig:
     def test_creates_config(self):
         data = {
@@ -102,6 +111,18 @@ class TestCreateDaytonaConfig:
         assert cfg.default_tier == "performance"
         assert set(cfg.resource_tiers) == {"standard", "performance"}
         assert cfg.resource_tiers["performance"].memory == 4
+
+    def test_forwards_host_unavailable_rebuild_after_minutes_when_present(self):
+        """0 is how an operator disables the rebuild, and differs from the default."""
+        data = {**_REQUIRED, "host_unavailable_rebuild_after_minutes": 0}
+        with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
+            cfg = create_daytona_config(data)
+        assert cfg.host_unavailable_rebuild_after_minutes == 0
+
+    def test_host_unavailable_rebuild_after_minutes_defaults_to_an_hour(self):
+        with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
+            cfg = create_daytona_config(dict(_REQUIRED))
+        assert cfg.host_unavailable_rebuild_after_minutes == 60
 
     def test_over_ceiling_tier_is_clamped_and_logged(self, caplog):
         """A tier above the org ceiling is clamped to it, with a warning."""

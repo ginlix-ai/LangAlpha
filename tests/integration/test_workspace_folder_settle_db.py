@@ -646,7 +646,11 @@ def _backup(computer_id, workspace_id, *, stale_folder):
         computer_id=computer_id,
         strict=True,
         expected_sandbox_id="sb-folders",
-        session=SimpleNamespace(sandbox=SimpleNamespace(sandbox_id="sb-folders")),
+        session=SimpleNamespace(
+            sandbox=SimpleNamespace(
+                sandbox_id="sb-folders", ensure_sandbox_ready=AsyncMock()
+            )
+        ),
         layout=WorkspaceLayout("/home/workspace", stale_folder),
     )
 

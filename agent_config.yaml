@@ -30,6 +30,7 @@ sandbox:
     auto_stop_interval: 3600 # 1 hour in seconds
     auto_archive_interval: 604800 # 7 days in seconds — keep workspaces "stopped" (fast restart) longer before moving to cold storage
     auto_delete_interval: 7776000 # 90 days in seconds — total lifetime before a dormant sandbox is garbage-collected
+    host_unavailable_rebuild_after_minutes: 60 # rebuild a computer from its backup once its sandbox's host has refused starts this long (the old sandbox is kept); 0 always waits
     python_version: "3.12"
 
     # Hash will be automatically appended based on dependencies

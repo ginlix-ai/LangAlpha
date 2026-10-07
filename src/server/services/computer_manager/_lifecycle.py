@@ -30,15 +30,18 @@ from src.server.database.computer import (
     get_computer,
     try_bind_computer_provider_ref,
     update_computer_activity,
+    update_computer_status,
 )
 from src.server.database.workspace import (
     adopt_computer_sandbox_into_workspaces,
     get_workspace as db_get_workspace,
+    get_workspace_identity as db_get_workspace_identity,
     SandboxIdentityLostError,
     update_workspace_activity,
     update_workspace_status,
 )
 from src.server.models.computer import CLAIMABLE_FOR_START, ComputerStatus
+from src.server.services.computer_manager._providers import host_outage_of
 from src.server.services.computer_manager._types import ComputerBinding
 from src.server.services.path_lock_coordination import (
     STOP_HEARTBEAT_UNAVAILABLE_RECOVERY_S,
@@ -71,6 +74,7 @@ class SessionLifecycleMixin:
         sandbox_id: str,
         expected_previous_sandbox_id: str | None,
         platform_secret_version: int,
+        expected_host_unavailable_since: datetime | None = None,
     ) -> Optional[Dict[str, Any]]:
         """The computers.provider_ref CAS elects one provisioner.
 
@@ -84,6 +88,7 @@ class SessionLifecycleMixin:
             provider_ref=sandbox_id,
             expected_previous_provider_ref=expected_previous_sandbox_id,
             platform_secret_version=platform_secret_version,
+            expected_host_unavailable_since=expected_host_unavailable_since,
         )
         if computer is None:
             return None
@@ -174,6 +179,7 @@ class SessionLifecycleMixin:
                                 binding,
                                 workspace_user_id,
                                 self._core_config_for(binding),
+                                outage_since=host_outage_of(init_err),
                             )
                             return recovered
                         session = None
@@ -771,21 +777,39 @@ class SessionLifecycleMixin:
                     f"Sandbox gone for workspace {workspace_id} during "
                     f"Phase 2: {e}. Recovering."
                 )
+                # The clear below forgets this start's claim, which a failed
+                # recovery must still release or the row waits on the reaper.
+                was_unpromoted_lazy = machine.pending_lazy_sync
+                claimed_sandbox_id = self._session_sandbox_id(session)
                 # Phase 2 can race replacement. Check identity here and across cleanup
                 # awaits via evict_session, or a healthy replacement could be destroyed.
                 if self._cached_session(computer_id) is session:
                     await self._clear_session(computer_id, evict_session=session)
 
-                async with self._acquire_machine_lock(computer_id):
-                    # Another request may have recovered while this one waited for the lock.
-                    existing = self._cached_session(computer_id)
-                    if existing and existing.sandbox and existing.sandbox.is_ready():
-                        return existing
-                    return await self._recover_sandbox(
-                        binding,
-                        workspace_user_id,
-                        self._core_config_for(binding),
-                    )
+                try:
+                    async with self._acquire_machine_lock(computer_id):
+                        # Another request may have recovered while this one waited for the lock.
+                        existing = self._cached_session(computer_id)
+                        if existing and existing.sandbox and existing.sandbox.is_ready():
+                            return existing
+                        return await self._recover_sandbox(
+                            binding,
+                            workspace_user_id,
+                            self._core_config_for(binding),
+                            outage_since=host_outage_of(e),
+                        )
+                except BaseException:
+                    if was_unpromoted_lazy:
+                        release = asyncio.create_task(
+                            self._release_lost_lazy_start(
+                                computer_id, claimed_sandbox_id
+                            )
+                        )
+                        try:
+                            await asyncio.shield(release)
+                        except asyncio.CancelledError:
+                            pass
+                    raise
             except LayoutMigrationError:
                 await self._revert_unpromoted_lazy_start(binding)
                 raise
@@ -865,11 +889,11 @@ class SessionLifecycleMixin:
 
         Waiters otherwise spend start_wait_timeout on a stranded starting row.
         pending_lazy_sync restricts reversion to unpromoted lazy starts."""
-        workspace_id = binding.workspace_id
         machine = self._machine_if_known(binding.computer_id)
         if machine is None or not machine.pending_lazy_sync:
             return
         machine.pending_lazy_sync = False
+        workspace_id = binding.workspace_id
         try:
             await update_workspace_status(workspace_id=workspace_id, status="stopped")
         except Exception:
@@ -877,6 +901,28 @@ class SessionLifecycleMixin:
             logger.exception(
                 "Failed to revert workspace %s to 'stopped' after Phase 2 failure",
                 workspace_id,
+            )
+
+    async def _release_lost_lazy_start(
+        self, computer_id: str, sandbox_id: str | None
+    ) -> None:
+        """Only while the row is still this start's. A recovery on another
+        worker may have bound its own sandbox meanwhile, and that start's
+        status is not this one's to revert."""
+        try:
+            await update_computer_status(
+                computer_id,
+                ComputerStatus.STOPPED,
+                expected="starting",
+                expected_provider_ref=sandbox_id,
+                require_provider_ref=True,
+            )
+        except Exception:
+            # Do not mask the recovery failure; the reaper releases it later.
+            logger.exception(
+                "Failed to release the lazy start of computer %s after its "
+                "recovery failed",
+                computer_id,
             )
 
     async def _publish_workspace_running_with_current_always_on(
@@ -917,6 +963,31 @@ class SessionLifecycleMixin:
             f"Computer {computer_id} changed while finishing its start"
         )
 
+    async def _reread_suspected_split(
+        self, binding: ComputerBinding
+    ) -> tuple[ComputerBinding, Dict[str, Any]]:
+        """Read both rows again, taking the two refs from one statement.
+
+        The binding is resolved before the machine lock and the row under it,
+        so a recover's bind landing between the reads looks like a split, and
+        rebuilding on it makes a sandbox the bind fence refuses. Any two
+        separate reads can straddle a bind the same way, so only the joined
+        identity read decides the refs; the full rows supply the rest."""
+        workspace_id = binding.workspace_id
+        identity = await db_get_workspace_identity(workspace_id)
+        computer = await get_computer(binding.computer_id)
+        row = await db_get_workspace(workspace_id)
+        if identity is None or computer is None or row is None:
+            raise SandboxTransientError(
+                f"Workspace {workspace_id} or its computer went away while attaching"
+            )
+        fresh = replace(
+            self._binding_from_computer(workspace_id, computer),
+            dir_name=binding.dir_name,
+            provider_ref=identity.get("provider_ref"),
+        )
+        return fresh, {**row, "sandbox_id": identity.get("sandbox_id")}
+
     async def _attach_running_session(
         self,
         binding: ComputerBinding,
@@ -930,13 +1001,21 @@ class SessionLifecycleMixin:
         A false did_init requires Phase 2 sync of the already-initialized session."""
         workspace_id = binding.workspace_id
         computer_id = binding.computer_id
+        # Ahead of the handle, which takes its tier from the binding.
+        sandbox_id = workspace.get("sandbox_id")
+        if (
+            binding.provider_ref is not None
+            and sandbox_id is not None
+            and binding.provider_ref != sandbox_id
+        ):
+            binding, workspace = await self._reread_suspected_split(binding)
+            sandbox_id = workspace.get("sandbox_id")
         core_config = self._core_config_for(binding)
         session = self._session_handle(binding, core_config)
         did_init = False
 
         # A joining project with no ref adopts its running machine's ref; rebuilding
         # would disrupt siblings already using that sandbox.
-        sandbox_id = workspace.get("sandbox_id")
         if sandbox_id is None and binding.provider_ref is not None:
             await adopt_computer_sandbox_into_workspaces(computer_id)
             sandbox_id = binding.provider_ref
@@ -951,7 +1030,9 @@ class SessionLifecycleMixin:
                 "recreating the sandbox",
                 extra={"workspace_id": workspace_id},
             )
-            await self._clear_session(computer_id)
+            # A recover outside the machine lock (a tier reclaim, a spec change)
+            # can publish its session while this cleanup awaits.
+            await self._clear_session(computer_id, evict_session=session)
             recovered = await self._recover_sandbox(
                 binding, workspace_user_id, core_config
             )
@@ -984,7 +1065,10 @@ class SessionLifecycleMixin:
                     f"{workspace_id} ({e}). Creating fresh sandbox."
                 )
                 recovered = await self._recover_sandbox(
-                    binding, workspace_user_id, core_config
+                    binding,
+                    workspace_user_id,
+                    core_config,
+                    outage_since=host_outage_of(e),
                 )
                 return recovered, True
             mark("session_initialize")
@@ -1275,6 +1359,7 @@ class SessionLifecycleMixin:
             session = self._session_handle(binding, core_config)
 
             sandbox_gone = False
+            outage_since = None
 
             try:
                 if lazy_init:
@@ -1294,6 +1379,7 @@ class SessionLifecycleMixin:
                     logger.debug(f"Session initialized for workspace {workspace_id}")
             except SandboxGoneError as e:
                 sandbox_gone = True
+                outage_since = host_outage_of(e)
                 await self._clear_session(computer_id)
                 logger.warning(
                     f"Sandbox {sandbox_id} unavailable for workspace "
@@ -1302,7 +1388,9 @@ class SessionLifecycleMixin:
 
             # Recovery reapplies always-on at creation.
             if sandbox_gone:
-                return await self._recover_sandbox(binding, user_id, core_config)
+                return await self._recover_sandbox(
+                    binding, user_id, core_config, outage_since=outage_since
+                )
 
             # Apply secrets before further sandbox work; lazy starts wait for Phase 2 readiness.
             if not lazy_init:
