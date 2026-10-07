@@ -1,465 +1,416 @@
 <p align="center">
-  <img src="../web/public/logo_words.png" alt="LangAlpha" height="120" />
-  <br>
-  <strong>vibe investing のための agent harness</strong>
-  <br>
-  LangAlpha は、金融市場の理解と投資判断を支援するために作られています。
-  <br><br>
-  <img src="https://img.shields.io/badge/python-3.13+-blue.svg" alt="Python 3.13+" />
-  <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?logo=langchain&logoColor=white" alt="LangChain" /></a>
-  <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License" />
+  <img src="../web/public/logo_words.png" alt="LangAlpha" height="110" />
+</p>
+
+<h3 align="center">Agent トレーディングのための harness。</h3>
+
+<p align="center">
+  市場をリサーチし、投資仮説を組み立て、<br>
+  あなたが設定した権限の範囲内で、あなた自身の証券口座で取引するオープンソースの AI agent。
 </p>
 
 <p align="center">
-  <a href="../README.md">English</a> ｜ <a href="README.zh-CN.md">简体中文</a> ｜ <strong>日本語</strong>
+  <a href="https://langalpha.ai"><strong>LangAlpha を試す ↗</strong></a> ·
+  <a href="#使い始める"><strong>使い始める</strong></a> ·
+  <a href="#agent-トレーディング"><strong>Agent トレーディング</strong></a> ·
+  <a href="#harness-設計"><strong>Harness 設計</strong></a> ·
+  <a href="#フルスタックアーキテクチャ"><strong>フルスタックアーキテクチャ</strong></a> ·
+  <a href="#セキュリティ"><strong>セキュリティ</strong></a>
+  <br />
+  <a href="../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語
 </p>
 
 <p align="center">
-  <a href="#クイックスタート">クイックスタート</a> &bull;
-  <a href="api/README.md">API ドキュメント</a> &bull;
-  <a href="../src/ptc_agent/">Agent Core</a> &bull;
-  <a href="../src/server/">Backend</a> &bull;
-  <a href="../web/">Web</a> &bull;
-  <a href="../libs/ptc-cli/">TUI</a> &bull;
-  <a href="../skills/">Skills</a> &bull;
-  <a href="../mcp_servers/">MCP</a>
+  <a href="https://github.com/ginlix-ai/langalpha/stargazers"><img src="https://img.shields.io/github/stars/ginlix-ai/langalpha?style=flat-square" alt="GitHub スター数" /></a>
+  <img src="https://img.shields.io/badge/license-Apache%202.0-green?style=flat-square" alt="ライセンス：Apache 2.0" />
+  <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square" alt="Python 3.13+" />
+  <a href="https://github.com/langchain-ai/langchain"><img src="https://img.shields.io/badge/LangChain-1c3c3c?style=flat-square&logo=langchain&logoColor=white" alt="LangChain" /></a>
+  <a href="https://github.com/ginlix-ai/langalpha/releases"><img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat-square" alt="デスクトップアプリ" /></a>
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/56ec23b5-e9af-46ab-8505-66a7dff822a4" autoplay loop muted playsinline width="900"></video>
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/hero-cbrs-research-dashboard.webp" alt="demo-cbrs workspace：左では agent が CBRS の株価を確認し、開示資料を取得し、2 人のアナリストを動かしている。右はそのリサーチから作った CBRS のダッシュボードで、IPO 以降の株価をイベントマーカー付きで表示し、選択したイベントのメモと出典を開いている" width="900" />
 </p>
-<p align="center"><em>ダッシュボードの厳選ニュースブリーフを agent に pin し、アイデア生成を開始して、並列 subagent にマーケットのスクリーニングを任せます。結果はインラインの対話型 dashboard に戻り、あなたのポートフォリオに合わせた 5 つのロング／ショート・ペアトレード案として提示されます。</em></p>
 
 ## LangAlpha を選ぶ理由
 
-現在の AI 金融ツールの多くは、投資を一回限りのやり取りとして扱います。質問して、答えを受け取り、そこで終わりです。しかし実際の投資はベイズ的です。最初に仮説を持ち、新しいデータが日々入り、そのたびに確信度を更新していきます。仮説を磨き、ポジションを見直し、過去の分析の上に新しい分析を重ねるこのプロセスは、数週間から数か月にわたって続きます。単発の prompt だけでは、この流れを受け止めきれません。
+AI 金融ツールの多くは、質問に答えるためのものです。私たちは、投資リサーチはベイズ的だと考えています。まず仮説と、何が起きればそれが誤りだと分かるかを書き出します。その後は決算発表、開示資料、値動きのたびに確信度が上下し、それに合わせてポジションも動きます。このループは数週間から数か月続き、1 回の prompt では捉えきれません。
 
-### *vibe coding から vibe investing へ*
+コーディング agent が実用的になったのは、コードのために作られた harness を得てからです。永続する codebase があり、各 commit が前の commit の上に積み上がり、さらにモデルの周りにツール、memory、runtime がそろっています。LangAlpha はその harness を市場に持ち込みます。vibe coding から vibe investing へ。どのモデルでも動くので、モデルが良くなるたびに LangAlpha も良くなります。設計の軸となる考え方は 2 つです。
 
-着想はソフトウェアエンジニアリングにあります。codebase は継続して存在し、各 commit はそれ以前の作業の上に積み上がります。Claude Code や OpenCode のようなコード agent harness が成果を上げたのは、agent が既存の文脈を探索し、過去の作業を土台に進められるようにしたからです。LangAlpha は同じ発想を投資に持ち込みます。agent に永続的な workspace を与えることで、リサーチは自然に積み上がります。
+- **トレードは tool call ではなく、ループです。** 仮説は workspace に置かれ、リサーチ、ポジションサイジング、注文、その後の監視のそれぞれが、新しい証拠を仮説に返します。
+- **自律には、あなたが決める境界が必要です。** agent はあなたが与えた権限の範囲内で動き、すべての注文は統制された 1 本の経路を通ります。
 
-実際には、研究目的ごとに workspace を作成します。たとえば「Q2 リバランス」「データセンター需要の深掘り」「エネルギーセクターのローテーション」などです。agent はあなたの目的やスタイルをヒアリングし、最初の成果物を作成し、すべてを workspace のファイルシステムに保存します。翌日に戻ってきても、ファイル、thread、蓄積されたリサーチはそのまま残っています。
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/loop.webp" alt="トレードはループである：思いつきがリサーチと workspace に保存された仮説につながり、サイジングとリスク、注文、監視へと進み、監視が新しい証拠を仮説に返して確信度を動かす" width="880" />
+</p>
 
 ## 機能ハイライト
 
-- **Progressive Tool Discovery** — MCP ツールは概要だけを context に載せ、完全なドキュメントは workspace に保存します。agent は本当に必要になった時点でツールを発見して使えます。JSON ツールを skill に紐づけ、skill が有効になったときだけ agent に公開することもできます。
-- **Programmatic Tool Calling（PTC）** — agent は MCP server からの金融データを context window に流し込むのではなく、Python を書いて実行し、データを処理します。複雑な多段分析を可能にしつつ、token の浪費を大幅に減らします。
-- **金融データエコシステム** — ネイティブツールは素早い参照に、MCP server は sandbox 内での大量データ処理、チャート作成、複数年分析に使う、多層的な data provider 構成です。
-- **永続 workspace** — 各 workspace は専用 sandbox に対応し、構造化ディレクトリと workspace notes ファイル（`agent.md`）を持ちます。これにより session や thread をまたいでリサーチが蓄積されます。別系統の長期 memory store（`.agents/user/memory/`、`.agents/workspace/memory/`）は、継続的なユーザー設定や sandbox をまたぐ知識を保持します。ユーザー管理の memo store（`.agents/user/memo/`）には PDF や markdown のリサーチノートをアップロードでき、agent が必要に応じて参照します。
-- **金融リサーチ Skills** — DCF モデル、初回カバレッジレポート、決算分析、モーニングノート、文書生成などの事前構築済み workflow を備えています。slash command でも自動検出でも起動できます。
-- **Finance Research Workbench** — Web UI には、インライン金融チャート、複数形式のファイルビューア、TradingView チャート、リアルタイム WebSocket 市場データ、agent によるチャート注釈、turn ごとの source provenance パネル、共有可能な会話、subagent 監視が含まれます。
-- **マルチ provider モデル層** — provider に依存しない LLM 抽象と、エラー時の自動 failover を備えます。
-- **Automations** — 定期実行や一回限りのタスクをスケジュールできます。株式や指数がリアルタイム価格条件に到達したときに発火する価格トリガー型 automation も設定できます。
-- **Secretary** — Flash agent は secretary としても動作します。workspace の作成と管理、バックグラウンドでの深い PTC 分析の dispatch、実行中タスクの監視、結果取得を、human-in-the-loop 承認付きの会話コマンドで行えます。
-- **Agent swarm** — 分離された context window、事前ロードされた toolset/skills、実行中 steering、checkpoint ベースの resume、UI でのライブ進捗監視を備えた、並列非同期 subagent 群です。
-- **Live steering** — agent や subagent の作業中に追加メッセージを送り、完了を待たずに方向修正、補足、リダイレクトができます。
-- **Middleware stack** — skill loading、マルチモーダル入力、auto-compaction、context management を扱う深く composable な middleware stack により、長時間の agent session を支えます。
-- **Security & vault** — pgcrypto による保存時暗号化、credential 漏えいの自動検出と redaction、sandboxed execution、agent が安全に利用できる account ごとの secret storage を提供します。
-- **Channel integrations** — Slack、Discord、Feishu、Telegram から LangAlpha を使えます。スケジュール結果はメール配信もできます。
-- **Production-ready infrastructure** — Redis buffer による再接続 replay 付きの SSE-streamed agent activity、HTTP 接続から切り離された background execution、PostgreSQL-backed state persistence を備えます。
+ここでの例の多くは、Cerebras（CBRS）を扱う 1 つの workspace から取っています。最初の質問から Slack に送られた初回カバレッジレポートまで、実際の動きは[この共有会話](https://app.langalpha.ai/s/z7rvgK3P9vZN)で確認できます。
 
-## 技術基盤
+### 🔎 Agent チームでリサーチする
 
-**システムアーキテクチャ**
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-
-flowchart TB
-    Web["Web UI<br/>React 19 · Vite · Tailwind"] -- "REST · SSE" --> API
-    Web -- "WebSocket" --> WSP
-    CLI["CLI / TUI"] -- "REST · SSE" --> API
-
-    subgraph Server ["FastAPI Backend"]
-        API["API Routers<br/>Threads · Workspaces · Market Data<br/>OAuth · Automations · Skills"]
-        WSP["WebSocket Proxy"]
-        API --> ChatHandler["Chat Handler<br/>LLM Resolution · Workflow Dispatch"]
-        ChatHandler --> BTM["Background Task Manager<br/>Decoupled Execution · Workflow Lifecycle"]
-    end
-
-    subgraph PostgreSQL ["PostgreSQL — Dual Pool"]
-        AppPool[("App Data<br/>Users · Workspaces · Threads<br/>Turns · BYOK Keys · Automations")]
-        CheckPool[("LangGraph Checkpointer<br/>Agent State · Checkpoints")]
-    end
-
-    subgraph Redis ["Redis"]
-        EventBuf[("SSE Event Buffer<br/>150K events · Reconnect Replay")]
-        DataCache[("API Cache<br/>Market Data · SWR")]
-        Steering[("Steering Queue<br/>User Messages Mid-workflow")]
-    end
-
-    BTM --> AppPool
-    BTM --> CheckPool
-    BTM --> EventBuf
-    BTM --> Steering
-    API --> DataCache
-
-    BTM -. "Sandbox API" .-> Daytona["Daytona<br/>Cloud Sandboxes"]
-    API -. "REST" .-> FinAPIs["Financial APIs<br/>FMP · SEC EDGAR"]
-    WSP -. "WebSocket" .-> GData["ginlix-data<br/>Polygon.io · Massive"]
-```
-
-### マルチ Provider モデル層
-
-LangAlpha は、複数の LLM backend を抽象化する provider-agnostic なモデル層で動作します。どのモデルが駆動していても、同じ middleware stack、tools、workflow が利用できます。標準で 2 つのモードを備えています。
-
-- **PTC mode** は、深い多段階の投資リサーチ向けです。強い推論能力を使って分析方針を立て、金融データを整理し、複雑な分析のためのコードを書きます。長い context により、SEC filings とリサーチレポートを一度に突き合わせられます。
-- **Flash mode** は、素早い会話応答と workspace orchestration 向けです。簡単な市場参照、MarketView での chart-and-chat、軽量 Q&A、workspace 管理やバックグラウンド PTC 分析の dispatch と結果通知を行う secretary として使えます。
-
-**自分のモデルを持ち込む** — 既存の AI subscription や API key を直接使えます。OAuth で ChatGPT や Claude subscription（OpenAI Codex OAuth、Claude Code OAuth）を接続したり、Kimi（Moonshot）、GLM（Zhipu）、MiniMax、Doubao（Volcengine）の coding plan を使ったり、BYOK で任意の対応 provider の API key を設定できます。すべての key は PostgreSQL pgcrypto で保存時に暗号化されます（[セキュリティ](#セキュリティと-vault) を参照）。
-
-**モデル耐障害性** — 一時的なエラーでは自動 retry し、その後は設定済み fallback model に failover します。reasoning effort（`low`/`medium`/`high`）は provider 間で自動的に正規化されます。
-
-### Programmatic Tool Calling（PTC）と Workspace アーキテクチャ
-
-多くの AI agent は、一回限りの JSON tool call でデータを扱い、結果をそのまま context window に入れます。Programmatic Tool Calling は発想を反転させます。生データを LLM に渡す代わりに、agent が [Daytona](https://www.daytona.io/) cloud sandbox 内でコードを書いて実行し、ローカルにデータを処理し、最終結果だけを返します。これにより token の浪費を大きく抑え、通常なら context limit を超える分析も可能になります。
-
-**PTC 実行フロー**
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-
-flowchart LR
-    LLM["LLM"] -- "1 — Writes Python" --> EC["ExecuteCode Tool"]
-    EC -- "2 — Sends to sandbox" --> Run["Code Runner"]
-
-    subgraph Sandbox ["Daytona Cloud Sandbox"]
-        Run -- "3 — import tools.*" --> Wrappers["Generated Wrappers<br/>One module per MCP server"]
-        Wrappers -- "4 — JSON-RPC stdio" --> MCP["MCP Servers<br/>Subprocesses in sandbox"]
-    end
-
-    MCP -- "5 — REST / WS" --> APIs["Financial APIs<br/>FMP · Yahoo · Polygon"]
-    APIs -- "6 — Data" --> MCP
-    Run -- "7 — stdout · charts · files" --> EC
-    EC -- "8 — Result" --> LLM
-```
-
-workspace 環境は、単一 session を超えた永続性も提供します。各 sandbox には構造化されたディレクトリがあります。`work/<task>/` はタスクごとの作業領域（data、charts、code）、`results/` は完成した report、`data/` は共有 dataset のための場所です。中間成果物は session をまたいで残ります。root には `agent.md` があり、agent が thread をまたいで維持する workspace notes として、workspace の目的、主要な発見、thread index、重要 artifact の file index を記録します。middleware layer は `agent.md` をすべての model call に注入するため、agent は毎回ファイルを読み直さなくても過去作業の文脈を把握できます。これとは別に、store-backed な long-term memory system（`.agents/user/memory/`、`.agents/workspace/memory/`）は、workspace reset 後も残るユーザー設定や sandbox 横断の知識を保持します。ユーザー管理の memo store（`.agents/user/memo/`）にはアップロードした文書を保存でき、PDF は server-side で text extraction され、metadata は LLM により非同期生成されるため、agent は topic に応じて検索・引用できます。各 workspace は、1 つの研究目的に紐づく複数の conversation thread をサポートします。
+質問すると、LangAlpha はそれを並列のアナリストに振り分けます。アナリストは開示資料を読み、株価、オプション、マクロデータを取得し、コードで数字を計算します。実行中でもいつでも追加のメッセージを送って、方向を変えられます。CBRS では、Cerebras が何を売り、どれだけの速さで成長し、誰が支払っているのかをまとめた [HTML の入門資料](https://app.langalpha.ai/a/lep06ly8Qjfa)が最終的な成果になりました。
 
 <p align="center">
-  <img src="images/workspaces-list-page.png" alt="Workspaces page with research workspace cards" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-research-subagents-primer.webp" alt="CBRS についての質問を 4 つの subagent に振り分けた様子。subagent はサイドバーで lead agent の下に並び、隣には Cerebras に誰が支払っているかを扱う入門資料のセクションがある" width="800" />
+  <br />
+  <sub><b>Subagents</b>：lead agent の下で 4 人のアナリストが質問に取り組み、各カードにはツールと token の使用数が表示されます。<code>/html-report</code> を 1 回実行すると、その調査結果が右の入門資料になります</sub>
 </p>
-<p align="center"><em>各 workspace は永続 sandbox に対応します。テーマ、portfolio、thesis ごとにリサーチを整理できます。</em></p>
 
-<p align="center">
-  <img src="images/chat-mag7-catalyst-calendar-dashboard.png" alt="PTC agent generating a Mag 7 + Semiconductors catalyst calendar dashboard" width="800" />
-</p>
-<p align="center"><em>agent はコードを書いて対話型 dashboard を構築します。ここでは Mag 7 と半導体の catalyst calendar を生成しています。</em></p>
+### 🗂️ アイデアはすべて Workspace に残す
 
-### 金融データエコシステム
+仮説、セクター、ポートフォリオごとに 1 つの workspace を使います。ファイル、チャット、agent 自身のメモは翌日もそのまま残っているので、毎回ゼロから始めるのではなく、前回のセッションの上に積み上げられます。
 
-PTC は多段階のデータ処理、金融モデリング、チャート作成のような複雑な作業に向いています。一方で、すべてのデータ参照に code execution を起動するのは過剰です。そこで、よく使うデータを LLM が読みやすい形式に変換する native financial data toolset も用意しています。これらの tool は frontend に直接描画できる artifact も返すため、人間は agent の分析と並べて即座に視覚的な文脈を得られます。
+> *「この workspace でここまでに分かったことをもとに、CBRS のインタラクティブなダッシュボードを作って。主要なイベント付きの株価、売上成長、顧客集中度、そして OpenAI にどれだけ依存しているか。あちこちクリックして見られるようにしたい。」*
 
-**Native tools** は、direct tool call による素早い参照向けです。
-
-- **Company overview**：リアルタイム quote、price performance、主要財務指標、analyst consensus、revenue breakdown
-- **SEC filings**（10-K、10-Q、8-K）：earnings call transcripts と引用しやすい markdown 形式
-- **Market indices** と **sector performance**：市場全体の文脈
-- **Web search**（Tavily、Serper、Bocha、Exa、Parallel）：manifest-driven provider selection、深さの段階選択（fast lookup から deep research）、image search、AI research mode、ユーザーごとの選択に対応。さらに、ゼロキーの組み込みクローラーに任意の provider 委譲（Firecrawl など）を加え、per-provider の circuit breaker で保護する **web fetch**、そしてオプトインの **site crawling**（WebCrawl/WebMap）
-
-**MCP servers** は、PTC code execution で扱う raw data 向けです。
-
-- **Price data**：株式、commodity、crypto、forex の OHLCV time series、short interest、short volume analytics
-- **Fundamentals**：複数年 financial statements、ratios、growth metrics、valuation、insider trades、dividends and splits、share float、key executives、technical indicators
-- **Macro economics**：GDP、CPI、unemployment、Fed funds rate、treasury yield curve（1M–30Y）、country risk premiums、economic calendar、earnings calendar
-- **Options**：filtering 可能な options chain、option contracts の historical OHLCV、real-time bid/ask snapshots
-- **Yahoo Finance suite**（price、fundamentals、analysis、market）：key 不要で statements、analyst ratings、holders、screening、calendars をカバー
-- **X（Twitter）**：sentiment と event tracking のための read-only post search、user/tweet lookup、thread fetch。JS-rendered や anti-bot-protected pages 向けの **scraping** server もあります。
-
-agent は適切な layer を自動で選びます。context に収まる素早い lookup には native tools を使い、bulk data processing、charting、sandbox 内での複数年 trend analysis が必要な場合は MCP tools を使います。
-
-MCP server は account に一度 install し、workspace ごとに選択します。built-in server は個別に無効化できます。custom HTTP または stdio server（[vault](#vault) から credential を読むものを含む）は API や UI から追加でき、workspace ごとに on / off を切り替えられ、restart なしで数秒以内に反映されます。
-
-#### Data Provider フォールバックチェーン
-
-LangAlpha は 3 層の data provider hierarchy をサポートします。各層は任意で、上位層が利用できない場合でも、システムは自動的に下位層へフォールバックします。
-
-| Tier | Provider                          | 必要な Key        | 追加される内容                                                                               |
-| ---- | --------------------------------- | ----------------- | ------------------------------------------------------------------------------------------ |
-| 1    | **ginlix-data**（hosted proxy）   | `GINLIX_DATA_URL` | リアルタイム WebSocket price feed、intraday data、extended trading hour data、options data |
-| 2    | **FMP**（Financial Modeling Prep）| `FMP_API_KEY`     | 高品質 fundamentals、financial statements、macro data、analyst data                        |
-| 3    | **Yahoo Finance**（yfinance）     | *不要、無料*      | Price history、basic fundamentals、earnings、holdings、insider transactions、ESG、screener |
-
-すべての tier はデフォルトで有効です。**無料データのみ**（Yahoo Finance）で動かしたい場合は、`make config` を実行して prompt で選択してください。`agent_config.yaml` を手動編集することもできます。
-
-> [!NOTE]
-> Yahoo Finance のデータは community-sourced であり制限があります。1 時間未満の intraday data はなく、quotes は delayed、macro coverage は限定的で、rate limiting が起きることもあります。`FMP_API_KEY` の設定を強く推奨します（[free tier available](https://site.financialmodelingprep.com/)）。
-
-### 金融リサーチ Skills
-
-agent には 23 個の事前構築済み金融リサーチ skill が含まれており、それぞれ slash command または automatic detection で有効化できます。Skills は [Agent Skills Spec](https://agentskills.io/specification) に従っており、workspace に `SKILL.md` ファイルを置くことで拡張できます。
-
-| Category                 | Skills                                                                                      |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
-| **Valuation & Modeling** | DCF Model、Comps Analysis、3-Statement Model、Model Update、Model Audit                     |
-| **Equity Research**      | Initiating Coverage（30–50 ページ report）、Earnings Preview、Earnings Analysis、Thesis Tracker |
-| **Market Intelligence**  | Morning Note、Catalyst Calendar、Sector Overview、Competitive Analysis、Idea Generation、X Research |
-| **Document Generation**  | PDF、DOCX、PPTX、XLSX、HTML：create、edit、extract                                          |
-| **Operations**           | Investment Deck QC、Scheduled Automations、User Profile & Portfolio                         |
-
-謝辞：一部の skill は [anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins) を元にしています。
-
-<p align="center">
-  <img src="images/chat-nvda-amd-googl-comps-implied-valuation.png" alt="Comps Analysis skill delivering an Excel model and PDF valuation report with implied price ranges for NVDA, AMD, and GOOGL" width="800" />
-</p>
-<p align="center"><em>Comps Analysis skill は Excel model と PDF report を出力します。同業他社 multiple から導いた implied price range も含まれます。</em></p>
-
-### マルチモーダル知能
-
-agent は画像（PNG、JPG、GIF、WebP）と PDF をネイティブに読み取れます。multimodal middleware が file read を捕捉し、sandbox や URL から content を download し、base64 として conversation に注入することで、視覚情報を直接解釈できます。MarketView では、ユーザーの live candlestick chart を capture して multimodal context として agent に送信できます。capture には chart image だけでなく、symbol、interval、OHLCV、moving averages、RSI、52-week range などの structured metadata も含まれるため、agent は視覚パターンと基礎データの両方から推論できます。
-
-<p align="center">
-  <img src="images/marketview-nvda-support-resistance-analysis.png" alt="MarketView showing NVDA candlestick chart with AI support and resistance analysis" width="800" />
-</p>
-<p align="center"><em>MarketView は live chart を agent に送り、リアルタイムの technical analysis を行います。</em></p>
-
-### Agent によるチャート注釈
-
-アプリ内のどの chat からでも、agent に株価 chart への注釈を依頼すると、live chart に直接描画します。price levels、trendlines、Fibonacci retracements、event badges、rectangles、text markers に対応します。Annotations は SSE 経由で live stream され、workspace および `symbol:timeframe` ペアごとに永続化されます（`NVDA:1day` の描画は `NVDA:1hour` とは別管理です）。再接続時には replay されます。MarketView では目の前の chart に描画されます。それ以外の会話では、chat transcript に symbol、timeframe、annotations を示す chart card が表示され、chat の横の tab で同じ live chart を開けます。MarketView から送信された message には画面上の ticker と timeframe が含まれるため、agent は常に「この chart」がどの chart を指すか理解しています。
-
-### 自動化
-
-agent は会話の中から自分の task を schedule できます。別 UI は不要です。専用 Automations page では、full CRUD、execution history、manual trigger で automations を管理できます。すべての automation type は同じ `AutomationExecutor`、設定可能な agent mode（PTC または Flash）、連続失敗後の自動無効化を共有します。
-
-**Time-based** — recurring schedules（「毎週月曜 9 時にこの分析を実行」）には標準 cron expression を、一回限りの future execution には one-shot datetime scheduling を使います。
-
-**Price-triggered** — 任意の株式や主要指数に price target または percentage move を設定し、条件が満たされた瞬間に agent が指示を実行します。`PriceMonitorService` は [ginlix-data](https://github.com/ginlix-ai/ginlix-data) への shared upstream WebSocket connection から real-time ticks を購読します（stocks は realtime tier、indices は delayed tier）。Redis-based deduplication により、server instances 間の duplicate trigger を防ぎます。
-
-| Condition                    | Example                                        |
-| ---------------------------- | ---------------------------------------------- |
-| Price above / below          | AAPL が $200 を超えたら trigger                |
-| Percent change above / below | SPX が前日終値から +2% 動いたら trigger        |
-
-条件は AND logic で組み合わせられます。各 price automation は **one-shot**（一度だけ発火）または **recurring** mode をサポートし、cooldown を設定できます（最短 4 時間、デフォルトでは trading day ごとに 1 回）。
-
-> [!NOTE]
-> Price-triggered automations には ginlix-data からの real-time WebSocket feed が必要です。beta 期間中、この機能は [hosted platform](https://langalpha.ai) のみで利用できます。より広範な WebSocket data source 対応は将来の release で予定されています。
-
-<p align="center">
-  <img src="images/automations-page-mag7-pre-earnings.png" alt="Automations page with template gallery and Mag 7 pre-earnings schedule" width="800" />
-</p>
-<p align="center"><em>定期リサーチを schedule できます。ここでは Mag 7 の pre-earnings analysis が各決算前に自動実行されます。</em></p>
-
-**Agent アーキテクチャ**
-
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-
-flowchart TB
-    subgraph Orchestrator ["BackgroundSubagentOrchestrator"]
-        direction TB
-        Agent["Main Agent · LangGraph ReAct"]
-    end
-
-    Agent -- "Task(init · update · resume)" --> SubPool
-    SubPool -- "results" --> Orchestrator
-
-    subgraph SubPool ["Subagent Pool — Parallel Async"]
-        direction LR
-        S1["general-purpose"]
-        S2["research"]
-        S3["user-defined"]
-    end
-
-    subgraph Middleware ["Middleware Stack"]
-        direction LR
-        MW1["Tool Safety<br/>Leak Detection<br/>Protected Paths<br/>Error Handling"]
-        MW2["Context & Skills<br/>agent.md Injection<br/>Skill Loading<br/>Multimodal"]
-        MW3["Coordination<br/>HITL<br/>Steering<br/>Subagent Dispatch"]
-        MW4["Resilience<br/>Compaction<br/>Retry + Fallback<br/>Prompt Caching"]
-    end
-
-    Agent -- "wraps model + tool calls" --> Middleware
-    Middleware --> LLM["Multi-Provider LLM<br/>OpenAI · Anthropic · Gemini · DeepSeek<br/>Qwen · Kimi · Doubao · GLM · MiniMax · ..."]
-
-    Agent <--> Tools
-
-    subgraph Tools ["Tool Layer"]
-        direction LR
-        T1["execute_code<br/>bash"]
-        T2["Filesystem<br/>read · write · edit<br/>glob · grep"]
-        T3["Finance<br/>Market Data · SEC<br/>Options · Screener"]
-        T4["Web<br/>Search · Fetch"]
-        T5["ShowWidget<br/>Inline HTML"]
-    end
-
-    T1 <--> Workspace
-    T2 <--> Workspace
-
-    subgraph Workspace ["Workspace — Daytona Sandbox"]
-        direction LR
-        W1["agent.md<br/>Workspace Notes"]
-        W2["work/‹task›/<br/>data · charts"]
-        W3["results/<br/>Reports"]
-        W4["tools/<br/>MCP Wrappers"]
-    end
-```
-
-### Agent 群
-
-core agent は [LangGraph](https://github.com/langchain-ai/langgraph) 上で動作し、`Task()` tool により parallel async subagents を起動します。subagent は分離された context window で同時実行されるため、長い reasoning chain の drift を防ぎます。各 subagent は synthesized result を main agent に返し、orchestrator を軽量に保ちます。main agent は subagent の結果を待つことも、他の pending work を続けることもできます。UI の **Subagents** view に切り替えると、進捗をリアルタイムで確認できます（web frontend のみ）。
-
-単純な dispatch に加え、main agent は実行中の subagent に follow-up instruction を送れます。完了済み subagent を full context 付きで resume し、反復的に refined することもできます。server が restart した場合、subagent state は最後の checkpoint から自動的に再構築されます。
-
-<p align="center">
-  <img src="images/chat-data-center-moat-ai-compute-timeline.png" alt="Parallel subagents researching the data center compute chain with an interactive AI compute timeline" width="800" />
-</p>
-<p align="center"><em>research subagents は compute chain 全体を並列に調査します。結果は NVIDIA、Google、AMD、AWS など業界全体をまたぐ対話型 AI compute timeline に統合されます。</em></p>
-
-### Middleware スタック
-
-agent には以下を含む middleware stack が同梱されています。
-
-- **Live steering** — agent が分析中に誤った方向へ進んだり、関係の薄いデータを追ったり、意図を誤解したりすることがあります。steering により、完了を待たずに軌道修正できます。agent の作業中いつでも follow-up message を送り、更新した指示、補足、まったく新しい質問を伝えると、agent は次の step の前にそれを受け取ります。steering はすべての layer で機能します。main agent を redirect し、個別の background subagent に follow-up を送り、workflow が先に終わった場合は未消費 message を input box に戻します。作業は失われず、restart も不要です。
-- **Dynamic skill loading** — `LoadSkill` tool により、agent は必要に応じて skill toolsets を発見・有効化できます。default tool surface を小さく保ちながら、必要なときだけ専門機能を利用できます。
-- **Multimodal** — images と PDFs の file read を捕捉し、sandbox や URL から content を download して base64 として conversation に注入します。multimodal models がネイティブに解釈できます。
-- **Auto-compaction** — token limit に近づくと conversation history を圧縮し、重要 context を保持しながら空き容量を作ります。
-- **Context management** — 大きな tool result を workspace filesystem に自動退避し、context には短い preview だけを残します。conversation が長くなると古い turn を要約しつつ compaction し、full transcript は workspace から復元できます。research session は context limit に突き当たらず長期間動かせます。
-
-完全な一覧は [`src/ptc_agent/agent/middleware/`](../src/ptc_agent/agent/middleware/) を参照してください。
-
-謝辞：一部の middleware components は [LangChain DeepAgents](https://github.com/langchain-ai/deepagents) の実装を元に、またはそこから着想を得ています。
-
-### ストリーミングとインフラ
-
-server は agent activity のすべてを SSE で stream します。text chunks、arguments と results 付き tool calls、subagent status updates、file operation artifacts、human-in-the-loop interrupts が含まれます。agent の各 decision は UI 上で完全に trace できます。
-
-workflow は HTTP/SSE connection から完全に分離された independent background task として動作します。browser tab を閉じたり network が切れたりしても、agent は作業を続けます。再接続時には最大 150,000 件の buffered events が replay され、client は中断地点から正確に復帰します。
-
-PostgreSQL は LangGraph checkpointing、conversation history、user data（watchlists、portfolios、preferences）を支え、agent state と user context を session 間で永続化します。Redis は SSE events を buffer し、browser refresh や network drop でも in-flight messages を失わないようにします。client は自動的に reconnect and replay します。user data は database-backed virtual JSON files として agent に公開され、read は live rows をオンデマンドに serialize し、write は sandbox sync round-trip なしで単一の validated transaction として適用されます。skills は session init 時に manifest-based cache を通じて sandbox に同期され、変更時だけ再アップロードされます。詳細は完全な [API reference](api/README.md) を参照してください。
-
-### データソースの来歴
-
-agent が触れた外部 data source はすべて trace され、表示されます。provenance middleware は、web search、page fetch、SEC filing、market-data call、MCP tool invocation、workspace file read を記録します。background subagents による access も含まれます。各 source につき `provenance` stream event が発行されますが、これらは LLM context には入りません。UI は各 turn の横に Sources panel として表示します。source は type ごとに group 化され、web origin には favicon が付き、detail view では provider、timestamp、captured arguments、content fingerprint、snippet を確認できます。*This turn / All sources* toggle により thread 全体の data footprint を表示できます。file や memo source をクリックすると workspace file panel で直接開けます。すべての research output の背後に、監査可能な data trail が残ります。
-
-## セキュリティと Vault
-
-LangAlpha は credential、code execution、user-supplied secrets に対し、layered security model を適用します。
-
-**Encryption at rest** — すべての sensitive data（BYOK API keys、OAuth tokens、vault secrets）は PostgreSQL 内で `pgcrypto` により暗号化されます。plaintext は database に保存されません。
-
-**Credential leak detection** — すべての tool output は LLM context に届く前に scan されます。middleware は既知の secret values（MCP server keys、sandbox tokens、vault secrets）を解決し、一致するものを `[REDACTED:KEY_NAME]` として redact します。同じ redaction は human-facing surfaces にも適用され、file reads と downloads は client に届く前に scrub されます。
-
-**Sandboxed code execution** — 各 workspace は、専用 filesystem と network boundary を持つ [Daytona](https://www.daytona.io/) cloud sandbox で動作します。protected path guards は agent が internal system directories に access するのを防ぎます。tool input は実行前に short-circuit され、tool output は leaked paths を redact します。
-
-### Vault
-
-各 account には、code execution 中に agent が使う API keys や credentials を保存する secret vault が組み込まれています。third-party data sources（brokerage APIs、external data vendors など）への access や、workspace 内での LLM-powered workflow 構築に役立ちます。UI で一度 secret を保存すると、すべての workspace の agent session から簡単な Python API で利用できます。
-
-```python
-from vault import get, list_names, load_env
-
-api_key = get("MY_API_KEY")       # retrieve a single secret
-names = list_names()               # list available secret names
-load_env()                         # bulk-load all secrets as env vars
-```
-
-vault secrets は上記すべての保護層を継承します。保存時暗号化、agent および human-facing output からの redaction、direct file access の block が適用されます。secret の作成、更新、表示、削除ができるのは account owner のみです。
-
-## フロントエンド
-
-Web UI は単なる chat interface ではなく、完全な research workbench です。
-
-- **Configurable dashboard** — preset layout（Morning Brief、Trader、Researcher、Agent Desk、Trader (TradingView)、Portfolio Steward）から始めるか、markets、intelligence、personal context、agent surfaces、workspace shortcuts を含む widget gallery から自分で構成できます。
-- **Inline financial charts** — tool results は chat thread 内で interactive sparklines、bar charts、overview cards として描画されます。
-- **Inline HTML widgets** — agent は `ShowWidget` tool を通じて interactive HTML/SVG visualizations（Chart.js charts、metric cards、data tables）を chat 内に直接描画できます。theme-aware styling と sandboxed iframe に対応します。
-- **HTML research reports** — agent は self-contained HTML documents を `results/` に書き出します。実ブラウザの semantics で提供され、scripts は実行され、CDN libraries は load され、relative assets は解決されます。fullscreen 表示と PDF export が可能で、inline widgets や live dashboards とは別物です。
-- **Multi-format file viewer** — PDF（paginated、zoomable）、Excel、CSV、HTML preview、source code（diff mode 付き Monaco editor）を download なしで inline 表示できます。
-- **TradingView charting** — drawing tools、indicators、professional candlestick styling を備えた完全な TradingView Advanced Chart です。
-- **Live market data** — 1 秒 tick resolution（US equities）の real-time WebSocket price feed、extended hours visualization、複数 moving average overlays に対応します。
-- **Agent-drawn chart annotations** — agent は株価の live chart に price levels、trendlines、Fibonacci retracements、event badges を描画し、`symbol:timeframe` ごとに永続化します。MarketView に直接表示されるほか、chat 内の chart card から開けます。
-- **Shareable conversations** — one-click sharing と granular permissions（file browsing と download access の切替）により、public URL で replay できます。
-- **Real-time subagent monitoring** — 各 background task の streaming output と tool calls を live に確認でき、mid-execution instructions も送れます。
-- **Source provenance panel** — 各 turn に、agent が access した external sources（web、SEC filings、market data、MCP tools、files）を favicons、content fingerprints、per-thread scope toggle とともに表示します。
-- **Automations** — cron builder、execution history、manual trigger、stock や index が real-time price condition に達したときに発火する price-triggered automations を備えた CRUD management です。
-
-<p align="center">
-  <img src="images/dashboard-market-overview-news-watchlist.png" alt="Dashboard with market index strip, market news brief, and watchlist — with a news brief dropped into the agent chat as context" width="800" />
-</p>
-<p align="center"><em>dashboard は market indices、personalized brief、watchlist を表示します。どの tile も agent に chat context として pin でき、research thread を開始できます。</em></p>
+新しい thread が、それまでの thread が workspace に残したリサーチとファイルをもとにダッシュボードを作ります。完成したのは[実際に操作できるライブダッシュボード](https://app.langalpha.ai/a/DB8NBmVeudB1)です。
 
 <table align="center">
   <tr>
-    <td width="50%">
-      <img src="images/dashboard-preset-picker-morning-brief.png" alt="Dashboard preset picker with Morning Brief, Agent Desk, Researcher, and Trader templates" />
-    </td>
-    <td width="50%">
-      <img src="images/dashboard-widget-gallery-add-widget.png" alt="Dashboard widget gallery with markets, intelligence, personal, agent, and workspace categories" />
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><em>Morning Brief、Agent Desk、Researcher、Trader などの curated preset から始められます。</em></td>
-    <td align="center"><em>または widget gallery から markets、intelligence、personal、agent、workspace を自由に組み合わせられます。</em></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-workspace-data-files.webp" alt="リサーチ途中の demo-cbrs workspace：agent が xlsx と dcf-model の skill を読み込み、市場データの入力値を得るコードを実行している。隣では、タスクごとに 1 フォルダのファイルツリーから、overview タスクの data フォルダにある revenue_history.json を開いている" /><br /><sub><b>Workspace Files</b>：大量のデータは agent の context ではなくファイルに保存されます。株価、開示資料、モデルの入力値が、ファイルツリー内の各タスクの data/ フォルダに入ります</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dashboard-openai-exposure.webp" alt="ダッシュボードの thread：作成の依頼と、別の thread のイベントファイルを取り込む追加の依頼。隣には OpenAI への依存度を示すライブの CBRS ダッシュボードがあり、エクスポージャー台帳と受注残のストレステストが表示されている" /><br /><sub><b>動くアプリ</b>：agent はインタラクティブなダッシュボードを作ります。棒、マーカー、行をクリックすると出典が表示され、OpenAI の受注残ストレステストはドラッグで操作でき、別の thread のファイルを @ で指定して取り込むこともできます</sub></td>
   </tr>
 </table>
 
-## チャネル連携
+### ⏰ 見張りを続ける Agent
 
-普段使っている tool から LangAlpha を利用できます。integration gateway は messaging platform と core agent の間で message を relay し、各チャネルでは、それぞれの形式に合わせたレスポンスを受け取れます。channel integrations は hosted service 限定で、one-click setup と quick account binding に対応しています。開始するには [integrations](https://platform.langalpha.ai/integrations) を開いてください。
+寄り付き前のブリーフを予約したり、株価がある価格を超えたときや 1 日で設定した割合だけ動いたときに agent を起動したりできます。結果は 1 つのフィードに届き、Slack、Discord、iMessage を接続していればそちらにも届きます。
 
-| Feature                        | Slack | Discord | Feishu | Telegram | WhatsApp |
-| ------------------------------ | ----- | ------- | ------ | -------- | -------- |
-| Rich text / markdown           | ✅     | ✅       | ✅      | ✅        | 🔜       |
-| File upload（user → agent）    | ✅     | ✅       | ✅      | ❌        | ➖        |
-| File download（agent → user）  | ✅     | ✅       | ✅      | ❌        | ➖        |
-| Image rendering                | ✅     | ✅       | ✅      | ❌        | ➖        |
-| Human-in-the-loop interrupts   | ✅     | ✅       | ✅      | ⚠️       | ➖        |
-| Subagent tracking              | ✅     | ✅       | ✅      | ✅        | 🔜       |
-| Workspace / model selection    | ✅     | ✅       | ✅      | ✅        | 🔜       |
-| Automation delivery（outbound）| ✅     | ✅       | ❌      | ➖        | ➖        |
-| Simplified account linking     | ✅     | ✅       | ❌      | ❌        | ➖        |
-| Slash commands                 | ✅     | ✅       | ✅      | ✅        | ➖        |
+> *「CBRS を見張っておいて。毎週月曜にモデルの前提を確認して、Q3 決算の後にモデルを更新して、株価が強気シナリオの価値を上抜けるか $95 を割り込んだら教えて。」*
 
-Slack と Discord は native channels と thread-level groups を提供しており、LangAlpha の workspaces と threads に自然に対応します。context は native mechanism で管理されます。Telegram と WhatsApp にはこうした仕組みがないため、簡略化したオーケストレーションで動作します。Feishu は完全な messaging と card-based UI を備え、OAuth は近日対応予定です。Telegram は一部対応済みで、今後さらに対応範囲を広げる予定です。WhatsApp は計画中です。
+agent は workspace に 4 つの automation を設定します。毎週の前提チェック、Q3 決算の翌朝に 1 回だけ実行するモデル更新、そして 2 つの価格トリガーです。価格トリガーは、DCF モデルから出した強気シナリオの価値と、レーティングを変える水準である $95 に置かれます。各実行は workspace のモデルとメモから始まり、結果を Slack に報告します。
 
-## クイックスタート
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-schedules-price-watches.webp" alt="毎週の CBRS チェック、決算後のモデル更新、2 つの価格トリガーが並ぶ Automations ページ" /><br /><sub><b>Automations</b>：すべてのスケジュールと価格監視を 1 ページで管理できます。各監視が発火までどれだけ離れているか、結果がどこに届くかも表示されます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-new-price-move.webp" alt="CBRS が前日終値から 15% 上昇したときに agent を起動する新しい automation。指示内容と Slack DM への配信先が設定されている" /><br /><sub><b>値動きで起動</b>：前日終値または当日始値からの % 変動で agent を起動します。当日の変動があなたの閾値と並べて表示されます</sub></td>
+  </tr>
+</table>
 
-> [!TIP]
-> **self-host したくない場合**は、[hosted version](https://langalpha.ai) を試してください。FMP、real-time market data、cloud sandboxes を含む full data infrastructure が最初から使えます。自分の LLM key（BYOK）を持ち込めば、すぐに始められます。
+### 📑 答えだけでなく成果物を受け取る
 
-LangAlpha は **Docker だけ**で起動できます。data API key も cloud sandbox も不要です。インフラは Docker だけで動かし、AI モデルには手元の LLM サブスクリプションを利用できます。
+数式が生きた Excel モデル、PDF と HTML のレポート、スライド資料、インタラクティブなダッシュボード。組み込みの skill は、DCF、類似企業比較、決算プレビュー、初回カバレッジ、モーニングノート、トレードピッチをカバーします。
+
+> *「CBRS について、セルサイドの初回カバレッジのようにまとめて。レーティング、目標株価、投資仮説、市場が織り込んでいること、シナリオ、ピア、主なリスク、チャートを入れて。すでにあるリサーチとモデルを使って。」*
+
+初回カバレッジの skill は、thread の前半で作ったリサーチとリバース DCF のワークブックを土台に、10 ページのレポートを書きます。目標株価 $130 の Sell 判断、シナリオ、ピア、リスク、7 つのチャートを含み、PDF と [HTML 版](https://app.langalpha.ai/a/eedVW2kllALZ)で出力されます。スプレッドシートパネルで範囲を選んで agent に送り返せば、その部分について質問できます。Slack を接続していれば、すべて送るよう頼むだけで全ファイルが DM に届き、その場で開けます。
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-report.webp" alt="チャットの横に開いた 10 ページの CBRS 初回カバレッジレポート。売上と顧客集中度のチャートがある" /><br /><sub><b>ファイルパネル</b>：HTML レポートは、レンダリング表示でもソースでも読めます。根拠となった開示資料やプレスリリースは本文中に引用されます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dcf-comps-workbook.webp" alt="スプレッドシートパネルに表示した CBRS のリバース DCF ワークブック。選択したセルをチャットに追加できる状態になっている" /><br /><sub><b>スプレッドシート</b>：DCF、WACC、Comps、Checks の各シートに生きた数式が入った本物のワークブックです。隣には、類似企業比較のデータを集めたリサーチの実行が並びます</sub></td>
+  </tr>
+</table>
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-peers.webp" alt="初回カバレッジの依頼と、PDF ビューアで開いた CBRS レポート。強気シナリオをピアのバリュエーションと利益率で検証するページを表示している" /><br /><sub><b>PDF ビューア</b>：完成した PDF をチャットの横でめくったり拡大したりできます。ここでは、強気シナリオをピアのマルチプルと利益率で検証するページを表示しています</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/slack-cbrs-deliverables-dm.webp" alt="agent が初回カバレッジレポート、ワークブック、ダッシュボード、リサーチノートを Slack DM に送り、Slack 上でレポートを開いている" /><br /><sub><b>Slack</b>：すべてを 2 通のメッセージで届けます。先に成果物、次にリサーチノートで、各ファイルはそれぞれ個別のスレッド返信になります</sub></td>
+  </tr>
+</table>
+
+### 📈 Agent と一緒にチャートを描く
+
+どのチャットからでも、agent はライブの市場チャートを読み取り、書き込めます。サポートとレジスタンス、トレンドライン、フィボナッチの水準、イベントマーカーを描き、銘柄と時間軸ごとに保存します。Market View 以外では、描画はチャートカードとして届き、会話の横で同じチャートを開けます。
+
+> *「CBRS の IPO 以降のチャートを出して、株価を動かした出来事に印を付けて。決算、ディール、アナリストの見解、ロックアップ。」*
+
+agent は大きく動いた日ごとに何が株価を動かしたのかを突き止め、ライブチャートに描き込みます。イベントバッジ 18 個、ロックアップのマーカー 4 個、そして IPO 価格 $185 とコンセンサス目標株価のラインです。バッジにカーソルを合わせると、そのメモを読めます。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chart-cbrs-post-ipo-event-annotations.webp" alt="IPO 以降の CBRS のライブ日足チャート。agent が描いたイベントバッジ、ロックアップのマーカー、参照ラインがある" width="800" />
+  <br />
+  <sub><b>ライブチャート</b>：各メモは株価が反応した日に置かれ、チャットではすべての値動きが、根拠となる出典とともに表にまとめられます</sub>
+</p>
+
+### 🧾 すべての回答の根拠を確かめる
+
+Sources パネルには、1 つの turn で agent が触れた開示資料、Web ページ、データ呼び出し、ファイルがすべて並びます。agent 自身の Python や Bash から行ったデータ呼び出しも含まれるので、結果を鵜呑みにせず、作業そのものを確かめられます。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-sources-panel.webp" alt="1 つの turn の裏にある subagent の読み込み、SEC 開示資料、市場データ、データツールの呼び出しを一覧表示する Sources パネル" width="800" />
+  <br />
+  <sub><b>Sources</b>：この turn の 14 件と thread 全体の 560 件の出典を切り替えて表示します。出典は Web 検索とクロール、SEC 開示資料、市場データ、データツールに分類され、それぞれ実行時の prompt や引数も確認できます</sub>
+</p>
+
+## Agent トレーディング
+
+私たちは、LangAlpha を agent トレーディングに最適な harness にすることに取り組んでいます。証券会社は今や AI agent が実際の口座で取引することを認めていますが、そこにつながる agent は汎用のものなので、注文は数ある tool call の 1 つにすぎません。LangAlpha では、注文こそが harness の設計の中心にある呼び出しです。
+
+- **モデルが何をしても崩れない制限。** 各接続に何を許可するか、どの注文があなたの承認を待つか、承認された注文は 1 回だけ実行されるというルールは、すべての注文が通る 1 本の[統制された経路](#統制された注文)上で、ホスト側で強制されます。どんな prompt も、agent が書くどんなスクリプトもこれらを広げることはできず、どのモデルを使っても同じです。
+- **読める注文経路。** モデルの呼び出しから証券会社が受け取るリクエストまで、注文が通るすべてのチェックはこのリポジトリ内のコードです。お金を預ける前にコードを読めますし、同じ制御のもとで自分のマシンで動かすこともできます。
+
+現在、4 つの証券会社に同じ制御のもとで接続できます。
+
+| | Robinhood | Interactive Brokers | moomoo | Webull |
+| --- | :---: | :---: | :---: | :---: |
+| 口座、ポジション、取引履歴 | ✅ | ✅ | ✅ | ✅ |
+| 市場データとウォッチリスト | ✅ | ✅ | ✅ | ✅ |
+| 注文プレビュー | ✅ | | | |
+| ペーパートレード | | | ✅ | |
+| 証券会社のアプリで確定するステージング注文 | | ✅ | | |
+| 実注文 | ✅ | | ✅ | |
+
+Robinhood はローカルアプリに戻るサインインしか受け付けないため、デスクトップアプリから接続します。moomoo は米国、中華圏、日本、東南アジアの市場をカバーします。
+
+接続するときに、読み取り専用からペーパートレード、実注文まで、何を許可するかを選びます。
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-brokerages-capabilities.webp" alt="Plugins ページの Brokerages タブ。各証券口座の接続でできることを表示している" /><br /><sub><b>Brokerages</b>：証券口座を接続します。各カードには、連携する前にその口座で agent ができることが表示されます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-robinhood-connect-capabilities.webp" alt="Robinhood の接続画面。市場データから実注文まで、agent に許可する操作ごとにスイッチがあり、実注文はオフのままになっている" /><br /><sub><b>Capabilities</b>：信頼できるものだけをオンにします。保有ポジションをもとにサイズを決めた注文は承認カードで待機し、あなたが承認するまで証券会社には何も届きません</sub></td>
+  </tr>
+</table>
+
+## 使い始める
+
+**すでに料金を払っているモデルを使えます。** Claude や ChatGPT のサブスクリプションでサインインする、Kimi、GLM、MiniMax の coding plan を使う、任意の API key を持ち込む、セルフホストならローカルモデルを動かす、のいずれも選べます。
+
+**いつもの場所で使えます。** ブラウザ、macOS、Windows、Linux 向けの[デスクトップアプリ](https://github.com/ginlix-ai/langalpha/releases)、そして [LangAlpha.ai](https://langalpha.ai) なら Slack、Discord、Telegram、Feishu、iMessage からも使えます。
+
+**ホスト版（beta）。** [LangAlpha.ai](https://langalpha.ai) に登録すると、無料で始めるか、いずれかのプランを試用できます。市場データ、クラウド sandbox、証券口座の接続、チャネルはすべて設定済みです。beta 期間中はプランや機能が変わる可能性があります。
+
+**セルフホスト。** 必要なのは Docker だけです。
 
 ```bash
-git clone https://github.com/ginlix-ai/langalpha.git
-cd langalpha
-make config   # interactive wizard — .env を作成し、LLM、data sources、sandbox、search を設定
-make up       # PostgreSQL、Redis、backend、frontend を起動
+git clone https://github.com/ginlix-ai/langalpha.git && cd langalpha
+make config   # wizard: model, data sources, sandbox, web search
+make up       # Postgres, Redis, backend and web app
 ```
 
-- **Frontend:** [http://localhost:5173](http://localhost:5173)
-- **Backend API:** [http://localhost:8000](http://localhost:8000)（interactive docs は `/docs`）
-- **Verify:** `curl http://localhost:8000/health`
+[http://localhost:5173](http://localhost:5173) を開いてください。API はポート 8000 で待ち受けており、インタラクティブなドキュメントは `/docs` にあります。
 
-完全な体験には、wizard が optional keys の入力を促します。あとから `.env` に追加することもできます。
+**セルフホストとの違い。** agent、workspace、automation、skill、統制された注文は同じように動きます。それ以外は次のように異なります。
 
-| Key                                  | 何が使えるようになるか                                                                                                  |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `DAYTONA_API_KEY`                    | session をまたいで workspace を維持できる persistent cloud sandboxes（[daytona.io](https://www.daytona.io/)）          |
-| `FMP_API_KEY`                        | 高品質な fundamentals、macro、SEC filings、options（[free tier available](https://site.financialmodelingprep.com/)）   |
-| `SERPER_API_KEY`、`TAVILY_API_KEY`、`EXA_API_KEY` または `PARALLEL_API_KEY` | Web search（いずれか一つで有効化）                                                |
-| `FIRECRAWL_API_KEY`                  | Web fetch と site crawling の強化（組み込みクローラーはキー不要）                                                     |
-| `LANGSMITH_API_KEY`                  | LangGraph runs の LangSmith tracing                                                                                    |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`        | OpenTelemetry traces と metrics を任意の OTLP backend（Jaeger、Grafana Tempo、Datadog、Honeycomb など）へ送信          |
-| `SANDBOX_PROVIDER`                   | sandbox provider（`daytona` または `docker`）を上書き。未設定時は `DAYTONA_API_KEY` から自動判定                       |
+| | ホスト版 | セルフホスト |
+| --- | --- | --- |
+| 市場データ | 米国株とオプションのリアルタイム相場、時間外取引にも対応。中国 A 株は近日対応予定 | Yahoo Finance または FMP の相場。60 秒ごとに更新され、遅延データとして表示 |
+| オプションと市場構造 | オプションチェーンとスナップショット、空売り残高、浮動株、値動き上位銘柄 | 利用不可 |
+| 価格トリガー | ライブのティックで発火 | 遅延株価に対して 30 秒ごとにポーリング |
+| チャネル | Slack、Discord、Telegram、Feishu、iMessage でチャットでき、automation の結果は Slack、Discord、iMessage に届く | Web アプリとデスクトップアプリ。automation の結果は自分で運用する webhook（`AUTOMATION_WEBHOOK_URL`）に届く |
+| アカウント | サインインがあり、ユーザーごとにデータが分かれる | サインインのないローカルユーザー 1 人。アクセスできる人は誰でも、接続済みの証券口座も含めてあなたとして操作できる。自分のマシンかプライベートネットワークの中だけで使うこと |
+| モデル | プランに含まれるモデル、自分の key、または Claude と ChatGPT のサインイン | 自分の key、coding plan、ローカルモデル、または Claude と ChatGPT のサインイン |
+| 稼働 | AWS の US East で 24 時間 365 日稼働するので、手元の PC がスリープしていても automation と価格トリガーが発火する | 自分のマシンとその Docker スタックが起動している間だけ稼働 |
+| リモートアクセス | ブラウザ、デスクトップアプリ、チャネルからどこでも使える | Web アプリと API はすべてのネットワークインターフェイスで待ち受けるため、ローカルネットワークから到達できる。外部から使うには、VPN か認証付きプロキシの背後に置いて自分で公開する必要がある |
+| 運用 | アップグレード、マイグレーション、バックアップ、sandbox の容量は運営側で対応 | アップグレード、データベースのマイグレーション、バックアップは自分で実施する。Docker sandbox はマシンの CPU、メモリ、ディスクを共有する |
 
-> [!NOTE]
-> 外部 service key がなくても機能しますが、体験は一部制限されます。Yahoo Finance は無料で price history、fundamentals、earnings、analyst data を提供しますが、real-time quotes、intraday tick data、macro economics、options analytics はありません。Docker sandbox は Daytona cloud sandboxes の代替として動き、PTC code execution は利用できますが、security と isolation は低下します。必要に応じて key を追加すると、より多くの機能が解放されます。
+<details>
+<summary><b>オプションの key と、それで使えるようになる機能</b></summary>
 
-利用可能な command は `make help` で確認できます。Docker を使わない手動 setup は [CONTRIBUTING.md](../CONTRIBUTING.md#manual-setup) を参照してください。
+| Key | 使えるようになる機能 |
+| --- | --- |
+| `FMP_API_KEY` | ファンダメンタルズ、財務諸表、マクロ、アナリストデータ（[無料枠あり](https://site.financialmodelingprep.com/)） |
+| `DAYTONA_API_KEY` | [Daytona](https://www.daytona.io/) のクラウド sandbox。設定しない場合、sandbox はローカルの Docker で動く |
+| `R2_*`、`S3_*` または `OSS_*` と `storage.provider` | Cloudflare R2、AWS S3、Alibaba OSS、MinIO のオブジェクトストレージ。workspace のファイルスナップショット、memo、添付ファイル、skill のアーカイブ、大きなトランスクリプト、チャットウィジェットのデータを保持し、署名付きリンクでダウンロードを提供する。バケットがない場合、これらのデータは Postgres に保存され、チャート画像のキャプチャは無効になる |
+| `TAVILY_API_KEY`、`SERPER_API_KEY`、`EXA_API_KEY`、`PARALLEL_API_KEY`、`BOCHA_API_KEY` | Web 検索。使うエンジンは `agent_config.yaml` の `search_api`（デフォルトは `tavily`）か、ユーザーごとに Settings で選ぶ |
+| `FIRECRAWL_API_KEY` | 強化された Web 取得とサイトのクロール。組み込みのクローラーは key 不要 |
+| `X_BEARER_TOKEN` | X の投稿検索とスレッドの参照。Plugins ページで vault secret として追加する |
+| `LANGSMITH_API_KEY`、`OTEL_EXPORTER_OTLP_ENDPOINT` | トレースとメトリクス |
 
-## ドキュメント
+データ用の key がなくても、Yahoo Finance の株価、ファンダメンタルズ、アナリストデータ、スクリーニング、SEC EDGAR の開示資料、ローカルの Docker sandbox が使えます。すべてのコマンドは `make help` で確認できます。backend と Web アプリをホスト上で直接動かす方法は [CONTRIBUTING.md](../CONTRIBUTING.md#quick-start) を参照してください。
 
-- **[API Reference](api/README.md)**：chat streaming、workspaces、workflow state などの endpoints
-- **Interactive API docs**：server 稼働中に `http://localhost:8000/docs` で利用できます
+</details>
 
-## お問い合わせ
+## Harness 設計
 
-partnership、collaboration、一般的な問い合わせは [contact@ginlix.ai](mailto:contact@ginlix.ai) までご連絡ください。
+**どの context を、どんな形でモデルに届け、モデルが何に対して行動できるか。それが harness を決めます。**
+
+すでに慣習があるところでは、LangAlpha はフロンティアラボが自社の agent に搭載しているものに従います。読み取り、書き込み、編集、検索を行うファイルツール、Bash シェル、`SKILL.md` ファイルとしての skill、そして `AGENTS.md` にならった workspace 用の `agent.md` です。こうした形はモデルの学習データに含まれている可能性が高く、モデルは最初から使い方を知っています。
+
+### Workspace と Memory
+
+仮説は数週間、数か月、あるいはそれ以上にわたって追跡され、どんな context window にも収まりません。その期間を通じて agent を同じ目標に向かわせ続けるのが workspace と memory です。だからこそ agent には最初から完全な workspace とファイルシステムが与えられます。それが他のすべての土台になります。
+
+1 つの **computer** は 1 つの sandbox を持ちます。各 **workspace** はその上のフォルダで、それぞれ独自の thread、ファイル、メモを持つため、2 つ目のアイデアは新しいマシンを起動せずに数秒で開けます。同じ computer 上の workspace は OS ユーザーを共有します。分離したい場合は computer を分けてください。
+
+各フォルダには、agent が管理する `agent.md`（目標、調査結果、thread とファイルの索引）、共有の `data/` ディレクトリ、タスクごとのフォルダがあります。memory、設定、履歴は特定の sandbox ではなくサーバー上にあります。FUSE マウントによって、どの computer でも通常のファイルとして見えるため、computer をまたいでも sandbox を作り直しても引き継がれ、Bash、コード、ファイルツールのどれからも同じ方法でアクセスできます。
+
+| ストア | 保持する内容 |
+| --- | --- |
+| Memory | ユーザー単位と workspace 単位の、長く残る好みや調査結果。agent が自ら管理し、あなたやあなたの仕事について学んだことを保存し、古くなった項目は更新または削除する |
+| Profile | ポートフォリオ、ウォッチリスト、好みの設定。agent が読み書きする JSON ファイルとして保持する |
+| Automations | automation 1 つにつき 1 つの JSON ファイル。agent はファイルを書くことで automation を作成、編集、一時停止する。サーバーは保存のたびに内容を検証してから反映し、拒否した保存は tool result で報告する |
+| Workflows | 保存済みの workflow スクリプト。agent は名前で実行したり、編集や追加をしたりできる |
+| Memos | アップロードした PDF やノート。テキストを抽出してインデックス化し、agent が引用できるようにする。agent からは読み取り専用 |
+| Transcripts | 過去のすべての thread。検索できるので、agent は先週自分が何をしたかを調べられる。読み取り専用 |
+
+### Programmatic Tool Calling
+
+LangAlpha は 2026 年 1 月の最初のリリース以来、programmatic tool calling を中心に作られています。agent はツールを 1 回ずつ JSON で呼び出すのではなく、ツールを import する Python を書きます。LangAlpha は任意の [MCP](https://modelcontextprotocol.io) server をドキュメント付きの Python モジュールに変換し、そのコードは sandbox で実行されます。理由は 2 つあります。
+
+- **ツールは使う前から context を消費します。** JSON ツールとしてバインドすると、その turn で必要かどうかにかかわらず、すべての server のスキーマが毎回の呼び出しに乗ります。LangAlpha では prompt に載るのは server ごとに 1 行だけで、agent は server の完全なドキュメントを、初めて必要になったときにファイルから読みます。token を節約でき、ノイズも入らず、server を追加しても増えるのは 1 行です。
+- **金融データは文章ではなく表です。** 12 銘柄の 10 年分の日足は約 30,000 行になります。モデルはそれをテキストとして扱えず、そのまま貼り付ければ context window が埋まってしまいます。コードなら agent はデータを集計、変換し、チャートにし、バリュエーションモデルやバックテストに渡せます。context に戻るのは結果だけです。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/ptc.webp" alt="Programmatic tool calling：モデルは sandbox 内で MCP server を Python モジュールとして import するコードを書き、生の行データは sandbox にとどまり、結果だけがモデルに戻る" width="880" />
+</p>
+
+コードはデフォルトであって、唯一の経路ではありません。どの MCP ツールも、Plugins ページでツールごとに設定すれば、通常の JSON tool call として実行できます。口座操作のように、呼び出し 1 つひとつを個別に見せるべき機微な操作にはこちらが向いています。注文ツールは常にこの方式で、[統制された経路](#統制された注文)上で実行されます。
+
+### データとツール
+
+大量のデータは Python モジュールを通じてコードで処理し、素早い参照は **direct** にバインドされます。株価、企業概要、開示資料、スクリーニングは 1 回の JSON tool call で取得でき、チャット内にカードとして表示されます。どちらの経路でも、context に収まらないほど大きな結果はファイルに保存され、代わりにプレビューが残ります。プレビューで足りなければ、agent はコードでそのファイルを開きます。
+
+データソースは次の 3 種類のデータを扱います。
+
+- **市場データ**：株価、株式・指数・暗号資産・FX・コモディティの価格履歴、オプションチェーン、スクリーナー、市場とセクターの概況。
+- **ファンダメンタルズとマクロ**：財務諸表と財務比率、アナリストデータ、インサイダー取引、決算カレンダーと経済カレンダー、マクロ系列、イールドカーブ。
+- **開示資料とテキスト**：SEC 開示資料と決算説明会のトランスクリプト、X の投稿、Web ページ。
+
+LangAlpha 独自のデータ server は、コードで扱いやすいように作られています。市場データツールはすべて同じエンベロープ（`symbol`、`currency`、`timezone`、`count`、`data`、`source`）を返し、時系列は古い順に並び、失敗は型付きのエラーコードとして返ります。そのため agent のコードは、文章を解析するのではなく、結果をそのままインデックスで参照できます。
+
+provider は市場ごとにフォールバックします。米国データには LangAlpha.ai のリアルタイムフィード、ファンダメンタルズとマクロには FMP、無料のフォールバック先として Yahoo Finance を使います。Web 検索は Tavily、Serper、Exa、Parallel、Bocha に対応します。Web 取得は組み込みのクローラーを使い、オプションで Firecrawl に委譲でき、provider ごとのサーキットブレーカーで保護されています。
+
+データ以外に、agent は次のツールを使います。
+
+| グループ | agent ができること |
+| --- | --- |
+| コードとファイル | Python とシェルコマンドを実行し、長いジョブはバックグラウンドで動かす。ファイルを読み取り、書き込み、編集、検索する。sandbox から配信するアプリのプレビューリンクを共有する |
+| Web | 検索、ページの取得、Firecrawl があればサイト全体のクロールやマップ |
+| 出力 | チャット内にインタラクティブなウィジェットを表示し、銘柄のライブチャートに注釈を描く |
+| 協調 | [subagent と workflow](#subagent-と-agent-チーム) を起動し、構造化された質問をあなたに投げ、有効にすれば todo リストも管理する |
+| あなたの接続 | OAuth またはヘッダー認証による証券口座とリモート MCP server、Agent Plugins |
+| メッセージ | LangAlpha.ai では、接続済みのチャネルで、ファイルを添付してあなたにメッセージを送る |
+
+**データ来歴**レイヤーは、agent が触れたすべてのソースを、モデルの context の外で記録します。対象は、市場データと MCP の呼び出し（モデルがツールを直接呼んだ場合も、sandbox 内で agent の Python や Bash が呼んだ場合も含む）、Web 検索と取得したページ、SEC 開示資料、そして agent が読んだファイル、memo、memory です。各レコードには provider、マスク済みの引数、タイムスタンプ、結果のフィンガープリントが含まれ、結果そのものも 64 KB まで保存され、呼び出しを行った turn と agent（main agent か subagent か）に紐づけられます。Sources パネルは turn ごとにこれらを一覧表示し、API も同じレコードを返すので、回答をその根拠と突き合わせて確かめられます。
+
+### Subagent と Agent チーム
+
+main agent は、それぞれ独自の context window を持つ **subagent** に作業を任せます。理由は 3 つです。
+
+- **より多くの作業を同時に。** subagent はバックグラウンドで複数並列に動き、その間も main agent は作業を続けたり、あなたと会話を続けたりできます。
+- **より広く、より深いリサーチ。** 1 つの質問を企業、セグメント、ソースごとに 1 つの subagent へ振り分け、各 subagent は担当部分に必要なだけ深く掘り下げられます。
+- **全体像を保つ main agent。** subagent が返すのは調査結果であり、その裏にある検索や tool call ではありません。そのため main agent の context には仮説と計画が保たれ、軌道を外れません。
+
+組み込みの subagent は 5 つ（`research`、`general-purpose`、`data-prep`、`equity-analyst`、`report-builder`）で、`agent_config.yaml` で追加できます。subagent とはいつでもやり取りできます。main agent は実行中の subagent に新しい指示を送ったり、完了した subagent を全履歴付きで再開したりできます。各 subagent の tool call と出力は UI にライブでストリーミングされ、あなたが直接メッセージを送ることもできます。
+
+**workflow** はスケールをさらに広げます。大規模な調査では、agent は workflow を実行します。workflow は短い JavaScript プログラムで、サーバー上の sandbox 化された QuickJS runtime の中で、`agent()`、`parallel()`、`pipeline()` を使って subagent に作業を振り分けます。保存済みの workflow を名前で実行することも、その場で新しく書くこともできます。ループを回すのは会話ではなくプログラムなので、100 社のスクリーニングでも 100 turn はかかりません。ただし、100 個の subagent 分の token は消費します。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/teams.webp" alt="context に仮説、計画、調査結果だけを保持する main agent が、subagent と、100 回の agent() 呼び出しに振り分ける workflow に作業を任せる。それぞれ tool call ではなく調査結果を返し、subagent は workspace のファイルを共有する" width="880" />
+</p>
+
+### Context の組み立て方
+
+モデルへの呼び出しはすべて、最も安定したものから最も変わりやすいものの順に並んだレイヤーで組み立てられます。そのため長いセッションでも、provider の prompt cache に継続してヒットします。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/context.webp" alt="1 回のモデル呼び出しを、最も安定したものから最も変わりやすいものへ並べた 5 つのレイヤー：ツール、system prompt、固定された thread baseline、履歴、市場情報のスタンプを含む末尾。最初の 4 つのレイヤーの後にそれぞれキャッシュポイントがある" width="880" />
+</p>
+
+- **System prompt。** 1 つのテンプレートを、使用中のモデルの guidance レベルに合わせてレンダリングします。
+- **Thread baseline。** turn の開始時に 1 回だけ読み込み、その後は固定します。内容は workspace、あなたのプロフィール、MCP server の一覧、skill のマニフェスト、`agent.md`、2 階層の memory、memo のインデックスです。後でいずれかが変わると、agent には何が変わったかを伝える短い行が届き、baseline はバイト単位で同一のまま保たれます。baseline は compaction の後か、行が 20 件たまった時点で再構築されます。
+- **Runtime 行。** 各 turn は、時刻、市場セッション（変わった場合）、前回の turn からの経過時間を伝える行で始まり、それぞれの provider が想定する形で送られます。
+- **Steering。** agent の作業中に送ったメッセージは、main agent でも subagent でも、次のモデル呼び出しの前に届きます。
+- **Compaction。** まず古いツールの引数を切り詰め、元のデータはファイルとして残します。モデルの上限に近づくと、古い turn は要約にまとめられ、完全なトランスクリプトが保存され、要約にはその読み先が書かれます。
+
+### モデル
+
+LangAlpha はフロンティアモデルだけに合わせて調整されているわけではありません。すべてのモデルを同じツールと middleware で動かすので、オープンウェイトのモデルでも、わずかなコストで同等の結果を得られます。thread の途中で provider を切り替えることもでき、失敗した呼び出しはリトライされ、その後は設定したモデルにフォールバックします。
+
+多くの provider は Chat Completions 形式を受け付けますが、いくつかの provider では、重要な情報が落ちる互換レイヤーにすぎません。LangAlpha は provider ごとに、そのモデルを最もよく活かす API 形式を選びます。たとえば OpenAI と Codex には OpenAI の [Responses API](https://platform.openai.com/docs/api-reference/responses)、Claude、Kimi、MiniMax、DeepSeek には Anthropic の [Messages API](https://docs.anthropic.com/en/api/messages) を使います。選択の決め手は 2 つです。
+
+- **思考が保持されます。** reasoning は turn 内でも turn をまたいでも、各 provider 独自の形式でモデルに戻されます。Anthropic の署名付き thinking ブロック、OpenAI の暗号化された reasoning item、GLM の reasoning テキストです。
+- **runtime context は適切なチャネルで届きます。** harness はモデルに多くの runtime context を渡します。OpenAI 形式の API では `developer` メッセージとして、それを尊重する Anthropic と GLM では会話途中の `system` メッセージとして、それ以外では user メッセージの中に入れて送ります。
+
+各モデルは 3 つのダイヤルで調整でき、Settings でアカウント全体またはモデルごとに設定します。
+
+- **Prompt guidance。** フロンティアモデルには簡潔な prompt を、小さなモデルには具体例と段階的な手順を含む詳細な prompt を渡します。どちらも 1 つのテンプレートから生成されるので、内容がずれることはありません。
+- **Reasoning effort。** `none` から `max` までの 1 つの尺度で、各ベンダー独自のパラメーターに書き込まれ、モデルが提供する最も近いレベルまで引き下げられます。入力欄から、メッセージ単位で上書きすることもできます。
+- **Compaction profile。** 積極的なものから緩やかなものまで 4 つのプリセットがあり、長い thread をどれだけ早く compaction するかを決めます。デフォルトでは、モデルの context window に応じて 1 つが選ばれます。
+
+| 接続方法 | Provider |
+| --- | --- |
+| サブスクリプションでのサインイン | Claude（Claude Code）、ChatGPT（Codex） |
+| Coding plan | Kimi、GLM、MiniMax |
+| API key | OpenAI、Anthropic、Gemini、DeepSeek、Qwen（DashScope）、Kimi（Moonshot）、GLM（Zhipu）、MiniMax、OpenRouter、Groq、Cerebras |
+| ローカル | Ollama、LM Studio、vLLM |
+
+key と OAuth token は pgcrypto で保存時に暗号化されます。
+
+### Skills と Plugins
+
+skill は [Agent Skills](https://agentskills.io/specification) 仕様に、plugin は [Agent Plugins 1.0.0](https://agent-plugins.org) 形式に従います。組み込みの MCP server と skill は [`plugins/`](../plugins/) 内の plugin バンドルとして提供されます。これは、Plugins ページでアップロードしたり git URL からインストールしたりするものと同じ形式です。これらの標準に加えて、LangAlpha は次の機能を追加しています。
+
+- **skill は必要なときに読み込まれます。** prompt に載るのは skill ごとに 1 行のマニフェストだけで、skill 全体は slash command か、agent が `SKILL.md` を読んだときに読み込まれます。automation ツールのように skill が持ち込むツールは、その skill が読み込まれるまで隠れたままです。
+- **自分の skill を、自分のコマンドで。** skill を zip でアップロードして好きな slash command を割り当てたり、agent に GitHub から workspace へインストールさせたりできます。
+- **plugin の拡張は 1 つのブロックに。** `mcp.json` は形式自体のフィールドしか受け付けません。LangAlpha が追加するものはすべて、形式で唯一の拡張ポイントである `plugin.json` の `extensions["ai.langalpha"]` の下に置かれます。prompt に届く server ごとの `description` と `instruction`、agent が各ツールを最初にどこまで見るかを決める `tool_exposure_mode`（`summary` または `detailed`）、そして server が必要とする各 credential とそのバインド先を示す `secrets` です。このブロックを取り除いても、パッケージはどの Agent Plugins ホストにもインストールできます。詳細は [`plugins/README.md`](../plugins/README.md) を参照してください。
+- **サードパーティの server は隔離して動きます。** LangAlpha が所有していないコードの server は、アプリ自身の環境からではなく、`uvx` か `npx` でバージョンを固定して起動します。そのため、どちらか一方で SDK をアップグレードしても、もう一方が壊れることはありません。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-builtin-packages.webp" alt="Plugins ページの Packages タブ。6 つの組み込み plugin バンドルが並んでいる" width="720" />
+  <br />
+  <sub><b>Packages</b>：MCP server と skill をまとめた 6 つの組み込みバンドルは、それぞれ一括でオン・オフでき、自分のバンドルも 50 個まで追加できます</sub>
+</p>
+
+組み込みの skill は 38 個です。
+
+| バンドル | Skills |
+| --- | --- |
+| Research | DCF モデル、類似企業比較、財務 3 表モデル、モデルの更新とチェック、初回カバレッジ、決算プレビューと決算分析、投資仮説トラッカー、トレードピッチ、企業プロファイル、競合分析、セクター概況、影響分析、カタリストカレンダー、アイデア創出、モーニングノート、マーケットウォッチ、プレゼン資料チェック |
+| Deliverables | Excel、Word、PowerPoint、PDF、HTML レポート、インタラクティブダッシュボード、インラインウィジェット、チャート注釈、UI デザイン |
+| Service | automation、オンボーディング、ユーザープロフィールとポートフォリオ、secretary、workflow、プロダクトヘルプ、自己改善 |
+| Alternative data | X リサーチ、Web スクレイピング |
+
+謝辞：一部のリサーチ skill は [anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins) を元にしています。
+
+## フルスタックアーキテクチャ
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/architecture.webp" alt="アーキテクチャ：Web、デスクトップ、チャットチャネルはマルチワーカーの FastAPI backend につながり、その run ライフサイクルが agent を駆動する。agent は sandbox 化された computer の中で動き、そのファイルは Postgres とオブジェクトストレージに永続化される。証券口座とリモート MCP への呼び出しは、credential を付与する egress relay を通って外に出る" width="880" />
+</p>
+
+turn は、それを開始した HTTP 接続から独立したバックグラウンドの run として実行されます。イベントは run ごとの Redis stream を経由して SSE で配信されるため、タブを閉じてもネットワークが切れても何も失われません。クライアントは再接続して追いつき、完了した turn は LangGraph の checkpoint から再生されます。Postgres が信頼できる唯一の情報源で、Redis は転送路にすぎないため、backend は複数のワーカーで動き、どのワーカーでもストリームの配信、キューの処理、孤立した run の復旧を担当できます。設定すれば、agent の run は LangSmith にトレースされ、backend は OpenTelemetry でトレースとメトリクスをエクスポートします。
+
+**ファイルは sandbox より長く残ります。** 各 turn の後と computer が停止するたびに、変更のあった workspace フォルダはすべてスナップショットされます。マニフェストは、パスごとに 1 行の Postgres レコードです。データ本体は sandbox から S3 互換のオブジェクトストレージへ直接送られ、オブジェクトストレージなしで運用している場合は Postgres に保存されます。computer が停止している間もファイルブラウザとダウンロードは使え、作り直した sandbox はスナップショットから復元されます。1 週間停止したままの Daytona computer は、さらにディスク全体をコールドストレージにアーカイブし、次回の起動時にそこから再開します。
+
+**チャネルゲートウェイ**は LangAlpha.ai の一部です。Slack、Discord、Telegram、Feishu、iMessage の会話を Web アプリと同じチャット API に届け、automation の結果を選んだチャネルに投稿します。
+
+### 統制された注文
+
+注文は実際のお金を動かすため、専用の経路を通ります。注文ツールは direct な JSON 呼び出しに固定されています。1 回の呼び出しが 1 件の注文になり、システムはそれを把握し、表示し、止めることができます。sandbox のスクリプトなら 1 回の実行で何件でも注文を出せてしまうため、注文ツールが sandbox に公開されることはありません。
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/orders.webp" alt="統制された注文：モデルの注文呼び出しは記録され、承認のためにあなたに表示される。承認によって実行トークンが発行され、egress relay がそれを検証し、1 回限りの送信権を確保して、保存済みの credential で注文を送る" width="880" />
+</p>
+
+- **接続ごとの同意。** 証券口座を接続するときに、どの capability グループを許可するかを選びます。relay は、モデルが何を求めても、その範囲外の呼び出しをすべて拒否します。
+- **注文ごとの承認。** 実注文とステージング注文はデフォルトであなたの承認を待ち、ペーパー注文は待ちません。モードごとに、あなたがスイッチで切り替えられます。
+- **実行は 1 回だけ。** 承認によって、その試行、そのツール、その引数のハッシュに紐づいた短命なトークンが発行されます。引数の変更、リプレイ、2 回目の呼び出しは relay で失敗します。
+- **証券会社の credential は sandbox に入りません。** 証券口座の OAuth token とリモート MCP の credential はホスト上の relay が付与するため、agent が書くコードからは見えません。
+- **読める台帳。** すべての試行、承認、拒否、約定は Orders ページに記録され、照合処理が証券会社自身の記録と突き合わせて注文の状態を確定させます。
+
+### セキュリティ
+
+- **Vault。** API key を一度保存すれば、`from vault import get` でどの workspace のコードからでも使えます。secret は保存時に暗号化され、表示や変更ができるのは所有者だけです。
+- **漏えい箇所のマスク。** すべての tool result はモデルに届く前に既知の secret 値がないかスキャンされ、一致した部分は `[REDACTED:NAME]` に置き換えられます。ダウンロードや共有ファイルにも同じ処理が適用されます。
+- **sandbox での実行。** agent のコードは Daytona または Docker の sandbox で実行され、保護パスのガードが、システムディレクトリに触れる tool call を拒否します。
+
+## ロードマップ
+
+- [x] リサーチ harness：コードで扱うデータ、永続する workspace、agent チーム
+- [x] LangAlpha.ai とデスクトップアプリ
+- [x] 統制された注文を備えた証券口座連携
+- [ ] 暗号資産と予測市場向けに調整した agent
+- [ ] あなた自身の AI agent（ChatGPT、Claude）から LangAlpha に取引を引き渡せるようにする
+
+## コントリビュート
+
+Issue と pull request を歓迎します。[CONTRIBUTING.md](../CONTRIBUTING.md) を参照してください。このリポジトリには、backend と agent のコア（[`src/`](../src/)）、Web アプリ（[`web/`](../web/)）、デスクトップシェル（[`desktop/`](../desktop/)）、組み込み plugin（[`plugins/`](../plugins/)）が含まれています。パートナーシップについては [contact@ginlix.ai](mailto:contact@ginlix.ai) までメールでご連絡ください。
+
+<a href="https://star-history.com/#ginlix-ai/langalpha&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ginlix-ai/langalpha&type=Date&theme=dark" />
+    <img alt="スター履歴" src="https://api.star-history.com/svg?repos=ginlix-ai/langalpha&type=Date" width="600" />
+  </picture>
+</a>
 
 ## 免責事項
 
-LangAlpha はリサーチツールであり、金融アドバイザーではありません。本ソフトウェアが生成する内容は、投資助言、推奨、またはいかなる証券の売買勧誘にも該当しません。すべての出力は情報提供および教育目的のみです。ご自身の判断で利用し、投資判断の前には必ずご自身でデューデリジェンスを行ってください。
+LangAlpha はソフトウェアであり、金融アドバイザーではありません。LangAlpha が生成するものはいずれも、投資助言でも、証券の売買の推奨でもありません。agent はあなたが与えた権限の範囲内でのみ動作し、あなたの口座で出されたすべての注文の責任はあなたにあります。必ずご自身でデューデリジェンスを行ってください。
 
 ## ライセンス
 
-Apache License 2.0
+[Apache 2.0](../LICENSE)
