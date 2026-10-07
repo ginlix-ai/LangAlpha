@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { OrderSummary } from '@/pages/ChatAgent/utils/api';
-import { HIDDEN, orderAmount, orderLimitPrice, orderSize } from '../utils/format';
+import { HIDDEN, orderAmount } from '@/components/orders/format';
+import { orderLimitPrice, orderSize } from '../utils/format';
 
 /**
  * An amount on an order is the tool's answer, and the page may not improve on

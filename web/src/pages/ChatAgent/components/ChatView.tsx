@@ -63,6 +63,7 @@ import { DispatchStatusProvider } from '../hooks/usePTCDispatchStatus';
 import JumpToLatestPill from './JumpToLatestPill';
 import ShareButton from './ShareButton';
 import { WorkspaceProvider } from '../contexts/WorkspaceContext';
+import { RouteLeaveGuardContext } from '../contexts/RouteLeaveGuardContext';
 import SubagentStatusBar from './SubagentStatusBar';
 import TodoDrawer from './TodoDrawer';
 import MarketWatchChip from './MarketWatchChip';
@@ -1274,6 +1275,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   return (
     <WorkspaceProvider workspaceId={workspaceId} downloadFile={null} folders={chatFolders}>
+    {/* A link in the transcript that changes the route unmounts the file
+        panel beside it, so it leaves through the panel's guard like the
+        panel's own exits do. */}
+    <RouteLeaveGuardContext value={leaveFiles}>
     {/* `h-full`, never `h-screen`: this fills the shell's content column, which
         is the viewport only when nothing else is in it. Pinning it to 100vh
         pushes it out of its own box the moment anything is (the offline
@@ -1924,6 +1929,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       )}
 
     </div>
+    </RouteLeaveGuardContext>
     </WorkspaceProvider>
   );
 }

@@ -3,7 +3,7 @@
  *
  * The card the person answers and the record they read afterwards are one
  * thing seen at two moments, so the pending card carries the receipt's header,
- * its field list and its pill, and only the footer changes. The arguments are
+ * its ticket and its pill, and only the footer changes. The arguments are
  * still the exact frame the vendor sees, and are still on screen, but behind a
  * disclosure: the summary above them is the question being answered, and a
  * JSON dump beside a live order buries it.
@@ -17,11 +17,12 @@ import { QueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import type { OrderAttempt, OrderPage } from '@/pages/ChatAgent/utils/api';
 import { renderWithProviders } from '@/test/utils';
+import { HIDDEN } from '@/components/orders/format';
 import enUS from '@/locales/en-US.json';
 import zhCN from '@/locales/zh-CN.json';
 import ToolApprovalCard from '../ToolApprovalCard';
 import { instrumentLabel } from '@/components/orders/instrument';
-import { ORDER_SUMMARY_KEYS, orderSummaryRows } from '../mcp/orderSummary';
+import { ORDER_REF_KEY, ORDER_SUMMARY_KEYS, orderReadFully, orderTicket } from '../mcp/orderSummary';
 import type { ToolApprovalState } from '@/types/chat';
 import type { OrderProposal } from '@/types/sse';
 
@@ -49,6 +50,7 @@ const ORDER: OrderProposal = {
   mode: 'live',
   vendor: 'moomoo',
   account_ref: '12345678',
+  asset_class: 'equity',
   instrument: { kind: 'equity', symbol: 'US.AAPL' },
   side: 'buy',
   qty: '1',
@@ -97,8 +99,8 @@ describe('the pending order card', () => {
     expect(screen.getByTestId('order-status-proposed')).toHaveTextContent(
       'toolArtifact.directTool.orderStatus.proposed',
     );
-    expect(card).toHaveTextContent('••••5678');
-    expect(card).toHaveTextContent('US.AAPL');
+    expect(card).toHaveTextContent('moomoo · ••••5678');
+    expect(screen.getByTestId('order-headline')).toHaveTextContent('orders.side.buy US.AAPL');
   });
 
   // The card answers a question about a trade. The frame that will be sent is
@@ -111,7 +113,7 @@ describe('the pending order card', () => {
     openArguments();
     expect(screen.getByText('code')).toBeInTheDocument();
     expect(screen.queryByText('12345678')).toBeNull();
-    expect(screen.getAllByText('••••5678').length).toBe(2);
+    expect(screen.getByText('••••5678')).toBeInTheDocument();
   });
 
   it('approves with a bare decision', () => {
@@ -175,13 +177,16 @@ describe('the pending order card', () => {
     );
     const card = screen.getByTestId('order-approval');
     expect(card).toHaveTextContent('toolArtifact.directTool.orderAction.cancel');
+    expect(screen.getByTestId('order-headline')).toHaveTextContent(
+      `toolArtifact.directTool.orderTicket.order ${TARGET}`,
+    );
     const target = screen.getByTestId('order-target-ref');
     expect(target.textContent).toBe(TARGET);
     expect(target.className).toContain('font-mono');
     // The fields a cancel does not carry stay off the card: on this surface a
     // blank price reads as a market order.
-    expect(card).not.toHaveTextContent('toolArtifact.directTool.orderField.quantity');
-    expect(card).toHaveTextContent('toolArtifact.directTool.orderField.account');
+    expect(screen.queryByTestId('order-figures')).toBeNull();
+    expect(card).toHaveTextContent('••••5678');
   });
 
   it('draws no target line for a place', () => {
@@ -197,6 +202,130 @@ describe('the pending order card', () => {
  * state a verdict no receipt has confirmed, so the card holds its shape and
  * says where the order is instead.
  */
+/**
+ * A vendor that renames a field leaves the adapter a shorter order that still
+ * looks whole: a buy with no size reads as a complete ticket. The card says so,
+ * and opens the arguments, which are then the only full account of the trade.
+ */
+describe('an order the adapter could not read whole', () => {
+  const pendingWith = (order: OrderProposal): ToolApprovalState => ({ ...keyedPending, order });
+
+  it('says so, and opens the arguments, when a buy has no size', () => {
+    renderWithProviders(
+      <ToolApprovalCard data={pendingWith({ ...ORDER, qty: null })} onApprove={() => {}} onReject={() => {}} />,
+    );
+    expect(screen.getByTestId('order-incomplete')).toHaveTextContent(
+      'toolArtifact.directTool.orderApproval.incomplete',
+    );
+    expect(screen.getByText('code')).toBeInTheDocument();
+  });
+
+  // The ticket names a spread by its strategy or its leg count; the legs
+  // themselves are only in the arguments.
+  it('opens the arguments of a spread, without calling it unread', () => {
+    const spread: OrderProposal = {
+      ...ORDER,
+      side: null,
+      instrument: { kind: 'combo', strategy: 'vertical', legs: [{ side: 'buy' }, { side: 'sell' }] },
+    };
+    renderWithProviders(
+      <ToolApprovalCard data={pendingWith(spread)} onApprove={() => {}} onReject={() => {}} />,
+    );
+    expect(screen.queryByTestId('order-incomplete')).toBeNull();
+    expect(screen.getByText('code')).toBeInTheDocument();
+  });
+
+  it('says so over an option it can name only by the vendor id', () => {
+    const byId: OrderProposal = {
+      ...ORDER,
+      vendor: 'robinhood',
+      asset_class: 'option',
+      instrument: { kind: 'opaque', raw_code: '3a2b1c00-4444-4000-8000-000000000004' },
+    };
+    renderWithProviders(
+      <ToolApprovalCard data={pendingWith(byId)} onApprove={() => {}} onReject={() => {}} />,
+    );
+    expect(screen.getByTestId('order-incomplete')).toBeInTheDocument();
+  });
+
+  it('says nothing over an order it read whole', () => {
+    renderWithProviders(
+      <ToolApprovalCard data={keyedPending} onApprove={() => {}} onReject={() => {}} />,
+    );
+    expect(screen.queryByTestId('order-incomplete')).toBeNull();
+    expect(screen.queryByText('code')).toBeNull();
+  });
+
+  it.each<[string, boolean, OrderProposal]>([
+    ['a buy with everything', true, ORDER],
+    ['a buy by amount', true, { ...ORDER, qty: null, notional: { amount: '500', currency: 'USD' } }],
+    ['a buy with no instrument', false, { ...ORDER, instrument: null }],
+    ['a buy with no side', false, { ...ORDER, side: null }],
+    [
+      'a spread, whose legs carry the side',
+      true,
+      { ...ORDER, side: null, instrument: { kind: 'combo', legs: [{ side: 'buy' }, { side: 'sell' }] } },
+    ],
+    ['an order the adapter read nothing of', false, { action: 'place', mode: 'live' }],
+    ['a limit order with no limit', false, { ...ORDER, limit_price: null }],
+    ['a stop order with no stop', false, { ...ORDER, order_type: 'stop', limit_price: null }],
+    ['a market order, which has no price to read', true, { ...ORDER, order_type: 'market', limit_price: null }],
+    [
+      'a share named only by its venue',
+      false,
+      { ...ORDER, instrument: { kind: 'equity', symbol: '', venue: 'US' } },
+    ],
+    [
+      'an option short of its strike and expiry',
+      false,
+      { ...ORDER, instrument: { kind: 'option', underlying: 'AAPL', right: 'C' } },
+    ],
+    ['a replace naming its order and a new price', true, { ...CANCEL, action: 'replace', limit_price: '101' }],
+    ['a replace that changes nothing it read', false, { ...CANCEL, action: 'replace' }],
+    ['a cancel naming its order', true, CANCEL],
+    ['a cancel naming nothing', false, { ...CANCEL, target_ref: null }],
+    [
+      'an option placed by the vendor id alone',
+      false,
+      { ...ORDER, asset_class: 'option', instrument: { kind: 'opaque', raw_code: 'opt-1' } },
+    ],
+    [
+      'an exercise of an option known only by its id',
+      false,
+      {
+        action: 'exercise',
+        mode: 'live',
+        asset_class: 'option',
+        qty: '1',
+        instrument: { kind: 'opaque', raw_code: 'opt-1' },
+      },
+    ],
+    [
+      'a staged order on a contract id that names no option',
+      true,
+      {
+        ...ORDER,
+        action: 'stage',
+        mode: 'staged',
+        asset_class: 'other',
+        instrument: { kind: 'opaque', raw_code: '265598' },
+      },
+    ],
+    [
+      'a cancelled exercise, addressed by its contract',
+      true,
+      {
+        action: 'cancel_exercise',
+        mode: 'live',
+        asset_class: 'option',
+        instrument: { kind: 'opaque', raw_code: 'opt-1' },
+      },
+    ],
+  ])('reads %s as whole: %s', (_label, whole, order) => {
+    expect(orderReadFully(order)).toBe(whole);
+  });
+});
+
 describe('an approved order still in flight', () => {
   const approved = { ...keyedPending, status: 'approved' as const };
 
@@ -277,10 +406,11 @@ describe('the order card while values are hidden', () => {
       />,
     );
     expect(screen.getByTestId('order-approval-card')).toHaveAttribute('data-order-state', state);
-    const card = screen.getByTestId('order-approval');
-    expect(within(card).getByText('1')).toBeInTheDocument();
-    expect(within(card).getByText('100')).toBeInTheDocument();
-    expect(card).not.toHaveTextContent('******');
+    const figures = screen.getByTestId('order-figures');
+    expect(within(figures).getByText('1')).toBeInTheDocument();
+    // The limit, and the estimate it makes at that size.
+    expect(within(figures).getAllByText('100.00')).toHaveLength(2);
+    expect(figures).not.toHaveTextContent(HIDDEN);
   });
 });
 
@@ -401,32 +531,90 @@ describe('the arguments behind a settled order', () => {
   });
 });
 
-describe('what the order summary reads off the server', () => {
+describe('what the order ticket reads off the server', () => {
+  const SHOWN = { hidden: false, locale: 'en-US' };
+
   it('draws only the fields the adapter could fill', () => {
-    const rows = orderSummaryRows({
-      action: 'cancel',
-      mode: 'paper',
-      instrument: { kind: 'equity', symbol: 'US.AAPL' },
-    });
-    expect(rows.map((r) => r.field)).toEqual(['instrument']);
+    const ticket = orderTicket(
+      { action: 'cancel', mode: 'paper', instrument: { kind: 'equity', symbol: 'US.AAPL' } },
+      SHOWN,
+    );
+    expect(ticket.figures).toEqual([]);
+    expect(ticket.meta).toEqual([]);
+    expect(ticket.side).toBeNull();
   });
 
-  it('keeps the target off the field grid, where the action line has it', () => {
-    const rows = orderSummaryRows(CANCEL);
-    expect(rows.map((r) => r.field)).toEqual(['account_ref']);
+  // The id is what a person matches against the broker's app: the subject of
+  // the headline when nothing else names the order, the first thing under it
+  // when an instrument does.
+  it('leads with the target wherever the instrument does not', () => {
+    expect(orderTicket(CANCEL, SHOWN)).toMatchObject({ instrument: null, targetRef: TARGET });
+    const named = orderTicket(
+      { ...CANCEL, instrument: { kind: 'equity', symbol: 'US.AAPL' } },
+      SHOWN,
+    );
+    expect(named.targetRef).toBeNull();
+    expect(named.meta[0]).toEqual({ field: 'target_ref', labelKey: ORDER_REF_KEY, value: TARGET });
   });
 
-  it('masks the account and pins the amount to its currency', () => {
-    const rows = orderSummaryRows({
-      action: 'place',
-      mode: 'live',
-      account_ref: '12345678',
-      notional: { amount: '250.00', currency: 'USD' },
-    });
-    expect(rows).toEqual([
-      { field: 'account_ref', labelKey: 'toolArtifact.directTool.orderField.account', value: '••••5678' },
-      { field: 'notional', labelKey: 'toolArtifact.directTool.orderField.notional', value: '250.00 USD' },
+  it('writes the amount in its own currency', () => {
+    const ticket = orderTicket(
+      { action: 'place', mode: 'live', notional: { amount: '250.00', currency: 'USD' } },
+      SHOWN,
+    );
+    expect(ticket.figures).toEqual([
+      { field: 'notional', labelKey: 'toolArtifact.directTool.orderField.notional', value: '$250.00' },
     ]);
+  });
+
+  // moomoo sends a price on every order and ignores it on a market order.
+  // Drawn without its type, that price is a limit order on the card asking
+  // someone to approve a market one.
+  it('names the type unless the prices already say it', () => {
+    const fields = (order: Partial<OrderProposal>) =>
+      orderTicket({ ...ORDER, ...order }, SHOWN).figures.map((part) => part.field);
+    expect(fields({ order_type: 'market' })).toEqual(['qty', 'order_type', 'limit_price']);
+    const market = orderTicket({ ...ORDER, order_type: 'market' }, SHOWN).figures;
+    expect(market[1]).toMatchObject({ valueKey: 'orders.orderType.market' });
+    // Not a limit, so not called one.
+    expect(market[2]).toMatchObject({ labelKey: 'toolArtifact.directTool.orderField.price' });
+    expect(orderTicket(ORDER, SHOWN).figures[1]).toMatchObject({
+      labelKey: 'toolArtifact.directTool.orderField.limitPrice',
+    });
+    expect(fields({ order_type: 'stop', stop_price: '95' })).toEqual([
+      'qty',
+      'order_type',
+      'stop_price',
+      'limit_price',
+    ]);
+    expect(fields({ order_type: 'market_if_touched', limit_price: null, stop_price: '95' })).toEqual([
+      'qty',
+      'order_type',
+      'stop_price',
+    ]);
+    expect(fields({ order_type: 'market', limit_price: null })).toEqual(['qty', 'order_type']);
+    // Here the columns say it, so the type would only repeat them.
+    expect(fields({})).toEqual(['qty', 'limit_price', 'total']);
+    expect(fields({ order_type: 'stop_limit', stop_price: '95' })).toEqual([
+      'qty',
+      'stop_price',
+      'limit_price',
+      'total',
+    ]);
+    expect(fields({ order_type: 'stop', limit_price: null, stop_price: '95' })).toEqual([
+      'qty',
+      'stop_price',
+    ]);
+  });
+
+  // The vendor's own rule decides which size it goes by, so the card draws
+  // both rather than asking about an order of the other size.
+  it('draws both sizes when both were sent', () => {
+    const ticket = orderTicket(
+      { ...ORDER, notional: { amount: '250.00', currency: 'USD' }, currency: 'USD' },
+      SHOWN,
+    );
+    expect(ticket.figures.map((part) => part.field)).toEqual(['qty', 'notional', 'limit_price']);
   });
 
   // Each asset class names itself off different fields, and the server says

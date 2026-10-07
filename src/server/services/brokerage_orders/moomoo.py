@@ -177,10 +177,44 @@ _LIVE_MARKETS = {
     "COMEX": "FUTURES", "HKFE": "FUTURES",
 }
 
-_OCC = re.compile(
-    r"^(?P<root>[A-Z]{1,6})(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})"
-    r"(?P<right>[CP])(?P<strike>\d{5,8})$"
+# moomoo labels no currency on an order, so the venue is the only place it is,
+# and only where every share and option the venue lists trades in one currency.
+# Hong Kong lists RMB and USD counters beside its HKD ones, Singapore and
+# Toronto list USD lines, and a future is priced in points, so those have none
+# rather than a guess. SSE and SZSE are reached through Stock Connect, which
+# carries only the A shares.
+_VENUE_CURRENCY = {
+    "US": "USD", "NASDAQ": "USD", "NYSE": "USD", "AMEX": "USD", "ARCA": "USD",
+    "CBOE": "USD", "JP": "JPY", "KR": "KRW", "SSE": "CNY", "SZSE": "CNY",
+}
+
+# The venues whose options are the OCC's, at 100 shares a contract.
+_US_VENUES = frozenset({"US", "NASDAQ", "NYSE", "AMEX", "ARCA", "CBOE"})
+
+# The codes moomoo's own quotes give a contract, which reach an order under the
+# market's prefix as often as under the exchange's. An option is root, expiry,
+# right and strike: ``AAPL261016C130000``, ``XBC261029C3600``, and in Japan the
+# stock code with the strike in plain yen, ``7203261008C1950``. Every other
+# market writes the strike in thousandths.
+_OPTION_CODE = re.compile(
+    r"^(?P<root>[A-Z0-9]{1,6})(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})"
+    r"(?P<right>[CP])(?P<strike>\d{1,9})$"
 )
+_STRIKE_UNITS = {"JP": 1}
+
+# A future is a root with a rolling alias or a contract month: ``HSIday``,
+# ``6Emain``, ``HSI2612``, ``NK2252612``. A share's code has no lower case and
+# never runs letters into a month.
+_FUTURE_CODE = re.compile(
+    r"^[A-Z0-9]{1,6}(main|current|next|day)$"
+    r"|^(?=[A-Z0-9]*[A-Z])[A-Z0-9]{1,6}\d{2}(0[1-9]|1[0-2])$"
+)
+
+
+def _currency(venue: str | None, asset_class: AssetClass) -> str | None:
+    if asset_class not in ("equity", "option"):
+        return None
+    return _VENUE_CURRENCY.get(venue or "")
 
 
 def _target_order_id(request: BrokerOrder | None) -> str | None:
@@ -215,8 +249,10 @@ def _micros(value: Any) -> datetime | None:
         return None
 
 
-def _occ_ref(symbol: str, code: str) -> OptionRef | None:
-    matched = _OCC.match(symbol.strip().upper())
+def _option_ref(venue: str | None, symbol: str, code: str) -> OptionRef | None:
+    # moomoo writes a US index with a second dot (``US..SPX``) and documents
+    # its contracts the same way (``US..SPXW260330C6330000``).
+    matched = _OPTION_CODE.match(symbol.strip().upper().lstrip("."))
     if not matched:
         return None
     try:
@@ -228,10 +264,35 @@ def _occ_ref(symbol: str, code: str) -> OptionRef | None:
     return OptionRef(
         underlying=matched["root"],
         expiration=expiration,
-        strike=Decimal(matched["strike"]) / 1000,
+        strike=Decimal(matched["strike"]) / _STRIKE_UNITS.get(venue or "", 1000),
         right=matched["right"],
         vendor_instrument_id=code,
+        # Outside the US a contract's size is set per underlying (Tencent's is
+        # 100 shares, Bank of China's 1000), so none is assumed.
+        multiplier=100 if venue in _US_VENUES else None,
     )
+
+
+def _instrument(
+    venue: str | None, symbol: str, code: str
+) -> tuple[AssetClass, InstrumentRef]:
+    """What a code names, read off its shape as well as its venue.
+
+    A contract read as a share is totalled at one unit a contract, so anything
+    not shaped like a share is said to be something else, and a code nothing
+    here can read is named as sent: a futures option writes its strike with an
+    ``x`` (``E1C2610C2100x0``).
+    """
+    option = _option_ref(venue, symbol, code)
+    if option:
+        return "option", option
+    if venue in _OPTION_VENUES:
+        return "option", OpaqueRef(raw_code=code)
+    if venue in _FUTURE_VENUES or _FUTURE_CODE.match(symbol):
+        return "future", FutureRef(symbol=symbol, venue=venue)
+    if symbol != symbol.upper():
+        return "other", OpaqueRef(raw_code=code)
+    return "equity", EquityRef(symbol=symbol, venue=venue)
 
 
 def _combo_legs(info: Any) -> tuple[dict, ...] | None:
@@ -257,11 +318,7 @@ def _live_instrument(
         return "option_combo", ComboRef(legs=_combo_legs(args.get("multi_leg_info")))
     if not code:
         return "other", None
-    if venue in _OPTION_VENUES:
-        return "option", _occ_ref(symbol, code) or OpaqueRef(raw_code=code)
-    if venue in _FUTURE_VENUES:
-        return "future", FutureRef(symbol=symbol, venue=venue)
-    return "equity", EquityRef(symbol=symbol, venue=venue)
+    return _instrument(venue, symbol, code)
 
 
 def _live_place(args: Mapping[str, Any]) -> BrokerOrder:
@@ -289,6 +346,7 @@ def _live_place(args: Mapping[str, Any]) -> BrokerOrder:
         mode=OrderMode.LIVE,
         asset_class=asset_class,
         instrument=instrument,
+        currency=_currency(venue, asset_class),
         side=_SIDES.get(str(args.get("side") or "").strip().upper()),
         qty=as_decimal(args.get("qty")),
         order_type=_ORDER_TYPES.get(str(args.get("order_type") or "").strip().upper()),
@@ -319,6 +377,8 @@ def _live_amend(args: Mapping[str, Any], action: OrderAction) -> BrokerOrder | N
         # A confirm acts on the confirmation moomoo handed back, not on the
         # order behind it; a replace and a cancel act on the order itself.
         target_ref=as_text(targets.get("confirm_id")) or as_text(targets.get("order_id")),
+        # No currency: an amend names no instrument, and a market lists futures
+        # under the prefix its shares use (``US.ESmain``), priced in points.
         qty=as_decimal(args.get("qty")),
         limit_price=as_decimal(args.get("price")),
         stop_price=as_decimal(args.get("aux_price")),
@@ -342,17 +402,18 @@ def _paper_place(args: Mapping[str, Any]) -> BrokerOrder:
     market = as_int(args.get("market"))
     venue, asset_class = _PAPER_MARKETS.get(market) or (None, "equity")
     symbol = str(args.get("symbol") or "")
-    instrument: InstrumentRef = (
-        FutureRef(symbol=symbol, venue=venue)
-        if asset_class == "future"
-        else EquityRef(symbol=symbol, venue=venue)
-    )
+    # The US book takes options as well as shares, under the same market.
+    if asset_class == "future":
+        instrument: InstrumentRef = FutureRef(symbol=symbol, venue=venue)
+    else:
+        asset_class, instrument = _instrument(venue, symbol, symbol)
     return BrokerOrder(
         vendor=VENDOR,
         account_ref=str(args.get("acc_id") or ""),
         mode=OrderMode.PAPER,
         asset_class=asset_class,
         instrument=instrument,
+        currency=_currency(venue, asset_class),
         side=_PAPER_SIDES.get(as_int(args.get("order_side"))),
         qty=as_decimal(args.get("qty")),
         order_type=_PAPER_ORDER_TYPES.get(as_int(args.get("order_type"))),
@@ -366,11 +427,13 @@ def _paper_place(args: Mapping[str, Any]) -> BrokerOrder:
 
 def _paper_amend(args: Mapping[str, Any]) -> BrokerOrder:
     consumed = {"acc_id", "market", "order_id", "new_qty", "new_price"}
+    venue, asset_class = _PAPER_MARKETS.get(as_int(args.get("market"))) or (None, "other")
     return BrokerOrder(
         vendor=VENDOR,
         account_ref=str(args.get("acc_id") or ""),
         mode=OrderMode.PAPER,
         target_ref=as_text(args.get("order_id")),
+        currency=_currency(venue, asset_class),
         qty=as_decimal(args.get("new_qty")),
         limit_price=as_decimal(args.get("new_price")),
         extras={
@@ -412,8 +475,8 @@ def _route(
             market = payload.get("market")
         return {"market": str(market)} if market is not None else {}
     exchange = request.extras.get("exchange") if request else None
-    if exchange is None and request is not None:
-        exchange = getattr(request.instrument, "venue", None)
+    if exchange is None:
+        exchange = _sent_venue(request)
     if exchange is None:
         exchange = _live_venue(payload.get("code"))
     return {"exchange": str(exchange)} if exchange else {}
@@ -792,10 +855,19 @@ def _paper_market(
     return None
 
 
+def _sent_venue(order: BrokerOrder | None) -> str | None:
+    """The venue a live order was sent to, from its instrument or else its code.
+
+    An option keeps no venue of its own, so ``US.AAPL261016C130000`` is routed
+    by the code it went out with.
+    """
+    if order is None:
+        return None
+    return getattr(order.instrument, "venue", None) or _live_venue(order.raw.get("code"))
+
+
 def _live_market(order: BrokerOrder | None, route: Mapping[str, str] | None) -> str | None:
-    venue = (route or {}).get("exchange") or getattr(
-        getattr(order, "instrument", None), "venue", None
-    )
+    venue = (route or {}).get("exchange") or _sent_venue(order)
     return _LIVE_MARKETS.get(str(venue or "").strip().upper())
 
 

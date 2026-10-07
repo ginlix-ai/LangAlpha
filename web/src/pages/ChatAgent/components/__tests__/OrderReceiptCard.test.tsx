@@ -9,15 +9,16 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { renderWithProviders } from '@/test/utils';
+import { HIDDEN } from '@/components/orders/format';
 import enUS from '@/locales/en-US.json';
 import zhCN from '@/locales/zh-CN.json';
 import { OrderReceiptCard } from '../mcp/OrderReceiptCard';
 import {
   ORDER_RECEIPT_KEYS,
-  orderOutcomeRows,
+  orderOutcomeView,
   orderReceiptOf,
   overlayLedgerRow,
 } from '../mcp/useOrderReceipt';
@@ -67,6 +68,7 @@ const ORDER: OrderProposal = {
   mode: 'paper',
   vendor: 'moomoo',
   account_ref: '1234567',
+  asset_class: 'equity',
   instrument: { kind: 'equity', symbol: 'AAPL' },
   side: 'buy',
   qty: '1',
@@ -218,10 +220,48 @@ describe('OrderReceiptCard', () => {
     const card = screen.getByTestId('order-receipt');
     expect(card).toHaveTextContent('toolArtifact.directTool.orderAction.place');
     expect(card).toHaveTextContent('plugins.detail.orderModePaper');
-    expect(card).toHaveTextContent('••••4567');
+    expect(card).toHaveTextContent('moomoo · ••••4567');
     expect(card).not.toHaveTextContent('1234567');
-    expect(card).toHaveTextContent('AAPL');
-    expect(card).toHaveTextContent('buy');
+    // The side is a word, not a colour.
+    expect(screen.getByTestId('order-headline')).toHaveTextContent('orders.side.buy AAPL');
+  });
+
+  // The card is a settled record, so it opens the call like every other card
+  // in a thread. The links on it go where they say, and only there.
+  it('opens the call on a click, and leaves the links to their own', () => {
+    const onClick = vi.fn();
+    renderWithProviders(
+      <OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} onClick={onClick} />,
+    );
+    fireEvent.click(screen.getByRole('link'));
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('order-headline'));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the call from the keyboard, and leaves keys on its links to them', () => {
+    const onClick = vi.fn();
+    renderWithProviders(
+      <OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} onClick={onClick} />,
+    );
+    const card = screen.getByTestId('order-receipt');
+    expect(card).toHaveAttribute('role', 'button');
+    expect(card).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(screen.getByRole('link'), { key: 'Enter' });
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(card, { key: 'Enter' });
+    fireEvent.keyDown(card, { key: ' ' });
+    expect(onClick).toHaveBeenCalledTimes(2);
+  });
+
+  it('is not a control when nothing opens it', () => {
+    renderWithProviders(<OrderReceiptCard artifact={artifactWith({ status: 'submitted' })} />);
+    const card = screen.getByTestId('order-receipt');
+    expect(card).not.toHaveAttribute('role');
+    expect(card).not.toHaveAttribute('tabindex');
   });
 
   it('shows the vendor order id, the fills and the fees when there are any', () => {
@@ -239,11 +279,21 @@ describe('OrderReceiptCard', () => {
 
     const card = screen.getByTestId('order-receipt');
     expect(card).toHaveTextContent('900101');
-    expect(card).toHaveTextContent('49.5');
-    expect(card).toHaveTextContent('0.99 USD');
+    expect(screen.getByTestId('order-fill')).toHaveTextContent(
+      'toolArtifact.directTool.orderOutcome.avgFillPrice 49.50',
+    );
+    expect(screen.getByTestId('order-fill')).toHaveTextContent(
+      'toolArtifact.directTool.orderOutcome.fees $0.99',
+    );
+    // What has filled so far is the total, while the order is still open.
+    const figures = within(screen.getByTestId('order-figures'));
+    expect(figures.getByText('toolArtifact.directTool.orderTotal.partial')).toBeInTheDocument();
+    expect(figures.getByText('198.00')).toBeInTheDocument();
   });
 
-  it('shows the failure code and message on a vendor rejection', () => {
+  // The broker's sentence is what a person can act on; the code is for
+  // matching against its documentation, so it comes second.
+  it('states a vendor rejection in its own words, then its code', () => {
     renderWithProviders(
       <OrderReceiptCard
         artifact={artifactWith({
@@ -253,8 +303,11 @@ describe('OrderReceiptCard', () => {
       />,
     );
 
-    const card = screen.getByTestId('order-receipt');
-    expect(card).toHaveTextContent('-5 backend business error');
+    const failure = screen.getByTestId('order-failure');
+    expect(failure.textContent).toBe(
+      'backend business error toolArtifact.directTool.orderOutcome.failureCode',
+    );
+    expect(failure.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('hides sizes and prices while the dashboard is hiding values', () => {
@@ -263,18 +316,51 @@ describe('OrderReceiptCard', () => {
       <OrderReceiptCard
         artifact={artifactWith({
           status: 'filled',
+          vendor_order_id: '900101',
           filled_qty: '1',
           avg_fill_price: '49.5',
+          fees: { amount: '0.99', currency: 'USD' },
         })}
       />,
     );
 
     const card = screen.getByTestId('order-receipt');
     expect(card).not.toHaveTextContent('49.5');
-    expect(card).toHaveTextContent('******');
+    expect(card).not.toHaveTextContent('0.99');
+    // The size, the limit and the total.
+    expect(within(screen.getByTestId('order-figures')).getAllByText(HIDDEN)).toHaveLength(3);
+    expect(screen.getByTestId('order-fill')).toHaveTextContent(
+      `toolArtifact.directTool.orderOutcome.fill ${HIDDEN}`,
+    );
     // What the order was is not a number, so it still reads.
     expect(card).toHaveTextContent('AAPL');
     expect(card).toHaveTextContent('••••4567');
+    expect(card).toHaveTextContent('900101');
+  });
+
+  // The letter is the vendor's shorthand, and the session is a wire value
+  // until it is said in words.
+  it('names an option contract and the session in words', () => {
+    const artifact = artifactWith({ status: 'submitted' });
+    (artifact.order_receipt as Record<string, unknown>).order = {
+      ...ORDER,
+      asset_class: 'option',
+      instrument: {
+        kind: 'option',
+        underlying: 'AAPL',
+        expiration: '2026-11-20',
+        strike: '250',
+        right: 'C',
+        multiplier: 100,
+      },
+      session: 'rth',
+    } satisfies OrderProposal;
+    renderWithProviders(<OrderReceiptCard artifact={artifact} />);
+
+    expect(screen.getByTestId('order-headline')).toHaveTextContent(
+      'orders.side.buy AAPL 2026-11-20 250 orders.optionRight.C',
+    );
+    expect(screen.getByTestId('order-receipt')).toHaveTextContent('orders.session.rth');
   });
 
   it('renders an order the adapter could not normalize, from the attempt alone', () => {
@@ -337,10 +423,23 @@ describe('the receipt for an amend', () => {
 
     const card = screen.getByTestId('order-receipt');
     expect(card).toHaveTextContent('toolArtifact.directTool.orderAction.cancel');
+    // Nothing else names the order a cancel acts on, so the id is the headline.
+    expect(screen.getByTestId('order-headline')).toHaveTextContent(
+      `toolArtifact.directTool.orderTicket.order ${TARGET}`,
+    );
     const target = screen.getByTestId('order-target-ref');
     // Whole, not elided: this is what gets matched against the broker's app.
     expect(target.textContent).toBe(TARGET);
     expect(target.className).toContain('font-mono');
+  });
+
+  it('names the order once when the cancel answers with the same id', () => {
+    renderWithProviders(
+      <OrderReceiptCard artifact={cancelArtifact({ status: 'cancelled', vendor_order_id: TARGET })} />,
+    );
+    expect(screen.getByTestId('order-receipt')).not.toHaveTextContent(
+      'toolArtifact.directTool.orderOutcome.orderId',
+    );
   });
 
   it('draws no target line for an order that acts on none', () => {
@@ -354,22 +453,25 @@ describe('the receipt for an amend', () => {
  * card, and it only survives a reload because the receipt carries it.
  */
 describe('the reason a person rejected with', () => {
-  it('ends the field list, under the order\'s own note label', () => {
+  // It answers what the card asked, so it is never dressed as the order's note.
+  it('is labelled as their reason, whether or not the order has a note', () => {
     renderWithProviders(
       <OrderReceiptCard
         artifact={artifactWith({ status: 'rejected_by_user', decision_message: 'wrong account' })}
       />,
     );
 
-    const card = screen.getByTestId('order-receipt');
-    expect(card).toHaveTextContent('toolArtifact.directTool.orderField.note');
-    expect(card).toHaveTextContent('wrong account');
+    const outcome = screen.getByTestId('order-outcome');
+    expect(outcome).toHaveTextContent(
+      'toolArtifact.directTool.orderOutcome.decisionMessage wrong account',
+    );
+    expect(screen.getByTestId('order-receipt')).not.toHaveTextContent(
+      'toolArtifact.directTool.orderField.note',
+    );
     expect(screen.getByTestId('order-status-rejected_by_user')).toBeInTheDocument();
   });
 
-  // Two different sentences must never both be called Note, so the reason takes
-  // a label of its own when the order already carries one.
-  it('takes its own label when the order carries a note too', () => {
+  it('stays apart from the order\'s own note', () => {
     const artifact = artifactWith({
       status: 'rejected_by_user',
       decision_message: 'wrong account',
@@ -379,10 +481,13 @@ describe('the reason a person rejected with', () => {
 
     renderWithProviders(<OrderReceiptCard artifact={artifact} />);
 
-    const card = screen.getByTestId('order-receipt');
-    expect(card).toHaveTextContent('toolArtifact.directTool.orderOutcome.decisionMessage');
-    expect(card).toHaveTextContent('good til close');
-    expect(card).toHaveTextContent('wrong account');
+    expect(screen.getByTestId('order-ticket')).toHaveTextContent(
+      'toolArtifact.directTool.orderField.note good til close',
+    );
+    expect(screen.getByTestId('order-ticket')).not.toHaveTextContent('wrong account');
+    expect(screen.getByTestId('order-outcome')).toHaveTextContent(
+      'toolArtifact.directTool.orderOutcome.decisionMessage wrong account',
+    );
   });
 
   // The reason is free text, not a size or a price, so the eye toggle leaves it.
@@ -487,15 +592,25 @@ describe('orderReceiptOf', () => {
   });
 });
 
-describe('orderOutcomeRows', () => {
-  it('draws only the fields the vendor answered', () => {
-    expect(orderOutcomeRows({ status: 'submitted' })).toEqual([]);
-    expect(orderOutcomeRows({ status: 'submitted', vendor_order_id: '1' })).toHaveLength(1);
+const SHOWN = { hidden: false, locale: 'en-US' };
+
+describe('orderOutcomeView', () => {
+  it('draws only what the vendor answered', () => {
+    expect(orderOutcomeView({ status: 'submitted' }, null, SHOWN)).toEqual({
+      decisionMessage: null,
+      failure: null,
+      fill: [],
+      orderId: null,
+    });
+    expect(
+      orderOutcomeView({ status: 'submitted', vendor_order_id: '1' }, null, SHOWN).orderId,
+    ).toBe('1');
   });
 
   it('falls back to the failure kind when there is no message', () => {
-    const rows = orderOutcomeRows({ status: 'failed', failure: { kind: 'transport' } });
-    expect(rows[0].value).toBe('transport');
+    expect(
+      orderOutcomeView({ status: 'failed', failure: { kind: 'transport' } }, null, SHOWN).failure,
+    ).toEqual({ message: 'transport', code: null });
   });
 });
 
@@ -717,14 +832,14 @@ describe('the instrument the ledger can name', () => {
  */
 describe('a fill written as progress', () => {
   it('says how much of the order filled', () => {
-    const rows = orderOutcomeRows(
+    const { fill } = orderOutcomeView(
       { status: 'partially_filled', filled_qty: '4' },
       { action: 'place', mode: 'paper', qty: '10' } satisfies OrderProposal,
+      SHOWN,
     );
-    expect(rows).toEqual([
+    expect(fill).toEqual([
       {
-        field: 'filled_qty',
-        labelKey: 'toolArtifact.directTool.orderOutcome.fill',
+        field: 'fill',
         value: '4 / 10',
         valueKey: 'toolArtifact.directTool.orderOutcome.filledOf',
         valueParams: { filled: '4', qty: '10' },
@@ -732,39 +847,41 @@ describe('a fill written as progress', () => {
     ]);
   });
 
-  it('says what a completed fill cost, in one row instead of two', () => {
-    const rows = orderOutcomeRows(
+  it('says what a completed fill cost, in one part instead of two', () => {
+    const { fill } = orderOutcomeView(
       { status: 'filled', filled_qty: '10', avg_fill_price: '49.5' },
-      { action: 'place', mode: 'paper', qty: '10' } satisfies OrderProposal,
+      { action: 'place', mode: 'paper', qty: '10', currency: 'USD' } satisfies OrderProposal,
+      SHOWN,
     );
-    expect(rows).toEqual([
+    expect(fill).toEqual([
       {
-        field: 'filled_qty',
-        labelKey: 'toolArtifact.directTool.orderOutcome.fill',
-        value: '10 @ 49.5',
+        field: 'fill',
+        value: '10 @ $49.50',
         valueKey: 'toolArtifact.directTool.orderOutcome.filledAt',
-        valueParams: { filled: '10', price: '49.5' },
+        valueParams: { filled: '10', price: '$49.50' },
       },
     ]);
   });
 
-  // The sentence needs both halves. Without them the figures go back to a row
+  // The sentence needs both halves. Without them the figures go back to a part
   // each, which is what every other status has always drawn.
-  it('falls back to a row each when a half is missing', () => {
+  it('falls back to a part each when a half is missing', () => {
+    const labels = (outcome: OrderOutcome, order?: OrderProposal) =>
+      orderOutcomeView(outcome, order, SHOWN).fill.map((part) => part.labelKey);
+    expect(labels({ status: 'partially_filled', filled_qty: '4' })).toEqual([
+      'toolArtifact.directTool.orderOutcome.filled',
+    ]);
     expect(
-      orderOutcomeRows({ status: 'partially_filled', filled_qty: '4' }).map((r) => r.labelKey),
-    ).toEqual(['toolArtifact.directTool.orderOutcome.filled']);
-    expect(
-      orderOutcomeRows(
+      labels(
         { status: 'filled', filled_qty: '10' },
         { action: 'place', mode: 'paper', qty: '10' } satisfies OrderProposal,
-      ).map((r) => r.labelKey),
+      ),
     ).toEqual(['toolArtifact.directTool.orderOutcome.filled']);
     expect(
-      orderOutcomeRows(
+      labels(
         { status: 'working', filled_qty: '4', avg_fill_price: '49.5' },
         { action: 'place', mode: 'paper', qty: '10' } satisfies OrderProposal,
-      ).map((r) => r.labelKey),
+      ),
     ).toEqual([
       'toolArtifact.directTool.orderOutcome.filled',
       'toolArtifact.directTool.orderOutcome.avgFillPrice',
@@ -775,7 +892,7 @@ describe('a fill written as progress', () => {
     const artifact = artifactWith({ status: 'partially_filled', filled_qty: '4' });
     (artifact.order_receipt as Record<string, unknown>).order = { ...ORDER, qty: '10' };
     renderWithProviders(<OrderReceiptCard artifact={artifact} />);
-    expect(screen.getByTestId('order-receipt')).toHaveTextContent(
+    expect(screen.getByTestId('order-fill')).toHaveTextContent(
       'toolArtifact.directTool.orderOutcome.filledOf',
     );
   });
@@ -790,7 +907,9 @@ describe('a fill written as progress', () => {
 
     const card = screen.getByTestId('order-receipt');
     expect(card).not.toHaveTextContent('toolArtifact.directTool.orderOutcome.filledOf');
-    expect(card).toHaveTextContent('******');
+    expect(screen.getByTestId('order-fill')).toHaveTextContent(
+      `toolArtifact.directTool.orderOutcome.fill ${HIDDEN}`,
+    );
   });
 
   /**
@@ -801,17 +920,19 @@ describe('a fill written as progress', () => {
    */
   it('reads a vendor zero as nothing filled, not as a fill', () => {
     expect(
-      orderOutcomeRows(
+      orderOutcomeView(
         { status: 'working', filled_qty: '0', avg_fill_price: '0' },
         { action: 'place', mode: 'live', qty: '10' } satisfies OrderProposal,
-      ),
+        SHOWN,
+      ).fill,
     ).toEqual([]);
     // Still drawn once the order really does start filling.
     expect(
-      orderOutcomeRows(
+      orderOutcomeView(
         { status: 'partially_filled', filled_qty: '1', avg_fill_price: '0' },
         { action: 'place', mode: 'live', qty: '10' } satisfies OrderProposal,
-      ).map((r) => r.valueKey),
+        SHOWN,
+      ).fill.map((part) => part.valueKey),
     ).toEqual(['toolArtifact.directTool.orderOutcome.filledOf']);
   });
 

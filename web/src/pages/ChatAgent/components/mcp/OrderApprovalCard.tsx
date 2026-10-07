@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from '@/lib/framer';
-import { Check, ChevronRight, MinusCircle, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronRight, MinusCircle, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { OrderStatusPill } from '@/components/orders/OrderStatusPill';
 import { OrdersPageLink } from '@/components/orders/OrdersPageLink';
+import { useLocale } from '@/hooks/useLocale';
 import { useOrder } from '@/hooks/useOrders';
 import { useNoteOrderExists } from '@/hooks/useOrdersVisible';
 import type { ToolApprovalState } from '@/types/chat';
@@ -13,7 +14,8 @@ import { ArgsTable } from './ArgsTable';
 import { StatusPill } from '@/components/mcp/McpPrimitives';
 import { OrderModeBadge } from '@/components/orders/OrderModeBadge';
 import { OrderCard } from './OrderCard';
-import { ORDER_ACTION_KEY, orderSummaryRows } from './orderSummary';
+import { maskAccountId } from '@/pages/ChatAgent/utils/directTools';
+import { ORDER_ACTION_KEY, orderReadFully, orderTicket } from './orderSummary';
 import { SettledStep } from '../SettledStep';
 import { useDirectToolVendorLabel } from './useDirectToolVendor';
 
@@ -22,8 +24,8 @@ import { useDirectToolVendorLabel } from './useDirectToolVendor';
  * the receipt it becomes.
  *
  * An order has one card in a thread and it is the receipt, so the card that
- * asks looks like the record that answers: the same header, the same field
- * list, the same footer line. Only the pill and the footer change as the order
+ * asks looks like the record that answers: the same header, the same ticket,
+ * the same footer line. Only the pill and the footer change as the order
  * moves, which is what makes approving feel like watching one thing settle
  * rather than one card being replaced by another.
  *
@@ -32,8 +34,10 @@ import { useDirectToolVendorLabel } from './useDirectToolVendor';
  * the size and prices they are approving.
  *
  * The arguments are not on the card. They are the exact frame the vendor will
- * see and they stay one click away, but the summary above them is the question
- * being answered, and a JSON dump beside a live order buries it.
+ * see and they fold under it, because the summary above them is the question
+ * being answered and a JSON dump beside a live order buries it. They start
+ * open only when the adapter could not read the whole order, since then they
+ * are the only full account of it.
  *
  * Once settled the step is a one-line record like every other tool call, with
  * the arguments behind its fold. The receipt above it is the copy of the trade,
@@ -60,8 +64,13 @@ export function OrderApprovalCard({
   resultLost?: boolean;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const locale = useLocale();
   const [reason, setReason] = useState('');
-  const [argsOpen, setArgsOpen] = useState(false);
+  // The arguments are the only full account of an order the adapter could
+  // not read, and of a spread's legs, which the ticket names only by count or
+  // strategy, so for those they start open rather than one click away.
+  const readFully = orderReadFully(order);
+  const [argsOpen, setArgsOpen] = useState(!readFully || order.instrument?.kind === 'combo');
   // The order names its own vendor; the server row is the fallback for a
   // vendor the shipped brokerage list does not carry.
   const vendorLabel = useDirectToolVendorLabel(order.vendor || data.server || '');
@@ -133,11 +142,12 @@ export function OrderApprovalCard({
       <OrderCard
         vendor={order.vendor || data.server || ''}
         action={order.action}
-        targetRef={order.target_ref}
         mode={order.mode}
         vendorLabel={vendorLabel}
+        account={order.account_ref ? maskAccountId(order.account_ref) : null}
         pill={pill}
-        rows={orderSummaryRows(order)}
+        ticket={orderTicket(order, { hidden: false, locale })}
+        notice={readFully ? null : <IncompleteNotice />}
         testid="order-approval"
         footer={
           canAct && !isApproved ? (
@@ -248,6 +258,22 @@ function SettledOrderStep({
         <OrdersPageLink attemptId={attemptId} />
       </div>
     </div>
+  );
+}
+
+/** Said when the ticket above is shorter than the order: what it leaves out
+ *  is in the arguments, which open with it. */
+function IncompleteNotice(): React.ReactElement {
+  const { t } = useTranslation();
+  return (
+    <p
+      className="flex gap-1.5 pt-2 text-xs leading-relaxed"
+      style={{ color: 'var(--color-warning)' }}
+      data-testid="order-incomplete"
+    >
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-[3px]" aria-hidden="true" />
+      <span>{t('toolArtifact.directTool.orderApproval.incomplete')}</span>
+    </p>
   );
 }
 

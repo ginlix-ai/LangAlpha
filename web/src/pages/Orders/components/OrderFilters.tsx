@@ -12,7 +12,8 @@ import {
 } from '@/pages/ChatAgent/utils/api';
 import { ORDER_MODE_KEY, ORDER_MODES } from '@/components/orders/mode';
 import type { OrderMode } from '@/types/orders';
-import { ORDER_ASSET_CLASS_KEY, ORDER_STATUS_GROUP_KEY } from '../utils/labels';
+import { ORDER_ASSET_CLASS_KEY } from '@/components/orders/labels';
+import { ORDER_STATUS_GROUP_KEY } from '../utils/labels';
 
 function Select({
   label,

@@ -6,7 +6,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router';
+import '@testing-library/jest-dom';
 
 vi.mock('@/contexts/ThemeContext', () => ({
   useTheme: () => ({ theme: 'dark', setTheme: () => {} }),
@@ -14,6 +16,7 @@ vi.mock('@/contexts/ThemeContext', () => ({
 
 import Markdown from '../Markdown';
 import { WorkspaceProvider } from '../../contexts/WorkspaceContext';
+import { RouteLeaveGuardContext, type RouteLeaveGuard } from '../../contexts/RouteLeaveGuardContext';
 import type { ComputerFolders } from '../../utils/agentPaths';
 
 function renderHtml(content: string, variant: 'chat' | 'panel' = 'chat'): string {
@@ -97,5 +100,54 @@ describe('Markdown links through a workspace folder', () => {
 
   it('hands a climb into the own folder on as written, for the handler to read against its file', () => {
     expect(click('[notes](../Home/notes.md)')).toEqual(['../Home/notes.md', undefined]);
+  });
+});
+
+// The agent writes the app's own pages as absolute links, so a reply read in a
+// channel still works. In the app a new tab is a second copy of it that has
+// lost this tab's state; a skipped setup sent that tab to the setup wizard.
+describe('Markdown links to pages of this app', () => {
+  function Where() {
+    const { pathname, search, hash } = useLocation();
+    return <output data-testid="where">{pathname + search + hash}</output>;
+  }
+
+  function renderInApp(content: string, guard: RouteLeaveGuard = (go) => go()) {
+    render(
+      <MemoryRouter initialEntries={['/chat/t/thread-1']}>
+        <RouteLeaveGuardContext value={guard}>
+          <Markdown variant="chat" content={content} />
+        </RouteLeaveGuardContext>
+        <Where />
+      </MemoryRouter>,
+    );
+    return screen.getByRole('link');
+  }
+
+  it('opens a page of this app in place', () => {
+    const href = `${window.location.origin}/settings?tab=preferences#trading-permission`;
+    const link = renderInApp(`[Trading permission](${href})`);
+    expect(link).not.toHaveAttribute('target');
+
+    fireEvent.click(link);
+
+    expect(screen.getByTestId('where')).toHaveTextContent('/settings?tab=preferences#trading-permission');
+  });
+
+  // Leaving the route unmounts the file panel beside the thread, and with it
+  // any draft it holds, so the host is asked first and can say no.
+  it('asks the host before it leaves the page', () => {
+    const guard = vi.fn<RouteLeaveGuard>();
+    const link = renderInApp(`[Orders](${window.location.origin}/orders)`, guard);
+
+    fireEvent.click(link);
+
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('where')).toHaveTextContent('/chat/t/thread-1');
+  });
+
+  it('keeps another app on this origin a web link', () => {
+    const link = renderInApp(`[Plans](${window.location.origin}/account/plans)`);
+    expect(link).toHaveAttribute('target', '_blank');
   });
 });

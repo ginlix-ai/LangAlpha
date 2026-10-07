@@ -10,21 +10,23 @@ import {
   orderStatusShortLabel,
 } from '@/components/orders/status';
 import {
-  ORDER_ACTION_KEY,
+  OPTION_RIGHT_KEY,
   ORDER_ASSET_CLASS_KEY,
+  ORDER_SESSION_KEY,
   ORDER_SIDE_KEY,
   ORDER_TIME_IN_FORCE_KEY,
   ORDER_TYPE_KEY,
-} from '../utils/labels';
+} from '@/components/orders/labels';
+import { ORDER_ACTION_KEY } from '../utils/labels';
 import { ORDER_STATUSES } from '@/pages/ChatAgent/utils/api';
 
 /**
- * Two of these maps come from the shared order module rather than from the
- * page: the status words are the chat receipt's and the mode words are the
- * Plugins badge's, on purpose. The locale sweep only reads bare keys under
- * `orders.`, so nothing else would notice if one of those were renamed under
- * us, and a missing key renders as the key itself on a row about an order
- * somebody placed.
+ * Most of these maps come from the shared order module rather than from the
+ * page: the order's own words are the chat card's too, the status words are
+ * the chat receipt's and the mode words are the Plugins badge's, on purpose.
+ * The locale sweep only reads bare keys under `orders.`, so nothing else would
+ * notice if one of the others were renamed under us, and a missing key renders
+ * as the key itself on a row about an order somebody placed.
  */
 
 function lookup(catalog: unknown, key: string): unknown {
@@ -47,6 +49,8 @@ const MAPS: Record<string, Record<string, string>> = {
   orderType: ORDER_TYPE_KEY,
   assetClass: ORDER_ASSET_CLASS_KEY,
   timeInForce: ORDER_TIME_IN_FORCE_KEY,
+  session: ORDER_SESSION_KEY,
+  optionRight: OPTION_RIGHT_KEY,
   mode: ORDER_MODE_KEY,
 };
 

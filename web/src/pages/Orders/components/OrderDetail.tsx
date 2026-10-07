@@ -20,21 +20,21 @@ import {
   DetailOverlay,
   DetailSection,
 } from '@/pages/Plugins/components/DetailOverlay';
+import { HIDDEN, orderAmount } from '@/components/orders/format';
 import {
-  formatOrderTime,
-  orderAmount,
-  orderLimitPrice,
-  orderSize,
-  orderStopPrice,
-  HIDDEN,
-} from '../utils/format';
-import {
-  ORDER_ACTION_KEY,
   ORDER_ASSET_CLASS_KEY,
+  ORDER_SESSION_KEY,
   ORDER_SIDE_KEY,
   ORDER_TIME_IN_FORCE_KEY,
   ORDER_TYPE_KEY,
-} from '../utils/labels';
+} from '@/components/orders/labels';
+import {
+  formatOrderTime,
+  orderLimitPrice,
+  orderSize,
+  orderStopPrice,
+} from '../utils/format';
+import { ORDER_ACTION_KEY } from '../utils/labels';
 
 function Body({
   order,
@@ -55,6 +55,7 @@ function Body({
   const tifKey = summary?.time_in_force
     ? ORDER_TIME_IN_FORCE_KEY[summary.time_in_force]
     : undefined;
+  const sessionKey = summary?.session ? ORDER_SESSION_KEY[summary.session] : undefined;
   const route = Object.entries(order.route ?? {});
   const filledQty = fillFigure(order.filled_qty);
   const avgFillPrice = fillFigure(order.avg_fill_price);
@@ -102,7 +103,7 @@ function Body({
             {tifKey ? t(tifKey) : summary.time_in_force || none}
           </DetailField>
           <DetailField label={t('orders.detail.session')}>
-            {summary.session || none}
+            {sessionKey ? t(sessionKey) : summary.session || none}
           </DetailField>
           {summary.note && (
             <DetailField label={t('orders.detail.note')}>{summary.note}</DetailField>

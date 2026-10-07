@@ -15,16 +15,26 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
+# No price, size or fee a market deals in sits this many places from the point.
+# The ledger writes every decimal out in plain digits, where a twelve-character
+# ``1e100000000`` from a model's arguments would run to a hundred million.
+_MAX_PLACES = 30
+
+
 def as_decimal(value: Any) -> Decimal | None:
     """A vendor's number, however it was typed, or None when it is not one."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, Decimal):
-        return value
-    try:
-        return Decimal(str(value).strip())
-    except (InvalidOperation, ValueError):
+        number = value
+    else:
+        try:
+            number = Decimal(str(value).strip())
+        except (InvalidOperation, ValueError):
+            return None
+    if not number.is_finite() or abs(number.adjusted()) > _MAX_PLACES:
         return None
+    return number
 
 
 def as_int(value: Any) -> int | None:
