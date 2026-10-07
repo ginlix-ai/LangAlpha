@@ -27,6 +27,7 @@ from src.server.database.workspace import (
     get_workspace_identity as db_get_workspace_identity,
 )
 
+from src.server.services.computer_manager._providers import HostOutageClock
 from src.server.services.computer_manager._types import (
     ComputerBinding,
     MachineState,
@@ -135,6 +136,10 @@ class SessionCacheMixin:
                 workspace_id=workspace_id, computer_id=computer_id
             )
         machine.meta.sandbox_id = self._session_sandbox_id(session)
+        # Only a bound sandbox is published.
+        policy = getattr(session, "host_unavailable_policy", None)
+        if isinstance(policy, HostOutageClock) and machine.meta.sandbox_id:
+            policy.bound(machine.meta.sandbox_id)
         machine.meta.touch()
         if workspace_id:
             self._session_computer[workspace_id] = computer_id
@@ -228,6 +233,9 @@ class SessionCacheMixin:
             label=binding.workspace_id or binding.computer_id,
             computer_id=binding.computer_id,
             resource_tier=binding.resource_tier,
+            host_unavailable_policy=self._host_unavailable_policy(
+                binding.computer_id, core_config, binding.provider_ref
+            ),
         )
 
     # ---- locks -----------------------------------------------------------

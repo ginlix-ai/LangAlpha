@@ -588,6 +588,9 @@ class ComputerSpecMixin:
             sandbox_id=sandbox_id,
             release_on_success=True,
         ):
+            # No host policy: a resize backs up from this sandbox, and calling
+            # an unreachable host gone would skip that and record the new tier
+            # over a sandbox the host may still bring back at the old size.
             session = Session(
                 computer_id, self._core_config_for(binding),
                 computer_id=computer_id, resource_tier=binding.resource_tier,

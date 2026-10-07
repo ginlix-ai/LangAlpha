@@ -48,6 +48,7 @@ from src.server.services.workspace_status_pubsub import (
     publish_workspace_binding_change,
 )
 
+from src.server.services.computer_manager._providers import host_outage_of
 from src.server.services.computer_manager._types import (
     _MACHINE_DECISION_LOCK_TIMEOUT_MS,
     ComputerBinding,
@@ -672,6 +673,9 @@ class MachineLifecycleMixin:
                 label=computer_id,
                 computer_id=computer_id,
                 resource_tier=binding.resource_tier,
+                host_unavailable_policy=self._host_unavailable_policy(
+                    computer_id, core_config, previous_ref
+                ),
             )
 
         # A stopped sandbox can still have an initialized handle in this
@@ -688,6 +692,7 @@ class MachineLifecycleMixin:
             )
 
         session = _handle()
+        outage_since = None
         try:
             if tier_lapsed:
                 # The sandbox was sized for a tier the plan no longer grants;
@@ -709,6 +714,7 @@ class MachineLifecycleMixin:
                         f"Sandbox {previous_ref} is gone for computer "
                         f"{computer_id} ({e}); building a fresh one"
                     )
+                    outage_since = host_outage_of(e)
                     await self._clear_session(computer_id, evict_session=session)
                     session = _handle()
                     reconnected = False
@@ -801,6 +807,7 @@ class MachineLifecycleMixin:
                         expected_previous_provider_ref=previous_ref,
                         platform_secret_version=secret_version or 0,
                         expected_always_on=current_always_on,
+                        expected_host_unavailable_since=outage_since,
                     )
                 if published is not None:
                     break

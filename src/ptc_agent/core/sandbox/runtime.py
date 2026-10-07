@@ -5,6 +5,7 @@ import shlex
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,62 @@ class SandboxGoneError(RuntimeError):
         if message:
             full_msg += f": {message}"
         super().__init__(full_msg)
+
+
+class SandboxHostUnavailableError(SandboxTransientError):
+    """The provider refused to start the sandbox while its host recovers.
+
+    Carries the provider's own wording, which tells the person to retry in a
+    few moments; the sandbox and its files are still there.
+    """
+
+    def __init__(self, sandbox_id: str, message: str):
+        self.sandbox_id = sandbox_id
+        super().__init__(message)
+
+
+class SandboxHostLostError(SandboxGoneError):
+    """The sandbox's host has been unavailable long enough to rebuild elsewhere.
+
+    Gone to every handler, so the start rebuilds from the backed-up files, but
+    the sandbox may come back with files the backup lacks, so it is never
+    deleted. ``outage_since`` is the outage that authorized the rebuild: the
+    host can come back while it runs, and a start that resumes the sandbox
+    meanwhile ends that outage, which is what refuses the replacement.
+    """
+
+    def __init__(
+        self, sandbox_id: str, reason: str, *, outage_since: datetime | None = None
+    ):
+        self.outage_since = outage_since
+        super().__init__(sandbox_id, reason)
+
+
+class HostUnavailablePolicy(ABC):
+    """How long a sandbox waits for its recovering host before it is rebuilt.
+
+    The caller keeps the outage's clock, because the outage outlives any one
+    handle on the sandbox. A refusal starts it and the sandbox coming up ends
+    it; a clock left running would cut the next outage short.
+    """
+
+    @abstractmethod
+    async def rebuild_now(self, sandbox_id: str) -> datetime | None:
+        """The host refused to start *sandbox_id*.
+
+        When the outage that authorizes rebuilding instead began, or None to
+        keep waiting for the host.
+        """
+
+    @abstractmethod
+    async def reconnected(self, sandbox_id: str) -> bool | None:
+        """*sandbox_id* came up, so its host is back.
+
+        True while the machine still names it. False when the machine named it
+        and names another by now: a rebuild during the outage replaced it, and
+        it must go unused. None when the machine has not named it yet, as for a
+        sandbox still being built to replace another.
+        """
 
 
 class SandboxFailureKind(str, Enum):
@@ -423,6 +480,13 @@ class SandboxProvider(ABC):
         """Return True if *exc* is a transient error that may be retried.
 
         Providers should override to classify provider-specific errors.
+        """
+        return False
+
+    def is_host_unavailable(self, exc: Exception) -> bool:
+        """True when a start failed because the sandbox's host is recovering.
+
+        Only a backend that runs sandboxes on hosts it can lose reports this.
         """
         return False
 

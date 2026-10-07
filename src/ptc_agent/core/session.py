@@ -13,6 +13,7 @@ from ptc_agent.config.core import CoreConfig
 
 from .mcp_registry import MCPRegistry, get_global_registry
 from .sandbox import PTCSandbox
+from .sandbox.runtime import HostUnavailablePolicy
 
 logger = structlog.get_logger(__name__)
 
@@ -41,6 +42,7 @@ class Session:
         *,
         computer_id: str | None = None,
         resource_tier: str | None = None,
+        host_unavailable_policy: HostUnavailablePolicy | None = None,
     ) -> None:
         """Initialize session.
 
@@ -55,10 +57,15 @@ class Session:
             resource_tier: That machine's tier, which sizes how much runs on it
                 at once. Travels with ``computer_id`` and is refreshed the same
                 way, so a resize converges on the next acquisition.
+            host_unavailable_policy: Handed to the sandbox, which asks it
+                whether a start a recovering host refused should rebuild
+                instead. The caller's, because the outage's clock is the
+                machine's and outlives this session.
         """
         self.session_label = session_label
         self.computer_id = computer_id
         self.resource_tier = resource_tier
+        self.host_unavailable_policy = host_unavailable_policy
         self.config = config
         # Pristine server list snapshotted before the WorkspaceManager mutates
         # ``config.mcp.servers`` to the resolved composite. Restored on stop() so
@@ -208,7 +215,10 @@ class Session:
         if sandbox_id:
             # RECONNECT MODE: Run MCP connections and sandbox start in parallel
             self.sandbox = PTCSandbox(
-                self.config, None, resource_tier=self.resource_tier or tier
+                self.config,
+                None,
+                resource_tier=self.resource_tier or tier,
+                host_unavailable_policy=self.host_unavailable_policy,
             )
 
             try:
@@ -239,7 +249,10 @@ class Session:
         else:
             # NEW SANDBOX MODE: Run workspace setup and MCP connect concurrently
             self.sandbox = PTCSandbox(
-                self.config, None, resource_tier=self.resource_tier or tier
+                self.config,
+                None,
+                resource_tier=self.resource_tier or tier,
+                host_unavailable_policy=self.host_unavailable_policy,
             )
 
             try:
@@ -310,7 +323,10 @@ class Session:
         # reconnect() is pure Daytona API calls, doesn't need the MCP registry.
         # This lets the sandbox start while MCP subprocesses are connecting.
         self.sandbox = PTCSandbox(
-            self.config, mcp_registry=None, resource_tier=self.resource_tier
+            self.config,
+            mcp_registry=None,
+            resource_tier=self.resource_tier,
+            host_unavailable_policy=self.host_unavailable_policy,
         )
         self.sandbox.start_lazy_init(sandbox_id, on_state_observed=on_state_observed)
 
@@ -497,6 +513,7 @@ class SessionManager:
         label: str | None = None,
         computer_id: str | None = None,
         resource_tier: str | None = None,
+        host_unavailable_policy: HostUnavailablePolicy | None = None,
     ) -> Session:
         """Get or create the session cached under *session_key*.
 
@@ -507,6 +524,8 @@ class SessionManager:
         because the machine can be resized under a session this process is
         still holding. Nothing here carries a workspace: the caller's
         ``ProjectContext`` does, because one session serves several.
+        ``host_unavailable_policy`` applies to a session this call creates; a
+        cached one keeps its own, which answers for the same machine.
         """
         if session_key not in cls._sessions:
             logger.debug("Creating new session", session_key=session_key)
@@ -515,6 +534,7 @@ class SessionManager:
                 config,
                 computer_id=computer_id,
                 resource_tier=resource_tier,
+                host_unavailable_policy=host_unavailable_policy,
             )
         else:
             logger.debug("Returning existing session", session_key=session_key)

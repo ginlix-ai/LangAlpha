@@ -43,6 +43,7 @@ from ptc_agent.core.sandbox.providers.daytona_secrets import (
     DaytonaSecretReconciler,
     daytona_error_code as _daytona_error_code,
     daytona_error_status as _daytona_error_status,
+    is_daytona_host_unavailable,
     is_transient_daytona_error,
 )
 
@@ -197,6 +198,9 @@ class DaytonaProvider(SandboxProvider):
     def is_transient_error(self, exc: Exception) -> bool:
         """Classify whether *exc* is a transient Daytona SDK error."""
         return is_transient_daytona_error(exc)
+
+    def is_host_unavailable(self, exc: Exception) -> bool:
+        return is_daytona_host_unavailable(exc)
 
     def classify_error(self, exc: Exception) -> SandboxFailureKind:
         """Classify a Daytona failure from its structured error metadata.

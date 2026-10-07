@@ -10,6 +10,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ptc_agent.config import AgentConfig
@@ -444,6 +445,7 @@ class ProvisioningMixin:
         post_init: "Callable[[Session], Any]",
         core_config: Any = None,
         expected_previous_sandbox_id: str | None = None,
+        expected_host_unavailable_since: datetime | None = None,
     ) -> tuple[Session, Any]:
         """Publish only after post_init and the guarded identity write succeed.
 
@@ -512,6 +514,7 @@ class ProvisioningMixin:
                 sandbox_id=sandbox_id,
                 expected_previous_sandbox_id=expected_previous_sandbox_id,
                 platform_secret_version=secret_version,
+                expected_host_unavailable_since=expected_host_unavailable_since,
             )
             if workspace is None:
                 # The losing sandbox is unreferenced and billed: destroy it and retry attach.
@@ -557,12 +560,16 @@ class ProvisioningMixin:
         binding: ComputerBinding,
         user_id: str | None,
         core_config: Any,
+        *,
+        outage_since: datetime | None = None,
     ) -> Session:
         """Recheck tier and always-on entitlements when recreating a sandbox.
 
         Hosted Daytona cannot resize a snapshot sandbox, so entitled sizing and
         auto-stop must be applied at creation. Sizing comes off the machine: a
-        project shadow that lags a resize would rebuild at the old size."""
+        project shadow that lags a resize would rebuild at the old size.
+        ``outage_since`` is the host outage that authorized replacing the old
+        sandbox, if one did; the bind holds only while that outage runs."""
         workspace_id = binding.workspace_id
         workspace = await db_get_workspace(workspace_id)
         # Warm-path recovery may lack user_id. Use the NOT NULL row owner or
@@ -608,6 +615,7 @@ class ProvisioningMixin:
             post_init=_post_init,
             core_config=core_config,
             expected_previous_sandbox_id=previous_sandbox_id,
+            expected_host_unavailable_since=outage_since,
         )
         # The new sandbox is bound: past here nothing may fail the recover, or
         # a spec change settles failed and reverts the tier over a machine
