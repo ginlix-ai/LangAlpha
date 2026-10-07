@@ -94,8 +94,9 @@ FEATURES: dict[str, FeatureSpec] = {
             "behavior and pricing may change."
         ),
     ),
-    # Off in the catalog until it rolls out: a deployment turns it on in
-    # config.yaml, and then it reaches only the users who opt in.
+    # Off in the catalog, as it needs a sandbox provider Flash does not: a
+    # deployment turns it on in config.yaml, and then it reaches every user
+    # who has not turned it off.
     "all_workspaces_agent": FeatureSpec(
         key="all_workspaces_agent",
         label="Chief of Staff",
@@ -105,7 +106,7 @@ FEATURES: dict[str, FeatureSpec] = {
             "workspaces and hand tasks to the analyst in each."
         ),
         enabled=False,
-        gate=FeatureGate.OPT_IN,
+        gate=FeatureGate.OPT_OUT,
         tradeoffs=(
             "Every chat carries extra context about your recent workspaces and "
             "activity, so each turn uses more tokens. The first message starts "
