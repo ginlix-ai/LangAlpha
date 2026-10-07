@@ -28,6 +28,7 @@ const label = (key: string, opts?: Record<string, unknown>) => i18n.t(key, opts)
 
 const OPTIONS: DeliveryOptions = {
   enabled: true,
+  workspace_id: 'ws-1',
   apps: {
     slack: {
       chats: [{ address: 'slack:T1/C1', name: '#demo', kind: 'channel' }],

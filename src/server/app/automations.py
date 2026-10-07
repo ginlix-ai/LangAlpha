@@ -8,7 +8,7 @@ Endpoints (/api/v1/automations):
 - POST   /automations                              - Create automation
 - GET    /automations                              - List automations
 - GET    /automations/executions                   - Run feed across automations
-- GET    /automations/delivery-options             - Chats a workspace's runs can reach
+- GET    /automations/delivery-options             - Chats an automation's runs can reach
 - PUT    /automations/delivery-default             - Set a workspace's default chat
 - GET    /automations/{automation_id}              - Get automation
 - PATCH  /automations/{automation_id}              - Update automation
@@ -34,6 +34,7 @@ from pydantic import ValidationError
 
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
+from src.server.database.home_workspace import is_flash_row
 from src.server.database.workspace import get_workspace
 from src.server.services.automations import lifecycle as handler
 from src.server.models.automation import (
@@ -146,27 +147,47 @@ def _unavailable(detail: str) -> HTTPException:
     return HTTPException(status_code=503, detail=detail)
 
 
+_HOME_HAS_NO_DEFAULT = (
+    "Home has no default chat: its automations deliver to each app's preferred chat."
+)
+
+
+async def _delivery_workspace(user_id: str, workspace_id: Optional[UUID]) -> Optional[str]:
+    """The workspace whose default chat an entry naming only an app follows,
+    once the user is checked as its owner. None without one, and for Home,
+    which is none of the user's workspaces: its runs deliver as a run with no
+    workspace does."""
+    if workspace_id is None:
+        return None
+    workspace = await get_workspace(str(workspace_id))
+    require_workspace_owner(workspace, user_id=user_id)
+    return None if is_flash_row(workspace) else str(workspace_id)
+
+
 # Declared before /automations/{automation_id}, which would otherwise capture
 # the path as an id.
 @router.get("/automations/delivery-options")
 @handle_api_exceptions("list delivery options", logger)
 async def get_delivery_options(
     user_id: CurrentUserId,
-    workspace_id: UUID = Query(...),
+    workspace_id: Optional[UUID] = Query(None),
 ) -> dict[str, Any]:
-    """The chats each linked app offers a workspace's automations, and the
-    one an entry naming only the app reaches. ``enabled`` is false, with no
-    apps, on a server with no messaging service."""
-    require_workspace_owner(await get_workspace(str(workspace_id)), user_id=user_id)
+    """The chats each linked app offers an automation's runs, and the one an
+    entry naming only the app reaches. Asked with the automation's workspace,
+    or with none for one that has none. ``workspace_id`` is the workspace the
+    answer was made for: null without one and for Home, which has no default
+    chat. ``enabled`` is false, with no apps, on a server with no messaging
+    service."""
+    workspace = await _delivery_workspace(user_id, workspace_id)
     if not messaging.messaging_enabled():
-        return {"enabled": False, "apps": {}}
+        return {"enabled": False, "apps": {}, "workspace_id": workspace}
     try:
         answer = await messaging.gateway_request(
             "GET",
             "/agent/automation-targets",
             user_id=user_id,
             timeout=_DELIVERY_TIMEOUT,
-            params={"workspace_id": str(workspace_id)},
+            params={"workspace_id": workspace} if workspace else None,
         )
     except messaging.GatewayError as e:
         raise _unavailable(e.message)
@@ -178,7 +199,7 @@ async def get_delivery_options(
     apps = (answer.data or {}).get("apps")
     if not isinstance(apps, dict):
         raise _unavailable("The messaging service sent an answer that could not be read.")
-    return {"enabled": True, "apps": apps}
+    return {"enabled": True, "apps": apps, "workspace_id": workspace}
 
 
 @router.put("/automations/delivery-default")
@@ -189,8 +210,15 @@ async def set_delivery_default(
 ):
     """Set the chat on one app that a workspace's automations deliver to when
     an entry names only the app, or clear it with a null address. Answers
-    the chat as saved."""
-    require_workspace_owner(await get_workspace(str(request.workspace_id)), user_id=user_id)
+    the chat as saved. Home has none to set."""
+    if await _delivery_workspace(user_id, request.workspace_id) is None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": _HOME_HAS_NO_DEFAULT,
+                "problems": [{"field": "workspace_id", "message": _HOME_HAS_NO_DEFAULT}],
+            },
+        )
     if not messaging.messaging_enabled():
         raise HTTPException(status_code=404, detail="No messaging service is configured.")
     try:

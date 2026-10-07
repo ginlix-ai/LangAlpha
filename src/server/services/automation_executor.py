@@ -98,6 +98,15 @@ class _Firing:
     def workspace_id(self) -> Optional[str]:
         return self.route.workspace_id if self.route else None
 
+    @property
+    def delivery_workspace_id(self) -> Optional[str]:
+        """The workspace whose chats an app-only delivery entry falls to: an
+        Analyst's. Home is none of the user's workspaces, so a run there names
+        none and the entry takes the app's preferred chat."""
+        if self.route is None or self.route.role != "analyst":
+            return None
+        return self.route.workspace_id
+
 
 async def _thread_busy(thread_id: str) -> bool:
     """A turn is live on the thread, or a compact or offload is rewriting it.
@@ -484,7 +493,7 @@ class AutomationExecutor:
                 f"again: execution_id={execution_id} delivery_id={delivery_id}"
             )
         firing.delivery = await automation_delivery.start_run(
-            firing.automation, delivery_id, firing.workspace_id,
+            firing.automation, delivery_id, firing.delivery_workspace_id,
             thread_id=firing.thread_id,
         )
 

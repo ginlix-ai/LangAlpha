@@ -15,11 +15,6 @@ vi.mock('@/hooks/useWorkspaces', () => ({
   useWorkspaces: () => ({ data: { workspaces: [{ workspace_id: 'ws-1', name: 'Research' }] } }),
 }));
 
-vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/pages/ChatAgent/utils/api')>()),
-  getFlashWorkspace: vi.fn(async () => ({ workspace_id: 'ws-flash' })),
-}));
-
 vi.mock('../../utils/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/api')>()),
   getDeliveryOptions: vi.fn(),
@@ -32,6 +27,7 @@ const label = (key: string, opts?: Record<string, unknown>) => i18n.t(key, opts)
 
 const OPTIONS: DeliveryOptions = {
   enabled: true,
+  workspace_id: 'ws-1',
   apps: {
     discord: {
       chats: [
@@ -189,7 +185,7 @@ describe('the delivery picker', () => {
   });
 
   it('offers the apps alone where no messaging service is connected', async () => {
-    serve({ enabled: false, apps: {} });
+    serve({ enabled: false, apps: {}, workspace_id: 'ws-1' });
     const { queryClient } = renderPicker(['slack']);
 
     // Nothing on screen changes when the answer lands, so wait on the answer.
@@ -212,12 +208,17 @@ describe('the delivery picker', () => {
     expect(picked()).toEqual(['discord']);
   });
 
-  it('reads a Flash automation’s chats in the Flash workspace', async () => {
-    serve();
-    renderPicker([], { ...INITIAL_FORM, agent_mode: 'flash' });
+  it('reads the chats of an automation in no workspace, and offers no default', async () => {
+    serve({ ...OPTIONS, workspace_id: null });
+    renderPicker(['slack:T1/C2'], { ...INITIAL_FORM, agent_mode: 'flash' });
 
     await addButton();
-    expect(api.getDeliveryOptions).toHaveBeenCalledWith('ws-flash');
+    expect(api.getDeliveryOptions).toHaveBeenCalledWith(null);
+    expect(within(chips()[0]).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual([
+      label('automation.deliveryRemove', { name: '#research' }),
+    ]);
+    expect(screen.queryByText(label('automation.deliveryUseAsDefault'))).not.toBeInTheDocument();
+    expect(screen.queryByText(label('automation.deliveryClearDefault'))).not.toBeInTheDocument();
   });
 
   it('names the chats in the folded summary', async () => {
@@ -300,6 +301,17 @@ describe('the workspace default', () => {
     ]);
   });
 
+  it('offers no default where the server says the run has no workspace, as in Home', async () => {
+    serve({ ...OPTIONS, workspace_id: null });
+    renderPicker(['slack:T1/C2', 'slack']);
+
+    await addButton();
+    for (const chip of chips()) {
+      expect(within(chip).getAllByRole('button')).toHaveLength(1);
+    }
+    expect(api.getDeliveryOptions).toHaveBeenCalledWith('ws-1');
+  });
+
   it('shows why a default was refused, beside the chips', async () => {
     serve();
     vi.mocked(api.setDeliveryDefault).mockRejectedValue(
@@ -332,6 +344,7 @@ describe('the workspace default', () => {
 describe('the workspace default across a workspace switch', () => {
   const OTHER: DeliveryOptions = {
     enabled: true,
+    workspace_id: 'ws-2',
     apps: { slack: { ...OPTIONS.apps.slack, default: { address: 'slack:T1/C2', name: '#research', via: 'workspace' } } },
   };
 
@@ -350,8 +363,8 @@ describe('the workspace default across a workspace switch', () => {
 
   it('offers no default, pin or default name while another workspace’s chats show', async () => {
     let release: (v: never) => void = () => {};
-    vi.mocked(api.getDeliveryOptions).mockImplementation(async (id: string) =>
-      id === 'ws-1' ? ({ data: OPTIONS } as never) : new Promise<never>((r) => (release = r)),
+    vi.mocked(api.getDeliveryOptions).mockImplementation(async (id: string | null) =>
+      id === 'ws-1' ? ({ data: { ...OPTIONS, workspace_id: id } } as never) : new Promise<never>((r) => (release = r)),
     );
     renderWithProviders(<Switcher methods={['slack', 'slack:T1/C1']} />);
     await waitFor(() => expect(chips().map((c) => c.textContent)).toEqual(['Slack (#demo)', '#demo']));

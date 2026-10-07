@@ -61,10 +61,10 @@ export const skipRun = (automationId: string, executionId: string): Promise<ApiR
 export const dismissRun = (automationId: string, executionId: string): Promise<ApiResponse<Automation>> =>
   api.post(`/api/v1/automations/${automationId}/executions/${executionId}/dismiss`);
 
-/** The chats each linked app offers an automation in this workspace, and
- *  where its bare entry lands now. */
-export const getDeliveryOptions = (workspaceId: string): Promise<ApiResponse<DeliveryOptions>> =>
-  api.get('/api/v1/automations/delivery-options', { params: { workspace_id: workspaceId } });
+/** The chats each linked app offers an automation, and where its bare entry
+ *  lands now. An automation in no workspace asks with none. */
+export const getDeliveryOptions = (workspaceId: string | null): Promise<ApiResponse<DeliveryOptions>> =>
+  api.get('/api/v1/automations/delivery-options', { params: workspaceId ? { workspace_id: workspaceId } : undefined });
 
 export interface DeliveryDefaultPayload {
   workspace_id: string;

@@ -943,8 +943,8 @@ async def get_workspace_name_and_description(
 async def get_workspace_names(
     user_id: str, workspace_ids: Iterable[str] | None = None
 ) -> Dict[str, str]:
-    """Name by canonical id of the user's live workspaces, the flash one
-    aside, in name order: all of them, or those of ``workspace_ids``."""
+    """Name by canonical id of the user's live workspaces, Home aside, in
+    name order: all of them, or those of ``workspace_ids``."""
     params: dict[str, Any] = {"user_id": user_id, "flash_id": get_flash_workspace_id(user_id)}
     only = ""
     if workspace_ids is not None:

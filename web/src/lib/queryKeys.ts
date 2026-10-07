@@ -225,12 +225,13 @@ export const queryKeys = {
     runs:       () => [...queryKeys.automations.all, 'runs'],
     waiting:    (threadId: string) => [...queryKeys.automations.all, 'waiting', threadId],
   },
-  // The chats an automation can deliver to, per workspace. Its own root: an
+  // The chats an automation can deliver to, per workspace (null: an
+  // automation with no workspace). Its own root: an
   // automation write changes none of them, and each read asks the messaging
   // service to list every chat again.
   automationDelivery: {
     all:     ['automationDelivery'],
-    options: (workspaceId: string) => [...queryKeys.automationDelivery.all, 'options', workspaceId],
+    options: (workspaceId: string | null) => [...queryKeys.automationDelivery.all, 'options', workspaceId],
   },
   // Per-symbol quote cache — the unified snapshot layer (see lib/quotes/).
   // Key = uppercase legacy symbol spelling (indexes stripped of a leading '^').

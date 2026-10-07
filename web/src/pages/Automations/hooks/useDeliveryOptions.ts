@@ -1,5 +1,4 @@
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { flashWorkspaceQuery } from '@/hooks/useFlashWorkspace';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { apiErrorStatus } from '@/pages/ChatAgent/utils/api/errors';
 import type { Automation, DeliveryOptions } from '@/types/automation';
@@ -20,24 +19,24 @@ export interface DeliveryOptionsState {
   isPlaceholderData: boolean;
   /** No answer yet, for this workspace or any before it. */
   isPending: boolean;
-  /** The workspace the run delivers from: a Flash run's is the Flash workspace. */
+  /** The workspace whose default an app-only entry follows, as the server
+   *  answered: null for a run in no workspace or in Home. */
   workspaceId: string | null;
 }
 
 /**
- * The chats an automation can deliver to, for the workspace its runs use.
- * A Flash automation names none, but runs in the account's Flash workspace,
- * whose default output is the one its bare entries follow.
+ * The chats an automation can deliver to. An automation in no workspace asks
+ * with none; the workspace whose default applies is the server's answer, null
+ * for a run in Home.
  */
 export function useDeliveryOptions({ agentMode, workspaceId, enabled = true }: DeliveryOptionsArgs): DeliveryOptionsState {
-  const queryClient = useQueryClient();
-  const flash = useQuery({ ...flashWorkspaceQuery(queryClient), enabled: enabled && agentMode === 'flash' });
-  const runWorkspace = agentMode === 'flash' ? flash.data?.workspace_id ?? null : workspaceId || null;
+  const asked = agentMode === 'flash' ? null : workspaceId || null;
 
   const query = useQuery({
-    queryKey: queryKeys.automationDelivery.options(runWorkspace ?? ''),
-    queryFn: async () => (await getDeliveryOptions(runWorkspace as string)).data,
-    enabled: enabled && !!runWorkspace,
+    queryKey: queryKeys.automationDelivery.options(asked),
+    queryFn: async () => (await getDeliveryOptions(asked)).data,
+    // A PTC form with no workspace picked yet asks nothing.
+    enabled: enabled && (agentMode === 'flash' || !!asked),
     staleTime: 60_000,
     // A workspace switch keeps the picker up while the new one's chats load.
     placeholderData: keepPreviousData,
@@ -51,6 +50,6 @@ export function useDeliveryOptions({ agentMode, workspaceId, enabled = true }: D
     error: query.error,
     isPlaceholderData: query.isPlaceholderData,
     isPending: query.isPending,
-    workspaceId: runWorkspace,
+    workspaceId: query.data?.workspace_id ?? null,
   };
 }

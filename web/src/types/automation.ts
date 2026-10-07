@@ -87,6 +87,9 @@ export interface DeliveryApp {
 export interface DeliveryOptions {
   enabled: boolean;
   apps: Record<string, DeliveryApp>;
+  /** The workspace whose default chat an app-only entry follows. Null when
+   *  the run has none: no workspace, or Home. */
+  workspace_id: string | null;
 }
 
 /** One run as the server sends it: a list row's newest execution, an

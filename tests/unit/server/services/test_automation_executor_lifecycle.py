@@ -361,20 +361,31 @@ _DELIVERING = {"delivery_config": {"methods": ["slack:T/C"]}}
 
 
 @contextmanager
-def _delivery(*starts):
+def _delivery(*starts, home: bool = True):
     """The messaging service's start, answering each of ``starts`` in turn
-    (None: it asked nothing), and its finish."""
+    (None: it asked nothing), and its finish.
+
+    Entered after ``_firing``. With ``home``, an automation with no workspace
+    runs as the Chief of Staff in Home, as every account does once Flash is
+    gone; without, it runs on Flash, which the flag still allows.
+    """
     fx = SimpleNamespace(
         start=AsyncMock(side_effect=list(starts)),
         finish=AsyncMock(
             return_value=automation_delivery.Finish([{"method": "slack:T/C", "success": False}])
         ),
+        manager=MagicMock(ensure_home_bound=AsyncMock()),
     )
     with (
         patch(f"{_MOD}.automation_delivery.start_run", new=fx.start),
         patch(
             "src.server.services.automation_settlement.automation_delivery.finish_run",
             new=fx.finish,
+        ),
+        patch("src.server.services.turn_runtime.home_enabled", new=AsyncMock(return_value=home)),
+        patch(
+            "src.server.services.workspace_manager.WorkspaceManager.get_instance",
+            return_value=fx.manager,
         ),
     ):
         yield fx
@@ -393,9 +404,11 @@ async def test_a_held_run_tells_its_agent_where_to_send():
         await AutomationExecutor().execute(automation, _EXEC)
 
     args = _turn_args(fx)
-    # The thread the run goes on, resolved before the start.
+    assert args["role"] == "chief_of_staff"
+    # The thread the run goes on, resolved before the start. Home is none of
+    # the user's workspaces, so the run names none.
     assert args["thread_id"]
-    dx.start.assert_awaited_once_with(automation, _EXEC, "ws-1", thread_id=args["thread_id"])
+    dx.start.assert_awaited_once_with(automation, _EXEC, None, thread_id=args["thread_id"])
     contexts = [(c.type, c.content) for c in args["request"].additional_context]
     assert contexts == [
         ("directive", "Be brief."),
@@ -411,6 +424,53 @@ async def test_a_held_run_tells_its_agent_where_to_send():
     # Its agent sends the result; nothing announces the start.
     fx.started.assert_not_awaited()
     assert _left_to_run(fx) == fx.run_ids[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "automation",
+    [
+        {"agent_mode": "flash"},
+        {"agent_mode": "ptc", "workspace_id": get_flash_workspace_id(_USER)},
+    ],
+    ids=["no_workspace", "in_home"],
+)
+async def test_a_run_in_home_names_no_workspace_to_the_service(automation):
+    """Whether the automation names Home or no workspace, an entry naming
+    only an app takes that app's preferred chat."""
+    home_id = get_flash_workspace_id(_USER)
+    home = {"workspace_id": home_id, "user_id": _USER, "status": "running"}
+    with (
+        _firing([_streams]) as fx,
+        _delivery(_HELD) as dx,
+        patch("src.server.database.workspace.get_workspace", new=AsyncMock(return_value=home)),
+    ):
+        await AutomationExecutor().execute(_automation(**_DELIVERING, **automation), _EXEC)
+
+    args = _turn_args(fx)
+    assert (args["workspace_id"], args["role"]) == (home_id, "chief_of_staff")
+    assert dx.start.await_args.args[2] is None
+    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
+
+
+@pytest.mark.asyncio
+async def test_an_analysts_run_names_its_workspace_to_the_service():
+    workspace = {"workspace_id": "ws-9", "user_id": _USER, "status": "running"}
+    automation = _automation(**_DELIVERING, agent_mode="ptc", workspace_id="ws-9")
+    with (
+        _firing([_streams]) as fx,
+        _delivery(_HELD) as dx,
+        patch(
+            "src.server.database.workspace.get_workspace",
+            new=AsyncMock(return_value=workspace),
+        ),
+    ):
+        await AutomationExecutor().execute(automation, _EXEC)
+
+    args = _turn_args(fx)
+    assert (args["workspace_id"], args["role"]) == ("ws-9", "analyst")
+    dx.start.assert_awaited_once_with(automation, _EXEC, "ws-9", thread_id=args["thread_id"])
+    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
 
 
 @pytest.mark.asyncio
@@ -515,6 +575,8 @@ async def test_a_credit_refusal_before_the_turn_ends_with_the_service():
     assert dx.finish.await_args.args[1:3] == (_EXEC, "failed")
     assert dx.finish.await_args.kwargs["targets"] == _HELD.targets
     fx.settled_webhook.assert_not_awaited()
+    # Refused, so the user's computer is left as it was.
+    dx.manager.ensure_home_bound.assert_not_awaited()
 
 
 @pytest.mark.asyncio

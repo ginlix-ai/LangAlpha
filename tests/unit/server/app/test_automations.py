@@ -765,6 +765,19 @@ async def test_dismiss_on_another_users_automation_writes_nothing(client):
 SERVICE = "http://messaging.test/api/prefix"
 WS_ID = str(uuid.uuid4())
 OPTIONS_URL = f"/api/v1/automations/delivery-options?workspace_id={WS_ID}"
+
+
+def _home() -> dict:
+    """The user's Home, bound to their computer so it reads its status."""
+    from src.server.database.home_workspace import get_flash_workspace_id
+
+    return {
+        "workspace_id": get_flash_workspace_id("test-user-123"),
+        "user_id": "test-user-123",
+        "status": "running",
+    }
+
+
 DEFAULT_URL = "/api/v1/automations/delivery-default"
 APPS = {
     "slack": {
@@ -833,7 +846,7 @@ async def test_delivery_options_without_a_messaging_service(client):
     resp = await client.get(OPTIONS_URL)
 
     assert resp.status_code == 200
-    assert resp.json() == {"enabled": False, "apps": {}}
+    assert resp.json() == {"enabled": False, "apps": {}, "workspace_id": WS_ID}
 
 
 @pytest.mark.asyncio
@@ -844,7 +857,7 @@ async def test_delivery_options_lists_each_apps_chats(client, messaging_service)
     resp = await client.get(OPTIONS_URL)
 
     assert resp.status_code == 200
-    assert resp.json() == {"enabled": True, "apps": APPS}
+    assert resp.json() == {"enabled": True, "apps": APPS, "workspace_id": WS_ID}
     (request,) = messaging_service.requests
     assert request.method == "GET"
     assert request.url.path == "/api/prefix/agent/automation-targets"
@@ -898,10 +911,52 @@ async def test_delivery_options_only_for_the_users_workspace(
 
 
 @pytest.mark.asyncio
-async def test_delivery_options_needs_a_workspace(client):
+async def test_delivery_options_without_a_workspace_name_none(
+    client, messaging_service, workspace
+):
+    messaging_service.reply = httpx.Response(200, json={"apps": APPS})
+
     resp = await client.get("/api/v1/automations/delivery-options")
 
-    assert resp.status_code == 422
+    assert resp.status_code == 200
+    assert resp.json() == {"enabled": True, "apps": APPS, "workspace_id": None}
+    (request,) = messaging_service.requests
+    assert dict(request.url.params) == {}
+    workspace.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delivery_options_in_home_name_no_workspace(
+    client, messaging_service, workspace
+):
+    """Home is none of the user's workspaces, so an automation there gets
+    the chats a run with no workspace gets, and no default to set."""
+    home = _home()
+    workspace.return_value = home
+    messaging_service.reply = httpx.Response(200, json={"apps": APPS})
+
+    resp = await client.get(
+        f"/api/v1/automations/delivery-options?workspace_id={home['workspace_id']}"
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["workspace_id"] is None
+    (request,) = messaging_service.requests
+    assert dict(request.url.params) == {}
+
+
+@pytest.mark.asyncio
+async def test_delivery_options_check_the_owner_before_home(
+    client, messaging_service, workspace
+):
+    workspace.return_value = {**_home(), "user_id": "someone-else"}
+
+    resp = await client.get(
+        f"/api/v1/automations/delivery-options?workspace_id={_home()['workspace_id']}"
+    )
+
+    assert resp.status_code == 403
+    assert messaging_service.requests == []
 
 
 @pytest.mark.asyncio
@@ -988,6 +1043,27 @@ async def test_delivery_default_without_a_messaging_service(client):
     )
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delivery_default_refused_for_home(client, messaging_service, workspace):
+    home = _home()
+    workspace.return_value = home
+
+    resp = await client.put(
+        DEFAULT_URL,
+        json={
+            "workspace_id": home["workspace_id"],
+            "platform": "slack",
+            "address": "slack:T1/C1",
+        },
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail.startswith("Home has no default chat")
+    assert resp.json()["problems"] == [{"field": "workspace_id", "message": detail}]
+    assert messaging_service.requests == []
 
 
 @pytest.mark.asyncio

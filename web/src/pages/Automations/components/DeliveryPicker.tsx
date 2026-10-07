@@ -97,7 +97,9 @@ interface DeliveryPickerProps {
   /** The options are another workspace's, shown while this one's load: its
    *  defaults are not this workspace's, so none is shown or changed. */
   stale?: boolean;
-  /** The workspace the runs deliver from. Without one there is no default to set. */
+  /** The workspace whose default an app-only entry follows, as the server
+   *  answered. Without one (a run in no workspace, or in Home) there is no
+   *  default to set. */
   workspaceId: string | null;
   names: DeliveryNames;
   /** What the last save was refused over, by entry. */

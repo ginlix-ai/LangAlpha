@@ -40,6 +40,7 @@ function refused(status: number, body: unknown) {
 
 const OPTIONS: DeliveryOptions = {
   enabled: true,
+  workspace_id: 'ws-1',
   apps: {
     slack: {
       chats: [

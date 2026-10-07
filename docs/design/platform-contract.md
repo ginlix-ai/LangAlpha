@@ -210,7 +210,9 @@ events such a run fires. Same two headers:
 - `POST {base}/agent/automation-runs` takes `{"execution_id", "workspace_id",
   "automation_name", "entries", "thread_id"}` before the run's turn starts, `thread_id` being
   the run's thread, already resolved (both calls send it, so what the service posts links back
-  to the thread and a reply there continues it), and answers `{"targets":
+  to the thread and a reply there continues it). `workspace_id` is the Analyst's workspace the
+  run is in; a run in Home, the Chief of Staff's, sends null, as Home is none of the user's
+  workspaces and has no default chat. It answers `{"targets":
   [{"entry", "address", "name", "ok", "message"}]}`; a refused entry has `ok` false and a null
   `address`. The same `execution_id` again answers the same run. When the call fails or no entry
   is `ok`, the run delivers by webhook as before, and its run row keeps each entry's reason: the
@@ -252,16 +254,20 @@ events such a run fires. Same two headers:
 - `GET {base}/agent/automation-targets?workspace_id=` answers `{"apps": {app: {"chats":
   [{"address", "name", "kind"}], "default": {"address", "name", "via"} | null, "error"}}}`,
   `via` one of `workspace`, `preferred` or `dm`: the chat an entry naming only the app reaches.
-  langalpha serves it as `GET /api/v1/automations/delivery-options?workspace_id=`, which adds
-  `enabled` (false, with no apps, without a messaging service) and answers 503 `{"detail"}` when
-  the service fails.
+  `workspace_id` is left out for a run with no workspace. langalpha serves it as
+  `GET /api/v1/automations/delivery-options?workspace_id=`, the parameter optional, which adds
+  `enabled` (false, with no apps, without a messaging service) and `workspace_id`, the
+  workspace the answer was made for: the one asked, or null when none was asked or it was Home,
+  which langalpha asks the service about as a run with no workspace. It answers 503
+  `{"detail"}` when the service fails.
 - `PUT {base}/agent/automation-output` takes `{"workspace_id", "platform", "address"}` (a null
   `address` clears it) and answers 200 `{"address", "name"}`, 400 `{"code": "invalid",
   "message", "problems": [{"field", "message"}]}`, 409 `{"code": "busy", "message"}` or 503
   `{"code": "unavailable", "message"}`. langalpha serves it as
   `PUT /api/v1/automations/delivery-default`: 400 `{"detail", "problems"}`, 409 and 503
-  `{"detail"}`, and 404 without a messaging service. Both routes refuse a workspace that isn't
-  the caller's.
+  `{"detail"}`, and 404 without a messaging service. It refuses Home with a 400 whose problem
+  names `workspace_id`, before asking the service. Both routes refuse a workspace that isn't the
+  caller's.
 
 A create or update refused for its delivery stays a 409 whose `detail` is the joined sentence,
 and adds `problems: [{"entry", "message"}]`, one per refused entry.
