@@ -159,7 +159,7 @@ async def codex_device_poll(user_id: CurrentUserId):
 
         logger.info(
             f"[oauth] Codex connected for user_id={user_id} "
-            f"email={claims.get('email')} plan={claims.get('plan_type')}"
+            f"plan={claims.get('plan_type')}"
         )
         return {
             "success": True,
