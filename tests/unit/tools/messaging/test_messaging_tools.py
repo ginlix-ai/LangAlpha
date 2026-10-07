@@ -184,7 +184,16 @@ class TestBothRolesBindThem:
             captured.update(kwargs)
             return MagicMock()
 
+        from ptc_agent.agent import agent as agent_module
+
+        resolve = agent_module.resolve_identity_gates
+
+        def _gates(**kwargs):
+            self.gates = resolve(**kwargs)
+            return self.gates
+
         with (
+            patch.object(agent_module, "resolve_identity_gates", side_effect=_gates),
             patch("ptc_agent.agent.agent.create_agent", side_effect=_capture),
             patch("ptc_agent.agent.agent.CompactionMiddleware"),
             patch("ptc_agent.agent.agent.SubAgentMiddleware") as subagents,
@@ -224,6 +233,8 @@ class TestBothRolesBindThem:
         assert {"send_message", "list_message_targets"} <= set(main)
         assert "workspace_id" in main["send_message"].args
         assert not {"send_message", "list_message_targets"} & set(inherited)
+        # And the channel settings files, the same as an Analyst.
+        assert self.gates.channels is True
 
     def test_an_analyst_attaches_only_its_own_files(self, configured):
         main, _ = self._ptc_build()
