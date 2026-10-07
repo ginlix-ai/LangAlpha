@@ -35,12 +35,12 @@ def test_market_watch_is_cataloged_enabled_opt_in():
     assert spec.tradeoffs  # experiments state their cost
 
 
-def test_all_workspaces_agent_is_cataloged_off_and_opt_in():
+def test_all_workspaces_agent_is_cataloged_off_and_opt_out():
     """Every turn outside a workspace reads the flag by this key, and one the
     catalog lacks fails them all."""
     spec = FEATURES[ALL_WORKSPACES_AGENT]
     assert spec.enabled is False
-    assert spec.gate is FeatureGate.OPT_IN
+    assert spec.gate is FeatureGate.OPT_OUT
 
 
 def test_system_flag_partial_override_merges_with_catalog(monkeypatch):

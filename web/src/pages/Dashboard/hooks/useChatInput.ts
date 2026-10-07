@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useToast } from '../../../components/ui/use-toast';
 import type { ComposerScope } from '../../../components/ui/chat-input.types';
 import { attachmentsToContexts, widgetSnapshotsToContexts } from '../../ChatAgent/utils/fileUpload';
 import { warmWorkspace } from '../../ChatAgent/utils/warmWorkspace';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { FLASH_ROUTE_STATE, flashWorkspaceQuery } from '@/hooks/useFlashWorkspace';
-import { useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
+import { ALL_WORKSPACES_AGENT, useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
+import { featuresQuery, isFeatureEnabled } from '@/hooks/useFeatures';
 import { ContextBus } from '@/lib/contextBus';
 import type { WidgetContextSnapshot } from '../widgets/framework/contextSnapshot';
 
@@ -48,7 +49,7 @@ const MAX_LOCATION_STATE_BYTES = 5 * 1024 * 1024; // ~5MB structured-clone safet
  * All workspaces (the user's flash row, which the server runs as Home) or the
  * selected workspace, both on the full agent. `composerProps` carries
  * whichever the flag calls for. `composing` is the host's report that the user
- * is writing a message, which warms the target computer.
+ * is writing a message, which warms a picked workspace's computer.
  */
 export function useChatInput({ composing = false }: { composing?: boolean } = {}) {
   const [mode, setModeRaw] = useState<ChatMode>('ptc');
@@ -61,11 +62,6 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
   const allWorkspaces = useAllWorkspacesAgent();
   // Nothing picked yet means All workspaces, which needs no workspace to exist.
   const [scope, setScope] = useState<ComposerScope>('all');
-
-  // The All workspaces target, resolved ahead of the send so warming and the
-  // send both have it. The request upserts the row, so only with the flag on.
-  const { data: flashWs } = useQuery({ ...flashWorkspaceQuery(queryClient), enabled: allWorkspaces });
-  const flashWorkspaceId = flashWs?.workspace_id ?? null;
 
   // Fetch workspaces for the workspace selector. The 100-limit matches the other
   // dashboard widgets (RecentThreads, ConversationWidget, WorkspacePicker) so all
@@ -94,12 +90,14 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
     if (workspaces.length === 0 && mode !== 'fast') setModeRaw('fast');
   }, [wsData, workspaces.length, mode]);
 
-  // Start the computer while the user is still typing, so the send lands on a
-  // running one. Once per target per composing spell: stopping forgets what
-  // was warmed, and a scope change meanwhile warms the new target. With the
-  // flag off a start on the flash row is refused, and nothing here warms.
+  // Start a picked workspace's computer while the user is still typing, so the
+  // send lands on a running one. All workspaces needs nothing here: the click
+  // or key that focused the composer has already warmed Home (WarmHome). Once
+  // per workspace per composing spell: stopping forgets what was warmed, and
+  // picking another meanwhile warms that one. With the flag off nothing here
+  // warms.
   const warmedRef = useRef(new Set<string>());
-  const warmTargetId = !allWorkspaces ? null : scope === 'all' ? flashWorkspaceId : selectedWorkspaceId;
+  const warmTargetId = allWorkspaces && scope === 'workspace' ? selectedWorkspaceId : null;
   useEffect(() => {
     if (!composing) {
       warmedRef.current.clear();
@@ -107,8 +105,8 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
     }
     if (!warmTargetId || warmedRef.current.has(warmTargetId)) return;
     warmedRef.current.add(warmTargetId);
-    void warmWorkspace(warmTargetId, queryClient, { home: warmTargetId === flashWorkspaceId });
-  }, [composing, warmTargetId, flashWorkspaceId, queryClient]);
+    void warmWorkspace(warmTargetId, queryClient);
+  }, [composing, warmTargetId, queryClient]);
 
   /**
    * Navigates to the ChatAgent workspace with the composed message payload:
@@ -169,15 +167,21 @@ export function useChatInput({ composing = false }: { composing?: boolean } = {}
         }
       }
 
+      // Until the flags answer, the composer shows Flash's controls. A send
+      // made then waits for them, so it goes to the user's default rather
+      // than where those point; a read that fails leaves the flag off, as the
+      // controls show.
+      const flags = await queryClient.ensureQueryData(featuresQuery).catch(() => undefined);
+      const onAllWorkspaces = isFeatureEnabled(flags, ALL_WORKSPACES_AGENT);
       // The flash row is Home under the all-workspaces agent, which runs the
       // full agent, so the Subagents pick rides there as to any workspace. A
       // Flash composer names none.
-      const toFlashRow = allWorkspaces ? scope === 'all' : mode === 'fast';
+      const toFlashRow = onAllWorkspaces ? scope === 'all' : mode === 'fast';
       const workspaceId = toFlashRow
         ? (await queryClient.ensureQueryData(flashWorkspaceQuery(queryClient))).workspace_id
         : selectedWorkspaceId;
       if (!workspaceId) {
-        toast(allWorkspaces
+        toast(onAllWorkspaces
           ? { variant: 'destructive', title: t('agents.workspaceRequired') }
           : {
             variant: 'destructive',

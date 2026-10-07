@@ -209,7 +209,7 @@ function ComputerRow({
           </div>
         </div>
         {isRunning ? (
-          <Button variant="ghost" size="sm" className="gap-1.5" disabled={busy || !!specChange} onClick={() => onAction('stop')}>
+          <Button variant="ghost" size="sm" className="gap-1.5" disabled={busy || !!specChange} onClick={() => onAction('stop')} data-computer-power>
             <Square className="h-3.5 w-3.5" />
             {t('computer.stop', 'Stop')}
           </Button>
@@ -220,6 +220,7 @@ function ComputerRow({
             className="gap-1.5"
             disabled={busy || isTransitional || !!specChange || computer.status === 'deleted'}
             onClick={() => onAction('start')}
+            data-computer-power
           >
             <Play className="h-3.5 w-3.5" />
             {t('computer.start', 'Start')}

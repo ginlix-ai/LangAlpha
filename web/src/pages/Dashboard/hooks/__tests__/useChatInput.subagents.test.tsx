@@ -63,6 +63,8 @@ function ChatPage() {
 function renderComposer(Composer: React.ComponentType, subagentsDefault: boolean) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(queryKeys.user.preferences(), { other_preference: { subagents_default: subagentsDefault } });
+  // A send waits for the flags; none are on here.
+  queryClient.setQueryData(queryKeys.features.list(), []);
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/dashboard']}>
