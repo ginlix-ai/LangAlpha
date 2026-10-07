@@ -468,7 +468,9 @@ class TestSchemaCache:
         """Vault-mutation invalidation primitives: purge one server's snapshots
         (any hash) and bump every workspace of the user outside a row
         mutation."""
-        from src.server.database.mcp_servers import bump_user_workspaces_mcp_version
+        from src.server.database.mcp_config_version import (
+            bump_user_workspaces_mcp_version,
+        )
         from src.server.database.mcp_tool_schemas import (
             delete_tool_schemas,
             upsert_tool_schemas,

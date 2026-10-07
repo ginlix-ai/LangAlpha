@@ -17,12 +17,14 @@ from uuid import UUID
 
 from psycopg.rows import dict_row
 
+from src.server.database.mcp_servers import get_catalog_server
 from src.server.database.pool import get_db_connection
 from src.server.services.brokerage_orders import AttemptStatus, OrderOutcome
 from src.server.services.brokerage_orders.models import (
     CREATING_ACTIONS,
     TERMINAL_STATUSES,
 )
+from src.server.services.tool_binding import inputs_from_row, order_policy
 from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
@@ -173,9 +175,18 @@ async def consume_attempt(attempt_id: str) -> dict[str, Any] | None:
     This is the consume-once. A retry after a worker loss, a replayed frame and
     a second concurrent handler all reach this statement, and exactly one of
     them finds the row ``approved``.
+
+    An attempt approved unasked is judged again first, under the lock
+    ``refuse_unasked_attempts`` holds. That refusal cannot see one proposed
+    after its snapshot, by another worker while its write is open or by a turn
+    whose tools predate it, and such an attempt can wait behind another order's
+    approval card and resume under tools that ask, which the per-call re-read
+    lets through.
     """
-    async with get_db_connection() as conn:
+    async with get_db_connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
+            if await _refused_as_asking(cur, attempt_id):
+                return None
             await cur.execute(
                 f"""
                 UPDATE order_attempts
@@ -341,6 +352,112 @@ async def refuse_attempts_on_connection_change(
     if refused:
         logger.info(
             "[ORDERS] user=%s server=%s: connection changed, refused attempts %s",
+            user_id, server, refused,
+        )
+    return refused
+
+
+_APPROVAL_CHANGED = {
+    "kind": "policy",
+    "code": "approval_changed",
+    "message": (
+        "orders like this one started asking for approval after it was "
+        "proposed, so it was not sent; propose it again"
+    ),
+}
+
+# Salted so the key cannot collide with another per-user lock.
+_APPROVAL_LOCK_KEY_PREFIX = "orders:approval:"
+
+
+async def _lock_order_approval(cur, user_id: str) -> None:
+    """The lock between a write turning asking on and the consume of an unasked
+    attempt; it holds until the transaction ends."""
+    await cur.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (_APPROVAL_LOCK_KEY_PREFIX + user_id,),
+    )
+
+
+async def _refused_as_asking(cur, attempt_id: str) -> bool:
+    """Refuse an attempt approved unasked whose order asks now; whether it did.
+
+    Read after the lock, so the policy is either what the last write turning
+    asking on committed, or that write is waiting on this consume and its
+    refusal will find the attempt unsent.
+    """
+    await cur.execute(
+        "SELECT user_id, server, vendor, tool FROM order_attempts "
+        "WHERE attempt_id = %s AND status = 'approved' AND NOT approval_required",
+        (attempt_id,),
+    )
+    found = await cur.fetchone()
+    if found is None:
+        return False
+    await _lock_order_approval(cur, found["user_id"])
+    row = await get_catalog_server(
+        found["user_id"], found["server"] or "", conn=cur.connection
+    )
+    policy = order_policy(
+        found["vendor"],
+        found["tool"] or "",
+        order_approval=inputs_from_row(row).order_approval,
+    )
+    if policy is None or not policy.approval:
+        return False
+    await cur.execute(
+        """
+        UPDATE order_attempts
+           SET status = 'refused',
+               failure = %s,
+               decided_at = COALESCE(decided_at, NOW()),
+               completed_at = NOW(),
+               updated_at = NOW()
+         WHERE attempt_id = %s AND status = 'approved'
+        """,
+        (SafeJson(_APPROVAL_CHANGED), attempt_id),
+    )
+    return True
+
+
+async def refuse_unasked_attempts(
+    user_id: str, modes: Sequence[str], *, server: str | None = None, conn
+) -> list[str]:
+    """Refuse this user's unasked orders in ``modes`` that no frame has carried.
+
+    An order proposed while its mode did not ask is approved on the spot, and
+    one waiting behind another order's approval card is still unsent when the
+    user turns asking back on. The resume finds that attempt already approved,
+    and the call's own re-read stops only a call whose tools still say it does
+    not ask: a resume built on the new answer passes it, and nothing would put
+    it to the user. Run inside the write that turns asking on; ``server``
+    narrows it to one connection's switch. Under the lock ``consume_attempt``
+    takes, so an attempt this statement cannot see is judged there instead.
+    """
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await _lock_order_approval(cur, user_id)
+        await cur.execute(
+            """
+            UPDATE order_attempts
+               SET status = 'refused',
+                   failure = %s,
+                   decided_at = COALESCE(decided_at, NOW()),
+                   completed_at = NOW(),
+                   updated_at = NOW()
+             WHERE user_id = %s
+               AND NOT approval_required
+               AND mode = ANY(%s)
+               AND (%s::text IS NULL OR server = %s)
+               AND (status = 'approved'
+                    OR (status = 'submitting' AND dispatched_at IS NULL))
+            RETURNING attempt_id
+            """,
+            (SafeJson(_APPROVAL_CHANGED), user_id, list(modes), server, server),
+        )
+        refused = [str(row["attempt_id"]) for row in await cur.fetchall()]
+    if refused:
+        logger.info(
+            "[ORDERS] user=%s server=%s: approval turned on, refused attempts %s",
             user_id, server, refused,
         )
     return refused

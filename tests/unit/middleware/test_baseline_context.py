@@ -57,6 +57,7 @@ from ptc_agent.agent.middleware.runtime_context.epoch import Workspace
 from ptc_agent.agent.middleware.runtime_context.harness_blocks import (
     harness_update_kind,
 )
+from ptc_agent.agent.middleware.runtime_context.profile import ProfileSnapshot
 from ptc_agent.core.paths import (
     MEMORY_INDEX_FILENAME,
     MEMORY_USER_DIR,
@@ -979,6 +980,52 @@ class TestProfileFollowsTheGoldenRule:
         later = self._turn(self.PROFILE, {**self.COUNTS, "portfolio_count": 7})
         assert await later.abefore_agent(state, None) is None
         assert "Portfolio: 7 holding(s)" in _text(await _render(later, state))
+
+    @pytest.mark.asyncio
+    async def test_an_epoch_stored_before_the_cursor_kept_the_profile_takes_it_from_a_quiet_read(
+        self,
+    ):
+        """A turn whose profile read does not answer measures the trading rule
+        against the profile as last seen, which such an epoch names by hash alone."""
+        state = await self._turn(self.PROFILE, self.COUNTS).abefore_agent({}, None)
+        moved = {**self.PROFILE, "timezone": "America/New_York"}
+        second = await self._turn(moved, self.COUNTS).abefore_agent(state, None)
+        assert [runtime_update_from_message(m).kind for m in _rows(second)] == [
+            "profile_changed"
+        ]
+        legacy = {**state, **second}
+        legacy[STATE_BASELINE] = {
+            k: v for k, v in second[STATE_BASELINE].items() if k != "profile_seen"
+        }
+
+        quiet = await self._turn(moved, self.COUNTS).abefore_agent(legacy, None)
+        assert quiet is not None
+        assert _rows(quiet) == []
+        assert quiet[STATE_BASELINE]["profile_seen"]["user_profile"] == moved
+
+        blind = _middleware(
+            _session("# Notes"),
+            user_profile={
+                "trading_permission": "autonomous",
+                "trading_settings_url": "https://example.com/settings",
+            },
+            user_data_counts=None,
+            sandbox_enabled=True,
+        )
+        third = await blind.abefore_agent({**legacy, **quiet}, None)
+        rows = [runtime_update_from_message(m) for m in _rows(third)]
+        assert [r.kind for r in rows] == ["profile_changed"]
+        assert "Trading permission: **Full autonomy.**" in rows[0].text
+        # A later profile row supersedes the earlier one whole, so it restates
+        # the change that row carried.
+        assert "Timezone: America/New_York (the frozen block says Europe/Paris)" in rows[0].text
+
+    def test_a_quiet_read_of_an_epoch_that_names_its_profile_writes_nothing(self):
+        frozen = ProfileSnapshot(self.PROFILE, self.COUNTS)
+        epoch = BaselineEpoch.from_state(
+            {"profile": frozen.to_state(), "observed": {"profile": frozen.sha()}}
+        )
+        assert advance_epoch(epoch, Observations(now=NOW, profile=frozen)) == (None, [])
 
 
 class TestSupersession:

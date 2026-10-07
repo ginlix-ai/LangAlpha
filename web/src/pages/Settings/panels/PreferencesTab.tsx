@@ -17,10 +17,12 @@ import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { useOnboarding } from '@/pages/Onboarding';
 import type { Preferences } from './types';
 import { AutoApproveSettings } from './AutoApproveSettings';
+import { TradingPermissionSection } from './TradingPermissionSection';
 
 /** Preferences tab: investment-preference summary, output format, the
  * subagents default that every thread without a value of its own follows,
- * onboarding replay/reset entry points, and the reset-preferences flow. */
+ * trading permission, onboarding replay/reset entry points, and the
+ * reset-preferences flow. */
 export function PreferencesTab() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -292,6 +294,7 @@ export function PreferencesTab() {
         </p>
       </div>
       <AutoApproveSettings />
+      <TradingPermissionSection />
 
       {/* Column until there is room for a row. The two actions are a fixed
           ~259px whatever the viewport, so side-by-side on a phone leaves the

@@ -33,7 +33,11 @@ from ptc_agent.core.mcp_sanitize import VAULT_REF_RE
 from src.server.database.mcp_oauth import ConnectionStatus
 from src.server.services.brokerages import Brokerage
 from src.server.services.mcp_config import Origin
-from src.server.services.tool_binding import order_approval_map
+from src.server.services.tool_binding import inputs_from_row
+from src.server.services.trading_permission import (
+    DEFAULT_TRADING_PERMISSION,
+    TradingPermission,
+)
 
 # ---------------------------------------------------------------------------
 # Shared constants — single source of truth for validators (also mirrored
@@ -438,7 +442,9 @@ class BindingInput(BaseModel):
     # whatever the row already says, so the page can flip live without
     # re-sending paper. The resolver reads it, so turning a mode off empties
     # the plan's approval set for that mode rather than leaving an interrupt
-    # nothing arms.
+    # nothing arms. Turning a mode on is always allowed, since it can only add
+    # a question; turning live or staged off is refused while the user's
+    # trading permission asks (``order_approval_refusal``).
     order_approval: Optional[dict[Literal["live", "paper", "staged"], bool]] = None
 
     model_config = {"extra": "forbid"}
@@ -873,11 +879,15 @@ class CatalogServer(BaseModel):
     # and nothing else. The effective binding per tool, and the paths it may
     # take, are on the tools endpoint, which sees the vendor's list.
     # ``order_approval`` is stored only; see ``BindingInput``. Echoed whole
-    # rather than as stored, so a mode the row never set still tells the page
-    # what it does.
+    # rather than as stored, and under the user's trading permission, so a
+    # mode the row never set still tells the page what it does.
     tool_binding: dict[str, str] = Field(default_factory=dict)
     binding_preset: Optional[str] = None
     order_approval: dict[str, bool] = Field(default_factory=dict)
+    # The level ``order_approval`` was resolved under, off the same read, so
+    # the page knows which switches it may turn off without a second request
+    # that could answer for another moment.
+    trading_permission: TradingPermission = DEFAULT_TRADING_PERMISSION
     # Non-blocking policy nudges (isolation etc.) — populated on create/update
     # responses only, never stored.
     warnings: Optional[list[str]] = None
@@ -1083,6 +1093,7 @@ def catalog_row_to_response(
     # The list route already carries the row's tools, so the verdict does not
     # repeat them: a second copy would be a divergent answer on every listing.
     probe = snapshot_probe(snapshot)
+    binding = inputs_from_row(row)
     return CatalogServer(
         name=row["name"],
         transport=row["transport"],
@@ -1108,7 +1119,8 @@ def catalog_row_to_response(
         discovery_uses_secrets=bool(row.get("discovery_uses_secrets", False)),
         tool_binding=dict(row.get("tool_binding") or {}),
         binding_preset=row.get("binding_preset"),
-        order_approval=order_approval_map(row.get("order_approval")),
+        order_approval=dict(binding.order_approval),
+        trading_permission=binding.trading,
         probe_kicked_at=row.get("probe_kicked_at"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),

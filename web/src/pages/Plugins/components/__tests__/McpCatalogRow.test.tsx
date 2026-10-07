@@ -50,6 +50,7 @@ function makeServer(overrides: Partial<CatalogServer> = {}): CatalogServer {
     enabled: true,
     created_at: null,
     updated_at: null,
+    trading_permission: 'approve_each',
     ...overrides,
   };
 }

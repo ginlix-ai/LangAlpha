@@ -382,11 +382,18 @@ async def astream_flash_workflow(
 
         # The one MCP surface Flash has: tools bound directly through the relay.
         from src.server.services.egress.direct_tools import direct_tools_for_turn
-        from src.server.services.egress.flash_binding import bind_flash_direct_tools
+        from src.server.services.egress.flash_binding import (
+            bind_flash_direct_tools,
+            resolve_flash_mcp,
+        )
+        from src.server.services.trading_rule import trading_rule, with_trading_rule
 
+        resolved_mcp = await resolve_flash_mcp(
+            config, user_id=user_id, workspace_id=workspace_id
+        )
         direct_mcp, order_ledger = await direct_tools_for_turn(
             bind_flash_direct_tools(
-                config, user_id=user_id, workspace_id=workspace_id
+                resolved_mcp, user_id=user_id, workspace_id=workspace_id
             ),
             user_id=user_id,
             workspace_id=workspace_id,
@@ -394,6 +401,8 @@ async def astream_flash_workflow(
             run_id=run_id,
             turn_index=run_handle.turn_index,
         )
+        # Off the resolve, not the bind, so it moves only when a setting does.
+        user_profile = with_trading_rule(user_profile, trading_rule(resolved_mcp))
 
         # Build flash graph (no sandbox, no session)
         flash_graph = build_flash_graph(

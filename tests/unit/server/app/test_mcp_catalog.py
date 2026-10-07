@@ -19,6 +19,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from src.server.database.mcp_servers import MAX_CATALOG_SERVERS_PER_USER
+from src.server.services.trading_permission import TRADING_AGREEMENT_VERSION
 from tests.conftest import create_test_app
 
 
@@ -2154,15 +2155,16 @@ ROBINHOOD_URL = "https://agent.robinhood.com/mcp/trading"
 
 @asynccontextmanager
 async def _binding_patches(
-    *, row, connection=None, read=None, lock=None, rewrite=None
+    *, row, connection=None, read=None, lock=None, rewrite=None, refuse=None
 ):
     """The write is captured rather than performed; ``update`` records the
     ``updates`` the handler decided on, which is the whole contract here.
 
     ``read`` replaces the catalog read (it receives the handler's call, so it
     can answer by whether ``conn`` was passed); ``lock`` replaces the egress
-    lock; ``rewrite`` replaces the header-grant rewrite. All default to no-ops
-    that return ``row``."""
+    lock; ``rewrite`` replaces the header-grant rewrite; ``refuse`` replaces the
+    ledger's refusal of unasked orders. All default to no-ops that return
+    ``row``."""
 
     @asynccontextmanager
     async def _txn():
@@ -2194,6 +2196,10 @@ async def _binding_patches(
             new=AsyncMock(return_value=connection),
         ),
         patch("src.server.app.mcp_catalog.get_db_connection", new=_connection),
+        patch(
+            "src.server.database.order_attempts.refuse_unasked_attempts",
+            new=refuse or AsyncMock(return_value=[]),
+        ),
         patch(
             "src.server.database.egress_grants.apply_consent_to_active_grants",
             new=AsyncMock(),
@@ -2526,13 +2532,17 @@ async def test_binding_refuses_direct_on_a_legacy_sse_row(client):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", [True, False])
 async def test_binding_writes_the_order_approval_switch(client, value):
-    """The resolver reads the column now, so the write is stored rather than
-    refused: it is the one setting that decides whether an order stops."""
+    """Under a trading permission that skips approval the row's live switch
+    is stored while it asks, which is what keeps one connection asking there.
+    Off is stored as unset: the level answers that anyway, and a build from
+    before the level would read a stored ``false`` as never asking."""
     row = _row(
         "moomoo",
         url=MOOMOO_URL,
         tool_binding={},
         order_approval={"live": not value},
+        trading_level="autonomous",
+        trading_agreement_version=TRADING_AGREEMENT_VERSION,
     )
     async with _binding_patches(row=row) as update:
         resp = await client.patch(
@@ -2540,7 +2550,72 @@ async def test_binding_writes_the_order_approval_switch(client, value):
             json={"order_approval": {"live": value}, "binding_preset": "ptc_only"},
         )
     assert resp.status_code == 200
-    assert update.await_args.kwargs["updates"]["order_approval"] == {"live": value}
+    assert update.await_args.kwargs["updates"]["order_approval"] == (
+        {"live": True} if value else {}
+    )
+    # The echo carries the level its switches were resolved under, so the page
+    # needs no second read to know which of them it may turn off.
+    assert resp.json()["trading_permission"] == "autonomous"
+    assert resp.json()["order_approval"]["live"] is value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["live", "staged"])
+async def test_binding_refuses_unasking_while_the_trading_permission_asks(
+    client, mode
+):
+    """Only the agreement behind the trading permission takes a question away
+    from real-money orders; a connection's switch can only add one."""
+    row = _row("moomoo", url=MOOMOO_URL, tool_binding={}, order_approval={})
+    async with _binding_patches(row=row) as update:
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"order_approval": {mode: False}},
+        )
+    assert resp.status_code == 422
+    assert "trading permission" in resp.json()["detail"]
+    update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_binding_refuses_unsent_unasked_orders_in_a_mode_switched_on(client):
+    """An order let through while its mode did not ask, and still waiting
+    behind another order's card, would otherwise go out on the resume without
+    ever reaching the user. Only the modes this request turns on, and only at
+    this connection."""
+    row = _row(
+        "moomoo",
+        url=MOOMOO_URL,
+        tool_binding={},
+        order_approval={},
+        trading_level="autonomous",
+        trading_agreement_version=TRADING_AGREEMENT_VERSION,
+    )
+    refuse = AsyncMock(return_value=[])
+    async with _binding_patches(row=row, refuse=refuse):
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"order_approval": {"paper": True, "live": False}},
+        )
+    assert resp.status_code == 200, resp.json()
+    refuse.assert_awaited_once()
+    assert refuse.await_args.args == ("test-user-123", ["paper"])
+    assert refuse.await_args.kwargs["server"] == "moomoo"
+    # In the write's own transaction, so the switch and the refusal land as one.
+    assert "conn" in refuse.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_binding_switching_asking_off_refuses_nothing(client):
+    row = _row("moomoo", url=MOOMOO_URL, tool_binding={}, order_approval={"paper": True})
+    refuse = AsyncMock(return_value=[])
+    async with _binding_patches(row=row, refuse=refuse):
+        resp = await client.patch(
+            "/api/v1/mcp/servers/moomoo/binding",
+            json={"order_approval": {"paper": False}},
+        )
+    assert resp.status_code == 200, resp.json()
+    refuse.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2561,7 +2636,9 @@ async def test_binding_stores_only_the_modes_someone_set(client):
 async def test_binding_merges_one_mode_into_the_stored_map(client):
     """The body is a delta over the modes, so a page flipping paper cannot put
     a live answer another tab stored back to what this worker last read. The
-    merge is under the same lock as the tool map, and for the same reason."""
+    merge is under the same lock as the tool map, and for the same reason. A
+    live switch stored off before the level is dropped on the way, the same as
+    one turned off now."""
     row = _row(
         "moomoo",
         url=MOOMOO_URL,
@@ -2575,7 +2652,7 @@ async def test_binding_merges_one_mode_into_the_stored_map(client):
         )
     assert resp.status_code == 200, resp.json()
     assert update.await_args.kwargs["updates"]["order_approval"] == {
-        "live": False, "paper": True, "staged": True
+        "paper": True, "staged": True
     }
 
 
@@ -2584,7 +2661,7 @@ async def test_binding_folds_the_boolean_the_column_used_to_hold(client):
     """A row untouched since the column was one switch names no modes at all.
     The old value is carried as the live answer, and nothing is written for
     the modes it never named."""
-    row = _row("moomoo", url=MOOMOO_URL, tool_binding={}, order_approval=False)
+    row = _row("moomoo", url=MOOMOO_URL, tool_binding={}, order_approval=True)
     async with _binding_patches(row=row) as update:
         resp = await client.patch(
             "/api/v1/mcp/servers/moomoo/binding",
@@ -2592,7 +2669,7 @@ async def test_binding_folds_the_boolean_the_column_used_to_hold(client):
         )
     assert resp.status_code == 200, resp.json()
     assert update.await_args.kwargs["updates"]["order_approval"] == {
-        "live": False, "paper": True
+        "live": True, "paper": True
     }
 
 

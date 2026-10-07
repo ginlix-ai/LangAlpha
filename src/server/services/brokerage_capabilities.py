@@ -187,6 +187,7 @@ _CURATION: dict[str, dict[str, tuple[str, ...]]] = {
             "quote_capital_distribution",
             "quote_capital_flow",
             "quote_capital_flow_history",
+            "quote_combo_option_quote",
             "quote_community_search",
             "quote_company_executive_background",
             "quote_company_executives",
@@ -220,6 +221,8 @@ _CURATION: dict[str, dict[str, tuple[str, ...]]] = {
             "quote_option_exercise_probability",
             "quote_option_expiration_date",
             "quote_option_screen",
+            "quote_option_strategy",
+            "quote_option_strategy_spread",
             "quote_option_volatility",
             "quote_order_book",
             "quote_owner_plate",
@@ -264,6 +267,13 @@ _CURATION: dict[str, dict[str, tuple[str, ...]]] = {
             "account_orders_history",
             "account_positions",
             "account_trading_info",
+            "crypto_account_active_orders",
+            "crypto_account_fills",
+            "crypto_account_fills_history",
+            "crypto_account_order_detail",
+            "crypto_account_order_history",
+            "crypto_account_purchasing_power",
+            "crypto_account_total_balance",
         ),
         "paper_trading": (
             "sim_trade_account_list",
@@ -496,13 +506,24 @@ _CURATION: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-# Named so a reader can see it was a decision, not an omission: this submits a
-# feature request to IBKR in the user's name, which is not a thing an analysis
-# turn should be able to do on its own. ``denied_tools`` refuses these whatever
-# the user granted, which is the only place the policy is stricter than the
-# groups -- everything else it blocks, a capability toggle can unblock.
+# Named so a reader can see it was a decision, not an omission. ``denied_tools``
+# refuses these whatever the user granted, which is the only place the policy is
+# stricter than the groups -- everything else it blocks, a capability toggle can
+# unblock.
+#
+# IBKR's submits a feature request in the user's name, which is not a thing an
+# analysis turn should be able to do on its own. moomoo's crypto tools place,
+# change and cancel real orders, but the order adapter reads only moomoo's
+# equity order shape: behind the gate they would be approved and recorded
+# without anyone knowing what they are, and left ungrouped they would reach the
+# sandbox with no gate at all.
 UNCURATED: dict[str, tuple[str, ...]] = {
     "ibkr": ("provide_customer_feedback",),
+    "moomoo": (
+        "crypto_account_cancel_order",
+        "crypto_account_create_order",
+        "crypto_account_modify_order",
+    ),
 }
 
 
@@ -533,13 +554,6 @@ class OrderMode(StrEnum):
     STAGED = "staged"
 
 
-#: What each mode asks for when a row says nothing. Live money and a write into
-#: the real account stop for the user; a simulated account does not.
-ORDER_APPROVAL_DEFAULTS: dict[str, bool] = {
-    mode.value: mode is not OrderMode.PAPER for mode in OrderMode
-}
-
-
 @dataclass(frozen=True)
 class OrderTool:
     """One order-mutating tool, as the gate and the vendor adapter both read it.
@@ -553,14 +567,6 @@ class OrderTool:
     mode: OrderMode
     asset_class: AssetClass = "other"
 
-    @property
-    def approval(self) -> bool:
-        """The default for the mode rather than the setting in force.
-
-        A connection carries its own per-mode map, and this is what an absent
-        key there resolves to.
-        """
-        return ORDER_APPROVAL_DEFAULTS[self.mode.value]
 
 # Vendor names verbatim, the spelling the relay compares against. Every name
 # here is also in ``_CURATION`` under a rung group, which is what keeps consent

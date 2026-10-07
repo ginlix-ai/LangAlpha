@@ -26,7 +26,7 @@ from src.server.services.egress.direct_tools import (
     prepare_direct_mcp_tools,
 )
 from src.server.services.egress.grant_scope import grant_refs, user_snapshots
-from src.server.services.mcp_config import resolve_mcp_config
+from src.server.services.mcp_config import ResolvedMCP, resolve_mcp_config
 from src.server.services.mcp_tool_split import build_direct_entries
 
 logger = logging.getLogger(__name__)
@@ -66,19 +66,40 @@ async def sync_flash_grants(
         raise GrantSyncSuperseded(workspace_id)
 
 
-async def bind_flash_direct_tools(
+async def resolve_flash_mcp(
     base_config: Any, *, user_id: str | None, workspace_id: str
-) -> DirectMCPBinding:
-    empty = DirectMCPBinding(user_id=user_id)
+) -> ResolvedMCP | None:
+    """The flash workspace's resolve, read once a turn for its direct tools and
+    its trading rule; None when nothing could bind or the read failed.
+
+    Held apart from the bind so the rule follows the settings alone: a grant
+    sync another resolve superseded, or a bind that raises, costs the turn its
+    tools but not the rule it was configured with. A failed read costs the
+    turn its direct tools and not the turn, as a failed bind does.
+    """
     if not user_id or not EGRESS_RELAY_SECRET:
         logger.debug(
             "[DIRECT_MCP] flash: skipped user=%r secret=%s",
             user_id,
             bool(EGRESS_RELAY_SECRET),
         )
+        return None
+    try:
+        return await resolve_mcp_config(base_config, user_id, workspace_id)
+    except Exception:
+        logger.warning(
+            "[DIRECT_MCP] flash: resolve failed; running without", exc_info=True
+        )
+        return None
+
+
+async def bind_flash_direct_tools(
+    resolved: ResolvedMCP | None, *, user_id: str | None, workspace_id: str
+) -> DirectMCPBinding:
+    empty = DirectMCPBinding(user_id=user_id)
+    if resolved is None or not user_id:
         return empty
 
-    resolved = await resolve_mcp_config(base_config, user_id, workspace_id)
     plans = resolved.binding_plans_by_name
     snapshots = await user_snapshots(user_id)
     refs = await grant_refs(

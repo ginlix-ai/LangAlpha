@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { AnimatePresence } from '@/lib/framer';
 import { toast } from '@/components/ui/use-toast';
 import {
@@ -30,7 +30,9 @@ import { useDetailParam } from '../hooks/useDetailParam';
 import { withDetail } from '../utils/detailParam';
 import { BrokerageConsentDialog } from './BrokerageConsentDialog';
 import { BrokerageRow } from './BrokerageRow';
+import { DesktopDownloadLink } from './DesktopDownloadLink';
 import { ServerDetail, type ServerDetailData } from './ServerDetail';
+import { TradingPermissionLine } from './TradingPermissionLine';
 
 /**
  * The Plugins → Brokerages tab: every broker this build ships, listed whether
@@ -272,13 +274,21 @@ export function Brokerages() {
     <div className="flex flex-col gap-3">
       <p className="text-[0.6875rem]" style={{ color: 'var(--color-text-tertiary)' }}>
         {t('plugins.brokerages.intro')}
-        {blockedHere &&
-          ` ${t(
-            blockedHere === 'shell-outdated'
-              ? 'plugins.oauth.shellOutdatedHint'
-              : 'plugins.oauth.nativeHint',
-          )}`}
+        {blockedHere === 'shell-outdated' && ` ${t('plugins.oauth.shellOutdatedHint')}`}
+        {blockedHere === 'native-only' && (
+          <>
+            {' '}
+            <Trans
+              i18nKey="plugins.oauth.nativeHint"
+              // Not `link`: the Trans parser reads that as the void HTML
+              // element and drops the words inside it.
+              components={{ download: <DesktopDownloadLink /> }}
+            />
+          </>
+        )}
       </p>
+
+      <TradingPermissionLine />
 
       {listError ? (
         <ListError>

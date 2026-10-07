@@ -19,10 +19,8 @@ from collections.abc import Iterable
 
 from ptc_agent.config.core import MCPServerConfig
 from ptc_agent.core.mcp_sanitize import discovery_should_use_secrets, vault_refs
-from src.server.database.mcp_servers import (
-    bump_user_workspaces_mcp_version,
-    list_catalog_servers,
-)
+from src.server.database.mcp_config_version import bump_user_workspaces_mcp_version
+from src.server.database.mcp_servers import list_catalog_servers
 from src.server.database.mcp_tool_schemas import (
     delete_user_and_workspace_tool_schemas_and_bump,
 )

@@ -16,6 +16,9 @@ export const queryKeys = {
     me:          () => [...queryKeys.user.all, 'me'],
     preferences: () => [...queryKeys.user.all, 'preferences'],
     apiKeys:     () => [...queryKeys.user.all, 'api-keys'],
+    // Its own entry, not part of preferences: the server keeps it apart so the
+    // agent, which can write preferences, cannot raise it.
+    tradingPermission: () => [...queryKeys.user.all, 'trading-permission'],
   },
   models: {
     all: ['models'],

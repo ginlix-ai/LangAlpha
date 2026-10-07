@@ -30,6 +30,10 @@ from typing import Any, Literal
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from src.server.database.mcp_config_version import (
+    bump_user_versions,
+    bump_workspace_version,
+)
 from src.server.database.pool import get_db_connection
 from src.server.database.user_lock import lock_user_writes
 
@@ -94,9 +98,12 @@ _CATALOG_SELECT = """
            s.tool_binding, s.binding_preset, s.order_approval,
            s.probe_kicked_at,
            s.created_at, s.updated_at, s.plugin_id, s.plugin_server_key,
-           p.name AS plugin_name, p.enabled AS plugin_enabled
+           p.name AS plugin_name, p.enabled AS plugin_enabled,
+           tp.level AS trading_level,
+           tp.agreement_version AS trading_agreement_version
     FROM user_mcp_servers s
     LEFT JOIN user_plugins p ON p.user_plugin_id = s.plugin_id
+    LEFT JOIN trading_permissions tp ON tp.user_id = s.user_id
 """
 
 
@@ -547,18 +554,6 @@ async def list_enabled_user_servers(user_id: str) -> list[dict[str, Any]]:
             return [_catalog_row_to_dict(r) for r in await cur.fetchall()]
 
 
-async def bump_user_workspaces_mcp_version(user_id: str) -> int:
-    """Bump mcp_config_version on ALL of a user's workspaces (own transaction).
-
-    For out-of-band user-level invalidation (OAuth connect/disconnect, user
-    vault changes referenced by live servers). Returns workspaces touched.
-    """
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await bump_user_versions(cur, user_id)
-            return cur.rowcount
-
-
 # ---------------------------------------------------------------------------
 # Per-workspace rows (source of truth): every write bumps mcp_config_version,
 # except the selection a new workspace starts with
@@ -684,7 +679,7 @@ async def upsert_workspace_server(
                     ),
                 )
                 row = await cur.fetchone()
-                await _bump_version(cur, workspace_id)
+                await bump_workspace_version(cur, workspace_id)
                 logger.info(
                     f"[mcp_db] upsert_workspace_server workspace_id={workspace_id} "
                     f"name={name} source={source} enabled={enabled}"
@@ -734,7 +729,7 @@ async def tombstone_user_server(
                 )
                 if cur.rowcount == 0:
                     return False
-                await _bump_version(cur, workspace_id)
+                await bump_workspace_version(cur, workspace_id)
                 logger.info(
                     f"[mcp_db] tombstone_user_server workspace_id={workspace_id} "
                     f"name={name}"
@@ -794,7 +789,7 @@ async def untombstone_user_server(
                     "WHERE workspace_id = %s AND server_name = %s",
                     (workspace_id, name),
                 )
-                await _bump_version(cur, workspace_id)
+                await bump_workspace_version(cur, workspace_id)
                 logger.info(
                     f"[mcp_db] untombstone_user_server workspace_id={workspace_id} "
                     f"name={name}"
@@ -823,7 +818,7 @@ async def delete_workspace_server(workspace_id: str, name: str) -> bool:
                     "WHERE workspace_id = %s AND server_name = %s",
                     (workspace_id, name),
                 )
-                await _bump_version(cur, workspace_id)
+                await bump_workspace_version(cur, workspace_id)
                 logger.info(
                     f"[mcp_db] delete_workspace_server workspace_id={workspace_id} "
                     f"name={name}"
@@ -911,28 +906,6 @@ async def start_new_workspace_selection(
 # ---------------------------------------------------------------------------
 
 
-async def _bump_version(cur, workspace_id: str) -> None:
-    """Atomically increment a workspace's mcp_config_version (same txn)."""
-    await cur.execute(
-        "UPDATE workspaces SET mcp_config_version = mcp_config_version + 1 "
-        "WHERE workspace_id = %s",
-        (workspace_id,),
-    )
-
-
-async def bump_user_versions(cur, user_id: str) -> None:
-    """Increment mcp_config_version on every workspace of a user (same txn).
-
-    One statement, unpaginated on purpose: a user-level change must never
-    leave a subset of workspaces on the old version.
-    """
-    await cur.execute(
-        "UPDATE workspaces SET mcp_config_version = mcp_config_version + 1 "
-        "WHERE user_id = %s",
-        (user_id,),
-    )
-
-
 def _catalog_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize a user_mcp_servers row into a plain JSON-friendly dict.
 
@@ -967,9 +940,15 @@ def _catalog_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "tool_binding": dict(row.get("tool_binding") or {}),
         "binding_preset": row.get("binding_preset"),
         # Left as stored rather than filled out here: a row stores only the
-        # modes a user set, and the defaults for the rest belong to the one
-        # reader that knows them.
+        # modes a user set, and the rest are filled in under the level by the
+        # one reader that knows the rule (``inputs_from_row``).
         "order_approval": row.get("order_approval"),
+        # The owner's trading permission as stored, joined on so every reader
+        # that judges an order off a row judges it under the level of that
+        # moment; the per-call gate re-reads the row for this. Passed through
+        # raw: ``inputs_from_row`` is the one place the agreement is judged.
+        "trading_level": row["trading_level"],
+        "trading_agreement_version": row["trading_agreement_version"],
         # When a probe was last claimed for this row, so a reader can tell a
         # kick still in flight from one that never started. Indexed, not
         # .get(): it is part of ``_CATALOG_SELECT``.

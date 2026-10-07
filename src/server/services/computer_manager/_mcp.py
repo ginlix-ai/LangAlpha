@@ -17,6 +17,7 @@ from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.core.session import Session
 
 from src.server.services.mcp_tool_split import build_direct_entries
+from src.server.services.trading_rule import trading_rule
 from src.server.services.egress.session_binding import (
     maybe_remint_egress_jwt,
     RelayBind,
@@ -324,6 +325,7 @@ class McpSecretsMixin:
                 session.mcp_registry = session._builtin_mcp_registry
                 session.mcp_tool_summary = None
                 session.direct_mcp_tools = {}
+                session.trading_rule = None
                 session.egress_binding = None
                 session.mcp_config_version = None
                 session.mcp_config_workspace_id = None
@@ -417,6 +419,7 @@ class McpSecretsMixin:
             mcp_config_version=resolved.version,
             mcp_servers=tuple(resolved.servers),
             mcp_settled_servers=frozenset(settled),
+            trading_rule=trading_rule(resolved),
         )
         self._mirror_tool_view_on_session(session, view)
         return view
@@ -427,6 +430,7 @@ class McpSecretsMixin:
         session.mcp_registry = view.mcp_registry
         session.mcp_tool_summary = view.mcp_tool_summary
         session.direct_mcp_tools = dict(view.direct_mcp_tools)
+        session.trading_rule = view.trading_rule
         session.egress_binding = view.egress_binding
         session.mcp_config_version = view.mcp_config_version
         session.mcp_config_workspace_id = view.workspace_id

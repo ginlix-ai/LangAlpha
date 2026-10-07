@@ -26,6 +26,37 @@ export interface UserPreferences {
   [key: string]: unknown;
 }
 
+// --- Trading permission ---
+
+/** The two levels that let a live or staged order skip the approval gate, and
+ *  so the two the server takes only with the signed agreement. */
+export type AgreementLevel = 'plan_first' | 'autonomous';
+
+/** How far the agent may go with orders at the user's brokerages, least first.
+ *  What each one means to the app is `TRADING_LEVEL_INFO`. */
+export type TradingLevel = 'no_trading' | 'approve_each' | AgreementLevel;
+
+/**
+ * The level in force, read from its own endpoint rather than from preferences:
+ * the agent can write preferences, and must never be able to write this.
+ * `agreement_version` is the version the server currently accepts. It is
+ * never sent back: opting in sends the version of the text the client showed
+ * (`TRADING_AGREEMENT_VERSION`), and this one only tells the client the two
+ * have parted.
+ */
+export interface TradingPermission {
+  level: TradingLevel;
+  agreement_version: number;
+  agreed_at: string | null;
+  updated_at: string | null;
+}
+
+/** A level behind the agreement cannot be written without the version of the
+ *  text that was accepted; one that asks before every order carries none. */
+export type TradingPermissionUpdate =
+  | { level: Exclude<TradingLevel, AgreementLevel> }
+  | { level: AgreementLevel; agreement_version: number };
+
 // --- Feature flags ---
 
 /**

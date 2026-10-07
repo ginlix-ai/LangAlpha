@@ -8,6 +8,7 @@ import { canDisconnectOauth, isOauthBroken } from '@/pages/ChatAgent/components/
 import type { McpOauthStatus } from '@/pages/ChatAgent/utils/api';
 import { connectBlock, type Brokerage } from '../brokerages';
 import { RowNote } from './RowNote';
+import { NativeOnlyNote } from './DesktopDownloadLink';
 
 /**
  * The parts every OAuth-capable row draws the same way.
@@ -67,11 +68,7 @@ export function VendorNotes({
           {t('plugins.oauth.shellOutdatedNote')}
         </RowNote>
       )}
-      {block === 'native-only' && (
-        <RowNote icon={Monitor} id={blockedNoteId(rowKey)}>
-          {t('plugins.oauth.nativeOnlyNote')}
-        </RowNote>
-      )}
+      {block === 'native-only' && <NativeOnlyNote id={blockedNoteId(rowKey)} />}
       {vendor?.exclusive_connection && (
         // Said before the click, not after: connecting here takes the
         // account's one slot from wherever it is now. Warning weight because

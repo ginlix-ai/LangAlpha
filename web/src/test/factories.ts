@@ -1,3 +1,4 @@
+import { DEFAULT_TRADING_LEVEL } from '@/lib/tradingPermission';
 import type { CatalogServer, McpProbeResult } from '@/pages/ChatAgent/utils/api';
 
 /**
@@ -32,6 +33,7 @@ export function catalogServer(over: Partial<CatalogServer> = {}): CatalogServer 
     plugin_name: null,
     plugin_enabled: null,
     probe_kicked_at: null,
+    trading_permission: DEFAULT_TRADING_LEVEL,
     ...over,
   };
 }

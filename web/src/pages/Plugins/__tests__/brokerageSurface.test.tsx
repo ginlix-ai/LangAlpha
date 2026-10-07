@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
+import i18n from '@/i18n';
 import { renderWithProviders } from '@/test/utils';
 import { LoopbackRequiredError } from '@/pages/ChatAgent/utils/api';
 import type {
@@ -74,6 +75,13 @@ vi.mock('@/lib/desktop', () => ({
   isDesktopShell: () => shell !== undefined,
   canBeginMcpOAuth: () => typeof shell?.beginMcpOAuth === 'function',
   beginMcpOAuth: async () => undefined,
+}));
+
+let tradingLevel: string | undefined;
+vi.mock('@/hooks/useTradingPermission', () => ({
+  useTradingPermission: () => ({
+    data: tradingLevel ? { level: tradingLevel, agreement_version: 1 } : undefined,
+  }),
 }));
 
 const toggleBrokerage = vi.fn(async () => ({}));
@@ -150,6 +158,7 @@ afterAll(() => {
 
 beforeEach(() => {
   shell = undefined;
+  tradingLevel = undefined;
   shipped = [RH, IBKR];
   catalogServers = [];
   toggleBrokerage.mockClear();
@@ -676,6 +685,55 @@ describe('the brokerages tab', () => {
       expect(startConnect).not.toHaveBeenCalled();
       expect(toggleBrokerage).not.toHaveBeenCalled();
       expect(screen.getByText('Needs the desktop app')).toBeInTheDocument();
+    });
+
+    it('names the trading permission and links to where it is changed', async () => {
+      tradingLevel = 'autonomous';
+      await renderTab();
+
+      expect(screen.getByText('Trading permission: Full autonomy')).toBeInTheDocument();
+      expect(
+        screen.getByRole('link', { name: 'Manage trading permission' }),
+      ).toHaveAttribute('href', '/settings?tab=preferences#trading-permission');
+    });
+
+    it('links to the download beside the note, without opening the row', async () => {
+      await renderTab();
+
+      // One beside the row's note, one in the paragraph up top.
+      const links = screen.getAllByRole('link', { name: 'Download the desktop app' });
+      expect(links).toHaveLength(2);
+      for (const link of links) {
+        expect(link).toHaveAttribute('href', 'https://langalpha.ai/download');
+        expect(link).toHaveAttribute('target', '_blank');
+      }
+      const onRow = links.find((link) => link.textContent === 'Download')!;
+      const bubbled = vi.fn();
+      document.addEventListener('click', bubbled);
+      fireEvent.click(onRow);
+      document.removeEventListener('click', bubbled);
+      expect(bubbled).not.toHaveBeenCalled();
+    });
+
+    it('keeps the download link inside the translated hint, with no stray space', async () => {
+      await renderTab();
+      const hint = () =>
+        screen
+          .getAllByRole('link', { name: /Download|下载/ })
+          .find((link) => link.closest('p'))!
+          .closest('p')!.textContent;
+      expect(hint()).toContain('from a browser. Download the desktop app');
+
+      try {
+        await act(async () => {
+          await i18n.changeLanguage('zh-CN');
+        });
+        expect(hint()).toContain('无法在浏览器中连接。下载桌面应用');
+      } finally {
+        await act(async () => {
+          await i18n.changeLanguage('en-US');
+        });
+      }
     });
 
     it('says why to a screen reader, on a control it can still reach', async () => {
