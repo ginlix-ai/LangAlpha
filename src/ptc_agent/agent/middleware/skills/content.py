@@ -100,7 +100,7 @@ def load_skill_content(
     for the specified skill.
 
     Args:
-        skill_name: Name of the skill (e.g. 'user-profile')
+        skill_name: Name of the skill (e.g. 'onboarding')
         skill_dirs: Optional list of local skill directories to search.
                    If not provided, uses project_root/skills.
         mode: Optional agent mode filter. If provided, only loads skills

@@ -3,8 +3,10 @@
 - **Name**: {{ user_profile.name | default("User") }}
 - **Timezone**: {{ user_profile.timezone | default("UTC") }}
 - **Locale**: {{ user_profile.locale | default("en-US", true) }}
+{% if profile_files %}
 
 To change one of these, edit `.agents/user/profile/user.json`.
+{% endif %}
 
 ## Response Language
 
@@ -28,6 +30,7 @@ For substantial deliverables (reports, analyses, comparisons), produce a styled 
 
 ## Financial Context
 
+{% if profile_files %}
 When handling investment-related queries, check these JSON files under `.agents/user/profile/`. They serve fresh DB-backed data on every read and accept atomic JSON edits (validated server-side):
 
 | File | Contains | Check when... |
@@ -39,6 +42,7 @@ When handling investment-related queries, check these JSON files under `.agents/
 **Editing:** to update, `Read` the file, `Edit` the JSON, and `Write` it back.
 
 `Read .agents/user/profile/README.md` for the full JSON schema, examples, and error-recovery hints before your first edit.
+{% endif %}
 {% if user_data_counts %}
 **Your current data:**
 {% if user_data_counts.portfolio_count and user_data_counts.portfolio_count > 0 %}

@@ -156,6 +156,18 @@ class SSEStreamClient:
     # Workspace Management
     # =========================================================================
 
+    async def feature_enabled(self, key: str) -> bool:
+        """Whether feature ``key`` is on for this user. Off when the flags
+        cannot be read, as the web app treats them."""
+        url = urljoin(self.base_url, "/api/v1/features")
+        try:
+            response = await self.client.get(url, headers=self._make_headers())
+            response.raise_for_status()
+            features = response.json().get("features", [])
+        except (httpx.HTTPError, ValueError):
+            return False
+        return any(f.get("key") == key and f.get("enabled") for f in features)
+
     async def list_workspaces(self) -> List[Dict[str, Any]]:
         """
         List available workspaces for the current user.

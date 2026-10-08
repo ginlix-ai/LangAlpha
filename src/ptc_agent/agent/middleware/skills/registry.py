@@ -13,8 +13,6 @@ from typing import Any, Callable, Literal
 from src.config.features import is_feature_enabled_system
 from src.config.settings import get_workflow_orchestration_config
 from src.tools.automation import AUTOMATION_TOOLS
-from src.tools.onboarding import ONBOARDING_TOOLS
-from src.tools.user_profile import USER_PROFILE_TOOLS
 
 # Type alias for agent modes that can use skills
 SkillMode = Literal["ptc", "flash"]
@@ -140,20 +138,12 @@ def _matches_mode(skill: SkillDefinition, mode: SkillMode | None) -> bool:
 # Registry of all available skills
 # Skills are pre-registered at agent creation but tools are hidden until loaded
 SKILL_REGISTRY: dict[str, SkillDefinition] = {
-    "user-profile": SkillDefinition(
-        name="user-profile",
-        description="Manage user profile including watchlists, portfolio, and preferences.",
-        tools=USER_PROFILE_TOOLS,
-        skill_md_path="skills/user-profile/SKILL.md",
-        # Flash-only: PTC edits user data via .agents/user/profile/*.json through
-        # the UserDataBackend filesystem surface, so the structured skill tools
-        # are redundant there. Flash has no filesystem, so it keeps them.
-        exposure="flash",
-    ),
     "onboarding": SkillDefinition(
         name="onboarding",
-        description="First-time user onboarding to set up investment profile, watchlists, portfolio, and preferences.",
-        tools=ONBOARDING_TOOLS,
+        description="First-time setup. Import holdings and watchlists from a connected brokerage, learn the markets the user follows, and save it all to their profile files.",
+        # Guidance-only: the agent saves what it learns to the profile files
+        # under .agents/user/profile/, so the skill binds no tools of its own.
+        tools=[],
         skill_md_path="skills/onboarding/SKILL.md",
         exposure="hidden",
     ),
@@ -221,7 +211,7 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         skill_md_path="skills/automation/SKILL.md",
         # Flash-only: PTC edits the files in .agents/user/automations/
         # through the AutomationsBackend filesystem surface. Flash has no
-        # filesystem, so it keeps the tools. Same split as user-profile.
+        # filesystem, so it keeps the tools.
         exposure="flash",
     ),
     "run-workflow": SkillDefinition(

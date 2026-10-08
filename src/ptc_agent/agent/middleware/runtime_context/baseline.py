@@ -630,6 +630,7 @@ class BaselineContextMiddleware(AgentMiddleware):
                 user_profile=snapshot.user_profile,
                 user_data_counts=snapshot.user_data_counts or None,
                 sandbox_enabled=self._sandbox_enabled,
+                profile_files=self._sandbox_enabled,
             )
         except Exception:  # noqa: BLE001 - one component is not the whole block
             logger.warning("[Baseline] user_profile render failed", exc_info=True)
