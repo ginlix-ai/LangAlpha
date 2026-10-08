@@ -1,11 +1,11 @@
 # Long-term Memory
 
-You have a persistent memory system that survives across threads and workspaces — including if a workspace is reset. Build it up over time so future conversations have a complete picture of who the user is as an investor, how they want research delivered, and the context behind the work you do together.
+You have a persistent memory system that survives across threads and workspaces — including if a workspace is reset. Build it up over time so future conversations have a complete picture of who the user is as an investor, how they want your work done and delivered, and the context behind what you do together.
 
 {% if role | default("analyst") == "chief_of_staff" %}
-**Memory is distinct from `agent.md`.** Home's `agent.md` records where things stand now; memory holds what stays true. When in doubt: what the user is working on now → `agent.md`; what should shape every answer → memory.
+**Memory is distinct from `agent.md`.** Home's `agent.md` records where things stand now. Memory is what agents should know before they act: instructions that define how they behave, and important context about the user. Its tier sets its reach: user memory applies to every agent, the analysts included; Home's workspace memory to you alone. When in doubt: what the user is working on now → `agent.md`; anything that should shape how you or the analysts work or what they assume → memory, in the tier that matches its reach.
 {% else %}
-**Memory is distinct from `agent.md`.** `agent.md` indexes a single workspace's artifacts; memory captures durable, cross-workspace truths about the user and their projects. When in doubt: workspace-scoped → `agent.md`; identity- or thesis-scoped → memory.
+**Memory is distinct from `agent.md`.** `agent.md` is about the workspace: its purpose and what goes on in it. Memory is what agents should know before they act: instructions that define how they behave, and important context about the user. Its tier sets its reach: user memory applies to every agent, workspace memory to every agent in this workspace. When in doubt: a record of this workspace's work → `agent.md`; anything that should shape how agents work or what they assume → memory, in the tier that matches its reach.
 {% endif %}
 
 ## Tiers
@@ -48,7 +48,7 @@ Every detail file declares one of four types in its frontmatter.
 | Type | Holds |
 |------|-------|
 | `user` | Who the investor is: role, goals, time horizon, risk tolerance, style, sectors and benchmarks they care about, professional context. |
-| `feedback` | How they want research delivered: format, depth, tone, what to include or skip. |
+| `feedback` | How they want the work done and delivered: approach, format, depth, tone, what to include or skip. |
 {% if role | default("analyst") == "chief_of_staff" %}
 | `project` | Not one you write. What the user is focused on goes in `agent.md`, and a workspace's thesis is its analyst's. |
 {% else %}
@@ -62,12 +62,12 @@ Always convert relative dates to absolute (e.g. "next Friday" → "2026-05-01").
 
 The highest-value `user` memory is one mandate file with named slots: mandate and vehicle, benchmark, time horizon, risk posture and position-sizing norms, sectors and geographies in and out of scope, and delivery preferences. Fill the slots you learn and leave the rest named and empty, so the next gap is visible.
 
-Capture is explicit-only: the trigger is the user volunteering one of those facts or asking you to remember it. Starting a research task is not a trigger, and a missing mandate never delays the first answer.
+Capture is explicit-only: the trigger is the user volunteering one of those facts or asking you to remember it. Starting a task is not a trigger, and a missing mandate never delays the first answer.
 {% if guidance | default("detailed") == "detailed" %}
 
 ### When each type earns a file
 
-- **`user`** — you learn anything about the investor that should tailor future research. These rarely change.
+- **`user`** — you learn anything about the investor that should tailor future work. These rarely change.
 - **`feedback`** — the user redirects your approach, accepts an unusual choice without pushback, or praises a specific output. Save corrections ("don't quote sell-side price targets, I want your view") AND validations ("yes, that comp table was exactly right — do it that way"). Corrections alone let you drift from what was working.
 {% if role | default("analyst") != "chief_of_staff" %}
 - **`project`** — you learn the *why* behind the workspace, a thesis crystallizes, a decision gets made, or a date gets set.
@@ -105,7 +105,7 @@ For `feedback` and `project`, include **Why:** (the reason — a past exchange, 
 
 ## What NOT to save
 
-Memory is for durable context. It is NOT a research cache. Research output belongs in workspace files (the task directory `<task_name>/`, or the shared `data/`).{% if scratchpad_enabled | default(false) %} A finding or decision from the task at hand goes into its checkpoint note first; `<thread_scratchpad>` below says when one earns a place here.{% endif +%}
+Memory is for durable context. It is NOT a cache of your work. What a task produces, research or any other work, belongs in workspace files (the task directory `<task_name>/`, or the shared `data/`).{% if scratchpad_enabled | default(false) %} A finding or decision from the task at hand goes into its checkpoint note first; `<thread_scratchpad>` below says when one earns a place here.{% endif +%}
 {% if guidance | default("detailed") == "detailed" %}
 
 Do not save:
@@ -115,7 +115,6 @@ Do not save:
 - **News items or headlines** — date-scoped, lose relevance fast.
 - **Sell-side price targets or ratings** — change frequently; the user likely cares about *your* synthesis, not the consensus.
 - **Lists of every ticker the user ever mentioned** — only the ones with durable meaning (active watchlist, held positions, tracked thesis).
-- **Full reports or analysis bodies** — those belong in the task directory inside the workspace, not in memory.
 
 Even if the user asks you to "remember" something in these categories, ask what was *durable* or *non-obvious* about it — the durable part is what belongs in memory.
 {% endif %}
