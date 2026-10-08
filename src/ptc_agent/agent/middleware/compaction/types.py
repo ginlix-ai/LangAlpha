@@ -106,8 +106,9 @@ class CompactionState(AgentState):
 # that bloat context in older messages.
 TRUNCATABLE_TOOLS = frozenset({"Write", "Edit", "ExecuteCode"})
 
-# Path prefixes for Read results considered non-critical — these files contain
-# previously offloaded content that the agent has already processed.
+# The dirs whose Read results are non-critical: content offloaded earlier that
+# the agent has already processed, and its own working files, which it reads
+# again by path when it needs them.
 NON_CRITICAL_READ_PREFIXES: tuple[str, ...] = tuple(
     f"{d}/" for d in (*AGENT_HISTORY_DIRS, SandboxLayout.TMP_DIR)
 )

@@ -338,7 +338,7 @@ def stale_read_ids(messages: list[AnyMessage], cutoff_index: int) -> set[str]:
 
     stale: set[str] = set()
     for (file_path, _, _), entries in reads.items():
-        non_critical = file_path.startswith(NON_CRITICAL_READ_PREFIXES)
+        non_critical = _is_non_critical_read(file_path)
         latest = entries[-1][0]
         for i, call_id in entries:
             if (
@@ -348,6 +348,16 @@ def stale_read_ids(messages: list[AnyMessage], cutoff_index: int) -> set[str]:
             ):
                 stale.add(call_id)
     return stale
+
+
+def _is_non_critical_read(file_path: str) -> bool:
+    """Whether ``file_path`` lies under a ``NON_CRITICAL_READ_PREFIXES`` dir,
+    matched wherever the dir sits in the path: the model names these files
+    workspace-relative or absolute, and the scratchpad's are always absolute."""
+    return any(
+        file_path.startswith(prefix) or f"/{prefix}" in file_path
+        for prefix in NON_CRITICAL_READ_PREFIXES
+    )
 
 
 def read_offload_marker(file_path: str) -> str:
