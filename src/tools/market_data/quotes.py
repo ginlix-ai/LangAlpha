@@ -20,6 +20,7 @@ from .quote_format import (
 )
 from src.data_client import get_financial_data_provider, get_market_data_provider
 from src.data_client.freshness import is_live
+from src.data_client.ginlix_data.directory import fill_quote_names
 from src.data_client.market_data_provider import snapshot_key
 from src.data_client.ginlix_data.pagination import paginate_cursor
 from market_protocol import AssetClass, display_spelling
@@ -254,6 +255,17 @@ async def fetch_quote(
         resolved = [spelling for _, spelling in listings]
         asked = {snapshot_key(spelling): ref for ref, spelling in listings if ref is not None}
         snaps = await provider.get_snapshots(resolved, asset_type=asset_type, user_id=user_id)
+        if asset_type == "stocks":
+            # A listing no provider quotes (Beijing has no realtime one) reads
+            # its last daily close while its venue is closed, as the REST
+            # quote routes do; empty, the agent goes to the web for it.
+            from src.server.services.cache.quote_daily_fallback import fill_from_daily
+
+            served = [(asked[k], s) for s in snaps if (k := snapshot_key(s.get("symbol"))) in asked]
+            filled = await fill_from_daily(served, list(asked.values()), user_id)
+            snaps = [*snaps, *(row for _, row in filled[len(served):])]
+        # The card names each row as the REST routes do; a daily row has none.
+        await fill_quote_names(snaps)
         if not snaps:
             return f"No quote data available for {', '.join(syms)}.", empty
         # Stamp each row with what it actually is: the declared tier, the

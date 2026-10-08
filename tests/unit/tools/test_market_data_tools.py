@@ -10,7 +10,8 @@ import pytest
 import pytz
 
 from src.tools.market_data._shared import _normalize_market_bars
-from src.tools.market_data.company import fetch_company_overview
+from src.tools.market_data.company import _quote_heading, fetch_company_overview
+from src.tools.market_data.display import resolve_ref
 from src.tools.market_data.market_overview import (
     fetch_market_overview,
     fetch_sector_performance,
@@ -26,6 +27,7 @@ from src.tools.market_data.quotes import (
     fetch_options_chain,
     fetch_quote,
 )
+from src.tools.market_data.quote_format import stamp_quote
 from src.tools.market_data.screener import fetch_stock_screener
 
 _PRICES_MOD = "src.tools.market_data.prices"
@@ -33,6 +35,7 @@ _COMPANY_MOD = "src.tools.market_data.company"
 _MKT_MOD = "src.tools.market_data.market_overview"
 _SCREEN_MOD = "src.tools.market_data.screener"
 _QUOTES_MOD = "src.tools.market_data.quotes"
+_DAILY_MOD = "src.server.services.cache.quote_daily_fallback"
 _ET = pytz.timezone("US/Eastern")
 _FIXED_ET = _ET.localize(datetime(2026, 7, 1, 14, 32, 5))
 
@@ -42,7 +45,16 @@ def _stub_cn_display_name():
     # Keep the CN/HK display-name lookups off the network for every test;
     # name-specific tests override with their own patch.
     with patch(f"{_PRICES_MOD}.display_names", new=AsyncMock(return_value=(None, None))), \
-            patch(f"{_COMPANY_MOD}.display_names", new=AsyncMock(return_value=(None, None))):
+            patch(f"{_COMPANY_MOD}.display_names", new=AsyncMock(return_value=(None, None))), \
+            patch(f"{_QUOTES_MOD}.fill_quote_names", new=AsyncMock()):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_daily_quote_fallback():
+    # A quote the provider drops reads the daily bars while its venue is
+    # closed, which would make a test's result depend on the hour it runs.
+    with patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=AsyncMock(return_value=None)):
         yield
 
 
@@ -1857,9 +1869,11 @@ class TestProviderQuoteFallback:
         provider = _make_fake_financial_provider(
             financial=_quote_only_financial(self._PROFILE, [quote])
         )
+        # Venue open: a closed one titles any current row as its last close.
         with patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider), \
                 patch(f"{_COMPANY_MOD}.get_market_data_provider", return_value=mdp), \
-                patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]):
+                patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]), \
+                patch("src.data_client.freshness._venue_closed", return_value=False):
             content, _ = await fetch_company_overview("0700.HK")
         return content
 
@@ -1878,6 +1892,46 @@ class TestProviderQuoteFallback:
         assert "Error" not in content
         assert "### Quote (freshness unknown)" in content
         assert "**Price:** HK$318.20\n" in content
+
+
+@pytest.mark.parametrize(
+    ("closed", "label", "heading"),
+    [
+        (True, "live", "### Quote (last close)"),
+        (True, "delayed", "### Quote (last close)"),
+        (False, "live", "### Real-Time Quote"),
+        (False, "delayed", "### Quote (delayed 15m)"),
+        (True, "stale", "### Quote (stale)"),
+    ],
+)
+def test_a_closed_sessions_final_row_is_titled_last_close(closed, label, heading):
+    # On a closed venue a current row, or a delayed one nothing measured, is the
+    # session's final price, not a real-time one; a stale row keeps naming its
+    # staleness.
+    assert _quote_heading({"closed": closed, "label": label}) == heading
+
+
+@pytest.mark.parametrize(
+    ("symbol", "printed", "at", "heading"),
+    [
+        # A measured print still inside the feed's delay predates the auction.
+        ("0700.HK", datetime(2026, 9, 16, 15, 57, tzinfo=ZoneInfo("Asia/Hong_Kong")),
+         datetime(2026, 9, 16, 16, 12, tzinfo=ZoneInfo("Asia/Hong_Kong")), "### Quote (delayed 15m)"),
+        ("600519.SH", datetime(2026, 9, 16, 14, 46, tzinfo=ZoneInfo("Asia/Shanghai")),
+         datetime(2026, 9, 16, 15, 2, tzinfo=ZoneInfo("Asia/Shanghai")), "### Quote (delayed 15m)"),
+        # Once the auction print has arrived the row is the settled close.
+        ("0700.HK", datetime(2026, 9, 16, 16, 8, tzinfo=ZoneInfo("Asia/Hong_Kong")),
+         datetime(2026, 9, 16, 16, 25, tzinfo=ZoneInfo("Asia/Hong_Kong")), "### Quote (last close)"),
+        ("600519.SH", datetime(2026, 9, 16, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+         datetime(2026, 9, 16, 15, 16, tzinfo=ZoneInfo("Asia/Shanghai")), "### Quote (last close)"),
+    ],
+)
+def test_a_measured_delayed_row_is_last_close_only_once_the_auction_printed(
+    symbol, printed, at, heading
+):
+    row = {"symbol": symbol, "as_of": int(printed.timestamp() * 1000), "tier": "delayed_15m"}
+    freshness = stamp_quote(row, at, ref=resolve_ref(symbol))["freshness"]
+    assert _quote_heading(freshness) == heading
 
 
 class TestMarketHeaderLabel:
@@ -2074,6 +2128,48 @@ class TestFetchQuote:
             _, artifact = await fetch_quote(["NVDA"])
         assert artifact["all_realtime"] is (not closed)
         assert artifact["quotes"][0]["currency"] == "USD"
+
+    @pytest.mark.asyncio
+    async def test_a_closed_listing_no_provider_quotes_reads_its_daily_close(self):
+        # Beijing has no realtime provider: while its venue is closed the row
+        # comes from the daily bars, as on the REST quote routes, and is named.
+        snaps = [{"symbol": "600519.SH", "price": 1255.79, "change_percent": -0.22,
+                  "volume": 2_500_000, "last_trade_price": 1255.79, "tier": "realtime"}]
+        daily = {"symbol": "920395.BJ", "price": 6.68, "change": 0.06,
+                 "change_percent": 0.91, "previous_close": 6.62, "volume": 307_600,
+                 "market_status": "closed", "source": "daily", "tier": "eod",
+                 "as_of": int(datetime(2026, 9, 30, 7, tzinfo=timezone.utc).timestamp() * 1000),
+                 "regular_only": True}
+        provider = _make_fake_snapshot_provider(snaps)
+        names = AsyncMock()
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=AsyncMock(return_value=daily)), \
+                patch(f"{_DAILY_MOD}.clock_for_ref") as clock, \
+                patch(f"{_QUOTES_MOD}.fill_quote_names", new=names):
+            clock.return_value.is_closed.return_value = True
+            content, artifact = await fetch_quote(["600519.SH", "920395.BJ"])
+
+        assert "920395.BJ  CN¥6.68  +0.91% today" in content
+        assert "no data" not in content
+        bj = artifact["quotes"][1]
+        assert (bj["source"], bj["tier"], bj["currency"]) == ("daily", "eod", "CNY")
+        assert [r["symbol"] for r in names.await_args.args[0]] == ["600519.SH", "920395.BJ"]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_listing_stays_missing_while_its_venue_trades(self):
+        # During a session a last close would pass a quote outage off as live.
+        snaps = [{"symbol": "600519.SH", "price": 1255.79, "change_percent": -0.22,
+                  "volume": 2_500_000, "last_trade_price": 1255.79, "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        daily = AsyncMock()
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=daily), \
+                patch(f"{_DAILY_MOD}.clock_for_ref") as clock:
+            clock.return_value.is_closed.return_value = False
+            content, _ = await fetch_quote(["600519.SH", "920395.BJ"])
+
+        assert "(no data: 920395.BJ)" in content
+        daily.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reports_missing_symbols(self):

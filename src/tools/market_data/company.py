@@ -38,6 +38,7 @@ from .quote_format import (
 from .segments import SegmentBreakdown, fetch_segments, segment_lines
 from .utils import finite_or_none, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
+from src.data_client.freshness import FreshnessLabel
 from src.data_client.ginlix_data.directory import display_names
 from market_protocol import AssetClass, InstrumentRef
 
@@ -492,8 +493,17 @@ def _quote_heading(freshness: Dict[str, Any]) -> str:
 
     Only a row measured or declared current is called real-time. A delayed one
     says so, and a provider quote that carries neither a tier nor a print time
-    reads as unknown rather than borrowing the title.
+    reads as unknown rather than borrowing the title. On a closed venue a
+    current row is the session's final price, and so is a delayed one nothing
+    measured. A measured delayed row is still inside its delay, before the
+    closing auction's print, so it keeps naming the delay.
     """
+    label = freshness.get("label")
+    if freshness.get("closed") and (
+        label == FreshnessLabel.LIVE
+        or (label == FreshnessLabel.DELAYED and not freshness.get("measured"))
+    ):
+        return "### Quote (last close)"
     words = FRESHNESS_WORDS.get(freshness.get("label"))
     return f"### Quote ({words})" if words else "### Real-Time Quote"
 
