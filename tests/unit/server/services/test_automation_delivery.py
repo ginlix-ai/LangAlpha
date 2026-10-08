@@ -222,6 +222,41 @@ class TestTheRunRowStamp:
         assert delivery.delivery_of_run(run, EXECUTION_ID) is None
 
 
+class TestTheTurnsConfig:
+    """A held run's turn carries the run for its tools, and a hand-off reads
+    it back from there to tell the turn reporting its result."""
+
+    def test_the_turn_names_the_run_and_its_targets(self):
+        held = Delivery("exec-1.2", [DEMO, UNLINKED])
+        configurable = delivery.turn_configurable(held)
+
+        assert configurable["automation_execution_id"] == "exec-1.2"
+        assert delivery.delivery_of_turn(configurable) == held
+
+    def test_a_turn_that_names_the_id_alone_names_no_targets(self):
+        """A turn started before the targets were carried."""
+        configurable = {"automation_execution_id": "exec-1"}
+        assert delivery.delivery_of_turn(configurable) == Delivery("exec-1", [])
+
+    def test_targets_stamped_for_another_run_are_not_this_ones(self):
+        configurable = {
+            **delivery.turn_configurable(Delivery("exec-old", [DEMO])),
+            "automation_execution_id": "exec-1",
+        }
+        assert delivery.delivery_of_turn(configurable) == Delivery("exec-1", [])
+
+    @pytest.mark.parametrize(
+        "configurable",
+        [{}, {"automation_execution_id": ""}, {"automation_execution_id": None}],
+    )
+    def test_a_turn_naming_no_run_sends_for_none(self, configurable):
+        assert delivery.delivery_of_turn(configurable) is None
+
+    @pytest.mark.parametrize("stamp", [None, "x", {"id": "exec-1"}, {"targets": []}])
+    def test_a_stamp_naming_no_targets_or_id_names_nothing(self, stamp):
+        assert delivery.read_stamp(stamp) is None
+
+
 class TestUnsent:
     def test_each_entry_fails_for_the_reason_its_start_gave(self):
         refused = Target(entry="slack:T/C", address=None, name=None, ok=False)

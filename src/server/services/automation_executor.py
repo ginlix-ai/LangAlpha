@@ -652,7 +652,7 @@ class AutomationExecutor:
                         "content": automation_delivery.reminder(firing.delivery.targets),
                     },
                 ]
-                extra_configurable = {"automation_execution_id": firing.delivery.id}
+                extra_configurable = automation_delivery.turn_configurable(firing.delivery)
             if firing.delivery is not None:
                 run_metadata.update(automation_delivery.run_metadata(firing.delivery))
             request = ChatRequest(
@@ -694,7 +694,8 @@ class AutomationExecutor:
                     role=firing.route.role,
                     # Tools read the turn from the graph's config:
                     # ``send_message`` names the run the service holds, so
-                    # its sends reach its targets.
+                    # its sends reach its targets, and a hand-off records
+                    # them for the turn that reports its result back.
                     extra_configurable=extra_configurable,
                 )
 

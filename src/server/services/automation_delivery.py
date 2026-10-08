@@ -231,11 +231,30 @@ async def start_run(
     return Delivery(id=execution_id, targets=targets)
 
 
+def stamp(delivery: Delivery) -> Dict[str, Any]:
+    """The delivery as it is written down: on the run row, in the turn's
+    config, and in a hand-off's report-back record."""
+    return {"id": delivery.id, "targets": [t.as_dict() for t in delivery.targets]}
+
+
+def read_stamp(data: Any, default_id: Optional[str] = None) -> Optional[Delivery]:
+    """The delivery a stamp names; None when it names no targets list. A
+    stamp naming no id is filed under ``default_id``, and with neither it
+    names nothing."""
+    if not isinstance(data, dict) or not isinstance(data.get("targets"), list):
+        return None
+    delivery_id = _text(data.get("id")) or default_id
+    if not delivery_id:
+        return None
+    return Delivery(
+        id=delivery_id,
+        targets=[t for t in (Target.read(i) for i in data["targets"]) if t is not None],
+    )
+
+
 def run_metadata(delivery: Delivery) -> Dict[str, Any]:
     """The run-row stamp a settle reads to follow this run's way of delivery."""
-    return {
-        DELIVERY_KEY: {"id": delivery.id, "targets": [t.as_dict() for t in delivery.targets]}
-    }
+    return {DELIVERY_KEY: stamp(delivery)}
 
 
 def delivery_of_run(run: Optional[Dict[str, Any]], execution_id: str) -> Optional[Delivery]:
@@ -243,13 +262,33 @@ def delivery_of_run(run: Optional[Dict[str, Any]], execution_id: str) -> Optiona
     start asked nothing. A stamp naming no id is filed under the
     execution's."""
     metadata = (run or {}).get("metadata") or {}
-    stamp = metadata.get(DELIVERY_KEY) if isinstance(metadata, dict) else None
-    if not isinstance(stamp, dict) or not isinstance(stamp.get("targets"), list):
+    data = metadata.get(DELIVERY_KEY) if isinstance(metadata, dict) else None
+    return read_stamp(data, execution_id)
+
+
+def turn_configurable(delivery: Delivery) -> Dict[str, Any]:
+    """What a held run's turn carries in its config for its tools.
+
+    ``send_message`` names the id, so its sends may reach the run's targets.
+    A hand-off records the targets too, so the turn that reports its result
+    back can say where the run delivers and send there under the same id.
+    """
+    return {"automation_execution_id": delivery.id, DELIVERY_KEY: stamp(delivery)}
+
+
+def delivery_of_turn(configurable: Dict[str, Any]) -> Optional[Delivery]:
+    """The held run a turn sends for, by its config; None when it names none.
+
+    A config that names the id without its targets (a turn started before
+    they were carried) gives the run with no targets.
+    """
+    delivery_id = _text(configurable.get("automation_execution_id"))
+    if not delivery_id:
         return None
-    return Delivery(
-        id=_text(stamp.get("id")) or execution_id,
-        targets=[t for t in (Target.read(i) for i in stamp["targets"]) if t is not None],
-    )
+    delivery = read_stamp(configurable.get(DELIVERY_KEY), delivery_id)
+    if delivery is None or delivery.id != delivery_id:
+        return Delivery(id=delivery_id, targets=[])
+    return delivery
 
 
 def unsent(delivery: Delivery) -> list[Dict[str, Any]]:
@@ -269,7 +308,8 @@ def unsent(delivery: Delivery) -> list[Dict[str, Any]]:
     ]
 
 
-def _app_name(address: str) -> str:
+def app_name(address: str) -> str:
+    """The app an address or a bare app name is on, as the user knows it."""
     app = address.split(":", 1)[0].lower()
     return _APP_NAMES.get(app, app.capitalize())
 
@@ -284,33 +324,40 @@ def _is_dm(address: str) -> bool:
 _NAME_CHARS = 80
 
 
+def one_line(text: Optional[str], chars: int) -> Optional[str]:
+    """Free text fit for a reminder, or None when nothing is left.
+
+    A reminder is a directive the agent trusts, so text from elsewhere stays
+    one short line of plain words: control and format characters, line
+    breaks included, become spaces, backticks go, since they would close a
+    code span beside it, whitespace collapses and long text is cut.
+    """
+    if not text:
+        return None
+    text = "".join(
+        " " if c.isspace() or unicodedata.category(c) in ("Cc", "Cf", "Cs") else c
+        for c in text.replace("`", "")
+    )
+    text = " ".join(text.split())
+    if len(text) > chars:
+        text = text[: chars - 1].rstrip() + "…"
+    return text or None
+
+
 def _shown_name(name: Optional[str]) -> Optional[str]:
     """A chat's name fit for the run's reminder, or None when nothing is left.
 
     The name is free text whoever runs the chat can set (a Telegram group's
-    title, an iMessage group's name), and the reminder is a directive the
-    agent trusts. So it stays one short line of plain words: control and
-    format characters, line breaks included, become spaces, backticks go,
-    since they would close the code span the address sits in, whitespace
-    collapses and a long name is cut.
+    title, an iMessage group's name), so it goes through ``one_line``.
     """
-    if not name:
-        return None
-    text = "".join(
-        " " if c.isspace() or unicodedata.category(c) in ("Cc", "Cf", "Cs") else c
-        for c in name.replace("`", "")
-    )
-    text = " ".join(text.split())
-    if len(text) > _NAME_CHARS:
-        text = text[: _NAME_CHARS - 1].rstrip() + "…"
-    return text or None
+    return one_line(name, _NAME_CHARS)
 
 
 def _describe(target: Target, address: str) -> str:
     """One target as the reminder names it. The address is given as the
     service resolved it, since the agent passes it to ``send_message``; a
     chat whose name has nothing left to show goes by its app."""
-    app = _app_name(address)
+    app = app_name(address)
     if _is_dm(address):
         return f"your {app} DM `{address}`"
     name = _shown_name(target.name)
@@ -319,13 +366,22 @@ def _describe(target: Target, address: str) -> str:
     return f"{app} `{address}`"
 
 
+def reached(targets: list[Target]) -> list[Target]:
+    """The targets a run's agent may send to: the ones its start resolved."""
+    return [t for t in targets if t.ok and t.address]
+
+
+def described(targets: list[Target]) -> str:
+    """The targets the run reaches, as its reminders name them."""
+    return ", ".join(_describe(t, t.address) for t in reached(targets))
+
+
 def reminder(targets: list[Target]) -> str:
     """What the run's agent is told about its delivery: where to send when it
     finishes. An entry that didn't resolve is the run record's to name, not
     the agent's to try."""
-    reached = ", ".join(_describe(t, t.address) for t in targets if t.ok and t.address)
     return (
-        f"When you finish, send the result with send_message to: {reached}. "
+        f"When you finish, send the result with send_message to: {described(targets)}. "
         "Write it for chat; attach files for detail."
     )
 

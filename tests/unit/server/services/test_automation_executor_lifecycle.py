@@ -414,8 +414,15 @@ async def test_a_held_run_tells_its_agent_where_to_send():
         ("directive", "Be brief."),
         ("directive", automation_delivery.reminder(_HELD.targets)),
     ]
-    # Its sends name the firing, and its run row says how it delivers.
-    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
+    # Its sends name the firing, a hand-off records the targets for the turn
+    # that reports it back, and its run row says how it delivers.
+    assert args["extra_configurable"] == {
+        "automation_execution_id": _EXEC,
+        automation_delivery.DELIVERY_KEY: {
+            "id": _EXEC,
+            "targets": [t.as_dict() for t in _HELD.targets],
+        },
+    }
     assert args["run_metadata"] == {
         "automation_execution_id": _EXEC,
         "automation_id": "auto-1",
@@ -450,7 +457,7 @@ async def test_a_run_in_home_names_no_workspace_to_the_service(automation):
     args = _turn_args(fx)
     assert (args["workspace_id"], args["role"]) == (home_id, "chief_of_staff")
     assert dx.start.await_args.args[2] is None
-    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
+    assert args["extra_configurable"] == automation_delivery.turn_configurable(_HELD)
 
 
 @pytest.mark.asyncio
@@ -470,7 +477,7 @@ async def test_an_analysts_run_names_its_workspace_to_the_service():
     args = _turn_args(fx)
     assert (args["workspace_id"], args["role"]) == ("ws-9", "analyst")
     dx.start.assert_awaited_once_with(automation, _EXEC, "ws-9", thread_id=args["thread_id"])
-    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
+    assert args["extra_configurable"] == automation_delivery.turn_configurable(_HELD)
 
 
 @pytest.mark.asyncio
@@ -674,7 +681,10 @@ async def test_a_wait_that_outlasts_a_delivery_change_runs_with_the_new_one():
     assert [c.content for c in args["request"].additional_context] == [
         automation_delivery.reminder(_RESTARTED.targets)
     ]
-    assert args["extra_configurable"] == {"automation_execution_id": f"{_EXEC}.2"}
+    assert args["extra_configurable"] == automation_delivery.turn_configurable(
+        _RESTARTED
+    )
+    assert args["extra_configurable"]["automation_execution_id"] == f"{_EXEC}.2"
     assert args["run_metadata"] == {
         "automation_execution_id": _EXEC,
         "automation_id": "auto-1",
@@ -732,7 +742,7 @@ async def test_a_wait_with_the_same_delivery_keeps_its_start():
     dx.start.assert_awaited_once()
     args = _turn_args(fx)
     assert args["user_input"] == "Summarize the week"
-    assert args["extra_configurable"] == {"automation_execution_id": _EXEC}
+    assert args["extra_configurable"] == automation_delivery.turn_configurable(_HELD)
     assert args["run_metadata"][automation_delivery.DELIVERY_KEY]["id"] == _EXEC
 
 
