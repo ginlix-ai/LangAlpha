@@ -40,7 +40,7 @@ Reasoning, compaction summaries and the context rows the harness injects are not
 
 ## Finding things
 
-Grep skips `.agents/` and Glob skips the history folders unless `path` points inside them.
+Grep skips `.agents/` (`.agents/memory/` aside) and Glob skips the history folders unless `path` points inside them.
 
 - Pick candidates from the index before searching everything:
   `jq -r '[.updated_at[:10], .workspace, .title, (.transcript // "-")] | @tsv' ../.agents/threads.jsonl`

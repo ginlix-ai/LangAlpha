@@ -17,6 +17,7 @@ from langgraph.store.base import BaseStore
 from ptc_agent.agent.backends.results import EditTextResult
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
+from ptc_agent.core.sandbox.grep_render import GrepLine
 from src.observability.private_errors import failure
 
 logger = structlog.get_logger(__name__)
@@ -160,7 +161,10 @@ def grep_texts(
     counts: list[tuple[str, int]] = []
     for path, content in texts:
         found = [
-            f"{path}:{number}:{line}" if show_line_numbers else f"{path}:{line}"
+            GrepLine(
+                f"{path}:{number}:{line}" if show_line_numbers else f"{path}:{line}",
+                path,
+            )
             for number, line in enumerate(content.splitlines(), start=1)
             if compiled.search(line)
         ]

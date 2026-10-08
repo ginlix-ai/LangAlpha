@@ -31,6 +31,11 @@ class DbJsonFolderRoute(DbJsonRoute):
     # What each file here stands for, as a refusal names it.
     entry: ClassVar[str] = "an entry"
 
+    @property
+    def fixed_names(self) -> None:
+        """None: the rows name the files here, so only a read can tell."""
+        return None
+
     def _readme_instead(self) -> str:
         return "Write the files beside it instead."
 

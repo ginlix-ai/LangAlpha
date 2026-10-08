@@ -22,6 +22,15 @@ def _magic(segment: str) -> bool:
     return any(c in segment for c in "*?[")
 
 
+def agent_glob_pattern(pattern: str) -> str:
+    """The pattern the agent's Glob walks for ``pattern``. A bare name looks
+    at every depth, so the server, matching a store's files for the same
+    Glob, has to read it the same way."""
+    if "**" not in pattern and "/" not in pattern:
+        return f"**/{pattern}"
+    return pattern
+
+
 def find(
     pattern: str,
     search_path: str,
