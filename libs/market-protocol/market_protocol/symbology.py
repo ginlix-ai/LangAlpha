@@ -99,6 +99,11 @@ _CN_INDEX_PREFIXES: dict[str, tuple[str, ...]] = {
     "XSHG": ("000",), "XSHE": ("399",), "BJSE": ("899",),
 }
 _CN_FUND_PREFIXES: dict[str, tuple[str, ...]] = {"XSHG": ("5",), "XSHE": ("15", "16", "18")}
+# B-shares have their own code range and trade in a foreign currency: SSE
+# 900xxx in US dollars, SZSE 200xxx in Hong Kong dollars.
+_CN_B_SHARE_CURRENCY: dict[str, tuple[str, str]] = {
+    "XSHG": ("900", "USD"), "XSHE": ("200", "HKD"),
+}
 
 
 def _is_code(symbol: str) -> bool:
@@ -113,6 +118,13 @@ def _venue_asset_class(symbol: str, mic: str) -> AssetClass:
         if symbol.startswith(_CN_FUND_PREFIXES.get(mic, ())):
             return AssetClass.FUND
     return AssetClass.EQUITY
+
+
+def _venue_currency(symbol: str, mic: str, default: str) -> str:
+    b_share = _CN_B_SHARE_CURRENCY.get(mic)
+    if b_share is not None and _is_code(symbol) and symbol.startswith(b_share[0]):
+        return b_share[1]
+    return default
 
 
 def _venue_code(symbol: str, mic: str) -> str:
@@ -370,8 +382,10 @@ def _clean(symbol: str) -> str:
 _MAX_SYMBOL_LEN = 64
 
 # A consumer interpolates the symbol into a URL path, where each of these
-# would end the segment, start a query or fragment, or begin an escape.
-_URL_METACHARS = frozenset("/\\?#%")
+# would end the segment, start a query or fragment, or begin an escape. A
+# comma separates a batch request's symbols, so one inside a symbol would
+# name two listings.
+_URL_METACHARS = frozenset("/\\?#%,")
 
 
 def _checked(symbol: object) -> str:
@@ -474,7 +488,7 @@ def _venue_ref(
     seed = _seed_registry().get(_spell(symbol, mic)) or {}
     mic = seed.get("mic", mic)
     info = _MICS.get(mic, _MICS[UNKNOWN_MIC])
-    currency = seed.get("currency", info.currency)
+    currency = seed.get("currency", _venue_currency(symbol, mic, info.currency))
     derived = _venue_asset_class(symbol, mic)
     # The key carries no asset class, so a hint that contradicts the listing
     # would file one class's data under another's key. A pair hint is refused
