@@ -464,7 +464,7 @@ async def test_restore_pulls_a_pack_as_one_item_with_its_members(restore_db):
     pack = packs[0]
     assert pack["sha256"] == CHUNK and pack["url"] == f"https://get/blobs/{USER}/{CHUNK}" and pack["size"] == PACK_MAX_BYTES
     by_path = {m["path"]: m for m in pack["members"]}
-    assert by_path["a.txt"] == {"path": "a.txt", "offset": 0, "size": 3, "sha256": _sha(A), "mode": 0o600, "mtime_ns": (NS // 1000) * 1000}
+    assert by_path["a.txt"] == {"path": "a.txt", "offset": 0, "size": 3, "sha256": _sha(A), "mode": 0o600, "mtime_ns": (NS // 1000) * 1000, "keep_existing": False}
     assert by_path["b.txt"]["offset"] == 3
     assert restore_db["sign"].call_count == 2  # one per chunk, one per object
     assert result == {"restored": 3, "errors": 0}
@@ -507,8 +507,8 @@ async def test_restore_relays_an_unreachable_pack_as_one_upload(restore_db):
     assert items == [big, {
         "kind": "pack", "file": f".wsfiles-relay-{CHUNK}", "sha256": CHUNK, "size": 8,
         "members": [
-            {"path": "a.txt", "offset": 0, "size": 3, "sha256": _sha(A), "mode": 0o600, "mtime_ns": (NS // 1000) * 1000},
-            {"path": "b.txt", "offset": 3, "size": 5, "sha256": _sha(B), "mode": 0o644, "mtime_ns": (NS // 1000) * 1000},
+            {"path": "a.txt", "offset": 0, "size": 3, "sha256": _sha(A), "mode": 0o600, "mtime_ns": (NS // 1000) * 1000, "keep_existing": False},
+            {"path": "b.txt", "offset": 3, "size": 5, "sha256": _sha(B), "mode": 0o644, "mtime_ns": (NS // 1000) * 1000, "keep_existing": False},
         ],
     }]
     assert result == {"restored": 3, "errors": 0}

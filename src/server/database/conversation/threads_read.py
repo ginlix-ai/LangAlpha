@@ -534,8 +534,8 @@ async def _thread_prefixes(conn, workspace_id: str) -> ThreadPrefixes:
     )
 
 
-async def get_workspace_thread_prefixes(workspace_id: str) -> ThreadPrefixes:
-    async with pool.get_db_connection() as conn:
+async def get_workspace_thread_prefixes(workspace_id: str, conn=None) -> ThreadPrefixes:
+    async with pool.get_db_connection(conn) as conn:
         return await _thread_prefixes(conn, workspace_id)
 
 

@@ -37,6 +37,13 @@ def test_what_a_prune_set_aside_is_never_backed_up():
     assert ".agents/.pruned." in spec["exclude_rel_dir_prefixes"]
 
 
+def test_the_deferred_ledger_is_never_backed_up():
+    """It lists what one sandbox received; restored onto the next, it would
+    keep that sandbox from ever receiving those paths."""
+    spec = exclusion_spec(1)
+    assert ".agents/large_tool_results/.restored.d" in spec["exclude_rel_dirs"]
+
+
 def test_the_reconciler_lock_is_reserved_at_its_own_path_only():
     """A basename exclusion would drop a user's ``results/.skills-sync.flock``
     from every scan and prune its row on the next sync."""

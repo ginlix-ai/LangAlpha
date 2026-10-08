@@ -263,10 +263,18 @@ async def test_restore_holds_the_same_lock_across_the_flag_and_the_transfer():
         return True
 
     async def _rows(
-        workspace_id, *, include_content=False, all_kinds=False, outside=None, conn=None
+        workspace_id,
+        *,
+        include_content=False,
+        all_kinds=False,
+        outside=None,
+        under=None,
+        conn=None,
     ):
-        order.append("read")
+        order.append("read" if under is None else "notes")
         seen_conns.append(conn)
+        if under is not None:
+            return []
         return [{"file_path": "d", "kind": "dir", "permissions": "0755"}]
 
     async def _owner(workspace_id, conn=None):
@@ -298,10 +306,11 @@ async def test_restore_holds_the_same_lock_across_the_flag_and_the_transfer():
         "skills-lock",
         "lock",
         "read",
+        "notes",
         "owner",
         "pull",
         "flag=False",
         "unlock",
         "skills-unlock",
     ]
-    assert seen_conns == [None] + ["own-session"] * 4
+    assert seen_conns == [None] + ["own-session"] * 5

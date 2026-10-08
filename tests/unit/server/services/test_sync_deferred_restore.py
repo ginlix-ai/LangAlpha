@@ -137,10 +137,11 @@ async def test_evicted_results_missing_before_the_marker_keep_their_rows():
 
     result, mark = await _sync(manifest, [_file("notes.txt", "n"), _dir(".agents")])
 
-    assert {RESULTS_DIR, THREAD_DIR, EVICTED, NOTE} <= set(manifest.rows)
-    # Everything else still prunes.
-    assert GONE not in manifest.rows
-    assert result.deleted == 1
+    assert {RESULTS_DIR, THREAD_DIR, EVICTED} <= set(manifest.rows)
+    # Everything else still prunes, a checkpoint note too: it came with the
+    # first pass, so one missing now is one the turn deleted.
+    assert GONE not in manifest.rows and NOTE not in manifest.rows
+    assert result.deleted == 2
     # A withheld prune is one the next pass has to repeat, which a recorded
     # scan mark would let the sweep skip.
     assert result.pruned is False

@@ -319,7 +319,7 @@ async def _sync_locked(
                 untouched_since=started_at,
                 conn=conn,
             )
-            # A kept evicted result is a prune this pass could not make.
+            # A kept deferred row is a prune this pass could not make.
             result.pruned = not withheld
         # Rows kept for oversized files, or by a skipped prune, still count.
         result.total_size = await get_workspace_total_size(workspace_id, conn=conn)
