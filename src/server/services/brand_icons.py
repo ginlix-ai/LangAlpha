@@ -32,7 +32,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -568,3 +568,29 @@ async def icon_response(*sources: str | None) -> Response:
         media_type=icon.content_type,
         headers={"Cache-Control": _HIT_CACHE, **_ART_SAFETY},
     )
+
+
+_WARM_LOCK = "brand-icon-warm:v1"
+_WARM_LOCK_MS = 60_000
+
+
+async def warm_marks(chains: Iterable[Sequence[str | None]]) -> None:
+    """Resolve the marks this build ships before anyone asks for them.
+
+    Run at startup, so an emptied cache or a newly named source does not hand
+    its first viewer a vendor's homepage to wait on. One worker does it per
+    start; the others would only fetch the same pages again.
+    """
+    cache = get_cache_client()
+    token = uuid.uuid4().hex
+    if await cache.acquire_lock(_WARM_LOCK, token, _WARM_LOCK_MS) is not True:
+        return
+    try:
+        results = await asyncio.gather(
+            *(_first_mark(chain) for chain in chains), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("[brand_icons] warming a mark failed: %r", result)
+    finally:
+        await cache.release_lock(_WARM_LOCK, token)

@@ -476,6 +476,9 @@ class InfrastructureConfig(BaseModel):
     redis_warm_on_startup: bool = Field(
         default=True, description="Enable Redis cache warming on startup"
     )
+    brokerage_marks_warm_on_startup: bool = Field(
+        default=False, description="Fetch the built-in brokerages' logos on startup"
+    )
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing")
     market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
 

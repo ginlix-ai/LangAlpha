@@ -761,3 +761,53 @@ class TestABrokerMarkFallsBackToItsSite:
         moomoo = next(b for b in BROKERAGES if b.name == "moomoo")
         assert moomoo.mark_sources == (moomoo.icon, "moomoo.com")
         assert moomoo.icon.startswith("https://")
+
+
+class TestWarmingTheShippedMarks:
+    """Startup resolves the shipped brokers' marks, so no viewer waits on one."""
+
+    @pytest.mark.asyncio
+    async def test_each_mark_is_resolved_and_stored(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache()
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        await brand_icons.warm_marks([("a.test",), ("b.test",)])
+
+        assert sorted(asked) == ["a.test", "b.test"]
+        assert {"brand-icon:v1:a.test", "brand-icon:v1:b.test"} <= set(cache.entries)
+
+    @pytest.mark.asyncio
+    async def test_a_worker_that_does_not_hold_the_lock_fetches_nothing(
+        self, monkeypatch
+    ):
+        from src.server.services import brand_icons
+
+        monkeypatch.setattr(
+            brand_icons, "get_cache_client", lambda: _Cache(locked=True)
+        )
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        await brand_icons.warm_marks([("a.test",)])
+
+        assert asked == []
+
+    @pytest.mark.asyncio
+    async def test_one_failing_mark_does_not_stop_the_rest(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache()
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+
+        async def _find(host):
+            if host == "broken.test":
+                raise RuntimeError("vendor answered nonsense")
+            return brand_icons.BrandIcon(content=NEW_MARK, content_type="image/png")
+
+        monkeypatch.setattr(brand_icons, "_from_site", _find)
+
+        await brand_icons.warm_marks([("broken.test",), ("fine.test",)])
+
+        assert "brand-icon:v1:fine.test" in cache.entries
