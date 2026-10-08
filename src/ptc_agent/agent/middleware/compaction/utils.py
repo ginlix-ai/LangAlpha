@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import json
 import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -19,13 +19,15 @@ from langchain_core.messages import (
 from langchain_core.messages.human import HumanMessage
 from langchain_core.messages.utils import convert_to_messages
 
-from ptc_agent.agent.middleware._message_utils import message_id
-from ptc_agent.agent.transcript import TranscriptTarget
-from ptc_agent.agent.transcript.pointer import (
-    SummaryStart,
-    summary_resumes_at,
-    transcript_note,
+from ptc_agent.agent.middleware._message_utils import (
+    is_tool_message,
+    message_field,
+    message_id,
 )
+from ptc_agent.agent.middleware.skills.content import skill_bodies
+from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript.classify import is_summary_message
+from ptc_agent.agent.transcript.pointer import SummarySpan, transcript_note
 from src.llms.attachment_payload import FILE_BLOCK_TYPES, IMAGE_BLOCK_TYPES
 from ptc_agent.agent.middleware.compaction.types import (
     CONTEXT_SUMMARY_PREFIX,
@@ -33,8 +35,6 @@ from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     TRUNCATABLE_TOOLS,
 )
-
-logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -106,8 +106,18 @@ def count_tokens_tiktoken(messages: Iterable[MessageLikeRepresentation]) -> int:
     enc = _get_tiktoken_encoder()
     total = 0
     for msg in convert_to_messages(messages):
-        # Extract from main content
-        text = _extract_text_from_content(msg.content)
+        tool_calls = getattr(msg, "tool_calls", None)
+        content = msg.content
+        if tool_calls and isinstance(content, list):
+            # Anthropic keeps each call as a tool_use block too; the provider
+            # is sent tool_calls, which a Tier 1 cut rewrites, so count those.
+            ids = {tc.get("id") for tc in tool_calls}
+            content = [
+                b
+                for b in content
+                if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in ids)
+            ]
+        text = _extract_text_from_content(content)
 
         # Also check additional_kwargs for OpenAI reasoning (o1/o3 models)
         additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
@@ -121,6 +131,15 @@ def count_tokens_tiktoken(messages: Iterable[MessageLikeRepresentation]) -> int:
                 else str(reasoning)
             )
             text = f"{text} {reasoning_text}" if text else reasoning_text
+
+        # Sent with the message, and on a code-heavy turn most of its size.
+        if tool_calls:
+            calls = json.dumps(
+                [{"name": tc.get("name"), "args": tc.get("args")} for tc in tool_calls],
+                ensure_ascii=False,
+                default=str,
+            )
+            text = f"{text} {calls}" if text else calls
 
         total += len(enc.encode(text)) + 3  # +3 for role/message overhead
     return total
@@ -250,245 +269,85 @@ def strip_base64_from_messages(messages: list[AnyMessage]) -> list[AnyMessage]:
 
 
 def truncate_tool_call(
-    tool_call: dict[str, Any],
-    max_length: int,
-    truncation_text: str,
-    thread_dir: str | None = None,
+    tool_call: dict[str, Any], max_length: int, marker: str
 ) -> dict[str, Any]:
-    """Truncate large arguments in a single tool call.
-
-    Only clips individual string args exceeding max_length, preserving arg structure.
-
-    Args:
-        tool_call: The tool call dictionary to truncate.
-        max_length: Maximum character length for tool arguments before truncation.
-        truncation_text: Fallback text when no thread_dir is available.
-        thread_dir: If provided, the truncation marker includes the path where
-            the original content is saved, so the agent can retrieve it.
-
-    Returns:
-        A copy of the tool call with large arguments truncated, or the
-        original if no modifications were needed.
-    """
+    """A copy of ``tool_call`` with each string arg over ``max_length`` cut
+    to its head plus ``marker``, or the call itself when none is that long."""
     args = tool_call.get("args", {})
-
-    # Build the marker text — include file path when backend offloading is active
-    if thread_dir is not None:
-        tool_call_id = tool_call.get("id", "unknown")
-        path = f"{thread_dir}/truncated_args_{tool_call_id}.md"
-        marker = f"... [this tool call's arguments were offloaded to {path} — use Read to access when needed]"
-    else:
-        marker = truncation_text
-
     truncated_args = {}
     modified = False
-
     for key, value in args.items():
         if isinstance(value, str) and len(value) > max_length:
             truncated_args[key] = value[:20] + marker
             modified = True
         else:
             truncated_args[key] = value
-
     if modified:
         return {**tool_call, "args": truncated_args}
     return tool_call
 
 
-def truncate_message_args(
-    messages: list[AnyMessage],
-    cutoff_index: int,
-    max_length: int,
-    truncation_text: str,
-    thread_dir: str | None = None,
-) -> tuple[list[AnyMessage], bool, dict[str, dict[str, Any]]]:
-    """Truncate large tool call arguments in old messages.
-
-    Only processes messages before the cutoff index. Only modifies AIMessages
-    with tool calls to truncatable tools (Write, Edit, ExecuteCode).
-
-    Args:
-        messages: Effective messages to potentially truncate.
-        cutoff_index: Messages at index >= cutoff are protected from truncation.
-        max_length: Maximum character length for tool arguments before truncation.
-        truncation_text: Fallback text when no thread_dir is available.
-        thread_dir: If provided, truncation markers include the path where
-            the original content is saved.
-
-    Returns:
-        Tuple of (messages, modified, originals). If modified is False,
-        messages is the same list object as input. originals maps
-        tool_call_id -> {"name": str, "args": dict} for calls that were
-        truncated, so callers can offload the original content.
-    """
-    if cutoff_index >= len(messages):
-        return messages, False, {}
-
-    logger.debug(
-        "Truncating tool args in messages before index %d (of %d total)",
-        cutoff_index,
-        len(messages),
-    )
-
-    truncated_messages: list[AnyMessage] = []
-    modified = False
-    originals: dict[str, dict[str, Any]] = {}
-
-    for i, msg in enumerate(messages):
-        if i < cutoff_index and isinstance(msg, AIMessage) and msg.tool_calls:
-            truncated_tool_calls = []
-            msg_modified = False
-
-            for tool_call in msg.tool_calls:
-                if tool_call["name"] in TRUNCATABLE_TOOLS:
-                    truncated_call = truncate_tool_call(
-                        tool_call, max_length, truncation_text, thread_dir
-                    )
-                    if truncated_call is not tool_call:
-                        msg_modified = True
-                        originals[tool_call["id"]] = {
-                            "name": tool_call["name"],
-                            "args": tool_call["args"],
-                        }
-                    truncated_tool_calls.append(truncated_call)
-                else:
-                    truncated_tool_calls.append(tool_call)
-
-            if msg_modified:
-                truncated_msg = msg.model_copy()
-                truncated_msg.tool_calls = truncated_tool_calls
-                truncated_messages.append(truncated_msg)
-                modified = True
-            else:
-                truncated_messages.append(msg)
-        else:
-            truncated_messages.append(msg)
-
-    if modified:
-        logger.debug(
-            "Tool arg truncation applied to messages before index %d (%d tool calls)",
-            cutoff_index,
-            len(originals),
+def oversized_arg_calls(
+    messages: list[AnyMessage], cutoff_index: int, max_length: int
+) -> set[str]:
+    """Ids of the Write, Edit and ExecuteCode calls before ``cutoff_index``
+    that pass a string longer than ``max_length``."""
+    return {
+        call["id"]
+        for message in messages[:cutoff_index]
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls or ()
+        if call["name"] in TRUNCATABLE_TOOLS
+        and call.get("id")
+        and any(
+            isinstance(value, str) and len(value) > max_length
+            for value in (call.get("args") or {}).values()
         )
-
-    return truncated_messages, modified, originals
+    }
 
 
 # =============================================================================
-# Read result truncation
+# Stale Read results
 # =============================================================================
 
 
-def truncate_read_results(
-    messages: list[AnyMessage],
-    cutoff_index: int,
-) -> tuple[list[AnyMessage], bool, set[str]]:
-    """Truncate duplicate and non-critical Read tool results in old messages.
+def stale_read_ids(messages: list[AnyMessage], cutoff_index: int) -> set[str]:
+    """Ids of the Read results before ``cutoff_index`` the agent no longer
+    needs in full: one a later Read of the same file, offset and limit
+    supersedes, and one of a file under ``NON_CRITICAL_READ_PREFIXES``, whose
+    content the agent has already processed."""
+    read_args = {
+        call["id"]: call.get("args", {})
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls or ()
+        if call["name"] == "Read"
+    }
+    reads: dict[tuple, list[tuple[int, str]]] = {}
+    for i, message in enumerate(messages):
+        if isinstance(message, ToolMessage) and message.tool_call_id in read_args:
+            args = read_args[message.tool_call_id]
+            # Args as the model wrote them, not as Read accepted them: a null
+            # path or a list offset must not fail the turn start this runs in.
+            key = (
+                str(args.get("file_path") or ""),
+                repr(args.get("offset")),
+                repr(args.get("limit")),
+            )
+            reads.setdefault(key, []).append((i, message.tool_call_id))
 
-    Complements truncate_message_args (which handles AIMessage args) by targeting
-    ToolMessage content for Read tool calls. Two patterns are handled:
-
-    1. **Duplicate reads**: Same file read multiple times with identical
-       (file_path, offset, limit) — earlier results are superseded.
-    2. **Non-critical reads**: Reads of paths matching NON_CRITICAL_READ_PREFIXES
-       (e.g. .agents/threads/) — content already processed by the agent.
-
-    Only messages before cutoff_index are eligible for truncation.
-
-    Args:
-        messages: Effective messages to potentially truncate.
-        cutoff_index: Messages at index >= cutoff are protected from truncation.
-
-    Returns:
-        Tuple of (messages, modified, offloaded_tool_call_ids).
-        If modified is False, messages is the same list object as input.
-        offloaded_tool_call_ids contains the tool_call_id of every truncated ToolMessage.
-    """
-    if cutoff_index >= len(messages):
-        return messages, False, set()
-
-    # --- Pass 1: Build tool_call_id → Read args index from AIMessages ---
-    read_args_by_id: dict[str, dict[str, Any]] = {}
-    for msg in messages:
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc["name"] == "Read":
-                    read_args_by_id[tc["id"]] = tc.get("args", {})
-
-    if not read_args_by_id:
-        return messages, False, set()
-
-    # --- Pass 2: Group ToolMessages by read signature, track latest index ---
-    # signature key → list of (msg_index, tool_call_id)
-    sig_groups: dict[tuple, list[tuple[int, str]]] = {}
-    for i, msg in enumerate(messages):
-        if not isinstance(msg, ToolMessage):
-            continue
-        tc_id = msg.tool_call_id
-        if tc_id not in read_args_by_id:
-            continue
-        args = read_args_by_id[tc_id]
-        sig = (
-            args.get("file_path", ""),
-            args.get("offset"),
-            args.get("limit"),
-        )
-        sig_groups.setdefault(sig, []).append((i, tc_id))
-
-    if not sig_groups:
-        return messages, False, set()
-
-    # Find the latest msg_index per signature
-    latest_per_sig: dict[tuple, int] = {}
-    for sig, entries in sig_groups.items():
-        latest_per_sig[sig] = max(idx for idx, _ in entries)
-
-    # --- Pass 3: Determine which ToolMessages to truncate ---
-    ids_to_truncate: dict[str, str] = {}  # tool_call_id → replacement content
-
-    for sig, entries in sig_groups.items():
-        file_path = sig[0]
-        latest_idx = latest_per_sig[sig]
-        is_non_critical = any(
-            file_path.startswith(prefix) for prefix in NON_CRITICAL_READ_PREFIXES
-        )
-
-        for msg_idx, tc_id in entries:
-            if msg_idx >= cutoff_index:
-                continue  # Protected — don't touch
-
-            is_duplicate = len(entries) > 1 and msg_idx != latest_idx
-
-            # Compute the marker we'd insert
-            marker: str | None = None
-            if is_duplicate or is_non_critical:
-                marker = read_offload_marker(file_path)
-
-            # Skip if content already equals the marker (idempotent)
-            if marker is not None and messages[msg_idx].content != marker:
-                ids_to_truncate[tc_id] = marker
-
-    if not ids_to_truncate:
-        return messages, False, set()
-
-    # --- Pass 4: Build new message list with replacements ---
-    new_messages: list[AnyMessage] = []
-    for msg in messages:
-        if isinstance(msg, ToolMessage) and msg.tool_call_id in ids_to_truncate:
-            replaced = msg.model_copy()
-            replaced.content = ids_to_truncate[msg.tool_call_id]
-            new_messages.append(replaced)
-        else:
-            new_messages.append(msg)
-
-    offloaded_ids = set(ids_to_truncate.keys())
-    logger.debug(
-        "Read result truncation applied before index %d (%d results truncated)",
-        cutoff_index,
-        len(offloaded_ids),
-    )
-
-    return new_messages, True, offloaded_ids
+    stale: set[str] = set()
+    for (file_path, _, _), entries in reads.items():
+        non_critical = file_path.startswith(NON_CRITICAL_READ_PREFIXES)
+        latest = entries[-1][0]
+        for i, call_id in entries:
+            if (
+                i < cutoff_index
+                and (non_critical or i != latest)
+                and messages[i].content != read_offload_marker(file_path)
+            ):
+                stale.add(call_id)
+    return stale
 
 
 def read_offload_marker(file_path: str) -> str:
@@ -499,21 +358,6 @@ def read_offload_marker(file_path: str) -> str:
 # Shared compaction helpers (used by both middleware and manual triggers)
 # =============================================================================
 
-
-def _is_tool_message(message: Any) -> bool:
-    """True for a tool result in either typed (``ToolMessage``) or dict shape.
-
-    The checkpoint reducer coerces every write via ``convert_to_messages`` (see
-    ``messages_delta_reducer``), so only typed messages should reach
-    reconstruction. But this predicate backs the orphaned-``tool_result`` crash
-    backstop, so it stays agnostic to message shape rather than trusting that
-    invariant — a dict-shaped tool result slipping in must still be caught.
-    """
-    if isinstance(message, ToolMessage):
-        return True
-    if isinstance(message, dict):
-        return message.get("role") == "tool" or message.get("type") == "tool"
-    return False
 
 
 def _tool_result_call_id(message: Any) -> str | None:
@@ -531,20 +375,6 @@ def _tool_result_call_id(message: Any) -> str | None:
     return call_id if isinstance(call_id, str) else None
 
 
-def _field(message: Any, name: str) -> Any:
-    """Read a field off a message in either typed or dict shape.
-
-    The same reason ``_is_tool_message`` gives: the reducer is supposed to have
-    coerced everything, and this side of the ownership rule is what deletes, so
-    it does not trust that. Reading only attributes made a dict-shaped assistant
-    turn declare nothing, which marked its own answered results as orphans and
-    stripped them. The two halves have to make the same shape assumption or the
-    mismatch loses content.
-    """
-    if isinstance(message, dict):
-        return message.get(name)
-    return getattr(message, name, None)
-
 
 def declared_tool_call_ids(message: Any) -> set[str]:
     """Every tool call an assistant turn is on the hook for an answer to.
@@ -560,14 +390,14 @@ def declared_tool_call_ids(message: Any) -> set[str]:
     ids: set[str] = set()
 
     for attr in ("tool_calls", "invalid_tool_calls"):
-        for call in _field(message, attr) or []:
+        for call in message_field(message, attr) or []:
             call_id = (
                 call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
             )
             if isinstance(call_id, str) and call_id:
                 ids.add(call_id)
 
-    content = _field(message, "content")
+    content = message_field(message, "content")
     if isinstance(content, list):
         for block in content:
             if not isinstance(block, dict):
@@ -605,7 +435,7 @@ def _result_owners(messages: list[AnyMessage]) -> dict[int, int | None]:
     owners: dict[int, int | None] = {}
 
     for i, msg in enumerate(messages):
-        if _is_tool_message(msg):
+        if is_tool_message(msg):
             call_id = _tool_result_call_id(msg)
             if call_id is not None:
                 owners[i] = last_declared.get(call_id)
@@ -837,18 +667,9 @@ _LEGACY_FILE_NOTE = "\n\nFull conversation history saved to `"
 _SUMMARY_SOURCE = "summarization"
 
 
-def is_summary_message(message: Any) -> bool:
-    """Whether ``message`` is a summary ``build_summary_message`` wrote."""
-    if not isinstance(message, HumanMessage):
-        return False
-    if (message.additional_kwargs or {}).get("lc_source") == _SUMMARY_SOURCE:
-        return True
-    content = message.content
-    return isinstance(content, str) and content.startswith(CONTEXT_SUMMARY_PREFIX)
-
-
-def _after_summary(messages: Sequence[AnyMessage]) -> Sequence[AnyMessage]:
-    return messages[1:] if messages and is_summary_message(messages[0]) else messages
+#: What a summary message stands in for, read back when the next compaction
+#: summarizes it: the span of turns, and the skills its note listed.
+SUMMARIZED_KEY = "summarized"
 
 
 def build_summary_message(
@@ -856,18 +677,25 @@ def build_summary_message(
     transcript: TranscriptTarget | None = None,
     original_message_count: int = 0,
     *,
-    resumes_at: SummaryStart | None = None,
+    span: SummarySpan | None = None,
+    index: Sequence[str] = (),
+    skills: Sequence[str] = (),
+    skill_files: bool = False,
+    source: str = "model",
 ) -> HumanMessage:
     """Build the summary HumanMessage, pointing at the transcript when there is one.
 
     Tags with lc_source='summarization' for chain filtering, and stamps the
     emit-time ``context_window`` summarize fields into ``additional_kwargs``
     so checkpoint-sourced replay re-emits the event without the stored SSE
-    stream.
+    stream. ``skills`` are listed for the agent to reload (see
+    ``skill_reload_note``). ``source`` says what wrote the summary (see
+    ``summarize``).
     """
     content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
     if transcript is not None:
-        content += transcript_note(transcript, resumes_at)
+        content += transcript_note(transcript, span, index)
+    content += skill_reload_note(list(skills), files=skill_files)
 
     return HumanMessage(
         content=content,
@@ -877,43 +705,87 @@ def build_summary_message(
             "summarize_complete": {
                 "summary_length": len(summary),
                 "original_message_count": original_message_count,
+                "source": source,
+            },
+            SUMMARIZED_KEY: {
+                "span": [span.first, span.last] if span is not None else None,
+                "gap": list(span.gap) if span is not None and span.gap is not None else None,
+                "skills": list(skills),
             },
         },
     )
 
 
-def build_summary_event(
-    summary: str,
-    transcript: TranscriptTarget | None,
-    *,
-    raw_messages: list[AnyMessage],
-    preserved_messages: list[AnyMessage],
-    original_message_count: int,
-    to_summarize: Sequence[AnyMessage] = (),
-    summarized: Sequence[AnyMessage] = (),
-) -> CompactionEvent:
-    """The event putting ``summary`` in place of ``to_summarize``, pointing
-    at the transcript when there is one. ``summarized`` is what the model was
-    sent of them after trimming, which says where the summary starts; an
-    earlier summary heading both is kept whole, so the start is after it."""
-    summary_message = build_summary_message(
-        summary,
-        transcript,
-        original_message_count,
-        resumes_at=(
-            summary_resumes_at(
-                raw_messages, _after_summary(to_summarize), _after_summary(summarized)
-            )
-            if transcript is not None
-            else None
-        ),
+def _summarized(message: Any) -> Mapping[str, Any]:
+    stamp = (getattr(message, "additional_kwargs", None) or {}).get(SUMMARIZED_KEY)
+    return stamp if isinstance(stamp, dict) else {}
+
+
+def summarized_span(message: Any) -> SummarySpan | None:
+    """The turns an earlier summary stood in for, and those it left out,
+    when it recorded them."""
+    stamp = _summarized(message)
+    span, gap = stamp.get("span"), stamp.get("gap")
+    if not _turn_pair(span):
+        return None
+    return SummarySpan(span[0], span[1], (gap[0], gap[1]) if _turn_pair(gap) else None)
+
+
+def _turn_pair(value: Any) -> bool:
+    return isinstance(value, list) and len(value) == 2 and all(isinstance(n, int) for n in value)
+
+
+def listed_skills(messages: Iterable[Any]) -> list[str]:
+    """The skills earlier summaries among ``messages`` listed for reloading."""
+    return [
+        name
+        for message in messages
+        if is_summary_message(message)
+        for name in _summarized(message).get("skills") or ()
+        if isinstance(name, str)
+    ]
+
+
+def compacted_skills(summarized: Any, kept: Any) -> list[str]:
+    """Skills whose body a summary replaces and no kept message still carries
+    whole.
+
+    Part of a body counts on the summarized side, since a skill read in pages
+    was still being followed. An earlier summary in ``summarized`` carries no
+    body, only the names its note listed, and those skills are still out of
+    context unless a kept message has read one again; dropping them would lose
+    them for good.
+    """
+    still = {name for name, whole in skill_bodies(kept).items() if whole}
+    names = dict.fromkeys([*listed_skills(summarized), *skill_bodies(summarized)])
+    return [name for name in names if name not in still]
+
+
+def skill_reload_note(names: list[str], *, files: bool) -> str:
+    """What a summary tells the agent about skills it may still be following.
+
+    ``files`` is whether the agent reaches skills as files (PTC, where a Read
+    of SKILL.md loads one) rather than through LoadSkill (Flash).
+    """
+    if not names:
+        return ""
+    listed = ", ".join(f"`{name}`" for name in names)
+    how = (
+        "Read its `.agents/skills/<name>/SKILL.md` again"
+        if files
+        else "call LoadSkill with its name"
     )
-    return build_compaction_event(
-        raw_messages=raw_messages,
-        preserved_messages=preserved_messages,
-        summary_message=summary_message,
-        file_path=transcript.directory if transcript else None,
+    return (
+        f"\n\nThe instructions of these skills were in the summarized part and "
+        f"are no longer in your context: {listed}. Before you continue with one "
+        f"you are still following, {how}."
     )
+
+
+def summary_source(message: Any) -> str | None:
+    """What wrote a summary message (see ``summarize``), as it was stamped."""
+    stamp = (getattr(message, "additional_kwargs", None) or {}).get("summarize_complete")
+    return stamp.get("source") if isinstance(stamp, dict) else None
 
 
 def parse_summary_message(message: HumanMessage) -> str:
@@ -929,68 +801,3 @@ def parse_summary_message(message: HumanMessage) -> str:
         return text[:length]
     # Legacy checkpoints without the stamp: fall back to note-prefix splitting.
     return text.rsplit(_LEGACY_FILE_NOTE, 1)[0]
-
-
-# =============================================================================
-# Prompt template
-# =============================================================================
-
-# Financial research summarization prompt. Instructions only — the conversation
-# history is delivered in a separate HumanMessage so the system channel stays
-# bounded and cacheable, and so BaseChatModel.format() doesn't try to interpret
-# message content as further format placeholders.
-DEFAULT_SUMMARY_PROMPT = """<role>
-Financial Research Context Summarizer
-</role>
-
-<context>
-You're nearing your input token limit. The conversation history in the user
-message will be replaced with the context you extract. This is critical -
-ensure you capture all important information so you can continue the research
-without losing progress.
-</context>
-
-<objective>
-Extract the most important context to preserve research continuity and prevent
-repeating completed work. Think deeply about what information is essential to
-achieving the user's overall goal.
-</objective>
-
-<instructions>
-Create a natural, readable summary that captures everything needed to continue the work.
-Write in the SAME LANGUAGE as the user's queries.
-Use your judgment on structure - the categories below are guidelines, not rigid templates.
-
-Key information to capture:
-
-1. **Current Query**: What is the user asking? Include the verbatim question, relevant tickers/entities, and scope.
-
-2. **Progress**: What has been done and what remains? List completed steps with outcomes, current work, and pending tasks.
-
-3. **Key Findings**: All critical discoveries with their sources:
-   - Data points with exact values: prices, ratios, growth rates (always include source)
-   - Observations and patterns identified
-   - Conclusions reached from analysis
-   - URLs crawled, APIs used, files created
-
-4. **Decisions**: Any methodology choices or user preferences that affect ongoing work.
-
-5. **Query History** (for multi-turn sessions only): Previous queries in chronological order with their outcomes.
-
-Guidelines:
-- Preserve ALL numerical data exactly as discovered
-- Include source/citation for each data point
-- Omit categories that have no content
-- Be concise but comprehensive
-- Use natural prose or bullet points as appropriate
-</instructions>
-
-<output_format>
-Respond ONLY with the extracted context. Do not include preamble or commentary.
-
-Begin with a Brief 1-2 sentence overview of the research session and current goal.
-Make sure you maintain the user original query and goal.
-
-Then organize naturally using markdown headers.
-Write as if briefing a colleague who needs to continue your work without repeating what's done.
-</output_format>"""

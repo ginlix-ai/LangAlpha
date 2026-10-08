@@ -16,6 +16,11 @@ from __future__ import annotations
 DEFAULT_READ_LINES = 2000
 MAX_READ_CHARS = 160_000
 
+# How Read's note opens when it showed less than the file may hold: a window
+# clipped at the character cap, or one that filled its line limit.
+READ_CLIPPED_NOTE = "\n\n[Read truncated"
+READ_FULL_WINDOW_NOTE = "\n\n[Read stopped at the "
+
 
 def format_cat_n(lines: list[str], *, start_line_number: int) -> str:
     return "\n".join(f"{i:6}\t{line}" for i, line in enumerate(lines, start=start_line_number))

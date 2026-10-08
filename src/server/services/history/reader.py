@@ -535,13 +535,14 @@ class CheckpointHistoryReader:
             ],
         )
 
-    async def alatest_task_checkpoint_id(
-        self, thread_id: str, task_id: str
+    async def alatest_checkpoint_id(
+        self, thread_id: str, checkpoint_ns: str = ""
     ) -> str | None:
-        """The checkpoint ``aget_task_history`` would read at now, without
-        materializing its state."""
+        """The newest checkpoint written in ``checkpoint_ns``, without
+        materializing its state: for a task, the one ``aget_task_history``
+        would read at now; for the thread, past its stamp while a turn runs."""
         tip = await self._checkpointer.aget_tuple(
-            {"configurable": {"thread_id": thread_id, "checkpoint_ns": f"task:{task_id}"}}
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}}
         )
         if tip is None:
             return None

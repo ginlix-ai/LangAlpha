@@ -314,7 +314,7 @@ class TestLoadFromDictCompaction:
             "enabled": False,
             "token_threshold": 80000,
             "keep_messages": 3,
-            "truncate_args_trigger_messages": 15,
+            "truncate_args_idle_minutes": 30,
             "truncate_args_keep_messages": 10,
             "truncate_args_max_length": 1000,
         })
@@ -322,7 +322,7 @@ class TestLoadFromDictCompaction:
         assert config.compaction.enabled is False
         assert config.compaction.token_threshold == 80000
         assert config.compaction.keep_messages == 3
-        assert config.compaction.truncate_args_trigger_messages == 15
+        assert config.compaction.truncate_args_idle_minutes == 30
 
     def test_partial_compaction(self):
         """Partial compaction section uses defaults for missing fields."""

@@ -383,7 +383,7 @@
     "compactionProfile": "压缩预设",
     "compactionProfileDesc": "用于控制压缩触发与保留的预设组合。保持系统默认时，每个模型会自动匹配与其上下文窗口相称的预设。",
     "compactionProfileUseDefault": "使用系统默认",
-    "compactionProfilePreset": "{{tokens}}k tokens · 保留 {{keep}} 条 · 第 {{trim}} 条起截断",
+    "compactionProfilePreset": "{{tokens}}k tokens · 保留 {{keep}} 条",
     "compactionProfiles": {
       "aggressive": {
         "label": "激进",
@@ -1773,7 +1773,7 @@
       "subagentDesc": "使用子 Agent 完成此任务",
       "compactName": "compact",
       "compactDesc": "压缩对话上下文以释放 token 空间",
-      "offloadDesc": "将大型工具参数转存至沙箱文件系统",
+      "offloadDesc": "精简较早消息中的大型工具参数和过时的文件读取结果",
       "noMatching": "无匹配命令",
       "comps-analysisDesc": "可比公司分析：经营指标、估值倍数、同业对标",
       "dcf-modelDesc": "DCF 估值：自由现金流预测、WACC、终值、敏感性分析",

@@ -896,7 +896,9 @@ async def agrep_content(
         if output_mode == "files_with_matches":
             cmd.append("-l")
         elif output_mode == "count":
-            cmd.append("-c")
+            # rg leaves the file name off when it searches one file, and the
+            # parse below needs "path:count" to read the count.
+            cmd.extend(["-c", "--with-filename"])
         elif output_mode == "content":
             # Match offsets come from rg itself, so cutting a long line never
             # re-runs the pattern in Python, whose backtracking rg does not share.

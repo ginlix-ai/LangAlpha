@@ -7,11 +7,18 @@ appended to the user message when a skill is activated. Lives in ``ptc_agent``
 """
 
 import logging
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from ptc_agent.agent.middleware._message_utils import message_id as _message_id
+from ptc_agent.agent.middleware._message_utils import (
+    is_tool_message,
+    message_field,
+    message_id as _message_id,
+)
+from ptc_agent.agent.middleware.skills.discovery import validate_skill_name
 from ptc_agent.agent.middleware.skills.registry import (
     SkillDefinition,
     SkillMode,
@@ -46,8 +53,8 @@ def _resolve_skill(
 def loaded_skill_marker(name: str, message_id: str | None = None) -> str:
     """Opening tag marking a skill's injected SKILL.md body in the message history.
 
-    Single source of truth shared by the writer (``build_skill_content``) and the
-    scanner (``compute_already_loaded``) so the marker format can't drift between them.
+    Written by ``build_skill_content``; ``_BOUND_MARKER`` is the scanner's
+    pattern for the same tag (``skill_bodies``), so a change here goes there too.
 
     The optional ``mid`` attribute binds the marker to the framework-assigned id of
     the message the body is written into. The scanner only treats a marker as live
@@ -324,6 +331,91 @@ def _message_text(message: Any) -> str:
     return ""
 
 
+_BOUND_MARKER = re.compile(r'<loaded-skill name="([^"]+)" mid="([^"]+)">')
+_SKILL_CLOSE = "</loaded-skill>"
+# Bounded attributes: an unbounded one would scan to the end of the text for
+# each malformed opening tag.
+_SKILL_BLOCK = re.compile(
+    r'<loaded-skill name="([^"]{1,200})"[^>]{0,200}>.*?</loaded-skill>', re.S
+)
+# Where skills are installed (SandboxLayout.SKILLS_DIR); a project's own
+# skills/<x>/SKILL.md is not skill <x>.
+_SKILL_MD = re.compile(r"(?:^|/)\.agents/skills/([^/]+)/SKILL\.md$")
+
+
+def _skill_call(call: Any) -> tuple[str, str, bool] | None:
+    """(skill, path read, whole) for a call that brings a skill's body into
+    context, ``whole`` being whether it brings all of it."""
+    name = message_field(call, "name")
+    args = message_field(call, "args") or {}
+    if name == "Read":
+        path = str(args.get("file_path") or "")
+        match = _SKILL_MD.search(path)
+        # The name goes into the summary's reload note, so a directory no
+        # skill could be named (backticks, newlines) is not one.
+        if match is None or not validate_skill_name(match.group(1), match.group(1))[0]:
+            return None
+        return match.group(1), path, _whole_read(args)
+    if name == "LoadSkill" and isinstance(args.get("skill_name"), str):
+        return args["skill_name"], "", True
+    return None
+
+
+def _whole_read(args: Mapping[str, Any]) -> bool:
+    """A read from the top at least as long as Read's default, which every
+    SKILL.md fits in; models often pass that default explicitly."""
+    from ptc_agent.agent.backends.read_window import DEFAULT_READ_LINES
+
+    offset, limit = args.get("offset"), args.get("limit")
+    return not offset and (not limit or (isinstance(limit, int) and limit >= DEFAULT_READ_LINES))
+
+
+def skill_bodies(messages: Any) -> dict[str, bool]:
+    """Skills whose SKILL.md body these messages carry, first seen first,
+    each mapped to whether some carrier holds the whole body.
+
+    The injection dedup and the compaction hand-back read this one rule, so a
+    body the agent re-read after a summary is never pasted in again. Only a
+    Read can be partial, and each reader decides what that counts as: an
+    excerpt in view is not the procedure, while a skill read in pages and then
+    summarized away was still being followed.
+    """
+    from ptc_agent.agent.backends.read_window import READ_CLIPPED_NOTE, READ_FULL_WINDOW_NOTE
+    from ptc_agent.agent.middleware.compaction.utils import read_offload_marker
+
+    calls: dict[str, tuple[str, str, bool]] = {}
+    found: dict[str, bool] = {}
+    for message in messages or []:
+        if is_tool_message(message):
+            call = calls.get(message_field(message, "tool_call_id") or "")
+            text = _message_text(message)
+            if (
+                call is not None
+                and message_field(message, "status") != "error"
+                and not text.startswith(("ERROR", "Error"))
+                and text != read_offload_marker(call[1])
+            ):
+                name, _, whole = call
+                # A SKILL.md longer than the window asked for is cut short,
+                # and Read says so.
+                whole = whole and not any(
+                    note in text for note in (READ_CLIPPED_NOTE, READ_FULL_WINDOW_NOTE)
+                )
+                found[name] = found.get(name, False) or whole
+            continue
+        for tool_call in message_field(message, "tool_calls") or ():
+            skill = _skill_call(tool_call)
+            call_id = message_field(tool_call, "id")
+            if skill is not None and call_id:
+                calls[call_id] = skill
+        mid = _message_id(message)
+        if mid:
+            for name, bound in _BOUND_MARKER.findall(_message_text(message)):
+                if bound == mid:
+                    found[name] = True
+    return found
+
+
 def compute_already_loaded(
     loaded: Any, messages: Any, summarization_event: Any
 ) -> set[str]:
@@ -340,11 +432,10 @@ def compute_already_loaded(
       that survives only inside the summary is gone verbatim and must be re-injected
       (its tools stay available via state regardless).
 
-    The marker scan is identity-bound: a skill counts as live only when its marker,
-    carrying ``mid`` equal to the scanned message's own framework id, is present in
-    that message. Content alone can't forge a match (a user-typed marker, or a
-    SKILL.md documenting the format, carries a ``mid`` that won't equal the id of the
-    message it sits in), so a spurious "still loaded" can't suppress a real body.
+    What counts as a body is a whole one in ``skill_bodies``. Its marker scan is
+    identity-bound: a marker counts only when its ``mid`` equals the id of the
+    message it sits in, so neither user-typed text nor a SKILL.md documenting the
+    format can suppress a real body.
 
     Non-string skill names are filtered out; any unexpected shape degrades to an
     empty set so the caller re-injects in full.
@@ -360,13 +451,20 @@ def compute_already_loaded(
     from ptc_agent.agent.middleware.compaction import get_effective_messages
 
     effective = get_effective_messages(messages or [], event)[1:]
-    live: set[str] = set()
-    for m in effective:
-        mid = _message_id(m)
-        if not mid:
-            continue
-        text = _message_text(m)
-        for name in loaded_set:
-            if name not in live and loaded_skill_marker(name, mid) in text:
-                live.add(name)
-    return live
+    return loaded_set & {name for name, whole in skill_bodies(effective).items() if whole}
+
+
+def skill_blocks_as_names(text: str) -> str:
+    """``text`` with each ``<loaded-skill>`` body cut down to the skill's
+    name, for a one-line preview of the message the body was appended to.
+
+    Only the text up to the last closing tag is searched: an opening tag with
+    no close after it would send the lazy match to the end of the text once
+    per tag, and a message full of them would stall the worker.
+    """
+    end = text.rfind(_SKILL_CLOSE)
+    if end < 0:
+        return text
+    end += len(_SKILL_CLOSE)
+    names = _SKILL_BLOCK.sub(lambda m: f"[skill: {m.group(1)}]", text[:end])
+    return names + text[end:]

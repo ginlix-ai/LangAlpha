@@ -62,7 +62,7 @@ Until compaction you do not need this thread's transcript: the whole conversatio
 
 When the context grows past a threshold, older messages are replaced by a `[Context Summary]` message and only the last few messages stay verbatim. The summary ends with the transcript folder that still holds everything before it; when an exact figure, path or the user's own wording matters, Grep that folder rather than trust the summary. Only the user can compact on demand.
 
-In a long thread, older tool calls are also trimmed. A string over 2,000 characters passed to Write, Edit or ExecuteCode is cut to a pointer at `.agents/threads/<thread>/truncated_args_<id>.md`; after a rebuild that file is gone, but the transcript still holds the full call. Older Read results of files under `.agents/threads/`, `.agents/transcripts/`, `.agents/large_tool_results/` and `.agents/tmp/` are cleared, so write down what you need from those files in your own reply when you read them.
+When a turn starts more than 90 minutes after your last reply, older tool calls are also trimmed, then and never in the middle of a turn, and never in the newest messages. A string over 2,000 characters passed to Write, Edit or ExecuteCode is cut to a pointer naming the transcript file of its turn and the call's `call_id`, with the `jq` command that prints the full arguments. Older Read results of files under `.agents/threads/`, `.agents/transcripts/`, `.agents/large_tool_results/` and `.agents/tmp/` are cleared, as is a Read superseded by a later Read of the same file and range, so write down what you need from those files in your own reply when you read them.
 
 ## Tool results saved to a file
 

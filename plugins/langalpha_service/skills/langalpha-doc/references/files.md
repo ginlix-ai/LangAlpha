@@ -24,8 +24,7 @@ agent.md, data/, <task>/            yours
 .agents/skills/<name>               this workspace's skills, and links to shared ones
 .agents/tools/                      wrappers and docs for the data servers enabled here;
                                     generated, never edit
-.agents/threads/<thread>/           code/ (a copy of every ExecuteCode and Bash script),
-                                    truncated_args_*.md
+.agents/threads/<thread>/           code/ (a copy of every ExecuteCode and Bash script)
 .agents/transcripts/<thread>/       every conversation's transcript, read only
 .agents/large_tool_results/<thread>/  tool results too large for your context
 .file_sync_marker                   never delete: without it the workspace is restored again

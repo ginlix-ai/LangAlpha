@@ -19,6 +19,7 @@ HumanKind = Literal[
     "market-watch",
     "credit-gate",
     "runtime-context",
+    "orchestrator",
 ]
 
 #: How mid-turn input opens: the user's, and an orchestrator's follow-up to a
@@ -37,9 +38,25 @@ _MARKET_WATCH_STAMP_OPEN = "<market-watch>"
 # gate-stopped background tasks injected when a credit-paused turn resumes.
 _CREDIT_GATE_SOURCE = "credit_gate"
 
+# Written by middleware/compaction/ (CONTEXT_SUMMARY_PREFIX): how a summary
+# opens. Summaries from before the lc_source stamp carry only this.
+_SUMMARY_PREFIX = (
+    "[Context Summary]\n"
+    "This session is being continued from a previous conversation "
+    "that ran out of context. The conversation is summarized below:\n\n"
+)
+
 # Written by middleware/runtime_context/: the tail envelope carrier and the
 # durable rows it renders.
 _RUNTIME_CONTEXT_SOURCES = frozenset({"runtime_context", "runtime_update"})
+
+# Written by middleware/background_subagent/orchestrator.py: the trigger that
+# re-invokes the agent for pending steering, and background-task notices.
+# Checkpoints from before the stamp carry only the message name.
+ORCHESTRATOR_SOURCE = "orchestrator"
+#: The steering trigger's whole text. It only routes the graph back to the
+#: agent; the steering message that follows it carries the user's words.
+STEERING_TRIGGER = "User sent additional instructions."
 
 
 def human_kind(message: HumanMessage) -> HumanKind:
@@ -59,6 +76,8 @@ def human_kind(message: HumanMessage) -> HumanKind:
         return "credit-gate"
     if source in _RUNTIME_CONTEXT_SOURCES:
         return "runtime-context"
+    if source == ORCHESTRATOR_SOURCE or message.name == ORCHESTRATOR_SOURCE:
+        return "orchestrator"
     return "plain"
 
 
@@ -66,3 +85,15 @@ def is_run_boundary_message(message: AnyMessage) -> bool:
     """A plain HumanMessage opens a turn, or a run in a task namespace (the
     spawn or resume input); stamped injections land mid-run and never open one."""
     return isinstance(message, HumanMessage) and human_kind(message) == "plain"
+
+
+def is_summary_message(message: AnyMessage) -> bool:
+    """A compaction summary, which heads the view after a compaction.
+
+    One written before summaries were stamped is known by its opening alone,
+    so the next compaction keeps it whole rather than trimming it as input.
+    """
+    if not isinstance(message, HumanMessage):
+        return False
+    content = message.content if isinstance(message.content, str) else ""
+    return human_kind(message) == "summarization" or content.startswith(_SUMMARY_PREFIX)

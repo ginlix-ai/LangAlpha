@@ -104,10 +104,6 @@ class TestCompactionProfileIsPerModel:
         config = await _resolve(two_profiles, request_model=BIG)
         preset = COMPACTION_PROFILES["aggressive"]
         assert config.compaction.keep_messages == preset["keep_messages"]
-        assert (
-            config.compaction.truncate_args_trigger_messages
-            == preset["truncate_args_trigger_messages"]
-        )
 
 
 class TestProfileIsKeyedOnTheModelThatRuns:

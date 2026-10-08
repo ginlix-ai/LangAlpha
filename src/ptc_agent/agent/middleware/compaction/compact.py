@@ -1,305 +1,339 @@
-"""Standalone functions for manual compaction and offloading triggers."""
+"""One compaction, whichever path runs it.
 
-import asyncio
+The middleware compacts when the context nears its limit, manual /compact
+when the user asks. Both summarize the view the model is sent, through the
+same chain, into the same event and state update, so a thread reads the same
+after either. Manual /offload chooses Tier 1 cuts the way the middleware's
+idle pass does.
+"""
+
+from __future__ import annotations
+
 import logging
-from typing import Any
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AnyMessage
 
 from langchain.chat_models import BaseChatModel
 
 from src.config.settings import get_compaction_timeout
-from src.llms.content_utils import format_llm_content
-from ptc_agent.config.agent import CompactionConfig
-from ptc_agent.core.paths import WorkspaceLayout
-from src.llms import get_llm_by_type
+from src.llms import get_llm_by_type, maybe_disable_streaming
 
 from ptc_agent.agent.state import ensure_message_ids
-from ptc_agent.agent.middleware.compaction.types import CompactionEvent
-from ptc_agent.agent.middleware.compaction.utils import (
+from ptc_agent.agent.middleware.compaction.types import (
+    CompactionEvent,
+    OffloadSettings,
+    TokenCounter,
+)
+from ptc_agent.agent.middleware.compaction.summary_request import (
     DEFAULT_SUMMARY_PROMPT,
-    build_summary_event,
+    build_summary_request,
+)
+from ptc_agent.agent.middleware.compaction.summarize import (
+    Summary,
+    awrite_summary,
+    preparer,
+    server_summary,
+)
+from ptc_agent.agent.middleware.compaction.utils import (
+    build_compaction_event,
+    build_summary_message,
+    compacted_skills,
+    count_tokens_tiktoken,
     find_group_safe_cutoff,
     get_effective_messages,
     partition_at_cutoff,
-    truncate_message_args,
-    truncate_read_results,
+    summarized_span,
 )
-from ptc_agent.agent.middleware.compaction.model import (
-    summary_trim_budget,
-    trim_for_summary,
-)
-from ptc_agent.agent.middleware.compaction.middleware import _build_summary_request
-from src.llms import maybe_disable_streaming
+from ptc_agent.agent.middleware.compaction.model import resolve_compaction_client
 from ptc_agent.agent.middleware.compaction.offloading import (
+    Offloads,
     aoffload_base64_content,
-    aoffload_truncated_args,
-    apply_recorded_offloads,
-    get_thread_id,
+    offload_view,
+    recorded_offloads,
+    select_offloads,
+    tool_call_ids,
 )
-from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_target
+from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript.pointer import (
+    TranscriptTurns,
+    aexport_transcript,
+    summary_span,
+    transcript_target,
+)
+
+if TYPE_CHECKING:
+    from ptc_agent.agent.backends.sandbox import SandboxBackend
+    from ptc_agent.config.agent import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+#: How far past the threshold the summary model may read, so the history
+#: that crossed it, however large its last tool result, usually reaches it
+#: whole.
+_SUMMARY_HEADROOM = 50_000
+
+
+@dataclass(frozen=True)
+class Compaction:
+    """A summary in place of the start of the view."""
+
+    event: CompactionEvent
+    summary: Summary
+    #: How many messages the view held before the summary replaced its start.
+    original_count: int
+    #: The messages kept after the summary.
+    preserved: list[AnyMessage]
+
+    @property
+    def messages(self) -> list[AnyMessage]:
+        """The view after it."""
+        return [self.event["summary_message"], *self.preserved]
+
+    def update(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        """The state update that installs it over ``state``.
+
+        Summarized calls never reach the model again, so their recorded
+        offload ids are dropped. The cached token counts measured the view
+        before it: left in place, the next call would read them as still over
+        the threshold and compact again at once.
+        """
+        live = tool_call_ids(self.preserved)
+        args, reads = recorded_offloads(state)
+        return {
+            "_summarization_event": self.event,
+            "_offloaded_tool_call_ids": args & live,
+            "_offloaded_read_result_ids": reads & live,
+            "_cached_input_tokens": 0,
+            "_cached_output_tokens": 0,
+        }
+
+
+@dataclass(frozen=True)
+class Summarizer:
+    """The model that writes an agent's summaries, and how much it reads."""
+
+    model: BaseChatModel
+    #: The most tokens of history the summary model is sent.
+    limit: int
+    #: How tokens are counted, for the threshold and for trimming.
+    counter: TokenCounter = count_tokens_tiktoken
+
+    @classmethod
+    def for_agent(cls, config: AgentConfig) -> Summarizer:
+        """The client ``resolve_compaction_client`` picks, else the named
+        compaction model, with streaming off so its chunks never stream as
+        the answer."""
+        model = resolve_compaction_client(config) or get_llm_by_type(
+            (config.llm.compaction_name if config.llm else None) or ""
+        )
+        maybe_disable_streaming(model)
+        return cls(model, config.compaction.token_threshold + _SUMMARY_HEADROOM)
+
+    async def compact(
+        self,
+        messages: list[AnyMessage],
+        view: list[AnyMessage],
+        cutoff: int,
+        *,
+        backend: SandboxBackend | None,
+        workspace_id: str | None,
+        transcript: TranscriptTarget | None,
+        fallback: Any | None,
+        thread_id: str | None = None,
+    ) -> Compaction:
+        """Summarize ``view`` before ``cutoff``, ``messages`` being the
+        agent's whole checkpoint list, from this model, ``fallback`` or the
+        server (see ``summarize``).
+
+        The transcript is saved first: the summary cites its turn files and
+        ends pointing at it only if that save lands and ``workspace_id``'s
+        folder can read it. Admission holds the next turn for about the
+        compaction timeout, so the save counts against it too.
+        """
+        to_summarize, preserved = partition_at_cutoff(view, cutoff)
+        started = time.monotonic()
+        budget = get_compaction_timeout()
+        exported = await aexport_transcript(
+            backend, transcript, messages, workspace_id=workspace_id, budget=budget
+        )
+        turns = TranscriptTurns.of(exported, messages) if exported else None
+
+        async def render(trimmed: list[AnyMessage]) -> list[AnyMessage]:
+            trimmed = await aoffload_base64_content(backend, trimmed, thread_id=thread_id)
+            return build_summary_request(DEFAULT_SUMMARY_PROMPT, trimmed, turns)
+
+        summary = await awrite_summary(
+            model=self.model,
+            fallback=fallback,
+            prepare=preparer(
+                to_summarize, limit=self.limit, counter=self.counter, render=render
+            ),
+            server=lambda: server_summary(
+                to_summarize, preserved, raw_messages=messages, turns=turns
+            ),
+            budget=budget - (time.monotonic() - started),
+        )
+        event = build_summary_event(
+            summary,
+            turns,
+            raw_messages=messages,
+            to_summarize=to_summarize,
+            preserved=preserved,
+            original_count=len(view),
+            skill_files=backend is not None,
+        )
+        return Compaction(event, summary, len(view), preserved)
+
+
+def build_summary_event(
+    summary: Summary,
+    turns: TranscriptTurns | None,
+    *,
+    raw_messages: list[AnyMessage],
+    to_summarize: Sequence[AnyMessage],
+    preserved: list[AnyMessage],
+    original_count: int,
+    skill_files: bool = False,
+) -> CompactionEvent:
+    """The event putting ``summary`` in place of ``to_summarize``, pointing
+    at the transcript ``turns`` numbers when there is one.
+
+    The skills whose instructions go with ``to_summarize`` are listed from the
+    messages, not from the summary: a summarizer may drop a name, and the
+    agent mid-procedure needs every one to reload. ``skill_files`` says how
+    the agent reloads one (see ``skill_reload_note``).
+    """
+    # A summary of an earlier summary alone stands in for the same turns.
+    earlier = summarized_span(to_summarize[0]) if to_summarize else None
+    span = (
+        summary_span(turns.turns, to_summarize, summary.covered, earlier) or earlier
+        if turns is not None
+        else None
+    )
+    message = build_summary_message(
+        summary.text,
+        turns.target if turns is not None else None,
+        original_count,
+        span=span,
+        index=turns.index(span.last) if turns is not None and span is not None else (),
+        skills=compacted_skills(to_summarize, preserved),
+        skill_files=skill_files,
+        source=summary.source,
+    )
+    return build_compaction_event(
+        raw_messages=raw_messages,
+        preserved_messages=preserved,
+        summary_message=message,
+        file_path=turns.target.directory if turns is not None else None,
+    )
 
 
 async def compact_messages(
     messages: list[AnyMessage],
+    state: Mapping[str, Any],
+    config: AgentConfig,
+    *,
+    thread_id: str,
     keep_messages: int = 5,
-    model_name: str = "",
-    backend: Any | None = None,
-    previous_event: CompactionEvent | None = None,
-    compaction_config: CompactionConfig | None = None,
-    llm_client: BaseChatModel | None = None,
-    thread_id: str | None = None,
-) -> dict[str, Any]:
-    """
-    Compact conversation messages with two-tier context management.
+    backend: SandboxBackend | None = None,
+    workspace_id: str | None = None,
+) -> Compaction:
+    """Manual /compact: summarize all but the last ``keep_messages`` of the
+    view, ``messages`` being the thread's whole checkpoint list and ``state``
+    its values. The user's main model is tried when the summary model fails.
 
-    Produces a ``CompactionEvent`` that the middleware can use to
-    reconstruct the effective message list on subsequent model calls,
-    without destructively replacing checkpoint messages.
+    Tier 1 has no part here: what it would trim is in the stretch the summary
+    replaces.
 
-    Two-tier offloading (when backend is provided):
-    - Tier 1: Truncate large tool args in old messages, offload originals to sandbox
-    - Tier 2: Summarize evicted messages; the summary points at the thread's
-      transcript, which is brought up to date alongside
-
-    When backend is None, offloading is skipped but truncation and summarization
-    still occur.
-
-    Args:
-        messages: List of conversation messages to compact (full state).
-        keep_messages: Number of recent messages to preserve (default: 5).
-        model_name: LLM model name for generating summaries (default: gpt-5-nano).
-        backend: Optional SandboxBackend for offloading to sandbox filesystem.
-        previous_event: Previous CompactionEvent for chained compactions.
-        compaction_config: Optional CompactionConfig override.
-        llm_client: Pre-built OAuth/BYOK client. When None, built from model_name.
-        thread_id: The thread being compacted. This runs outside the graph, so
-            without it offloads and the transcript pointer have no thread dir.
-
-    Returns:
-        Dict with:
-        - "event": CompactionEvent to write to state (under preserved
-          ``_summarization_event`` key)
-        - "summary_text": The generated summary text
-        - "original_count": Number of effective messages before compaction
-        - "preserved_count": Number of preserved messages + summary message
-        - "offloaded_arg_ids": Set of tool call IDs whose args were truncated/offloaded
-        - "offloaded_read_ids": Set of tool call IDs whose Read results were truncated
-
-    Example:
-        result = await compact_messages(messages, previous_event=prev_event)
-        await graph.aupdate_state(config, {"_summarization_event": result["event"]})
+    Raises:
+        ValueError: If the view leaves nothing to summarize.
     """
     if not messages:
         raise ValueError("No messages to compact")
-
-    # Ensure all messages have IDs
     ensure_message_ids(messages)
-
-    # Reconstruct effective messages from previous event
-    effective = get_effective_messages(messages, previous_event)
-
-    # ---- Tier 1: Truncate large tool args + stale Read results in old messages ----
-    config = (compaction_config or CompactionConfig()).model_dump()
-    truncate_trigger_messages = config.get("truncate_args_trigger_messages")
-    offloaded_arg_ids: set[str] = set()
-    offloaded_read_ids: set[str] = set()
-    if truncate_trigger_messages is not None and len(effective) >= int(
-        truncate_trigger_messages
-    ):
-        truncate_keep = int(config.get("truncate_args_keep_messages", 20))
-        truncate_max_length = int(config.get("truncate_args_max_length", 2000))
-        truncation_text = "...(argument truncated)"
-
-        cutoff = max(0, len(effective) - truncate_keep)
-        thread_dir = None
-        if backend is not None:
-            thread_dir = WorkspaceLayout.thread_subdir(get_thread_id(thread_id))
-
-        effective, truncated, originals = truncate_message_args(
-            effective,
-            cutoff,
-            truncate_max_length,
-            truncation_text,
-            thread_dir,
-        )
-
-        # Offload original args before they're lost
-        if truncated and originals and backend is not None:
-            offloaded_arg_ids = await aoffload_truncated_args(
-                backend, originals, thread_id=thread_id
-            )
-
-        # Truncate duplicate/non-critical Read results (same cutoff)
-        effective, _read_truncated, offloaded_read_ids = truncate_read_results(
-            effective, cutoff
-        )
-
-    # ---- Determine cutoff for summarization ----
-    if len(effective) <= keep_messages:
+    transcript = transcript_target(backend, thread_id)
+    view = offload_view(
+        messages,
+        state,
+        max_length=config.compaction.truncate_args_max_length,
+        transcript=transcript,
+    )
+    if len(view) <= keep_messages:
         raise ValueError(
-            f"Not enough messages to compact. Have {len(effective)}, "
+            f"Not enough messages to compact. Have {len(view)}, "
             f"need more than {keep_messages} to preserve."
         )
-
-    cutoff_index = find_group_safe_cutoff(effective, len(effective) - keep_messages)
-
-    if cutoff_index <= 0:
+    cutoff = find_group_safe_cutoff(view, len(view) - keep_messages)
+    if cutoff <= 0:
         raise ValueError("Cannot determine valid cutoff point for compaction")
 
-    messages_to_summarize, preserved = partition_at_cutoff(effective, cutoff_index)
-
-    # ---- Tier 2: Summarize, pointing at the transcript once its save lands ----
-    transcript = transcript_target(backend, thread_id)
-    to_summarize = messages_to_summarize
-
-    if llm_client is not None:
-        compaction_model: BaseChatModel = llm_client
-    else:
-        compaction_model = get_llm_by_type(model_name)
-    maybe_disable_streaming(compaction_model)
-
-    token_threshold = config.get("token_threshold", 120000)
-    messages_to_summarize = trim_for_summary(
-        messages_to_summarize, summary_trim_budget(compaction_model, token_threshold)
-    )
-    if not messages_to_summarize:
-        raise RuntimeError(
-            "Nothing since the last summary fits the compaction model's budget"
-        )
-
-    # Strip base64 blobs before sending to LLM
-    request_messages = await aoffload_base64_content(
-        backend, messages_to_summarize, thread_id=thread_id
+    return await Summarizer.for_agent(config).compact(
+        messages,
+        view,
+        cutoff,
+        backend=backend,
+        workspace_id=workspace_id,
+        transcript=transcript,
+        fallback=_main_client(config),
+        thread_id=thread_id,
     )
 
-    # Manual /compact MUST fail loudly on LLM error. Swallowing the exception
-    # and fabricating a fake summary would corrupt state (a "compacted" cutoff
-    # with garbage summary text) while reporting HTTP 200 to the client.
-    # trigger_compaction's outer except converts the raise into HTTP 500.
-    #
-    # The call carries its own wall-clock budget: a hung summarize raises
-    # TimeoutError here (rather than blocking the thread forever), which the
-    # except below re-raises -> HTTP 500. The timeout lives on the call, not on
-    # a flat admission-side 409 clock.
+
+def _main_client(config: AgentConfig) -> BaseChatModel | None:
     try:
-        response, transcript = await asyncio.gather(
-            asyncio.wait_for(
-                compaction_model.ainvoke(
-                    _build_summary_request(DEFAULT_SUMMARY_PROMPT, request_messages)
-                ),
-                timeout=get_compaction_timeout(),
-            ),
-            aexport_transcript(backend, transcript, messages),
-        )
+        return config.get_llm_client()
     except Exception as e:
-        logger.error(f"[Compaction] manual compact LLM call failed: {e}")
-        raise
-
-    content = response.content if hasattr(response, "content") else response
-    additional_kwargs = getattr(response, "additional_kwargs", None)
-    formatted = format_llm_content(content, additional_kwargs)
-    summary_text = formatted.get("text", "").strip()
-
-    if not summary_text:
-        raise RuntimeError("Compaction LLM returned empty summary")
-
-    # Build the event with an id anchor (cutoff grounded in the raw list)
-    event = build_summary_event(
-        summary_text,
-        transcript,
-        raw_messages=messages,
-        to_summarize=to_summarize,
-        summarized=messages_to_summarize,
-        preserved_messages=preserved,
-        original_message_count=len(effective),
-    )
-
-    return {
-        "event": event,
-        "summary_text": summary_text,
-        "original_count": len(effective),
-        "preserved_count": len(preserved) + 1,  # +1 for summary message
-        "offloaded_arg_ids": offloaded_arg_ids,
-        "offloaded_read_ids": offloaded_read_ids,
-    }
+        logger.warning("[Compaction] no fallback model for /compact (%s)", type(e).__name__)
+        return None
 
 
 async def offload_tool_args(
     messages: list[AnyMessage],
-    backend: Any | None = None,
-    already_offloaded: set[str] | None = None,
-    compaction_config: CompactionConfig | None = None,
-    already_offloaded_reads: set[str] | None = None,
-    thread_id: str | None = None,
-) -> dict[str, Any]:
-    """Offload large tool args and stale read results (Tier 1 only).
+    state: Mapping[str, Any],
+    settings: OffloadSettings,
+    *,
+    thread_id: str,
+    backend: SandboxBackend | None = None,
+    workspace_id: str | None = None,
+) -> Offloads:
+    """Manual /offload: the new (arg ids, read ids) to hide, chosen as the
+    middleware's idle pass chooses them, without waiting for a pause.
 
-    Records which calls to offload and never rewrites checkpoint messages: the
-    middleware re-applies every recorded id on each model call, so the
-    checkpoint keeps full args and a write here cannot race a live turn's
-    appends. ``messages`` is the effective list (after any summarization), so
-    the cutoff and batch count match what the middleware sees.
-
-    Returns:
-        Dict with "offloaded_arg_ids" and "offloaded_read_ids" (new ids only,
-        without args whose write failed), and their counts as
-        "offloaded_args" / "offloaded_reads".
+    An argument is hidden only once the transcript holding it is saved and
+    ``workspace_id``'s folder can read it, since that is then its only copy
+    the agent can read.
 
     Raises:
-        ValueError: If no messages are provided or nothing new can be offloaded.
-        RuntimeError: If every arg write failed and no Read result was left.
+        ValueError: If nothing new can be offloaded.
+        RuntimeError: If only args were due and their transcript did not save.
     """
     if not messages:
         raise ValueError("No messages to offload")
-
     ensure_message_ids(messages)
-
-    config = (compaction_config or CompactionConfig()).model_dump()
-    truncate_keep = int(config.get("truncate_args_keep_messages", 20))
-    truncate_max_length = int(config.get("truncate_args_max_length", 2000))
-    truncation_text = "...(argument truncated)"
-
-    cutoff = max(0, len(messages) - truncate_keep)
-    if cutoff == 0:
+    effective = get_effective_messages(messages, state.get("_summarization_event"))
+    if len(effective) <= settings.keep_messages:
         raise ValueError(
-            f"Not enough messages to offload. Have {len(messages)}, "
-            f"need more than {truncate_keep} to have any candidates."
+            f"Not enough messages to offload. Have {len(effective)}, "
+            f"need more than {settings.keep_messages} to have any candidates."
         )
 
-    thread_dir = None
-    if backend is not None:
-        thread_dir = WorkspaceLayout.thread_subdir(get_thread_id(thread_id))
-
-    # Start from the view the model already has, so only new offloads count.
-    messages = apply_recorded_offloads(
-        messages,
-        already_offloaded or set(),
-        already_offloaded_reads or set(),
-        truncate_max_length,
-        truncation_text,
-        thread_dir,
-    )
-    messages, _, originals = truncate_message_args(
-        messages, cutoff, truncate_max_length, truncation_text, thread_dir
-    )
-    _, _, read_ids = truncate_read_results(messages, cutoff)
-
-    if not originals and not read_ids:
+    arg_ids, read_ids = select_offloads(effective, settings, recorded_offloads(state))
+    if arg_ids:
+        transcript = transcript_target(backend, thread_id)
+        if transcript is None:
+            arg_ids = set()
+        elif await aexport_transcript(
+            backend, transcript, messages, workspace_id=workspace_id
+        ) is None:
+            if not read_ids:
+                # A failure to retry, not "nothing to offload": the caller
+                # turns this into a 500 and records nothing.
+                raise RuntimeError("Could not save the transcript the arguments are kept in")
+            arg_ids = set()
+    if not arg_ids and not read_ids:
         raise ValueError("Nothing to offload at the current threshold")
-
-    # Persist original args before the view hides them
-    arg_ids = await aoffload_truncated_args(backend, originals, thread_id=thread_id)
-    if originals and not arg_ids and not read_ids:
-        # A failure to retry, not "nothing to offload": the caller turns this
-        # into a 500 and records nothing.
-        raise RuntimeError("Could not save any tool arguments to the sandbox")
-
-    return {
-        "offloaded_arg_ids": arg_ids,
-        "offloaded_read_ids": read_ids,
-        "offloaded_args": len(arg_ids),
-        "offloaded_reads": len(read_ids),
-    }
+    return arg_ids, read_ids

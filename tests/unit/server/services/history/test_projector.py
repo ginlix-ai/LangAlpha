@@ -521,6 +521,32 @@ def test_runtime_update_row_is_hidden_and_opens_no_run():
     assert is_run_boundary_message(HumanMessage(content="what moved?", id="h-1"))
 
 
+def test_orchestrator_message_is_hidden_and_opens_no_run():
+    """The orchestrator's re-invoke trigger and task notices land mid-turn; read
+    as input, each opened a transcript turn of its own and became that turn's
+    request. Checkpoints from before the stamp carry only the message name."""
+    from ptc_agent.agent.transcript.classify import (
+        ORCHESTRATOR_SOURCE,
+        is_run_boundary_message,
+    )
+
+    stamped = HumanMessage(
+        content="User sent additional instructions.",
+        name="orchestrator",
+        additional_kwargs={"lc_source": ORCHESTRATOR_SOURCE},
+        id="orchestrator-1",
+    )
+    unstamped = HumanMessage(
+        content="User sent additional instructions.", name="orchestrator", id="orchestrator-2"
+    )
+    for message in (stamped, unstamped):
+        assert not is_run_boundary_message(message)
+        assert _sse([message], agent="task:abc123") == []
+    assert _sse([stamped, AIMessage(content="ok", id="ai-1")]) == _sse(
+        [AIMessage(content="ok", id="ai-1")]
+    )
+
+
 def test_stamped_steering_message_projects_delivered():
     delivered = {
         "count": 1,

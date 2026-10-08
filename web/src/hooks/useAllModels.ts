@@ -21,7 +21,6 @@ interface SystemDefaults {
 
 export interface CompactionProfilePreset {
   token_threshold: number;
-  truncate_args_trigger_messages: number;
   keep_messages: number;
 }
 

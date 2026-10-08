@@ -18,6 +18,7 @@ from ptc_agent.agent.middleware.background_subagent.middleware import (
 # utils.build_message_checker governs every caller — tools.py binds the same way.
 from ptc_agent.agent.middleware.background_subagent import utils
 from ptc_agent.agent.middleware.background_subagent.utils import config_own_run_id
+from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, STEERING_TRIGGER
 
 logger = structlog.get_logger(__name__)
 
@@ -112,14 +113,7 @@ class BackgroundSubagentOrchestrator:
                     iteration=iteration,
                 )
 
-                notification_message = HumanMessage(
-                    content=notification, name="orchestrator"
-                )
-                await self.agent.aupdate_state(
-                    config,
-                    {"messages": ensure_message_ids([notification_message])},
-                    as_node="__start__",
-                )
+                await self._inject(config, notification)
                 current_state = None  # Resume from updated checkpoint
                 continue
 
@@ -146,14 +140,7 @@ class BackgroundSubagentOrchestrator:
                         iteration=iteration,
                     )
 
-                    notification_message = HumanMessage(
-                        content=notification, name="orchestrator"
-                    )
-                    await self.agent.aupdate_state(
-                        config,
-                        {"messages": ensure_message_ids([notification_message])},
-                        as_node="__start__",
-                    )
+                    await self._inject(config, notification)
                     current_state = None  # Resume from updated checkpoint
                     continue
 
@@ -251,14 +238,7 @@ class BackgroundSubagentOrchestrator:
                     iteration=iteration,
                 )
 
-                notification_message = HumanMessage(
-                    content=notification, name="orchestrator"
-                )
-                await self.agent.aupdate_state(
-                    config,
-                    {"messages": ensure_message_ids([notification_message])},
-                    as_node="__start__",
-                )
+                await self._inject(config, notification)
                 current_state = None  # Resume from updated checkpoint
                 continue
 
@@ -307,18 +287,24 @@ class BackgroundSubagentOrchestrator:
                 iteration=iteration,
             )
 
-            notification_message = HumanMessage(
-                content=notification, name="orchestrator"
-            )
-            await self.agent.aupdate_state(
-                config,
-                {"messages": ensure_message_ids([notification_message])},
-                as_node="__start__",
-            )
+            await self._inject(config, notification)
             current_state = None  # Resume from updated checkpoint
 
             # NOTE: Do NOT clear registry here - agent needs to call TaskOutput()
             # to retrieve results in the next iteration.
+
+    async def _inject(self, config: dict[str, Any], content: str) -> None:
+        """Append an orchestrator-authored human turn as if from ``__start__``."""
+        message = HumanMessage(
+            content=content,
+            name="orchestrator",
+            additional_kwargs={"lc_source": ORCHESTRATOR_SOURCE},
+        )
+        await self.agent.aupdate_state(
+            config,
+            {"messages": ensure_message_ids([message])},
+            as_node="__start__",
+        )
 
     def _format_notification_for_tasks(self, tasks: list) -> str:
         """Format notification message for specific tasks.
@@ -433,15 +419,7 @@ class BackgroundSubagentOrchestrator:
 
         # Inject a minimal trigger so the graph routes to the agent node.
         # SteeringMiddleware.abefore_model() will consume the actual content.
-        trigger = HumanMessage(
-            content="User sent additional instructions.",
-            name="orchestrator",
-        )
-        await self.agent.aupdate_state(
-            config,
-            {"messages": ensure_message_ids([trigger])},
-            as_node="__start__",
-        )
+        await self._inject(config, STEERING_TRIGGER)
         return True
 
     async def check_and_get_notification(self) -> str | None:

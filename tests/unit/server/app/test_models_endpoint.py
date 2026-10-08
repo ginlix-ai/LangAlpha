@@ -126,9 +126,7 @@ class TestListModelsResponse:
         profiles = body["compaction_profiles"]
         assert set(profiles.keys()) == {"aggressive", "moderate", "extended", "relaxed"}
         for preset in profiles.values():
-            assert "token_threshold" in preset
-            assert "truncate_args_trigger_messages" in preset
-            assert "keep_messages" in preset
+            assert set(preset) == {"token_threshold", "keep_messages"}
         # Thresholds should be strictly increasing from aggressive to relaxed
         order = ["aggressive", "moderate", "extended", "relaxed"]
         thresholds = [profiles[name]["token_threshold"] for name in order]

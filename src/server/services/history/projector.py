@@ -230,7 +230,7 @@ def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEve
     content = message.content if isinstance(message.content, str) else ""
     kind = human_kind(message)
 
-    if kind in ("market-watch", "credit-gate", "runtime-context"):
+    if kind in ("market-watch", "credit-gate", "runtime-context", "orchestrator"):
         # Model-facing only. Returning here rather than falling through also
         # keeps them out of a task namespace's ``user-message`` projection,
         # where the raw reminder would surface as if the user had typed it.
@@ -260,6 +260,7 @@ def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEve
                     "summary_length": stamped.get("summary_length", len(summary_text)),
                     "summary_text": summary_text,
                     "original_message_count": stamped.get("original_message_count", 0),
+                    **({"source": stamped["source"]} if "source" in stamped else {}),
                 },
             )
         ]

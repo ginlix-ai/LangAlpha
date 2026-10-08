@@ -61,7 +61,7 @@ def _evicted_pointer() -> re.Pattern[str]:
 
 
 def evicted_path(message: ToolMessage) -> str | None:
-    text = message.content if isinstance(message.content, str) else _text(message.content)
+    text = message.content if isinstance(message.content, str) else visible_text(message.content)
     match = _evicted_pointer().match(text)
     return match.group(1) if match else None
 
@@ -80,7 +80,7 @@ def _turn_opened_at(message: HumanMessage) -> str | None:
     return None
 
 
-def _text(content: Any, *, attachments: bool = True) -> str:
+def visible_text(content: Any, *, attachments: bool = True) -> str:
     """Visible text of a content value; attachments become short placeholders."""
     if isinstance(content, str):
         return content
@@ -149,12 +149,12 @@ def render_segment(
             kind = human_kind(message)
             if kind not in ("plain", "steering"):
                 continue
-            event = {"type": "user", "id": message.id, "text": _text(message.content)}
+            event = {"type": "user", "id": message.id, "text": visible_text(message.content)}
             if kind == "steering":
                 event["steering"] = True
             emit(event, message)
         elif isinstance(message, AIMessage):
-            text = _text(message.content, attachments=False)
+            text = visible_text(message.content, attachments=False)
             if text.strip():
                 emit({"type": "assistant", "id": message.id, "text": text}, message)
             for call in message.tool_calls or ():
@@ -176,7 +176,7 @@ def render_segment(
                 "call_id": message.tool_call_id,
                 "tool": names.get(message.tool_call_id) or message.name,
                 "status": message.status,
-                "text": _text(message.content),
+                "text": visible_text(message.content),
             }
             path = evicted_path(message)
             if path:
@@ -216,16 +216,16 @@ def segment_shape(
     for message in messages:
         part = f"{type(message).__name__}|{message.id}"
         if isinstance(message, AIMessage):
-            part += "|" + _checksum(_text(message.content, attachments=False))
+            part += "|" + _checksum(visible_text(message.content, attachments=False))
             for call in message.tool_calls or ():
                 tool_names[call["id"]] = call["name"]
                 part += f"|{call['id']}|{call['name']}|{_args_checksum(call.get('args', {}))}"
         elif isinstance(message, ToolMessage):
-            part += f"|{_checksum(_text(message.content))}|{message.tool_call_id}"
+            part += f"|{_checksum(visible_text(message.content))}|{message.tool_call_id}"
             part += f"|{message.status}|{message.name}"
         elif isinstance(message, HumanMessage):
             source = (message.additional_kwargs or {}).get("lc_source")
-            part += f"|{_checksum(_text(message.content))}|{source}|{_turn_opened_at(message)}"
+            part += f"|{_checksum(visible_text(message.content))}|{source}|{_turn_opened_at(message)}"
         parts.append(part)
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:32]
 
@@ -253,9 +253,19 @@ def _args_checksum(args: Any) -> str:
 
 def message_turns(messages: Iterable[AnyMessage]) -> dict[str, int]:
     """The turn each message belongs to, by message id."""
-    return {
-        message.id: number
-        for number, run in enumerate(split_runs(messages), start=1)
-        for message in run
-        if message.id
-    }
+    return turn_map(messages)[0]
+
+
+def turn_map(messages: Iterable[AnyMessage]) -> tuple[dict[str, int], dict[int, str]]:
+    """The turn each message belongs to, by message id, and the text of the
+    user message that opened each turn, by turn number."""
+    turns: dict[str, int] = {}
+    requests: dict[int, str] = {}
+    for number, run in enumerate(split_runs(messages), start=1):
+        for message in run:
+            if message.id:
+                turns[message.id] = number
+        opener = next((m for m in run if is_run_boundary_message(m)), None)
+        if opener is not None:
+            requests[number] = visible_text(opener.content)
+    return turns, requests

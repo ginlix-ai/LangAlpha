@@ -1,7 +1,10 @@
 """Types, constants, and defaults for the compaction middleware."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Iterable
-from typing import Annotated, Literal, NotRequired
+from dataclasses import dataclass
+from typing import Annotated, NotRequired
 
 from langchain_core.messages import MessageLikeRepresentation
 from langchain_core.messages.human import HumanMessage
@@ -9,6 +12,7 @@ from typing_extensions import TypedDict
 
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 
+from ptc_agent.config.agent import CompactionConfig
 from ptc_agent.core.paths import AGENT_HISTORY_DIRS, SandboxLayout
 
 
@@ -43,28 +47,39 @@ class CompactionEvent(TypedDict):
     anchor_message_id: NotRequired[str | None]
 
 
-class TruncateArgsSettings(TypedDict, total=False):
-    """Settings for truncating large tool arguments in old messages.
+@dataclass(frozen=True)
+class OffloadSettings:
+    """Tier 1: which old tool arguments and Read results are hidden.
 
-    Attributes:
-        trigger: Threshold to trigger argument truncation. If None, truncation is disabled.
-        keep: Context retention policy for message truncation (defaults to last 20 messages).
-        max_length: Maximum character length for tool arguments before truncation.
-        truncation_text: Text to replace truncated arguments with.
+    ``max_length`` holds with Tier 1 off too: the view still re-applies the
+    cuts a manual /offload recorded, and has to cut them as they were chosen.
     """
 
-    trigger: "ContextSize | None"
-    keep: "ContextSize"
-    max_length: int
-    truncation_text: str
+    #: The newest messages Tier 1 never touches.
+    keep_messages: int = 20
+    #: The longest string argument left whole.
+    max_length: int = 2000
+    #: How long since the model last answered a turn must start for Tier 1
+    #: to run there; None turns automatic Tier 1 off.
+    idle_seconds: float | None = 90 * 60
+
+    @classmethod
+    def from_config(cls, config: CompactionConfig) -> OffloadSettings:
+        idle = config.truncate_args_idle_minutes
+        return cls(
+            keep_messages=config.truncate_args_keep_messages,
+            max_length=config.truncate_args_max_length,
+            idle_seconds=None if idle is None else float(idle) * 60,
+        )
 
 
 class CompactionState(AgentState):
     """State for the compaction middleware.
 
     Extends AgentState with private fields for tracking compaction events,
-    offloaded tool call IDs, and batch truncation state.
-    The PrivateStateAttr annotation hides them from input/output schemas.
+    offloaded tool call IDs, and when the model last answered (epoch seconds),
+    which gates Tier 1. The PrivateStateAttr annotation hides them from
+    input/output schemas.
 
     Note: The ``_summarization_event`` field name is preserved because values are
     stored under that key in the LangGraph checkpointer — renaming it would
@@ -74,11 +89,11 @@ class CompactionState(AgentState):
     _summarization_event: Annotated[
         NotRequired[CompactionEvent | None], PrivateStateAttr
     ]
-    _truncation_batch_count: Annotated[NotRequired[int], PrivateStateAttr]
     _offloaded_tool_call_ids: Annotated[NotRequired[set[str]], PrivateStateAttr]
     _offloaded_read_result_ids: Annotated[NotRequired[set[str]], PrivateStateAttr]
     _cached_input_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _cached_output_tokens: Annotated[NotRequired[int], PrivateStateAttr]
+    _last_model_response_at: Annotated[NotRequired[float], PrivateStateAttr]
 
 
 # Tool names whose arguments carry large payloads (file contents, code strings)
@@ -93,10 +108,4 @@ NON_CRITICAL_READ_PREFIXES: tuple[str, ...] = tuple(
 
 TokenCounter = Callable[[Iterable[MessageLikeRepresentation]], int]
 
-_DEFAULT_MESSAGES_TO_KEEP = 20
-_DEFAULT_TRIM_TOKEN_LIMIT = 4000
-
-ContextFraction = tuple[Literal["fraction"], float]
-ContextTokens = tuple[Literal["tokens"], int]
-ContextMessages = tuple[Literal["messages"], int]
-ContextSize = ContextFraction | ContextTokens | ContextMessages
+_DEFAULT_FALLBACK_MESSAGE_COUNT = 15

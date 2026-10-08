@@ -43,7 +43,6 @@ from ptc_agent.agent.middleware import (
     ProvenanceMiddleware,
     SkillsMiddleware,
     CompactionMiddleware,
-    resolve_compaction_client,
     LargeResultEvictionMiddleware,
     MarketWatchMiddleware,
     SteeringMiddleware,
@@ -673,13 +672,9 @@ class PTCAgent:
         )
 
         # --- Build final middleware stacks ---
-        compaction_config = self.config.compaction.model_dump()
-        if self.config.llm and self.config.llm.compaction_name:
-            compaction_config["llm"] = self.config.llm.compaction_name
-        client = resolve_compaction_client(self.config)
-        if client is not None:
-            compaction_config["_llm_client"] = client
-        compaction = CompactionMiddleware.from_config(config=compaction_config, backend=backend)
+        compaction = CompactionMiddleware.for_agent(
+            self.config, backend=backend, workspace_id=workspace_id_for_memory
+        )
 
         model_resilience = [build_model_resilience_middleware(self.config, turn)]
 

@@ -19,6 +19,27 @@ def message_id(message: Any) -> str | None:
     return mid
 
 
+def message_field(message: Any, name: str) -> Any:
+    """A field of a checkpoint message in either typed or dict shape."""
+    if isinstance(message, dict):
+        return message.get(name)
+    return getattr(message, name, None)
+
+
+def is_tool_message(message: Any) -> bool:
+    """True for a tool result in either typed (``ToolMessage``) or dict shape.
+
+    The checkpoint reducer coerces every write to typed messages, but the
+    orphan repair deletes what this misreads, so it does not trust that: a
+    dict-shaped result read as something else would be dropped.
+    """
+    if isinstance(message, ToolMessage):
+        return True
+    if isinstance(message, dict):
+        return message.get("role") == "tool" or message.get("type") == "tool"
+    return False
+
+
 def order_tool_results_first(messages: list) -> list:
     """Order each tool-result run so its ToolMessages precede any other content.
 

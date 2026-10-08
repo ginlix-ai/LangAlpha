@@ -19,7 +19,6 @@ from ptc_agent.agent.middleware import (
     ToolErrorHandlingMiddleware,
     ToolResultNormalizationMiddleware,
     CompactionMiddleware,
-    resolve_compaction_client,
     SkillsMiddleware,
     AskUserMiddleware,
     LeakDetectionMiddleware,
@@ -341,15 +340,10 @@ class FlashAgent:
         main_middleware.append(StandingApprovalMiddleware(user_id))
 
         # Optional compaction (shares config with main agent)
-        compaction_config = None
-        if self.config.llm.compaction_name:
-            compaction_config = self.config.compaction.model_dump()
-            compaction_config["llm"] = self.config.llm.compaction_name
-            client = resolve_compaction_client(self.config)
-            if client is not None:
-                compaction_config["_llm_client"] = client
-        compaction = CompactionMiddleware.from_config(
-            config=compaction_config, backend=None
+        compaction = (
+            CompactionMiddleware.for_agent(self.config)
+            if self.config.llm.compaction_name
+            else None
         )
         if compaction is not None:
             main_middleware.append(compaction)
