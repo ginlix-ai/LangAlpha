@@ -34,7 +34,7 @@ def test_a_model_with_no_card_has_no_opinion():
 def test_a_pricier_model_buys_a_bigger_budget():
     """The ordering is the whole product. Sonnet over Haiku, Opus over Sonnet:
     if this inverts, a premium turn is reserving less than a cheap one."""
-    haiku = chunk_multiplier("claude-haiku-4-5")
+    haiku = chunk_multiplier("claude-haiku-5-5")
     sonnet = chunk_multiplier("claude-sonnet-5-5")
     opus = chunk_multiplier("claude-opus-5-5")
     assert haiku is not None and sonnet is not None and opus is not None

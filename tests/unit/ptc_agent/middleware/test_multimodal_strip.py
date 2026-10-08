@@ -609,24 +609,34 @@ class TestPDFPageCeilingIsPerTarget:
         blocks, _ = await _blocks_reaching("claude-sonnet-5-5", _pdf_block(300))
         assert [b["type"] for b in blocks] == ["text", "file"]
 
-    def test_the_200k_route_is_still_one(self):
-        """An unknown model fails closed to the same 100 pages, so the tests
-        below would pass against a retired key while proving nothing."""
-        from src.llms.llm import LLM
-
-        entry = LLM.get_model_config().get_model_config("claude-haiku-4-5")
-        assert entry is not None and entry["context"] < 1_000_000
+    @pytest.fixture
+    def route_200k(self, monkeypatch):
+        """No shipped Anthropic model sits below a 1M context any more. A model
+        missing from the manifest would also be held to 100 pages, but it would
+        have no PDF modality either, so the 80-page case below only passes when
+        this entry is the one being read."""
+        monkeypatch.setitem(
+            LLM.get_model_config().llm_config,
+            "_route_200k",
+            {
+                "model_id": "_route_200k",
+                "provider": "anthropic",
+                "context": 200_000,
+                "input_modalities": ["text", "image", "pdf"],
+            },
+        )
+        return "_route_200k"
 
     @pytest.mark.asyncio
-    async def test_the_same_pdf_is_stripped_for_a_200k_route(self):
-        blocks, request = await _blocks_reaching("claude-haiku-4-5", _pdf_block(300))
+    async def test_the_same_pdf_is_stripped_for_a_200k_route(self, route_200k):
+        blocks, request = await _blocks_reaching(route_200k, _pdf_block(300))
         assert [b["type"] for b in blocks] == ["text", "text"]
         assert "300 pages" in blocks[1]["text"]
         assert _STRIP.placeholder_guidance in blocks[1]["text"]
 
     @pytest.mark.asyncio
-    async def test_a_pdf_inside_the_200k_ceiling_still_reaches_it(self):
-        blocks, _ = await _blocks_reaching("claude-haiku-4-5", _pdf_block(80))
+    async def test_a_pdf_inside_the_200k_ceiling_still_reaches_it(self, route_200k):
+        blocks, _ = await _blocks_reaching(route_200k, _pdf_block(80))
         assert [b["type"] for b in blocks] == ["text", "file"]
 
     @pytest.mark.asyncio
@@ -635,7 +645,7 @@ class TestPDFPageCeilingIsPerTarget:
         assert [b["type"] for b in blocks] == ["text", "file"]
 
     @pytest.mark.asyncio
-    async def test_an_unstamped_block_is_left_alone(self):
+    async def test_an_unstamped_block_is_left_alone(self, route_200k):
         """Blocks written before the stamp existed. Re-deriving the count would
         mean decoding every PDF in history per call; leaving them keeps the old
         behaviour rather than regressing threads that already work."""
@@ -644,7 +654,7 @@ class TestPDFPageCeilingIsPerTarget:
             {"type": "file", "base64": "abc", "mime_type": "application/pdf",
              "filename": "old.pdf"},
         ])
-        blocks, _ = await _blocks_reaching("claude-haiku-4-5", legacy)
+        blocks, _ = await _blocks_reaching(route_200k, legacy)
         assert [b["type"] for b in blocks] == ["text", "file"]
 
 

@@ -76,9 +76,13 @@ class TestUnhonoredLevelsDegrade:
     def test_supported_level_is_untouched(self, config):
         assert config.resolve_reasoning_effort("claude-opus-5-5", "xhigh") == "xhigh"
 
-    def test_model_with_no_control_resolves_to_nothing(self, config):
-        """A chat model that declares no ladder, not a model of another kind."""
-        assert config.resolve_reasoning_effort("claude-haiku-4-5", "high") is None
+    def test_model_with_no_control_resolves_to_nothing(self, config, monkeypatch):
+        """A chat model that declares no ladder, not a model of another kind.
+        Every shipped entry declares one now, so this is a row without it."""
+        monkeypatch.setitem(
+            config.llm_config, "_no_ladder", {"model_id": "_no_ladder", "provider": "anthropic"}
+        )
+        assert config.resolve_reasoning_effort("_no_ladder", "high") is None
 
     def test_above_the_ceiling_steps_down_one(self, config):
         """max on a low/medium/high model runs high, not that model's middle."""
