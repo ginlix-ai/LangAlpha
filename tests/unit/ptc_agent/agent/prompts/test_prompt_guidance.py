@@ -135,16 +135,16 @@ class TestFailSafeDefault:
     def test_defaults_to_detailed(self, model_name):
         assert resolve_prompt_guidance(model_name) == "detailed"
 
-    def test_intelligence_score_does_not_drive_guidance(self):
+    def test_intelligence_score_does_not_drive_guidance(self, monkeypatch):
         """`intelligence` is editorial copy for the model picker — a wording
-        change there must not move agent behavior."""
+        change there must not move agent behavior. 5 is the score the frontier
+        entries were seeded from, so it is the one most likely to leak."""
         from src.llms import LLM
 
-        config = LLM.get_model_config()
-        haiku = config.llm_config["claude-haiku-4-5"]
-        assert "prompt_guidance" not in haiku
-        assert haiku.get("intelligence") is not None
-        assert resolve_prompt_guidance("claude-haiku-4-5") == "detailed"
+        monkeypatch.setitem(
+            LLM.get_model_config().llm_config, "_scored", {"intelligence": 5}
+        )
+        assert resolve_prompt_guidance("_scored") == "detailed"
 
 
 class TestTemplateVars:

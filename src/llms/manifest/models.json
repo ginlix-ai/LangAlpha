@@ -244,24 +244,41 @@
       "write": "parameters.output_config.effort"
     }
   },
-  "claude-haiku-4-5": {
-    "model_id": "claude-haiku-4-5-20251001",
+  "claude-haiku-5-5": {
+    "model_id": "claude-haiku-5-5",
     "provider": "anthropic",
     "visible": true,
-    "speed": 4,
-    "intelligence": 1,
-    "context": 200000,
+    "speed": 5,
+    "intelligence": 3,
+    "context": 1000000,
     "input_modalities": [
       "text",
       "image",
       "pdf"
     ],
     "parameters": {
-      "max_tokens": 64000,
+      "max_tokens": 128000,
       "thinking": {
-        "type": "enabled",
-        "budget_tokens": 4096
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {
+          "prefix_mismatch_behavior": "drop_block"
+        }
       }
+    },
+    "additional_betas": [
+      "thinking-binding-controls-2026-08-01"
+    ],
+    "reasoning": {
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default": "medium",
+      "write": "parameters.output_config.effort"
     }
   },
   "gemini-3.1-pro": {
@@ -1229,24 +1246,41 @@
       "write": "parameters.output_config.effort"
     }
   },
-  "claude-haiku-4-5-oauth": {
-    "model_id": "claude-haiku-4-5-20251001",
+  "claude-haiku-5-5-oauth": {
+    "model_id": "claude-haiku-5-5",
     "provider": "claude-oauth",
     "visible": true,
-    "speed": 4,
-    "intelligence": 1,
-    "context": 200000,
+    "speed": 5,
+    "intelligence": 3,
+    "context": 1000000,
     "input_modalities": [
       "text",
       "image",
       "pdf"
     ],
     "parameters": {
-      "max_tokens": 64000,
+      "max_tokens": 128000,
       "thinking": {
-        "type": "enabled",
-        "budget_tokens": 8000
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {
+          "prefix_mismatch_behavior": "drop_block"
+        }
       }
+    },
+    "additional_betas": [
+      "thinking-binding-controls-2026-08-01"
+    ],
+    "reasoning": {
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default": "medium",
+      "write": "parameters.output_config.effort"
     }
   }
 }

@@ -20,19 +20,21 @@ class TestGetMaxPdfPages:
     def test_a_1m_context_anthropic_route_gets_the_higher_ceiling(self, model):
         assert get_max_pdf_pages(model) == 600
 
-    @pytest.mark.parametrize(
-        "model",
-        ["claude-haiku-4-5", "claude-haiku-4-5-oauth"],
-    )
-    def test_a_sub_1m_anthropic_route_gets_the_tighter_one(self, model):
+    @pytest.mark.parametrize("provider", ["anthropic", "claude-oauth"])
+    def test_a_sub_1m_anthropic_route_gets_the_tighter_one(self, monkeypatch, provider):
         """The pair that makes a single global cap impossible: same vendor, same
         modality support, six-fold difference in what a request may carry.
 
-        An unknown model also gets 100, so a retired target would still pass
-        here while testing nothing; the entry has to exist below 1M."""
-        entry = LLM.get_model_config().get_model_config(model)
-        assert entry is not None and entry["context"] < 1_000_000
-        assert get_max_pdf_pages(model) == 100
+        Synthetic entries, because no shipped Anthropic route sits below 1M any
+        more and a model that is not in the manifest also gets 100. The 1M twin
+        answering 600 is what shows the entries were read at all."""
+        models = LLM.get_model_config().llm_config
+        for name, context in (("_wide", 1_000_000), ("_narrow", 200_000)):
+            monkeypatch.setitem(
+                models, name, {"model_id": name, "provider": provider, "context": context}
+            )
+        assert get_max_pdf_pages("_wide") == 600
+        assert get_max_pdf_pages("_narrow") == 100
 
     def test_a_provider_with_no_documented_page_limit_reports_none(self):
         """None means 'not bounded by pages', which is a different claim from

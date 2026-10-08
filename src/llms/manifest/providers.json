@@ -152,132 +152,6 @@
         },
         "context_window": 1050000,
         "max_output": 128000
-      },
-      {
-        "id": "gpt-5.5",
-        "name": "GPT-5.5",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by GPT-6.1 Sol. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input": 5.0,
-          "cached_input": 0.5,
-          "output": 30.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "gpt-5.6-sol",
-        "name": "GPT-5.6 Sol",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by GPT-6.1 Sol. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 5.0,
-              "cached_input": 0.5,
-              "cache_5m": 6.25
-            },
-            {
-              "max_tokens": null,
-              "rate": 10.0,
-              "cached_input": 1.0,
-              "cache_5m": 12.5
-            }
-          ],
-          "cache_5m": 6.25,
-          "output_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 30.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 45.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 1050000,
-        "max_output": 128000
-      },
-      {
-        "id": "gpt-5.6-luna",
-        "name": "GPT-5.6 Luna",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by GPT-6 Luna. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 0.2,
-              "cached_input": 0.02,
-              "cache_5m": 0.25
-            },
-            {
-              "max_tokens": null,
-              "rate": 0.4,
-              "cached_input": 0.04,
-              "cache_5m": 0.5
-            }
-          ],
-          "cache_5m": 0.25,
-          "output_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 1.2
-            },
-            {
-              "max_tokens": null,
-              "rate": 1.8
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 1050000,
-        "max_output": 128000
-      },
-      {
-        "id": "gpt-6-sol",
-        "name": "GPT-6 Sol",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by GPT-6.1 Sol. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 2.0,
-              "cached_input": 0.2,
-              "cache_5m": 2.5
-            },
-            {
-              "max_tokens": null,
-              "rate": 4.0,
-              "cached_input": 0.4,
-              "cache_5m": 5.0
-            }
-          ],
-          "cache_5m": 2.5,
-          "output_tiers": [
-            {
-              "max_tokens": 272000,
-              "rate": 10.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 15.0
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "input_pricing_mode": "input_dependent",
-          "unit": "per_1m_tokens"
-        },
-        "context_window": 1050000,
-        "max_output": 128000
       }
     ],
     "anthropic": [
@@ -324,10 +198,47 @@
         }
       },
       {
+        "id": "claude-haiku-5-5",
+        "name": "Claude Haiku 5.5",
+        "is_reasoning": true,
+        "description": "Claude Haiku 5.5 model",
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 100000,
+              "rate": 0.1,
+              "cached_input": 0.01,
+              "cache_5m": 0.125,
+              "cache_1h": 0.2
+            },
+            {
+              "max_tokens": null,
+              "rate": 0.5,
+              "cached_input": 0.05,
+              "cache_5m": 0.625,
+              "cache_1h": 1.0
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 100000,
+              "rate": 0.5
+            },
+            {
+              "max_tokens": null,
+              "rate": 2.5
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "input_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "claude-haiku-4-5-20251001",
         "name": "Claude 4.5 Haiku",
         "is_reasoning": true,
-        "description": "Fast and cost-efficient model",
+        "description": "Retired 2026-10-07, superseded by Claude Haiku 5.5. Kept until the next retirement so a custom model on this id still bills.",
         "alias": [
           "claude-haiku-4.5"
         ],
@@ -337,102 +248,6 @@
           "cache_5m": 1.25,
           "cache_1h": 2.0,
           "output": 5.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "claude-fable-5",
-        "name": "Claude Fable 5",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by Claude Fable 5.1. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input": 10.0,
-          "cached_input": 1.0,
-          "cache_5m": 12.5,
-          "cache_1h": 20.0,
-          "output": 50.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "claude-opus-5",
-        "name": "Claude Opus 5",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by Claude Opus 5.5. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input": 5.0,
-          "cached_input": 0.5,
-          "cache_5m": 6.25,
-          "cache_1h": 10.0,
-          "output": 25.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "claude-sonnet-5",
-        "name": "Claude Sonnet 5",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by Claude Sonnet 5.5. Kept until the next retirement so a custom model on this id still bills.",
-        "pricing": {
-          "input": 2.0,
-          "cached_input": 0.2,
-          "cache_5m": 2.5,
-          "cache_1h": 4.0,
-          "output": 10.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "claude-opus-4-8",
-        "name": "Claude 4.8 Opus",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by Claude Opus 5.5. Kept until the next retirement so a custom model on this id still bills.",
-        "alias": [
-          "claude-opus-4.8"
-        ],
-        "pricing": {
-          "input": 5.0,
-          "cached_input": 0.5,
-          "cache_5m": 6.25,
-          "cache_1h": 10.0,
-          "output": 25.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "claude-sonnet-4-6",
-        "name": "Claude 4.6 Sonnet",
-        "is_reasoning": true,
-        "description": "Retired 2026-09-30, superseded by Claude Sonnet 5.5. Kept until the next retirement so a custom model on this id still bills.",
-        "alias": [
-          "claude-sonnet-4.6"
-        ],
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 3.0,
-              "cached_input": 0.3
-            },
-            {
-              "max_tokens": null,
-              "rate": 6.0,
-              "cached_input": 0.6
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 15.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 22.5
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "cache_5m": 3.75,
-          "cache_1h": 6.0,
           "unit": "per_1m_tokens"
         }
       }
