@@ -293,6 +293,10 @@ class TestRead:
         readme = await backend.aread_range(README)
 
         assert "available.json" in readme and "Editing rules" in readme
+        assert (
+            "editing them sends nothing. To message the user, use `send_message`;"
+            " `list_message_targets` shows where you can send now."
+        ) in " ".join(readme.split())
 
 
 class TestSave:

@@ -32,6 +32,9 @@ with Read, Write, Edit, Grep and Glob only; Bash and code can't.
 - `available.json`: read-only. The chats on each connected app, and the user's
   workspaces by id, which `channels.json` may name.
 
+These files hold settings; editing them sends nothing. To message the user,
+use `send_message`; `list_message_targets` shows where you can send now.
+
 Read `channels.json` before you write it; a save over a change you haven't
 seen is refused.
 
