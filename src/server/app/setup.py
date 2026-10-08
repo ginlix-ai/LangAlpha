@@ -668,6 +668,9 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Application shutdown started...")
+    from src.server.services.brand_icons import stop_refreshes
+
+    await stop_refreshes()
 
     # 0.0. Stop the recovery scanner first — no new recovery work while the
     # process drains (live runs hold their guards and are skipped anyway).

@@ -6,6 +6,8 @@ them broke a plausible implementation before it was measured.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import time
 
 import pytest
@@ -293,7 +295,9 @@ class TestAMalformedRedirectIsAMiss:
         class _Client:
             async def get(self, url):
                 return httpx.Response(
-                    302, headers={"location": location}, request=httpx.Request("GET", url)
+                    302,
+                    headers={"location": location},
+                    request=httpx.Request("GET", url),
                 )
 
         @contextlib.asynccontextmanager
@@ -314,7 +318,9 @@ class TestAMalformedRedirectIsAMiss:
             brand_icons, "pinned_stream_client", self._redirecting_to("http://[bad")
         )
 
-        assert await brand_icons._get("https://vendor.test/i.png", max_bytes=1000) is None
+        assert (
+            await brand_icons._get("https://vendor.test/i.png", max_bytes=1000) is None
+        )
 
     @pytest.mark.asyncio
     async def test_the_route_answers_the_ordinary_404(self, monkeypatch):
@@ -346,17 +352,19 @@ class TestASourceThatCannotBeStored:
     async def test_a_lone_surrogate_names_no_mark(self):
         from src.server.services import brand_icons
 
-        assert await brand_icons.publish_icon_source(
-            "https://vendor.test/" + chr(0xD800)
-        ) is None
+        assert (
+            await brand_icons.publish_icon_source("https://vendor.test/" + chr(0xD800))
+            is None
+        )
 
     @pytest.mark.asyncio
     async def test_an_ordinary_source_still_publishes(self):
         from src.server.services import brand_icons
 
-        assert await brand_icons.publish_icon_source(
-            "https://vendor.test/logo.png"
-        ) is not None
+        assert (
+            await brand_icons.publish_icon_source("https://vendor.test/logo.png")
+            is not None
+        )
 
 
 class TestAPortThatIsNotAPort:
@@ -393,3 +401,297 @@ class TestAPortThatIsNotAPort:
         response = await icon_response("https://vendor.test:99999/icon.png")
 
         assert response.status_code == 404
+
+
+class _Cache:
+    """Redis as a dict, with the lock a refresh takes."""
+
+    def __init__(self, entries=None, *, locked=False):
+        self.entries = dict(entries or {})
+        self.ttls: dict[str, int | None] = {}
+        self.locked = locked
+        self.held: set[str] = set()
+
+    async def get(self, key):
+        return self.entries.get(key)
+
+    async def set(self, key, value, ttl=None):
+        self.entries[key] = value
+        self.ttls[key] = ttl
+        return True
+
+    async def acquire_lock(self, key, token, ttl_ms):
+        if self.locked or key in self.held:
+            return False
+        self.held.add(key)
+        return True
+
+    async def release_lock(self, key, token):
+        self.held.discard(key)
+
+
+OLD_MARK = _png(152, 152)
+NEW_MARK = _png(180, 180)
+SITE_KEY = "brand-icon:v1:vendor.test"
+
+
+def _stored(content: bytes, *, fresh_for: float, found_ago: float = 0) -> dict:
+    return {
+        "content": base64.b64encode(content).decode("ascii"),
+        "content_type": "image/png",
+        "fresh_until": time.time() + fresh_for,
+        "found_at": time.time() - found_ago,
+    }
+
+
+def _resolving(monkeypatch, name: str, found: bytes | None) -> list[str]:
+    """Stand in for one way of finding a mark, recording who it was asked for."""
+    from src.server.services import brand_icons
+
+    asked: list[str] = []
+
+    async def _find(source):
+        asked.append(source)
+        if found is None:
+            return None
+        return brand_icons.BrandIcon(content=found, content_type="image/png")
+
+    monkeypatch.setattr(brand_icons, name, _find)
+    return asked
+
+
+async def _settle():
+    from src.server.services import brand_icons
+
+    await asyncio.gather(*brand_icons._REFRESHES)
+
+
+class TestAStoredMarkIsServedWhileItRefreshes:
+    """Finding a mark reads a vendor's homepage, which can take seconds.
+
+    moomoo's is two redirects and a 470 KB page. Once any answer is stored, a
+    viewer gets it at once and the refresh runs behind them, and a refresh that
+    finds nothing keeps what was there: a vendor's site being down for a day
+    is no reason to draw its logo as a letter.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_stale_mark_is_served_and_replaced_behind_it(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        served = await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+
+        assert served.content == OLD_MARK
+        assert asked == ["vendor.test"]
+        stored = brand_icons._read(cache.entries[SITE_KEY])
+        assert stored.icon.content == NEW_MARK
+        assert stored.fresh
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_that_finds_nothing_keeps_the_mark(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        _resolving(monkeypatch, "_from_site", None)
+
+        await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+
+        entry = cache.entries[SITE_KEY]
+        assert base64.b64decode(entry["content"]) == OLD_MARK
+        # Kept, but asked about again as soon as a miss would be.
+        assert entry["fresh_until"] - time.time() <= brand_icons._MISS_FRESH
+
+    @pytest.mark.asyncio
+    async def test_a_current_mark_asks_nobody(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=3600)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        served = await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+
+        assert served.content == OLD_MARK
+        assert asked == []
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_already_running_elsewhere_is_not_repeated(
+        self, monkeypatch
+    ):
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)}, locked=True)
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        served = await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+
+        assert served.content == OLD_MARK
+        assert asked == []
+
+    @pytest.mark.asyncio
+    async def test_an_entry_stored_before_freshness_was_kept_is_refreshed(
+        self, monkeypatch
+    ):
+        from src.server.services import brand_icons
+
+        old_format = {
+            "content": base64.b64encode(OLD_MARK).decode("ascii"),
+            "content_type": "image/png",
+        }
+        cache = _Cache({SITE_KEY: old_format})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        served = await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+
+        assert served.content == OLD_MARK
+        assert asked == ["vendor.test"]
+
+    @pytest.mark.asyncio
+    async def test_a_site_never_seen_is_resolved_for_its_first_viewer(
+        self, monkeypatch
+    ):
+        from src.server.services import brand_icons
+
+        cache = _Cache()
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        served = await brand_icons.icon_for_site("vendor.test")
+
+        assert served.content == NEW_MARK
+        assert brand_icons._read(cache.entries[SITE_KEY]).fresh
+
+    @pytest.mark.asyncio
+    async def test_viewers_arriving_during_a_refresh_start_nothing(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+        started: list[str] = []
+        refresh = brand_icons._refresh
+
+        async def _counted(key, *rest):
+            started.append(key)
+            await refresh(key, *rest)
+
+        monkeypatch.setattr(brand_icons, "_refresh", _counted)
+
+        served = await asyncio.gather(
+            *(brand_icons.icon_for_site("vendor.test") for _ in range(20))
+        )
+        await _settle()
+
+        assert {icon.content for icon in served} == {OLD_MARK}
+        assert started == [SITE_KEY]
+        assert asked == ["vendor.test"]
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_done_elsewhere_meanwhile_is_not_undone(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", None)
+
+        await brand_icons.icon_for_site("vendor.test")
+        # Another worker stores the new mark before this one's refresh runs.
+        cache.entries[SITE_KEY] = _stored(NEW_MARK, fresh_for=3600)
+        await _settle()
+
+        assert asked == []
+        assert base64.b64decode(cache.entries[SITE_KEY]["content"]) == NEW_MARK
+
+    @pytest.mark.asyncio
+    async def test_a_reread_that_fails_writes_nothing(self, monkeypatch):
+        """The cache reads a failure as absence, and absence confirms nothing:
+        another worker may have stored a newer mark since this one's read."""
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)})
+        reads = 0
+        read = cache.get
+
+        async def _fails_after_the_first(key):
+            nonlocal reads
+            reads += 1
+            return await read(key) if reads == 1 else None
+
+        cache.get = _fails_after_the_first
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", None)
+
+        served = await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+
+        assert served.content == OLD_MARK
+        assert asked == []
+        assert cache.ttls == {}
+        assert cache.held == set()
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_stopped_at_shutdown_releases_its_lock(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked: list[str] = []
+
+        async def _slow_vendor(source):
+            asked.append(source)
+            await asyncio.sleep(60)
+
+        monkeypatch.setattr(brand_icons, "_from_site", _slow_vendor)
+
+        await brand_icons.icon_for_site("vendor.test")
+        await asyncio.sleep(0)
+        assert asked == ["vendor.test"] and cache.held
+
+        await brand_icons.stop_refreshes()
+
+        assert cache.held == set()
+        assert not brand_icons._REFRESHES
+        assert base64.b64decode(cache.entries[SITE_KEY]["content"]) == OLD_MARK
+
+    @pytest.mark.asyncio
+    async def test_a_mark_not_found_for_a_week_is_let_go(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        week = brand_icons._KEEP_UNFOUND
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1, found_ago=week + 1)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        _resolving(monkeypatch, "_from_site", None)
+
+        await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+
+        assert cache.entries[SITE_KEY]["content"] is None
+        assert cache.ttls[SITE_KEY] == brand_icons._MISS_KEEP
+
+    @pytest.mark.asyncio
+    async def test_a_resolver_that_raises_is_stored_as_a_miss(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        cache = _Cache()
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+
+        async def _find(host):
+            raise ValueError("label too long")
+
+        monkeypatch.setattr(brand_icons, "_from_site", _find)
+
+        assert await brand_icons.icon_for_site("vendor.test") is None
+        assert cache.entries[SITE_KEY]["content"] is None
+        assert cache.ttls[SITE_KEY] == brand_icons._MISS_KEEP

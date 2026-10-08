@@ -30,6 +30,9 @@ import base64
 import hashlib
 import logging
 import re
+import time
+import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -55,20 +58,40 @@ _MAX_REDIRECTS = 3
 # api.ibkr.com's 16px favicon is the shape this rejects.
 MIN_PIXELS = 32
 
-# Art changes on a rebrand, so a hit may sit for a week. A miss is usually a
-# site with nothing to find, but it is also every transient failure, so it
-# expires soon enough that a fixed site recovers without anyone's help.
-_HIT_TTL = 7 * 24 * 3600
-_MISS_TTL = 6 * 3600
+# Art changes on a rebrand, so a hit is current for a week. A miss is usually
+# a site with nothing to find, but it is also every transient failure, so it is
+# asked again sooner. Past either, the stored answer is still served while a
+# refresh runs behind it: resolving reads a vendor's homepage and can take
+# seconds (moomoo's is two redirects and a 470 KB page), and no viewer should
+# wait on that more than once. A refresh that finds nothing keeps the mark it
+# had, so a bad day on a vendor's site does not turn its logo into a letter,
+# but only for a week past the last time the mark was found: art that is gone
+# for good gives way to the next source, or to the letter.
+_HIT_FRESH = 7 * 24 * 3600
+_MISS_FRESH = 6 * 3600
+_KEEP_UNFOUND = _HIT_FRESH
+# How long an answer outlives its last write. Each refresh rewrites it, so only
+# a source nobody has asked about in this long resolves in front of a viewer.
+# A miss holds nothing worth keeping that long, and an older build reads any
+# entry as current for as long as it lives.
+_KEEP = 90 * 24 * 3600
+_MISS_KEEP = 2 * _MISS_FRESH
 _CACHE_PREFIX = "brand-icon:v1:"
+# One refresh per answer at a time across workers. The lease outlasts a whole
+# refresh, whose reread and write can each wait out the cache's pool and socket
+# timeouts around a resolve of DEADLINE_SECONDS, so no second refresh starts
+# while the first can still write. Only a worker that dies mid-refresh holds it
+# this long, and the stale mark is served meanwhile.
+_REFRESH_LOCK_PREFIX = "brand-icon-refresh:v1:"
+_REFRESH_LOCK_MS = 60_000
 
-# What a browser is told, kept here because it has to agree with the TTLs
+# What a browser is told, kept here because it has to agree with the windows
 # above and cannot from another file. A client re-checks a mark daily but may
-# draw a stale one for as long as the resolved answer lives here, so nobody
+# draw a stale one for as long as the answer here stays current, so nobody
 # waits on a re-resolve. A miss expires sooner in the browser than in the
 # cache: resolving is the expensive half, and a site that gains a logo should
 # reappear without waiting out both.
-_HIT_CACHE = f"public, max-age=86400, stale-while-revalidate={_HIT_TTL}"
+_HIT_CACHE = f"public, max-age=86400, stale-while-revalidate={_HIT_FRESH}"
 _MISS_CACHE = "public, max-age=3600"
 
 # Brand art is fetched from third parties and, for an MCP server, from bytes
@@ -273,39 +296,130 @@ async def icon_for_site(site: str) -> BrandIcon | None:
     host = site.strip().lower()
     if not host:
         return None
+    return await _cached(f"{_CACHE_PREFIX}{host}", lambda: _from_site(host))
 
-    cache = get_cache_client()
-    key = f"{_CACHE_PREFIX}{host}"
-    cached = await cache.get(key)
-    if isinstance(cached, dict):
-        if not cached.get("content"):
-            return None
-        try:
-            return BrandIcon(
-                content=base64.b64decode(cached["content"]),
-                content_type=cached["content_type"],
-            )
-        except (ValueError, KeyError):
-            pass  # Unreadable entry: resolve again and overwrite it.
 
+_Resolver = Callable[[], Awaitable[BrandIcon | None]]
+
+# Strong references to running refreshes: the loop holds tasks weakly, and a
+# refresh nobody awaits could otherwise be collected before it lands.
+_REFRESHES: set[asyncio.Task[None]] = set()
+
+
+@dataclass(frozen=True)
+class _Stored:
+    icon: BrandIcon | None
+    fresh: bool
+    # When a resolver last returned ``icon``, which a refresh that finds
+    # nothing keeps only for so long.
+    found_at: float
+
+
+def _read(raw: object) -> _Stored | None:
+    """A stored answer, or None when there is none worth serving.
+
+    An entry with no ``fresh_until`` predates it and reads as stale, so it is
+    served once more while its refresh rewrites it. One with no ``found_at``
+    counts as found now, so its clock starts with that rewrite.
+    """
+    if not isinstance(raw, dict):
+        return None
+    until = raw.get("fresh_until")
+    fresh = isinstance(until, (int, float)) and time.time() < until
+    found = raw.get("found_at")
+    found_at = found if isinstance(found, (int, float)) else time.time()
+    if not raw.get("content"):
+        return _Stored(icon=None, fresh=fresh, found_at=found_at)
+    try:
+        icon = BrandIcon(
+            content=base64.b64decode(raw["content"]),
+            content_type=raw["content_type"],
+        )
+    except (ValueError, KeyError, TypeError):
+        return None  # Unreadable: resolve again and overwrite it.
+    return _Stored(icon=icon, fresh=fresh, found_at=found_at)
+
+
+async def _resolve(
+    key: str, resolver: _Resolver, kept: _Stored | None
+) -> BrandIcon | None:
+    """Ask the vendor and store the answer, keeping ``kept`` if it gives none.
+
+    Any failure to resolve is a miss rather than an error, so it is stored and
+    asked about again on the miss schedule, and the next source gets its turn.
+    """
     try:
         async with asyncio.timeout(DEADLINE_SECONDS):
-            icon = await _from_site(host)
+            icon = await resolver()
     except TimeoutError:
         icon = None
-
-    if icon is None:
-        await cache.set(key, {"content": None}, ttl=_MISS_TTL)
-        return None
-    await cache.set(
-        key,
-        {
-            "content": base64.b64encode(icon.content).decode("ascii"),
-            "content_type": icon.content_type,
-        },
-        ttl=_HIT_TTL,
+    except Exception:
+        logger.warning("[brand_icons] resolving %.200s failed", key, exc_info=True)
+        icon = None
+    now = time.time()
+    found = icon is not None
+    found_at = now
+    if not found and kept is not None and now - kept.found_at < _KEEP_UNFOUND:
+        icon, found_at = kept.icon, kept.found_at
+    value: dict[str, object] = {
+        "content": None,
+        "fresh_until": now + (_HIT_FRESH if found else _MISS_FRESH),
+        "found_at": found_at,
+    }
+    if icon is not None:
+        value["content"] = base64.b64encode(icon.content).decode("ascii")
+        value["content_type"] = icon.content_type
+    await get_cache_client().set(
+        key, value, ttl=_KEEP if icon is not None else _MISS_KEEP
     )
     return icon
+
+
+async def _refresh(key: str, resolver: _Resolver, lock: str, token: str) -> None:
+    """Resolve again behind an answer already served, holding the refresh lock."""
+    cache = get_cache_client()
+    try:
+        # Read again under the lock: another worker may have refreshed it since
+        # this one's read. A read that fails confirms nothing, so it ends the
+        # refresh rather than writing over what may be newer.
+        current = _read(await cache.get(key))
+        if current is not None and not current.fresh:
+            await _resolve(key, resolver, current)
+    except Exception:
+        logger.warning("[brand_icons] refresh of %.200s failed", key, exc_info=True)
+    finally:
+        await cache.release_lock(lock, token)
+
+
+async def _cached(key: str, resolver: _Resolver) -> BrandIcon | None:
+    """The stored answer for ``key``, resolving it only when there is none."""
+    cache = get_cache_client()
+    stored = _read(await cache.get(key))
+    if stored is None:
+        return await _resolve(key, resolver, None)
+    if not stored.fresh:
+        # The lock is taken before the task rather than inside it, so viewers
+        # arriving while a refresh runs start nothing at all.
+        lock = f"{_REFRESH_LOCK_PREFIX}{key}"
+        token = uuid.uuid4().hex
+        if await cache.acquire_lock(lock, token, _REFRESH_LOCK_MS) is True:
+            task = asyncio.create_task(_refresh(key, resolver, lock, token))
+            _REFRESHES.add(task)
+            task.add_done_callback(_REFRESHES.discard)
+    return stored.icon
+
+
+async def stop_refreshes() -> None:
+    """Cancel the refreshes still running and wait for them.
+
+    Called at shutdown before the cache closes, so each releases its lock
+    while Redis is open; a lock left to expire holds off the refresh of that
+    mark after a quick restart.
+    """
+    tasks = list(_REFRESHES)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _from_data_uri(source: str) -> BrandIcon | None:
@@ -344,38 +458,8 @@ async def _icon_at_url(url: str) -> BrandIcon | None:
     The fetch is still pinned per hop and capped, since the address came from a
     server the user added rather than from us.
     """
-    cache = get_cache_client()
     key = f"{_CACHE_PREFIX}url:{hashlib.sha256(url.encode()).hexdigest()}"
-    cached = await cache.get(key)
-    if isinstance(cached, dict):
-        if not cached.get("content"):
-            return None
-        try:
-            return BrandIcon(
-                content=base64.b64decode(cached["content"]),
-                content_type=cached["content_type"],
-            )
-        except (ValueError, KeyError):
-            pass
-
-    try:
-        async with asyncio.timeout(DEADLINE_SECONDS):
-            icon = await _fetch_icon(url)
-    except TimeoutError:
-        icon = None
-
-    if icon is None:
-        await cache.set(key, {"content": None}, ttl=_MISS_TTL)
-        return None
-    await cache.set(
-        key,
-        {
-            "content": base64.b64encode(icon.content).decode("ascii"),
-            "content_type": icon.content_type,
-        },
-        ttl=_HIT_TTL,
-    )
-    return icon
+    return await _cached(key, lambda: _fetch_icon(url))
 
 
 async def icon_for_source(source: str) -> BrandIcon | None:
