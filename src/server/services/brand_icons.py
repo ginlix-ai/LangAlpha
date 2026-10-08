@@ -301,9 +301,10 @@ async def icon_for_site(site: str) -> BrandIcon | None:
 
 _Resolver = Callable[[], Awaitable[BrandIcon | None]]
 
-# Strong references to running refreshes: the loop holds tasks weakly, and a
-# refresh nobody awaits could otherwise be collected before it lands.
-_REFRESHES: set[asyncio.Task[None]] = set()
+# Strong references to running refreshes, with the lock each holds: the loop
+# holds tasks weakly, and a refresh nobody awaits could otherwise be collected
+# before it lands.
+_REFRESHES: dict[asyncio.Task[None], tuple[str, str]] = {}
 
 
 @dataclass(frozen=True)
@@ -405,22 +406,26 @@ async def _cached(key: str, resolver: _Resolver) -> BrandIcon | None:
         token = uuid.uuid4().hex
         if await cache.acquire_lock(lock, token, _REFRESH_LOCK_MS) is True:
             task = asyncio.create_task(_refresh(key, resolver, lock, token))
-            _REFRESHES.add(task)
-            task.add_done_callback(_REFRESHES.discard)
+            _REFRESHES[task] = (lock, token)
+            task.add_done_callback(lambda done: _REFRESHES.pop(done, None))
     return stored.icon
 
 
 async def stop_refreshes() -> None:
-    """Cancel the refreshes still running and wait for them.
+    """Cancel the refreshes still running and release their locks.
 
-    Called at shutdown before the cache closes, so each releases its lock
-    while Redis is open; a lock left to expire holds off the refresh of that
-    mark after a quick restart.
+    Called at shutdown before the cache closes; a lock left to expire holds off
+    the refresh of that mark after a quick restart. The locks are released here
+    too, because a task cancelled before its first step never reaches its own
+    ``finally``, and a release is a no-op for a lock its owner already let go.
     """
-    tasks = list(_REFRESHES)
-    for task in tasks:
+    running = dict(_REFRESHES)
+    for task in running:
         task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.gather(*running, return_exceptions=True)
+    cache = get_cache_client()
+    for lock, token in running.values():
+        await cache.release_lock(lock, token)
 
 
 def _from_data_uri(source: str) -> BrandIcon | None:

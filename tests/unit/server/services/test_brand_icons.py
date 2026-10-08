@@ -671,6 +671,23 @@ class TestAStoredMarkIsServedWhileItRefreshes:
         assert cache.held == set()
 
     @pytest.mark.asyncio
+    async def test_a_refresh_stopped_before_it_starts_releases_its_lock(
+        self, monkeypatch
+    ):
+        """A task cancelled before its first step never runs its ``finally``."""
+        from src.server.services import brand_icons
+
+        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1)})
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        asked = _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        await brand_icons.icon_for_site("vendor.test")
+        await brand_icons.stop_refreshes()
+
+        assert asked == []
+        assert cache.held == set()
+
+    @pytest.mark.asyncio
     async def test_a_refresh_stopped_at_shutdown_releases_its_lock(self, monkeypatch):
         from src.server.services import brand_icons
 
