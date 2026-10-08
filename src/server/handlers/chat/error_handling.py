@@ -227,8 +227,8 @@ async def handle_workflow_error(
     ``error``).  Call it with ``async for event in handle_workflow_error(...): yield event``.
 
     ``scope`` owns the burst lease and the open START row; its
-    ``owned_run_handle`` is the run to finalize, ``None`` when the error
-    fired before START. After handoff to BTM, whose ``_finalize_run`` owns
+    ``owned_run_handle`` is the run to finalize, ``None`` when no START row
+    committed. After handoff to BTM, whose ``_finalize_run`` owns
     the terminal write (and the durable slot release), this yields nothing.
     ``workspace_id`` accepts ``None`` to guard against the case where the
     error occurred before the workspace was resolved.

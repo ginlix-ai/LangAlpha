@@ -155,6 +155,7 @@ class RunCoordinator:
         attempt_no: int = 1,
         retry_of_run_id: Optional[str] = None,
         run_metadata: Optional[Dict[str, Any]] = None,
+        on_started: Optional[Callable[[RunHandle], None]] = None,
     ) -> RunHandle:
         """Create the durable attempt: query row + in_progress run + projection.
 
@@ -164,6 +165,10 @@ class RunCoordinator:
         (503 — pinned-session budget/lock bounded refusal). A server-minted
         request_key is the legacy fallback only; callers should supply one
         for dedup to mean anything.
+
+        ``on_started`` receives the run as soon as its row commits, before
+        the announcements: a failure or a cancel there still raises, and the
+        caller holds the run to settle, since no executor ever takes it.
         """
         from src.server.services import writer_guard as wg
 
@@ -180,6 +185,7 @@ class RunCoordinator:
             metadata["workspace_id"] = workspace_id
 
         guard = None
+        handle = None
         if wg.guard_enabled():
             guard = await wg.WriterGuard.acquire_root(
                 thread_id=thread_id, run_id=run_id
@@ -213,6 +219,8 @@ class RunCoordinator:
             )
             if guard is not None:
                 guard.bind_owner(handle)
+            if on_started is not None:
+                on_started(handle)
             # Two independent post-commit announcements, in parallel:
             # - control lane: an attached mux admits the main-lane channel
             #   push-style. Unbounded — the mux has no root-run recovery scan
@@ -257,6 +265,10 @@ class RunCoordinator:
             # announce await): releasing the guard here is what lets the
             # recovery scanner reclaim the committed in_progress row instead
             # of it wedging the thread behind a leaked advisory lock.
+            if handle is not None:
+                # Before the await, which a cancel can cut short: whoever
+                # settles this run does it on the pool.
+                handle.guard = None
             if guard is not None:
                 await guard.release()
             raise

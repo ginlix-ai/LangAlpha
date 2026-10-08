@@ -314,6 +314,7 @@ async def astream_flash_workflow(
         carried = await carry.carried_pair(request, thread_id)
         run_handle = await begin_run(
             request,
+            scope=scope,
             thread_id=thread_id,
             run_id=run_id,
             msg_type="flash",
@@ -338,7 +339,6 @@ async def astream_flash_workflow(
                 **(run_metadata or {}),
             },
         )
-        scope.attach_run(run_handle)
 
         logger.info(
             f"[FLASH_CHAT] Run started: workspace_id={workspace_id} "

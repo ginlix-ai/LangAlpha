@@ -1,12 +1,14 @@
 """A failed message that never reached the graph runs again on /retry.
 
-Pins the three seams of that contract: what the failed run row carries,
-what ``/retry`` builds from it (the query row's text, never the client's),
-and that the re-run chains onto the turn without a second query row.
+Pins the seams of that contract: what the failed run row carries, what
+``/retry`` builds from it (the query row's text, never the client's), that
+the re-run chains onto the turn without a second query row, and that a START
+which raised after committing still leaves its run to the turn to settle.
 """
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -161,6 +163,7 @@ async def test_rerun_chains_onto_the_turn_without_a_second_query_row():
     ):
         await admission.begin_run(
             request,
+            scope=admission.RunScope(user_id="u-1", burst_slot_id=None),
             thread_id="t-1",
             run_id="run-2",
             msg_type="ptc",
@@ -183,6 +186,118 @@ async def test_rerun_chains_onto_the_turn_without_a_second_query_row():
         2,
         "run-1",
     )
+
+
+
+def _begin(scope):
+    from src.server.models.chat import ChatRequest
+
+    return admission.begin_run(
+        ChatRequest(workspace_id="ws-1", messages=[{"role": "user", "content": "hi"}]),
+        scope=scope,
+        thread_id="t-1",
+        run_id="run-2",
+        msg_type="ptc",
+        workspace_id="ws-1",
+        user_id="u-1",
+        is_byok=False,
+        query_content="hi",
+        query_type="follow_up",
+        feedback_action=None,
+        query_metadata={},
+        fork=None,
+        is_checkpoint_replay=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row, owned",
+    [
+        (
+            {
+                "status": "in_progress",
+                "turn_index": 5,
+                "attempt_no": 1,
+                "created_at": "2026-10-08T20:00:00Z",
+            },
+            True,
+        ),
+        (None, False),
+    ],
+    ids=["committed", "rolled-back"],
+)
+async def test_a_start_whose_commit_was_not_acknowledged_leaves_its_run_to_the_turn(
+    row, owned
+):
+    """No executor ever takes a run whose START raised, so a committed one is
+    the turn's to settle as the failed attempt ``/retry`` chains onto. Left
+    to the client's resend instead, the message would steer into it. A lost
+    COMMIT acknowledgement raises before START hands back any run, so only
+    the ledger knows."""
+    scope = admission.RunScope(user_id="u-1", burst_slot_id=None)
+    coordinator = SimpleNamespace(
+        start_run=AsyncMock(side_effect=RuntimeError("connection lost in COMMIT"))
+    )
+
+    with patch.object(
+        admission, "resolve_retry_of", new=AsyncMock(return_value=None)
+    ), patch(
+        "src.server.services.runs.coordinator.RunCoordinator.get_instance",
+        return_value=coordinator,
+    ), patch(
+        "src.server.database.runs.lifecycle.get_run", new=AsyncMock(return_value=row)
+    ), pytest.raises(RuntimeError, match="connection lost in COMMIT"):
+        await _begin(scope)
+
+    handle = scope.owned_run_handle
+    if not owned:
+        assert handle is None
+        return
+    assert (handle.run_id, handle.thread_id, handle.turn_index, handle.attempt_no) == (
+        "run-2",
+        "t-1",
+        5,
+        1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_start_cancelled_awaiting_its_commit_is_settled_detached():
+    """A cancel lands again on every await of the cancelled request, so a
+    detached task finds the run whose COMMIT went through and settles it,
+    rather than leaving it to fence the thread until recovery."""
+    scope = admission.RunScope(user_id="u-1", burst_slot_id=None)
+    coordinator = SimpleNamespace(
+        start_run=AsyncMock(side_effect=asyncio.CancelledError),
+        fail_open_run=AsyncMock(),
+    )
+    spawned = []
+    row = {
+        "status": "in_progress",
+        "turn_index": 5,
+        "attempt_no": 1,
+        "created_at": "2026-10-08T20:00:00Z",
+    }
+
+    with patch.object(
+        admission, "resolve_retry_of", new=AsyncMock(return_value=None)
+    ), patch(
+        "src.server.services.runs.coordinator.RunCoordinator.get_instance",
+        return_value=coordinator,
+    ), patch(
+        "src.server.services.runs.coordinator.spawn_protected",
+        side_effect=lambda coro, name: spawned.append(coro),
+    ), patch(
+        "src.server.database.runs.lifecycle.get_run", new=AsyncMock(return_value=row)
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await _begin(scope)
+        assert scope.owned_run_handle is None
+        await spawned.pop()
+
+    (handle, reason), kwargs = coordinator.fail_open_run.await_args
+    assert (handle.run_id, handle.turn_index, kwargs["status"]) == ("run-2", 5, "cancelled")
 
 
 @pytest.mark.asyncio

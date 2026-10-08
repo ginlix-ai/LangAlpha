@@ -403,6 +403,7 @@ async def astream_ptc_workflow(
         carried = await carry.carried_pair(request, thread_id)
         run_handle = await begin_run(
             request,
+            scope=scope,
             thread_id=thread_id,
             run_id=run_id,
             msg_type="ptc",
@@ -417,7 +418,6 @@ async def astream_ptc_workflow(
             is_checkpoint_replay=is_checkpoint_replay,
             extra_run_metadata={**origin_meta, **carried, **(run_metadata or {})},
         )
-        scope.attach_run(run_handle)
         if not is_checkpoint_replay:
             logger.debug(
                 f"[PTC_CHAT] Run started: workspace_id={workspace_id} "

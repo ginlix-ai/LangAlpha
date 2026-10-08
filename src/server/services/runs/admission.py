@@ -323,6 +323,7 @@ async def resolve_retry_of(request: ChatRequest, thread_id: str):
 async def begin_run(
     request: "ChatRequest",
     *,
+    scope: RunScope,
     thread_id: str,
     run_id: str,
     msg_type: str,
@@ -342,60 +343,141 @@ async def begin_run(
     checkpoint replays pin their turn and reuse the preserved query row,
     everything else allocates MAX+1 — so the derivation can never drift
     between agent modes. ``fork`` (a ForkSpec) executes its truncation +
-    checkpoint pin inside the same transaction."""
+    checkpoint pin inside the same transaction.
+
+    The run goes to ``scope``, even when START raised once its row had
+    committed: no executor ever takes that run, so the turn's error path
+    settles it, as the failed attempt ``/retry`` chains onto."""
     from uuid import uuid4
 
     from src.server.services.runs.coordinator import QuerySpec, RunCoordinator
 
     retry_of = await resolve_retry_of(request, thread_id)
-    return await RunCoordinator.get_instance().start_run(
-        thread_id=thread_id,
+    try:
+        handle = await RunCoordinator.get_instance().start_run(
+            thread_id=thread_id,
+            run_id=run_id,
+            msg_type=msg_type,
+            request_key=request.request_key,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            is_byok=is_byok,
+            # A retry is another attempt at a turn whose first attempt wrote the
+            # query row; rewriting it would let a retry change what was asked.
+            query=(
+                None
+                if is_checkpoint_replay or retry_of is not None
+                else QuerySpec(
+                    query_id=str(uuid4()),
+                    content=query_content,
+                    query_type=query_type,
+                    feedback_action=feedback_action,
+                    metadata=query_metadata,
+                )
+            ),
+            fork=fork,
+            turn_index=(
+                retry_of["turn_index"]
+                if retry_of is not None
+                else request.fork_from_turn
+                if (fork is not None and is_checkpoint_replay)
+                else None
+            ),
+            attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),
+            retry_of_run_id=(
+                str(retry_of["conversation_response_id"])
+                if retry_of is not None
+                else None
+            ),
+            # Durable on the row so the startup sweep can enqueue this run's
+            # terminal hooks (burst release, watch clear) without any in-process
+            # context surviving the crash.
+            run_metadata={
+                "user_id": user_id,
+                "burst_slot_id": request.burst_slot_id,
+                # /retry builds its attempt from the row, and a retry body
+                # carries only the per-attempt model choices.
+                **(
+                    {"subagents_enabled": request.subagents_enabled}
+                    if request.subagents_enabled is not None
+                    else {}
+                ),
+                **(extra_run_metadata or {}),
+            },
+            on_started=scope.attach_run,
+        )
+    except BaseException as exc:
+        if scope.owned_run_handle is None:
+            identity = dict(
+                thread_id=thread_id,
+                msg_type=msg_type,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                is_byok=is_byok,
+            )
+            if isinstance(exc, Exception):
+                committed = await _committed_start(run_id, **identity)
+                if committed is not None:
+                    scope.attach_run(committed)
+            else:
+                # A cancel lands again on every await here, so a detached
+                # task looks for the run and settles it.
+                from src.server.services.runs.coordinator import spawn_protected
+
+                spawn_protected(
+                    _settle_cancelled_start(run_id, **identity),
+                    f"start-settle-{run_id}",
+                )
+        raise
+    return handle
+
+
+async def _settle_cancelled_start(run_id: str, **identity: Any) -> None:
+    from src.server.services.runs.coordinator import RunCoordinator
+
+    committed = await _committed_start(run_id, **identity)
+    if committed is not None:
+        await RunCoordinator.get_instance().fail_open_run(
+            committed, "client disconnected during START", status="cancelled"
+        )
+
+
+async def _committed_start(
+    run_id: str,
+    *,
+    thread_id: str,
+    msg_type: str,
+    workspace_id: Optional[str],
+    user_id: Optional[str],
+    is_byok: bool,
+):
+    """The run a failed START left open on the ledger, if its row committed.
+
+    A commit whose acknowledgement was lost, or was still awaited when the
+    request was cancelled, leaves an in_progress row that the request holding
+    it cannot see from its own state."""
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.runs.coordinator import RunHandle
+
+    try:
+        row = await tl_db.get_run(run_id)
+    except Exception:
+        logger.warning(
+            f"[START] Could not read run={run_id} after its START failed; "
+            "the recovery scanner settles it if it committed",
+            exc_info=True,
+        )
+        return None
+    if row is None or row["status"] != "in_progress":
+        return None
+    return RunHandle(
         run_id=run_id,
+        thread_id=thread_id,
+        turn_index=row["turn_index"],
+        attempt_no=row["attempt_no"],
         msg_type=msg_type,
-        request_key=request.request_key,
         workspace_id=workspace_id,
         user_id=user_id,
         is_byok=is_byok,
-        # A retry is another attempt at a turn whose first attempt wrote the
-        # query row; rewriting it would let a retry change what was asked.
-        query=(
-            None
-            if is_checkpoint_replay or retry_of is not None
-            else QuerySpec(
-                query_id=str(uuid4()),
-                content=query_content,
-                query_type=query_type,
-                feedback_action=feedback_action,
-                metadata=query_metadata,
-            )
-        ),
-        fork=fork,
-        turn_index=(
-            retry_of["turn_index"]
-            if retry_of is not None
-            else request.fork_from_turn
-            if (fork is not None and is_checkpoint_replay)
-            else None
-        ),
-        attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),
-        retry_of_run_id=(
-            str(retry_of["conversation_response_id"])
-            if retry_of is not None
-            else None
-        ),
-        # Durable on the row so the startup sweep can enqueue this run's
-        # terminal hooks (burst release, watch clear) without any in-process
-        # context surviving the crash.
-        run_metadata={
-            "user_id": user_id,
-            "burst_slot_id": request.burst_slot_id,
-            # /retry builds its attempt from the row, and a retry body
-            # carries only the per-attempt model choices.
-            **(
-                {"subagents_enabled": request.subagents_enabled}
-                if request.subagents_enabled is not None
-                else {}
-            ),
-            **(extra_run_metadata or {}),
-        },
+        started_at=row["created_at"],
     )
