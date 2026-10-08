@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import json
 
-from ptc_agent.core.sandbox.grep_render import GREP_LINE_CHARS, render_grep_json
+from ptc_agent.core.sandbox.grep_render import (
+    GREP_LINE_CHARS,
+    GrepLine,
+    render_grep_json,
+)
 
 
 def _event(kind: str, path: str, number: int, text: str, *spans: tuple[int, int]) -> str:
@@ -143,3 +147,38 @@ def test_rg_errors_follow_the_matches_in_their_order():
         "rg: /w/nope.txt: No such file or directory (os error 2)",
         "rg: /w/locked: Permission denied (os error 13)",
     ]
+
+
+def test_each_line_holds_its_file_whatever_the_name_holds():
+    """A name may hold the ``:`` or ``-`` that ends it in the line, so each
+    line carries its path apart from the text, and a group's ``--`` and an
+    error carry none."""
+    lines = _render(
+        _event("context", "/w/Q1: a-2-b.md", 1, "alpha\n"),
+        _event("match", "/w/Q1: a-2-b.md", 2, "beta\n", (0, 4)),
+        _event("match", "/w/n-1-x", 9, "beta\n", (0, 4)),
+        grouped=True,
+    )
+
+    assert lines == [
+        "/w/Q1: a-2-b.md-1-alpha",
+        "/w/Q1: a-2-b.md:2:beta",
+        "--",
+        "/w/n-1-x:9:beta",
+    ]
+    assert [getattr(line, "path", None) for line in lines] == [
+        "/w/Q1: a-2-b.md",
+        "/w/Q1: a-2-b.md",
+        None,
+        "/w/n-1-x",
+    ]
+    assert lines[1].at("/v/Q1: a-2-b.md") == "/v/Q1: a-2-b.md:2:beta"
+
+
+def test_a_line_that_names_no_file_keeps_its_text_when_respelled():
+    (line,) = _render(_event("match", "/w/a:1:b", 3, "beta\n", (0, 4)), search="/w/a:1:b")
+
+    assert line == "3:beta"
+    moved = line.at("/v/a:1:b")
+    assert (moved, moved.path) == ("3:beta", "/v/a:1:b")
+    assert isinstance(moved, GrepLine)

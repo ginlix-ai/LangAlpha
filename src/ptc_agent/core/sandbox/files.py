@@ -25,7 +25,12 @@ from src.observability import (
     workspace_fs_bytes,
 )
 
-from ptc_agent.core.paths import AGENT_HISTORY_DIRS, ALWAYS_HIDDEN_DIR_NAMES, logged_path
+from ptc_agent.core.paths import (
+    AGENT_HISTORY_DIRS,
+    ALWAYS_HIDDEN_DIR_NAMES,
+    grep_working_dir,
+    logged_path,
+)
 from ptc_agent.core.sandbox import path_locks as _path_locks
 from ptc_agent.core.sandbox.grep_render import render_grep_json
 from ptc_agent.core.sandbox.livefs_runtime.protocol import MOUNT
@@ -54,6 +59,9 @@ _INLINE_TEXT_MARKER = "__LANGALPHA_TEXT_PAYLOAD__"
 # 9 ms per MB, so 128 KiB holds the loop near 1 ms, while smaller outputs, the
 # common case, skip the thread hop.
 _GREP_RENDER_INLINE_CHARS = 128 * 1024
+# The exit status a Grep command ends with when it could not enter the
+# directory it runs rg from. rg, head and grep never exit with it.
+_GREP_CWD_MISSING = 97
 
 _GLOB_SCRIPT_B64 = base64.b64encode(
     Path(__file__).with_name("glob_runtime.py").read_bytes()
@@ -878,10 +886,14 @@ async def agrep_content(
     multiline: bool = False,
     head_limit: int | None = None,
     offset: int = 0,
+    folder: str | None = None,
 ) -> Any:
     """Async ripgrep; safe to retry automatically.
 
-    An empty result means no matches; a broken sandbox raises.
+    An empty result means no matches; a broken sandbox raises. ``folder`` is
+    the turn's folder where the caller holds one of its own, as a backend
+    pinned to a folder does, so rg matches a filter from where the caller
+    reads it; without one, it is the sandbox's.
     """
     await sandbox._wait_ready()
 
@@ -926,7 +938,20 @@ async def agrep_content(
         search_path = sandbox._normalize_search_path(path)
         cmd.append(search_path)
 
-        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        # The search path is absolute, so what rg prints is the same from any
+        # directory. A directory that is gone (a folder mid-move, or one the
+        # agent removed) leaves rg in the runtime's own, where it still
+        # searches: the exec folds a shell's error into the output, which
+        # would read as a match, so the miss is told by the exit status alone.
+        cwd = grep_working_dir(
+            search_path,
+            folder=folder or sandbox._normalize_search_path("."),
+            root=sandbox._work_dir,
+        )
+        cmd_str = (
+            f"lost=; cd {shlex.quote(cwd)} 2>/dev/null || lost={_GREP_CWD_MISSING}; "
+            + " ".join(shlex.quote(c) for c in cmd)
+        )
         # Cut in the sandbox what the slice below would drop, so it never
         # crosses the wire. Every match or context event renders as one line
         # or more, and rendering keeps its order, so the first ``bound`` events
@@ -939,6 +964,7 @@ async def agrep_content(
             cmd_str += f" | grep {limit}-F -e '\"type\":\"match\"' -e '\"type\":\"context\"'"
         elif bound:
             cmd_str += f" | head -n {bound}"
+        cmd_str += "; exit ${lost:-$?}"
         assert sandbox.runtime is not None
         result = await sandbox._runtime_call(
             sandbox.runtime.exec,
@@ -946,6 +972,12 @@ async def agrep_content(
             timeout=60,
             retry_policy=RetryPolicy.SAFE,
         )
+        if getattr(result, "exit_code", None) == _GREP_CWD_MISSING:
+            logger.warning(
+                "Grep ran outside its directory, which is missing",
+                cwd=logged_path(cwd),
+                path=logged_path(path),
+            )
 
         output = result.stdout.strip() if result.stdout else ""
         if not output:
