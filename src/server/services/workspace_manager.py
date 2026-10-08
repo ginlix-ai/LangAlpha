@@ -184,11 +184,6 @@ class WorkspaceManager(ComputerManager):
             ) from e
         return session
 
-    async def stop_workspace(self, workspace_id: str) -> Dict[str, Any]:
-        """Stop the machine this project runs on (preserves data)."""
-        binding = await self.resolve_binding(workspace_id)
-        return await self._stop_machine(binding.computer_id, workspace_id=workspace_id)
-
     async def archive_workspace(self, workspace_id: str) -> Dict[str, Any]:
         """Archive a stopped machine (moves its sandbox to object storage)."""
         binding = await self.resolve_binding(workspace_id)

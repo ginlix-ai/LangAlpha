@@ -280,6 +280,7 @@ export function projectHistoryInterrupt(
               [proposalId]: {
                 actionType: actionType as 'delete_workspace' | 'stop_workspace' | 'delete_thread',
                 workspace_id: proposalData.workspace_id,
+                workspace_name: proposalData.workspace_name,
                 thread_id: proposalData.thread_id,
                 interruptId: event.interrupt_id,
                 status: 'pending',

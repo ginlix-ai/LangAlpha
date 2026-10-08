@@ -264,21 +264,6 @@ class SSEStreamClient:
         response.raise_for_status()
         return response.json()
 
-    async def stop_workspace(self, workspace_id: str) -> Dict[str, Any]:
-        """
-        Stop a running workspace (keeps sandbox for later).
-
-        Args:
-            workspace_id: Workspace identifier
-
-        Returns:
-            Updated workspace dict
-        """
-        url = urljoin(self.base_url, f"/api/v1/workspaces/{workspace_id}/stop")
-        response = await self.client.post(url, headers=self._make_headers(), timeout=30.0)
-        response.raise_for_status()
-        return response.json()
-
     async def delete_workspace(self, workspace_id: str) -> Dict[str, Any]:
         """
         Delete a workspace and its sandbox.

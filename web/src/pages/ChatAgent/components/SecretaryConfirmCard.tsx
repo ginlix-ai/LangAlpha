@@ -8,6 +8,8 @@ type SecretaryActionType = 'delete_workspace' | 'stop_workspace' | 'delete_threa
 interface ProposalData {
   actionType: SecretaryActionType;
   workspace_id?: string;
+  /** Sent with a workspace delete; older interrupts carry only the id. */
+  workspace_name?: string | null;
   thread_id?: string;
   status: 'pending' | 'approved' | 'rejected';
 }
@@ -74,6 +76,7 @@ function SecretaryConfirmCard({ proposalData, onApprove, onReject }: SecretaryCo
   const Icon = config.icon;
   const targetId = proposalData[config.idField] || 'unknown';
   const shortId = targetId.length > 12 ? `${targetId.slice(0, 8)}...` : targetId;
+  const targetName = config.idField === 'workspace_id' ? proposalData.workspace_name : null;
   const isApproved = status === 'approved';
   const isRejected = status === 'rejected';
 
@@ -126,7 +129,9 @@ function SecretaryConfirmCard({ proposalData, onApprove, onReject }: SecretaryCo
                 >
                   <div className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
                     <span className="font-medium">{config.idLabel}:</span>{' '}
-                    <span className="font-mono text-xs">{targetId}</span>
+                    {targetName
+                      ? <span>{targetName}</span>
+                      : <span className="font-mono text-xs">{targetId}</span>}
                   </div>
                 </div>
               </div>
@@ -165,7 +170,9 @@ function SecretaryConfirmCard({ proposalData, onApprove, onReject }: SecretaryCo
       >
         <div className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
           <span className="font-medium">{config.idLabel}:</span>{' '}
-          <span className="font-mono text-xs">{shortId}</span>
+          {targetName
+            ? <span>{targetName}</span>
+            : <span className="font-mono text-xs">{shortId}</span>}
         </div>
       </div>
 

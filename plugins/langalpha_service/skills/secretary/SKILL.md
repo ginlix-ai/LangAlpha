@@ -14,7 +14,7 @@ Workflow patterns and operational details for the secretary tools. Basic tool si
 ### HITL approval
 
 These actions pause for user confirmation before executing:
-- `manage_workspaces(action="create"|"delete"|"stop")`
+- `manage_workspaces(action="create"|"delete")`
 - `ptc_agent(...)` — always, before dispatch
 - `manage_threads(action="delete")`
 
@@ -77,5 +77,4 @@ When the user wants to follow up on a prior dispatch:
 
 When the user wants to tidy up:
 1. Call `manage_workspaces(action="list")` to identify stale workspaces
-2. Stop idle sandboxes with `manage_workspaces(action="stop", workspace_id="...")`
-3. Delete workspaces the user no longer needs with `manage_workspaces(action="delete", workspace_id="...")`
+2. Delete workspaces the user no longer needs with `manage_workspaces(action="delete", workspace_id="...")`

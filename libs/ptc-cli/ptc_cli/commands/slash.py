@@ -547,21 +547,6 @@ async def handle_command(
 
         parts = cmd_lower.split()
 
-        # Shortcut: /workspace stop (stop current workspace)
-        if len(parts) >= 2 and parts[1] == "stop":
-            if not client.workspace_id:
-                console.print("[yellow]No active workspace[/yellow]")
-                console.print()
-                return "handled"
-            try:
-                await client.stop_workspace(client.workspace_id)
-                console.print(f"[green]Workspace stopped:[/green] {client.workspace_id}")
-                console.print()
-            except Exception as e:
-                console.print(f"[yellow]Could not stop workspace: {e}[/yellow]")
-                console.print()
-            return "handled"
-
         # Interactive workspace picker
         from prompt_toolkit.application import Application
         from prompt_toolkit.key_binding import KeyBindings
@@ -579,7 +564,7 @@ async def handle_command(
             return "handled"
 
         selected = [0]
-        status_line = ["Enter = switch | s = start | x = stop | n = new | Ctrl+C = cancel"]
+        status_line = ["Enter = switch | s = start | n = new | Ctrl+C = cancel"]
 
         def menu_text() -> str:
             lines = ["Workspaces:", status_line[0], ""]
@@ -611,10 +596,6 @@ async def handle_command(
         @kb.add("s")
         def _(event: Any) -> None:
             event.app.exit(result=("start", selected[0]))
-
-        @kb.add("x")
-        def _(event: Any) -> None:
-            event.app.exit(result=("stop", selected[0]))
 
         @kb.add("n")
         def _(event: Any) -> None:
@@ -670,15 +651,6 @@ async def handle_command(
                 console.print(f"[green]Workspace started:[/green] {workspace_id}")
             except Exception as e:
                 console.print(f"[yellow]Could not start workspace: {e}[/yellow]")
-            console.print()
-            return "handled"
-
-        if action == "stop":
-            try:
-                await client.stop_workspace(workspace_id)
-                console.print(f"[green]Workspace stopped:[/green] {workspace_id}")
-            except Exception as e:
-                console.print(f"[yellow]Could not stop workspace: {e}[/yellow]")
             console.print()
             return "handled"
 
