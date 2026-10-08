@@ -4,7 +4,6 @@ import '@testing-library/jest-dom';
 import React from 'react';
 import { renderWithProviders } from '@/test/utils';
 import { SandboxSettingsContent } from '../SandboxSettingsPanel';
-import { api } from '@/api/client';
 
 // ---------------------------------------------------------------------------
 // Mocks. `formatApiErrorDetail` stays real (spread from the original module):
@@ -12,12 +11,17 @@ import { api } from '@/api/client';
 // ---------------------------------------------------------------------------
 
 const mockGetSandboxStats = vi.fn();
+const mockGetWorkspace = vi.fn();
+const mockStopComputer = vi.fn();
 
 vi.mock('../../utils/api', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
     getSandboxStats: (...args: unknown[]) => mockGetSandboxStats(...args),
+    getWorkspace: (...args: unknown[]) => mockGetWorkspace(...args),
+    getComputers: vi.fn(async () => ({ computers: [], total: 0 })),
+    stopComputer: (...args: unknown[]) => mockStopComputer(...args),
     installSandboxPackages: vi.fn(),
     refreshWorkspace: vi.fn(),
   };
@@ -51,6 +55,7 @@ function defaultStats() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetSandboxStats.mockResolvedValue(defaultStats());
+  mockGetWorkspace.mockResolvedValue({ workspace_id: 'ws-1', status: 'running', computer_id: 'computer-1' });
 });
 
 // ---------------------------------------------------------------------------
@@ -291,14 +296,14 @@ describe('a superseded stats response cannot overwrite a newer one', () => {
   // so Refresh stays on screen while a Stop is in flight; the read it starts takes
   // the full path (~15s of probes) while the post-Stop read takes the fast offline
   // one. Committing by arrival order would put a stopped sandbox back into
-  // "running" with its live-only tabs open and Stop offered — which the API then
-  // rejects, since stop_workspace requires a running row.
+  // "running" with its live-only tabs open and Stop offered for a machine that
+  // is already down.
   it('drops the slow refresh that resolves after the post-stop read', async () => {
     mockGetSandboxStats.mockResolvedValue(liveStats('running'));
     await openTab(/overview/i);
 
     const stopPost = deferred<any>();
-    (api.post as any).mockReturnValueOnce(stopPost.promise);
+    mockStopComputer.mockReturnValueOnce(stopPost.promise);
 
     fireEvent.click(await waitFor(() => screen.getByRole('button', { name: /^stop$/i })));
 

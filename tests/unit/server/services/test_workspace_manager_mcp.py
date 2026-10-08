@@ -842,8 +842,8 @@ class TestVersionDeltaBackgroundDiscovery:
 
     @pytest.mark.asyncio
     @cm_patch("db_get_workspace", new_callable=AsyncMock)
-    async def test_stop_workspace_cancels_discovery(self, mock_get_ws):
-        """stop_workspace cancels the in-flight discovery on the machine it stops.
+    async def test_stop_machine_cancels_discovery(self, mock_get_ws):
+        """A machine stop cancels the in-flight discovery on the machine it stops.
 
         The sandbox goes with the computer, so every project's probe on it has
         to go too, not just the one that asked for the stop.
@@ -890,7 +890,7 @@ class TestVersionDeltaBackgroundDiscovery:
             # Give the task a tick to enter discover_and_cache.
             await asyncio.sleep(0)
 
-            await wm.stop_workspace(ws_id)
+            await wm._stop_machine(computer_id, workspace_id=ws_id)
 
             with pytest.raises(asyncio.CancelledError):
                 await task

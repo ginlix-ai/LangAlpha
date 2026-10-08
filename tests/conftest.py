@@ -144,7 +144,6 @@ def mock_workspace_manager():
     manager = AsyncMock()
     manager.create_workspace = AsyncMock()
     manager.get_session = AsyncMock()
-    manager.stop_workspace = AsyncMock()
     manager.delete_workspace = AsyncMock()
     manager.start_workspace = AsyncMock()
     manager.archive_workspace = AsyncMock()
