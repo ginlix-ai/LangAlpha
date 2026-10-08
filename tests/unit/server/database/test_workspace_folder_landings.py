@@ -146,16 +146,45 @@ async def test_a_new_folder_is_never_one_a_staged_row_may_have_landed_on():
 
 
 @pytest.mark.asyncio
-async def test_a_config_replace_keeps_the_rows_planned_landings():
-    """The client writes ``config`` whole; the settle's list is not its to set."""
+async def test_a_config_replace_keeps_the_rows_server_owned_keys():
+    """The client writes ``config`` whole; the settle's list and the sandbox
+    stamp are not its to set."""
     from src.server.database.workspace import update_workspace
 
     cur = _Cursor()
     await update_workspace(A, config={"folder_landings": ["Sibling"], "theme": "dark"}, conn=_Conn(cur))
     [(sql, params)] = cur.updates()
     assert (
-        "config = (%s::jsonb - 'folder_landings') || CASE WHEN config ? 'folder_landings'"
-        " THEN jsonb_build_object('folder_landings', config->'folder_landings')"
-        " ELSE '{}'::jsonb END"
+        "config = (%s::jsonb - %s::text[]) || COALESCE((SELECT jsonb_object_agg(key, value)"
+        " FROM jsonb_each(config) WHERE key = ANY(%s::text[])), '{}'::jsonb)"
     ) in sql
     assert params[0].obj == {"folder_landings": ["Sibling"], "theme": "dark"}
+    owned = ["folder_landings", "sandbox_config_hash", "sandbox_provider", "sandbox_working_dir"]
+    assert params[1] == params[2] == owned
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_stamp_lands_on_every_live_folder_of_the_machine():
+    """The folders share one sandbox, so a sibling left on an older stamp
+    would vouch for settings the machine no longer runs. A folder already
+    carrying it is left alone, since any write moves it in the lists
+    ``updated_at`` orders."""
+    from src.server.database import workspace as workspace_db
+
+    cur = _Cursor()
+
+    @asynccontextmanager
+    async def _connection(_conn=None):
+        yield _Conn(cur)
+
+    stamp = {"sandbox_config_hash": "497a2514", "sandbox_provider": "daytona"}
+    with patch.object(workspace_db, "get_db_connection", _connection):
+        await workspace_db.stamp_computer_sandbox_config(A, stamp)
+
+    [(sql, params)] = cur.updates()
+    assert (
+        "WHERE computer_id = %s AND status <> 'deleted'"
+        " AND config->>'sandbox_config_hash' IS DISTINCT FROM %s"
+    ) in sql
+    assert params[0].obj == stamp
+    assert params[1:] == (A, "497a2514")

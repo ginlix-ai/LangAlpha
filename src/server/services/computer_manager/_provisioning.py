@@ -37,6 +37,7 @@ from src.server.database.workspace import (
     get_workspace_identity as db_get_workspace_identity,
     get_restore_owed_workspace_ids_for_computer,
     SandboxIdentityLostError,
+    stamp_computer_sandbox_config,
     update_workspace_activity,
 )
 from src.server.database.workspace_folders import (
@@ -626,7 +627,30 @@ class ProvisioningMixin:
             logger.warning(
                 f"Recovered workspace {workspace_id} but could not stamp activity: {e}"
             )
+        await self._stamp_sandbox_config(binding)
         return session
+
+    async def _stamp_sandbox_config(self, binding: ComputerBinding) -> None:
+        """Record that the machine's sandbox was just built under the current settings.
+
+        Unstamped, its next start forces a full init under the machine lock to
+        find that out, and a migrated row would migrate again on every
+        reconnect. Retried once and never raised: the sandbox is already bound.
+        """
+        workspace_id = binding.workspace_id
+        for attempt in range(2):
+            try:
+                await self._write_sandbox_stamp(binding, raise_on_error=True)
+                return
+            except Exception:
+                if attempt == 0:
+                    logger.warning(f"Retrying config stamp for {workspace_id}")
+                else:
+                    logger.error(
+                        f"Failed to stamp sandbox config for {workspace_id} "
+                        "after 2 attempts; its next start runs a full init.",
+                        exc_info=True,
+                    )
 
     async def backup_project_files(
         self,
@@ -1106,29 +1130,18 @@ class ProvisioningMixin:
             ),
         }
 
-    @staticmethod
-    async def _update_workspace_config_fields(
-        workspace_id: str, fields: Dict[str, Any], *, raise_on_error: bool = False
+    async def _write_sandbox_stamp(
+        self, binding: ComputerBinding, *, raise_on_error: bool = False
     ) -> None:
         """Critical stamps must request raise_on_error so callers can retry."""
-        from psycopg.types.json import Json
-
-        from src.server.database.pool import get_db_connection
-
         try:
-            async with get_db_connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        """
-                        UPDATE workspaces
-                        SET config = COALESCE(config, '{}'::jsonb) || %s::jsonb,
-                            updated_at = NOW()
-                        WHERE workspace_id = %s
-                        """,
-                        (Json(fields), workspace_id),
-                    )
+            await stamp_computer_sandbox_config(
+                binding.computer_id, self._sandbox_config_stamp(binding)
+            )
         except Exception as e:
-            logger.warning(f"Failed to update config for workspace {workspace_id}: {e}")
+            logger.warning(
+                f"Failed to stamp sandbox config for computer {binding.computer_id}: {e}"
+            )
             if raise_on_error:
                 raise
 
@@ -1163,9 +1176,7 @@ class ProvisioningMixin:
         expected_wd = binding.root_dir or self.config.filesystem.working_directory
         if actual_wd == expected_wd:
             # Another recreation may already have corrected the directory.
-            await self._update_workspace_config_fields(
-                workspace_id, self._sandbox_config_stamp(binding)
-            )
+            await self._write_sandbox_stamp(binding)
             return None
 
         if await self._machine_has_active_tasks(
@@ -1274,25 +1285,6 @@ class ProvisioningMixin:
                 expected=ComputerStatus.STARTING,
             )
             raise
-
-        # Retry the stamp once: an unstamped workspace re-migrates on every reconnect,
-        # wasting resources and risking data loss.
-        stamp = self._sandbox_config_stamp(binding)
-        for attempt in range(2):
-            try:
-                await self._update_workspace_config_fields(
-                    workspace_id, stamp, raise_on_error=True
-                )
-                break
-            except Exception:
-                if attempt == 0:
-                    logger.warning(f"Retrying config stamp for {workspace_id}")
-                else:
-                    logger.error(
-                        f"Failed to stamp sandbox config for {workspace_id} "
-                        f"after 2 attempts. Workspace may re-migrate on next reconnect.",
-                        exc_info=True,
-                    )
 
         logger.info(f"Migration complete for workspace {workspace_id}")
         return new_session

@@ -2154,6 +2154,70 @@ class TestSandboxConfigHash(_Base):
         )
 
 
+class TestTheStampAFolderCarries(_Base):
+    """A row without the stamp forces a full init under the machine lock the
+    next time it starts the machine, unless another folder there carries it,
+    so the row a sandbox was built for is stamped with the build.
+    """
+
+    @staticmethod
+    @contextmanager
+    def _recovering(manager, session):
+        with (
+            patch(
+                f"{_PROVISIONING}.db_get_workspace",
+                AsyncMock(return_value={"user_id": "user-1"}),
+            ),
+            patch(f"{_PROVISIONING}.flag_sibling_restores_pending", AsyncMock()),
+            patch(f"{_PROVISIONING}.update_workspace_activity", AsyncMock()),
+            patch.object(manager, "_entitled_tier", AsyncMock(return_value="standard")),
+            patch.object(manager, "_entitled_always_on", AsyncMock(return_value=False)),
+            patch.object(
+                manager,
+                "_provision_sandbox_session",
+                AsyncMock(return_value=(session, None)),
+            ),
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_a_built_sandbox_stamps_the_row_it_was_built_for(self):
+        """A brand-new user's Home or first workspace is built here, and its
+        next start must take the lazy path like any other."""
+        manager = _make_manager()
+        session = _make_session()
+        binding = _make_binding("ws-a")
+
+        with (
+            self._recovering(manager, session),
+            patch.object(manager, "_write_sandbox_stamp", AsyncMock()) as write,
+        ):
+            assert await manager._recover_sandbox(binding, "user-1", None) is session
+
+        write.assert_awaited_once_with(binding, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_a_stamp_that_will_not_write_never_fails_the_recover(self):
+        """The new sandbox is already bound; a lost stamp costs one full init."""
+        manager = _make_manager()
+        session = _make_session()
+
+        with (
+            self._recovering(manager, session),
+            patch.object(
+                manager,
+                "_write_sandbox_stamp",
+                AsyncMock(side_effect=RuntimeError("pool closed")),
+            ) as write,
+        ):
+            assert (
+                await manager._recover_sandbox(_make_binding("ws-a"), "user-1", None)
+                is session
+            )
+
+        assert write.await_count == 2
+
+
 # ---------------------------------------------------------------------------
 # The first start of a machine that was never built
 # ---------------------------------------------------------------------------

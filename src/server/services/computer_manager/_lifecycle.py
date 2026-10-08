@@ -34,6 +34,7 @@ from src.server.database.computer import (
 )
 from src.server.database.workspace import (
     adopt_computer_sandbox_into_workspaces,
+    computer_has_config_hash,
     get_workspace as db_get_workspace,
     get_workspace_identity as db_get_workspace_identity,
     SandboxIdentityLostError,
@@ -1342,11 +1343,17 @@ class SessionLifecycleMixin:
         ws_config = workspace.get("config") or {}
         stored_hash = ws_config.get("sandbox_config_hash")
         if stored_hash != expected_hash and lazy_init:
-            logger.info(
-                f"Forcing non-lazy init for {workspace_id}: "
-                f"sandbox_config_hash={stored_hash!r}, expected={expected_hash!r}"
-            )
-            lazy_init = False
+            if await computer_has_config_hash(computer_id, expected_hash):
+                # The stamp describes the sandbox, which every folder on the
+                # machine shares, so a folder verified under these settings
+                # vouches for one no build stamped (Home, a new workspace).
+                await self._write_sandbox_stamp(binding)
+            else:
+                logger.info(
+                    f"Forcing non-lazy init for {workspace_id}: "
+                    f"sandbox_config_hash={stored_hash!r}, expected={expected_hash!r}"
+                )
+                lazy_init = False
 
         logger.debug(
             f"Reconnecting to sandbox {sandbox_id} for workspace {workspace_id}",

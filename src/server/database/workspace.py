@@ -540,6 +540,58 @@ async def get_live_workspace_ids_for_computer(
         return [str(r["workspace_id"]) for r in await cur.fetchall()]
 
 
+# What a row's sandbox was last verified under, for the next start to compare.
+SANDBOX_STAMP_KEYS = ("sandbox_config_hash", "sandbox_provider", "sandbox_working_dir")
+# Written by the server alone: a forged stamp would skip the migration a start
+# owes, and folder landings are the folder settle's record. A client's config
+# carries none of them in.
+SERVER_OWNED_CONFIG_KEYS = ("folder_landings", *SANDBOX_STAMP_KEYS)
+
+
+async def stamp_computer_sandbox_config(computer_id: str, stamp: Dict[str, Any]) -> None:
+    """Record the settings the computer's sandbox was verified under on every live folder.
+
+    The stamp describes the one sandbox the folders share, so a folder left on
+    an older stamp would vouch for settings the machine no longer runs once a
+    deployment returns to them. A folder already carrying it is left alone:
+    any write moves it in the lists ``updated_at`` orders.
+    """
+    from psycopg.types.json import Json
+
+    async with _ws_cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE workspaces
+            SET config = COALESCE(config, '{}'::jsonb) || %s::jsonb
+            WHERE computer_id = %s AND status <> 'deleted'
+              AND config->>'sandbox_config_hash' IS DISTINCT FROM %s
+            """,
+            (Json(stamp), normalize_uuid(computer_id), stamp["sandbox_config_hash"]),
+        )
+
+
+async def computer_has_config_hash(computer_id: str, config_hash: str) -> bool:
+    """Whether a live workspace on the computer was verified under these sandbox settings."""
+    computer_id = normalize_uuid(computer_id)
+    if computer_id is None:
+        return False
+
+    async with _ws_cursor() as cur:
+        await cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM workspaces
+                WHERE computer_id = %s AND status <> 'deleted'
+                  AND config->>'sandbox_config_hash' = %s
+            ) AS verified
+            """,
+            (computer_id, config_hash),
+        )
+        row = await cur.fetchone()
+        return bool(row and row["verified"])
+
+
 async def get_restore_owed_workspace_ids_for_computer(
     computer_id: str,
     *,
@@ -975,15 +1027,15 @@ async def update_workspace(
             params.append(description)
 
         if config is not None:
-            # A staged row's planned landings are the folder settle's record,
-            # so a replaced config keeps the row's and never takes the caller's.
+            # A replaced config keeps the row's server-owned keys and never
+            # takes the caller's.
             updates.append(
-                "config = (%s::jsonb - 'folder_landings') || CASE"
-                " WHEN config ? 'folder_landings'"
-                " THEN jsonb_build_object('folder_landings', config->'folder_landings')"
-                " ELSE '{}'::jsonb END"
+                "config = (%s::jsonb - %s::text[]) || COALESCE("
+                "(SELECT jsonb_object_agg(key, value) FROM jsonb_each(config)"
+                " WHERE key = ANY(%s::text[])), '{}'::jsonb)"
             )
-            params.append(Json(config))
+            owned = list(SERVER_OWNED_CONFIG_KEYS)
+            params.extend((Json(config), owned, owned))
 
         if is_pinned is not None:
             updates.append("is_pinned = %s")

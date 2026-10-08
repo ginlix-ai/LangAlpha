@@ -19,6 +19,7 @@ from src.server.database.computer import (
 )
 from src.server.database.home_workspace import is_flash_row
 from src.server.database.workspace import (
+    SANDBOX_STAMP_KEYS,
     duplicate_workspace_on_computer,
     get_workspace as db_get_workspace,
     get_workspace_name_keys,
@@ -349,11 +350,7 @@ class WorkspaceEntitlementsMixin:
         # belong to the source's sandbox and are re-stamped when the machine is
         # next provisioned.
         source_config = dict(source.get("config") or {})
-        for stamp_key in (
-            "sandbox_config_hash",
-            "sandbox_provider",
-            "sandbox_working_dir",
-        ):
+        for stamp_key in SANDBOX_STAMP_KEYS:
             source_config.pop(stamp_key, None)
 
         for attempt in range(_COPY_NAME_ATTEMPTS):
