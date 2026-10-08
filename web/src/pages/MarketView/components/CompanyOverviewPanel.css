@@ -9,21 +9,12 @@
   box-sizing: border-box;
 }
 
-.company-overview-panel::-webkit-scrollbar {
-  width: 5px;
-}
-
-.company-overview-panel::-webkit-scrollbar-track {
-  background: transparent;
-}
-
 .company-overview-panel::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 3px;
+  background-color: var(--color-border-muted);
 }
 
 .company-overview-panel::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-tertiary);
+  background-color: var(--color-text-tertiary);
 }
 
 .company-overview-header {

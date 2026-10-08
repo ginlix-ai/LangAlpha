@@ -49,6 +49,8 @@ html {
      this far down, so the first row sits at one depth when moving between pages
      (centre of a 28px title row: --page-top + 14px). */
   --page-top: clamp(16px, 3vw, 32px);
+  /* The lane every webkit scrollbar takes from the layout (rules below). */
+  --scrollbar-size: 12px;
 
   /* ---------- Background roles ----------
      Which fill belongs on which surface. Reach for the role, not a lookalike
@@ -606,22 +608,44 @@ html {
   font-feature-settings: "tnum";
 }
 
+/* A scrollbar never touches the edge it runs along. The thumb paints only the
+   middle of its --scrollbar-size lane, a transparent border insetting it from
+   the container's border, and the track stops short of both ends, clear of
+   rounded corners and of a divider above the list. A container that tints its
+   thumb sets background-color, never the background shorthand, which would
+   reset the clip and paint the inset too. Documents the app frames carry a
+   copy, so a change here goes to each: buildHtmlSrcDoc.ts (widgets), the
+   server's workspace_files/serve.py (served HTML) and sec_proxy.py (filings). */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
+  margin: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-elevated);
-  border-radius: 4px;
+  background-color: var(--color-border-elevated);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: calc(var(--scrollbar-size) / 2);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-tertiary);
+  background-color: var(--color-text-tertiary);
+}
+
+/* Monaco's own scrollbar, inset through CodeEditor's options. Its arrows are
+   there only to hold the track short of both ends. */
+.monaco-editor .scrollbar > .scra,
+.monaco-editor .scrollbar > .arrow-background {
+  display: none;
+}
+
+.monaco-editor .scrollbar > .slider {
+  border-radius: 3px;
 }
 
 /* === Floating AI chat FAB (mobile) === */

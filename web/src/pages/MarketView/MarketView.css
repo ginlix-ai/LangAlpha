@@ -194,23 +194,13 @@ body.col-resizing * {
   color: var(--color-text-primary);
 }
 
-/* Scrollbar styling consistent with Dashboard */
-.market-center-container::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.market-center-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+/* The Dashboard's quieter thumb; its shape is the app-wide one (tokens.css). */
 .market-center-container::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 4px;
+  background-color: var(--color-border-muted);
 }
 
 .market-center-container::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-default);
+  background-color: var(--color-border-default);
 }
 
 /* Mobile layout */

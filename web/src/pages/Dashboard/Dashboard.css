@@ -15,23 +15,11 @@
   background-color: var(--color-bg-canvas);
 }
 
-/* Dashboard-specific scrollbar styling */
-.dashboard-container ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.dashboard-container ::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.dashboard-container ::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 4px;
-}
-
+/* A quieter thumb that stays put under the pointer; its shape is the
+   app-wide one (tokens.css). */
+.dashboard-container ::-webkit-scrollbar-thumb,
 .dashboard-container ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-muted);
+  background-color: var(--color-border-muted);
 }
 
 /* === Monospace utility for financial data === */

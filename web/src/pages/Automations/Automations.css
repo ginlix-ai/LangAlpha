@@ -136,15 +136,15 @@
    pane that overflows by a few rows turns it into a stripe the height of the
    content. */
 .automations-scroller::-webkit-scrollbar-thumb {
-  background: transparent;
+  background-color: transparent;
 }
 
 .automations-scroller[data-scrolling]::-webkit-scrollbar-thumb {
-  background: var(--color-border-elevated);
+  background-color: var(--color-border-elevated);
 }
 
 .automations-scroller::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-tertiary);
+  background-color: var(--color-text-tertiary);
 }
 
 /* ── Starting points ────────────────────────────────── */

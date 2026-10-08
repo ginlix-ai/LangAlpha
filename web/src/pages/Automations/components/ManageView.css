@@ -19,10 +19,10 @@
   padding: 24px 0 56px 40px;
   /* Reach into the page gutter so the scrollbar sits there and the content
      keeps the header's right edge instead of running into the thumb. The
-     gutter is held open (8px, the app-wide scrollbar) so that edge does not
-     move with whether the pane overflows. */
+     gutter is held open (--scrollbar-size, the app-wide lane) so that edge
+     does not move with whether the pane overflows. */
   margin-right: calc(-1 * var(--automations-gutter));
-  padding-right: calc(var(--automations-gutter) - 8px);
+  padding-right: calc(var(--automations-gutter) - var(--scrollbar-size));
   scrollbar-gutter: stable;
   /* Holds the outgoing automation in place while it dissolves over the next. */
   position: relative;
