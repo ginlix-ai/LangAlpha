@@ -418,14 +418,17 @@ async def stop_refreshes() -> None:
     the refresh of that mark after a quick restart. The locks are released here
     too, because a task cancelled before its first step never reaches its own
     ``finally``, and a release is a no-op for a lock its owner already let go.
+    They go out together, so a slow Redis costs shutdown one wait rather than
+    one per refresh.
     """
     running = dict(_REFRESHES)
     for task in running:
         task.cancel()
     await asyncio.gather(*running, return_exceptions=True)
     cache = get_cache_client()
-    for lock, token in running.values():
-        await cache.release_lock(lock, token)
+    await asyncio.gather(
+        *(cache.release_lock(lock, token) for lock, token in running.values())
+    )
 
 
 def _from_data_uri(source: str) -> BrandIcon | None:

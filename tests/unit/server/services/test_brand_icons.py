@@ -688,6 +688,37 @@ class TestAStoredMarkIsServedWhileItRefreshes:
         assert cache.held == set()
 
     @pytest.mark.asyncio
+    async def test_shutdown_releases_the_locks_together(self, monkeypatch):
+        """A slow Redis costs shutdown one wait, not one per refresh."""
+        from src.server.services import brand_icons
+
+        hosts = ["a.test", "b.test", "c.test"]
+        cache = _Cache(
+            {f"brand-icon:v1:{h}": _stored(OLD_MARK, fresh_for=-1) for h in hosts}
+        )
+        release = cache.release_lock
+        in_flight = most = 0
+
+        async def _slow_release(key, token):
+            nonlocal in_flight, most
+            in_flight += 1
+            most = max(most, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            await release(key, token)
+
+        cache.release_lock = _slow_release
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        _resolving(monkeypatch, "_from_site", NEW_MARK)
+
+        for host in hosts:
+            await brand_icons.icon_for_site(host)
+        await brand_icons.stop_refreshes()
+
+        assert most == len(hosts)
+        assert cache.held == set()
+
+    @pytest.mark.asyncio
     async def test_a_refresh_stopped_at_shutdown_releases_its_lock(self, monkeypatch):
         from src.server.services import brand_icons
 
