@@ -102,9 +102,15 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\xff\xd8\xff", "image/jpeg"),
 )
 
-_LINK_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
+# Linear on any page, because the parse runs in one step on the event loop
+# where no timeout can stop it. A tag ends at the next ``<`` and an attribute
+# name starts only where a name can begin, so a page built of unclosed
+# ``<link`` runs or of one long name with no ``=`` is read in one pass instead
+# of once from every character.
+_LINK_RE = re.compile(r"<link\b[^<>]*>", re.IGNORECASE)
 _ATTR_RE = re.compile(
-    r"""([a-zA-Z][a-zA-Z0-9-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"""
+    r"""(?<![a-zA-Z0-9-])([a-zA-Z][a-zA-Z0-9-]*)\s*=\s*"""
+    r"""(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"""
 )
 # Bounded and delimited on purpose. The HTML is fetched from a site we do not
 # control, and an unbounded run of digits reaches ``int()``, which refuses a

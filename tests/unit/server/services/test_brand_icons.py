@@ -6,6 +6,8 @@ them broke a plausible implementation before it was measured.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from unittest.mock import patch
 
@@ -105,6 +107,30 @@ class TestRanking:
         """Robinhood declares its 32px twice; the list must not."""
         urls = _declared_icons(ROBINHOOD_HEAD, "https://robinhood.com/")
         assert len(urls) == len(set(urls))
+
+
+class TestAHostilePageIsReadInOnePass:
+    """The parse runs on the event loop, where no timeout can stop it.
+
+    These shapes took seconds at 40,000 characters and grew with the square of
+    the page, so a 1 MB page held a worker for over an hour.
+    """
+
+    @pytest.mark.parametrize(
+        "page",
+        [
+            '<link rel="icon" ' + "a" * 40_000 + ">",
+            "<link " * 40_000,
+        ],
+    )
+    def test_it_is_parsed_at_once(self, page):
+        started = time.perf_counter()
+        _declared_icons(page, "https://x.test/")
+        assert time.perf_counter() - started < 1.0
+
+    def test_names_still_read_beside_a_hyphen(self):
+        head = '<link data-x=1 rel="icon" sizes="64x64" href="/m.png">'
+        assert _declared_icons(head, "https://x.test/") == ["https://x.test/m.png"]
 
 
 class TestSniff:
