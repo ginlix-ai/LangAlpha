@@ -324,6 +324,43 @@
         }
       },
       {
+        "id": "claude-haiku-5-5",
+        "name": "Claude Haiku 5.5",
+        "is_reasoning": true,
+        "description": "Claude Haiku 5.5 model",
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 100000,
+              "rate": 0.1,
+              "cached_input": 0.01,
+              "cache_5m": 0.125,
+              "cache_1h": 0.2
+            },
+            {
+              "max_tokens": null,
+              "rate": 0.5,
+              "cached_input": 0.05,
+              "cache_5m": 0.625,
+              "cache_1h": 1.0
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 100000,
+              "rate": 0.5
+            },
+            {
+              "max_tokens": null,
+              "rate": 2.5
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "input_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "claude-haiku-4-5-20251001",
         "name": "Claude 4.5 Haiku",
         "is_reasoning": true,
