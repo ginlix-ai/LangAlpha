@@ -20,9 +20,9 @@ vi.mock('../OnboardingProvider', () => ({
   }),
 }));
 
-const navigateToPersonalization = vi.fn(async () => {});
-vi.mock('@/pages/Dashboard/hooks/useOnboarding', () => ({
-  useOnboarding: () => ({ navigateToPersonalization }),
+const startOnboarding = vi.fn();
+vi.mock('../connect/useStartOnboarding', () => ({
+  useStartOnboarding: () => ({ available: true, start: startOnboarding }),
 }));
 vi.mock('@/hooks/useAllWorkspacesAgent', () => ({ useAllWorkspacesAgent: () => false }));
 
@@ -47,7 +47,7 @@ describe('GettingStartedCard', () => {
   beforeEach(() => {
     dismiss.mockClear();
     completeTask.mockClear();
-    navigateToPersonalization.mockClear();
+    startOnboarding.mockClear();
     mockVisible = true;
     mockTasks = GETTING_STARTED_TASKS.map((def, i) => ({ def, done: i === 0 }));
   });
@@ -83,17 +83,17 @@ describe('GettingStartedCard', () => {
     expect(screen.getByTestId('loc').textContent).toBe('/chat');
   });
 
-  it('an interview task explains the flow first, then confirm opens it — not a bare route', () => {
+  it('an interview task explains the flow first, then confirm starts onboarding, not a bare route', () => {
     mockTasks = GETTING_STARTED_TASKS.map((def) => ({ def, done: false }));
     renderCard();
     fireEvent.click(screen.getByRole('button', { name: /Share your investing preferences/ }));
     // explainer dialog, nothing launched yet
     expect(screen.getByText(/agent asks a few questions about your portfolio/)).toBeInTheDocument();
-    expect(navigateToPersonalization).not.toHaveBeenCalled();
+    expect(startOnboarding).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Start the chat' }));
-    expect(navigateToPersonalization).toHaveBeenCalledTimes(1);
-    // a plain navigate to /chat/t/__default__ would bounce back to /chat
+    expect(startOnboarding).toHaveBeenCalledTimes(1);
+    // not a bare route: the connect sheet opens over the page the user is on
     expect(screen.getByTestId('loc').textContent).toBe('/settings');
   });
 
@@ -102,7 +102,7 @@ describe('GettingStartedCard', () => {
     renderCard();
     fireEvent.click(screen.getByRole('button', { name: /Share your watchlist/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
-    expect(navigateToPersonalization).not.toHaveBeenCalled();
+    expect(startOnboarding).not.toHaveBeenCalled();
     expect(screen.queryByText(/agent asks a few questions/)).toBeNull();
   });
 

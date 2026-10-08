@@ -53,7 +53,7 @@ async function mountThread(agentMode: string) {
   const queryClient = createTestQueryClient();
   const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
   const rendered = renderHookWithProviders(
-    () => useChatMessages('ws-x', 'th-x', null, null, null, null, null, null, agentMode),
+    () => useChatMessages('ws-x', 'th-x', null, null, null, null, null, agentMode),
     { queryClient },
   );
   await waitFor(() => expect(mockReplay).toHaveBeenCalled());

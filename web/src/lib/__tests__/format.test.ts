@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatTimestamp, relativeTime, signedFixed2 } from '@/lib/format';
+import { createFormatter, createDateFormatter, compactNumber, compactNumberFixed2, fixed2, formatBytes, formatList, formatTimestamp, relativeTime, signedFixed2 } from '@/lib/format';
 
 describe('createFormatter', () => {
   it('formats numbers in the given locale', () => {
@@ -164,5 +164,18 @@ describe('formatBytes', () => {
   it('formats the number in the given locale', () => {
     expect(formatBytes(1536, 'de-DE')).toBe('1,5 KB');
     expect(formatBytes(2000 * 1024 ** 4, 'de-DE')).toBe('2.000 TB');
+  });
+});
+
+describe('formatList', () => {
+  it('joins names the way the locale says a list', () => {
+    expect(formatList(['moomoo'], 'en-US')).toBe('moomoo');
+    expect(formatList(['moomoo', 'Webull'], 'en-US')).toBe('moomoo and Webull');
+    expect(formatList(['moomoo', 'Webull', 'IBKR'], 'en-US')).toBe('moomoo, Webull, and IBKR');
+  });
+
+  it('spaces a Chinese conjunction from the Latin names beside it, not the enumeration comma', () => {
+    expect(formatList(['moomoo', 'Webull'], 'zh-CN')).toBe('moomoo 和 Webull');
+    expect(formatList(['moomoo', 'Webull', 'IBKR'], 'zh-CN')).toBe('moomoo、Webull 和 IBKR');
   });
 });

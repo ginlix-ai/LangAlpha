@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
-const { markConnectStarted, useConnectReturn } = await import('../connectReturn');
+const { connectStartedHere, markConnectStarted, useConnectReturn } = await import('../connectReturn');
 
 const at = (search: string) => window.history.replaceState({}, '', `/plugins${search}`);
 const restore = (persisted: boolean) =>
@@ -221,6 +221,35 @@ describe('useConnectReturn', () => {
 
     expect(() => markConnectStarted('robinhood', false)).not.toThrow();
     expect(() => renderHook(() => useConnectReturn(h))).not.toThrow();
+    expect(h.onAbandoned).not.toHaveBeenCalled();
+  });
+});
+
+describe('connectStartedHere', () => {
+  it('vouches only for a connect this tab started', () => {
+    markConnectStarted('moomoo', false);
+
+    expect(connectStartedHere('moomoo')).toBe(true);
+    // The callback's params alone, as a link would carry them.
+    expect(connectStartedHere('robinhood')).toBe(false);
+  });
+
+  it('takes an answer naming no server for the one connect out, and only then', () => {
+    expect(connectStartedHere(null)).toBe(false);
+    markConnectStarted('moomoo', false);
+    expect(connectStartedHere(null)).toBe(true);
+    markConnectStarted('webull', false);
+    expect(connectStartedHere(null)).toBe(false);
+  });
+
+  it('still sees the marker when another surface leaves the landing to it', () => {
+    markConnectStarted('moomoo', false);
+    at('?mcp_connected=moomoo&server=moomoo');
+    const h = handlers();
+
+    renderHook(() => useConnectReturn(h, false));
+
+    expect(connectStartedHere('moomoo')).toBe(true);
     expect(h.onAbandoned).not.toHaveBeenCalled();
   });
 });

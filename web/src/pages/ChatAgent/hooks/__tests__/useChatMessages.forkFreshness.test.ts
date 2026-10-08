@@ -54,7 +54,7 @@ describe('useChatMessages – a fork sends the current render', () => {
   it('regenerates and edits with a platform that changed after the last message', async () => {
     let platform = 'web';
     const { result, rerender } = renderHookWithProviders(() =>
-      useChatMessages('ws-test', null, null, null, null, null, null, null, 'ptc', null, null, platform));
+      useChatMessages('ws-test', null, null, null, null, null, null, 'ptc', null, null, platform));
     await waitFor(() => expect(replayThreadHistory).toHaveBeenCalled());
     await act(async () => {});
 
