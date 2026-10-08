@@ -4,11 +4,7 @@ import { FileText, ImageIcon, Ruler, SquareDashedMousePointer } from 'lucide-rea
 import type { WidgetContextPreviewShape } from '@/pages/Dashboard/widgets/framework/WidgetContextPreview';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { SelectionContextPreview, type SelectionPreviewShape } from '../SelectionContextPreview';
-
-/** Selection price with 2 decimals (matching StockHeader); `—` when absent. */
-function fmtSelectionPrice(n: number | null | undefined): string {
-  return n == null || !Number.isFinite(n) ? '—' : n.toFixed(2);
-}
+import { selectionPriceBounds } from '../../utils/selectionBounds';
 
 /* --- Attachment helpers --- */
 const formatFileSize = (bytes: number | null | undefined): string => {
@@ -80,9 +76,8 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
         const title = s.selectionType === 'region'
           ? t('marketView.selection.cardRegionTitle')
           : t('marketView.selection.cardPriceTitle');
-        const bounds = s.selectionType === 'region'
-          ? `$${fmtSelectionPrice(s.priceLow)} – $${fmtSelectionPrice(s.priceHigh)}`
-          : `$${fmtSelectionPrice(s.priceLow)}`;
+        // en-US on purpose: the bounds mirror the context text the agent receives.
+        const bounds = selectionPriceBounds(s, 'en-US');
         // Prefer the user's note as the snippet; fall back to the bounds.
         const snippet = s.comment ? `“${s.comment}”` : bounds;
         return (

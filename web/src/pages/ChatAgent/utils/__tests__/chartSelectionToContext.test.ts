@@ -102,7 +102,17 @@ describe('describeSelectionImage', () => {
   // and the display-attachment `name`, so its exact shape is worth locking.
   it('renders the full caption with price range and time span for a region', () => {
     expect(describeSelectionImage(region())).toBe(
-      'Cropped chart image of NVDA 1day (price $180–$195, ' +
+      'Cropped chart image of NVDA 1day (price $180.00 - $195.00, ' +
+        '2024-01-03T00:00:00.000Z → 2024-02-15T00:00:00.000Z)',
+    );
+  });
+
+  it('prints the bounds at the places the chart axis showed when it was drawn', () => {
+    // Two places would read `$1.08 - $1.09`, against `1.0845 – 1.0862` in the
+    // structured block the agent gets in the same turn.
+    const cap = describeSelectionImage(region({ priceLow: 1.084537, priceHigh: 1.086219, decimals: 4 }));
+    expect(cap).toBe(
+      'Cropped chart image of NVDA 1day (price $1.0845 - $1.0862, ' +
         '2024-01-03T00:00:00.000Z → 2024-02-15T00:00:00.000Z)',
     );
   });
@@ -111,7 +121,7 @@ describe('describeSelectionImage', () => {
     const cap = describeSelectionImage(
       region({ selectionType: 'price_level', timeStart: undefined, timeEnd: undefined, priceLow: 200, priceHigh: 200 }),
     );
-    expect(cap).toBe('Cropped chart image of NVDA 1day (price $200–$200)');
+    expect(cap).toBe('Cropped chart image of NVDA 1day (price $200.00)');
     expect(cap).not.toContain('→');
   });
 });

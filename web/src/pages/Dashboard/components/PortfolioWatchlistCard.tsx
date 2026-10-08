@@ -7,6 +7,7 @@ import { getExtendedHoursInfo } from '@/lib/marketUtils';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { createFormatter, grouped2, integer } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
+import { formatMoney, quoteCurrency } from '@/lib/bars';
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '@/components/ui/context-menu';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import {
@@ -28,6 +29,8 @@ interface WatchlistRow {
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
+  currency?: string | null;
+  assetClass?: string | null;
   [key: string]: unknown;
 }
 
@@ -67,6 +70,10 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
   const pos = hasQuote ? item.isPositive ?? true : true;
   const pctStr = hasQuote ? (pos ? '+' : '') + grouped2(Number(item.changePercent), locale) + '%' : 'N/A';
   const hasId = !!item.watchlist_item_id;
+  // A watchlist mixes venues, so the row's own listing decides the symbol.
+  // Prefer the currency the snapshot was quoted in; the suffix table is the
+  // fallback for payloads that predate it. An index level prints bare.
+  const code = quoteCurrency(item.currency, item.symbol, item.assetClass);
 
   // Extended hours: show when not regular session and data available
   const { extPct, extType, extPrice: _extPrice, extChange: _extChange } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
@@ -78,7 +85,7 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.05 }}
-      className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-pointer"
+      className="flex items-center gap-2 p-3 rounded-xl border border-transparent transition-all cursor-pointer"
       style={{ backgroundColor: 'transparent' }}
       onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
       onMouseEnter={(e) => {
@@ -90,18 +97,22 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
         e.currentTarget.style.borderColor = 'transparent';
       }}
     >
-      <div>
-        <div className="font-bold text-sm" style={{ color: 'var(--color-text-primary)' }}>
+      {/* The ticker is the row's identity and never truncates at a width a card
+          actually takes; the cap only catches a pathological symbol. */}
+      <div className="min-w-0 max-w-[50%] flex-none">
+        <div className="font-bold text-sm truncate" style={{ color: 'var(--color-text-primary)' }} title={item.symbol}>
           {item.symbol}
         </div>
-        <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.portfolioWatchlistCard.stock')}</div>
+        <div className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.portfolioWatchlistCard.stock')}</div>
       </div>
 
-      <div className="flex items-center gap-4">
-        <div className="text-right">
+      {/* A CN¥ price is wide enough that price and badge stop fitting side by
+          side in a narrow card. They wrap rather than run past its edge. */}
+      <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        <div className="text-right whitespace-nowrap">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
             {hasQuote
-              ? grouped2(Number(extType && item.previousClose != null ? item.previousClose : item.price), locale)
+              ? formatMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), code, locale)
               : 'N/A'}
           </div>
           <div
@@ -112,13 +123,13 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
                 : 'var(--color-text-secondary)',
             }}
           >
-            {hasQuote ? (pos ? '+' : '') + grouped2(Number(item.change), locale) : 'N/A'}
+            {hasQuote ? formatMoney(Number(item.change), code, locale, { signed: true }) : 'N/A'}
           </div>
         </div>
 
-        <div className="text-right">
+        <div className="text-right shrink-0">
           <div
-            className="w-16 py-1 rounded-lg text-center text-xs font-bold"
+            className="min-w-16 px-2 py-1 rounded-lg text-center text-xs font-bold whitespace-nowrap"
             style={{
               backgroundColor: hasQuote
                 ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
@@ -131,34 +142,35 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
             {pctStr}
           </div>
           {hasQuote && extType && extPct != null && (
-            <div className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
+            <div className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5 whitespace-nowrap" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-              {grouped2(Number(item.price), locale)} {extPct >= 0 ? '+' : ''}{grouped2(extPct, locale)}%
+              {formatMoney(Number(item.price), code, locale)} {extPct >= 0 ? '+' : ''}{grouped2(extPct, locale)}%
             </div>
           )}
         </div>
-
-        {/* Mobile: visible menu button */}
-        {isMobile && hasId && (
-          <DropdownMenu modal={false}>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="p-1 -mr-1 rounded-md transition-colors"
-                style={{ color: 'var(--color-text-tertiary)' }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MoreVertical size={16} />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.watchlist_item_id))}>
-                <Trash2 className="h-3.5 w-3.5" />
-                {t('dashboard.portfolioWatchlistCard.delete')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
       </div>
+
+      {/* Mobile: visible menu button, outside the wrapping cluster so it keeps
+          its place at the row's edge. */}
+      {isMobile && hasId && (
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="p-1 -mr-1 shrink-0 rounded-md transition-colors"
+              style={{ color: 'var(--color-text-tertiary)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <MoreVertical size={16} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.watchlist_item_id))}>
+              <Trash2 className="h-3.5 w-3.5" />
+              {t('dashboard.portfolioWatchlistCard.delete')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </motion.div>
   );
 
@@ -225,7 +237,7 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.05 }}
-      className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-pointer"
+      className="flex items-center gap-2 p-3 rounded-xl border border-transparent transition-all cursor-pointer"
       style={{ backgroundColor: 'transparent' }}
       onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
       onMouseEnter={(e) => {
@@ -237,11 +249,11 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
         e.currentTarget.style.borderColor = 'transparent';
       }}
     >
-      <div>
-        <div className="font-bold text-sm" style={{ color: 'var(--color-text-primary)' }}>
+      <div className="min-w-0 max-w-[50%] flex-none">
+        <div className="font-bold text-sm truncate" style={{ color: 'var(--color-text-primary)' }} title={item.symbol}>
           {item.symbol}
         </div>
-        <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+        <div className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>
           {valuesHidden
             ? t('dashboard.portfolioWatchlistCard.sharesHidden')
             : item.quantity != null
@@ -250,8 +262,8 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
-        <div className="text-right">
+      <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        <div className="text-right whitespace-nowrap">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
             {valuesHidden
               ? '******'
@@ -264,9 +276,9 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
           </div>
         </div>
 
-        <div className="text-right">
+        <div className="text-right shrink-0">
           <div
-            className="w-16 py-1 rounded-lg text-center text-xs font-bold"
+            className="min-w-16 px-2 py-1 rounded-lg text-center text-xs font-bold whitespace-nowrap"
             style={{
               backgroundColor: hasQuote
                 ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
@@ -279,38 +291,39 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
             {plStr}
           </div>
           {hasQuote && extType && extPct != null && (
-            <div className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
+            <div className="text-[0.625rem] mt-0.5 text-center flex items-center justify-center gap-0.5 whitespace-nowrap" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
               {formatPortfolioMoney(item.price, currency, locale)} {extPct >= 0 ? '+' : ''}{grouped2(extPct, locale)}%
             </div>
           )}
         </div>
-
-        {/* Mobile: visible menu button */}
-        {isMobile && hasId && (
-          <DropdownMenu modal={false}>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="p-1 -mr-1 rounded-md transition-colors"
-                style={{ color: 'var(--color-text-tertiary)' }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MoreVertical size={16} />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => onEdit?.(item)}>
-                <Pencil className="h-3.5 w-3.5" />
-                {t('dashboard.portfolioWatchlistCard.edit')}
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.user_portfolio_id))}>
-                <Trash2 className="h-3.5 w-3.5" />
-                {t('dashboard.portfolioWatchlistCard.delete')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
       </div>
+
+      {/* Mobile: visible menu button, outside the wrapping cluster so it keeps
+          its place at the row's edge. */}
+      {isMobile && hasId && (
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="p-1 -mr-1 shrink-0 rounded-md transition-colors"
+              style={{ color: 'var(--color-text-tertiary)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <MoreVertical size={16} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => onEdit?.(item)}>
+              <Pencil className="h-3.5 w-3.5" />
+              {t('dashboard.portfolioWatchlistCard.edit')}
+            </DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.user_portfolio_id))}>
+              <Trash2 className="h-3.5 w-3.5" />
+              {t('dashboard.portfolioWatchlistCard.delete')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </motion.div>
   );
 

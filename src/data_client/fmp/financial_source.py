@@ -64,13 +64,23 @@ class FMPFinancialSource:
     async def get_revenue_by_segment(
         self, symbol: str, segment_type: str = "product", **kwargs: Any
     ) -> list[dict[str, Any]]:
-        if segment_type == "geography":
-            return await self._client.get_revenue_geographic_segmentation(
-                symbol, **kwargs
-            )
-        return await self._client.get_revenue_product_segmentation(
-            symbol, **kwargs
+        """Rows in the ``[{date: {segment: value}}]`` shape every source answers.
+
+        FMP's stable API answers ``{date, data, ...}`` rows whatever
+        ``structure`` asks for; left as is, the first key read as the date is
+        ``symbol``.
+        """
+        fetch = (
+            self._client.get_revenue_geographic_segmentation
+            if segment_type == "geography"
+            else self._client.get_revenue_product_segmentation
         )
+        return [
+            {row["date"]: row["data"]}
+            if isinstance(row, dict) and row.get("date") and isinstance(row.get("data"), dict)
+            else row
+            for row in await fetch(symbol, **kwargs) or []
+        ]
 
     async def get_sector_performance(
         self, target_date: str | None = None

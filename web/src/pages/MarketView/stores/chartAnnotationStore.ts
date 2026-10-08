@@ -24,6 +24,7 @@
  */
 
 import { useMemo, useSyncExternalStore } from 'react';
+import { displaySpelling } from '@/lib/bars/exchanges';
 
 export type AnnotationType =
   | 'price_line'
@@ -159,9 +160,10 @@ export function normalizeTimeframe(interval: string | null | undefined): string 
   return VALID_TIMEFRAMES.has(tf) ? tf : DEFAULT_TIMEFRAME;
 }
 
-/** Disclosed instance key: `{SYMBOL}:{timeframe}` (uppercased ticker). */
+/** Disclosed instance key: `{SYMBOL}:{timeframe}`, the ticker in its display
+ *  spelling, which is how the server keys it (`600519.SH:1day`, never `.SS`). */
 export function makeChartId(symbol: string, timeframe: string): string {
-  return `${symbol.trim().toUpperCase()}:${timeframe.trim()}`;
+  return `${displaySpelling(symbol)}:${timeframe.trim()}`;
 }
 
 type Bucket = Record<string, StoredAnnotation>;
@@ -248,13 +250,16 @@ function parseChartId(chartId: string): { symbol: string; timeframe: string } {
   return { symbol: chartId.slice(0, idx), timeframe: chartId.slice(idx + 1) };
 }
 
-function toUpper(symbol: string): string {
-  return symbol.trim().toUpperCase();
+/** A chart id from an older thread may spell Shanghai `.SS`; respelled, it
+ *  lands in the bucket the chart reads instead of one nothing draws from. */
+function canonicalChartId(chartId: string): string {
+  const idx = chartId.indexOf(':');
+  return idx < 0 ? chartId : makeChartId(chartId.slice(0, idx), chartId.slice(idx + 1));
 }
 
 /** Composite key for one chart instance bucket. */
 function storeKey(workspaceId: string, chartId: string): string {
-  return `${workspaceId}${SEP}${chartId}`;
+  return `${workspaceId}${SEP}${canonicalChartId(chartId)}`;
 }
 
 /**
@@ -403,7 +408,7 @@ export const chartAnnotationStore = {
     sinceSeq?: number,
   ): void {
     if (!workspaceId) return;
-    const sym = toUpper(symbol);
+    const sym = displaySpelling(symbol);
     const prefix = `${workspaceId}${SEP}${sym}:`;
     const isFresher = (key: string): boolean =>
       sinceSeq != null && (keyMutatedAt.get(key) ?? 0) > sinceSeq;
@@ -463,7 +468,7 @@ const VALID_MARKER_SHAPES: ReadonlySet<string> = new Set([
 /** Resolve the chart_id from a payload, deriving it if only symbol+tf given. */
 function resolveChartId(payload: Record<string, unknown>): string | null {
   const chartId = payload.chart_id;
-  if (typeof chartId === 'string' && chartId) return chartId;
+  if (typeof chartId === 'string' && chartId) return canonicalChartId(chartId);
   const symbol = payload.symbol;
   if (typeof symbol !== 'string' || !symbol) return null;
   return makeChartId(symbol, normalizeTimeframe(payload.timeframe as string | undefined));

@@ -11,7 +11,6 @@ from .display import (
     _symbol_currency,
     resolve_ref,
 )
-from .utils import format_number
 from src.data_client import get_financial_data_provider
 
 logger = logging.getLogger(__name__)
@@ -33,6 +32,21 @@ _SCREENER_PARAM_MAP = {
     "is_fund": "isFund",
     "is_actively_trading": "isActivelyTrading",
 }
+
+
+def _screened_currency(results: list) -> Optional[str]:
+    """The listing currency every returned row shares; None (dollars) otherwise.
+
+    The screen that answers a market applies the price and cap thresholds in
+    that market's currency (a CN screen in CNY), so the echoed filter has to
+    name it. A mixed answer has no single currency and keeps the dollar.
+    """
+    currencies = set()
+    for row in results:
+        ref = resolve_ref(row.get("symbol")) if isinstance(row, dict) else None
+        if ref is not None and ref.price_currency:
+            currencies.add(ref.price_currency)
+    return currencies.pop() if len(currencies) == 1 else None
 
 
 async def fetch_stock_screener(
@@ -116,6 +130,7 @@ async def fetch_stock_screener(
             )
 
         # Build active filters summary for display
+        filter_cur = _screened_currency(results)
         active_filters = {}
         if sector:
             active_filters["Sector"] = sector
@@ -126,13 +141,13 @@ async def fetch_stock_screener(
         if country:
             active_filters["Country"] = country
         if market_cap_more_than is not None:
-            active_filters["Mkt Cap >"] = format_number(market_cap_more_than)
+            active_filters["Mkt Cap >"] = fmt_money(market_cap_more_than, filter_cur)
         if market_cap_lower_than is not None:
-            active_filters["Mkt Cap <"] = format_number(market_cap_lower_than)
+            active_filters["Mkt Cap <"] = fmt_money(market_cap_lower_than, filter_cur)
         if price_more_than is not None:
-            active_filters["Price >"] = f"${price_more_than:.2f}"
+            active_filters["Price >"] = fmt_price(price_more_than, filter_cur)
         if price_lower_than is not None:
-            active_filters["Price <"] = f"${price_lower_than:.2f}"
+            active_filters["Price <"] = fmt_price(price_lower_than, filter_cur)
         if volume_more_than is not None:
             active_filters["Vol >"] = fmt_count(volume_more_than)
         if volume_lower_than is not None:
@@ -142,9 +157,9 @@ async def fetch_stock_screener(
         if beta_lower_than is not None:
             active_filters["Beta <"] = f"{beta_lower_than:.2f}"
         if dividend_more_than is not None:
-            active_filters["Dividend >"] = f"{dividend_more_than:.2f}%"
+            active_filters["Dividend/Share >"] = f"{dividend_more_than:.2f}"
         if dividend_lower_than is not None:
-            active_filters["Dividend <"] = f"{dividend_lower_than:.2f}%"
+            active_filters["Dividend/Share <"] = f"{dividend_lower_than:.2f}"
 
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         lines = []
@@ -163,12 +178,13 @@ async def fetch_stock_screener(
 
         for stock in results:
             sym = stock.get("symbol", "N/A")
-            name = stock.get("companyName", "N/A")
+            # A CN row carries these keys as null, which .get's default misses.
+            name = stock.get("companyName") or "N/A"
             if len(name) > 25:
                 name = name[:22] + "..."
             price = stock.get("price")
             mkt_cap = stock.get("marketCap")
-            sect = stock.get("sector", "N/A")
+            sect = stock.get("sector") or "N/A"
             beta = stock.get("beta")
             volume = stock.get("volume")
             change = stock.get("change")

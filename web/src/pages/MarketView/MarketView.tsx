@@ -17,6 +17,7 @@ import { useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
 import { FLASH_ROUTE_STATE } from '@/hooks/useFlashWorkspace';
 import type { Workspace } from '@/types/api';
 import type { StockSearchHit } from '@/lib/marketUtils';
+import type { Freshness } from '@/types/market';
 import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
 import { useThreadModel } from '../ChatAgent/hooks/useThreadModel';
 import { useThreadSubagents } from '../ChatAgent/hooks/useThreadSubagents';
@@ -27,6 +28,8 @@ import { MobileBottomSheet } from '../../components/ui/mobile-bottom-sheet';
 import { MobileFabChat } from '../../components/ui/mobile-fab-chat';
 import { MarketDataWSProvider, useMarketDataWSContext } from './contexts/MarketDataWSContext';
 
+import { displaySpelling, formatMoney } from '@/lib/bars';
+import { displayOverrideFromHit, type SymbolDisplayOverride } from '@/lib/displayName';
 import { loadPref, savePref } from './utils/prefs';
 import { useRestoredWorkspace } from './hooks/useRestoredWorkspace';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -41,11 +44,6 @@ import { normalizeTimeframe, subscribeLiveAnnotationAdd } from './stores/chartAn
 import { chartSelectionStore, isConfirmedFor, useChartSelections } from './stores/chartSelectionStore';
 import { buildChartSelectionSend } from './utils/selectionSend';
 
-interface DisplayOverride {
-  name: string;
-  exchange: string;
-}
-
 interface AttachmentItem {
   dataUrl: string;
   file: { name: string; size: number };
@@ -57,22 +55,6 @@ interface AttachmentItem {
 // `workspaces` dependency doesn't change on every render before the fetch
 // lands. React Query's structural sharing covers the loaded case.
 const EMPTY_WORKSPACES: Workspace[] = [];
-
-// TODO: type properly once overview API response shape is formalized
-interface OverviewData {
-  symbol?: string;
-  name?: string;
-  quote?: {
-    previousClose?: number;
-    open?: number;
-    yearHigh?: number;
-    yearLow?: number;
-    avgVolume?: number;
-    [key: string]: unknown;
-  };
-  earningsSurprises?: unknown;
-  [key: string]: unknown;
-}
 
 interface ChartMetadata {
   chartMode?: string;
@@ -121,10 +103,13 @@ function MarketViewInner() {
   // for a fresh chat. Seeded here, the effect below re-applies the same values
   // and React bails, so the link's conversation survives the landing.
   const [openingRoute] = useState(() => readMarketViewRoute(searchParams));
+  // Every way in (link, saved pref, search, sidebar, chip) lands on the display
+  // spelling, so a `600519.SS` link, its header, pref and chart keys all read
+  // `600519.SH` from the first render.
   const [selectedStock, setSelectedStock] = useState<string>(
-    () => openingRoute.symbol?.trim().toUpperCase() || loadPref('symbol', 'GOOGL'),
+    () => displaySpelling(openingRoute.symbol || loadPref('symbol', 'GOOGL')) || 'GOOGL',
   );
-  const [selectedStockDisplay, setSelectedStockDisplay] = useState<DisplayOverride | null>(null);
+  const [selectedStockDisplay, setSelectedStockDisplay] = useState<SymbolDisplayOverride | null>(null);
 
   const {
     stockInfo,
@@ -145,6 +130,9 @@ function MarketViewInner() {
   // Venue market phase reported by the chart's bars responses (calendar-derived
   // server-side); drives the header's Closed badge. Null until the first load.
   const [marketPhase, setMarketPhase] = useState<string | null>(null);
+  // Measured freshness of the chart's own bars — a different surface from the
+  // quote, and frequently a different provider; the header shows both.
+  const [chartFreshness, setChartFreshness] = useState<Freshness | null>(null);
   const [selectedInterval, setSelectedInterval] = useState<string>(() => {
     // Sanitize the stored pref: a since-removed interval (e.g. '1s') falls
     // back to the default instead of leaving the chart on an unknown key.
@@ -291,7 +279,7 @@ function MarketViewInner() {
   // Switch the chart to a given instance — used by the live-add auto-focus
   // below and by an annotation chip that jumps to a different ticker.
   const handleJumpToChart = useCallback((symbol: string, timeframe?: string | null) => {
-    const sym = (symbol || '').trim().toUpperCase();
+    const sym = displaySpelling(symbol || '');
     if (!sym) return;
     if (sym !== selectedStock) {
       setSelectedStock(sym);
@@ -330,7 +318,7 @@ function MarketViewInner() {
   useEffect(() => {
     const route = readMarketViewRoute(searchParams);
     if (route.symbol) {
-      const symbol = route.symbol.trim().toUpperCase();
+      const symbol = displaySpelling(route.symbol);
       if (symbol && symbol !== selectedStock) {
         setSelectedStock(symbol);
         setSelectedStockDisplay(null);
@@ -367,14 +355,9 @@ function MarketViewInner() {
   }, [searchParams, selectedStock, setSearchParams, selectWorkspace]);
 
   const handleStockSearch = useCallback((symbol: string, searchResult?: StockSearchHit | null) => {
-    setSelectedStock(symbol);
+    setSelectedStock(displaySpelling(symbol));
     setSelectedStockDisplay(
-      searchResult
-        ? {
-          name: searchResult.name || searchResult.symbol,
-          exchange: searchResult.exchangeShortName || searchResult.stockExchange || '',
-        }
-        : null
+      searchResult ? displayOverrideFromHit(searchResult) : null
     );
     setChartMeta(null);
     setShowOverview(false);
@@ -387,16 +370,15 @@ function MarketViewInner() {
     return () => wsUnsubscribe([selectedStock]);
   }, [selectedStock, wsSubscribe, wsUnsubscribe]);
 
-  // Display price: prefer WS live data over REST. Only use realTimePrice if it
-  // belongs to the current symbol (prevents stale data flash when switching tickers).
-  const realTimePriceMatch = realTimePrice?.symbol === selectedStock ? realTimePrice : null;
-  const displayPrice = wsPrices.get(selectedStock) || realTimePriceMatch;
+  // Display price: prefer WS live data over REST. useStockData only returns
+  // the rows of the symbol on screen, so a switch shows dashes, not the last one's.
+  const displayPrice = wsPrices.get(selectedStock) || realTimePrice;
   const wsHasData = !!wsPrices.get(selectedStock);
   const quote = useStockQuoteModel({
     symbol: selectedStock,
     stockInfo,
     realTimePrice: displayPrice,
-    quoteData: (overviewData as OverviewData | null)?.quote || null,
+    quoteData: overviewData?.quote || null,
     snapshot: snapshotData,
     marketStatus,
     wsStatus,
@@ -464,18 +446,20 @@ function MarketViewInner() {
       parts.push(`Latest candle — O: ${c.open} H: ${c.high} L: ${c.low} C: ${c.close} Vol: ${c.volume?.toLocaleString('en-US')}`);
     }
 
-    const overview = overviewData as OverviewData | null;
+    const overview = overviewData;
     if (overview?.quote) {
       if (overview.quote.yearHigh != null) parts.push(`52-week high: ${overview.quote.yearHigh}`);
       if (overview.quote.yearLow != null) parts.push(`52-week low: ${overview.quote.yearLow}`);
     }
 
     if (displayPrice) {
-      parts.push(`Real-time price: $${displayPrice.price} (${displayPrice.change >= 0 ? '+' : ''}${displayPrice.change} / ${displayPrice.changePercent.toFixed(2)}%)`);
+      // The header's own currency: the row's code, or none for an index level.
+      const code = quote.currency;
+      parts.push(`Real-time price: ${formatMoney(displayPrice.price, code, 'en-US')} (${formatMoney(displayPrice.change, code, 'en-US', { signed: true })} / ${displayPrice.changePercent.toFixed(2)}%)`);
     }
 
     setChartImageDesc(parts.join('\n'));
-  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice]);
+  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice, quote.currency]);
 
   const handleSendMessage = useCallback(async (message: string, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort }: { model?: string; reasoningEffort?: string } = {}) => {
     // Build additional_context from chart image + file attachments.
@@ -592,7 +576,7 @@ function MarketViewInner() {
   }, [handleFastModeSend, navigate, toast, t, chartImage, chartImageDesc, mode, selectedWorkspaceId, selectedStock, selectedInterval, allWorkspaces, flashWorkspaceId, subagents.toSend]);
 
   const handleSidebarSymbolClick = useCallback((symbol: string) => {
-    setSelectedStock(symbol);
+    setSelectedStock(displaySpelling(symbol));
     setSelectedStockDisplay(null);
     setChartMeta(null);
     setShowOverview(false);
@@ -661,6 +645,7 @@ function MarketViewInner() {
             wsHasData={wsHasData}
             wsDataLevel={wsDataLevel}
             ginlixDataEnabled={ginlixDataEnabled}
+            chartFreshness={chartFreshness}
           />
 
           {/* Chart fills remaining space */}
@@ -674,8 +659,9 @@ function MarketViewInner() {
               onCapture={handleCaptureChart}
               onStockMeta={handleStockMeta as any}
               onMarketPhase={setMarketPhase}
-              quoteData={(overviewData as OverviewData | null)?.quote || null}
-              earningsData={(overviewData as OverviewData | null)?.earningsSurprises || null}
+              onChartFreshness={setChartFreshness}
+              quoteData={overviewData?.quote || null}
+              earningsData={overviewData?.earningsSurprises || null}
               overlayData={overlayData as Record<string, unknown> | null}
               stockMeta={chartMeta}
               snapshot={snapshotData}
@@ -778,7 +764,7 @@ function MarketViewInner() {
               symbol={selectedStock}
               visible={true}
               onClose={() => setShowOverview(false)}
-              data={overviewData as OverviewData | null}
+              data={overviewData}
               loading={overviewLoading}
             />
           </MobileBottomSheet>
@@ -798,6 +784,7 @@ function MarketViewInner() {
                   wsHasData={wsHasData}
                   wsDataLevel={wsDataLevel}
                   ginlixDataEnabled={ginlixDataEnabled}
+                  chartFreshness={chartFreshness}
                 />
               </div>
               <div className="market-chart-area">
@@ -806,7 +793,7 @@ function MarketViewInner() {
                     symbol={selectedStock}
                     visible={showOverview}
                     onClose={() => setShowOverview(false)}
-                    data={overviewData as OverviewData | null}
+                    data={overviewData}
                     loading={overviewLoading}
                   />
                 )}
@@ -819,8 +806,9 @@ function MarketViewInner() {
                   onCapture={handleCaptureChart}
                   onStockMeta={handleStockMeta as any}
                   onMarketPhase={setMarketPhase}
-                  quoteData={(overviewData as OverviewData | null)?.quote || null}
-                  earningsData={(overviewData as OverviewData | null)?.earningsSurprises || null}
+                  onChartFreshness={setChartFreshness}
+                  quoteData={overviewData?.quote || null}
+                  earningsData={overviewData?.earningsSurprises || null}
                   overlayData={overlayData as Record<string, unknown> | null}
                   stockMeta={chartMeta}
                   snapshot={snapshotData}

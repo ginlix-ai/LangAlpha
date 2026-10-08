@@ -35,8 +35,14 @@ dev = ["pytest>=8.0.0"]
 required-version = ">=0.6.15"
 # A non-editable install is rebuilt only when a cache key changes. The default
 # key is pyproject.toml alone, so a source edit would leave the suite testing
-# the previous build.
-cache-keys = [{ file = "pyproject.toml" }, { file = "market_protocol/**/*" }]
+# the previous build. Sources and package data only: a key matching the
+# bytecode an import writes would rebuild the package on every later launch.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "market_protocol/**/*.py" },
+    { file = "market_protocol/**/*.yaml" },
+    { file = "market_protocol/py.typed" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

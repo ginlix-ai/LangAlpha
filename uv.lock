@@ -2202,6 +2202,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "json-repair" },
     { name = "jsonschema" },
+    { name = "langalpha-market-protocol" },
     { name = "langchain", extra = ["mcp"] },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
@@ -2308,6 +2309,7 @@ requires-dist = [
     { name = "json-repair", specifier = ">=0.7.0" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "langalpha-cli", marker = "extra == 'cli'", editable = "libs/ptc-cli" },
+    { name = "langalpha-market-protocol", editable = "libs/market-protocol" },
     { name = "langchain", extras = ["mcp"], specifier = ">=1.4.0" },
     { name = "langchain-anthropic", specifier = ">=1.0.0" },
     { name = "langchain-core", specifier = ">=1.6.0" },
@@ -2377,6 +2379,28 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-socket", specifier = ">=0.7.0" },
 ]
+
+[[package]]
+name = "langalpha-market-protocol"
+version = "0.1.0"
+source = { editable = "libs/market-protocol" }
+dependencies = [
+    { name = "exchange-calendars" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "exchange-calendars", specifier = ">=4.13.2,<5" },
+    { name = "pandas", specifier = ">=2.2.2" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0.0" }]
 
 [[package]]
 name = "langchain"

@@ -13,12 +13,17 @@ from .currency import fmt_count, fmt_price
 from .display import (
     _market_label,
     _symbol_currency,
+    resolve_listing,
     resolve_ref,
+    venue_local_time,
 )
-from .quote_format import build_live_stamp
+from .quote_format import FRESHNESS_WORDS, build_live_stamp
 from .utils import finite_or_none, format_percentage
 from src.data_client import get_market_data_provider
-from src.market_protocol import AssetClass, to_legacy_api
+from src.data_client.freshness import Freshness, FreshnessLabel, measure_bars, measure_daily
+from src.data_client.normalize import series_lineage
+from src.data_client.ginlix_data.directory import display_names
+from market_protocol import AssetClass, PriceTreatment
 
 from ._shared import _get_user_id, _normalize_market_bars
 
@@ -312,6 +317,47 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# A chart series names what an incomplete one lacks; a quote has no bars to miss.
+_CHART_FRESHNESS_WORDS = {
+    **FRESHNESS_WORDS,
+    FreshnessLabel.INCOMPLETE: "incomplete (missing the session's final bars)",
+}
+
+
+def _chart_freshness_line(ref, freshness: Freshness) -> Optional[str]:
+    """One line naming the chart series' provider and lag; None when it is current."""
+    words = _CHART_FRESHNESS_WORDS.get(freshness.label)
+    if not words:
+        return None
+    line = f"**Chart bars:** {freshness.source or 'unknown source'}, {words}"
+    try:
+        last = freshness.actual_latest
+        local = venue_local_time(ref, datetime.fromtimestamp(last / 1000, tz=timezone.utc)) if last else None
+    except (OverflowError, OSError, ValueError):
+        local = None
+    if local is not None:
+        line += f" (last bar {local.strftime('%H:%M')} {local.strftime('%Z') or ref.tz})"
+    return line
+
+
+# A CN daily series is Tushare's forward-adjusted one where it serves and a
+# fallback's unadjusted or split-only one where it does not. They differ by
+# every dividend since, so the agent must know which it holds before comparing.
+_TREATMENT_WORDS = {
+    PriceTreatment.RAW: "unadjusted",
+    PriceTreatment.SPLIT_ADJUSTED: "adjusted for splits only",
+    PriceTreatment.DIVIDEND_ADJUSTED: "adjusted for splits and dividends",
+}
+
+
+def _treatment_line(source: Optional[str], ref) -> str:
+    """The header line naming the daily rows' price treatment; empty with no source."""
+    if not source:
+        return ""
+    words = _TREATMENT_WORDS.get(series_lineage(source, ref)[0])
+    return f"**Prices:** {words}, from {source}\n" if words else ""
+
+
 async def _live_stamp_for(
     provider,
     symbols: List[str],
@@ -321,9 +367,32 @@ async def _live_stamp_for(
     """Best-effort `[Live: ...]` stamp; never raises."""
     try:
         snaps = await provider.get_snapshots(symbols, asset_type=asset_type, user_id=user_id)
-        return build_live_stamp(snaps or [])
+        asset_class = AssetClass.INDEX if asset_type == "indices" else AssetClass.EQUITY
+        return build_live_stamp(snaps or [], asset_class=asset_class)
     except Exception:
         return None
+
+
+def _window_is_open(end_date: Optional[str], venue_now: datetime) -> bool:
+    """Whether a window ending at *end_date* runs to the present.
+
+    A date-only end is open from the venue's today on; a datetime end is a
+    closed intraday window unless it is at or after the venue's clock, so a
+    string compare against today's date would call 09:30-10:30 open-ended.
+    A naive end reads as venue-local; one with an offset is an instant.
+    """
+    if not end_date:
+        return True
+    text = end_date.strip()
+    if len(text) <= 10:
+        return text >= venue_now.date().isoformat()
+    try:
+        end = datetime.fromisoformat(text)
+    except ValueError:
+        return text[:10] >= venue_now.date().isoformat()
+    if end.tzinfo is None:
+        return end >= venue_now.replace(tzinfo=None)
+    return end >= venue_now.astimezone()
 
 
 async def fetch_daily_prices(
@@ -340,7 +409,7 @@ async def fetch_daily_prices(
     For periods >= 14 trading days: Returns formatted summary report with aggregated statistics
 
     Args:
-        symbol: Stock ticker symbol (e.g., "AAPL", "600519.SS", "0700.HK")
+        symbol: Stock ticker symbol (e.g., "AAPL", "600519.SH", "0700.HK")
         start_date: Start date in YYYY-MM-DD format
         end_date: End date in YYYY-MM-DD format
         limit: Limit number of records (if not using date range)
@@ -353,9 +422,7 @@ async def fetch_daily_prices(
     try:
         # Resolve once: normalize the agent-supplied spelling to the legacy form
         # provider calls / cache keys use, and reuse the ref for the display label.
-        ref = resolve_ref(symbol)
-        if ref is not None:
-            symbol = to_legacy_api(ref)
+        ref, symbol = resolve_listing(symbol)
         provider = await get_market_data_provider()
         user_id = _get_user_id(config)
         # Index symbols need index-market routing in the provider chain; the
@@ -380,7 +447,7 @@ async def fetch_daily_prices(
 
         # Fetch daily bars via provider chain (ginlix-data → FMP fallback)
         if start_date or end_date:
-            raw_bars = await provider.get_daily(
+            raw_bars, daily_source, _ = await provider.get_daily_with_source(
                 symbol, from_date=start_date, to_date=end_date,
                 is_index=is_index, user_id=user_id,
             )
@@ -388,11 +455,12 @@ async def fetch_daily_prices(
         else:
             if limit:
                 end = datetime.now().date()
-                # Estimate: ~252 trading days per year, add 50% buffer for weekends/holidays
-                days_back = int(limit * 1.5)
+                # ~252 trading days a year plus a 50% weekend buffer; the flat two
+                # weeks keep a small limit clear of a closure like Golden Week.
+                days_back = int(limit * 1.5) + 14
                 start = end - timedelta(days=days_back)
 
-                raw_bars = await provider.get_daily(
+                raw_bars, daily_source, _ = await provider.get_daily_with_source(
                     symbol, from_date=start.isoformat(), to_date=end.isoformat(),
                     is_index=is_index, user_id=user_id,
                 )
@@ -402,7 +470,7 @@ async def fetch_daily_prices(
                 if results and len(results) > limit:
                     results = results[:limit]
             else:
-                raw_bars = await provider.get_daily(
+                raw_bars, daily_source, _ = await provider.get_daily_with_source(
                     symbol, is_index=is_index, user_id=user_id
                 )
                 results = _normalize_market_bars(raw_bars, symbol)
@@ -439,12 +507,14 @@ No price data available for the specified period."""
         else:
             title = f"Stock Price Data: {symbol}"
 
+        cn_name = (await display_names(symbol))[0]
+        company_line = f"**Company:** {cn_name}\n" if cn_name else ""
         header = f"""## {title}
-**Retrieved:** {timestamp}
+{company_line}**Retrieved:** {timestamp}
 **Market:** {_market_label(ref)}
 **Period:** {actual_start} to {actual_end}
 **Data Points:** {num_days} trading days
-
+{_treatment_line(daily_source, ref)}
 """
 
         # Build OHLCV artifact data (sorted oldest first for charting)
@@ -470,6 +540,13 @@ No price data available for the specified period."""
         # rendering. Short periods need finer granularity.
         chart_ohlcv = ohlcv
         chart_interval = "daily"
+        # Measured in trading days, against the bars already in hand, so no
+        # second fetch describes them. The chart series starts as the daily one.
+        daily_freshness = measure_daily(
+            symbol, raw_bars, is_index=is_index, source=daily_source
+        )
+        chart_source = daily_source
+        chart_freshness = daily_freshness
         if num_days <= 60 and actual_start != "N/A" and actual_end != "N/A":
             if num_days <= 5:
                 intraday_interval = "5min"
@@ -479,11 +556,17 @@ No price data available for the specified period."""
                 intraday_interval = "4hour"
 
             try:
-                intraday_bars = await provider.get_intraday(
+                # The daily series ends on the last PUBLISHED daily bar, which
+                # during a session is yesterday; the intraday chart must run to
+                # today or it stops a whole session short of the live stamp.
+                # A Shanghai session is already on tomorrow's date in New York.
+                venue_today = (venue_local_time(ref) or datetime.now()).date().isoformat()
+                intraday_to = end_date or max(actual_end, venue_today)
+                intraday_bars, intraday_source, _ = await provider.get_intraday_with_source(
                     symbol,
                     interval=intraday_interval,
                     from_date=actual_start,
-                    to_date=actual_end,
+                    to_date=intraday_to,
                     is_index=is_index,
                     user_id=user_id,
                 )
@@ -510,6 +593,12 @@ No price data available for the specified period."""
                         if d.get("date")
                     ]
                     chart_interval = intraday_interval
+                    chart_source = intraday_source
+                    chart_freshness = measure_bars(
+                        symbol, intraday_interval, intraday_bars,
+                        is_index=is_index, source=intraday_source,
+                        tier=series_lineage(intraday_source, ref)[1].value,
+                    )
                     logger.debug(
                         f"Fetched {len(chart_ohlcv)} intraday ({intraday_interval}) "
                         f"data points for {symbol}"
@@ -520,12 +609,31 @@ No price data available for the specified period."""
                     f"falling back to daily: {e}"
                 )
 
+        # Freshness measures the series against now, so it only describes a
+        # window that runs to the present. A closed historical window would
+        # always read STALE.
+        venue_now = venue_local_time(ref) or datetime.now()
+        open_ended = _window_is_open(end_date, venue_now)
+
         artifact = {
             "type": "stock_prices",
             "symbol": symbol,
+            **({"name": cn_name} if cn_name else {}),
+            # The chart renders the axis and tooltips off this — without it the
+            # client falls back to a suffix guess and a CNY series reads as USD.
+            **({"price_currency": ref.price_currency} if ref is not None else {}),
             "ohlcv": ohlcv,
             "chart_ohlcv": chart_ohlcv,
             "chart_interval": chart_interval,
+            # Who served `ohlcv`. The table and the card's sparkline both
+            # read it, so the card must credit the daily publisher, not whoever
+            # happened to fill the finer-grained chart series below.
+            "source": daily_source,
+            **({"freshness": daily_freshness.model_dump(mode="json")} if open_ended else {}),
+            # `chart_ohlcv` can come from a different provider at a different
+            # tier; the detail chart is the only surface that renders it.
+            "chart_source": chart_source,
+            **({"chart_freshness": chart_freshness.model_dump(mode="json")} if open_ended else {}),
             "stats": {
                 "period_change_pct": stats.get("period_change_pct"),
                 "ma_20": stats.get("ma_20"),
@@ -550,6 +658,12 @@ No price data available for the specified period."""
                 f"Retrieved {num_days} daily price records for {symbol}, returning markdown table"
             )
             content = header + _format_price_data_as_table(results)
+
+        # Only for an open-ended window; see ``open_ended`` above.
+        if chart_interval != "daily" and open_ended:
+            note = _chart_freshness_line(ref, chart_freshness)
+            if note:
+                content = f"{content}\n\n{note}"
 
         stamp = await stamp_task
         if stamp:

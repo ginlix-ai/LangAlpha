@@ -33,19 +33,28 @@ export { fetchStockData } from './legacyBars';
 export type { StockDataResult } from './legacyBars';
 
 export {
+  chartPriceFormat,
   currencyForSymbol,
   currencySymbol,
+  formatMoney,
   formatPrice,
+  resolveCurrency,
   resolveDisplayCurrency,
 } from './currencyDisplay';
 
 export {
   FOREIGN_EXCHANGES,
   US_MARKET_TZ,
+  displaySpelling,
+  isIndexFamilySpelling,
+  isIndexListing,
   isUSEquity,
+  quoteCurrency,
   timezoneForSymbol,
+  venueLabelForSymbol,
 } from './exchanges';
 export type { ExchangeInfo } from './exchanges';
+export type { FormatMoneyOptions } from './currencyDisplay';
 
 export { RANGE_PRESETS, rangeStartChartSec } from './rangePresets';
 export type { RangePreset } from './rangePresets';

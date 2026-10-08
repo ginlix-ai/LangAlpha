@@ -7,70 +7,102 @@ provider on error.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from src.market_protocol import CARET_INDEX_REGIONS, to_canonical
+from market_protocol import (
+    AssetClass,
+    InstrumentRef,
+    MarketPhase,
+    display_spelling,
+    market_home,
+    market_of,
+    to_canonical,
+)
+from market_protocol.calendars import get_calendar
+from market_protocol.intervals import to_schema
+from market_protocol.routing import (
+    Cell,
+    CellKey,
+    ProbedProvider,
+    RoutingTable,
+    Ruleset,
+    Surface,
+)
 
 from .base import FetchResult, MarketDataSource
+from .normalize import declared_venue, snapshot_tier
+
+# Fills names onto snapshot rows in place (the CN/HK local and English names).
+NameRows = Callable[[Iterable[dict[str, Any]]], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
-# Symbol suffix → market region
-_SUFFIX_MAP: dict[str, str] = {
-    "HK": "hk",
-    "SS": "cn",
-    "SZ": "cn",
-    "L": "uk",
-    "T": "jp",
-    "TO": "ca",
-    "AX": "au",
-    "PA": "eu",
-    "DE": "eu",
-    "AS": "eu",
-    "MI": "eu",
-    "MC": "eu",
-    "SW": "eu",
-    "KS": "kr",
-    "KQ": "kr",
-    "TW": "tw",
-    "SI": "sg",
-    "BO": "in",
-    "NS": "in",
-}
-
 
 def symbol_market(symbol: str) -> str:
-    """Derive market region from a symbol's suffix (routing token).
+    """Market the ``config.yaml`` provider chain routes a legacy spelling to.
 
-    Bare symbols (no dot) and ``.US`` suffixes are treated as US. Known
-    caret-prefixed foreign indices are matched explicitly first, since they
-    carry no dot suffix for the suffix parser to key off of. Kept for provider
-    chain routing (``_market_matches``); timezone resolution moved to the
-    protocol (:func:`symbol_timezone`).
+    The market itself is the protocol's ``market_of``; what this adds is the
+    one place the chain reads a spelling differently from ``to_canonical``.
+    The chain and price monitor speak legacy REST spellings, so:
+
+    - a dotless spelling routes as ``us`` unless it carries a caret (indices
+      travel the chain caret-free, and ``HSI`` there has always meant the US
+      chain; ``^HSI`` routes to ``hk``);
+    - a dotted spelling in canonical form (``SAP.XETR``, ``BTC-USD.CRYPTO``)
+      routes as ``other``, the token config market sets use for "no venue",
+      because the chain's legacy providers do not read MIC spellings.
+
+    The routing ruleset is read with the canonical market instead
+    (:func:`_route_ref`), since ginlix-data keys the same ruleset by
+    ``market_of``.
     """
-    symbol = symbol.upper()
-    if symbol in CARET_INDEX_REGIONS:
-        return CARET_INDEX_REGIONS[symbol]
-    if "." not in symbol or symbol.endswith(".US"):
-        return "us"
-    suffix = symbol.rsplit(".", 1)[-1]
-    return _SUFFIX_MAP.get(suffix, "other")
+    # Folded as to_canonical folds it, so a full-width 600519．SH is the
+    # Shanghai listing here too.
+    s = display_spelling(symbol)
+    try:
+        if "." not in s:
+            return market_of(to_canonical(s)) if s.startswith("^") else "us"
+        if s.endswith(".US"):
+            return "us"
+        suffix = s.rsplit(".", 1)[1]
+        ref = to_canonical(s.lstrip("^"), asset_class=AssetClass.EQUITY)
+        return "other" if ref.mic == suffix else market_of(ref)
+    except ValueError:
+        return "us" if "." not in s else "other"
 
 
-def symbol_timezone(symbol: str) -> ZoneInfo:
-    """Return exchange-local timezone for a symbol, via the canonical instrument.
+def snapshot_key(symbol: Any) -> str:
+    """Where a requested symbol and a served snapshot row meet, whatever either spelled.
 
-    Delegates to ``to_canonical(symbol).tz`` (the protocol's single tz authority),
-    falling back to ET for anything unresolvable — offset-identical to the old
-    region map, but per-venue accurate for European suffixes.
+    Providers answer an index caret-free (``^GSPC`` comes back ``GSPC``), so one
+    leading caret drops; only one, so a malformed ``^^X`` never collapses onto a
+    bare ``X`` request. A venue suffix in either spelling (``600519.SS``,
+    ``600519.SH``) names one listing. The key is itself a routable spelling.
+    """
+    return display_spelling(str(symbol or "")).removeprefix("^")
+
+
+# Surfaces the routing ruleset has cells for.
+_ROUTED_SURFACES = frozenset({Surface.INTRADAY, Surface.DAILY, Surface.SNAPSHOT})
+
+
+def _route_ref(symbol: str, is_index: bool) -> InstrumentRef | None:
+    """The instrument a chain request names, or None when the protocol cannot read it.
+
+    Index symbols travel caret-free through the chain, so the endpoint's idea
+    of the symbol rides as a hint; the protocol still overrules it on the asset
+    class, so a CN ETF asked for through an equity endpoint is a fund.
     """
     try:
-        return ZoneInfo(to_canonical(symbol).tz)
-    except Exception:
-        return ZoneInfo("America/New_York")
+        return to_canonical(symbol, asset_class=AssetClass.INDEX if is_index else AssetClass.EQUITY)
+    except ValueError:
+        return None
 
 
 def is_us_symbol(symbol: str) -> bool:
@@ -87,6 +119,26 @@ _SNAPSHOT_CORE_FIELDS = (
 def _is_null_row(snap: dict) -> bool:
     """True if a snapshot row carries no market data at all."""
     return all(snap.get(f) is None for f in _SNAPSHOT_CORE_FIELDS)
+
+
+def calendar_market_status(market: str) -> dict[str, Any]:
+    """Legacy market-status payload for a non-US *market* from its venues' calendar.
+
+    Status is a clock, not a quote: no provider has to be consulted for it, and
+    the providers that do implement it only know the US session.
+    """
+    home = market_home(market)
+    if home is None:
+        raise ValueError(f"No market calendar for market {market!r}")
+    cal = get_calendar(home[0])
+    now = datetime.now(cal.tz)
+    return {
+        "market": "open" if cal.phase_at(now) is MarketPhase.REGULAR else "closed",
+        "afterHours": False,
+        "earlyHours": False,
+        "serverTime": now.isoformat(),
+        "exchanges": None,
+    }
 
 
 def _market_matches(markets: set[str], market: str) -> bool:
@@ -121,6 +173,12 @@ class ProviderEntry:
         }.get(capability or "")
         return self.markets if override is None else override
 
+    @property
+    def scope(self) -> set[str]:
+        """Every market this entry is configured for, under any capability."""
+        overrides = (self.intraday_markets, self.daily_markets, self.snapshot_markets)
+        return self.markets.union(*(o for o in overrides if o))
+
 
 class MarketDataProvider:
     """Chain-of-responsibility provider implementing :class:`MarketDataSource`.
@@ -133,11 +191,141 @@ class MarketDataProvider:
     listed twice for per-capability priority is only tried once per request.
     """
 
-    def __init__(self, entries: list[ProviderEntry]) -> None:
+    def __init__(
+        self,
+        entries: list[ProviderEntry],
+        routing: RoutingTable | None = None,
+        name_rows: NameRows | None = None,
+    ) -> None:
         self.entries = entries
+        self.routing = routing
+        self._name_rows = name_rows
+        self._unknown_names: set[str] = set()
 
-    def _sources_for(self, symbol: str, capability: str | None = None) -> list[ProviderEntry]:
-        """Return entries that cover *symbol*'s market, in priority order."""
+    def _entry_by_name(self, name: str) -> ProviderEntry | None:
+        """First entry with *name* — same-name entries share one source instance,
+        so any of them stands in for the provider once the cell has ordered it."""
+        for e in self.entries:
+            if e.name == name:
+                return e
+        return None
+
+    def _configured_in(self, name: str, market: str) -> bool:
+        """Whether config lists provider *name* for *market* under any capability.
+
+        A cell may promote a provider to a surface its entry leaves out (tushare
+        intraday), never to a market: a CN-only source that answers a US canary
+        is serving someone else's feed under its own name.
+        """
+        return any(e.name == name and _market_matches(e.scope, market) for e in self.entries)
+
+    @functools.cached_property
+    def _verdicts(self) -> RoutingTable:
+        """The ruleset with every provider it measured read as routable.
+
+        Looked up like the real table, it resolves the same cell and names every
+        provider that cell has a verdict on, the excluded ones included.
+        """
+        ruleset = self.routing.ruleset
+        return RoutingTable(Ruleset(generated_at=ruleset.generated_at, cells=[
+            Cell(key=c.key, probed_at=c.probed_at,
+                 providers=[ProbedProvider(name=p.name) for p in c.providers])
+            for c in ruleset.cells
+        ]))
+
+    @functools.cached_property
+    def _cell_keys(self) -> frozenset[CellKey]:
+        return frozenset(c.key for c in self.routing.ruleset.cells)
+
+    def _borrows_width(
+        self, capability: str, market: str, asset_class: AssetClass, interval: str | None
+    ) -> bool:
+        """Whether the table answers *interval* from the cell of another bar width.
+
+        ``RoutingTable.order_for`` takes the exact cell, then the interval-less
+        one, then the nearest probed width; only that last step borrows.
+        """
+        if interval is None:
+            return False
+        return not any(
+            CellKey(market=market, asset_class=asset_class, surface=capability, interval=i)
+            in self._cell_keys
+            for i in (interval, None)
+        )
+
+    def _routed_names(
+        self,
+        symbol: str,
+        capability: str | None,
+        configured: list[ProviderEntry],
+        interval: str | None = None,
+        is_index: bool = False,
+    ) -> list[str] | None:
+        """Provider names for *symbol*'s cell, or ``None`` to use config routing.
+
+        The cell's routable providers lead in its order; configured providers it
+        has no verdict on (added since the probe, or not built when it ran) follow
+        in *configured* order, so a ruleset refines the configured chain and never
+        narrows it to what one run probed. Providers the cell excluded stay out,
+        unless the cell measured another bar width: then every configured provider
+        follows, since a provider routable at ``1h`` may have no ``4h`` bars at all
+        and the request must not end with only those.
+        ``None`` also when that leaves nothing: a ruleset never empties the chain.
+        """
+        if self.routing is None or capability not in _ROUTED_SURFACES:
+            return None
+        if capability != Surface.INTRADAY:
+            interval = None
+        else:
+            try:
+                to_schema(interval or "")
+            except ValueError:
+                return None  # only a readable width has a cell
+        ref = _route_ref(symbol, is_index)
+        if ref is None:
+            return None
+        market, asset_class = market_of(ref), ref.asset_class
+        order = self.routing.order_for(capability, market, asset_class, interval)
+        if order is None:
+            return None
+        names: list[str] = []
+        for name in order:
+            if self._entry_by_name(name) is None:
+                if name not in self._unknown_names:
+                    self._unknown_names.add(name)
+                    logger.debug(
+                        "market_data.routing.unknown_provider | name=%s", name
+                    )
+                continue
+            if name not in names and self._configured_in(name, market):
+                names.append(name)
+        if self._borrows_width(capability, market, asset_class, interval):
+            mentioned: set[str] = set()
+        else:
+            mentioned = set(
+                self._verdicts.order_for(capability, market, asset_class, interval) or ()
+            )
+        names += [e.name for e in configured if e.name not in mentioned and e.name not in names]
+        if not names:
+            logger.info(
+                "market_data.routing.empty_cell | symbol=%s capability=%s cell=%s/%s",
+                symbol, capability, market, asset_class.value,
+            )
+            return None
+        return names
+
+    def _sources_for(
+        self,
+        symbol: str,
+        capability: str | None = None,
+        interval: str | None = None,
+        is_index: bool = False,
+    ) -> list[ProviderEntry]:
+        """Return entries that cover *symbol*, in priority order.
+
+        The generated ruleset wins when it has a cell for this request; otherwise
+        the ``config.yaml`` market sets decide, unchanged.
+        """
         market = symbol_market(symbol)
         candidates = []
         seen: set[str] = set()
@@ -145,6 +333,9 @@ class MarketDataProvider:
             if e.name not in seen and _market_matches(e.markets_for(capability), market):
                 candidates.append(e)
                 seen.add(e.name)
+        routed = self._routed_names(symbol, capability, candidates, interval, is_index)
+        if routed is not None:
+            return [e for name in routed if (e := self._entry_by_name(name)) is not None]
         return candidates
 
     async def _try_chain(
@@ -162,7 +353,12 @@ class MarketDataProvider:
         a :class:`FetchResult` to signal truncation; plain ``list`` results
         are treated as non-truncated.
         """
-        candidates = self._sources_for(symbol, capability)
+        candidates = self._sources_for(
+            symbol,
+            capability,
+            interval=kwargs.get("interval"),
+            is_index=bool(kwargs.get("is_index")),
+        )
         if not candidates:
             raise RuntimeError(f"No data source configured for market of {symbol}")
         last_exc: Exception | None = None
@@ -332,45 +528,20 @@ class MarketDataProvider:
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch batch snapshots with per-symbol market routing and fallback."""
-        def normalize_symbol(value: Any) -> str:
-            # removeprefix("^") so a provider returning the Yahoo caret form
-            # ("^GSPC") still matches the bare requested index symbol ("GSPC").
-            # Strips exactly one leading caret (Yahoo's index prefix) — unlike
-            # lstrip, a malformed "^^X" won't collapse onto a bare "X" request
-            # and resolve it against the wrong source. Request symbols are
-            # caret-free, so this is a no-op for them.
-            return str(value).strip().upper().removeprefix("^")
-
         pending = [s for s in symbols if str(s).strip()]
         if not pending:
             return []
 
+        is_index = asset_type == "indices"
         results_by_symbol: dict[str, dict[str, Any]] = {}
+        venues: dict[str, str | None] = {}
         last_exc: Exception | None = None
-        supports_snapshots = False
 
-        tried: set[str] = set()
-        for entry in self.entries:
-            fn = getattr(entry.source, "get_snapshots", None)
-            if fn is None or entry.name in tried:
-                continue
-            supports_snapshots = True
-
-            snapshot_markets = entry.markets_for("snapshot")
-            batch = [
-                s
-                for s in pending
-                if _market_matches(snapshot_markets, symbol_market(normalize_symbol(s)))
-            ]
-            if not batch:
-                # Not marked tried: an entry with no work must not shadow a
-                # later same-name entry that does cover these symbols (the
-                # intraday-only priority slot vs the catch-all fallback).
-                continue
-            tried.add(entry.name)
-
+        async def serve(entry: ProviderEntry, batch: list[Any]) -> set[str]:
+            """Ask one provider for *batch*; return the symbols it resolved."""
+            nonlocal last_exc
             try:
-                snapshots = await fn(
+                snapshots = await entry.source.get_snapshots(
                     symbols=batch,
                     asset_type=asset_type,
                     user_id=user_id,
@@ -381,12 +552,12 @@ class MarketDataProvider:
                     entry.name, exc,
                 )
                 last_exc = exc
-                continue
+                return set()
 
-            requested = {normalize_symbol(s) for s in batch}
+            requested = {snapshot_key(s) for s in batch}
             resolved: set[str] = set()
             for snap in snapshots or []:
-                symbol = normalize_symbol(snap.get("symbol") or "")
+                symbol = snapshot_key(snap.get("symbol") or "")
                 if symbol in requested:
                     if _is_null_row(snap):
                         # A row with no data does not resolve the symbol —
@@ -398,6 +569,9 @@ class MarketDataProvider:
                         )
                         continue
                     snap["source"] = entry.name
+                    # A provider that knows its own freshness keeps it (a
+                    # daily-derived row is EOD whoever built it).
+                    snap.setdefault("tier", snapshot_tier(entry.name, venues[symbol]).value)
                     results_by_symbol[symbol] = snap
                     resolved.add(symbol)
                 elif symbol:
@@ -412,35 +586,68 @@ class MarketDataProvider:
                         entry.name,
                         snap,
                     )
+            return resolved
 
-            if resolved:
-                pending = [s for s in pending if normalize_symbol(s) not in resolved]
-                if not pending:
-                    break
+        # Each symbol walks its own provider order (its routing cell, else the
+        # configured chain). A round asks every symbol's next provider at once,
+        # one batch per provider, and only the unresolved move on.
+        queues: dict[str, list[ProviderEntry]] = {}
+        for s in pending:
+            key = snapshot_key(s)
+            if key not in queues:
+                # Routed on the caller's spelling: the key drops the caret, and
+                # ^FTSE on the stocks endpoint is still the London index.
+                queues[key] = self._sources_for(s, "snapshot", is_index=is_index)
+                venues[key] = declared_venue(_route_ref(s, is_index))
+        while pending:
+            batches: dict[str, tuple[ProviderEntry, list[Any]]] = {}
+            for s in pending:
+                queue = queues[snapshot_key(s)]
+                if queue:
+                    batches.setdefault(queue[0].name, (queue[0], []))[1].append(s)
+            if not batches:
+                break
+            for key in {snapshot_key(s) for _, batch in batches.values() for s in batch}:
+                queues[key].pop(0)
+            answered = await asyncio.gather(
+                *(serve(entry, batch) for entry, batch in batches.values())
+            )
+            resolved = set().union(*answered)
+            pending = [s for s in pending if snapshot_key(s) not in resolved]
 
         if results_by_symbol:
+            if self._name_rows is not None:
+                await self._name_rows(results_by_symbol.values())
             return [
-                results_by_symbol[normalize_symbol(symbol)]
+                results_by_symbol[snapshot_key(symbol)]
                 for symbol in symbols
-                if normalize_symbol(symbol) in results_by_symbol
+                if snapshot_key(symbol) in results_by_symbol
             ]
 
         if last_exc:
             raise last_exc
-        if supports_snapshots:
-            return []
-        raise RuntimeError("No data source supports get_snapshots")
+        return []
 
     async def get_market_status(
         self,
         user_id: str | None = None,
+        market: str = "us",
     ) -> dict[str, Any]:
-        """Fetch market status, trying providers in order."""
+        """Fetch market status for *market*.
+
+        Status is a clock, not a quote: outside the US the venue calendar
+        answers, since the providers that implement status only know the US
+        session. For the US, covering providers are tried in order.
+        """
+        if market != "us":
+            return calendar_market_status(market)
         last_exc: Exception | None = None
         tried: set[str] = set()
         for entry in self.entries:
             fn = getattr(entry.source, "get_market_status", None)
             if fn is None or entry.name in tried:
+                continue
+            if not _market_matches(entry.markets_for(None), market):
                 continue
             tried.add(entry.name)
             try:
@@ -467,6 +674,18 @@ class MarketDataProvider:
     def source_names(self) -> list[str]:
         return list(dict.fromkeys(e.name for e in self.entries))
 
-    def source_names_for(self, symbol: str, capability: str | None = None) -> list[str]:
+    def source_names_for_market(self, market: str) -> list[str]:
+        """Provider names configured for *market* under any capability, in chain order."""
+        covering = {e.name for e in self.entries if _market_matches(e.scope, market)}
+        return [name for name in self.source_names if name in covering]
+
+    def source_names_for(
+        self,
+        symbol: str,
+        capability: str | None = None,
+        interval: str | None = None,
+        is_index: bool = False,
+    ) -> list[str]:
         """Provider names covering *symbol* for *capability*, in chain priority order."""
-        return [e.name for e in self._sources_for(symbol, capability)]
+        return [e.name for e in self._sources_for(symbol, capability, interval, is_index)]
+

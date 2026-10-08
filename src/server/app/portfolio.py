@@ -2,10 +2,11 @@
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
 from src.server.database.portfolio import (
+    HoldingCurrencyMismatch,
     delete_portfolio_holding as db_delete_portfolio_holding,
     get_portfolio_holding as db_get_portfolio_holding,
     get_user_portfolio as db_get_user_portfolio,
@@ -54,22 +55,26 @@ async def add_portfolio_holding(
         response: FastAPI response for setting status code
 
     Returns:
-        Created or merged portfolio holding (201 for new, 200 for merged)
+        Created or merged portfolio holding (201 for new, 200 for merged);
+        409 when the request names a currency other than the existing holding's
     """
-    holding, merge_details = await db_upsert_portfolio_holding(
-        user_id=user_id,
-        symbol=request.symbol,
-        instrument_type=request.instrument_type,
-        quantity=request.quantity,
-        exchange=request.exchange,
-        name=request.name,
-        average_cost=request.average_cost,
-        currency=request.currency,
-        account_name=request.account_name,
-        notes=request.notes,
-        metadata=request.metadata,
-        first_purchased_at=request.first_purchased_at,
-    )
+    try:
+        holding, merge_details = await db_upsert_portfolio_holding(
+            user_id=user_id,
+            symbol=request.symbol,
+            instrument_type=request.instrument_type,
+            quantity=request.quantity,
+            exchange=request.exchange,
+            name=request.name,
+            average_cost=request.average_cost,
+            currency=request.currency,
+            account_name=request.account_name,
+            notes=request.notes,
+            metadata=request.metadata,
+            first_purchased_at=request.first_purchased_at,
+        )
+    except HoldingCurrencyMismatch as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
     await maybe_complete_onboarding(user_id)
 

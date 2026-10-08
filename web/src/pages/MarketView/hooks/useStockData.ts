@@ -1,12 +1,12 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { mapSnapshotToStockQuote, fetchCompanyOverview, fetchAnalystData } from '../utils/api';
 import { useQuote } from '@/lib/quotes';
+import { isIndexFamilySpelling, isUSEquity } from '@/lib/bars/exchanges';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 import type { StockInfo, RealTimePrice, SnapshotData } from '@/types/market';
+import type { CompanyOverviewArtifact } from '@/lib/quotes/overview';
 import type { ConnectionStatus } from './useMarketDataWS';
-
-type MapperSnapshot = Parameters<typeof mapSnapshotToStockQuote>[1];
 
 /** Market status shape returned by fetchMarketStatus */
 interface MarketStatusData {
@@ -41,7 +41,7 @@ export interface UseStockDataReturn {
     stockInfo: StockInfo | null;
     realTimePrice: RealTimePrice | null;
     snapshotData: SnapshotData | null;
-    overviewData: unknown;
+    overviewData: CompanyOverviewArtifact | null;
     overviewLoading: boolean;
     overlayData: AnalystOverlayData | null;
     marketStatus: MarketStatusData | null;
@@ -60,29 +60,26 @@ export function useStockData({
     setPreviousClose,
     setDayOpen
 }: UseStockDataOptions): UseStockDataReturn {
-    const [stockInfo, setStockInfo] = useState<StockInfo | null>(null);
-    const [realTimePrice, setRealTimePrice] = useState<RealTimePrice | null>(null);
-    const [snapshotData, setSnapshotData] = useState<SnapshotData | null>(null);
-
     // 1. Stock Quote & Snapshot — sourced from the unified quote layer so this
     //    symbol shares one cache entry (and one poll) with the sidebar watchlist
     //    / portfolio showing it, and stays consistent with WS write-through.
-    const isIndex = !!selectedStock && selectedStock.startsWith('^');
     const { quote, isLoading: quoteLoading } = useQuote(selectedStock, {
-        isIndex,
-        // Polling: disabled if WS is streaming real-time, otherwise poll every 60s.
-        refetchInterval: wsStatus === 'connected' ? false : 60000,
+        isIndex: isIndexFamilySpelling(selectedStock),
+        // The socket streams US equities only, so it stands in for the poll
+        // only there; a CN/HK listing or an index keeps polling every 60s.
+        refetchInterval: wsStatus === 'connected' && isUSEquity(selectedStock) ? false : 60000,
         staleTime: 1000 * 10, // 10s fresh cache
     });
 
-    // Undefined while the first fetch is still in flight so the sync effect below
-    // keeps the prior UI state instead of flashing the fallback (matches the old
-    // "leave state untouched until the query resolves" behavior).
+    // Derived from the cache entry of the symbol on screen, never mirrored
+    // into state: a mirror held the previous symbol's price, currency and name
+    // under the new ticker until its quote landed. Null while it is in flight,
+    // so the header prints dashes rather than another company's figures.
     const quoteResponse = useMemo(() => {
         if (!selectedStock) return null;
-        if (quote) return mapSnapshotToStockQuote(selectedStock, quote as MapperSnapshot);
+        if (quote) return mapSnapshotToStockQuote(selectedStock, quote);
         if (!quoteLoading) return mapSnapshotToStockQuote(selectedStock, null);
-        return undefined;
+        return null;
     }, [selectedStock, quote, quoteLoading]);
 
     // Seed the WS refs (previousClose / dayOpen) from the resolved snapshot.
@@ -95,22 +92,6 @@ export function useStockData({
             setDayOpen(selectedStock, quote.open);
         }
     }, [quote, selectedStock, setPreviousClose, setDayOpen]);
-
-    // The quote row is the single writer of realTimePrice — live WS ticks
-    // override at display time (wsPrices in the consumer), never here. Keeping
-    // one writer makes the header deterministic across refreshes; the chart's
-    // head bar must not be lifted into this state.
-    useEffect(() => {
-        if (!selectedStock) {
-            setStockInfo(null);
-            setRealTimePrice(null);
-            setSnapshotData(null);
-        } else if (quoteResponse) {
-            setStockInfo(quoteResponse.stockInfo);
-            setRealTimePrice(quoteResponse.realTimePrice);
-            setSnapshotData(quoteResponse.snapshot);
-        }
-    }, [quoteResponse, selectedStock]);
 
     // 2. Company Overview
     const { data: overviewData = null, isLoading: overviewLoading } = useQuery({
@@ -143,10 +124,13 @@ export function useStockData({
         staleTime: 30000,
     });
 
+    // The quote row is the single source of realTimePrice — live WS ticks
+    // override at display time (wsPrices in the consumer), never here; the
+    // chart's head bar must not be lifted into it.
     return {
-        stockInfo,
-        realTimePrice,
-        snapshotData,
+        stockInfo: quoteResponse?.stockInfo ?? null,
+        realTimePrice: quoteResponse?.realTimePrice ?? null,
+        snapshotData: quoteResponse?.snapshot ?? null,
         overviewData,
         overviewLoading,
         overlayData,

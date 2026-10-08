@@ -40,7 +40,7 @@ Rules:
 - **Timestamps** are exchange-local strings `"YYYY-MM-DD"` or `"YYYY-MM-DD HH:MM:SS"`,
   self-described by the envelope `timezone`.
 - **Prices are major units** of `currency` (pence/GBX converted to pounds, etc.).
-- **Symbols** go through `src.market_protocol.symbology` at the boundary; the echoed
+- **Symbols** go through `market_protocol.symbology` at the boundary; the echoed
   `symbol` is the canonical display spelling, regardless of what the caller passed.
 - **Interval vocab**: `1min|5min|15min|30min|1hour|4hour|1day|1week|1month`.
   Provider-native spellings (`1m`, `1wk`, `daily`, ...) are accepted as input aliases
@@ -105,7 +105,7 @@ Three sections, in order, moderate length (target ≤800 characters total):
 <0-2 lines: hard constraints — symbol formats, interval vocab, limits.>
 
 Args:
-    symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SS".
+    symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
     interval: One of 1min|5min|15min|30min|1hour|4hour|1day.
 
 Returns:

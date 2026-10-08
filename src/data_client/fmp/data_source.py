@@ -18,20 +18,28 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.data_client.market_data_provider import symbol_timezone
 from src.data_client.normalize import (
     build_series,
     minor_unit_scale,
     scale_price,
     scale_snapshot_prices,
+    symbol_timezone,
 )
-from src.market_protocol import InstrumentRef, Series
+from market_protocol import InstrumentRef, Series, vendor_spelling
 
 from .fmp_client import FMPClient
 
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
+
+
+def _print_time_ms(timestamp: Any) -> int | None:
+    """A quote's ``timestamp`` (Unix seconds) as ``as_of``. Without it a row
+    printed in the previous session cannot be told from today's."""
+    if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool) and timestamp > 0:
+        return int(timestamp * 1000)
+    return None
 
 
 def _parse_row_time(row: dict[str, Any], tz: ZoneInfo) -> int:
@@ -68,7 +76,7 @@ class FMPDataSource:
 
     @staticmethod
     def _api_symbol(symbol: str, is_index: bool) -> str:
-        # Suffixed index symbols (000300.SS) are already valid — never caret them.
+        # Suffixed index symbols (000300.SH) are already valid — never caret them.
         if not is_index or symbol.startswith("^") or "." in symbol:
             return symbol
         return f"^{symbol}"
@@ -152,10 +160,22 @@ class FMPDataSource:
         are not available from FMP and returned as None — the frontend
         gracefully hides them when absent.
         """
-        api_symbols = [
-            self._api_symbol(s, is_index=(asset_type == "indices"))
-            for s in symbols
-        ]
+        api_symbols: list[str] = []
+        refused: ValueError | None = None
+        for s in symbols:
+            api_symbol = self._api_symbol(s, is_index=(asset_type == "indices"))
+            try:
+                vendor_spelling(api_symbol)
+            except ValueError as exc:
+                # One symbol FMP cannot be asked for must not fail the batch
+                # quote for the rest; it is a miss the chain moves on.
+                refused = refused or exc
+            else:
+                api_symbols.append(api_symbol)
+        if not api_symbols:
+            if refused is not None:
+                raise refused
+            return []
         async with FMPClient() as client:
             quotes = await client.get_batch_quotes(api_symbols)
         return [self._normalize_quote(q, asset_type) for q in (quotes or [])]
@@ -202,6 +222,10 @@ class FMPDataSource:
             "market_status": None,
             "early_trading_change_percent": None,
             "late_trading_change_percent": None,
+            # The regular session's print: extended hours have their own
+            # endpoints, so after the close this stamp stays at the close.
+            "as_of": _print_time_ms(q.get("timestamp")),
+            "regular_only": True,
         }
         return scale_snapshot_prices(snap, minor_unit_scale(symbol))
 

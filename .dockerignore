@@ -1,12 +1,14 @@
 .venv/
+# A nested package (libs/*) can carry its own venv and bytecode from a host run.
+**/.venv/
 node_modules/
 .git/
 .worktrees/
 .worktree/
 .env
 .env.production
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
 .ruff_cache/
 web/node_modules/
 web/.pnpm-store/

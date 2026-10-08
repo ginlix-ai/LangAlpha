@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytz
 
 from src.tools.market_data._shared import _normalize_market_bars
-from src.tools.market_data.company import fetch_company_overview
+from src.tools.market_data.company import _quote_heading, fetch_company_overview
+from src.tools.market_data.display import resolve_ref
 from src.tools.market_data.market_overview import (
     fetch_market_overview,
     fetch_sector_performance,
@@ -25,6 +27,7 @@ from src.tools.market_data.quotes import (
     fetch_options_chain,
     fetch_quote,
 )
+from src.tools.market_data.quote_format import stamp_quote
 from src.tools.market_data.screener import fetch_stock_screener
 
 _PRICES_MOD = "src.tools.market_data.prices"
@@ -32,8 +35,38 @@ _COMPANY_MOD = "src.tools.market_data.company"
 _MKT_MOD = "src.tools.market_data.market_overview"
 _SCREEN_MOD = "src.tools.market_data.screener"
 _QUOTES_MOD = "src.tools.market_data.quotes"
+_DAILY_MOD = "src.server.services.cache.quote_daily_fallback"
 _ET = pytz.timezone("US/Eastern")
 _FIXED_ET = _ET.localize(datetime(2026, 7, 1, 14, 32, 5))
+
+
+@pytest.fixture(autouse=True)
+def _stub_cn_display_name():
+    # Keep the CN/HK display-name lookups off the network for every test;
+    # name-specific tests override with their own patch.
+    with patch(f"{_PRICES_MOD}.display_names", new=AsyncMock(return_value=(None, None))), \
+            patch(f"{_COMPANY_MOD}.display_names", new=AsyncMock(return_value=(None, None))), \
+            patch(f"{_QUOTES_MOD}.fill_quote_names", new=AsyncMock()):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_daily_quote_fallback():
+    # A quote the provider drops reads the daily bars while its venue is
+    # closed, which would make a test's result depend on the hour it runs.
+    with patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=AsyncMock(return_value=None)):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_company_snapshot():
+    # The overview's snapshot fetch would otherwise reach the live provider
+    # chain, whose HTTP client is not stopped by the socket guard, and print
+    # whatever the market is doing right now. Snapshot tests patch their own.
+    mdp = AsyncMock()
+    mdp.get_snapshots = AsyncMock(return_value=[])
+    with patch(f"{_COMPANY_MOD}.get_market_data_provider", return_value=mdp):
+        yield
 
 # ---------------------------------------------------------------------------
 # Helpers — canned data
@@ -80,11 +113,26 @@ def _make_provider_bars(n: int, base_price: float = 150.0):
     return bars
 
 
-def _make_fake_market_provider(*, daily_bars=None, intraday_bars=None):
-    """Build a mock MarketDataProvider."""
+def _make_fake_market_provider(
+    *, daily_bars=None, intraday_bars=None, source="fmp", intraday_source=None,
+):
+    """Build a mock MarketDataProvider.
+
+    The tools take the ``*_with_source`` variants so the artifact can name the
+    provider that served each series; the plain variants stay mocked for the
+    other callers of this helper. ``intraday_source`` defaults to ``source``;
+    pass it to model the split where one provider serves the daily table and
+    another the finer-grained chart.
+    """
     provider = AsyncMock()
     provider.get_daily = AsyncMock(return_value=daily_bars or [])
     provider.get_intraday = AsyncMock(return_value=intraday_bars or [])
+    provider.get_daily_with_source = AsyncMock(
+        return_value=(daily_bars or [], source, False)
+    )
+    provider.get_intraday_with_source = AsyncMock(
+        return_value=(intraday_bars or [], intraday_source or source, False)
+    )
     return provider
 
 
@@ -337,7 +385,7 @@ class TestFetchDailyPrices:
                 "AAPL", start_date="2025-01-01", end_date="2025-01-05"
             )
 
-        provider.get_daily.assert_called_once_with(
+        provider.get_daily_with_source.assert_called_once_with(
             "AAPL", from_date="2025-01-01", to_date="2025-01-05",
             is_index=False, user_id=None,
         )
@@ -354,7 +402,7 @@ class TestFetchDailyPrices:
                 "^GSPC", start_date="2025-01-01", end_date="2025-01-05"
             )
 
-        assert provider.get_daily.call_args.kwargs["is_index"] is True
+        assert provider.get_daily_with_source.call_args.kwargs["is_index"] is True
 
     @pytest.mark.asyncio
     async def test_intraday_fetched_for_short_period(self):
@@ -368,7 +416,7 @@ class TestFetchDailyPrices:
         with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
             content, artifact = await fetch_daily_prices("AAPL", limit=5)
 
-        provider.get_intraday.assert_called_once()
+        provider.get_intraday_with_source.assert_called_once()
         assert artifact["chart_interval"] == "5min"
 
     @pytest.mark.asyncio
@@ -376,7 +424,7 @@ class TestFetchDailyPrices:
         """If intraday fetch fails, chart_ohlcv should use daily data."""
         bars = _make_provider_bars(5)
         provider = _make_fake_market_provider(daily_bars=bars)
-        provider.get_intraday = AsyncMock(side_effect=Exception("API error"))
+        provider.get_intraday_with_source = AsyncMock(side_effect=Exception("API error"))
 
         with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
             content, artifact = await fetch_daily_prices("AAPL", limit=5)
@@ -393,7 +441,121 @@ class TestFetchDailyPrices:
             content, artifact = await fetch_daily_prices("AAPL")
 
         # Should call with date range (limit logic converts to date range)
-        provider.get_daily.assert_called_once()
+        provider.get_daily_with_source.assert_called_once()
+
+
+class TestChartSeriesProvenance:
+    @pytest.mark.asyncio
+    async def test_daily_chart_artifact_names_source_and_freshness(self):
+        bars = _make_provider_bars(20)
+        provider = _make_fake_market_provider(daily_bars=bars, source="tushare")
+
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_daily_prices("AAPL", limit=20)
+
+        assert artifact["chart_interval"] == "daily"
+        assert artifact["source"] == "tushare"
+        assert artifact["freshness"]["interval"] == "1day"
+        assert artifact["freshness"]["source"] == "tushare"
+        assert artifact["freshness"]["measured"] is True
+        # With no intraday series the chart keys restate the daily ones.
+        assert artifact["chart_source"] == "tushare"
+        assert artifact["chart_freshness"] == artifact["freshness"]
+        # The freshness line is about intraday chart bars only.
+        assert "Chart bars:" not in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "end_date, open_ended",
+        [("2026-07-01", True), ("2026-07-01 10:30", False), ("2026-07-01 15:00", True)],
+    )
+    async def test_an_intraday_end_is_open_only_at_or_after_the_venue_clock(
+        self, end_date, open_ended
+    ):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        venue_now = datetime(2026, 7, 1, 14, 32)  # venue-local, naive is enough
+
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_PRICES_MOD}.venue_local_time", return_value=venue_now):
+            _, artifact = await fetch_daily_prices(
+                "AAPL", start_date="2026-06-01", end_date=end_date
+            )
+
+        assert ("freshness" in artifact) is open_ended
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "end_date, open_ended",
+        [("2026-07-01T07:00:00Z", True), ("2026-07-01T15:00:00+09:00", False)],
+    )
+    async def test_an_end_with_an_offset_is_compared_as_an_instant(
+        self, end_date, open_ended
+    ):
+        # 14:32 in Shanghai is 06:32Z. Read as wall clocks, 07:00Z falls before
+        # it and 15:00+09:00 (06:00Z) after it.
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        venue_now = datetime(2026, 7, 1, 14, 32, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_PRICES_MOD}.venue_local_time", return_value=venue_now):
+            _, artifact = await fetch_daily_prices(
+                "600519.SS", start_date="2026-06-01", end_date=end_date
+            )
+
+        assert ("freshness" in artifact) is open_ended
+
+    @pytest.mark.asyncio
+    async def test_intraday_chart_freshness_is_measured_and_stated(self):
+        daily_bars = _make_provider_bars(5)
+        intraday_bars = _make_provider_bars(50)
+        provider = _make_fake_market_provider(
+            daily_bars=daily_bars, intraday_bars=intraday_bars, source="fmp"
+        )
+
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_daily_prices("AAPL", limit=5)
+
+        assert artifact["chart_interval"] == "5min"
+        assert artifact["chart_source"] == "fmp"
+        assert artifact["chart_freshness"]["interval"] == "5min"
+        # The canned bars are years old, so the series is not current and the
+        # agent-visible text has to say which provider served it.
+        assert artifact["chart_freshness"]["label"] != "live"
+        assert "**Chart bars:** fmp" in content
+
+    @pytest.mark.asyncio
+    async def test_card_source_is_the_daily_publisher_not_the_charts(self):
+        # The inline card plots `ohlcv` (the daily table) but badges `source`
+        # and `freshness`, so a chart filled by another provider must not end
+        # up crediting that provider for the table.
+        provider = _make_fake_market_provider(
+            daily_bars=_make_provider_bars(5),
+            intraday_bars=_make_provider_bars(50),
+            source="tushare",
+            intraday_source="fmp",
+        )
+
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_daily_prices("600519.SS", limit=5)
+
+        assert artifact["chart_interval"] == "5min"
+        assert artifact["source"] == "tushare"
+        assert artifact["freshness"]["source"] == "tushare"
+        assert artifact["freshness"]["interval"] == "1day"
+        assert artifact["chart_source"] == "fmp"
+        assert artifact["chart_freshness"]["source"] == "fmp"
+
+    @pytest.mark.asyncio
+    async def test_the_daily_rows_name_their_price_treatment(self):
+        # A CN fallback serves unadjusted closes where Tushare's are
+        # forward-adjusted; the text has to say which the rows are.
+        for source, words in (
+            ("tushare", "adjusted for splits and dividends"), ("fmp", "unadjusted"),
+        ):
+            provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5), source=source)
+            with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+                content, _ = await fetch_daily_prices("600519.SS", limit=5)
+            assert f"**Prices:** {words}, from {source}" in content
 
 
 class TestFreshnessStamp:
@@ -403,11 +565,13 @@ class TestFreshnessStamp:
         provider = _make_fake_market_provider(daily_bars=bars)
         provider.get_snapshots = AsyncMock(return_value=[
             {"symbol": "AAPL", "price": 210.0, "change_percent": 1.1,
-             "volume": 1_000, "last_trade_price": 211.50, "market_status": "open"},
+             "volume": 1_000, "last_trade_price": 211.50, "market_status": "open",
+             "tier": "realtime"},
         ])
         with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
              patch("src.tools.market_data.quote_format.get_market_session",
-                   return_value=("REGULAR_HOURS", _FIXED_ET)):
+                   return_value=("REGULAR_HOURS", _FIXED_ET)), \
+             patch("src.data_client.freshness._now", side_effect=lambda now: now or _FIXED_ET):
             content, _ = await fetch_daily_prices("AAPL", limit=5)
         assert content.startswith("[Live: AAPL $211.50")
 
@@ -481,9 +645,12 @@ class TestFetchCompanyOverview:
                 "fiscalDateEnding": "2025-06-30",
             }],
             price_change=[{"1D": 0.5, "5D": 1.2, "1M": -2.3, "ytd": 15.0, "1Y": 30.0}],
-            key_metrics=[{"returnOnEquityTTM": 1.60, "returnOnAssetsTTM": 0.30}],
+            # FMP stable key-metrics-ttm / ratios-ttm spellings.
+            key_metrics=[{"returnOnEquityTTM": 1.60, "returnOnAssetsTTM": 0.30, "evToOperatingCashFlowTTM": 28.4}],
             ratios=[{
-                "priceToEarningsRatioTTM": 32.5,
+                "priceToEarningsRatioTTM": 35.2,
+                "priceToEarningsGrowthRatioTTM": 2.1,
+                "interestCoverageRatioTTM": 29.5,
                 "priceToBookRatioTTM": 50.0,
                 "netProfitMarginTTM": 0.245,
                 "debtToEquityRatioTTM": 1.87,
@@ -519,9 +686,21 @@ class TestFetchCompanyOverview:
 
         assert "Apple Inc." in content
         assert "Technology" in content
-        assert "Real-Time Quote" in content
+        # The fixture's provider quote carries no tier and no print time.
+        assert "### Quote (freshness unknown)" in content
+        assert "Real-Time Quote" not in content
         assert "Stock Price Performance" in content
         assert "Key Financial Metrics" in content
+        assert "| P/E Ratio | 35.20x |" in content
+        assert "| PEG Ratio | 2.10 |" in content
+        assert "| P/B Ratio | 50.00x |" in content
+        assert "| EV/OCF | 28.40x |" in content
+        # A return above 100% is still a fraction on the wire.
+        assert "| ROE (Return on Equity) | 160.00% |" in content
+        assert "| Interest Coverage | 29.50x |" in content
+        assert "| Net Profit Margin | 24.50% |" in content
+        assert "| Debt/Equity Ratio | 1.87 |" in content
+        assert "| Current Ratio | 0.99 |" in content
         assert "Earnings Performance" in content
         assert "Analyst Consensus" in content
         assert "Revenue Breakdown" in content
@@ -531,6 +710,129 @@ class TestFetchCompanyOverview:
         assert "quote" in artifact
         assert "performance" in artifact
         assert "analystRatings" in artifact
+
+    @pytest.mark.asyncio
+    async def test_cn_profile_prefers_chinese_name(self):
+        """A tushare profile's nameLocal wins over the English companyName."""
+        financial = _make_fake_financial_source(profile_data=[{
+            "companyName": "Alpha Co., Ltd.",
+            "nameLocal": "甲公司",
+            "sector": "Technology",
+            "industry": "Semiconductors",
+            "marketCap": 1_000_000_000_000,
+            "price": 42.0,
+            "exchangeShortName": "SSE",
+        }])
+        provider = _make_fake_financial_provider(financial=financial)
+        with (
+            patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]),
+        ):
+            content, artifact = await fetch_company_overview("600001.SS")
+
+        assert "**Company:** 甲公司" in content
+        assert artifact["name"] == "甲公司"
+
+    @pytest.mark.asyncio
+    async def test_cn_metrics_render_through_the_cn_source(self):
+        """ginlix-data's CN snapshot rows carry no TTM suffix; the cn source
+        renames them to FMP's keys, so the table fills from the same reads."""
+        from src.data_client.financial_data_provider import MarketRoute, RoutedFinancialSource
+        from src.data_client.ginlix_data.cn_financial import GinlixDataCnFinancialSource
+
+        rows = {
+            "profile": [{
+                "symbol": "600001.XSHG",
+                "companyName": "Alpha Co., Ltd.",
+                "nameLocal": "\u7532\u516c\u53f8",
+                "sector": None,
+                "industry": None,
+                "marketCap": 1_000_000_000_000,
+                "price": 42.0,
+                "exchangeShortName": "SSE",
+            }],
+            "key_metrics": [{
+                "symbol": "600001.XSHG",
+                "peRatio": 20.0,
+                "priceToBookRatio": 4.0,
+                "returnOnEquity": 0.25,
+                "returnOnAssets": 0.12,
+                "debtToEquity": 0.30,
+            }],
+            "financial_ratios": [{
+                "symbol": "600001.XSHG",
+                "peRatio": 20.0,
+                "priceToBookRatio": 4.0,
+                "netProfitMargin": 0.40,
+                "operatingProfitMargin": 0.50,
+                "debtToEquity": 0.30,
+                "currentRatio": 3.0,
+                "quickRatio": 2.5,
+            }],
+        }
+        client = MagicMock()
+        client.get_fundamentals_v2 = AsyncMock(side_effect=lambda key, kind, **_: rows.get(kind, []))
+        financial = RoutedFinancialSource(
+            default=_make_fake_financial_source(profile_data=[]),
+            by_market={"cn": MarketRoute(GinlixDataCnFinancialSource(client))},
+        )
+        provider = _make_fake_financial_provider(financial=financial)
+        market = MagicMock()
+        market.get_snapshots = AsyncMock(return_value=[])
+        with (
+            patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_COMPANY_MOD}.get_market_data_provider", AsyncMock(return_value=market)),
+            patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]),
+        ):
+            content, _ = await fetch_company_overview("600001.SS")
+
+        assert "| P/E Ratio | 20.00x |" in content
+        assert "| P/B Ratio | 4.00x |" in content
+        assert "| ROE (Return on Equity) | 25.00% |" in content
+        assert "| ROA (Return on Assets) | 12.00% |" in content
+        assert "| Net Profit Margin | 40.00% |" in content
+        assert "| Operating Margin | 50.00% |" in content
+        assert "| Debt/Equity Ratio | 0.30 |" in content
+        assert "| Current Ratio | 3.00 |" in content
+        assert "| Quick Ratio | 2.50 |" in content
+        # A key present with a None value must not print the literal "None".
+        assert "Sector: N/A | Industry: N/A" in content
+
+    @pytest.mark.asyncio
+    async def test_past_row_without_eps_is_not_an_upcoming_report(self):
+        """epsActual is None on a past date means never populated, not upcoming."""
+        financial = _make_fake_financial_source(
+            profile_data=[{"companyName": "Alpha Co., Ltd.", "price": 42.0}],
+            earnings_calendar=[
+                {"date": "2020-01-31", "epsActual": None, "fiscalDateEnding": "2019-12-31"},
+            ],
+        )
+        provider = _make_fake_financial_provider(financial=financial)
+        with (
+            patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]),
+        ):
+            content, _ = await fetch_company_overview("600001.SS")
+
+        assert "Next Earnings Report" not in content
+
+    @pytest.mark.asyncio
+    async def test_future_row_without_eps_is_an_upcoming_report(self):
+        financial = _make_fake_financial_source(
+            profile_data=[{"companyName": "Alpha Co., Ltd.", "price": 42.0}],
+            earnings_calendar=[
+                {"date": "2099-01-31", "epsActual": None, "fiscalDateEnding": "2098-12-31"},
+            ],
+        )
+        provider = _make_fake_financial_provider(financial=financial)
+        with (
+            patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]),
+        ):
+            content, _ = await fetch_company_overview("600001.SS")
+
+        assert "Next Earnings Report" in content
+        assert "2099-01-31" in content
 
     @pytest.mark.asyncio
     async def test_missing_profile_returns_error(self):
@@ -640,6 +942,7 @@ class TestFetchCompanyOverview:
                 "last_trade_price": 236.10,
                 "change_percent": 0.99,
                 "market_status": "open",
+                "tier": "realtime",
             },
         ])
         with (
@@ -648,10 +951,12 @@ class TestFetchCompanyOverview:
             patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]),
             patch("src.tools.market_data.quote_format.get_market_session",
                   return_value=("REGULAR_HOURS", _FIXED_ET)),
+            patch("src.data_client.freshness._now", side_effect=lambda now: now or _FIXED_ET),
         ):
             content, artifact = await fetch_company_overview("AAPL")
 
         assert content.startswith("[Live: AAPL $236.10")
+        assert "### Real-Time Quote" in content
 
     @staticmethod
     async def _overview_metrics(profile, key_metrics, ratios):
@@ -823,6 +1128,17 @@ class TestFetchCompanyOverview:
         assert "| P/E Ratio | -5.80x |" in content
         assert "| EV/OCF | -12.50x |" in content
         assert "| Interest Coverage | -4.18x |" in content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pe", ["Infinity", float("inf"), float("nan")])
+    async def test_a_non_finite_ratio_drops_only_its_row(self, full_profile, pe):
+        """A P/E over zero earnings arriving as Infinity drops its own row; the
+        rest of the overview renders instead of an error."""
+        content = await self._overview_metrics(
+            full_profile, [], [{"priceToEarningsRatioTTM": pe, "debtToEquityRatioTTM": 0.78}],
+        )
+        assert "| P/E Ratio |" not in content
+        assert "| Debt/Equity Ratio | 0.78 |" in content
 
     @pytest.mark.asyncio
     async def test_missing_ratios_are_omitted(self, full_profile):
@@ -1001,17 +1317,21 @@ class TestFetchMarketOverview:
     @pytest.mark.asyncio
     async def test_live_index_stamp_when_open(self):
         idx_snaps = [{"symbol": "^GSPC", "price": 6120.5, "change_percent": 0.42,
-                      "volume": None, "last_trade_price": None, "market_status": "open"}]
+                      "volume": None, "last_trade_price": None,
+                      "market_status": "open", "tier": "realtime"}]
         provider = AsyncMock()
         provider.get_snapshots = AsyncMock(return_value=idx_snaps)
+        # An index's clock reads closed outside 09:30-16:00 ET, so the
+        # measurement is pinned inside the session the patched header claims.
         with patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
                    AsyncMock(return_value=_snapshot_result())), \
              patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
              patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider), \
              patch("src.tools.market_data.quote_format.get_market_session",
-                   return_value=("REGULAR_HOURS", _FIXED_ET)):
+                   return_value=("REGULAR_HOURS", _FIXED_ET)), \
+             patch("src.data_client.freshness._now", side_effect=lambda now: now or _FIXED_ET):
             content, _ = await fetch_market_overview(region="us")
-        assert content.startswith("[Live: ^GSPC $6,120.50")
+        assert content.startswith("[Live: ^GSPC 6,120.50")
 
     @pytest.mark.asyncio
     async def test_historical_date_skips_live_stamp(self):
@@ -1070,6 +1390,26 @@ class TestFetchMarketOverview:
         assert artifact["date"] == "2025-02-14"
 
     @pytest.mark.asyncio
+    async def test_the_default_date_is_the_venue_day_not_utc(self):
+        """At 21:00 ET the UTC date is already tomorrow; the US default stays
+        on today and does not warn of a bar that cannot exist yet."""
+        evening = datetime(2025, 2, 14, 21, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        class _Evening(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return evening.astimezone(tz)
+
+        with patch(f"{_MKT_MOD}.datetime", _Evening), \
+             patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2025-02-14"))) as mock_snap, \
+             patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, _ = await fetch_market_overview(region="us")
+        assert mock_snap.await_args.args[1] == "2025-02-14"
+        assert "No daily bar" not in content
+
+    @pytest.mark.asyncio
     async def test_no_reminder_when_date_matches(self):
         with patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
                    AsyncMock(return_value=_snapshot_result("2025-02-14"))), \
@@ -1094,9 +1434,28 @@ class TestFetchMarketOverview:
         assert mock_sec.await_args.kwargs["date"] == "2025-02-14"
 
     @pytest.mark.asyncio
+    async def test_caret_free_snapshot_row_reaches_its_caret_basket_entry(self):
+        # Providers answer ^GSPC as GSPC; that row must still supply the forming bar.
+        # Its previous close is the series' last close, so it is the next session.
+        bars = _make_provider_bars(10)
+        last_close = max(bars, key=lambda b: b["time"])["close"]
+        provider = _make_fake_market_provider(daily_bars=bars)
+        provider.get_snapshots = AsyncMock(return_value=[{
+            "symbol": "GSPC", "price": 6120.5, "previous_close": last_close,
+            "source": "ginlix-data", "tier": "realtime",
+        }])
+        with patch(f"{_MKT_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider):
+            _, artifact = await fetch_market_overview(region="us", indices=["^GSPC"])
+        entry = artifact["indices"]["indices"]["^GSPC"]
+        assert entry["ohlcv"][-1]["close"] == 6120.5
+        assert entry["source"] == "ginlix-data"
+
+    @pytest.mark.asyncio
     async def test_snapshot_error_returns_error_artifact(self):
         with patch(f"{_MKT_MOD}._fetch_index_day_snapshot",
-                   AsyncMock(side_effect=RuntimeError("provider down"))):
+                   AsyncMock(side_effect=RuntimeError("provider down"))), \
+             patch(f"{_MKT_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
             content, artifact = await fetch_market_overview(region="us")
         assert "Error retrieving market overview" in content
         assert artifact["error"] == "provider down"
@@ -1118,9 +1477,9 @@ class TestFetchIndexDaySnapshot:
                 ["^GSPC"], "2025-01-30"
             )
 
-        provider.get_daily.assert_called_once()
-        assert provider.get_daily.call_args.kwargs["is_index"] is True
-        assert provider.get_daily.call_args.kwargs["to_date"] == "2025-01-30"
+        provider.get_daily_with_source.assert_called_once()
+        assert provider.get_daily_with_source.call_args.kwargs["is_index"] is True
+        assert provider.get_daily_with_source.call_args.kwargs["to_date"] == "2025-01-30"
 
         assert snapshot_date == "2025-01-30"
         assert "| Index | Close | Day Change | Volume | Date |" in content
@@ -1129,7 +1488,13 @@ class TestFetchIndexDaySnapshot:
         assert "$" not in content
 
         entry = artifact["indices"]["^GSPC"]
-        assert set(entry) == {"name", "ohlcv", "chart_ohlcv", "chart_interval", "stats"}
+        assert set(entry) == {
+            "name", "ohlcv", "chart_ohlcv", "chart_interval", "stats",
+            "source", "tier", "freshness",
+        }
+        assert entry["source"] == "fmp"
+        # A past date is a closed window, so there is nothing to label stale.
+        assert entry["freshness"] is None
         assert entry["chart_interval"] == "daily"
         # ohlcv ascending for the chart
         dates = [b["date"] for b in entry["ohlcv"]]
@@ -1142,12 +1507,27 @@ class TestFetchIndexDaySnapshot:
         assert entry["stats"]["period_change_pct"] == pytest.approx(expected_day_pct)
 
     @pytest.mark.asyncio
+    async def test_today_in_the_venue_stays_open_after_the_utc_date_rolls(self):
+        from src.tools.market_data.market_overview import _fetch_index_day_snapshot
+
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(30))
+        # 21:00 ET on 07-01 is already 07-02 in UTC.
+        venue_now = datetime(2026, 7, 1, 21, 0)
+        with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider), \
+             patch(f"{_MKT_MOD}.venue_local_time", return_value=venue_now):
+            _, artifact, _ = await _fetch_index_day_snapshot(["^GSPC"], "2026-07-01")
+
+        assert artifact["indices"]["^GSPC"]["freshness"] is not None
+
+    @pytest.mark.asyncio
     async def test_partial_failure_lists_missing_symbols(self):
         from src.tools.market_data.market_overview import _fetch_index_day_snapshot
 
         bars = _make_provider_bars(10)
         provider = AsyncMock()
-        provider.get_daily = AsyncMock(side_effect=[bars, RuntimeError("boom")])
+        provider.get_daily_with_source = AsyncMock(
+            side_effect=[(bars, "fmp", False), RuntimeError("boom")]
+        )
         with patch(f"{_MKT_MOD}.get_market_data_provider", return_value=provider):
             content, artifact, snapshot_date = await _fetch_index_day_snapshot(
                 ["^GSPC", "^IXIC"], "2025-01-30"
@@ -1476,6 +1856,84 @@ def _quote_only_financial(profile, quote):
     return _make_fake_financial_source(profile_data=profile, quote_data=quote)
 
 
+class TestProviderQuoteFallback:
+    """With no snapshot, the overview prints the financial provider's quote,
+    which must say how current it is and survive null fields."""
+
+    _PROFILE = [{"companyName": "Placeholder HK Co.", "marketCap": 1e12,
+                 "price": 318.20, "exchangeShortName": "HKSE"}]
+
+    async def _overview(self, quote):
+        mdp = AsyncMock()
+        mdp.get_snapshots = AsyncMock(return_value=[])
+        provider = _make_fake_financial_provider(
+            financial=_quote_only_financial(self._PROFILE, [quote])
+        )
+        # Venue open: a closed one titles any current row as its last close.
+        with patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider), \
+                patch(f"{_COMPANY_MOD}.get_market_data_provider", return_value=mdp), \
+                patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]), \
+                patch("src.data_client.freshness._venue_closed", return_value=False):
+            content, _ = await fetch_company_overview("0700.HK")
+        return content
+
+    @pytest.mark.asyncio
+    async def test_a_delayed_provider_quote_is_not_titled_real_time(self):
+        content = await self._overview({"price": 318.20, "change": 1.5,
+                                        "changePercentage": 0.47, "tier": "delayed_15m"})
+        assert "### Quote (delayed 15m)" in content
+        assert "Real-Time Quote" not in content
+        assert "**Price:** HK$318.20 (+1.50 / +0.47%)" in content
+
+    @pytest.mark.asyncio
+    async def test_null_move_fields_drop_out_instead_of_raising(self):
+        content = await self._overview({"price": 318.20, "change": None,
+                                        "changePercentage": None})
+        assert "Error" not in content
+        assert "### Quote (freshness unknown)" in content
+        assert "**Price:** HK$318.20\n" in content
+
+
+@pytest.mark.parametrize(
+    ("closed", "label", "heading"),
+    [
+        (True, "live", "### Quote (last close)"),
+        (True, "delayed", "### Quote (last close)"),
+        (False, "live", "### Real-Time Quote"),
+        (False, "delayed", "### Quote (delayed 15m)"),
+        (True, "stale", "### Quote (stale)"),
+    ],
+)
+def test_a_closed_sessions_final_row_is_titled_last_close(closed, label, heading):
+    # On a closed venue a current row, or a delayed one nothing measured, is the
+    # session's final price, not a real-time one; a stale row keeps naming its
+    # staleness.
+    assert _quote_heading({"closed": closed, "label": label}) == heading
+
+
+@pytest.mark.parametrize(
+    ("symbol", "printed", "at", "heading"),
+    [
+        # A measured print still inside the feed's delay predates the auction.
+        ("0700.HK", datetime(2026, 9, 16, 15, 57, tzinfo=ZoneInfo("Asia/Hong_Kong")),
+         datetime(2026, 9, 16, 16, 12, tzinfo=ZoneInfo("Asia/Hong_Kong")), "### Quote (delayed 15m)"),
+        ("600519.SH", datetime(2026, 9, 16, 14, 46, tzinfo=ZoneInfo("Asia/Shanghai")),
+         datetime(2026, 9, 16, 15, 2, tzinfo=ZoneInfo("Asia/Shanghai")), "### Quote (delayed 15m)"),
+        # Once the auction print has arrived the row is the settled close.
+        ("0700.HK", datetime(2026, 9, 16, 16, 8, tzinfo=ZoneInfo("Asia/Hong_Kong")),
+         datetime(2026, 9, 16, 16, 25, tzinfo=ZoneInfo("Asia/Hong_Kong")), "### Quote (last close)"),
+        ("600519.SH", datetime(2026, 9, 16, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+         datetime(2026, 9, 16, 15, 16, tzinfo=ZoneInfo("Asia/Shanghai")), "### Quote (last close)"),
+    ],
+)
+def test_a_measured_delayed_row_is_last_close_only_once_the_auction_printed(
+    symbol, printed, at, heading
+):
+    row = {"symbol": symbol, "as_of": int(printed.timestamp() * 1000), "tier": "delayed_15m"}
+    freshness = stamp_quote(row, at, ref=resolve_ref(symbol))["freshness"]
+    assert _quote_heading(freshness) == heading
+
+
 class TestMarketHeaderLabel:
     """`**Market:**` header is derived from the resolved instrument, not hardcoded."""
 
@@ -1500,6 +1958,30 @@ class TestMarketHeaderLabel:
         with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
             content, _ = await fetch_daily_prices("600519.SS", limit=5)
         assert "**Market:** A-Share" in content
+
+    @pytest.mark.asyncio
+    async def test_beijing_listing_is_an_ashare_too(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_daily_prices("430047.BJ", limit=5)
+        assert "**Market:** A-Share" in content
+
+    @pytest.mark.asyncio
+    async def test_ashare_header_carries_chinese_name(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_PRICES_MOD}.display_names", new=AsyncMock(return_value=("甲公司", None))):
+            content, artifact = await fetch_daily_prices("600519.SS", limit=5)
+        assert "**Company:** 甲公司" in content
+        assert artifact["name"] == "甲公司"
+
+    @pytest.mark.asyncio
+    async def test_us_header_has_no_company_line(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_PRICES_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_daily_prices("AAPL", limit=5)
+        assert "**Company:**" not in content
+        assert "name" not in artifact
 
 
 class TestOverviewSessionClockGating:
@@ -1604,6 +2086,92 @@ class TestFetchQuote:
         assert len(artifact["quotes"]) == 2
 
     @pytest.mark.asyncio
+    async def test_quote_rows_carry_tier_and_measured_freshness(self):
+        # The chart card reads freshness off each row, so every row carries the
+        # declared tier and the measurement taken against it.
+        snaps = [
+            {"symbol": "0700.HK", "price": 318.20, "change_percent": -0.5,
+             "volume": 12_000_000, "last_trade_price": 318.20,
+             "tier": "delayed_15m", "source": "fmp"},
+            {"symbol": "600519.SS", "price": 1712.40, "change_percent": 1.25,
+             "volume": 3_000_000, "last_trade_price": 1712.40,
+             "tier": "realtime", "source": "tushare",
+             "as_of": int(datetime.now(timezone.utc).timestamp() * 1000)},
+        ]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+            _, artifact = await fetch_quote(["0700.HK", "600519.SS"])
+
+        hk, cn = artifact["quotes"]
+        assert hk["tier"] == "delayed_15m"
+        assert hk["freshness"]["label"] == "delayed"
+        assert hk["freshness"]["measured"] is False
+        assert hk["freshness"]["source"] == "fmp"
+        assert cn["tier"] == "realtime"
+        assert cn["freshness"]["measured"] is True
+        assert cn["freshness"]["actual_latest"] == cn["as_of"]
+        # as_of_local is the PRINT time in venue local time, not retrieval.
+        assert cn["as_of_local"].endswith("CST")
+        assert artifact["all_realtime"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("closed", [False, True])
+    async def test_all_realtime_true_only_when_every_row_is_live(self, closed):
+        # A realtime row on a closed venue is its last close, so the card must
+        # not head it "Live Quotes".
+        snaps = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
+                  "volume": 1, "last_trade_price": 233.45,
+                  "market_status": "open", "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+                patch("src.data_client.freshness._venue_closed", return_value=closed):
+            _, artifact = await fetch_quote(["NVDA"])
+        assert artifact["all_realtime"] is (not closed)
+        assert artifact["quotes"][0]["currency"] == "USD"
+
+    @pytest.mark.asyncio
+    async def test_a_closed_listing_no_provider_quotes_reads_its_daily_close(self):
+        # Beijing has no realtime provider: while its venue is closed the row
+        # comes from the daily bars, as on the REST quote routes, and is named.
+        snaps = [{"symbol": "600519.SH", "price": 1255.79, "change_percent": -0.22,
+                  "volume": 2_500_000, "last_trade_price": 1255.79, "tier": "realtime"}]
+        daily = {"symbol": "920395.BJ", "price": 6.68, "change": 0.06,
+                 "change_percent": 0.91, "previous_close": 6.62, "volume": 307_600,
+                 "market_status": "closed", "source": "daily", "tier": "eod",
+                 "as_of": int(datetime(2026, 9, 30, 7, tzinfo=timezone.utc).timestamp() * 1000),
+                 "regular_only": True}
+        provider = _make_fake_snapshot_provider(snaps)
+        names = AsyncMock()
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=AsyncMock(return_value=daily)), \
+                patch(f"{_DAILY_MOD}.clock_for_ref") as clock, \
+                patch(f"{_QUOTES_MOD}.fill_quote_names", new=names):
+            clock.return_value.is_closed.return_value = True
+            content, artifact = await fetch_quote(["600519.SH", "920395.BJ"])
+
+        assert "920395.BJ  CN¥6.68  +0.91% today" in content
+        assert "no data" not in content
+        bj = artifact["quotes"][1]
+        assert (bj["source"], bj["tier"], bj["currency"]) == ("daily", "eod", "CNY")
+        assert [r["symbol"] for r in names.await_args.args[0]] == ["600519.SH", "920395.BJ"]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_listing_stays_missing_while_its_venue_trades(self):
+        # During a session a last close would pass a quote outage off as live.
+        snaps = [{"symbol": "600519.SH", "price": 1255.79, "change_percent": -0.22,
+                  "volume": 2_500_000, "last_trade_price": 1255.79, "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        daily = AsyncMock()
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider), \
+                patch(f"{_DAILY_MOD}.daily_fallback_snapshot", new=daily), \
+                patch(f"{_DAILY_MOD}.clock_for_ref") as clock:
+            clock.return_value.is_closed.return_value = False
+            content, _ = await fetch_quote(["600519.SH", "920395.BJ"])
+
+        assert "(no data: 920395.BJ)" in content
+        daily.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_reports_missing_symbols(self):
         snaps = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
                   "volume": 1, "last_trade_price": 233.45, "market_status": "open"}]
@@ -1672,6 +2240,291 @@ class TestFetchQuote:
                   "volume": 0, "last_trade_price": 6120.5, "market_status": "open"}]
         provider = _make_fake_snapshot_provider(snaps)
         with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
-            content, _ = await fetch_quote(["SPX", "ZZZZ"])
+            content, _ = await fetch_quote(["SPX", "ZZZZ"], asset_type="indices")
         assert "no data: ZZZZ" in content
         assert "no data: SPX" not in content
+
+    @pytest.mark.asyncio
+    async def test_rows_carry_the_class_they_were_asked_as(self):
+        # The echo "GSPC" is a bare ticker on its own; the row is the index
+        # that "SPX" was asked as, so it is measured on the index clock.
+        snaps = [{"symbol": "GSPC", "last_trade_price": 6120.5, "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+            _, artifact = await fetch_quote(["SPX"], asset_type="indices")
+        assert [q["asset_class"] for q in artifact["quotes"]] == ["index"]
+
+    @pytest.mark.asyncio
+    async def test_a_bare_alias_asked_as_a_stock_is_the_stock(self):
+        # COMP names both Compass and the Nasdaq Composite; on the stocks path
+        # it is requested and stamped as the stock.
+        snaps = [{"symbol": "COMP", "last_trade_price": 9.22, "tier": "realtime"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_QUOTES_MOD}.get_market_data_provider", return_value=provider):
+            _, artifact = await fetch_quote(["COMP"])
+        assert provider.get_snapshots.await_args.args[0] == ["COMP"]
+        assert [q["asset_class"] for q in artifact["quotes"]] == ["equity"]
+
+
+class TestFormingIndexRow:
+    """A daily-only index publisher is a session behind all day; the snapshot
+    chain supplies today's row, but only once the snapshot prices today."""
+
+    # The series' last posted bar: the 2026-09-09 session, closed at 3951.51.
+    _NEWEST = {"date": "2026-09-09", "close": 3951.51}
+    _CST = ZoneInfo("Asia/Shanghai")
+
+    def _snap(self, **over):
+        snap = {
+            "symbol": "000001.SS", "price": 3934.02, "change": -17.49,
+            "change_percent": -0.4426, "previous_close": 3951.51,
+            "open": 3950.0, "high": 3955.0, "low": 3930.0, "volume": None,
+            "tier": "delayed_15m", "source": "fmp", "as_of": None,
+        }
+        snap.update(over)
+        return snap
+
+    def _forming(self, snap, newest):
+        from src.tools.market_data.market_overview import _forming_bar
+
+        with patch(f"{_MKT_MOD}.clock_for") as clock:
+            clock.return_value.expected_latest_daily_date.return_value = "2026-09-10"
+            clock.return_value.tz = self._CST
+            return _forming_bar("000001.SS", snap, newest)
+
+    def _as_of(self, *local):
+        return int(datetime(*local, tzinfo=self._CST).timestamp() * 1000)
+
+    def test_stands_in_when_the_series_is_behind_the_venue_date(self):
+        row = self._forming(self._snap(), self._NEWEST)
+        assert row is not None
+        assert row["date"] == "2026-09-10"
+        assert row["close"] == 3934.02
+        assert row["changePercent"] == pytest.approx(-0.4426)
+        assert row["forming"] is True
+
+    def test_steps_aside_once_the_publisher_has_posted_today(self):
+        newest = {"date": "2026-09-10", "close": 3934.02}
+        assert self._forming(self._snap(), newest) is None
+
+    def test_derives_the_move_from_previous_close_when_the_feed_omits_it(self):
+        row = self._forming(self._snap(change=None, change_percent=None), self._NEWEST)
+        assert row["change"] == pytest.approx(3934.02 - 3951.51)
+        assert row["changePercent"] == pytest.approx((3934.02 - 3951.51) / 3951.51 * 100)
+
+    def test_no_price_means_no_row(self):
+        assert self._forming(self._snap(price=None), self._NEWEST) is None
+
+    def test_a_snapshot_printed_today_stands_in(self):
+        snap = self._snap(as_of=self._as_of(2026, 9, 10, 9, 45))
+        row = self._forming(snap, self._NEWEST)
+        assert row is not None and row["date"] == "2026-09-10"
+
+    def test_yesterdays_print_just_after_the_open_is_not_today(self):
+        # 09:31 on the 10th: the snapshot still holds the 9th's close, printed
+        # at 15:00 that day. Standing it in would date yesterday's move today
+        # and repeat the 9th's bar.
+        snap = self._snap(as_of=self._as_of(2026, 9, 9, 15, 0), price=3951.51,
+                          previous_close=3969.00, change=-17.49)
+        assert self._forming(snap, self._NEWEST) is None
+
+    def test_unprinted_snapshot_a_session_behind_is_not_today(self):
+        # No print time, and its previous close is the bar BEFORE the series'
+        # last one: the snapshot is the 9th, not the 10th.
+        snap = self._snap(price=3951.51, previous_close=3969.00)
+        assert self._forming(snap, self._NEWEST) is None
+
+    def test_unprinted_snapshot_with_no_series_to_check_against_is_not_today(self):
+        assert self._forming(self._snap(), None) is None
+
+
+class TestCnOverviewHeaderAndCurrency:
+    """A CNY listing's overview: headline price, English name, and currency."""
+
+    # A CN profile's price comes from the last PUBLISHED daily row, which during
+    # a session is the previous session's close.
+    _PROFILE = [{
+        "companyName": "Alpha Co., Ltd.",
+        "nameLocal": "甲公司",
+        "sector": None,
+        "industry": "白酒",
+        "marketCap": 1_000_000_000_000,
+        "price": 100.0,
+        "exchangeShortName": "SSE",
+        "currency": "CNY",
+    }]
+    _SNAPSHOT = {
+        "symbol": "600001.SS",
+        "price": 104.0,
+        "previous_close": 100.0,
+        "change": 4.0,
+        "change_percent": 4.0,
+        "open": 100.5,
+        "high": 105.0,
+        "low": 99.5,
+        "volume": 1_000_000,
+        "source": "tushare",
+        "tier": "realtime",
+    }
+
+    def _financial(self):
+        return _make_fake_financial_source(
+            profile_data=self._PROFILE,
+            income_stmt=[{
+                "date": "2026-06-30", "period": "Q2", "fiscalYear": "2026",
+                "reportedCurrency": "CNY",
+                "revenue": 90_000_000_000, "netIncome": 40_000_000_000,
+            }],
+            cash_flow=[{
+                "date": "2026-06-30", "reportedCurrency": "CNY",
+                "operatingCashFlow": 28_000_000_000,
+                "capitalExpenditure": -3_000_000_000,
+                "freeCashFlow": 25_000_000_000,
+            }],
+            price_target_consensus=[{
+                "targetMedian": 160.0, "targetLow": 140.0, "targetHigh": 180.0,
+                "targetConsensus": 165.5,
+            }],
+            product_data=[{"2026-06-30": {"甲酒": 70_000_000_000, "乙酒": 20_000_000_000}}],
+        )
+
+    def _patches(self, snapshot):
+        mdp = AsyncMock()
+        mdp.get_snapshots = AsyncMock(return_value=[snapshot] if snapshot else [])
+        provider = _make_fake_financial_provider(financial=self._financial())
+        return (
+            patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_COMPANY_MOD}.get_market_data_provider", return_value=mdp),
+            patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]),
+        )
+
+    @pytest.mark.asyncio
+    async def test_headline_price_is_the_snapshot_not_the_last_published_close(self):
+        p1, p2, p3 = self._patches(self._SNAPSHOT)
+        with p1, p2, p3:
+            content, _ = await fetch_company_overview("600001.SS")
+
+        assert "Current Price: CN¥104.00" in content
+        assert "Current Price: CN¥100.00" not in content
+
+    @pytest.mark.asyncio
+    async def test_headline_price_falls_back_to_the_profile_without_a_snapshot(self):
+        p1, p2, p3 = self._patches(None)
+        with p1, p2, p3:
+            content, _ = await fetch_company_overview("600001.SS")
+
+        assert "Current Price: CN¥100.00" in content
+
+    @pytest.mark.asyncio
+    async def test_statement_tables_carry_the_reported_currency(self):
+        p1, p2, p3 = self._patches(self._SNAPSHOT)
+        with p1, p2, p3:
+            content, _ = await fetch_company_overview("600001.SS")
+
+        assert "| Q2 FY2026 | CN¥28.00B | -CN¥3.00B | CN¥25.00B |" in content
+        assert "| 甲酒 | CN¥70.00B |" in content
+        assert "- **Analyst Consensus:** CN¥165.50" in content
+        assert "$" not in content.split("### Cash Flow (Quarterly)")[1]
+
+    @pytest.mark.asyncio
+    async def test_artifact_carries_the_english_name_alongside_the_local_one(self):
+        p1, p2, p3 = self._patches(self._SNAPSHOT)
+        with p1, p2, p3:
+            _, artifact = await fetch_company_overview("600001.SS")
+
+        assert artifact["name"] == "甲公司"
+        assert artifact["nameEn"] == "Alpha Co., Ltd."
+        assert artifact["currency"] == "CNY"
+
+
+class TestOverviewOneArtifact:
+    """The REST endpoint and the agent tool build the overview from one gather,
+    so they cannot disagree on what a field means."""
+
+    def _financial(self):
+        # An HK listing whose income rows omit the reporting currency while
+        # its cash-flow rows name it: the statements are in CNY, not HKD.
+        return _make_fake_financial_source(
+            profile_data=[{"companyName": "Beta Holdings", "marketCap": 4e12,
+                           "price": 500.0, "currency": "HKD"}],
+            income_stmt=[{"date": "2026-06-30", "period": "Q2", "fiscalYear": "2026",
+                          "revenue": 180_000_000_000, "netIncome": 50_000_000_000}],
+            earnings_calendar=[{"date": "2026-08-13", "fiscalDateEnding": "2026-06-30",
+                                "epsActual": 5.2, "epsEstimated": 5.0,
+                                "revenueActual": 180_000_000_000}],
+            cash_flow=[{"date": "2026-06-30", "reportedCurrency": "CNY",
+                        "operatingCashFlow": 70_000_000_000,
+                        "capitalExpenditure": -20_000_000_000,
+                        "freeCashFlow": 50_000_000_000}],
+            ratios=[{"priceToEarningsRatioTTM": 22.0}],
+            quote_data=[{"price": 500.0, "change": 5.0, "changePercentage": 1.0,
+                         "yearHigh": 560.0, "yearLow": 380.0, "volume": 2e7}],
+        )
+
+    def _patches(self):
+        mdp = AsyncMock()
+        mdp.get_snapshots = AsyncMock(return_value=[])
+        provider = _make_fake_financial_provider(financial=self._financial())
+        return (
+            patch(f"{_COMPANY_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_COMPANY_MOD}.get_market_data_provider", return_value=mdp),
+            patch(f"{_COMPANY_MOD}._fmp_request", return_value=[]),
+        )
+
+    @staticmethod
+    def _unstamped(artifact):
+        # The freshness stamp is measured at each call's own instant.
+        quote = {k: v for k, v in artifact["quote"].items() if k != "freshness"}
+        return {**artifact, "quote": quote}
+
+    @pytest.mark.asyncio
+    async def test_rest_and_agent_artifacts_match(self):
+        from src.tools.market_data.company import fetch_company_overview_data
+
+        p1, p2, p3 = self._patches()
+        with p1, p2, p3:
+            _, agent = await fetch_company_overview("0001.HK")
+            rest = await fetch_company_overview_data("0001.HK")
+
+        assert self._unstamped(agent) == self._unstamped(rest)
+        assert rest["currency"] == "HKD" and rest["reportedCurrency"] == "CNY"
+        # A CN-style quote carries no P/E; the TTM ratio stands in.
+        assert rest["quote"]["pe"] == 22.0
+
+    @pytest.mark.asyncio
+    async def test_agent_text_prints_earnings_in_the_listings_currency(self):
+        # Earnings are consensus figures in the trading currency: an HK listing
+        # reporting in CNY, like an ADR reporting in TWD, has them in its own.
+        p1, p2, p3 = self._patches()
+        with p1, p2, p3:
+            content, _ = await fetch_company_overview("0001.HK")
+
+        assert "- **EPS:** HK$5.20 actual vs HK$5.00 estimate" in content
+        assert "- **Revenue:** HK$180.00B (no estimate available)" in content
+        assert "Current Price: HK$500.00" in content
+
+
+@pytest.mark.asyncio
+class TestIndexOverviewOutage:
+    def _down(self):
+        provider = MagicMock()
+        provider.get_snapshots = AsyncMock(side_effect=RuntimeError("upstream 503"))
+        provider.get_daily_with_source = AsyncMock(side_effect=RuntimeError("upstream 503"))
+        return patch(
+            "src.tools.market_data.index_overview.get_market_data_provider",
+            AsyncMock(return_value=provider),
+        )
+
+    async def test_the_agent_reads_an_outage_as_an_error_not_as_no_data(self):
+        with self._down():
+            content, artifact = await fetch_company_overview("^GSPC")
+
+        assert "**Status:** Error" in content
+        assert "No level data available." not in content
+        assert artifact["error"]
+
+    async def test_the_rest_artifact_raises_rather_than_answer_empty(self):
+        from src.tools.market_data.company import fetch_company_overview_data
+
+        with self._down(), pytest.raises(RuntimeError, match="upstream 503"):
+            await fetch_company_overview_data("^GSPC")

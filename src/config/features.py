@@ -148,6 +148,16 @@ FEATURES: dict[str, FeatureSpec] = {
             "own files."
         ),
     ),
+    "a_share_pack": FeatureSpec(
+        key="a_share_pack",
+        label="A-share market pack",
+        description=(
+            "Switches the dashboard news widget to the Chinese-language CN "
+            "market feed (Chinese locales only)."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+    ),
 }
 
 

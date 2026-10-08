@@ -12,8 +12,8 @@ import {
   dedupeMergeByTime,
   rangeBeforeOldest,
 } from '../utils/chartDataLoaders';
-import { applyQuoteToDailyBar, deriveMarketSession, foldMinuteBar, formatPrice, useCurrencyDisplay, useLiveBars } from '@/lib/bars';
-import { timezoneForSymbol } from '@/lib/bars/exchanges';
+import { applyQuoteToDailyBar, chartPriceFormat, deriveMarketSession, foldMinuteBar, useCurrencyDisplay, useLiveBars } from '@/lib/bars';
+import { isIndexFamilySpelling, timezoneForSymbol } from '@/lib/bars/exchanges';
 import { RANGE_PRESETS, rangeStartChartSec } from '@/lib/bars/rangePresets';
 import type { RangePreset } from '@/lib/bars/rangePresets';
 import { chartSecToDateStr, cn, dateStrInTz } from '@/lib/utils';
@@ -57,7 +57,7 @@ import { clampToPricePane, isOnPricePane, pricePaneHeight } from '../utils/paneB
 import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu, X, SquareDashedMousePointer, Ruler } from 'lucide-react';
 
 import { loadPref, savePref } from '../utils/prefs';
-import type { SnapshotData } from '@/types/market';
+import type { Freshness, SnapshotData } from '@/types/market';
 import type { BarData } from '../hooks/useMarketDataWS';
 import { useOnClickOutside } from '@/hooks/useOnClickOutside';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -88,6 +88,9 @@ interface MarketChartProps {
   onStockMeta?: (meta: unknown) => void;
   /** Venue market phase (`pre|open|post|closed`) from the bars responses; null until known. */
   onMarketPhase?: (phase: string | null) => void;
+  /** Measured freshness of the chart's own bars — which provider filled them
+   *  and how far behind they are. Travels with `onMarketPhase`; null until known. */
+  onChartFreshness?: (freshness: Freshness | null) => void;
   quoteData: Record<string, unknown> | null;
   earningsData: unknown;
   overlayData: Record<string, unknown> | null;
@@ -165,6 +168,7 @@ const MarketChart = React.memo(function MarketChart({
   onCapture: _onCapture,
   onStockMeta,
   onMarketPhase,
+  onChartFreshness,
   quoteData,
   earningsData,
   overlayData,
@@ -576,11 +580,13 @@ const MarketChart = React.memo(function MarketChart({
       timeEnd: new Date(endSec * 1000).toISOString(),
       priceLow: Math.min(priceLow, priceHigh),
       priceHigh: Math.max(priceLow, priceHigh),
+      // The axis's own places, so the bounds print as the chart showed them.
+      decimals: priceFormatRef.current.decimals,
       bars: selBars,
       barsTruncated: truncated,
       croppedImage,
     });
-  }, [selectionSymbol, annotationInterval, captureSelectionCrop]);
+  }, [selectionSymbol, annotationInterval, captureSelectionCrop, priceFormatRef]);
 
   const handleSelectPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const mode = selectModeRef.current;
@@ -647,6 +653,7 @@ const MarketChart = React.memo(function MarketChart({
               timeframe: annotationInterval,
               selectionType: 'price_level',
               priceLow: price, priceHigh: price,
+              decimals: priceFormatRef.current.decimals,
               bars: [], barsTruncated: false,
             });
           }
@@ -661,7 +668,7 @@ const MarketChart = React.memo(function MarketChart({
       }
     }
     // Tool stays armed so the user can keep drawing; Esc / the tool button disarms.
-  }, [commitRegionSelection, selectionSymbol, annotationInterval]);
+  }, [commitRegionSelection, selectionSymbol, annotationInterval, priceFormatRef]);
 
   const handleSelectPointerCancel = useCallback(() => {
     // Pointer sequence aborted (touch interrupted, capture stolen) before a
@@ -968,7 +975,7 @@ const MarketChart = React.memo(function MarketChart({
   // is preserved. Deliberately does NOT touch lastLiveTickTimeRef, so the 60s
   // REST poll still runs as the authoritative correction (MA/RSI + drift).
   const { quote: dayQuote } = useQuote(symbol, {
-    isIndex: (symbol ?? '').startsWith('^'),
+    isIndex: isIndexFamilySpelling(symbol),
     enabled: interval === '1day' && effectiveChartMode === 'custom',
   });
   useEffect(() => {
@@ -1202,12 +1209,16 @@ const MarketChart = React.memo(function MarketChart({
   // storage (allDataRef) and the WS tick clock (lastLiveTickTimeRef, written by
   // the fold effect above). Runs only in the custom (Light) chart mode. See
   // useLiveBars for the reconcile/skip invariants. `seedMeta` seeds the
-  // watermark + currency from the initial loader's metadata.
-  const { seedMeta } = useLiveBars(symbol, interval, {
+  // watermark + currency from the initial loader's metadata. A series rebuilt
+  // server-side re-runs that loader (`historyEpoch`), never a splice.
+  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const { seedMeta, loadFailed } = useLiveBars(symbol, interval, {
     enabled: effectiveChartMode === 'custom',
     dataRef: allDataRef,
     lastWsTickRef: lastLiveTickTimeRef,
     onMeta: onCurrencyMeta,
+    onFreshness: onChartFreshness,
+    onRebuilt: () => setHistoryEpoch((n) => n + 1),
     onPhase: (phase) => {
       // Ref first: the imperative data paths must read the fresh phase
       // before React commits the state update.
@@ -1350,12 +1361,7 @@ const MarketChart = React.memo(function MarketChart({
       // series so the volume histogram keeps its `type: 'volume'` format; the
       // formatter reads the ref so the currency follows `displayCurrency`
       // without re-creating the series.
-      priceFormat: {
-        type: 'custom',
-        minMove: 0.01,
-        formatter: (price: number) =>
-          formatPrice(price, priceFormatRef.current.code, priceFormatRef.current.decimals),
-      },
+      priceFormat: chartPriceFormat(priceFormatRef),
     });
 
     // Extended-hours background shading primitive
@@ -1488,6 +1494,12 @@ const MarketChart = React.memo(function MarketChart({
     // exhaustive-deps sees the formatter's read; its identity never changes, so
     // this stays a mount-only chart-creation effect.
   }, [priceFormatRef]); // Mount only
+
+  // The price step is fixed when applied, and the served decimals land after
+  // the series exists (first protocol header, symbol change).
+  useEffect(() => {
+    candlestickSeriesRef.current?.applyOptions({ priceFormat: chartPriceFormat(priceFormatRef) });
+  }, [displayCurrency.decimals, priceFormatRef]);
 
   // --- Effect: Update watermark when symbol changes ---
   useEffect(() => {
@@ -1787,6 +1799,9 @@ const MarketChart = React.memo(function MarketChart({
             onIntervalChange?.('1hour');
             return;
           }
+          // No bars, from an error or an empty answer: a reload a rebuild
+          // asked for is sent again on the next poll tick.
+          loadFailed();
           clearChartSeries();
           setError(result?.error
             ? { text: result.error }
@@ -1816,7 +1831,7 @@ const MarketChart = React.memo(function MarketChart({
       abortController.abort();
       stage2AbortRef.current?.abort();
     };
-  }, [symbol, interval, onStockMeta, updateSeriesData, handleScrollLoadMore, seedMeta]);
+  }, [symbol, interval, historyEpoch, onStockMeta, updateSeriesData, handleScrollLoadMore, seedMeta, loadFailed]);
 
   // --- Effect 3: TimeScale options per interval ---
   useEffect(() => {
@@ -1932,7 +1947,7 @@ const MarketChart = React.memo(function MarketChart({
   const isIntervalDisabled = (key: string) => key === '4hour' && !supports4hInterval;
   const pickInterval = (key: string) => {
     if (isIntervalDisabled(key)) {
-      setDisabledTooltip('4H data requires FMP or Ginlix Data provider');
+      setDisabledTooltip(t('marketView.chart.fourHourNeedsProvider'));
       if (disabledTooltipTimer.current) clearTimeout(disabledTooltipTimer.current);
       disabledTooltipTimer.current = setTimeout(() => setDisabledTooltip(null), 2000);
       return;
@@ -2067,14 +2082,14 @@ const MarketChart = React.memo(function MarketChart({
         className={`interval-btn${!isTV ? ' interval-btn-active' : ''}`}
         onClick={() => { setChartMode('custom'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
       >
-        Light
+        {t('marketView.chart.light')}
       </button>
       <button
         type="button"
         className={`interval-btn${isTV ? ' interval-btn-active' : ''}`}
         onClick={() => { setChartMode('tradingview'); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false); }}
       >
-        Advanced
+        {t('marketView.chart.advanced')}
       </button>
     </div>
   );
@@ -2087,7 +2102,7 @@ const MarketChart = React.memo(function MarketChart({
         onClick={() => handleTogglePriceScale(PriceScaleMode.Logarithmic)}
         title={t('marketView.chart.toolLogScale')}
       >
-        Log
+        {t('marketView.chart.log')}
       </button>
       <button type="button" className="chart-tool-btn" onClick={handleZoomIn} title={t('marketView.chart.toolZoomIn')}><Plus size={14} /></button>
       <button type="button" className="chart-tool-btn" onClick={handleZoomOut} title={t('marketView.chart.toolZoomOut')}><Minus size={14} /></button>
@@ -2145,7 +2160,7 @@ const MarketChart = React.memo(function MarketChart({
               >
                 {intervalsCollapsed || !PRIMARY_INTERVAL_KEYS.has(interval)
                   ? INTERVALS.find(({ key }) => key === interval)?.label
-                  : 'More'}
+                  : t('marketView.chart.more')}
                 <ChevronDown size={10} style={{ marginLeft: 2, opacity: 0.6 }} />
               </button>
               {intervalsOpen && (
@@ -2341,7 +2356,7 @@ const MarketChart = React.memo(function MarketChart({
               <CrosshairTooltipLayer
                 store={tooltipStore}
                 containerRef={chartContainerRef}
-                currency={displayCurrency.code}
+                currency={displayCurrency.code ?? undefined}
                 decimals={displayCurrency.decimals}
               />
               {effectiveChartMode === 'custom' && (

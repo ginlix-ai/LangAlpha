@@ -1,6 +1,8 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { formatMoney, quoteCurrency } from '@/lib/bars';
+import { useLocale } from '@/hooks/useLocale';
 import { chartSelectionStore, type ChartSelection } from '../stores/chartSelectionStore';
 
 /**
@@ -10,14 +12,19 @@ import { chartSelectionStore, type ChartSelection } from '../stores/chartSelecti
  */
 export function SelectionChips({ chips }: { chips: readonly ChartSelection[] }): React.ReactElement | null {
   const { t } = useTranslation();
+  const locale = useLocale();
   if (chips.length === 0) return null;
   return (
     <div style={{ padding: '0 12px', marginBottom: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
       {chips.map((c) => {
+        // The price arrives pre-formatted: the string carries no currency of its
+        // own. It prints at the places the chart axis showed when it was drawn.
         const baseLabel = c.selectionType === 'region'
           ? t('marketView.selection.chipRegion', { symbol: c.symbol, timeframe: c.timeframe })
           : t('marketView.selection.chipPriceLevel', {
-              price: Number.isFinite(c.priceLow) ? c.priceLow.toFixed(2) : '—',
+              price: Number.isFinite(c.priceLow)
+                ? formatMoney(c.priceLow, quoteCurrency(null, c.symbol), locale, { decimals: c.decimals ?? 2 })
+                : '—',
               symbol: c.symbol,
               timeframe: c.timeframe,
             });

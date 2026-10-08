@@ -35,6 +35,12 @@
   color: var(--color-text-primary);
 }
 
+/* Named once beside the price; every figure on both strips prints bare. */
+.legend-lead-currency {
+  font-size: 0.85em;
+  color: var(--color-text-secondary);
+}
+
 .legend-lead-change {
   font-family: 'SF Mono', 'Fira Code', monospace;
   color: var(--color-text-secondary);
@@ -69,7 +75,9 @@
 }
 
 .legend-lead-status--live .legend-lead-dot { background: var(--color-profit); }
+.legend-lead-status--realtime .legend-lead-dot { background: var(--color-profit); }
 .legend-lead-status--closed .legend-lead-dot { background: var(--color-text-tertiary); }
+.legend-lead-status--warning .legend-lead-dot { background: var(--color-warning); }
 
 /* The day's figures as one mono string: label dim, value bright. */
 .legend-stats {

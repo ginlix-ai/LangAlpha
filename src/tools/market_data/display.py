@@ -11,31 +11,48 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
-from src.market_protocol import (
+from market_protocol import (
     AssetClass,
     InstrumentRef,
     MarketPhase,
     display_decimals_for,
     to_canonical,
+    to_legacy_api,
 )
-from src.market_protocol.calendars import get_calendar
+
+from src.data_client.instrument_clock import clock_for_ref
 
 from .currency import DisplaySpec
 
 
-def resolve_ref(symbol: Optional[str]) -> Optional[InstrumentRef]:
+def resolve_ref(
+    symbol: Optional[str], asset_class: Optional[AssetClass] = None
+) -> Optional[InstrumentRef]:
     """Canonicalize a symbol to its ``InstrumentRef``; ``None`` if empty or
     unresolvable.
 
     Lets each fetch entry resolve once and pass the ref to the display helpers
-    instead of re-parsing the string in every helper.
+    instead of re-parsing the string in every helper. ``asset_class`` is the
+    caller's hint for a bare ticker the registry would otherwise read another
+    way (a company overview reads ``SPX`` as the S&P 500 only through it).
     """
     if not symbol:
         return None
     try:
-        return to_canonical(symbol)
+        return to_canonical(symbol, asset_class=asset_class)
     except Exception:
         return None
+
+
+def resolve_listing(
+    symbol: str, asset_class: Optional[AssetClass] = None
+) -> tuple[Optional[InstrumentRef], str]:
+    """The ref plus the spelling the provider chain takes for it.
+
+    An unresolvable symbol travels as typed, so a provider still gets to try it.
+    """
+    ref = resolve_ref(symbol, asset_class)
+    return ref, (to_legacy_api(ref) if ref is not None else symbol)
 
 
 def _symbol_currency(ref: Optional[InstrumentRef]) -> DisplaySpec:
@@ -52,6 +69,7 @@ def _symbol_currency(ref: Optional[InstrumentRef]) -> DisplaySpec:
         return DisplaySpec(
             ref.price_currency,
             display_decimals_for(ref.price_currency, ref.asset_class),
+            bare=ref.asset_class is AssetClass.INDEX,
         )
     except Exception:
         return DisplaySpec(None, 2)
@@ -66,6 +84,7 @@ _MIC_MARKET_LABELS: Dict[str, str] = {
     "XHKG": "HK Stock",
     "XSHG": "A-Share",
     "XSHE": "A-Share",
+    "BJSE": "A-Share",
     "XLON": "UK Stock",
     "XTKS": "Japan Stock",
     "XTSE": "Canada Stock",
@@ -121,15 +140,15 @@ def _is_us_clock(ref: Optional[InstrumentRef]) -> bool:
 def venue_phase(
     ref: Optional[InstrumentRef], at: Optional[datetime] = None
 ) -> Optional[MarketPhase]:
-    """Exchange-calendar phase for a listing at ``at`` (default now); ``None`` on any failure.
+    """The listing's phase at ``at`` (default now); ``None`` on any failure.
 
-    The single place the calendar lookup happens — display and quote helpers
-    build their phase suffixes on this so the lookup+guard live in one spot.
+    Read off the instrument clock, so an index reads its venue's extended hours
+    as closed here exactly as its freshness does.
     """
     if ref is None:
         return None
     try:
-        return get_calendar(ref.calendar_id).phase_at(at or datetime.now(timezone.utc))
+        return clock_for_ref(ref).phase(at or datetime.now(timezone.utc))
     except Exception:
         return None
 

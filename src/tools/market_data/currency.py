@@ -1,13 +1,12 @@
 """Currency-aware display formatting for market-data tool output.
 
 Field names and numeric values stay currency-neutral; only human-readable
-display strings gain a currency prefix. USD output is byte-identical to the
-legacy hardcoded ``$`` formatting, so US symbols are unaffected.
+display strings gain a currency prefix. USD keeps the ``$`` it always printed,
+but a negative value now leads with its sign (``-$1.23``, where the old
+formatting wrote ``$-1.23``) and one that rounds to zero drops it.
 """
 
 from typing import NamedTuple, Optional, Union
-
-from .utils import format_number
 
 # ISO 4217 code -> display prefix. Unknown codes fall back to "<ISO> " so a
 # value renders as e.g. "CHF 12.34".
@@ -30,6 +29,8 @@ class DisplaySpec(NamedTuple):
 
     currency: Optional[str]
     decimals: int
+    # An index level is points, not money: it prints with no currency prefix.
+    bare: bool = False
 
 
 # What the formatters accept for their second argument: a resolved spec, a bare
@@ -42,6 +43,16 @@ def _spec(currency: CurrencyArg) -> DisplaySpec:
     if isinstance(currency, DisplaySpec):
         return currency
     return DisplaySpec(currency, 2)
+
+
+def _sign(value: float, decimals: int) -> tuple[str, float]:
+    """Split the sign off so it leads the symbol ("-CN¥1.23", never "CN¥-1.23").
+
+    A value that rounds to zero at the shown precision drops its sign.
+    """
+    if value < 0 and round(value, decimals) != 0:
+        return "-", -value
+    return "", abs(value)
 
 
 def currency_symbol(code: Optional[str]) -> str:
@@ -73,40 +84,38 @@ def fmt_price(
     spec = _spec(currency)
     dec = spec.decimals if decimals is None else decimals
     grouping = "," if group else ""
-    return f"{currency_symbol(spec.currency)}{value:{grouping}.{dec}f}"
+    sign, value = _sign(value, dec)
+    prefix = "" if spec.bare else currency_symbol(spec.currency)
+    return f"{sign}{prefix}{value:{grouping}.{dec}f}"
 
 
-def fmt_money(
-    value: Optional[float], currency: CurrencyArg = None, suffix: bool = True
-) -> str:
-    """Currency-aware large-number formatting (mirrors utils.format_number).
+def _scaled(value: float, prefix: str) -> str:
+    """The one magnitude ladder (T/B/M, grouped below a million), sign first.
 
-    Applies B/M/T suffixes for magnitudes and a currency prefix. For USD the
-    output is byte-identical to ``format_number``. ``None`` value -> "N/A".
-    Use only for values priced in the instrument's listing currency (market
-    cap, price targets); statement figures (revenue, cash flow) may be
-    reported in a different currency and keep plain ``format_number`` until
-    reportedCurrency is plumbed through.
+    Money and counts differ only in ``prefix``, so they cannot drift apart on
+    where a suffix starts or which side of the symbol a minus sits.
+    """
+    sign, value = _sign(value, 2)
+    for scale, unit in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+        if value >= scale:
+            return f"{sign}{prefix}{value / scale:.2f}{unit}"
+    return f"{sign}{prefix}{value:,.2f}"
+
+
+def fmt_money(value: Optional[float], currency: CurrencyArg = None) -> str:
+    """Large money figure with a currency prefix, e.g. "$3.68T", "HK$2.50B".
+
+    A statement figure (revenue, cash flow) is reported in the issuer's own
+    currency, which need not be the listing one, so pass its
+    ``reportedCurrency`` rather than the instrument's. ``None`` -> "N/A".
     """
     if value is None:
         return "N/A"
-    sym = currency_symbol(_spec(currency).currency)
-    if suffix and abs(value) >= 1e12:
-        return f"{sym}{value / 1e12:.2f}T"
-    if suffix and abs(value) >= 1e9:
-        return f"{sym}{value / 1e9:.2f}B"
-    if suffix and abs(value) >= 1e6:
-        return f"{sym}{value / 1e6:.2f}M"
-    if suffix:
-        return f"{sym}{value:,.2f}"
-    return f"{value:,.2f}"
+    return _scaled(value, currency_symbol(_spec(currency).currency))
 
 
 def fmt_count(value: Optional[float]) -> str:
-    """Currency-neutral large-number formatting for share counts / volumes.
-
-    Byte-identical to ``format_number(value)`` with the currency prefix stripped
-    (delegates to it, so B/M/T suffixes, ``None`` -> "N/A", and negatives match
-    exactly). Use for quantities that carry no currency, never for prices.
-    """
-    return format_number(value).replace("$", "")
+    """Share counts and volumes: the money ladder without a currency prefix."""
+    if value is None:
+        return "N/A"
+    return _scaled(value, "")

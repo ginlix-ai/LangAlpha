@@ -6,14 +6,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.data_client.yfinance.data_source import YFinanceDataSource, _fetch_history
+from src.data_client.yfinance.data_source import (
+    YFinanceDataSource,
+    _fetch_history,
+    _place_in_sessions,
+)
 
 
 def _history_kwargs(**call_kwargs) -> dict:
     """Run _fetch_history with a stubbed Ticker; return the kwargs it passed."""
     ticker = MagicMock()
     ticker.history.return_value = None  # empty result — we only care about kwargs
-    with patch("src.data_client.yfinance.data_source.yf.Ticker", return_value=ticker):
+    with patch("src.data_client.yfinance.yahoo.yf.Ticker", return_value=ticker):
         _fetch_history("0700.HK", "1m", **call_kwargs)
     return ticker.history.call_args.kwargs
 
@@ -38,6 +42,27 @@ def test_fetch_history_open_ended_window_has_no_end_bound():
 def test_fetch_history_unparseable_end_passes_through():
     kwargs = _history_kwargs(start=None, end="garbage")
     assert kwargs["end"] == "garbage"
+
+
+def _cst(hhmm: str) -> int:
+    """Epoch ms of 2026-09-30 HH:MM in Shanghai; the base is that midnight."""
+    h, m = map(int, hhmm.split(":"))
+    return 1790697600000 + (h * 60 + m) * 60_000
+
+
+def test_a_shares_drop_yahoo_lunch_padding_and_start_the_afternoon_at_the_reopen():
+    """Yahoo padded 11:30-13:00 with flat zero-volume 5m bars (66 a day, not
+    48), and its hourly grid put the 13:00-13:30 trading in a 12:30 bar."""
+    five = [{"time": _cst(t), "volume": v} for t, v in (("11:25", 9), ("11:30", 0), ("12:55", 0), ("13:00", 7))]
+    assert [b["time"] for b in _place_in_sessions(five, "000001.SZ", False, "5min")] == [
+        _cst("11:25"), _cst("13:00"),
+    ]
+    hourly = [{"time": _cst(t), "volume": 1} for t in ("10:30", "11:30", "12:30", "13:30")]
+    assert [b["time"] for b in _place_in_sessions(hourly, "000001.SZ", False, "1hour")] == [
+        _cst("10:30"), _cst("13:00"), _cst("13:30"),
+    ]
+    us = [{"time": _cst("12:00"), "volume": 1}]
+    assert _place_in_sessions(us, "AAPL", False, "5min") == us
 
 
 @pytest.mark.asyncio
@@ -76,6 +101,25 @@ async def test_get_snapshots_preserves_order_and_drops_failures():
         )
 
     assert [r["symbol"] for r in result] == ["GSPC", "DJI"]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshots_skips_only_the_symbol_yahoo_cannot_be_asked_for():
+    """An unspellable symbol is a miss, not a failure of the batch; a batch of
+    nothing else is refused with the reason."""
+    def fake_fetch(sym: str) -> dict:
+        return {"symbol": sym, "price": 1.0}
+
+    with patch(
+        "src.data_client.yfinance.data_source._fetch_single_snapshot",
+        side_effect=fake_fetch,
+    ) as fetch:
+        result = await YFinanceDataSource().get_snapshots(["AAPL", "EUR/USD", "MSFT"])
+        with pytest.raises(ValueError, match="EUR/USD"):
+            await YFinanceDataSource().get_snapshots(["EUR/USD"])
+
+    assert [r["symbol"] for r in result] == ["AAPL", "MSFT"]
+    assert [c.args[0] for c in fetch.call_args_list] == ["AAPL", "MSFT"]
 
 
 @pytest.mark.asyncio

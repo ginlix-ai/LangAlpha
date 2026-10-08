@@ -3,24 +3,37 @@ PriceMonitorService — Monitors prices via MarketDataFeed
 and triggers price-based automations when conditions are met.
 
 Supports stock and index markets. Uses Redis SET NX locks for
-multi-instance deduplication. Falls back to REST snapshot polling
-when WS is disconnected.
+multi-instance deduplication. Falls back to REST snapshot polling when WS is
+disconnected, and polls non-US symbols while their venue's session runs, since
+the live-data WebSocket carries US venues only.
 """
 
 import asyncio
 import logging
+import math
+import numbers
 import time
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
-from src.market_protocol.symbology import index_legacy_to_polygon
+from market_protocol import (
+    AssetClass,
+    InstrumentRef,
+    MarketPhase,
+    display_spelling,
+    market_of,
+    to_canonical,
+)
+
+from src.data_client.ginlix_data.data_source import INDEX_TICKERS, index_ticker
 from src.server.models.automation import (
     MarketType,
     PriceConditionType,
     PriceTriggerConfig,
     RetriggerMode,
 )
+from src.data_client.instrument_clock import clock_for, clock_for_ref, is_us_class_share
 from src.server.services.market_data_feed import MarketDataFeed
 
 logger = logging.getLogger(__name__)
@@ -36,30 +49,19 @@ _MIN_TRADING_DAY_TTL = 300  # 5 min floor for trading-day TTL
 # transports authenticate the same way.
 _SERVICE_USER_ID = "langalpha-service"
 
-_ET = ZoneInfo("America/New_York")
-_MARKET_OPEN_HOUR = 9
-_MARKET_OPEN_MINUTE = 30
-
-
 # ─── Symbol normalization ───────────────────────────────────────────
-
-# Bare legacy index symbol → Polygon wire spelling, from the protocol
-# symbology (single source of truth — was a private ginlix-data import).
-_INDEX_SYMBOL_MAP: Dict[str, str] = index_legacy_to_polygon()
 
 # Display symbol → bare symbol (for REST snapshot response → automation lookup)
 # _normalize_snapshot maps e.g. I:SPX → GSPC, I:COMP → IXIC; we map those back to bare.
 _DISPLAY_TO_BARE: Dict[str, str] = {
-    display: wire.removeprefix("I:")
-    for display, wire in _INDEX_SYMBOL_MAP.items()
+    display: wire.removeprefix("I:") for display, wire in INDEX_TICKERS.items()
 }
 
 
 def _to_ws_symbol(symbol: str, market: MarketType) -> str:
     """Bare symbol → ginlix-data wire format (for WS subscriptions)."""
     if market == MarketType.INDEX:
-        bare = symbol.lstrip("^").upper()
-        return _INDEX_SYMBOL_MAP.get(bare, f"I:{bare}")
+        return index_ticker(symbol)
     return symbol.upper()
 
 
@@ -80,25 +82,125 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _seconds_until_next_market_open() -> int:
-    """Compute seconds from now until next US market open (9:30 AM ET, skip weekends).
+def _positive(value: Any) -> Optional[float]:
+    """*value* as a float when it is a positive real number, else None.
 
-    Returns at least _MIN_TRADING_DAY_TTL to avoid degenerate cases.
-    Does not account for market holidays.
+    A snapshot row can hold one field null while others carry data (the
+    provider drops only rows null throughout), so a number read off a row is
+    checked before anything compares it.
     """
-    now_et = _now_utc().astimezone(_ET)
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value > 0 else None
 
-    # Start from tomorrow
-    next_day = (now_et + timedelta(days=1)).replace(
-        hour=_MARKET_OPEN_HOUR, minute=_MARKET_OPEN_MINUTE, second=0, microsecond=0
+
+@lru_cache(maxsize=4096)
+def watched_listing(symbol: str, market: MarketType) -> Optional[InstrumentRef]:
+    """The listing a price alert watches, or None for a spelling the protocol cannot read.
+
+    The alert's market decides what a bare spelling names: ``HSI`` on an index
+    alert is the Hang Seng, which trades in Hong Kong, where the same letters
+    on a stock alert are a US ticker.
+    """
+    try:
+        return to_canonical(
+            symbol,
+            asset_class=AssetClass.INDEX if market == MarketType.INDEX else AssetClass.EQUITY,
+        )
+    except ValueError:
+        return None
+
+
+def watched_market(symbol: str, market: MarketType) -> Optional[str]:
+    """The market an alert's listing is watched in (``us``, ``cn``, ``hk`` ...), None when unreadable.
+
+    A dotted class share (BRK.B, BF.B) parses to the unknown venue, since the
+    protocol knows no such suffix, yet the WebSocket carries it as the US
+    ticker it is. Any other unknown suffix stays ``other`` and is polled.
+    """
+    ref = watched_listing(symbol, market)
+    if ref is None:
+        return None
+    return "us" if is_us_class_share(ref) else market_of(ref)
+
+
+def _is_us_symbol(symbol: str, market: MarketType) -> bool:
+    """True when the alert's listing trades on the US tape, the only one the
+    live-data WebSocket carries, so everything else is evaluated by the REST poll."""
+    return watched_market(symbol, market) in (None, "us")
+
+
+def _session_day_start_ms(symbol: str, market: MarketType, now: datetime) -> Optional[int]:
+    """Start of the venue's trading day while its regular session runs at *now*, else None.
+
+    Only the regular session counts: a non-US quote is frozen outside it and
+    through a lunch break, so a poll then spends an upstream call on a price
+    that cannot cross anything. The day starts at local midnight rather than at
+    the open because the opening auction prints before the open.
+    """
+    ref = watched_listing(symbol, market)
+    if ref is None:
+        return None
+    try:
+        clock = clock_for_ref(ref)
+        if clock.phase(now) is not MarketPhase.REGULAR:
+            return None
+        day = now.astimezone(clock.tz).date()
+    except Exception:
+        # The poll pass covers every venue at once, so a calendar that fails
+        # skips only its own listings rather than every alert in the pass.
+        logger.error("[PriceMonitor] No session clock for %s", symbol, exc_info=True)
+        return None
+    return int(datetime(day.year, day.month, day.day, tzinfo=clock.tz).timestamp() * 1000)
+
+
+def _seconds_until_next_market_open(
+    symbol: Optional[str] = None, market: MarketType = MarketType.STOCK,
+) -> int:
+    """Seconds until the alert's venue opens its next session; floored at _MIN_TRADING_DAY_TTL.
+
+    The clock is the listing the alert watches, read with the alert's market,
+    so a CN or HK automation is not locked out until New York reopens and a
+    stock alert on HSI, a US ticker, does not wait for Hong Kong. A missing or
+    unreadable symbol is the US clock.
+    """
+    ref = watched_listing(symbol, market) if symbol else None
+    clock = clock_for_ref(ref) if ref is not None else clock_for(None)
+    return max(int(clock.seconds_until_next_session_open(_now_utc())), _MIN_TRADING_DAY_TTL)
+
+
+async def _fetch_snapshots(
+    provider, stock_syms: List[str], index_syms: List[str],
+) -> List[tuple[str, dict]]:
+    """``(bare symbol, snapshot)`` for every row either market returned.
+
+    The two calls are independent, so one failing costs only its own rows.
+    Index rows come back in display spelling (``GSPC``) and are mapped to the
+    bare symbol an automation is keyed on (``SPX``). A row keeps the spelling
+    of the provider that served it, so a fallback vendor's ``600519.SS`` is
+    respelled to the ``600519.SH`` an automation is keyed on.
+    """
+    async def _fetch(symbols: List[str], asset_type: str) -> list[dict]:
+        if not symbols:
+            return []
+        try:
+            return await provider.get_snapshots(
+                symbols, asset_type=asset_type, user_id=_SERVICE_USER_ID
+            )
+        except Exception:
+            logger.debug("[PriceMonitor] %s snapshot fetch failed", asset_type, exc_info=True)
+            return []
+
+    stocks, indices = await asyncio.gather(
+        _fetch(stock_syms, "stocks"), _fetch(index_syms, "indices")
     )
-
-    # Skip weekends: Saturday=5, Sunday=6
-    while next_day.weekday() >= 5:
-        next_day += timedelta(days=1)
-
-    delta = (next_day - now_et).total_seconds()
-    return max(int(delta), _MIN_TRADING_DAY_TTL)
+    pairs = [(display_spelling(str(snap.get("symbol") or "")), snap) for snap in stocks]
+    pairs += [
+        (_from_display_symbol(display_spelling(str(snap.get("symbol") or ""))), snap)
+        for snap in indices
+    ]
+    return [(sym, snap) for sym, snap in pairs if sym]
 
 
 class ConditionEvaluator:
@@ -108,10 +210,14 @@ class ConditionEvaluator:
         # symbol → {previous_close, day_open}
         self._reference_prices: Dict[str, Dict[str, float]] = {}
 
-    def set_reference(self, symbol: str, previous_close: float, day_open: float) -> None:
+    def set_reference(
+        self, symbol: str, previous_close: Optional[float], day_open: Optional[float]
+    ) -> None:
+        # A reference a row left null reads as missing (0), which evaluate
+        # already treats as no reference, instead of failing every compare.
         self._reference_prices[symbol] = {
-            "previous_close": previous_close,
-            "day_open": day_open,
+            "previous_close": _positive(previous_close) or 0.0,
+            "day_open": _positive(day_open) or 0.0,
         }
 
     def evaluate(
@@ -159,47 +265,15 @@ class ConditionEvaluator:
             from src.data_client import get_market_data_provider
 
             provider = await get_market_data_provider()
-
-            # Split by market
-            stock_syms = []
-            index_syms = []
-            if symbol_markets:
-                for s in symbols:
-                    if symbol_markets.get(s) == MarketType.INDEX:
-                        index_syms.append(s)
-                    else:
-                        stock_syms.append(s)
-            else:
-                stock_syms = list(symbols)
-
-            # Fetch stock snapshots
-            if stock_syms:
-                snaps = await provider.get_snapshots(
-                    stock_syms, asset_type="stocks", user_id=_SERVICE_USER_ID
+            markets = symbol_markets or {}
+            index_syms = [s for s in symbols if markets.get(s) == MarketType.INDEX]
+            stock_syms = [s for s in symbols if markets.get(s) != MarketType.INDEX]
+            for sym, snap in await _fetch_snapshots(provider, stock_syms, index_syms):
+                self.set_reference(
+                    sym,
+                    previous_close=snap.get("previous_close"),
+                    day_open=snap.get("open"),
                 )
-                for snap in snaps:
-                    sym = snap.get("symbol", "").upper()
-                    if sym:
-                        self.set_reference(
-                            sym,
-                            previous_close=snap.get("previous_close", 0),
-                            day_open=snap.get("open", 0),
-                        )
-
-            # Fetch index snapshots (response uses display symbols)
-            if index_syms:
-                snaps = await provider.get_snapshots(
-                    index_syms, asset_type="indices", user_id=_SERVICE_USER_ID
-                )
-                for snap in snaps:
-                    raw_sym = snap.get("symbol", "").upper()
-                    bare = _from_display_symbol(raw_sym)
-                    if bare:
-                        self.set_reference(
-                            bare,
-                            previous_close=snap.get("previous_close", 0),
-                            day_open=snap.get("open", 0),
-                        )
         except Exception:
             logger.warning("Failed to refresh reference prices", exc_info=True)
 
@@ -378,7 +452,7 @@ class PriceMonitorService:
             if retrigger.cooldown_seconds is not None:
                 lock_ttl = retrigger.cooldown_seconds
             else:
-                lock_ttl = max(_seconds_until_next_market_open(), _MIN_TRADING_DAY_TTL)
+                lock_ttl = _seconds_until_next_market_open(config.symbol, config.market)
 
         # Try to acquire dedup lock — Redis preferred, in-memory fallback
         acquired = await self._acquire_lock(automation_id, lock_key, lock_ttl, current_price)
@@ -513,13 +587,13 @@ class PriceMonitorService:
 
             bare = config.symbol.upper()
             market = config.market
-            ws_sym = _to_ws_symbol(bare, market)
 
             new_symbol_markets[bare] = market
-            if market == MarketType.INDEX:
-                new_index_ws.add(ws_sym)
-            else:
-                new_stock_ws.add(ws_sym)
+            # The feeds carry the US tape only, where 600519.SH or I:HSI names
+            # nothing; the REST poll covers every other venue in its session.
+            if _is_us_symbol(bare, market):
+                ws_symbols = new_index_ws if market == MarketType.INDEX else new_stock_ws
+                ws_symbols.add(_to_ws_symbol(bare, market))
 
             auto["_parsed_config"] = config
             new_symbol_map.setdefault(bare, []).append(auto)
@@ -566,7 +640,8 @@ class PriceMonitorService:
             )
 
     async def _poll_fallback_loop(self) -> None:
-        """REST polling fallback when WS is disconnected."""
+        """REST poll: the fallback while a WS feed is down, and the only feed a
+        non-US venue has. ``_poll_snapshots`` decides what each pass fetches."""
         while not self._shutdown_event.is_set():
             try:
                 await asyncio.wait_for(
@@ -579,17 +654,10 @@ class PriceMonitorService:
             if not self._monitored_symbols:
                 continue
 
-            # Poll markets where WS is disconnected
-            stock_disconnected = self._stock_ws and not self._stock_ws.is_connected
-            index_disconnected = self._index_ws and not self._index_ws.is_connected
-
-            if not stock_disconnected and not index_disconnected:
-                continue
-
             try:
                 await self._poll_snapshots(
-                    poll_stock=stock_disconnected,
-                    poll_index=index_disconnected,
+                    poll_stock=bool(self._stock_ws and not self._stock_ws.is_connected),
+                    poll_index=bool(self._index_ws and not self._index_ws.is_connected),
                 )
             except Exception:
                 logger.error("[PriceMonitor] REST poll failed", exc_info=True)
@@ -597,61 +665,53 @@ class PriceMonitorService:
     async def _poll_snapshots(
         self, poll_stock: bool = True, poll_index: bool = True
     ) -> None:
-        """Fetch current prices via REST and evaluate conditions."""
+        """Fetch current prices via REST and evaluate conditions.
+
+        A US symbol is polled while its WS feed is down. A non-US symbol has no
+        WS feed, so it is polled while its venue's regular session runs and
+        never outside it; with none in session and the feeds up, a pass makes
+        no upstream call.
+        """
+        now = _now_utc()
+        day_starts: Dict[str, int] = {}
+        stock_syms: List[str] = []
+        index_syms: List[str] = []
+        for bare, market in self._symbol_markets.items():
+            if _is_us_symbol(bare, market):
+                if not (poll_index if market == MarketType.INDEX else poll_stock):
+                    continue
+            else:
+                day_start = _session_day_start_ms(bare, market, now)
+                if day_start is None:
+                    continue
+                day_starts[bare] = day_start
+            (index_syms if market == MarketType.INDEX else stock_syms).append(bare)
+        if not stock_syms and not index_syms:
+            return
+
         from src.data_client import get_market_data_provider
 
         provider = await get_market_data_provider()
-
-        # Split bare symbols by market
-        stock_syms = []
-        index_syms = []
-        for bare, market in self._symbol_markets.items():
-            if market == MarketType.INDEX and poll_index:
-                index_syms.append(bare)
-            elif market == MarketType.STOCK and poll_stock:
-                stock_syms.append(bare)
-
-        all_snapshots: list[tuple[str, dict]] = []  # (bare_symbol, snapshot)
-
-        # Fetch stock snapshots
-        if stock_syms:
-            try:
-                snaps = await provider.get_snapshots(
-                    stock_syms, asset_type="stocks", user_id=_SERVICE_USER_ID
-                )
-                for snap in snaps:
-                    sym = snap.get("symbol", "").upper()
-                    if sym:
-                        all_snapshots.append((sym, snap))
-            except Exception:
-                logger.debug("[PriceMonitor] Stock snapshot fetch failed")
-
-        # Fetch index snapshots (normalize display → bare)
-        if index_syms:
-            try:
-                snaps = await provider.get_snapshots(
-                    index_syms, asset_type="indices", user_id=_SERVICE_USER_ID
-                )
-                for snap in snaps:
-                    raw_sym = snap.get("symbol", "").upper()
-                    bare = _from_display_symbol(raw_sym)
-                    if bare:
-                        all_snapshots.append((bare, snap))
-            except Exception:
-                logger.debug("[PriceMonitor] Index snapshot fetch failed")
-
-        # Evaluate
-        for bare_symbol, snapshot in all_snapshots:
-            current_price = snapshot.get("price", 0)
-            if current_price <= 0:
+        for bare_symbol, snapshot in await _fetch_snapshots(provider, stock_syms, index_syms):
+            current_price = _positive(snapshot.get("price"))
+            if current_price is None:
+                continue
+            # A row printed before the session's day began has not rolled yet:
+            # its change is the previous session's move, which a recurring
+            # alert unlocked at the open would fire on. A row with no print
+            # time cannot show it rolled, so it is skipped too. US rows have
+            # no bound.
+            as_of = _positive(snapshot.get("as_of"))
+            day_start = day_starts.get(bare_symbol)
+            if day_start is not None and (as_of is None or as_of < day_start):
                 continue
 
             # Update reference prices
-            if snapshot.get("previous_close"):
+            if _positive(snapshot.get("previous_close")) is not None:
                 self._evaluator.set_reference(
                     bare_symbol,
-                    previous_close=snapshot["previous_close"],
-                    day_open=snapshot.get("open", 0),
+                    previous_close=snapshot.get("previous_close"),
+                    day_open=snapshot.get("open"),
                 )
 
             for automation in self._symbol_automations.get(bare_symbol, []):

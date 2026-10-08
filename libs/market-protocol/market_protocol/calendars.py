@@ -529,7 +529,13 @@ class Always24x7:
 
 
 class Weekdays24x5:
-    """FX: continuous from Monday 00:00 to Saturday 00:00 UTC."""
+    """FX: continuous from Monday 00:00 to Saturday 00:00 UTC.
+
+    UTC days approximate the market, which trades from about 17:00 New York on
+    Sunday to 17:00 New York on Friday: ``phase_at`` reads CLOSED on Sunday
+    evening UTC and REGULAR late on Friday UTC. They are kept because a session
+    here is one trade date of the vendors' daily FX bars, stamped 00:00 UTC.
+    """
 
     calendar_id = WEEKDAYS_24_5
     tz = ZoneInfo("UTC")

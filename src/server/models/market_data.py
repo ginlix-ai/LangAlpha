@@ -7,6 +7,10 @@ This module provides request and response models for FMP intraday data proxy end
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# Measured alongside the data it describes, so the model lives with the
+# measurement in the data layer and is re-exported here for the REST models.
+from src.data_client.freshness import Freshness
+
 
 # Supported intervals for intraday data. 1s was removed from the REST API —
 # second-level data exists only as the WS forming-bar stream (ohlcv-1s records).
@@ -27,6 +31,10 @@ class IntradayDataPoint(BaseModel):
     @field_validator("volume", mode="before")
     @classmethod
     def coerce_volume_to_int(cls, v: object) -> int:
+        # The protocol treats a null volume as legitimate (index bars, and
+        # Tushare rows with no `vol`), but the legacy wire is a plain int.
+        if v is None:
+            return 0
         if isinstance(v, float):
             return int(v)
         return v
@@ -42,6 +50,9 @@ class CacheMetadata(BaseModel):
     complete: Optional[bool] = Field(None, description="True when all bars are immutable (market closed / historical)")
     market_phase: Optional[str] = Field(None, description="Current market phase: pre, open, post, or closed")
     truncated: Optional[bool] = Field(None, description="True when upstream fetch hit its bar limit")
+    revision: Optional[int] = Field(
+        None, description="Series revision; a new one means history was rebuilt (reload, don't merge)"
+    )
 
 
 class IntradayResponse(BaseModel):
@@ -75,6 +86,10 @@ class IntradayResponse(BaseModel):
     interval: str = Field(..., description="Data interval (e.g., 1min, 5min, 1hour)")
     data: List[IntradayDataPoint] = Field(default_factory=list, description="Intraday OHLCV data points")
     count: int = Field(0, description="Number of data points returned")
+    currency: Optional[str] = Field(None, description="ISO 4217 code the prices are quoted in (e.g. USD, CNY)")
+    timezone: Optional[str] = Field(None, description="IANA timezone of the listing exchange (e.g. Asia/Shanghai)")
+    price_treatment: Optional[str] = Field(None, description="Adjustment applied to the prices: raw, split_adjusted or dividend_adjusted")
+    freshness: Optional[Freshness] = Field(None, description="Measured freshness of the served series")
     cache: CacheMetadata = Field(..., description="Cache metadata")
 
 
@@ -107,6 +122,10 @@ class DailyResponse(BaseModel):
     symbol: str = Field(..., description="Stock symbol")
     data: List[IntradayDataPoint] = Field(default_factory=list, description="Daily OHLCV data points")
     count: int = Field(0, description="Number of data points returned")
+    currency: Optional[str] = Field(None, description="ISO 4217 code the prices are quoted in (e.g. USD, CNY)")
+    timezone: Optional[str] = Field(None, description="IANA timezone of the listing exchange (e.g. Asia/Shanghai)")
+    price_treatment: Optional[str] = Field(None, description="Adjustment applied to the prices: raw, split_adjusted or dividend_adjusted")
+    freshness: Optional[Freshness] = Field(None, description="Measured freshness of the served series")
     cache: CacheMetadata = Field(..., description="Cache metadata")
 
 
@@ -211,6 +230,15 @@ class CompanyOverviewResponse(BaseModel):
     """Response for company overview endpoint."""
     symbol: str = Field(..., description="Stock ticker symbol")
     name: Optional[str] = Field(None, description="Company name")
+    nameEn: Optional[str] = Field(None, description="English name when the primary name is local-market")
+    currency: Optional[str] = Field(None, description="ISO 4217 code the prices are quoted in (e.g. USD, CNY)")
+    reportedCurrency: Optional[str] = Field(
+        None,
+        description="ISO 4217 code the statement figures (fundamentals, earnings, cash flow, segments) are reported in; may differ from currency (0700.HK reports in CNY)",
+    )
+    assetClass: Optional[str] = Field(
+        None, description="Set to 'index' for an index, which has a level but no company fundamentals"
+    )
     quote: Optional[Dict[str, Any]] = Field(None, description="Real-time quote data")
     performance: Optional[Dict[str, Any]] = Field(None, description="Price performance by period")
     analystRatings: Optional[Dict[str, Any]] = Field(None, description="Analyst rating distribution")
@@ -248,7 +276,17 @@ class AnalystDataResponse(BaseModel):
 class SnapshotData(BaseModel):
     """Normalized snapshot data for a single ticker."""
     symbol: str = Field(..., description="Ticker symbol")
+    requested: Optional[List[str]] = Field(
+        None,
+        description="The request's own spellings this row answers (600519.SS asked, 600519.SH served)",
+    )
     name: Optional[str] = Field(None, description="Ticker name")
+    name_local: Optional[str] = Field(None, description="Local-market name (e.g. Chinese for CN/HK listings)")
+    name_en: Optional[str] = Field(None, description="English name when the primary name is local-market")
+    currency: Optional[str] = Field(None, description="ISO 4217 code the prices are quoted in (e.g. USD, CNY)")
+    asset_class: Optional[str] = Field(
+        None, description="equity / index / fund / crypto / fx; an index quotes a level in points, not a price"
+    )
     price: Optional[float] = Field(None, description="Current / last price")
     change: Optional[float] = Field(None, description="Day change (absolute)")
     change_percent: Optional[float] = Field(None, description="Day change %")
@@ -266,6 +304,9 @@ class SnapshotData(BaseModel):
     late_trading_change: Optional[float] = Field(None, description="After-hours change (absolute)")
     late_trading_change_percent: Optional[float] = Field(None, description="After-hours change %")
     source: Optional[str] = Field(None, description="Provider that filled this row")
+    tier: Optional[str] = Field(None, description="Quote freshness the provider declares: realtime / delayed_15m / eod")
+    as_of: Optional[int] = Field(None, description="Time of the quoted print (Unix ms) when the provider reports one")
+    freshness: Optional[Freshness] = Field(None, description="Measured freshness of this quote")
 
 
 class SnapshotResponse(BaseModel):
@@ -299,6 +340,8 @@ class StockSearchResult(BaseModel):
 
     symbol: str = Field(..., description="Stock ticker symbol (e.g., AAPL)")
     name: str = Field(..., description="Company name")
+    nameLocal: Optional[str] = Field(None, description="Local-market name (e.g. Chinese for CN/HK listings)")
+    nameEn: Optional[str] = Field(None, description="English name when the primary name is local-market")
     currency: Optional[str] = Field(None, description="Currency code")
     stockExchange: Optional[str] = Field(None, description="Stock exchange name")
     exchangeShortName: Optional[str] = Field(None, description="Short exchange name")

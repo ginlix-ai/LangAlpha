@@ -1,6 +1,7 @@
 import React from 'react';
-import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useLocale } from '@/hooks/useLocale';
+import { X } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 import {
   PerformanceBarChart,
@@ -11,42 +12,16 @@ import {
   CashFlowChart,
   RevenueBreakdownChart,
 } from '../../ChatAgent/components/charts/MarketDataCharts';
+import { formatMoney } from '@/lib/bars';
+import { compactNumberFixed2, fixed2, signedFixed2 } from '@/lib/format';
+import { deriveOverviewQuote, type CompanyOverviewArtifact } from '@/lib/quotes/overview';
 import './CompanyOverviewPanel.css';
 
 const GREEN = 'var(--color-profit)';
 const RED = 'var(--color-loss)';
 const TEXT_COLOR = 'var(--color-text-secondary)';
+const NAME_CLIP: React.CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
 
-interface QuoteData {
-  price?: number;
-  change?: number;
-  changePct?: number;
-  open?: number;
-  previousClose?: number;
-  dayLow?: number;
-  dayHigh?: number;
-  yearLow?: number;
-  yearHigh?: number;
-  volume?: number;
-  marketCap?: number;
-  pe?: number;
-  eps?: number;
-}
-
-// TODO: type properly once MarketDataCharts exports its prop types
-interface OverviewData {
-  symbol?: string;
-  name?: string;
-  quote?: QuoteData;
-  performance?: unknown;
-  analystRatings?: unknown;
-  quarterlyFundamentals?: unknown;
-  earningsSurprises?: unknown;
-  cashFlow?: unknown;
-  revenueByProduct?: unknown;
-  revenueByGeo?: unknown;
-  [key: string]: unknown;
-}
 
 interface QuoteStatProps {
   label: string;
@@ -54,25 +29,17 @@ interface QuoteStatProps {
 }
 
 interface QuoteSummaryProps {
-  data: OverviewData;
+  data: CompanyOverviewArtifact;
+  symbol: string;
 }
 
 interface CompanyOverviewPanelProps {
   symbol: string;
   visible: boolean;
   onClose: () => void;
-  data: OverviewData | null;
+  data: CompanyOverviewArtifact | null;
   loading: boolean;
 }
-
-const formatNumber = (num: number | null | undefined): string => {
-  if (num == null) return 'N/A';
-  if (Math.abs(num) >= 1e12) return `$${(num / 1e12).toFixed(2)}T`;
-  if (Math.abs(num) >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
-  if (Math.abs(num) >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
-  if (Math.abs(num) >= 1e3) return `$${(num / 1e3).toFixed(1)}K`;
-  return typeof num === 'number' ? `$${num.toFixed(2)}` : String(num);
-};
 
 function QuoteStat({ label, value }: QuoteStatProps) {
   return (
@@ -83,52 +50,82 @@ function QuoteStat({ label, value }: QuoteStatProps) {
   );
 }
 
-function QuoteSummary({ data }: QuoteSummaryProps) {
+const FUNDAMENTAL_KEYS = [
+  'performance', 'analystRatings', 'quarterlyFundamentals', 'earningsSurprises',
+  'cashFlow', 'revenueByProduct', 'revenueByGeo',
+] as const;
+
+function hasFundamentals(data: CompanyOverviewArtifact): boolean {
+  return FUNDAMENTAL_KEYS.some((key) => {
+    const value = data[key];
+    if (value == null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    return typeof value !== 'object' || Object.keys(value as object).length > 0;
+  });
+}
+
+function QuoteSummary({ data, symbol }: QuoteSummaryProps) {
   const { t } = useTranslation();
-  const { symbol, name, quote } = data;
+  const locale = useLocale();
+  const { quote } = data;
   if (!quote) return null;
+
+  const { displayPrice, displayChange, displayChangePct, currency, dualName } = deriveOverviewQuote(data, symbol);
+  const money = (n: number): string => formatMoney(n, currency, locale);
 
   return (
     <div style={{ marginBottom: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: '1.125rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-          {name || symbol}
+      {/* Two long names can outrun the panel, so both shrink to an ellipsis and
+          the ticker, the shortest and most useful of the three, never does. */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8, minWidth: 0 }}>
+        <span title={dualName.primary} style={{ ...NAME_CLIP, fontSize: '1.125rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
+          {dualName.primary}
         </span>
-        <span style={{ fontSize: '0.8125rem', color: TEXT_COLOR }}>{symbol}</span>
+        {dualName.secondary && (
+          <span title={dualName.secondary} style={{ ...NAME_CLIP, fontSize: '0.8125rem', color: TEXT_COLOR }}>{dualName.secondary}</span>
+        )}
+        {dualName.named && <span style={{ flexShrink: 0, fontSize: '0.8125rem', color: TEXT_COLOR }}>{symbol}</span>}
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: '1.375rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-          ${quote.price?.toFixed(2) || 'N/A'}
+          {formatMoney(displayPrice, currency, locale)}
         </span>
-        {quote.change != null && (
-          <span style={{ fontSize: '0.8125rem', color: quote.change >= 0 ? GREEN : RED }}>
-            {quote.change >= 0 ? '+' : ''}{quote.change?.toFixed(2)} ({quote.changePct?.toFixed(2)}%)
+        {displayChange != null && (
+          <span style={{ fontSize: '0.8125rem', color: displayChange >= 0 ? GREEN : RED }}>
+            {formatMoney(displayChange, currency, locale, { signed: true })}
+            {displayChangePct != null && ` (${signedFixed2(displayChangePct, locale)}%)`}
           </span>
         )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
-        {quote.open != null && <QuoteStat label={t('marketView.header.open')} value={`$${quote.open.toFixed(2)}`} />}
-        {quote.previousClose != null && <QuoteStat label={t('marketView.header.prevClose')} value={`$${quote.previousClose.toFixed(2)}`} />}
+        {quote.open != null && <QuoteStat label={t('toolArtifact.open')} value={money(quote.open)} />}
+        {quote.previousClose != null && <QuoteStat label={t('toolArtifact.prevClose')} value={money(quote.previousClose)} />}
         {quote.dayLow != null && quote.dayHigh != null && (
-          <QuoteStat label={t('marketView.header.dayRange')} value={`$${quote.dayLow.toFixed(2)} - $${quote.dayHigh.toFixed(2)}`} />
+          <QuoteStat label={t('toolArtifact.dayRange')} value={`${money(quote.dayLow)} - ${money(quote.dayHigh)}`} />
         )}
         {quote.yearLow != null && quote.yearHigh != null && (
-          <QuoteStat label={t('marketView.header.range52w')} value={`$${quote.yearLow.toFixed(2)} - $${quote.yearHigh.toFixed(2)}`} />
+          <QuoteStat label={t('toolArtifact.52wRange')} value={`${money(quote.yearLow)} - ${money(quote.yearHigh)}`} />
         )}
-        {quote.volume != null && <QuoteStat label={t('marketView.header.volume')} value={formatNumber(quote.volume).replace('$', '')} />}
-        {quote.marketCap != null && <QuoteStat label={t('marketView.header.marketCap')} value={formatNumber(quote.marketCap)} />}
-        {quote.pe != null && <QuoteStat label="P/E" value={quote.pe.toFixed(2)} />}
-        {quote.eps != null && <QuoteStat label="EPS" value={`$${quote.eps.toFixed(2)}`} />}
+        {quote.volume != null && <QuoteStat label={t('toolArtifact.volume')} value={compactNumberFixed2(quote.volume, locale)} />}
+        {quote.marketCap != null && <QuoteStat label={t('toolArtifact.marketCap')} value={formatMoney(quote.marketCap, currency, locale, { compact: true })} />}
+        {quote.pe != null && <QuoteStat label={t('toolArtifact.peRatio')} value={fixed2(quote.pe, locale)} />}
+        {quote.eps != null && <QuoteStat label={t('toolArtifact.eps')} value={money(quote.eps)} />}
       </div>
     </div>
   );
 }
 
-export default function CompanyOverviewPanel({ symbol: _symbol, visible, onClose, data, loading }: CompanyOverviewPanelProps) {
+export default function CompanyOverviewPanel({ symbol, visible, onClose, data, loading }: CompanyOverviewPanelProps) {
   const { t } = useTranslation();
   if (!visible) return null;
 
-  const error = !data && !loading ? t('marketView.overview.noData') : null;
+  const shownSymbol = data?.symbol || symbol;
+  // Revenue, earnings and cash flow are in the issuer's reporting currency.
+  const { isIndex, statementCurrency, earningsCurrency } = deriveOverviewQuote(data ?? {}, shownSymbol);
+  // A payload with nothing to draw is as empty as no payload; an index still
+  // says why its fundamentals are missing.
+  const empty = !data || (!isIndex && !data.quote && !hasFundamentals(data));
+  const error = empty && !loading ? t('marketView.overview.noData') : null;
 
   return (
     <div className="company-overview-panel">
@@ -152,16 +149,17 @@ export default function CompanyOverviewPanel({ symbol: _symbol, visible, onClose
         <div className="company-overview-error">{error}</div>
       )}
 
-      {data && !loading && (
+      {data && !empty && !loading && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <QuoteSummary data={data} />
-          <PerformanceBarChart performance={data.performance as Record<string, number> | undefined} />
-          <AnalystRatingsChart ratings={data.analystRatings as Record<string, unknown> | undefined} />
-          <QuarterlyRevenueChart data={data.quarterlyFundamentals as Record<string, unknown>[] | undefined} />
-          <MarginsChart data={data.quarterlyFundamentals as Record<string, unknown>[] | undefined} />
-          <EarningsSurpriseChart data={data.earningsSurprises as Record<string, unknown>[] | undefined} />
-          <CashFlowChart data={data.cashFlow as Record<string, unknown>[] | undefined} />
-          <RevenueBreakdownChart revenueByProduct={data.revenueByProduct as Record<string, number> | undefined} revenueByGeo={data.revenueByGeo as Record<string, number> | undefined} />
+          <QuoteSummary data={data} symbol={shownSymbol} />
+          {isIndex && <div className="company-overview-note">{t('marketView.overview.indexNoFundamentals')}</div>}
+          <PerformanceBarChart performance={data.performance} />
+          <AnalystRatingsChart ratings={data.analystRatings} />
+          <QuarterlyRevenueChart data={data.quarterlyFundamentals} currency={statementCurrency} />
+          <MarginsChart data={data.quarterlyFundamentals} />
+          <EarningsSurpriseChart data={data.earningsSurprises} currency={earningsCurrency} />
+          <CashFlowChart data={data.cashFlow} currency={statementCurrency} />
+          <RevenueBreakdownChart revenueByProduct={data.revenueByProduct} revenueByGeo={data.revenueByGeo} currency={statementCurrency} />
         </div>
       )}
     </div>

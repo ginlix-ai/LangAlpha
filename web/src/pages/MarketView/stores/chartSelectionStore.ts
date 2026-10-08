@@ -56,6 +56,12 @@ export interface ChartSelection {
   priceLow: number;
   /** For `price_level`, equals `priceLow`. */
   priceHigh: number;
+  /**
+   * The price axis's decimals when it was drawn, so its bounds print at the
+   * places the chart showed. Two places would round both bounds of a 4-place
+   * FX range onto the same figure.
+   */
+  decimals?: number;
   /** OHLCV bars within the region (region only), capped — see MAX_SELECTION_BARS. */
   bars: SelectionBar[];
   /** True when `bars` was downsampled to the cap. */
@@ -90,6 +96,8 @@ export interface ChartSelectionSnapshot {
   timeframe: string;
   priceLow: number;
   priceHigh: number;
+  /** As on the selection; a snapshot persisted without it prints 2 places. */
+  decimals?: number;
   comment?: string;
   /** ISO8601 — region only. */
   timeStart?: string;
@@ -124,6 +132,7 @@ export function toSelectionSnapshot(sel: ChartSelection): ChartSelectionSnapshot
     timeframe: sel.timeframe,
     priceLow: sel.priceLow,
     priceHigh: sel.priceHigh,
+    ...(sel.decimals != null ? { decimals: sel.decimals } : {}),
     ...(comment ? { comment } : {}),
     ...(sel.timeStart ? { timeStart: sel.timeStart } : {}),
     ...(sel.timeEnd ? { timeEnd: sel.timeEnd } : {}),

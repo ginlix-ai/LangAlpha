@@ -23,7 +23,8 @@
         "plugins/langalpha_market_data/fundamentals_mcp_server.py"
       ],
       "env": {
-        "FMP_API_KEY": "${FMP_API_KEY}"
+        "FMP_API_KEY": "${FMP_API_KEY}",
+        "GINLIX_DATA_URL": "${GINLIX_DATA_URL}"
       }
     },
     "macro": {

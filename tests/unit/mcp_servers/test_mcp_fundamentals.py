@@ -92,7 +92,7 @@ class TestGetFinancialStatements:
 
     @pytest.mark.asyncio
     async def test_canonical_symbol_echo(self):
-        """Echoed symbol is the canonical display spelling; upstream gets input."""
+        """Echoed and forwarded in the display spelling, whatever was typed."""
         from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
@@ -100,10 +100,22 @@ class TestGetFinancialStatements:
             result = await get_financial_statements("aapl", statement_type="income")
 
         assert_ok_envelope(result, symbol="AAPL")
-        # Upstream receives the raw input spelling; pin only the symbol arg,
-        # not the default period/limit.
+        # The FMP client respells the suffix itself (.SH -> .SS); pin only the
+        # symbol arg, not the default period/limit.
         client.get_income_statement.assert_awaited_once()
-        assert client.get_income_statement.await_args.args[0] == "aapl"
+        assert client.get_income_statement.await_args.args[0] == "AAPL"
+
+    @pytest.mark.asyncio
+    async def test_canonical_instrument_key_reaches_fmp_as_a_ticker(self):
+        """FMP cannot read ``AAPL.XNAS``; it gets the ticker the key names."""
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_technical_indicator("AAPL.XNAS", indicator="rsi")
+
+        assert_ok_envelope(result, symbol="AAPL")
+        assert client.get_technical_indicator.await_args.args[0] == "AAPL"
 
     @pytest.mark.asyncio
     async def test_fmp_init_error(self):
@@ -313,6 +325,37 @@ class TestGetTechnicalIndicator:
         client.get_technical_indicator.assert_awaited_once_with(
             "AAPL", indicator="rsi", period=14, timeframe="1day",
         )
+
+    @pytest.mark.asyncio
+    async def test_caret_index_reaches_fmp_with_its_caret(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await get_technical_indicator("^GSPC", indicator="rsi")
+
+        assert client.get_technical_indicator.await_args.args[0] == "^GSPC"
+
+    @pytest.mark.asyncio
+    async def test_canonical_index_key_reaches_fmp_with_its_caret(self):
+        """The display spelling ``SPX`` is not one FMP reads."""
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await get_technical_indicator("SPX.INDEX", indicator="rsi")
+
+        assert client.get_technical_indicator.await_args.args[0] == "^GSPC"
+
+    @pytest.mark.asyncio
+    async def test_ticker_colliding_with_an_index_alias_stays_the_company(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await get_technical_indicator("COMP", indicator="rsi")
+
+        assert client.get_technical_indicator.await_args.args[0] == "COMP"
 
     @pytest.mark.asyncio
     async def test_custom_params(self):

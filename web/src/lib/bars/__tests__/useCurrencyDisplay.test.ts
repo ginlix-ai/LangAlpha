@@ -45,6 +45,22 @@ describe('useCurrencyDisplay', () => {
     expect(result.current.displayCurrency).toEqual({ code: 'GBP', decimals: 2 });
   });
 
+  it('labels an index axis bare, and stays bare after the protocol meta lands', () => {
+    const { result } = render('^GSPC');
+    expect(result.current.formatPrice(5000)).toBe('5000.00');
+    act(() => result.current.onCurrencyMeta({ currency: 'USD', displayDecimals: 2 }));
+    expect(result.current.displayCurrency.code).toBeNull();
+    expect(result.current.formatPrice(5000)).toBe('5000.00');
+  });
+
+  it('drops the currency when switching from a stock to an index', () => {
+    const { result, rerender } = render('600519.SH');
+    expect(result.current.formatPrice(1500)).toBe('CN¥1500.00');
+    rerender({ s: '000300.SH' });
+    expect(result.current.displayCurrency.code).toBeNull();
+    expect(result.current.formatPrice(4000)).toBe('4000.00');
+  });
+
   it('formatPrice tracks the live currency and decimals', () => {
     const { result } = render('AAPL');
     expect(result.current.formatPrice(12.3)).toBe('$12.30');

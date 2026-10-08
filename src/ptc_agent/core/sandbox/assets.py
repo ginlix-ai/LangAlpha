@@ -408,7 +408,7 @@ async def _compute_sandbox_manifest(
     mcp_version = _hash_dict(mcp_files)
     modules["mcp_servers"] = {"version": mcp_version, "files": mcp_files}
 
-    # ── Module: internal_packages (src/data_client, src/market_protocol) ──
+    # ── Module: internal_packages (src/data_client, market_protocol) ──
     # One module for the whole set: the upload is all-or-nothing, so a single
     # version is the honest re-upload gate. Hashes the exact file set the
     # upload ships (same collection helper), so nothing can drift or drop.

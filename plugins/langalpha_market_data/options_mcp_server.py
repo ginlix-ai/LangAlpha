@@ -14,7 +14,7 @@ Tools:
 - get_options_snapshot: real-time bid/ask, last trade, session data
 
 Currency and timezone are derived from the UNDERLYING instrument via
-src.market_protocol (US options: USD / America/New_York).
+market_protocol (US options: USD / America/New_York).
 """
 
 # NOTE: Tool docstrings in this file are hand-tuned agent prompt surface (parsed
@@ -37,7 +37,7 @@ from data_client.ginlix_data import (
     close_ginlix_mcp_client,
     get_ginlix_mcp_client,
 )
-from src.market_protocol import to_canonical, to_display
+from market_protocol import to_canonical, to_display
 
 try:
     from _envelope import error_from_upstream, make_error, make_response, normalize_interval

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { getExtendedHoursInfo, searchStocks, fetchMarketStatus } from '../marketUtils';
+import { getExtendedHoursInfo, searchStocks, fetchMarketStatus, normalizeSymbolInput, readTypedTicker } from '../marketUtils';
 
 // Mock the api client
 vi.mock('@/api/client', () => ({
@@ -246,5 +246,18 @@ describe('fetchMarketStatus', () => {
     mockGet.mockRejectedValue(err);
 
     await expect(fetchMarketStatus()).rejects.toThrow();
+  });
+});
+
+describe('symbol entry', () => {
+  it('hands over the display spelling, so a typed or saved .SS opens as .SH', () => {
+    expect(normalizeSymbolInput(' 600519.ss ')).toBe('600519.SH');
+    expect(normalizeSymbolInput('   ')).toBeNull();
+    expect(readTypedTicker('600519.SS')).toBe('600519.SH');
+    expect(readTypedTicker('nvda')).toBe('NVDA');
+  });
+
+  it('reads a code typed through a Chinese IME as a ticker', () => {
+    expect(readTypedTicker('６００５１９。ＳＨ')).toBe('600519.SH');
   });
 });

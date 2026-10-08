@@ -14,7 +14,7 @@ Tools:
 - get_asset_data: stock/commodity/crypto/forex OHLCV
 - get_short_data: short interest (bi-monthly) and short volume (daily)
 
-Symbols are resolved at the boundary through src.market_protocol (canonical
+Symbols are resolved at the boundary through market_protocol (canonical
 identity, currency, timezone); prices are returned in major currency units
 (GBX/pence venues converted to pounds).
 """
@@ -31,19 +31,26 @@ try:
 except ModuleNotFoundError:  # imported as a package module (tests)
     from mcp_servers._bootstrap import MCPServer
 
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone as _tz
 from typing import Any, Literal, Optional
 
+import httpx
 
 from data_client.fmp import close_fmp_client, get_fmp_client
+from data_client.lifespan import closing_lifespan
 from data_client.ginlix_data import (
     DAILY_INTERVALS,
     close_ginlix_mcp_client,
     get_ginlix_mcp_client,
 )
+from data_client.market_data_provider import symbol_market
 from data_client.normalize import minor_unit_scale, normalize_bars, scale_price
-from src.market_protocol import to_canonical, to_display, to_legacy_api
-from src.market_protocol.enums import AssetClass
+from data_client.ginlix_data.cn_source import GinlixDataCnSource
+from data_client.ginlix_data.directory import NameDirectory
+from market_protocol import to_canonical, to_display, to_legacy_api
+from market_protocol.enums import AssetClass
 
 try:
     from _envelope import (
@@ -72,29 +79,32 @@ from mcp_servers._schemas import (
     output_model,
 )
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Clients
 # ---------------------------------------------------------------------------
 
+
 _ginlix = get_ginlix_mcp_client()
 
 # Intervals served by each family. Stock/index route through the ginlix-data
-# (US) + FMP (global) fetch clients, which cover intraday + daily only.
+# (CN daily, US) + FMP (global) fetch clients, which cover intraday + daily only.
 _STOCK_INTRADAY = {"1min", "5min", "15min", "30min", "1hour", "4hour"}
 _STOCK_INTERVALS = _STOCK_INTRADAY | {"1day"}
 # FMP commodity/crypto/forex intraday coverage is narrower.
 _ASSET_INTRADAY = {"1min", "5min", "1hour"}
 _ASSET_INTERVALS = _ASSET_INTRADAY | {"1day"}
 
+#: Calendar days of daily bars an undated CN request gets. The CN source would
+#: fill two years, the window its live cache entry covers; an agent's undated
+#: question is about the recent tape, and FMP's own undated window keeps the
+#: other listings about as short.
+_CN_DEFAULT_DAILY_DAYS = 90
 
-@asynccontextmanager
-async def _lifespan(app):
-    try:
-        yield
-    finally:
-        await close_ginlix_mcp_client()
-        await close_fmp_client()
+
+_lifespan = closing_lifespan(close_ginlix_mcp_client, close_fmp_client)
 
 
 # ---------------------------------------------------------------------------
@@ -156,19 +166,48 @@ def _display_rows(
     return normalized
 
 
+_names = NameDirectory(_ginlix.get_instruments_v2, deadline=2.0)
+_cn = GinlixDataCnSource(_ginlix)
+
+
+def _http_miss(exc: httpx.HTTPError) -> str:
+    """The error class, and the status when there was one; never the URL."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{type(exc).__name__} {exc.response.status_code}"
+    return type(exc).__name__
+
+
 async def _fetch_stock_series(
     symbol: str,
     interval: str,
     start_date: Optional[str],
     end_date: Optional[str],
 ) -> tuple[Optional[dict], Optional[dict]]:
-    """Fetch stock OHLCV: ginlix-data (US) → FMP fallback (global).
+    """Fetch stock OHLCV: ginlix-data (CN daily, then US) → FMP fallback (global).
 
     Returns ``(make_response_kwargs, None)`` on success or ``(None, error)``.
     The success kwargs carry canonical ``symbol``/``interval``, ``currency``,
-    ``timezone``, ``data`` (ascending), and the resolved ``source``.
+    ``timezone``, ``data`` (ascending), the resolved ``source``, and for
+    CN and HK listings the local-language ``name``, whichever source served
+    the bars.
     """
-    display, legacy, currency, timezone = _resolve(symbol)
+    resolved = _resolve(symbol)
+    (name, _), (ok, err) = await asyncio.gather(
+        _names.display_names(resolved[1]),
+        _fetch_stock_bars(resolved, interval, start_date, end_date),
+    )
+    if ok is not None and name:
+        ok["name"] = name
+    return ok, err
+
+
+async def _fetch_stock_bars(
+    resolved: tuple[str, str, Optional[str], Optional[str]],
+    interval: str,
+    start_date: Optional[str],
+    end_date: Optional[str],
+) -> tuple[Optional[dict], Optional[dict]]:
+    display, legacy, currency, timezone = resolved
     canonical, err = _resolve_interval(interval, _STOCK_INTERVALS, symbol=display)
     if err is not None:
         return None, err
@@ -183,7 +222,39 @@ async def _fetch_stock_series(
             interval=canonical,
         )
 
-    # ginlix-data first (US equities only; returns None for anything else).
+    # CN A-shares, daily bars only: ginlix-data's minute history is short, so
+    # CN intraday stays on the existing fallbacks.
+    # Empty/error falls through the chain unchanged.
+    if not intraday and symbol_market(legacy) == "cn":
+        # The window runs back from the end the caller gave, else from today.
+        cn_start = start_date
+        if not start_date:
+            try:
+                end = datetime.strptime((end_date or "")[:10], "%Y-%m-%d")
+            except ValueError:
+                end = datetime.now(_tz.utc)
+            cn_start = (end - timedelta(days=_CN_DEFAULT_DAILY_DAYS)).strftime("%Y-%m-%d")
+        try:
+            bars = (await _cn.get_daily(legacy, cn_start, end_date)).bars
+        except httpx.HTTPError as exc:
+            # An upstream miss (a 503, a 429, a dropped connection) is expected and
+            # the chain answers instead, so one line is enough.
+            logger.warning("ginlix-data CN daily unavailable for %s: %s", display, _http_miss(exc))
+            bars = []
+        except Exception:  # noqa: BLE001 - soft miss, chain continues
+            logger.warning("ginlix-data CN daily failed for %s", display, exc_info=True)
+            bars = []
+        if bars:
+            return {
+                "data": _display_rows(bars, legacy, intraday=False),
+                "source": "tushare",
+                "symbol": display,
+                "interval": canonical,
+                "currency": currency,
+                "timezone": timezone,
+            }, None
+
+    # ginlix-data's US tier (US equities only; returns None for anything else).
     ginlix_result = await _ginlix.fetch_stock_data(legacy, canonical, start_date, end_date)
     if isinstance(ginlix_result, dict):
         return None, error_from_upstream(
@@ -244,9 +315,15 @@ async def _fetch_stock_series(
 mcp = MCPServer("PriceDataMCP", lifespan=_lifespan)
 
 
+_NAME_ECHO = described(STR, "Local-language company name; CN and HK listings only, omitted elsewhere.")
+
 _OUT_GET_STOCK_DATA = output_model(
     "GetStockDataOut",
-    envelope_schema(RECORDS, frame=("symbol", "interval", "currency", "timezone")),
+    envelope_schema(
+        RECORDS,
+        frame=("symbol", "interval", "currency", "timezone"),
+        echo={"name": _NAME_ECHO},
+    ),
 )
 
 
@@ -263,16 +340,17 @@ async def get_stock_data(
     accepted). start_date and end_date are required for intraday.
 
     Args:
-        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SS", LSE "VOD.L".
+        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH", LSE "VOD.L".
         interval: Bar size; one of the intervals above.
         start_date: "YYYY-MM-DD" (append " HH:MM" for intraday time filtering).
         end_date: "YYYY-MM-DD" (append " HH:MM" for intraday time filtering).
 
     Returns:
-        dict: {symbol, interval, currency, timezone, count, data, source}. data:
-        list of {date, open, high, low, close, volume} ascending (oldest first);
-        date exchange-local "YYYY-MM-DD" (daily) or "YYYY-MM-DD HH:MM:SS"
-        (intraday); prices in `currency` major units. On error:
+        dict: {symbol, interval, currency, timezone, count, data, source,
+        name?}. data: list of {date, open, high, low, close, volume} ascending
+        (oldest first); date exchange-local "YYYY-MM-DD" (daily) or
+        "YYYY-MM-DD HH:MM:SS" (intraday); prices in `currency` major units.
+        name: local-language company name, CN and HK listings only. On error:
         {error: <code>, detail}.
     """
     env, err = await _fetch_stock_series(symbol, interval, start_date, end_date)
@@ -286,7 +364,7 @@ _OUT_GET_ASSET_DATA = output_model(
     envelope_schema(
         RECORDS,
         frame=("symbol", "interval", "currency", "timezone"),
-        echo={"asset_type": STR},
+        echo={"asset_type": STR, "name": _NAME_ECHO},
     ),
 )
 
@@ -313,9 +391,10 @@ async def get_asset_data(
 
     Returns:
         dict: {symbol, asset_type, interval, currency, timezone, count, data,
-        source}. data: list of {date, open, high, low, close, volume} ascending
-        (oldest first); date exchange-local "YYYY-MM-DD[ HH:MM:SS]"; prices in
-        `currency` major units. On error: {error: <code>, detail}.
+        source, name?}. data: list of {date, open, high, low, close, volume}
+        ascending (oldest first); date exchange-local "YYYY-MM-DD[ HH:MM:SS]";
+        prices in `currency` major units. name: local-language company name,
+        CN and HK stock listings only. On error: {error: <code>, detail}.
     """
     at = asset_type.lower().strip()
     if at not in {"stock", "commodity", "crypto", "forex"}:

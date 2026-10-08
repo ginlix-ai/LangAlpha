@@ -48,32 +48,6 @@ def get_market_session(now: Optional[datetime] = None) -> Tuple[str, datetime]:
         return "CLOSED", now_et
 
 
-def format_number(value: Optional[float], suffix: bool = True) -> str:
-    """
-    Format large numbers with B/M/T suffixes or as currency.
-
-    Args:
-        value: Number to format
-        suffix: Whether to add B/M/T suffix for large numbers
-
-    Returns:
-        Formatted string (e.g., "$3.68T", "$247.92")
-    """
-    if value is None:
-        return "N/A"
-
-    if suffix and abs(value) >= 1e12:
-        return f"${value / 1e12:.2f}T"
-    elif suffix and abs(value) >= 1e9:
-        return f"${value / 1e9:.2f}B"
-    elif suffix and abs(value) >= 1e6:
-        return f"${value / 1e6:.2f}M"
-    elif suffix:
-        return f"${value:,.2f}"
-    else:
-        return f"{value:,.2f}"
-
-
 def finite_or_none(value) -> Optional[float]:
     """Return value if it's a finite number, else None (NaN/Inf/non-numeric)."""
     return value if isinstance(value, (int, float)) and math.isfinite(value) else None

@@ -205,6 +205,13 @@ market_data:
   providers:
     - name: ginlix-data
       markets: [us]          # US equities only
+    - name: tushare
+      markets: [cn]          # A-share daily bars (qfq-adjusted), served by ginlix-data
+      intraday_markets: []   # ginlix-data's minute history is short, so intraday
+                             # stays on the fallbacks; the probe ruleset
+                             # (data_routing.yaml) can override this
+      snapshot_markets: [cn] # realtime A-share quotes (equities; indices/ETFs
+                             # fall through)
     - name: yfinance
       markets: []                 # priority slot: non-US intraday only —
       intraday_markets: [non-us]  # native session anchors incl. lunch gaps
@@ -235,6 +242,9 @@ news_poll:
       limit: 50
     - provider: null       # Provider-chain general feed / Market tab (news:general:<limit>)
       limit: 50
+    - provider: tushare    # CN market feed (news:tushare:general:<limit>), served only to
+      limit: 50            # zh-locale users opted into the a_share_pack feature; needs
+                           # GINLIX_DATA_URL, and is skipped at startup without it
 
 # Order reconciliation: asks each connected brokerage what became of an order
 # the host stopped watching, so a lost answer settles and a working order

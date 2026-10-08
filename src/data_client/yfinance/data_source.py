@@ -13,10 +13,13 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
-
 from src.data_client.normalize import build_series, minor_unit_scale, scale_snapshot_prices
-from src.market_protocol import InstrumentRef, Series
+from market_protocol import InstrumentRef, Series, to_canonical
+from market_protocol.calendars import get_calendar, session_bounds
+from market_protocol.enums import AssetClass
+from src.utils.market_hours import interval_seconds
+
+from .yahoo import yahoo_symbol, yahoo_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +115,7 @@ def _fetch_history(
     scale: float = 1.0,
 ) -> list[dict[str, Any]]:
     """Synchronous helper — called via ``asyncio.to_thread``."""
-    ticker = yf.Ticker(symbol)
+    ticker = yahoo_ticker(symbol)
 
     # auto_adjust=False: Yahoo's Close is split-adjusted only (dividends live
     # in Adj Close, which we don't read) — the whole provider chain declares
@@ -137,10 +140,57 @@ def _fetch_history(
     return [_normalize_bar(idx, row, scale) for idx, row in df.iterrows()]
 
 
+def _place_in_sessions(
+    bars: list[dict[str, Any]], symbol: str, is_index: bool, interval: str,
+) -> list[dict[str, Any]]:
+    """Fit Yahoo's intraday grid around a venue's midday break.
+
+    Yahoo pads the A-share 11:30-13:00 break with flat zero-volume bars, and
+    its hourly grid, anchored at the open, starts a bar at 12:30 inside both
+    the Shanghai and the Hong Kong break. A bar wholly inside a break carries no
+    trading and is dropped; one that starts in it holds the reopen's trades, so
+    it starts at the reopen.
+    """
+    try:
+        ref = to_canonical(symbol, asset_class=AssetClass.INDEX if is_index else None)
+        tz = get_calendar(ref.calendar_id).tz
+    except Exception:
+        return bars
+    span_ms = interval_seconds(interval) * 1000
+    breaks: dict[date, tuple[int, int] | None] = {}
+    placed = []
+    for bar in bars:
+        day = datetime.fromtimestamp(bar["time"] / 1000, tz).date()
+        if day not in breaks:
+            bounds = session_bounds(ref.calendar_id, day.isoformat())
+            breaks[day] = (bounds[2], bounds[3]) if bounds and bounds[2] is not None else None
+        brk = breaks[day]
+        if brk is None or not brk[0] <= bar["time"] < brk[1]:
+            placed.append(bar)
+        elif bar["time"] + span_ms > brk[1]:
+            placed.append({**bar, "time": brk[1]})
+    return placed
+
+
+def _print_time_ms(ticker: Any) -> int | None:
+    """The quote's print time, from the chart metadata ``fast_info`` already
+    fetched, so stamping it costs no request. Without it a row printed in the
+    previous session cannot be told from today's."""
+    try:
+        t = ticker.history_metadata.get("regularMarketTime")
+    except Exception:
+        return None
+    if isinstance(t, datetime):  # yfinance formats it as a pandas Timestamp
+        return int(t.timestamp() * 1000)
+    if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0:
+        return int(t) * 1000
+    return None
+
+
 def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
     """Fetch snapshot for a single symbol. Returns None on failure."""
     try:
-        ticker = yf.Ticker(sym)
+        ticker = yahoo_ticker(sym)
         fi = ticker.fast_info
         # NaN is truthy, so `nan or 0` stays NaN — route every numeric field
         # through _finite() so a snapshot can never carry non-finite floats.
@@ -170,6 +220,10 @@ def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
             "market_status": None,
             "early_trading_change_percent": None,
             "late_trading_change_percent": None,
+            # regularMarketTime: the regular session's last print, which
+            # stands through the extended hours that follow.
+            "as_of": _print_time_ms(ticker),
+            "regular_only": True,
         }
     except Exception:
         logger.warning("yfinance.snapshot.failed | symbol=%s", sym, exc_info=True)
@@ -181,10 +235,7 @@ class YFinanceDataSource:
 
     @staticmethod
     def _api_symbol(symbol: str, is_index: bool) -> str:
-        # Suffixed index symbols (000300.SS) are already valid — never caret them.
-        if not is_index or symbol.startswith("^") or "." in symbol:
-            return symbol
-        return f"^{symbol}"
+        return yahoo_symbol(symbol, is_index=is_index)
 
     async def get_intraday(
         self,
@@ -202,9 +253,10 @@ class YFinanceDataSource:
             )
         api_symbol = self._api_symbol(symbol, is_index)
         scale = minor_unit_scale(symbol)
-        return await asyncio.to_thread(
+        bars = await asyncio.to_thread(
             _fetch_history, api_symbol, yf_interval, from_date, to_date, scale
         )
+        return _place_in_sessions(bars, symbol, is_index, interval)
 
     async def get_daily(
         self,
@@ -226,21 +278,29 @@ class YFinanceDataSource:
         asset_type: str = "stocks",
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        prepared = [
-            self._api_symbol(s, is_index=(asset_type == "indices")) for s in symbols
-        ]
+        prepared: list[tuple[str, str]] = []  # (as requested, as Yahoo spells it)
+        refused: ValueError | None = None
+        for s in symbols:
+            try:
+                prepared.append((s, self._api_symbol(s, is_index=(asset_type == "indices"))))
+            except ValueError as exc:
+                # A symbol Yahoo cannot be asked for is a miss like any other,
+                # not a failure of the whole batch.
+                refused = refused or exc
         if not prepared:
+            if refused is not None:
+                raise refused
             return []
         results = await asyncio.gather(
-            *(asyncio.to_thread(_fetch_single_snapshot, s) for s in prepared)
+            *(asyncio.to_thread(_fetch_single_snapshot, api) for _, api in prepared)
         )
-        # gather preserves order, so results[i] maps back to symbols[i]. Restore
+        # gather preserves order, so results[i] maps back to prepared[i]. Restore
         # the originally-requested (bare) symbol — the caret was only for the
         # Yahoo query — so the provider chain matches on the requested ticker
         # instead of dropping "^GSPC" as unrequested. Keeps yfinance consistent
         # with FMP/ginlix-data, which already return bare index symbols.
         out: list[dict[str, Any]] = []
-        for original, snap in zip(symbols, results):
+        for (original, _), snap in zip(prepared, results):
             if snap is None:
                 continue
             snap["symbol"] = original

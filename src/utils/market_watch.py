@@ -4,6 +4,8 @@ import asyncio
 import logging
 import re
 
+from market_protocol import display_spelling
+
 from src.config.settings import get_market_watch_max_symbols, get_redis_ttl_market_watch
 from src.utils.cache.redis_cache import get_cache_client
 
@@ -25,7 +27,11 @@ def watch_key(thread_id: str) -> str:
 
 
 def _clean(symbols: list[str] | str | None) -> list[str]:
-    """Clean and normalize symbols. Coerce int to str, skip other types."""
+    """Clean and normalize symbols. Coerce int to str, skip other types.
+
+    Venue suffixes take our spelling, so ``600519.SS`` and ``600519.SH`` are
+    one watched listing.
+    """
     # Treat bare string as single symbol (not character iteration).
     if isinstance(symbols, str):
         symbols = [symbols]
@@ -36,7 +42,7 @@ def _clean(symbols: list[str] | str | None) -> list[str]:
         if s is None or isinstance(s, (dict, list)):
             continue
         if isinstance(s, (str, int)):
-            sym = str(s).strip().upper()
+            sym = display_spelling(str(s))
             if sym and _SYMBOL_RE.fullmatch(sym) and sym not in out:
                 out.append(sym)
     return out
@@ -89,8 +95,10 @@ async def remove_symbols(
             if symbols is None:
                 await cache.delete(watch_key(thread_id))
                 return []
+            # The stored list can predate a respelling (600519.SS), so it is
+            # read in our spelling before it is compared.
             drop = set(_clean(symbols))
-            remaining = [s for s in await get_watchlist(thread_id) if s not in drop]
+            remaining = [s for s in _clean(await get_watchlist(thread_id)) if s not in drop]
             await cache.set(
                 watch_key(thread_id), remaining, ttl=get_redis_ttl_market_watch()
             )

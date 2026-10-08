@@ -64,6 +64,7 @@ from src.server.models.automation import (
 )
 from src.server.services.automations import lifecycle
 from src.server.services.llm import user_models
+from src.server.services.price_monitor import watched_market
 from src.utils.timezone_utils import zone_or_none
 
 logger = logging.getLogger(__name__)
@@ -656,10 +657,20 @@ def _next_run(row: dict[str, Any] | None) -> str:
             config = PriceTriggerConfig(**(row.get("trigger_config") or {}))
         except (ValidationError, TypeError):
             return ""
-        feed = "an index" if config.market == MarketType.INDEX else "a US stock"
-        return f"; watching {config.symbol} as {feed}"
+        return f"; watching {config.symbol} as {_watched_as(config)}"
     when = _iso(row.get("next_run_at"), row.get("timezone"))
     return f"; next run {when}" if when else ""
+
+
+def _watched_as(config: PriceTriggerConfig) -> str:
+    """``a CN stock``, ``an HK index``: the market is the monitor's own reading."""
+    kind = "index" if config.market == MarketType.INDEX else "stock"
+    market = watched_market(config.symbol, config.market) or "other"
+    if market == "other":
+        return f"{'an' if kind == 'index' else 'a'} {kind} on an unknown venue"
+    label = market.upper()
+    # The article follows the first letter's spoken name: an HK, a US.
+    return f"{'an' if label[0] in 'AEFHILMNORSX' else 'a'} {label} {kind}"
 
 
 def _at(model_field: str | None) -> str:

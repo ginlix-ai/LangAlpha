@@ -275,7 +275,7 @@ async def lifespan(app: FastAPI):
 
     # Pre-build market calendars so session lookups never build on a request path
     try:
-        from src.market_protocol.calendars import prebuild_calendars
+        from market_protocol.calendars import prebuild_calendars
 
         built = await asyncio.to_thread(prebuild_calendars)
         logger.info(f"Market calendars pre-built: {built}")

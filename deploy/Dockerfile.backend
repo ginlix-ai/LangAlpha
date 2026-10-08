@@ -30,6 +30,7 @@ COPY pyproject.toml uv.lock README.md ./
 # servers included; they start with a filtered environment, so setting
 # UV_FROZEN here would not reach them.
 COPY libs/ptc-cli/ libs/ptc-cli/
+COPY libs/market-protocol/ libs/market-protocol/
 
 # Install dependencies (frozen = use lockfile exactly).
 ARG INSTALL_OBSERVABILITY=false

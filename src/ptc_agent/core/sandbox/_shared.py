@@ -1,6 +1,7 @@
 """Shared dataclasses, constants, and module helpers for the sandbox package."""
 
 import hashlib
+import importlib.util
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,12 +30,25 @@ _MCP_SHARED_RUNTIME_FILES: tuple[str, ...] = (
     "_yf_common.py",
 )
 
-# Internal ``src.<pkg>`` packages mirrored into the sandbox's ``_internal/src/``
-# so sandbox code and the builtin MCP servers can ``import src.<pkg>`` without
-# the full repo. Shipped and hashed as ONE manifest module (``internal_packages``)
-# because the upload is all-or-nothing; every regular file ships so data seeds
-# (e.g. ``market_protocol/instruments.yaml``) can never silently drop.
-_SANDBOX_INTERNAL_PACKAGES: tuple[str, ...] = ("data_client", "market_protocol")
+# Packages mirrored into the sandbox's ``_internal/src/`` so sandbox code and
+# the builtin MCP servers can import them without the full repo. Each is keyed
+# by its sandbox name and resolved from the module the backend itself imports,
+# so the sandbox runs the same code as the server. Shipped and hashed as ONE
+# manifest module (``internal_packages``) because the upload is all-or-nothing;
+# every regular file ships so data seeds (e.g.
+# ``market_protocol/instruments.yaml``) can never silently drop.
+_SANDBOX_INTERNAL_PACKAGES: dict[str, str] = {
+    "data_client": "src.data_client",
+    "market_protocol": "market_protocol",
+}
+
+
+def _internal_package_dir(module: str) -> Path | None:
+    spec = importlib.util.find_spec(module)
+    if spec is None or spec.origin is None:
+        return None
+    return Path(spec.origin).resolve().parent
+
 
 #: Backend-owned script that walks, hashes and moves workspace files inside the
 #: sandbox. Lives beside this module on the host; ships to ``_internal/src/``.
@@ -134,9 +148,9 @@ def _internal_package_files(src_dir: Path) -> list[tuple[Path, Path]]:
         ))
     for livefs_file in sorted(_LIVEFS_SOURCE_DIR.glob("*.py")):
         files.append((livefs_file, Path(LIVEFS_SANDBOX_PACKAGE) / livefs_file.name))
-    for pkg in _SANDBOX_INTERNAL_PACKAGES:
-        pkg_dir = (src_dir / pkg).resolve()
-        if not pkg_dir.exists():
+    for pkg, module in _SANDBOX_INTERNAL_PACKAGES.items():
+        pkg_dir = _internal_package_dir(module)
+        if pkg_dir is None or not pkg_dir.exists():
             logger.warning(
                 "Internal package not found - skipping",
                 package=pkg,
@@ -146,7 +160,7 @@ def _internal_package_files(src_dir: Path) -> list[tuple[Path, Path]]:
         for file_path in sorted(pkg_dir.rglob("*")):
             if not file_path.is_file() or "__pycache__" in file_path.parts:
                 continue
-            files.append((file_path, file_path.relative_to(src_dir)))
+            files.append((file_path, Path(pkg) / file_path.relative_to(pkg_dir)))
     return files
 
 

@@ -26,6 +26,28 @@ describe('threadPersistence', () => {
       expect(getMarketThreadId(WS, 'Nvda')).toBe('thread-abc-123');
     });
 
+    it('keys Shanghai under its display spelling, whichever spelling asks', () => {
+      setMarketThreadId(WS, '600519.SS', 'thread-sh');
+      expect(getMarketThreadId(WS, '600519.SH')).toBe('thread-sh');
+    });
+
+    it('adopts a pointer saved under the old Shanghai spelling', () => {
+      localStorage.setItem(`marketview_thread_id_${WS}_600519.SS`, 'thread-old');
+      expect(getMarketThreadId(WS, '600519.SH')).toBe('thread-old');
+      expect(localStorage.getItem(`marketview_thread_id_${WS}_600519.SS`)).toBeNull();
+      // Read again from where it moved, not from the old key.
+      expect(getMarketThreadId(WS, '600519.SH')).toBe('thread-old');
+    });
+
+    it('adopts a pointer saved under a Hong Kong code as typed, bare or at five digits', () => {
+      localStorage.setItem(`marketview_thread_id_${WS}_700.HK`, 'thread-tencent');
+      localStorage.setItem(`marketview_thread_id_${WS}_09988.HK`, 'thread-baba');
+      expect(getMarketThreadId(WS, '0700.HK')).toBe('thread-tencent');
+      expect(getMarketThreadId(WS, '9988.HK')).toBe('thread-baba');
+      expect(localStorage.getItem(`marketview_thread_id_${WS}_700.HK`)).toBeNull();
+      expect(localStorage.getItem(`marketview_thread_id_${WS}_09988.HK`)).toBeNull();
+    });
+
     it('returns null when no entry exists for that (workspace, symbol)', () => {
       expect(getMarketThreadId(WS, 'AAPL')).toBeNull();
     });

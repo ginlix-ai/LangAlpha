@@ -102,6 +102,46 @@ describe('useDashboardData', () => {
     expect(item.tickers).toEqual(['AAPL']);
   });
 
+  it('market feed paginates by cursor, de-duping across pages', async () => {
+    const row = (id: string) => ({
+      id,
+      title: `Story ${id}`,
+      published_at: new Date().toISOString(),
+      source: { name: 'Reuters' },
+      tickers: [],
+    });
+    // getNews serves both the market and curated queries — dispatch on args.
+    mockGetNews.mockImplementation(async ({ provider, cursor }: { provider?: string; cursor?: string }) => {
+      if (provider === 'tickertick') return { results: [], count: 0, next_cursor: null };
+      if (!cursor) return { results: [row('n-1'), row('n-2')], count: 2, next_cursor: 'n-2' };
+      return { results: [row('n-2'), row('n-3')], count: 2, next_cursor: null };
+    });
+
+    const { result } = renderHookWithProviders(() => useDashboardData());
+
+    await waitFor(() => expect(result.current.newsItems.length).toBe(2));
+    expect(result.current.newsHasNextPage).toBe(true);
+
+    result.current.newsFetchNextPage();
+
+    // Page 2's duplicate n-2 (feed rotation) is dropped; n-3 appends.
+    await waitFor(() => expect(result.current.newsItems.length).toBe(3));
+    expect(result.current.newsItems.map((i) => i.id)).toEqual(['n-1', 'n-2', 'n-3']);
+    expect(result.current.newsHasNextPage).toBe(false);
+    expect(mockGetNews).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 50, cursor: 'n-2' }),
+    );
+  });
+
+  it('market feed offers no next page when the feed serves no cursor', async () => {
+    mockGetNews.mockResolvedValue({ results: [], count: 0, next_cursor: null });
+
+    const { result } = renderHookWithProviders(() => useDashboardData());
+
+    await waitFor(() => expect(result.current.newsLoading).toBe(false));
+    expect(result.current.newsHasNextPage).toBe(false);
+  });
+
   it('provides a marketStatusRef for backward compatibility', async () => {
     const { result } = renderHookWithProviders(() => useDashboardData());
 

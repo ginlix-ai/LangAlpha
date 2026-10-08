@@ -25,7 +25,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# yfinance servers import ``src.market_protocol`` at module level (via
+# yfinance servers import ``market_protocol`` at module level (via
 # _yf_common), so they too need the _bootstrap repo-root bridge — the same
 # regression class this gate exists to catch.
 _ENTRYPOINT_SERVERS = {

@@ -20,7 +20,7 @@ from src.data_client.fmp.data_source import normalize_series as fmp_normalize_se
 from src.data_client.normalize import minor_unit_scale
 from src.data_client.yfinance.data_source import YFinanceDataSource, _normalize_bar
 from src.data_client.yfinance.data_source import normalize_series as yf_normalize_series
-from src.market_protocol import to_canonical
+from market_protocol import to_canonical
 
 LSE = "VOD.L"   # XLON — quotes GBX (pence)
 US = "AAPL"     # XNAS — quotes USD (major units)
@@ -162,7 +162,7 @@ def _yf_snapshot(sym, **over):
 @pytest.mark.asyncio
 async def test_yfinance_intraday_lse_scaled_to_major_units():
     with patch(
-        "src.data_client.yfinance.data_source.yf.Ticker",
+        "src.data_client.yfinance.yahoo.yf.Ticker",
         return_value=_FakeTicker(_yf_df()),
     ):
         bars = await YFinanceDataSource().get_intraday(LSE, "1hour")
@@ -177,7 +177,7 @@ async def test_yfinance_intraday_lse_scaled_to_major_units():
 @pytest.mark.asyncio
 async def test_yfinance_intraday_us_untouched():
     with patch(
-        "src.data_client.yfinance.data_source.yf.Ticker",
+        "src.data_client.yfinance.yahoo.yf.Ticker",
         return_value=_FakeTicker(_yf_df(open_=190.0, high=191.0, low=189.0, close=190.5)),
     ):
         bars = await YFinanceDataSource().get_intraday(US, "1hour")

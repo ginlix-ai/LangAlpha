@@ -8,26 +8,10 @@
  */
 import { api } from '@/api/client';
 import { normalizeIndexKey } from '@/lib/marketUtils';
+import type { SnapshotBatchResponse, SnapshotData } from '@/types/market';
 
-export interface SnapshotEntry {
-  symbol: string;
-  name?: string;
-  price?: number;
-  change?: number;
-  change_percent?: number;
-  previous_close?: number;
-  early_trading_change_percent?: number;
-  late_trading_change_percent?: number;
-  // Backend ships additional fields (open/high/low/volume, …); accept them so a
-  // snapshot row is assignable to the quote layer's QuoteRow.
-  [key: string]: unknown;
-}
-
-export interface SnapshotResponse {
-  snapshots?: SnapshotEntry[];
-  results?: SnapshotEntry[];
-  data?: SnapshotEntry[];
-}
+export type SnapshotEntry = SnapshotData;
+export type SnapshotResponse = SnapshotBatchResponse;
 
 // Default index basket for a no-arg indexes batch (mirrors Dashboard's).
 const DEFAULT_INDEX_SYMBOLS: string[] = ['GSPC', 'IXIC', 'DJI', 'RUT', 'VIX'];

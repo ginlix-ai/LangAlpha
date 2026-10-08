@@ -182,11 +182,25 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
   };
   const { items, loading } = sources[activeTab];
 
-  // Infinite scroll — only the Top feed is cursor-paginated (TickerTick). As the
-  // user nears the end (rootMargin below), prefetch the next page.
-  const hasNextPage = activeTab === 'top' && !!dashboard.curatedHasNextPage;
-  const isFetchingNextPage = activeTab === 'top' && !!dashboard.curatedIsFetchingNextPage;
-  const fetchNextPage = activeTab === 'top' ? dashboard.curatedFetchNextPage : undefined;
+  // Infinite scroll — the Top (TickerTick) and Market feeds are cursor-
+  // paginated; portfolio/watchlist are single-page. As the user nears the end
+  // (rootMargin below), prefetch the next page. The Market chain feed (non-CN
+  // users) never serves a cursor, so hasNextPage stays false there.
+  const paging =
+    activeTab === 'top'
+      ? {
+          hasNextPage: !!dashboard.curatedHasNextPage,
+          isFetchingNextPage: !!dashboard.curatedIsFetchingNextPage,
+          fetchNextPage: dashboard.curatedFetchNextPage,
+        }
+      : activeTab === 'market'
+        ? {
+            hasNextPage: !!dashboard.newsHasNextPage,
+            isFetchingNextPage: !!dashboard.newsIsFetchingNextPage,
+            fetchNextPage: dashboard.newsFetchNextPage,
+          }
+        : { hasNextPage: false, isFetchingNextPage: false, fetchNextPage: undefined };
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = paging;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -529,8 +543,8 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
           </motion.div>
         </AnimatePresence>
 
-        {/* Infinite-scroll trigger (Top feed). Sits below the list so the
-            observer fires as the user nears the end and prefetches the next page. */}
+        {/* Infinite-scroll trigger (Top + Market feeds). Sits below the list so
+            the observer fires as the user nears the end and prefetches the next page. */}
         <div ref={sentinelRef} aria-hidden className="h-px w-full" />
         {isFetchingNextPage ? (
           <div className="flex justify-center py-3">

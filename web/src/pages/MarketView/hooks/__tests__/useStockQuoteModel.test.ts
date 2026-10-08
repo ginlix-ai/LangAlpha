@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveStockQuote, type StockQuoteInputs } from '../useStockQuoteModel';
+import { deriveStockQuote, quoteDotState, type StockQuoteInputs } from '../useStockQuoteModel';
 
 const base: StockQuoteInputs = {
   symbol: 'AMD',
@@ -59,5 +59,21 @@ describe('deriveStockQuote', () => {
   it('carries the live tick time only when the row is a tick', () => {
     expect(deriveStockQuote({ ...base, realTimePrice: row }).tickAt).toBeNull();
     expect(deriveStockQuote({ ...base, realTimePrice: { ...row, timestamp: 1700000000000 } }).tickAt).toBe(1700000000000);
+  });
+});
+
+describe('quoteDotState', () => {
+  const dot = (snapshot: StockQuoteInputs['snapshot']) => quoteDotState(deriveStockQuote({ ...base, snapshot }));
+
+  it('keeps a delay neutral and warns only on stale or short-of-close data', () => {
+    expect(dot({ symbol: 'AMD', tier: 'delayed_15m' })).toBe('delayed');
+    expect(dot({ symbol: 'AMD', tier: 'eod' })).toBe('delayed');
+    expect(dot({ symbol: 'AMD', freshness: { label: 'stale', measured: true } })).toBe('warning');
+    expect(dot({ symbol: 'AMD', freshness: { label: 'incomplete', measured: true } })).toBe('warning');
+  });
+
+  it('reads a current REST print as realtime and leaves the venue states alone', () => {
+    expect(dot({ symbol: 'AMD', freshness: { label: 'live', measured: true } })).toBe('realtime');
+    expect(quoteDotState(deriveStockQuote({ ...base, marketPhase: 'closed', snapshot: { symbol: 'AMD', freshness: { label: 'stale', measured: true } } }))).toBe('closed');
   });
 });

@@ -174,23 +174,38 @@ describe('MarketChartSurface', () => {
     expect(chart.props!.interval).toBe('5min');
   });
 
-  it('shows nothing of the previous company while the new symbol’s quote is loading', () => {
-    sd.stockInfo = { Symbol: 'AAPL', Name: 'Apple Inc.', Price: 190 };
-    sd.snapshotData = { symbol: 'AAPL', previous_close: 189 };
+  it('renders dashes and the bare symbol while the new symbol’s quote is loading', () => {
+    // useStockData holds no row for a symbol whose quote is in flight.
+    sd.stockInfo = null;
+    sd.snapshotData = null;
     render(<MarketChartSurface symbol="GOOGL" />);
 
     const quote = header.props!.quote as Record<string, unknown>;
     expect(quote.price).toBeNull();
     expect(quote.previousClose).toBeNull();
-    expect(quote.displayName).toBe('GOOGL Corp');
+    // No name yet: the symbol stands in, never the previous company's name.
+    expect(quote.displayName).toBe('GOOGL');
     expect(chart.props!.snapshot).toBeNull();
+  });
+
+  it('reads an index row spelled bare under its caret ticker', () => {
+    // Index rows answer as `GSPC`; the page holds `^GSPC`. Rejecting the row
+    // left the header Delayed with no as-of and the chart with no close line.
+    sd.stockInfo = { Symbol: '^GSPC', Price: 5000 };
+    sd.snapshotData = { symbol: 'GSPC', requested: ['GSPC'], asset_class: 'index', price: 5000, as_of: 1_800_000_000_000 };
+    render(<MarketChartSurface symbol="^GSPC" />);
+
+    const quote = header.props!.quote as Record<string, unknown>;
+    expect(chart.props!.snapshot).toBe(sd.snapshotData);
+    expect(quote.asOf).toBe(1_800_000_000_000);
+    expect(quote.currency).toBeNull();
   });
 
   it('names the picked company from the search hit until its own quote lands', () => {
     const onSwitchSymbol = vi.fn();
     const { rerender } = render(<MarketChartSurface symbol="AAPL" onSwitchSymbol={onSwitchSymbol} />);
     const displayName = () => (header.props!.quote as Record<string, unknown>).displayName;
-    expect(displayName()).toBe('AAPL Corp');
+    expect(displayName()).toBe('AAPL');
 
     act(() => fireEvent.click(screen.getByTestId('stock-header-pick')));
     rerender(<MarketChartSurface symbol="GOOGL" onSwitchSymbol={onSwitchSymbol} />);
@@ -198,7 +213,7 @@ describe('MarketChartSurface', () => {
 
     // The name belongs to the symbol it was picked for, not to whatever is up next.
     rerender(<MarketChartSurface symbol="MSFT" onSwitchSymbol={onSwitchSymbol} />);
-    expect(displayName()).toBe('MSFT Corp');
+    expect(displayName()).toBe('MSFT');
   });
 
   it('follows a timeframe prop change after the toolbar moved the interval', () => {
@@ -252,14 +267,6 @@ describe('MarketChartSurface', () => {
     expect(header.props!.wsHasData).toBe(true);
     // liveTick is sourced from the WS bar payload.
     expect(chart.props!.liveTick).toEqual(wsPrice.barData);
-  });
-
-  it('falls back to REST price only when it matches the current symbol', () => {
-    // No WS price; REST price is for a DIFFERENT symbol → guarded to null.
-    sd.realTimePrice = { symbol: 'MSFT', price: 99 };
-    render(<MarketChartSurface symbol="AAPL" />);
-    expect((header.props!.quote as Record<string, unknown>).price).toBeNull();
-    expect(header.props!.wsHasData).toBe(false);
   });
 
   it('uses the REST price when it matches and there is no WS price', () => {

@@ -19,8 +19,8 @@ def _patched(ticker_news, search_news):
     search = MagicMock()
     search.news = search_news
     return (
-        patch("src.data_client.yfinance.news_source.yf.Ticker", return_value=ticker),
-        patch("src.data_client.yfinance.news_source.yf.Search", return_value=search),
+        patch("src.data_client.yfinance.yahoo.yf.Ticker", return_value=ticker),
+        patch("src.data_client.yfinance.yahoo.yf.Search", return_value=search),
     )
 
 
@@ -50,6 +50,6 @@ def test_ticker_news_wins_over_search():
 def test_a_failing_search_skips_the_symbol():
     ticker_patch, _ = _patched([], [])
     with ticker_patch, patch(
-        "src.data_client.yfinance.news_source.yf.Search", side_effect=Exception("down")
+        "src.data_client.yfinance.yahoo.yf.Search", side_effect=Exception("down")
     ):
         assert _fetch_news(["AAPL"], limit=5)["count"] == 0

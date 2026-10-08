@@ -6,22 +6,19 @@ check used by both DailyCacheService and IntradayCacheService.
 
 import time
 from bisect import bisect_left
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from src.config.core import get_infrastructure_config
-from src.data_client.normalize import publisher_lineage
-from src.market_protocol import to_canonical
-from src.market_protocol.enums import AssetClass, Tier
-from src.market_protocol.intervals import schema_for_legacy
-from src.server.services.cache._instrument_clock import UsClock, clock_for
+from src.data_client.normalize import ref_for_key, series_lineage
+from market_protocol import to_canonical
+from market_protocol.enums import AssetClass, PriceTreatment, Tier
+from market_protocol.intervals import schema_for_legacy
+from src.data_client.instrument_clock import clock_for
 from src.utils.market_hours import current_trading_date, interval_seconds
 
 _ET = ZoneInfo("America/New_York")
-
-# Default clock: XNYS via the market_hours facade (pre-CMDP parity).
-_US_CLOCK = UsClock()
 
 # v4 (Phase 3): protocol Series container — header + records, keyed on
 # instrument_key. v3 (legacy source-segmented keys) remains readable for
@@ -32,17 +29,22 @@ _US_CLOCK = UsClock()
 # change keeps serving the old shape for up to a whole weekend after deploy.
 # A mismatched version reads as a miss (refetch). v5: invalidates
 # pre-release v4 rows written before `market_phase` joined the cache block.
-ENVELOPE_VERSION = 5
+# v6: caret index families (HSI, N225, FTSE, GDAXI, FCHI, STOXX50E) moved
+# to their home venue, so their daily bars are stamped at venue midnight
+# instead of New York midnight; a delta refresh onto a v5 envelope would
+# splice the two encodings and draw the seam day twice.
+ENVELOPE_VERSION = 6
 _ENVELOPE_V3 = 3
 
 _SOFT_TTL_RATIO: float = get_infrastructure_config().redis.swr.soft_ttl_ratio
 _TRUNCATED_TTL_RATIO = 0.25  # aggressive refresh for truncated data
 _EMPTY_RESULT_TTL = 30  # short TTL for empty upstream results
-# Floor between consecutive staleness-driven daily re-fetches. When the
-# provider itself is behind (e.g. today's daily bar not yet published right
-# after the open), re-asking immediately can't yield newer data — without
-# this floor every request would bypass the cache with a blocking fetch.
-_DAILY_STALE_REFETCH_COOLDOWN = 120
+# Floor between consecutive staleness-driven re-fetches. When the provider
+# itself is behind (e.g. today's daily bar not yet published right after the
+# open), or the listing stopped printing (a suspended stock), re-asking
+# immediately can't yield newer data — without this floor every request would
+# bypass the cache with a blocking fetch.
+_STALE_REFETCH_COOLDOWN = 120
 
 # Phase settledness ladder for the daily post-close settle check. A daily
 # envelope written in a less-settled phase than the venue is in now holds a
@@ -102,18 +104,20 @@ def _build_envelope(
     schema: Optional[str] = None,
     publisher: Optional[str] = None,
     revision: int = 0,
+    lineage: Optional[tuple[PriceTreatment, Tier]] = None,
 ) -> Dict[str, Any]:
     """Build a v4 Series envelope (storage form).
 
     Protocol lineage lives in ``header``; cache-operational flags stay
     top-level. Records gain ``ts_event`` (bar-open ms UTC, aliasing the
-    legacy ``time`` they already carry).
+    legacy ``time`` they already carry). A fill that already resolved the
+    series' *lineage* passes it in rather than re-parsing the key.
     """
     watermark = bars[-1].get("time", 0) if bars else 0
     now = time.time()
     for b in bars:
         b.setdefault("ts_event", b.get("time"))
-    treatment, tier = publisher_lineage(publisher)
+    treatment, tier = lineage or series_lineage(publisher, ref_for_key(instrument_key))
     return {
         "v": ENVELOPE_VERSION,
         "header": {
@@ -155,7 +159,7 @@ def adopt_v3_envelope(
     bars = v3.get("bars") or []
     for b in bars:
         b.setdefault("ts_event", b.get("time"))
-    treatment, tier = publisher_lineage(publisher)
+    treatment, tier = series_lineage(publisher, ref_for_key(instrument_key))
     return {
         "v": ENVELOPE_VERSION,
         "header": {
@@ -314,13 +318,13 @@ def _is_stale_date(
     """Return True if the envelope's ``data_date`` is behind the current trading date.
 
     The trading date comes from the instrument's clock (calendar-correct for
-    non-US symbols; XNYS parity by default) and is valid in every market
+    non-US symbols; XNYS by default) and is valid in every market
     phase, including weekends and holidays — no phase gate needed.
     """
     data_date = envelope.get("data_date")
     if not data_date:
         return True  # missing data_date — treat as stale
-    return data_date != (clock or _US_CLOCK).current_trading_date(now)
+    return data_date != (clock or clock_for(None)).current_trading_date(now)
 
 
 def is_watermark_stale(
@@ -371,7 +375,7 @@ def is_watermark_stale(
             return False
         if not envelope.get("bars"):
             return False  # empty window — soft-TTL governs re-fetch timing
-        if time.time() - envelope.get("fetched_at", 0) < _DAILY_STALE_REFETCH_COOLDOWN:
+        if time.time() - envelope.get("fetched_at", 0) < _STALE_REFETCH_COOLDOWN:
             # Just fetched — the provider simply hasn't published a newer bar
             # yet; flagging stale again would re-fetch on every request.
             # Deliberately ahead of the corrupt-watermark check: a persistently
@@ -388,8 +392,21 @@ def is_watermark_stale(
         # partial values all evening.
         stored_phase = envelope.get("market_phase")
         if stored_phase is not None:
-            now_rank = _PHASE_SETTLEDNESS.get(clock.market_phase(now), 0)
-            if now_rank > _PHASE_SETTLEDNESS.get(stored_phase, 0):
+            now_phase = clock.market_phase(now)
+            if _PHASE_SETTLEDNESS.get(now_phase, 0) > _PHASE_SETTLEDNESS.get(stored_phase, 0):
+                return True
+            # Same rung, not yet final: a fetch in the minutes after the close
+            # (a venue with no post phase, or a regular-only index clock, goes
+            # straight from open to closed) is stored closed but incomplete
+            # while the feed's delay runs out, and no rung change follows to
+            # revisit it. Once that delay has passed, refetch it final.
+            if (
+                stored_phase == "closed"
+                and not envelope.get("complete")
+                and is_settled_complete(
+                    now_phase, envelope["bars"], clock, _envelope_tier(envelope), now,
+                )
+            ):
                 return True
         return False
     # Empty envelopes (no bars in requested window) are not meaningfully stale
@@ -398,11 +415,18 @@ def is_watermark_stale(
     # with no data; the soft TTL path handles re-fetch timing.
     if not envelope.get("bars"):
         return False
+    clock = clock or clock_for(symbol, is_index)
+    if envelope.get("complete") and clock.is_closed(now):
+        # The session's final form: no newer bar can exist before the open.
+        return False
+    if time.time() - envelope.get("fetched_at", 0) < _STALE_REFETCH_COOLDOWN:
+        # As on daily, and ahead of the corrupt-watermark check for the same
+        # reason: a listing that stopped printing answers a re-ask unchanged.
+        return False
     watermark_ms = envelope.get("watermark") or 0
     if watermark_ms <= 0:
         # Bars exist but watermark is 0 — envelope is corrupt, treat as stale.
         return True
-    clock = clock or clock_for(symbol, is_index)
     expected_ms = clock.expected_latest_bar_ms(interval, now)
     if expected_ms <= 0:
         return False
@@ -423,6 +447,47 @@ def _tier_delay_ms(envelope: Dict[str, Any]) -> int:
     return _TIER_DELAY_MS.get(tier, 0)
 
 
+def _envelope_tier(envelope: Dict[str, Any]) -> Tier:
+    """The envelope's declared feed tier; a headerless (v3) one reads as realtime,
+    matching the strict tolerance :func:`_tier_delay_ms` gives it."""
+    try:
+        return Tier((envelope.get("header") or {}).get("tier"))
+    except ValueError:
+        return Tier.REALTIME
+
+
+# How long after a venue's regular close its session may still print, before
+# the feed's declared delay: a closing auction past the close the calendar
+# knows (HKEX's runs to 16:10) plus its publication. Public so a quote of the
+# same session settles on the same window.
+CLOSE_SETTLE_GRACE = timedelta(minutes=15)
+_CLOSE_SETTLE_GRACE_MS = int(CLOSE_SETTLE_GRACE.total_seconds() * 1000)
+
+
+def is_settled_complete(
+    phase: str,
+    bars: List[Dict[str, Any]],
+    clock,
+    tier: Tier,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Whether a series fetched now may be stored as the session's final form.
+
+    A complete envelope is never refreshed until the next open, so declaring it
+    on the first post-close fetch freezes whatever a delayed feed had out at
+    that moment: a 15-minute feed read at 15:00 stops at 14:44 and never gains
+    the rest of the session. The flag waits until the feed's declared delay
+    has run past the close. *tier* is the series' declared feed tier.
+    """
+    if phase != "closed" or not bars:
+        return False
+    close_ms = clock.expected_latest_bar_ms("1day", now)
+    if close_ms <= 0:
+        return True
+    now_ms = int((now or datetime.now(timezone.utc)).timestamp() * 1000)
+    return now_ms >= close_ms + _TIER_DELAY_MS.get(tier.value, 0) + _CLOSE_SETTLE_GRACE_MS
+
+
 def _needs_refresh(
     envelope: Dict[str, Any],
     ttl: int,
@@ -439,7 +504,8 @@ def _needs_refresh(
     1. (live) Stale date (``data_date`` < current trading date) → always refresh.
     2. (live) Stale watermark (interval-aware) → always refresh — catches the
        case where the date is current but bars haven't advanced for N periods.
-    3. (live) Complete + market reopened → refresh (day-boundary transition).
+    3. (live) Complete + market reopened → refresh (day-boundary transition);
+       complete + closed → no refresh, unless truncated.
     4. Truncated data → aggressive 25% soft TTL (fires for both live and
        historical so incomplete ranges get retried).
     5. Normal → 50% soft TTL.
@@ -467,11 +533,14 @@ def _needs_refresh(
         ):
             return True
 
-        # 3. Complete + market reopened
+        # 3. Complete + market reopened. A complete series still truncated
+        # falls through: frozen until the next open, it would keep a missing
+        # session through the whole closed stretch.
         if envelope.get("complete"):
             if not clock.is_closed(now):
                 return True
-            return False
+            if not envelope.get("truncated"):
+                return False
 
     elapsed = time.time() - envelope.get("fetched_at", 0)
 

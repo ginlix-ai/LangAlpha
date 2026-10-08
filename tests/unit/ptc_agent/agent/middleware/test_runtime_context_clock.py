@@ -1,9 +1,10 @@
-"""Locks the offline market clock behind the runtime-context tail envelope.
+"""Locks the market clock behind the runtime-context tail envelope.
 
 Every case pins a literal instant. The module takes ``now`` from its caller
 precisely so the session math can be exercised without a clock, and a boundary
 that drifts (an open time, a holiday, a DST offset) has to fail here rather
-than in a rendered prompt.
+than in a rendered prompt. Holidays come from the published exchange calendars,
+so the dates below are the venues' own, not a list kept here.
 """
 
 from datetime import date, datetime, time, timedelta
@@ -30,6 +31,16 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 HONG_KONG = ZoneInfo("Asia/Hong_Kong")
 
 CLOCK = MarketClock()
+
+
+def monday_past_horizon(calendar_id: str) -> date:
+    """A Monday years past *calendar_id*'s published sessions, wherever they
+    end now: a calendar's horizon moves with each release, and a hard-coded
+    year would eventually fall inside it."""
+    from market_protocol.calendars import calendar_range
+
+    day = calendar_range(calendar_id)[1] + timedelta(days=3 * 366)
+    return day + timedelta(days=-day.weekday() % 7)
 
 
 def et(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:
@@ -117,8 +128,9 @@ def test_us_early_close_shortens_the_session():
     assert CLOCK.session_at("US", et(2026, 11, 30, 13, 30)).name == REGULAR_HOURS
 
 
-def test_us_year_outside_the_holiday_list_is_not_calendar_known():
-    session = CLOCK.session_at("US", et(2030, 9, 9, 10, 0))
+def test_us_day_past_the_calendar_horizon_falls_back_to_weekdays():
+    day = monday_past_horizon("XNYS")
+    session = CLOCK.session_at("US", et(day.year, day.month, day.day, 10, 0))
     assert session.name == REGULAR_HOURS
     assert session.calendar_known is False
 
@@ -136,7 +148,7 @@ def test_cn_lunch_break_is_closed_and_reopens_at_one():
     assert session.is_trading_day is True
     assert session.next_transition_at == datetime(2026, 9, 9, 13, 0, tzinfo=SHANGHAI)
     assert session.next_transition_name == REGULAR_HOURS
-    assert session.calendar_known is False
+    assert session.calendar_known is True
     assert session.market_tz == "Asia/Shanghai"
 
 
@@ -159,11 +171,91 @@ def test_hk_afternoon_session_and_close():
     session = CLOCK.session_at("HK", trading)
     assert session.name == REGULAR_HOURS
     assert session.next_transition_at == datetime(2026, 9, 9, 16, 0, tzinfo=HONG_KONG)
-    assert session.calendar_known is False
+    assert session.calendar_known is True
     assert session.market_tz == "Asia/Hong_Kong"
 
     noon = datetime(2026, 9, 9, 12, 30, tzinfo=HONG_KONG)
     assert CLOCK.session_at("HK", noon).name == CLOSED
+
+
+def test_cn_national_day_break_is_a_holiday_closure():
+    # Golden Week 2026: the mainland is shut from Thursday 10-01 through 10-07.
+    session = CLOCK.session_at("CN", datetime(2026, 10, 1, 10, 0, tzinfo=SHANGHAI))
+    assert session.name == CLOSED
+    assert session.is_trading_day is False
+    assert session.calendar_known is True
+    assert CLOCK.next_open("CN", datetime(2026, 10, 1, 10, 0, tzinfo=SHANGHAI)) == datetime(
+        2026, 10, 8, 9, 30, tzinfo=SHANGHAI
+    )
+    assert CLOCK.describe("CN", datetime(2026, 10, 1, 10, 0, tzinfo=SHANGHAI)).startswith(
+        "CN: closed (holiday),"
+    )
+    # Wednesday 09-30 and Thursday 10-08 close; nothing in between does.
+    assert sessions_closed_between(
+        "CN",
+        datetime(2026, 9, 30, 9, 0, tzinfo=SHANGHAI),
+        datetime(2026, 10, 9, 9, 0, tzinfo=SHANGHAI),
+    ) == 2
+
+
+def test_hk_national_day_is_a_holiday_closure():
+    session = CLOCK.session_at("HK", datetime(2026, 10, 1, 10, 0, tzinfo=HONG_KONG))
+    assert (session.name, session.is_trading_day, session.calendar_known) == (CLOSED, False, True)
+    assert CLOCK.next_open("HK", datetime(2026, 10, 1, 10, 0, tzinfo=HONG_KONG)) == datetime(
+        2026, 10, 2, 9, 30, tzinfo=HONG_KONG
+    )
+
+
+def test_cn_day_past_the_calendar_horizon_is_unverified():
+    day = monday_past_horizon("XSHG")
+    line = CLOCK.describe("CN", datetime(day.year, day.month, day.day, 10, 0, tzinfo=SHANGHAI))
+    assert line == "CN: regular hours, closes in 5h (Mon 15:00 CST), holidays unverified"
+
+
+def test_a_next_open_past_the_horizon_is_unverified(monkeypatch):
+    # The last published session is verified, but the open it points at lands
+    # on a day no holiday list covers (New Year's Day, at the real horizon).
+    from ptc_agent.agent.middleware.runtime_context import clock as clock_module
+
+    monkeypatch.setattr(
+        clock_module.exchange_calendars, "calendar_range",
+        lambda calendar_id: (date(2016, 1, 4), date(2026, 9, 9)),
+    )
+    calendar = clock_module.ExchangeCalendar(
+        calendar_id="XSHG", market="CN", tz_name="Asia/Shanghai", tz_label="CST",
+        windows=((time(9, 30), time(11, 30), REGULAR_HOURS), (time(13, 0), time(15, 0), REGULAR_HOURS)),
+    )
+    clock = MarketClock({"CN": calendar})
+    last_close = datetime(2026, 9, 9, 16, 0, tzinfo=SHANGHAI)
+    assert clock.session_at("CN", last_close).calendar_known is True
+    assert clock.describe("CN", last_close) == (
+        "CN: closed, next open in 17h 30m (Thu 09:30 CST), holidays unverified"
+    )
+    # A close on the last verified day is itself verified.
+    assert clock.describe("CN", datetime(2026, 9, 9, 14, 0, tzinfo=SHANGHAI)) == (
+        "CN: regular hours, closes in 1h (Wed 15:00 CST)"
+    )
+
+
+def test_a_calendar_that_cannot_build_demotes_to_the_weekday_table(monkeypatch, caplog):
+    from ptc_agent.agent.middleware.runtime_context import clock as clock_module
+
+    def broken(calendar_id: str):
+        raise RuntimeError("no calendar data")
+
+    monkeypatch.setattr(clock_module.exchange_calendars, "calendar_range", broken)
+    calendar = clock_module.ExchangeCalendar(
+        calendar_id="XSHG", market="CN", tz_name="Asia/Shanghai", tz_label="CST",
+        windows=((time(9, 30), time(11, 30), REGULAR_HOURS), (time(13, 0), time(15, 0), REGULAR_HOURS)),
+    )
+    with caplog.at_level("WARNING"):
+        holiday = calendar.session_at(datetime(2026, 10, 1, 10, 0, tzinfo=SHANGHAI))
+    # A weekday trades, and the session says the holidays were not checked.
+    assert (holiday.name, holiday.calendar_known) == (REGULAR_HOURS, False)
+    assert sum("calendar_unavailable" in r.getMessage() for r in caplog.records) == 1
+    # The failure is remembered: the second answer does not retry the build.
+    calendar.session_at(datetime(2026, 10, 2, 10, 0, tzinfo=SHANGHAI))
+    assert sum("calendar_unavailable" in r.getMessage() for r in caplog.records) == 1
 
 
 def test_unknown_market_yields_none_and_never_raises():
@@ -219,11 +311,9 @@ def test_describe_labels_weekend_and_holiday_closures():
     )
 
 
-def test_describe_flags_an_unverified_holiday_calendar():
+def test_describe_omits_the_holiday_caveat_inside_the_calendar():
     line = CLOCK.describe("CN", datetime(2026, 9, 9, 10, 0, tzinfo=SHANGHAI))
-    assert line == (
-        "CN: regular hours, closes in 5h (Wed 15:00 CST), holidays unverified"
-    )
+    assert line == "CN: regular hours, closes in 5h (Wed 15:00 CST)"
 
 
 def test_market_status_line_matches_the_default_clock():
@@ -246,12 +336,16 @@ def test_market_status_line_matches_the_default_clock():
         (["AAPL", "0700.HK"], "US"),
         (["0700.HK", "AAPL"], "HK"),
         (["BRK.B"], "US"),
+        (["920300.BJ", "830799.BJ", "AAPL"], "CN"),
+        (["^HSI"], "HK"),
+        # No clock for Tokyo here: the vote lands on the default.
+        (["7203.T"], "US"),
         ([], None),
         ([""], None),
         (None, None),
     ],
 )
-def test_derive_preferred_market_by_suffix(symbols, expected):
+def test_derive_preferred_market_by_listing(symbols, expected):
     assert derive_preferred_market(symbols) == expected
 
 

@@ -2518,7 +2518,7 @@
     "floatPct": "流通比例",
     "prevClose": "前收",
     "dayRange": "日内区间",
-    "52wRange": "52周区间",
+    "52wRange": "52 周区间",
     "volume": "成交量",
     "marketCap": "市值",
     "periodHigh": "区间最高",
@@ -2527,6 +2527,8 @@
     "low": "低",
     "vol": "量",
     "liveQuotes": "实时报价",
+    "quotes": "报价",
+    "retrievedAt": "获取于 {{time}}",
     "extendedHours": {
       "preMarket": {
         "long": "盘前",
@@ -2542,6 +2544,12 @@
       "open": "盘中",
       "late_trading": "盘后",
       "closed": "休市"
+    },
+    "marketStatusDetail": {
+      "early_trading": "盘前交易",
+      "open": "盘中交易",
+      "late_trading": "盘后交易",
+      "closed": "已休市"
     },
     "marketIndices": "市场指数",
     "marketOverview": "市场概览",
@@ -2579,6 +2587,16 @@
     "shortVolRatio": "做空成交占比",
     "nResults": "{{count}} 个结果",
     "nRatings": "{{count}} 个评级",
+    "peRatio": "市盈率",
+    "eps": "每股收益",
+    "closeLabel": "收盘",
+    "ratings": {
+      "strongBuy": "强烈买入",
+      "buy": "买入",
+      "hold": "持有",
+      "sell": "卖出",
+      "strongSell": "强烈卖出"
+    },
     "nMoreStocks": "还有 {{count}} 只",
     "noPriceData": "暂无价格数据",
     "noSectorData": "暂无板块数据",
@@ -3180,15 +3198,21 @@
       "prevClose": "昨收",
       "open": "开盘",
       "openHint": "数值由盘中数据汇总而来，可能与图表上的日线数据略有差异。",
-      "low": "最低",
-      "high": "最高",
-      "high52w": "52 周最高",
-      "low52w": "52 周最低",
-      "avgVolume3m": "3 个月均量",
-      "volume": "成交量",
-      "dayRange": "日内区间",
-      "changePct": "涨跌幅",
-      "changePctExt": "涨跌幅（含盘前盘后）",
+      "statusRealtime": "实时",
+      "statusDelayed15m": "延迟 15 分钟",
+      "statusLastClose": "收盘价",
+      "statusStale": "过期",
+      "statusIncomplete": "不完整",
+      "statusDelayedMin": "延迟 {{minutes}} 分钟",
+      "quote": "行情",
+      "quoteUnknownTier": "未声明时效",
+      "chart": "图表",
+      "chartLastBar": "最后一根 K 线 {{time}}",
+      "chartLive": "实时",
+      "chartDelayedMin": "延迟 {{minutes}} 分钟",
+      "chartShortOfClose": "缺收盘前 {{minutes}} 分钟",
+      "source": "数据源",
+      "sourceDaily": "日线",
       "ws": {
         "label": "WebSocket：{{status}}",
         "connectedSecond": "已连接（秒级）",
@@ -3198,8 +3222,15 @@
         "reconnecting": "重连中",
         "disconnected": "已断开"
       },
-      "range52w": "52 周区间",
-      "marketCap": "市值"
+      "low": "最低",
+      "high": "最高",
+      "high52w": "52 周最高",
+      "low52w": "52 周最低",
+      "avgVolume3m": "3 个月均量",
+      "volume": "成交量",
+      "dayRange": "日内区间",
+      "changePct": "涨跌幅",
+      "changePctExt": "涨跌幅（含盘前盘后）"
     },
     "symbolSearch": {
       "switchSymbol": "切换标的，当前为 {{symbol}}",
@@ -3238,6 +3269,11 @@
       "clearAnnotationsTitle": "从图表中清除标注（已保留在对话中，点击该结果可恢复）",
       "modeLabel": "模式",
       "newsEventAria": "新闻事件：{{title}}",
+      "light": "简版",
+      "advanced": "高级",
+      "log": "对数",
+      "more": "更多",
+      "fourHourNeedsProvider": "4 小时数据需要 FMP 或 Ginlix Data 数据源",
       "overlay": "叠加",
       "toolPercentScale": "百分比刻度",
       "toolMagnet": "磁吸模式",
@@ -3291,11 +3327,12 @@
       "previewDrawBack": "Agent 可以据此分析，并将其判读绘制回图表的同一区域。",
       "editChip": "编辑备注",
       "chipRegion": "区域 · {{symbol}} {{timeframe}}",
-      "chipPriceLevel": "价格 ${{price}} · {{symbol}} {{timeframe}}",
+      "chipPriceLevel": "价格 {{price}} · {{symbol}} {{timeframe}}",
       "removeChip": "移除选择"
     },
     "overview": {
-      "noData": "暂无数据"
+      "noData": "暂无数据",
+      "indexNoFundamentals": "指数没有公司基本面、财报和分析师数据。"
     },
     "sidebar": {
       "remove": "移除",

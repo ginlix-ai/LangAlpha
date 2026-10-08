@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import pytest
 
+from src.data_client.ginlix_data.directory import fill_quote_names
 from src.data_client.market_data_provider import (
     MarketDataProvider,
     ProviderEntry,
     symbol_market,
 )
+
+
+def _without_tier(rows):
+    """Routing tests compare rows the chain produced; the stamped freshness tier is covered separately."""
+    return [{k: v for k, v in row.items() if k != "tier"} for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +108,12 @@ class TestSymbolMarket:
 
     def test_case_insensitive(self):
         assert symbol_market("0700.hk") == "hk"
+
+    def test_full_width_spelling_routes_like_to_canonical_reads_it(self):
+        # A Chinese IME types full-width forms and the ideographic full stop.
+        assert symbol_market("６００５１９．ＳＨ") == "cn"
+        assert symbol_market("600519。SH") == "cn"
+        assert symbol_market("＾ＨＳＩ") == "hk"
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +310,117 @@ class TestMarketDataProvider:
         assert global_src.calls[0][1]["symbols"] == ["301189.SZ"]
 
     @pytest.mark.asyncio
+    async def test_get_snapshots_miss_still_reaches_a_provider_already_asked_for_others(self):
+        """Rounds run providers concurrently: fmp answers the CN name in round
+        one, and must still get the US name after its own provider misses."""
+        us_src = SnapshotSource("ginlix", {})
+        global_src = SnapshotSource("fmp", {
+            "AAPL": {"symbol": "AAPL", "price": 190.0},
+            "301189.SZ": {"symbol": "301189.SZ", "price": 42.0},
+        })
+        provider = MarketDataProvider([
+            ProviderEntry("ginlix", us_src, {"us"}),
+            ProviderEntry("fmp", global_src, {"all"}),
+        ])
+
+        result = await provider.get_snapshots(["AAPL", "301189.SZ"])
+
+        assert [r["symbol"] for r in result] == ["AAPL", "301189.SZ"]
+        assert [c[1]["symbols"] for c in global_src.calls] == [["301189.SZ"], ["AAPL"]]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_stamps_the_declared_quote_tier(self):
+        """The header says realtime / delayed from the provider's declaration:
+        FMP is realtime only for US, yfinance is a 15-minute feed, and a row that
+        already carries its own tier (a daily-derived quote) keeps it."""
+        fmp = SnapshotSource("fmp", {
+            "AAPL": {"symbol": "AAPL", "price": 190.0},
+            "0700.HK": {"symbol": "0700.HK", "price": 400.0},
+            "601318.SS": {"symbol": "601318.SS", "price": 50.0, "tier": "eod"},
+        })
+        yf = SnapshotSource("yfinance", {"VOD.L": {"symbol": "VOD.L", "price": 1.0}})
+        provider = MarketDataProvider([
+            ProviderEntry("fmp", fmp, {"us", "cn", "hk"}),
+            ProviderEntry("yfinance", yf, {"all"}),
+        ])
+        rows = {r["symbol"]: r for r in await provider.get_snapshots(["AAPL", "0700.HK", "601318.SS", "VOD.L"])}
+        assert rows["AAPL"]["tier"] == "realtime"
+        assert rows["0700.HK"]["tier"] == "delayed_15m"
+        assert rows["601318.SS"]["tier"] == "eod"
+        assert rows["VOD.L"]["tier"] == "delayed_15m"
+
+    @pytest.mark.asyncio
+    async def test_index_tier_follows_the_family_home_market(self):
+        """Indices are requested caret-free, which the suffix parser reads as US;
+        the freshness stamp must still know HSI is a Hong Kong print."""
+        fmp = SnapshotSource("fmp", {
+            "GSPC": {"symbol": "GSPC", "price": 5000.0},
+            "HSI": {"symbol": "HSI", "price": 25000.0},
+        })
+        provider = MarketDataProvider([ProviderEntry("fmp", fmp, {"all"})])
+        rows = {r["symbol"]: r for r in await provider.get_snapshots(["GSPC", "HSI"], asset_type="indices")}
+        assert rows["GSPC"]["tier"] == "realtime"
+        assert rows["HSI"]["tier"] == "delayed_15m"
+
+    @pytest.mark.asyncio
+    async def test_caret_index_on_the_stocks_endpoint_routes_to_its_home_market(self):
+        """The queue is keyed caret-free, but ^FTSE is the London index, not a
+        US ticker FTSE: the US-only provider must not be asked for it."""
+        us_src = SnapshotSource("ginlix", {"FTSE": {"symbol": "FTSE", "price": 1.0}})
+        global_src = SnapshotSource("fmp", {"^FTSE": {"symbol": "^FTSE", "price": 8000.0}})
+        provider = MarketDataProvider([
+            ProviderEntry("ginlix", us_src, {"us"}),
+            ProviderEntry("fmp", global_src, {"all"}),
+        ])
+
+        rows = await provider.get_snapshots(["^FTSE"], asset_type="stocks")
+
+        assert [(r["symbol"], r["source"]) for r in rows] == [("^FTSE", "fmp")]
+        assert us_src.calls == []
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_attaches_dual_names(self, monkeypatch):
+        """CN/HK rows gain additive name_local/name_en; the provider's own name
+        stays untouched, and non-CN rows pass through clean."""
+        async def _fake_names(syms):
+            return {
+                s: ("甲公司", "Alpha Co., Ltd.") if s == "600001.SS" else (None, None) for s in syms
+            }
+
+        monkeypatch.setattr("src.data_client.ginlix_data.directory.display_names_many", _fake_names)
+        src = SnapshotSource("fmp", {
+            "600001.SS": {"symbol": "600001.SS", "price": 42.0, "name": "Alpha Co"},
+            "AAPL": {"symbol": "AAPL", "price": 190.0, "name": "Apple Inc."},
+        })
+        provider = MarketDataProvider([ProviderEntry("fmp", src, {"all"})], name_rows=fill_quote_names)
+
+        result = await provider.get_snapshots(["600001.SS", "AAPL"])
+
+        by_sym = {r["symbol"]: r for r in result}
+        assert by_sym["600001.SS"]["name"] == "Alpha Co"
+        assert by_sym["600001.SS"]["name_local"] == "甲公司"
+        assert by_sym["600001.SS"]["name_en"] == "Alpha Co., Ltd."
+        assert by_sym["AAPL"]["name"] == "Apple Inc."
+        assert "name_local" not in by_sym["AAPL"]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_fills_missing_name_from_directory(self, monkeypatch):
+        """A nameless row (tushare-served) gets name filled English-first."""
+        async def _fake_names(syms):
+            return {s: ("甲公司", "Alpha Co., Ltd.") for s in syms}
+
+        monkeypatch.setattr("src.data_client.ginlix_data.directory.display_names_many", _fake_names)
+        src = SnapshotSource("tushare", {
+            "600001.SS": {"symbol": "600001.SS", "price": 42.0},
+        })
+        provider = MarketDataProvider([ProviderEntry("tushare", src, {"all"})], name_rows=fill_quote_names)
+
+        result = await provider.get_snapshots(["600001.SS"])
+
+        assert result[0]["name"] == "Alpha Co., Ltd."
+        assert result[0]["name_local"] == "甲公司"
+
+    @pytest.mark.asyncio
     async def test_get_snapshots_partial_resolution_fallback(self):
         primary_src = SnapshotSource(
             "primary",
@@ -316,7 +439,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL", "MSFT"])
 
-        assert result == [
+        assert _without_tier(result) == [
             {"symbol": "AAPL", "price": 190.0, "source": "primary"},
             {"symbol": "MSFT", "price": 420.0, "source": "fallback"},
         ]
@@ -344,7 +467,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["  AAPL  ", " MSFT "])
 
-        assert result == [
+        assert _without_tier(result) == [
             {"symbol": "AAPL", "price": 190.0, "source": "primary"},
             {"symbol": "MSFT", "price": 420.0, "source": "fallback"},
         ]
@@ -363,7 +486,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots([" 301189.SZ "])
 
-        assert result == [{"symbol": "301189.SZ", "price": 42.0, "source": "cn"}]
+        assert _without_tier(result) == [{"symbol": "301189.SZ", "price": 42.0, "source": "cn"}]
         assert cn_src.calls[0][1]["symbols"] == [" 301189.SZ "]
 
     @pytest.mark.asyncio
@@ -386,7 +509,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL", "300059.SZ"])
 
-        assert result == [
+        assert _without_tier(result) == [
             {"symbol": "AAPL", "price": 190.0, "source": "ginlix"},
             {"symbol": "300059.SZ", "price": 42.0, "source": "cn"},
         ]
@@ -408,7 +531,20 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["GSPC"], asset_type="indices")
 
-        assert result == [{"symbol": "^GSPC", "price": 5000.0, "source": "caret"}]
+        assert _without_tier(result) == [{"symbol": "^GSPC", "price": 5000.0, "source": "caret"}]
+        assert "market_data.snapshot.drop_unrequested" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_matches_across_shanghai_spellings(self, caplog):
+        # A caller asking ``.SH`` gets the vendor's ``.SS`` row, not a drop.
+        src = SnapshotSource(
+            "cn", extra_rows=[{"symbol": "600519.SS", "price": 1.0}],
+        )
+        provider = MarketDataProvider([ProviderEntry("cn", src, {"all"})])
+
+        result = await provider.get_snapshots(["600519.SH"], asset_type="stocks")
+
+        assert [r["symbol"] for r in result] == ["600519.SS"]
         assert "market_data.snapshot.drop_unrequested" not in caplog.text
 
     @pytest.mark.asyncio
@@ -444,7 +580,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["301189.SZ"])
 
-        assert result == [{"symbol": "301189.SZ", "price": 42.0, "source": "fallback"}]
+        assert _without_tier(result) == [{"symbol": "301189.SZ", "price": 42.0, "source": "fallback"}]
         assert empty_src.calls[0][1]["symbols"] == ["301189.SZ"]
         assert fallback_src.calls[0][1]["symbols"] == ["301189.SZ"]
 
@@ -467,7 +603,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL"])
 
-        assert result == [{"symbol": "AAPL", "price": 190.0, "source": "fallback"}]
+        assert _without_tier(result) == [{"symbol": "AAPL", "price": 190.0, "source": "fallback"}]
         assert bad_src.calls[0][1]["symbols"] == ["AAPL"]
         assert fallback_src.calls[0][1]["symbols"] == ["AAPL"]
         assert "market_data.snapshot.drop_unkeyed" in caplog.text
@@ -484,7 +620,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL", "XYZ.ZZ"])
 
-        assert result == [{"symbol": "AAPL", "price": 190.0, "source": "ginlix"}]
+        assert _without_tier(result) == [{"symbol": "AAPL", "price": 190.0, "source": "ginlix"}]
         assert us_src.calls[0][1]["symbols"] == ["AAPL"]
 
     @pytest.mark.asyncio
@@ -517,7 +653,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL"])
 
-        assert result == [{"symbol": "AAPL", "price": 190.0, "source": "yfinance"}]
+        assert _without_tier(result) == [{"symbol": "AAPL", "price": 190.0, "source": "yfinance"}]
         assert len(yf.calls) == 1
         assert yf.calls[0][1]["symbols"] == ["AAPL"]
 
@@ -680,7 +816,7 @@ class TestNullRowRecovery:
             ProviderEntry("second", second, {"all"}),
         ])
         out = await provider.get_snapshots(["AAPL"])
-        assert out == [{"symbol": "AAPL", "price": 190.0, "source": "second"}]
+        assert _without_tier(out) == [{"symbol": "AAPL", "price": 190.0, "source": "second"}]
 
     @pytest.mark.asyncio
     async def test_unresolvable_symbol_absent_from_results(self):
@@ -696,3 +832,349 @@ class TestNullRowRecovery:
         ])
         out = await provider.get_snapshots(["AAPL", "ZZZFAKE"])
         assert [r["symbol"] for r in out] == ["AAPL"]
+
+
+class StatusSource(FakeSource):
+    """Fake source exposing get_market_status."""
+
+    def __init__(self, name: str, market_label: str, *, fail: bool = False):
+        super().__init__(name, fail=fail)
+        self.market_label = market_label
+
+    async def get_market_status(self, user_id=None):
+        self.calls.append(("get_market_status", {"user_id": user_id}))
+        if self.fail:
+            raise RuntimeError(f"{self.name} status error")
+        return {"market": "open", "exchanges": {self.market_label: "open"}}
+
+
+class TestMarketStatusRouting:
+    @pytest.mark.asyncio
+    async def test_us_default_skips_cn_only_entry(self):
+        cn = StatusSource("tushare", "sse")
+        us = StatusSource("fmp", "nasdaq")
+        provider = MarketDataProvider([
+            ProviderEntry("tushare", cn, {"cn"}),
+            ProviderEntry("fmp", us, {"all"}),
+        ])
+        out = await provider.get_market_status()
+        assert out["exchanges"] == {"nasdaq": "open"}
+        assert cn.calls == []
+
+    @pytest.mark.asyncio
+    async def test_non_us_market_is_the_venue_calendar(self):
+        """Even a provider listing cn explicitly is not asked: status is a clock."""
+        cn = StatusSource("tushare", "sse")
+        us = StatusSource("fmp", "nasdaq")
+        provider = MarketDataProvider([
+            ProviderEntry("tushare", cn, {"cn"}),
+            ProviderEntry("fmp", us, {"us"}),
+        ])
+        out = await provider.get_market_status(market="cn")
+        assert out["exchanges"] is None
+        assert out["serverTime"].endswith("+08:00")
+        assert cn.calls == [] and us.calls == []
+
+    def test_providers_list_only_the_markets_own(self):
+        """The shipped chain's shape: a CN-only entry is not credited on a US
+        status, and a name listed twice keeps its first chain position."""
+        src = FakeSource("x")
+        provider = MarketDataProvider([
+            ProviderEntry("ginlix-data", src, {"us"}),
+            ProviderEntry("tushare", src, {"cn"}, intraday_markets=set(), snapshot_markets={"cn"}),
+            ProviderEntry("yfinance", src, set(), intraday_markets={"non-us"}),
+            ProviderEntry("fmp", src, {"all"}),
+            ProviderEntry("yfinance", src, {"all"}),
+        ])
+        assert provider.source_names_for_market("us") == ["ginlix-data", "yfinance", "fmp"]
+        assert provider.source_names_for_market("cn") == ["tushare", "yfinance", "fmp"]
+        assert provider.source_names_for_market("hk") == ["yfinance", "fmp"]
+
+    @pytest.mark.asyncio
+    async def test_no_covering_source_raises(self):
+        cn = StatusSource("tushare", "sse")
+        provider = MarketDataProvider([ProviderEntry("tushare", cn, {"cn"})])
+        with pytest.raises(RuntimeError, match="No data source supports"):
+            await provider.get_market_status(market="us")
+
+    @pytest.mark.asyncio
+    async def test_catch_all_entry_never_answers_a_foreign_market(self):
+        """A provider matched through ``all`` only knows the US session: the
+        venue calendar answers for hk, in the venue's own clock."""
+        us = StatusSource("fmp", "nasdaq")
+        provider = MarketDataProvider([ProviderEntry("fmp", us, {"all"})])
+        out = await provider.get_market_status(market="hk")
+        assert us.calls == []
+        assert out["exchanges"] is None
+        assert out["market"] in {"open", "closed"}
+        assert out["serverTime"].endswith("+08:00")
+
+    @pytest.mark.asyncio
+    async def test_calendar_status_unknown_market_raises(self):
+        from src.data_client.market_data_provider import calendar_market_status
+
+        with pytest.raises(ValueError, match="No market calendar"):
+            calendar_market_status("mars")
+
+    @pytest.mark.asyncio
+    async def test_failure_falls_through_to_next_covering_entry(self):
+        first = StatusSource("first", "nasdaq", fail=True)
+        second = StatusSource("second", "nyse")
+        provider = MarketDataProvider([
+            ProviderEntry("first", first, {"all"}),
+            ProviderEntry("second", second, {"all"}),
+        ])
+        out = await provider.get_market_status()
+        assert out["exchanges"] == {"nyse": "open"}
+
+
+# ---------------------------------------------------------------------------
+# Generated routing ruleset (data_routing.yaml) overriding the config chain
+# ---------------------------------------------------------------------------
+
+def _table(cells: dict[str, list[str]]):
+    """RoutingTable from ``{"cn/equity/intraday/1m": ["fmp", "!yfinance"]}``.
+
+    A ``!`` marks a provider the cell measured and excluded.
+    """
+    from datetime import datetime, timezone
+
+    from market_protocol.routing import (
+        Cell, CellKey, ProbedProvider, Ruleset, RoutingTable, Surface,
+    )
+
+    built = []
+    for cell, names in cells.items():
+        market, asset_class, surface, *rest = cell.split("/")
+        built.append(Cell(
+            key=CellKey(
+                market=market,
+                asset_class=asset_class,
+                surface=Surface(surface),
+                interval=rest[0] if rest else None,
+            ),
+            probed_at=datetime(2026, 9, 9, tzinfo=timezone.utc),
+            providers=[
+                ProbedProvider(
+                    name=n.lstrip("!"), coverage_hit=1, coverage_total=1,
+                    excluded_reason="incomplete_session" if n.startswith("!") else None,
+                )
+                for n in names
+            ],
+        ))
+    return RoutingTable(Ruleset(generated_at=datetime(2026, 9, 9, tzinfo=timezone.utc), cells=built))
+
+
+class _RecordingTable:
+    """A routing table with no cells that records every lookup it is asked."""
+
+    def __init__(self):
+        self.asked: list[tuple] = []
+
+    def order_for(self, surface, market, asset_class, interval=None):
+        self.asked.append((str(surface), market, asset_class.value, interval))
+        return None
+
+
+class TestRoutingCellLookup:
+    """The cell a request reads, as handed to ``RoutingTable.order_for``."""
+
+    def _asked(self, symbol, capability, interval=None, is_index=False):
+        table = _RecordingTable()
+        provider = MarketDataProvider([ProviderEntry("fmp", FakeSource("fmp"), {"all"})], routing=table)
+        provider.source_names_for(symbol, capability, interval, is_index=is_index)
+        return table.asked
+
+    def test_cn_equity_intraday(self):
+        assert self._asked("600519.SS", "intraday", "1min") == [("intraday", "cn", "equity", "1min")]
+
+    def test_cn_etf_is_a_fund_even_through_the_equity_endpoint(self):
+        assert self._asked("510300.SS", "intraday", "5min") == [("intraday", "cn", "fund", "5min")]
+
+    def test_caret_free_index_keeps_its_home_market(self):
+        assert self._asked("HSI", "snapshot", is_index=True) == [("snapshot", "hk", "index", None)]
+
+    def test_market_matches_the_protocol_token(self):
+        """ginlix-data keys the same ruleset by ``market_of``; the two must agree."""
+        assert self._asked("I:HSI", "snapshot", is_index=True)[0][1] == "hk"
+        assert self._asked("SAP.XETR", "daily")[0][1] == "eu"
+        assert self._asked("0700.XHKG", "daily")[0][1] == "hk"
+        assert self._asked("EURUSD=X", "snapshot")[0][1:3] == ("fx", "fx")
+
+    def test_daily_and_snapshot_carry_no_interval(self):
+        assert self._asked("AAPL", "daily", "1min") == [("daily", "us", "equity", None)]
+        assert self._asked("AAPL", "snapshot") == [("snapshot", "us", "equity", None)]
+
+    def test_unknown_interval_or_capability_reads_no_cell(self):
+        assert self._asked("AAPL", "intraday", "3min") == []
+        assert self._asked("AAPL", "intraday", None) == []
+        assert self._asked("AAPL", "status") == []
+
+
+class TestRuleSetRouting:
+    def _chain(self, routing=None):
+        """The shipped chain shape: tushare cn (no intraday), yfinance non-us
+        intraday priority slot, fmp catch-all, yfinance catch-all."""
+        ts, yf, fmp = FakeSource("ts"), FakeSource("yf"), FakeSource("fmp")
+        provider = MarketDataProvider([
+            ProviderEntry("tushare", ts, {"cn"}, intraday_markets=set(), snapshot_markets={"cn"}),
+            ProviderEntry("yfinance", yf, set(), intraday_markets={"non-us"}),
+            ProviderEntry("fmp", fmp, {"all"}),
+            ProviderEntry("yfinance", yf, {"all"}),
+        ], routing=routing)
+        return provider, ts, yf, fmp
+
+    def test_config_order_without_a_ruleset(self):
+        provider, *_ = self._chain()
+        assert provider.source_names_for("600519.SS", "intraday", "1min") == ["yfinance", "fmp"]
+
+    @pytest.mark.asyncio
+    async def test_cell_order_beats_config_order(self):
+        provider, _, yf, _ = self._chain(_table({"cn/equity/intraday/1m": ["fmp", "yfinance"]}))
+        _, source, _ = await provider.get_intraday_with_source("600519.SS", interval="1min")
+        assert source == "fmp"
+        assert yf.calls == []
+
+    @pytest.mark.asyncio
+    async def test_cell_order_still_falls_back_on_failure(self):
+        table = _table({"cn/equity/intraday/1m": ["fmp", "yfinance"]})
+        provider, _, _, fmp = self._chain(table)
+        fmp.fail = True
+        _, source, _ = await provider.get_intraday_with_source("600519.SS", interval="1min")
+        assert source == "yfinance"
+
+    @pytest.mark.asyncio
+    async def test_cell_reaches_a_provider_the_config_excludes(self):
+        """tushare has ``intraday_markets: []``; a cell that measured it routable
+        puts it back in play without touching config.yaml."""
+        provider, ts, _, _ = self._chain(_table({"cn/equity/intraday/1m": ["tushare"]}))
+        _, source, _ = await provider.get_intraday_with_source("600519.SS", interval="1min")
+        assert source == "tushare"
+        assert ts.calls[0][1]["interval"] == "1min"
+
+    @pytest.mark.asyncio
+    async def test_no_matching_cell_falls_back_to_config(self):
+        table = _table({"cn/equity/intraday/1m": ["fmp"]})
+        provider, *_ = self._chain(table)
+        # A different market and (510300.SS) a different asset class miss the
+        # cell; a different interval takes the nearest probed one.
+        assert provider.source_names_for("600519.SS", "intraday", "5min") == ["fmp", "yfinance"]
+        assert provider.source_names_for("0700.HK", "intraday", "1min") == ["yfinance", "fmp"]
+        assert provider.source_names_for("510300.SS", "intraday", "1min") == ["yfinance", "fmp"]
+        _, source, _ = await provider.get_intraday_with_source("0700.HK", interval="1min")
+        assert source == "yfinance"
+
+    @pytest.mark.asyncio
+    async def test_a_borrowed_width_orders_the_chain_without_excluding(self):
+        """4hour has no cell, so the table answers from 1h's. yfinance leads
+        there but has no 4-hour bars; fmp, excluded only at 1h, must follow it."""
+        provider, _, yf, _ = self._chain(_table({"cn/equity/intraday/1h": ["yfinance", "!fmp"]}))
+        assert provider.source_names_for("600519.SS", "intraday", "1hour") == ["yfinance"]
+        assert provider.source_names_for("600519.SS", "intraday", "4hour") == ["yfinance", "fmp"]
+        yf.fail = True
+        _, source, _ = await provider.get_intraday_with_source("600519.SS", interval="4hour")
+        assert source == "fmp"
+
+    def test_interval_less_cell_governs_every_interval(self):
+        provider, *_ = self._chain(_table({"cn/equity/intraday": ["fmp"]}))
+        assert provider.source_names_for("600519.SS", "intraday", "30min") == ["fmp", "yfinance"]
+
+    def test_interval_less_cell_excludes_at_every_width(self):
+        """Unlike a borrowed width, a cell probed without one speaks for them all."""
+        provider, *_ = self._chain(_table({"cn/equity/intraday": ["fmp", "!yfinance"]}))
+        assert provider.source_names_for("600519.SS", "intraday", "30min") == ["fmp"]
+
+    def test_daily_cell_applies_to_daily_only(self):
+        provider, *_ = self._chain(_table({"cn/equity/daily": ["fmp", "tushare"]}))
+        assert provider.source_names_for("600519.SS", "daily") == ["fmp", "tushare", "yfinance"]
+        assert provider.source_names_for("600519.SS", "intraday", "1min") == ["yfinance", "fmp"]
+
+    @pytest.mark.asyncio
+    async def test_daily_routes_through_the_cell(self):
+        provider, ts, _, _ = self._chain(_table({"cn/equity/daily": ["tushare"]}))
+        _, source, _ = await provider.get_daily_with_source("600519.SS")
+        assert source == "tushare"
+
+    def test_a_cell_refines_the_chain_without_narrowing_it(self):
+        """A provider the cell has no verdict on (a ``--provider`` run, a token
+        missing when it ran) keeps its configured slot behind the cell's own;
+        one the cell measured and excluded stays out."""
+        provider, *_ = self._chain(_table({"cn/equity/intraday/1m": ["fmp"]}))
+        assert provider.source_names_for("600519.SS", "intraday", "1min") == ["fmp", "yfinance"]
+        provider, *_ = self._chain(_table({"cn/equity/intraday/1m": ["fmp", "!yfinance"]}))
+        assert provider.source_names_for("600519.SS", "intraday", "1min") == ["fmp"]
+
+    def test_a_cell_never_routes_a_provider_outside_its_configured_markets(self):
+        """tushare is configured for ``cn``; a US cell that measured it routable
+        (its source answered a US canary through another feed) cannot put it
+        in a US chain."""
+        provider, *_ = self._chain(_table({"us/equity/daily": ["tushare", "fmp"]}))
+        assert provider.source_names_for("AAPL", "daily") == ["fmp", "yfinance"]
+
+    def test_unknown_names_are_ignored(self):
+        provider, *_ = self._chain(_table({"cn/equity/intraday/1m": ["polygon", "fmp"]}))
+        assert provider.source_names_for("600519.SS", "intraday", "1min") == ["fmp", "yfinance"]
+
+    def test_cell_of_only_unknown_names_falls_back_to_config(self):
+        """A ruleset refines the configured chain; it never empties it."""
+        provider, *_ = self._chain(_table({"cn/equity/intraday/1m": ["polygon"]}))
+        assert provider.source_names_for("600519.SS", "intraday", "1min") == ["yfinance", "fmp"]
+
+    def test_index_request_uses_the_index_cell(self):
+        provider, *_ = self._chain(_table({"hk/index/intraday/1m": ["fmp", "!yfinance"]}))
+        assert provider.source_names_for("HSI", "intraday", "1min", is_index=True) == ["fmp"]
+        # Without the index hint the bare symbol reads as US equity — a
+        # different cell (and, here, no cell at all), so config routing stands.
+        assert provider.source_names_for("HSI", "intraday", "1min") == ["fmp", "yfinance"]
+
+    @pytest.mark.asyncio
+    async def test_snapshots_follow_the_cell_per_symbol(self):
+        us_rows = {"AAPL": {"symbol": "AAPL", "price": 190.0}}
+        cn_rows = {"600519.SS": {"symbol": "600519.SS", "price": 1500.0}}
+        primary = SnapshotSource("primary", {**us_rows, **cn_rows})
+        secondary = SnapshotSource("secondary", {**us_rows, **cn_rows})
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("primary", primary, {"all"}),
+                ProviderEntry("secondary", secondary, {"all"}),
+            ],
+            routing=_table({"cn/equity/snapshot": ["secondary"]}),
+        )
+        out = await provider.get_snapshots(["AAPL", "600519.SS"])
+        assert [(r["symbol"], r["source"]) for r in out] == [
+            ("AAPL", "primary"),
+            ("600519.SS", "secondary"),
+        ]
+        assert primary.calls[0][1]["symbols"] == ["AAPL"]
+        assert secondary.calls[0][1]["symbols"] == ["600519.SS"]
+
+    @pytest.mark.asyncio
+    async def test_snapshot_cell_falls_back_when_its_provider_misses(self):
+        first = SnapshotSource("first", {})
+        second = SnapshotSource("second", {"AAPL": {"symbol": "AAPL", "price": 190.0}})
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("first", first, {"all"}),
+                ProviderEntry("second", second, {"all"}),
+            ],
+            routing=_table({"us/equity/snapshot": ["first", "second"]}),
+        )
+        out = await provider.get_snapshots(["AAPL"])
+        assert _without_tier(out) == [{"symbol": "AAPL", "price": 190.0, "source": "second"}]
+
+    @pytest.mark.asyncio
+    async def test_snapshot_without_a_cell_keeps_config_batching(self):
+        cn = SnapshotSource("tushare", {"600519.SS": {"symbol": "600519.SS", "price": 1500.0}})
+        catch_all = SnapshotSource("fmp", {"AAPL": {"symbol": "AAPL", "price": 190.0}})
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("tushare", cn, {"cn"}),
+                ProviderEntry("fmp", catch_all, {"all"}),
+            ],
+            routing=_table({"hk/index/snapshot": ["fmp"]}),
+        )
+        out = await provider.get_snapshots(["AAPL", "600519.SS"])
+        assert [(r["symbol"], r["source"]) for r in out] == [
+            ("AAPL", "fmp"),
+            ("600519.SS", "tushare"),
+        ]

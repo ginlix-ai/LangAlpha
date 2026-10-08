@@ -1,13 +1,35 @@
 import { userLocalStorage } from '@/lib/userStorage';
+import { displaySpelling } from '@/lib/bars/exchanges';
 
 const PREFIX = 'marketview_thread_id_';
 
-function normalizeSymbol(symbol: string): string {
-  return symbol.trim().toUpperCase();
+function keyFor(workspaceId: string, symbol: string): string {
+  return `${PREFIX}${workspaceId}_${displaySpelling(symbol)}`;
 }
 
-function keyFor(workspaceId: string, symbol: string): string {
-  return `${PREFIX}${workspaceId}_${normalizeSymbol(symbol)}`;
+/** Pointers saved before keys took the display spelling sit under the symbol
+ *  as it arrived: Shanghai as `.SS`, a Hong Kong code bare or at HKEX's five
+ *  digits (`700.HK`, `00700.HK`). A candidate counts only when it folds to
+ *  this key's spelling; read once, it moves to the current key. */
+function legacyKeysFor(workspaceId: string, symbol: string): string[] {
+  const sym = displaySpelling(symbol);
+  const dot = sym.lastIndexOf('.');
+  if (dot === -1) return [];
+  const code = sym.slice(0, dot);
+  const venue = sym.slice(dot);
+  const bare = code.replace(/^0+/, '') || '0';
+  return [`${code}.SS`, `${bare}${venue}`, `${bare.padStart(5, '0')}${venue}`]
+    .filter((s) => s !== sym && displaySpelling(s) === sym)
+    .map((s) => `${PREFIX}${workspaceId}_${s}`);
+}
+
+function adoptLegacy(workspaceId: string, symbol: string): string | null {
+  const legacy = legacyKeysFor(workspaceId, symbol);
+  const raw = legacy.map((key) => userLocalStorage.getItem(key)).find((v) => v) ?? null;
+  if (!raw) return null;
+  legacy.forEach((key) => userLocalStorage.removeItem(key));
+  userLocalStorage.setItem(keyFor(workspaceId, symbol), raw);
+  return raw;
 }
 
 export function getMarketThreadId(
@@ -15,7 +37,7 @@ export function getMarketThreadId(
   symbol: string,
 ): string | null {
   if (!workspaceId || !symbol) return null;
-  const raw = userLocalStorage.getItem(keyFor(workspaceId, symbol));
+  const raw = userLocalStorage.getItem(keyFor(workspaceId, symbol)) ?? adoptLegacy(workspaceId, symbol);
   if (!raw) return null;
   if (raw === '__default__') {
     userLocalStorage.removeItem(keyFor(workspaceId, symbol));
@@ -43,6 +65,7 @@ export function clearMarketThreadId(
 ): void {
   if (!workspaceId || !symbol) return;
   userLocalStorage.removeItem(keyFor(workspaceId, symbol));
+  legacyKeysFor(workspaceId, symbol).forEach((key) => userLocalStorage.removeItem(key));
 }
 
 /**

@@ -1,7 +1,6 @@
-import { createFormatter } from '@/lib/format';
+import { formatMoney } from '@/lib/bars/currencyDisplay';
 
 const DEFAULT_PORTFOLIO_CURRENCY = 'USD';
-const portfolioMoneyFormatters = new Map<string, ReturnType<typeof createFormatter>>();
 
 export interface PortfolioSummaryRow {
   marketValue?: number | null;
@@ -64,24 +63,7 @@ export function summarizePortfolioByCurrency(rows: PortfolioSummaryRow[]): Curre
 }
 
 export function formatPortfolioMoney(amount: number, currency: unknown, locale?: string): string {
-  const normalizedCurrency = normalizePortfolioCurrency(currency);
-  const normalizedAmount = finiteNumber(amount);
-
-  try {
-    let formatter = portfolioMoneyFormatters.get(normalizedCurrency);
-    if (!formatter) {
-      formatter = createFormatter({
-        style: 'currency',
-        currency: normalizedCurrency,
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
-      portfolioMoneyFormatters.set(normalizedCurrency, formatter);
-    }
-    return formatter(normalizedAmount, locale || '');
-  } catch {
-    return `${normalizedCurrency} ${normalizedAmount.toFixed(2)}`;
-  }
+  return formatMoney(finiteNumber(amount), normalizePortfolioCurrency(currency), locale || '');
 }
 
 export function formatPortfolioMoneyCode(amount: number, currency: unknown): string {

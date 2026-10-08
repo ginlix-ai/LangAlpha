@@ -47,7 +47,7 @@ def get_analyst_recommendations(ticker: str) -> _OUT_GET_ANALYST_RECOMMENDATIONS
     buy/hold/sell balance over recent periods.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -77,7 +77,7 @@ def get_sustainability_data(ticker: str) -> _OUT_GET_SUSTAINABILITY_DATA:
     """ESG / sustainability scores for a company. Use for ESG risk context.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a single Yahoo-native ESG
@@ -114,7 +114,7 @@ def get_institutional_holders(ticker: str) -> _OUT_GET_INSTITUTIONAL_HOLDERS:
     the largest positions.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -146,7 +146,7 @@ def get_mutualfund_holders(ticker: str) -> _OUT_GET_MUTUALFUND_HOLDERS:
     positions.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -176,7 +176,7 @@ def get_insider_transactions(ticker: str) -> _OUT_GET_INSIDER_TRANSACTIONS:
     """Recent insider buy/sell transactions. Use to track insider activity.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -208,7 +208,7 @@ def get_insider_roster(ticker: str) -> _OUT_GET_INSIDER_ROSTER:
     their share positions.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -271,7 +271,7 @@ def get_news(ticker: str, count: int = 10, tab: str = "news") -> _OUT_GET_NEWS:
     coverage.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
         count: Number of articles (default 10).
         tab: One of "news", "all", or "press releases".
 
@@ -306,7 +306,7 @@ def get_analyst_price_targets(ticker: str) -> _OUT_GET_ANALYST_PRICE_TARGETS:
     current price.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a single Yahoo-native
@@ -346,7 +346,7 @@ def get_upgrades_downgrades(ticker: str) -> _OUT_GET_UPGRADES_DOWNGRADES:
     how the sell-side rating evolved.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -377,7 +377,7 @@ def get_earnings_history(ticker: str) -> _OUT_GET_EARNINGS_HISTORY:
     earnings beats/misses. Same data as get_earnings_data (fundamentals server).
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -407,7 +407,7 @@ def get_earnings_estimates(ticker: str) -> _OUT_GET_EARNINGS_ESTIMATES:
     quarters and years.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -437,7 +437,7 @@ def get_revenue_estimates(ticker: str) -> _OUT_GET_REVENUE_ESTIMATES:
     quarters and years.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -467,7 +467,7 @@ def get_growth_estimates(ticker: str) -> _OUT_GET_GROWTH_ESTIMATES:
     compare a name's growth outlook to its peers.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native
@@ -497,7 +497,7 @@ def get_major_holders(ticker: str) -> _OUT_GET_MAJOR_HOLDERS:
     high-level ownership summary.
 
     Args:
-        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        ticker: Symbol — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source}. data is a list of Yahoo-native

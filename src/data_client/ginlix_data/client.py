@@ -7,10 +7,17 @@ from typing import Any
 
 import httpx
 
+from .pagination import follow_cursor, unique_by_time
+from .v2_routes import GinlixDataV2Routes, path_segment
+
 logger = logging.getLogger(__name__)
 
+# ginlix-data's service auth needs a user id beside the token. Reads that belong
+# to no user (fundamentals, the name directory, feed polls) name the service.
+SERVICE_USER_ID = "langalpha-service"
 
-class GinlixDataClient:
+
+class GinlixDataClient(GinlixDataV2Routes):
     """Low-level httpx client for ``GET /api/v1/data/aggregates``."""
 
     def __init__(self, base_url: str, service_token: str = ""):
@@ -25,10 +32,7 @@ class GinlixDataClient:
         )
 
     def _user_headers(self, user_id: str | None) -> dict[str, str]:
-        """Build per-request headers with the caller's user ID."""
-        if user_id:
-            return {"X-User-Id": user_id}
-        return {}
+        return {"X-User-Id": user_id or SERVICE_USER_ID}
 
     # Maximum pages to follow when auto-paginating (safety bound).
     _MAX_PAGES = 10
@@ -71,42 +75,23 @@ class GinlixDataClient:
         if to_date:
             params["to"] = to_date
 
-        all_results: list[dict[str, Any]] = []
         headers = self._user_headers(user_id)
-        url = f"/api/v1/data/aggregates/{market}/{symbol}"
-        truncated = False
+        url = f"/api/v1/data/aggregates/{path_segment(market)}/{path_segment(symbol)}"
 
-        for page in range(self._MAX_PAGES):
-            resp = await self.http.get(url, params=params, headers=headers)
+        async def fetch_page(page_params: dict[str, Any]) -> dict[str, Any]:
+            resp = await self.http.get(url, params=page_params, headers=headers)
             resp.raise_for_status()
-            body = resp.json()
-            results = body.get("results", [])
-            all_results.extend(results)
+            return resp.json()
 
-            cursor = body.get("next_cursor")
-            if not cursor or not results:
-                break
-
-            logger.info(
-                "get_aggregates %s %s: page %d returned %d bars, following cursor",
-                symbol, timespan, page + 1, len(results),
-            )
-            # Next page: carry same params but add cursor
-            params["cursor"] = cursor
-        else:
-            # Loop exhausted without break — max pages hit with more data available
-            if cursor:
-                truncated = True
-                logger.warning(
-                    "get_aggregates %s %s: hit %d-page ceiling, data truncated",
-                    symbol, timespan, self._MAX_PAGES,
-                )
-
+        bars, truncated = await follow_cursor(
+            fetch_page, params, max_pages=self._MAX_PAGES,
+            label=f"get_aggregates {symbol} {timespan}",
+        )
         # Sort ascending; callers (lightweight-charts, cache watermark, delta-merge) depend on it.
+        bars = unique_by_time(bars)
         if sort == "desc":
-            all_results.sort(key=lambda b: b.get("time", 0))
-
-        return all_results, truncated
+            bars.sort(key=lambda b: b.get("time", 0))
+        return bars, truncated
 
     async def get_news(
         self,
@@ -248,7 +233,7 @@ class GinlixDataClient:
         ``GET /api/v1/data/options/contracts/{options_ticker}``
         """
         resp = await self.http.get(
-            f"/api/v1/data/options/contracts/{options_ticker}",
+            f"/api/v1/data/options/contracts/{path_segment(options_ticker)}",
             headers=self._user_headers(user_id),
         )
         resp.raise_for_status()
@@ -331,12 +316,17 @@ class GinlixDataClient:
         ``GET /api/v1/data/snapshots/movers/{direction}``
         """
         resp = await self.http.get(
-            f"/api/v1/data/snapshots/movers/{direction}",
+            f"/api/v1/data/snapshots/movers/{path_segment(direction)}",
             headers=self._user_headers(user_id),
         )
         resp.raise_for_status()
         body = resp.json()
         return body.get("results", [])
+
+    async def _v2_get(
+        self, path: str, params: dict[str, Any] | None = None, *, user_id: str | None = None
+    ) -> httpx.Response:
+        return await self.http.get(path, params=params, headers=self._user_headers(user_id))
 
     async def close(self) -> None:
         await self.http.aclose()

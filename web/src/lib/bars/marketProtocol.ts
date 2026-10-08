@@ -8,6 +8,7 @@
  * survives additive backend fields without a frontend redeploy — we only pin
  * the fields the chart layer actually reads.
  */
+import type { Freshness } from '@/types/market';
 
 /** Canonical schema ids the protocol endpoint accepts. */
 export type SchemaId =
@@ -101,6 +102,8 @@ export interface BarsCache {
   market_phase?: string | null;
   /** Epoch ms of the phase's next calendar boundary; null for 24/7 venues. */
   next_change_at?: number | null;
+  /** Measured at response time; null on a history page. */
+  freshness?: Freshness | null;
   [key: string]: unknown;
 }
 
@@ -130,8 +133,8 @@ export interface ChartBar {
  * Metadata the loaders surface to chart consumers. Sourced from either the
  * protocol series header or the legacy REST envelope, normalized to one shape.
  * `watermark` is the backend's epoch-ms high-water mark used to drive `after=`
- * delta polls; `currency`/`displayDecimals` are only present when the protocol
- * endpoint served the data.
+ * delta polls. Both routes carry `revision`, currency and freshness;
+ * `displayDecimals` and `nextChangeAt` come only from the protocol endpoint.
  */
 export interface LoaderMeta {
   watermark: number | null;
@@ -143,5 +146,11 @@ export interface LoaderMeta {
   cached?: boolean;
   currency?: string;
   displayDecimals?: number;
+  /** The series' revision, bumped when the server rebuilds its history; a
+   *  change tells the live loader to reload rather than merge. */
   revision?: number;
+  /** Adjustment basis of the prices (`split_adjusted`, `raw`, ...). */
+  priceTreatment?: string;
+  /** Measured freshness of the served series. */
+  freshness?: Freshness | null;
 }

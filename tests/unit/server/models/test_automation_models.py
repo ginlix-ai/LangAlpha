@@ -188,9 +188,15 @@ class TestTriggerRules:
         with pytest.raises(ValidationError, match="Invalid price trigger config"):
             _create("price", trigger_config=config)
 
-    def test_a_price_config_is_stored_as_sent(self):
+    def test_a_price_config_is_stored_as_sent_but_its_symbol_as_validated(self):
         config = {"symbol": "gspc", "conditions": [{"type": "price_above", "value": 1.0}]}
-        assert _create("price", trigger_config=config).trigger_config == config
+        stored = _create("price", trigger_config=config).trigger_config
+        assert stored == {**config, "symbol": "SPX"}
+
+    def test_a_shanghai_symbol_is_stored_in_its_display_spelling(self):
+        config = {"symbol": "600519.SS", "conditions": [{"type": "price_above", "value": 1.0}]}
+        stored = _create("price", trigger_config=config).trigger_config
+        assert stored == {**config, "symbol": "600519.SH"}
 
 
 # ---------------------------------------------------------------------------

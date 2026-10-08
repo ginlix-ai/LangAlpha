@@ -96,8 +96,35 @@ class TestCreate:
                 {"trigger_config": {"symbol": "AAPL", "conditions": [{"type": "price_below", "value": 200}]}},
                 "; watching AAPL as a US stock",
             ),
+            # The market is the listing's own, not every stock's US.
+            (
+                {"trigger_config": {"symbol": "600519.SH", "conditions": [{"type": "price_below", "value": 1500}]}},
+                "; watching 600519.SH as a CN stock",
+            ),
+            # A dotted class share parses to no known venue but trades on the US tape.
+            (
+                {"trigger_config": {"symbol": "BRK.B", "conditions": [{"type": "price_below", "value": 500}]}},
+                "; watching BRK.B as a US stock",
+            ),
+            (
+                {"trigger_config": {"symbol": "PETR4.SA", "conditions": [{"type": "price_below", "value": 40}]}},
+                "; watching PETR4.SA as a stock on an unknown venue",
+            ),
+            (
+                {
+                    "trigger_config": {
+                        "symbol": "HSI",
+                        "market": "index",
+                        "conditions": [{"type": "price_below", "value": 20000}],
+                    }
+                },
+                "; watching HSI as an HK index",
+            ),
         ],
-        ids=["paused", "once", "price"],
+        ids=[
+            "paused", "once", "price", "price-cn-stock", "price-us-class-share",
+            "price-foreign-unknown-venue", "price-hk-index",
+        ],
     )
     @pytest.mark.asyncio
     async def test_a_create_reports_when_it_will_run(self, db, backend, entry, suffix):

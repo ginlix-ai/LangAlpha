@@ -69,6 +69,7 @@ services:
     volumes:
       # Mount source for hot-reload
       - ./src:/app/src
+      - ./libs/market-protocol:/app/libs/market-protocol
       - ./server.py:/app/server.py
       - ./agent_config.yaml:/app/agent_config.yaml
       # Required when SANDBOX_PROVIDER=docker and the backend auto-builds

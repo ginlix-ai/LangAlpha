@@ -9,19 +9,30 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 12px;
   margin-bottom: 12px;
+}
+
+/* The identity column is what gives way when the header narrows; the price
+   column keeps every digit. */
+.stock-header-identity {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .stock-title {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .stock-symbol {
   font-size: 1.25rem;
   font-weight: 600;
   color: var(--color-text-primary);
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* The ticker as a control: same type as the label, plus the chevron that says
@@ -51,9 +62,26 @@
   gap: 6px;
 }
 
+/* Both names live on one line and share one ellipsis. As separate flex items
+   they would each shrink to their own min-content, which for a CJK name is a
+   single glyph: 贵州茅台 stacked four rows deep. */
+.stock-names {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .stock-name {
   font-size: 1rem;
   color: var(--color-text-secondary);
+}
+
+.stock-name-secondary {
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+  margin-left: 8px;
 }
 
 .stock-exchange {
@@ -62,9 +90,12 @@
   background-color: var(--color-bg-tag);
   padding: 4px 8px;
   border-radius: 4px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .stock-price-section {
+  flex: 0 0 auto;
   text-align: right;
 }
 
@@ -82,9 +113,19 @@
   color: var(--color-loss);
 }
 
+/* The currency code beside the headline: named once, so the figures stay bare. */
+.stock-price-currency {
+  margin-left: 6px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
+
 .stock-change {
   font-size: 0.875rem;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .stock-change.positive {
@@ -99,6 +140,7 @@
 .stock-data-source {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 5px;
   font-size: 0.6875rem;
   color: var(--color-text-secondary);
@@ -124,8 +166,18 @@
   gap: 2px;
 }
 
-.stock-data-source:hover .data-source-tooltip {
+/* Focus opens the lines for a keyboard and for a tap. A mouse click also
+   focuses the tab stop, and the lines would then stay open after the pointer
+   left, so where a pointer can hover only keyboard focus holds them open. */
+.stock-data-source:hover .data-source-tooltip,
+:root:not([data-pointer-focus]) .stock-data-source:focus-within .data-source-tooltip {
   display: flex;
+}
+
+@media (hover: none) {
+  .stock-data-source:focus-within .data-source-tooltip {
+    display: flex;
+  }
 }
 
 .data-source-dot {
@@ -140,9 +192,20 @@
   animation: pulse-live 2s ease-in-out infinite;
 }
 
+/* A realtime print reached by REST polling: steady, no pulse (the pulse means
+   a streaming tick). */
+.data-source-dot--realtime {
+  background: var(--color-profit);
+}
+
 .data-source-dot--delayed {
   background: var(--color-text-secondary);
   opacity: 0.5;
+}
+
+/* Stale or short of the close: a fault, unlike a delay, which is the tier. */
+.data-source-dot--warning {
+  background: var(--color-warning);
 }
 
 .data-source-dot--closed {
@@ -153,6 +216,7 @@
 .data-source-label {
   font-weight: 500;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .data-source-time {
@@ -255,6 +319,13 @@
   .stock-header--compact .stock-header-top { margin-bottom: 6px; }
   .stock-price { font-size: 1.375rem; }
   .stock-symbol { font-size: 1rem; }
+
+  /* A phone's title row cannot hold ticker, name and session label at once.
+     The name keeps its place beside the ticker and takes what is left of the
+     line; the session label drops to a line of its own. */
+  .stock-title { flex-wrap: wrap; row-gap: 2px; }
+  .stock-names { flex: 1 1 0; }
+  .stock-data-source--inline { flex: 0 0 100%; }
   .stock-metrics { grid-template-columns: repeat(4, 1fr); gap: 6px; }
   .metric-label { font-size: 0.625rem; }
   .metric-value { font-size: 0.75rem; }

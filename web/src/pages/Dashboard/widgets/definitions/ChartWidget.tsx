@@ -42,9 +42,10 @@ import {
   defaultBarsView,
   dedupeMergeByTime,
   rangeBeforeOldest,
-  currencySymbol,
+  formatMoney,
+  quoteCurrency,
   foldMinuteBar,
-  formatPrice,
+  chartPriceFormat,
   timezoneForSymbol,
   useCurrencyDisplay,
   useLiveBars,
@@ -505,11 +506,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
   // storage (allDataRef) and the WS tick clock (lastLiveTickTimeRef, written by
   // the WS fold effect). `seedMeta` seeds the watermark + currency from the
   // initial loader's metadata. See useLiveBars for the reconcile/skip invariants.
-  const { seedMeta } = useLiveBars(config.symbol, config.interval, {
+  // A series rebuilt server-side re-runs that loader (`historyEpoch`), never a splice.
+  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const { seedMeta, loadFailed } = useLiveBars(config.symbol, config.interval, {
     enabled: true,
     dataRef: allDataRef,
     lastWsTickRef: lastLiveTickTimeRef,
     onMeta: onCurrencyMeta,
+    onRebuilt: () => setHistoryEpoch((n) => n + 1),
     onBars: (merged) => {
       updateSeriesData(merged);
       const latest = merged[merged.length - 1];
@@ -677,12 +681,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     // Currency-aware price axis + native crosshair label, scoped to the price
     // series (the volume histogram keeps its `type: 'volume'` format). The
     // formatter reads the ref so the currency follows `displayCurrency`.
-    const priceFmt = {
-      type: 'custom' as const,
-      minMove: 0.01,
-      formatter: (price: number) =>
-        formatPrice(price, priceFormatRef.current.code, priceFormatRef.current.decimals),
-    };
+    const priceFmt = chartPriceFormat(priceFormatRef);
 
     // Already correct type — just reapply colors (positive may have flipped).
     if (seriesRef.current && seriesTypeRef.current === config.chartType) {
@@ -758,6 +757,12 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     // exhaustive-deps sees the formatter's read; its identity never changes.
   }, [config.chartType, changeColor, positive, ct.upColor, ct.downColor, ct.baselineUpFill1, ct.baselineUpFill2, ct.baselineDownFill1, ct.baselineDownFill2, updateSeriesData, priceFormatRef]);
 
+  // The price step is fixed when applied, and the served decimals land after
+  // the series exists (first protocol header, symbol change).
+  useEffect(() => {
+    seriesRef.current?.applyOptions({ priceFormat: chartPriceFormat(priceFormatRef) });
+  }, [displayCurrency.decimals, priceFormatRef]);
+
   // ============================================================
   // Effect 4: Interval label format + initial data load
   // ============================================================
@@ -812,6 +817,9 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         if (ac.signal.aborted || symbolRef.current !== sym || intervalRef.current !== iv) return;
         const bars = (res?.data ?? []) as Bar[];
         if (bars.length === 0) {
+          // No bars, from an error or an empty answer: a reload a rebuild
+          // asked for is sent again on the next poll tick.
+          loadFailed();
           updateSeriesData([]);
           setLoading(false);
           return;
@@ -889,7 +897,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
       ac.abort();
       stage2AbortRef.current?.abort();
     };
-  }, [config.symbol, config.interval, applyDefaultView, updateSeriesData, mergePrependedData, seedMeta]);
+  }, [config.symbol, config.interval, historyEpoch, applyDefaultView, updateSeriesData, mergePrependedData, seedMeta, loadFailed]);
 
   // ============================================================
   // Effect 5: WS subscription — one ref-count per symbol across all
@@ -1199,7 +1207,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   className="text-sm tabular-nums"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  {currencySymbol(displayCurrency.code)}{grouped2(headerLast, locale)}
+                  {formatMoney(headerLast, quoteCurrency(displayCurrency.code, config.symbol), locale)}
                 </span>
               )}
             </div>

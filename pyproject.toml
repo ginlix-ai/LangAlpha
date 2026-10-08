@@ -94,6 +94,7 @@ dependencies = [
     "boto3>=1.42.28",
     "tavily-python>=0.7.18",
     "PyJWT[crypto]>=2.8",
+    "langalpha-market-protocol",
     "certifi>=2026.1.4",
     "requests>=2.32.5",
     "croniter>=2.0.0",
@@ -113,6 +114,7 @@ dependencies = [
 
 [tool.uv.sources]
 langalpha-cli = { path = "libs/ptc-cli", editable = true }
+langalpha-market-protocol = { path = "libs/market-protocol", editable = true }
 
 [project.optional-dependencies]
 # The interactive TUI (libs/ptc-cli). An extra, not a runtime dependency: the
@@ -163,6 +165,9 @@ override-dependencies = ["curl_cffi>=0.14"]
 
 [tool.ruff]
 extend-exclude = ["src/llms/vendor", "src/ptc_agent/core/sandbox/livefs_runtime/mfusepy.py"]
+# The package supports 3.11; a [tool.ruff] table of its own would make it the
+# config root and drop the rules below.
+per-file-target-version = { "libs/market-protocol/**" = "py311" }
 
 [tool.ruff.lint]
 ignore = ["E741"]  # allow short names like l, O, I (common in OHLCV code)
@@ -172,6 +177,8 @@ extend-select = ["TID251"]
 # ptc_agent has ONE module identity: the bare package. A src.-prefixed import
 # creates a second copy of every module (separate singletons, unpatched twins).
 "src.ptc_agent".msg = "import ptc_agent bare — src.ptc_agent creates a duplicate module identity"
+# market_protocol is the libs/market-protocol package; src/ no longer holds a copy.
+"src.market_protocol".msg = "import market_protocol, the libs/market-protocol package"
 
 [tool.ruff.lint.per-file-ignores]
 # Relative imports inside ptc_agent statically resolve to src.ptc_agent in

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Fundamentals MCP Server.
 
-Raw FMP fundamental data for programmatic analysis via MCP. Payloads stay
-vendor-native inside `data`; the envelope around them is the standard
-market-data contract (AGENT_CONTRACT.md).
+Fundamental data for programmatic analysis via MCP. A CN listing is served
+first from ginlix-data (vendor Tushare), whose rows come in FMP's camelCase
+shape; every other listing, and any CN miss, comes from FMP. Ratios are the
+exception: FMP answers first there, since only it prices the valuation fields,
+and ginlix-data answers a CN listing FMP cannot. Historical valuation, insider
+trades and technical indicators come from FMP alone. `source` names the vendor
+that answered, and the envelope around `data` is the standard market-data
+contract (AGENT_CONTRACT.md).
 
 Tools:
 - get_financial_statements: Raw income/balance/cash flow (multi-year)
@@ -29,10 +34,18 @@ try:
 except ModuleNotFoundError:  # imported as a package module (tests)
     from mcp_servers._bootstrap import MCPServer
 
+import asyncio
+import logging
 from typing import Literal
 
+import httpx
 
-from data_client.fmp import get_fmp_client, fmp_lifespan
+from data_client.fmp import close_fmp_client, get_fmp_client
+from data_client.lifespan import closing_lifespan
+from data_client.market_data_provider import symbol_market
+from data_client.normalize import populated
+from data_client.ginlix_data import close_ginlix_mcp_client, get_ginlix_mcp_client
+from data_client.ginlix_data.cn_financial import GinlixDataCnFinancialSource
 from mcp_servers._envelope import error_from_exception, make_error, make_response
 from mcp_servers._schemas import (
     ANY,
@@ -44,14 +57,28 @@ from mcp_servers._schemas import (
     envelope_schema,
     output_model,
 )
-from src.market_protocol.symbology import to_canonical, to_display
+from market_protocol.enums import AssetClass
+from market_protocol.symbology import (
+    is_family_index,
+    to_canonical,
+    to_display,
+    to_legacy_api,
+)
+
+logger = logging.getLogger(__name__)
 
 
-mcp = MCPServer("FundamentalsMCP", lifespan=fmp_lifespan)
+_lifespan = closing_lifespan(close_ginlix_mcp_client, close_fmp_client)
+
+
+mcp = MCPServer("FundamentalsMCP", lifespan=_lifespan)
 
 _SOURCE = "fmp"
+_SOURCE_TUSHARE = "tushare"
 _CLIENT_UNAVAILABLE = "FMP client is unavailable"
 _UPSTREAM_FAILED = "FMP request failed"
+
+_tushare_financial = None
 
 
 def _canonical(symbol: str) -> str:
@@ -60,6 +87,74 @@ def _canonical(symbol: str) -> str:
         return to_display(to_canonical(symbol))
     except Exception:  # noqa: BLE001
         return symbol
+
+
+def _fmp_symbol(symbol: str) -> str:
+    """FMP's spelling for an input ticker (``^GSPC``, ``AAPL``, ``600519.SH``).
+
+    Not the display spelling: FMP reads an index as ``^GSPC``, never ``SPX``, and
+    a canonical key (``AAPL.XNAS``) not at all. Resolved as an equity so a company
+    ticker that collides with an index alias (COMP) stays the company; the FMP
+    client respells ``.SH`` itself.
+    """
+    try:
+        ref = to_canonical(symbol, asset_class=AssetClass.EQUITY)
+    except Exception:  # noqa: BLE001
+        return symbol
+    legacy = to_legacy_api(ref)
+    return f"^{legacy}" if is_family_index(ref) else legacy
+
+
+def _tushare_for(symbol: str) -> GinlixDataCnFinancialSource | None:
+    """CN fundamentals (vendor: Tushare) served by ginlix-data, for CN symbols.
+
+    Returns ``None`` otherwise; callers fall through to the FMP path, and an
+    unreachable ginlix-data or an empty result does the same (soft miss).
+    """
+    if symbol_market(symbol) != "cn":
+        return None
+    global _tushare_financial
+    if _tushare_financial is None:
+        _tushare_financial = GinlixDataCnFinancialSource(get_ginlix_mcp_client())
+    return _tushare_financial
+
+
+def _http_miss(exc: httpx.HTTPError) -> str:
+    """The error class, and the status when there was one; never the URL."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{type(exc).__name__} {exc.response.status_code}"
+    return type(exc).__name__
+
+
+async def _from_tushare(disp: str, fetch, *, data_type: str, **extra):
+    """Serve a CN tool from tushare, or ``None`` to fall through to FMP.
+
+    The single definition of the cn-branch contract: gate on ``_tushare_for``,
+    treat any tushare error or empty payload as a soft miss (``None`` → the
+    caller's FMP path answers), and envelope hits with ``source="tushare"``.
+    *disp* is the display spelling, so a canonical ``600519.XSHG`` still gates
+    in as a CN listing.
+    """
+    ts = _tushare_for(disp)
+    if ts is None:
+        return None
+    try:
+        data = await fetch(ts)
+    except httpx.HTTPError as exc:
+        # An upstream miss (a 503, a 429, a dropped connection) is expected; the
+        # FMP path answers instead, so one line is enough.
+        logger.warning(
+            "ginlix-data %s unavailable for %s: %s", data_type, disp, _http_miss(exc)
+        )
+        return None
+    except Exception:  # noqa: BLE001 — soft miss, fall through to FMP
+        logger.warning("ginlix-data %s failed for %s", data_type, disp, exc_info=True)
+        return None
+    if not populated(data):
+        return None
+    return make_response(
+        data, source=_SOURCE_TUSHARE, symbol=disp, data_type=data_type, **extra
+    )
 
 
 _OUT_GET_FINANCIAL_STATEMENTS = output_model(
@@ -83,7 +178,7 @@ async def get_financial_statements(
     building. statement_type="all" returns income, balance sheet, and cash flow.
 
     Args:
-        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SS".
+        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SH".
         statement_type: "income" | "balance" | "cash" | "all".
         period: "annual" | "quarter".
         limit: Number of periods (default 10).
@@ -97,6 +192,29 @@ async def get_financial_statements(
         error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
+
+    async def _cn_statements(ts: GinlixDataCnFinancialSource):
+        if statement_type == "income":
+            return await ts.get_income_statements(disp, period=period, limit=limit)
+        if statement_type == "balance":
+            return await ts.get_balance_sheets(disp, period=period, limit=limit)
+        if statement_type == "cash":
+            return await ts.get_cash_flows(disp, period=period, limit=limit)
+        income, balance, cash = await asyncio.gather(  # "all"
+            ts.get_income_statements(disp, period=period, limit=limit),
+            ts.get_balance_sheets(disp, period=period, limit=limit),
+            ts.get_cash_flows(disp, period=period, limit=limit),
+        )
+        return {"income_statement": income, "balance_sheet": balance, "cash_flow": cash}
+
+    cn = await _from_tushare(
+        disp, _cn_statements,
+        data_type="financial_statements", statement_type=statement_type, period=period,
+    )
+    if cn is not None:
+        return cn
+
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
@@ -104,15 +222,15 @@ async def get_financial_statements(
 
     try:
         if statement_type == "income":
-            data = await client.get_income_statement(symbol, period=period, limit=limit)
+            data = await client.get_income_statement(api, period=period, limit=limit)
         elif statement_type == "balance":
-            data = await client.get_balance_sheet(symbol, period=period, limit=limit)
+            data = await client.get_balance_sheet(api, period=period, limit=limit)
         elif statement_type == "cash":
-            data = await client.get_cash_flow(symbol, period=period, limit=limit)
+            data = await client.get_cash_flow(api, period=period, limit=limit)
         else:  # "all"
-            income = await client.get_income_statement(symbol, period=period, limit=limit)
-            balance = await client.get_balance_sheet(symbol, period=period, limit=limit)
-            cash_flow = await client.get_cash_flow(symbol, period=period, limit=limit)
+            income = await client.get_income_statement(api, period=period, limit=limit)
+            balance = await client.get_balance_sheet(api, period=period, limit=limit)
+            cash_flow = await client.get_cash_flow(api, period=period, limit=limit)
             data = {
                 "income_statement": income or [],
                 "balance_sheet": balance or [],
@@ -152,7 +270,7 @@ async def get_financial_ratios(
     and margins over time, or compare valuation across companies.
 
     Args:
-        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SS".
+        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SH".
         period: "annual" | "quarter".
         limit: Number of periods (default 10).
 
@@ -166,25 +284,43 @@ async def get_financial_ratios(
         returned by FMP. On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
+
+    async def _cn_ratios(ts: GinlixDataCnFinancialSource):
+        key_metrics, ratios = await asyncio.gather(
+            ts.get_key_metrics_periods(disp, period=period, limit=limit),
+            ts.get_ratios_periods(disp, period=period, limit=limit),
+        )
+        return {"key_metrics": key_metrics, "ratios": ratios}
+
+    # FMP first, the reverse of the other CN branches: the valuation fields
+    # promised above (marketCap, enterpriseValue, priceToEarningsRatio) are
+    # priced per period, and ginlix-data's CN rows carry only the accounting
+    # half. Those rows still answer a CN listing that FMP cannot.
+    async def _or_cn(fmp_answer: dict) -> dict:
+        cn = await _from_tushare(
+            disp, _cn_ratios, data_type="financial_ratios", period=period
+        )
+        return fmp_answer if cn is None else cn
+
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
-        return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
-
-    try:
-        key_metrics = await client.get_key_metrics(symbol, period=period, limit=limit)
-        ratios = await client.get_financial_ratios(symbol, period=period, limit=limit)
-
-        return make_response(
-            {"key_metrics": key_metrics or [], "ratios": ratios or []},
-            source=_SOURCE,
-            symbol=disp,
-            data_type="financial_ratios",
-            period=period,
+        return await _or_cn(
+            make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
         )
 
+    try:
+        key_metrics = await client.get_key_metrics(api, period=period, limit=limit)
+        ratios = await client.get_financial_ratios(api, period=period, limit=limit)
     except Exception as e:  # noqa: BLE001
-        return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
+        return await _or_cn(error_from_exception(e, _UPSTREAM_FAILED, symbol=disp))
+
+    data = {"key_metrics": key_metrics or [], "ratios": ratios or []}
+    answer = make_response(
+        data, source=_SOURCE, symbol=disp, data_type="financial_ratios", period=period
+    )
+    return answer if populated(data) else await _or_cn(answer)
 
 
 _OUT_GET_GROWTH_METRICS = output_model(
@@ -207,7 +343,7 @@ async def get_growth_metrics(
     trajectory or compare growth across competitors.
 
     Args:
-        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SS".
+        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SH".
         period: "annual" | "quarter".
         limit: Number of periods (default 10).
 
@@ -222,14 +358,24 @@ async def get_growth_metrics(
         {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
+
+    cn = await _from_tushare(
+        disp,
+        lambda ts: ts.get_growth_periods(disp, period=period, limit=limit),
+        data_type="growth_metrics", period=period,
+    )
+    if cn is not None:
+        return cn
+
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
     try:
-        financial_growth = await client.get_financial_growth(symbol, period=period, limit=limit)
-        income_growth = await client.get_income_statement_growth(symbol, period=period, limit=limit)
+        financial_growth = await client.get_financial_growth(api, period=period, limit=limit)
+        income_growth = await client.get_income_statement_growth(api, period=period, limit=limit)
 
         return make_response(
             {
@@ -266,7 +412,7 @@ async def get_historical_valuation(
     price or build valuation trend charts.
 
     Args:
-        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SS".
+        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SH".
         period: "annual" | "quarter".
         limit: Number of periods (default 10).
 
@@ -281,15 +427,16 @@ async def get_historical_valuation(
         error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
     try:
-        current_dcf = await client.get_dcf(symbol)
-        historical_dcf = await client.get_historical_dcf(symbol, period=period, limit=limit)
-        enterprise_value = await client.get_enterprise_value(symbol, period=period, limit=limit)
+        current_dcf = await client.get_dcf(api)
+        historical_dcf = await client.get_historical_dcf(api, period=period, limit=limit)
+        enterprise_value = await client.get_enterprise_value(api, period=period, limit=limit)
 
         return make_response(
             {
@@ -327,7 +474,7 @@ async def get_insider_trades(
     confidence.
 
     Args:
-        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
         limit: Number of recent transactions to fetch (default 50).
 
     Returns:
@@ -340,14 +487,15 @@ async def get_insider_trades(
         {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
     try:
-        trades = await client.get_insider_trades(symbol, limit=limit)
-        stats = await client.get_insider_trade_stats(symbol)
+        trades = await client.get_insider_trades(api, limit=limit)
+        stats = await client.get_insider_trade_stats(api)
 
         return make_response(
             {"trades": trades or [], "stats": stats or []},
@@ -378,7 +526,7 @@ async def get_dividends_and_splits(
     growth, adjust prices for splits, or compare dividend history across peers.
 
     Args:
-        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source, data_type}. data is
@@ -390,14 +538,21 @@ async def get_dividends_and_splits(
         {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
+    cn = await _from_tushare(
+        disp, lambda ts: ts.get_dividends(disp), data_type="dividends_and_splits"
+    )
+    if cn is not None:
+        return cn
+
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
     try:
-        dividends = await client.get_dividends(symbol)
-        splits = await client.get_splits(symbol)
+        dividends = await client.get_dividends(api)
+        splits = await client.get_splits(api)
 
         return make_response(
             {"dividends": dividends or [], "splits": splits or []},
@@ -428,7 +583,7 @@ async def get_shares_float(
     low-float names, gauge ownership concentration, or screen squeeze candidates.
 
     Args:
-        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source, data_type}. data is a list of
@@ -438,13 +593,20 @@ async def get_shares_float(
         {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
+    cn = await _from_tushare(
+        disp, lambda ts: ts.get_shares_float(disp), data_type="shares_float"
+    )
+    if cn is not None:
+        return cn
+
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
     try:
-        data = await client.get_shares_float(symbol)
+        data = await client.get_shares_float(api)
 
         return make_response(
             data or [],
@@ -475,7 +637,7 @@ async def get_key_executives(
     management team or compare executive pay across peers.
 
     Args:
-        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SS".
+        symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
 
     Returns:
         dict: {symbol, count, data, source, data_type}. data is a list of
@@ -485,13 +647,20 @@ async def get_key_executives(
         by FMP (not time-ordered). On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
+    cn = await _from_tushare(
+        disp, lambda ts: ts.get_key_executives(disp), data_type="key_executives"
+    )
+    if cn is not None:
+        return cn
+
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
         return make_error("client_unavailable", _CLIENT_UNAVAILABLE, symbol=disp)
 
     try:
-        data = await client.get_key_executives(symbol)
+        data = await client.get_key_executives(api)
 
         return make_response(
             data or [],
@@ -530,7 +699,7 @@ async def get_technical_indicator(
     overlay EMA/MACD, or screen by technical signals.
 
     Args:
-        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SS".
+        symbol: Ticker, e.g. "AAPL", "0700.HK", "600519.SH".
         indicator: FMP name — "rsi", "ema", "sma", "wma", "adx", "williams".
         period: Indicator lookback length (default 14).
         timeframe: FMP-native bar — "1min"…"4hour", "1day" (default "1day").
@@ -544,6 +713,7 @@ async def get_technical_indicator(
         On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
+    api = _fmp_symbol(symbol)
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
@@ -551,7 +721,7 @@ async def get_technical_indicator(
 
     try:
         data = await client.get_technical_indicator(
-            symbol, indicator=indicator, period=period, timeframe=timeframe
+            api, indicator=indicator, period=period, timeframe=timeframe
         )
 
         return make_response(

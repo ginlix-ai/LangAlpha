@@ -110,7 +110,7 @@ delete the object from the array.
 | average_cost       | no  | decimal | —   | Non-negative cost basis per unit. |
 | exchange           | no  | string  | 50  | e.g. `NASDAQ`. |
 | name               | no  | string  | 255 | Display name. |
-| currency           | no  | string  | 10  | ISO code (`USD`, `EUR`). Defaults to `USD`. |
+| currency           | no  | string  | 10  | ISO code (`USD`, `CNY`). A new row defaults to its listing's; a held row keeps its own. |
 | account_name       | no  | string \\| null | 100 | Lets the same symbol exist in multiple accounts. |
 | notes              | no  | string  | —   | Free-form. |
 | first_purchased_at | no  | date    | —   | `YYYY-MM-DD`. |

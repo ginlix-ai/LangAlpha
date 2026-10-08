@@ -97,3 +97,87 @@ class TestFmpHeaderAuth:
         assert "apikey" not in kwargs["params"]
         assert client._cache
         assert all(_SECRET not in key for key in client._cache)
+
+
+class TestFmpVendorSpelling:
+    """FMP resolves Shanghai only as ``.SS``; a ``.SH`` caller still lands."""
+
+    @pytest.mark.asyncio
+    async def test_display_spelling_reaches_fmp_in_its_own_form(self):
+        request = httpx.Request("GET", "https://financialmodelingprep.com/stable/quote")
+        response = httpx.Response(200, request=request, json=[{"symbol": "600519.SS"}])
+        get_mock = AsyncMock(return_value=response)
+        client = _client_with_mocked_http(get_mock)
+        try:
+            await client._make_request("quote", {"symbol": "600519.SH"})
+            await client._make_request("batch-quote", {"symbols": "600519.SH,AAPL"})
+        finally:
+            await client.close()
+
+        sent = [call.kwargs["params"] for call in get_mock.await_args_list]
+        assert sent[0]["symbol"] == "600519.SS"
+        assert sent[1]["symbols"] == "600519.SS,AAPL"
+
+    @pytest.mark.asyncio
+    async def test_rows_come_back_in_our_spelling(self):
+        request = httpx.Request("GET", "https://financialmodelingprep.com/stable/batch-quote")
+        response = httpx.Response(
+            200, request=request, json=[{"symbol": "600519.SS"}, {"symbol": "^GSPC"}]
+        )
+        get_mock = AsyncMock(return_value=response)
+        client = _client_with_mocked_http(get_mock)
+        try:
+            fresh = await client._make_request("batch-quote", {"symbols": "600519.SH,^GSPC"})
+            cached = await client._make_request("batch-quote", {"symbols": "600519.SH,^GSPC"})
+        finally:
+            await client.close()
+
+        assert get_mock.await_count == 1
+        assert [r["symbol"] for r in fresh] == ["600519.SH", "^GSPC"]
+        assert [r["symbol"] for r in cached] == ["600519.SH", "^GSPC"]
+
+    @pytest.mark.asyncio
+    async def test_blank_entries_drop_and_an_unspellable_symbol_never_reaches_fmp(self):
+        request = httpx.Request("GET", "https://financialmodelingprep.com/stable/batch-quote")
+        get_mock = AsyncMock(return_value=httpx.Response(200, request=request, json=[]))
+        client = _client_with_mocked_http(get_mock)
+        try:
+            await client._make_request("batch-quote", {"symbols": "600519.SH,, AAPL,"})
+            with pytest.raises(FMPRequestError) as exc:
+                await client._make_request("batch-quote", {"symbols": "AAPL,EUR/USD"})
+        finally:
+            await client.close()
+
+        assert get_mock.await_count == 1
+        assert get_mock.await_args.kwargs["params"]["symbols"] == "600519.SS,AAPL"
+        # A status, so the sandbox tools report it as a bad argument, with the reason.
+        assert exc.value.status_code == 400
+        assert "EUR/USD" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_batch_skips_only_the_symbol_fmp_cannot_be_asked_for(self):
+        from unittest.mock import patch
+
+        from src.data_client.fmp.data_source import FMPDataSource
+
+        asked: list[list[str]] = []
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_batch_quotes(self, symbols):
+                asked.append(symbols)
+                return [{"symbol": s, "price": 1.0} for s in symbols]
+
+        with patch("src.data_client.fmp.data_source.FMPClient", return_value=_FakeClient()):
+            snaps = await FMPDataSource().get_snapshots(["AAPL", "EUR/USD", "MSFT"])
+            # Nothing left to ask: the refusal itself is the answer.
+            with pytest.raises(ValueError, match="EUR/USD"):
+                await FMPDataSource().get_snapshots(["EUR/USD"])
+
+        assert [s["symbol"] for s in snaps] == ["AAPL", "MSFT"]
+        assert asked == [["AAPL", "MSFT"]]

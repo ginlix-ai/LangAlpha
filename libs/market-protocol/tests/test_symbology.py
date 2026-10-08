@@ -139,6 +139,8 @@ class TestJunkInput:
             "A　B",
             # Path and URL metacharacters, before and after the fold.
             "A/B", "A\\B", "A?B", "A#B", "A%2FB", "../ETC", "．．／", "AAPL／X",
+            # A batch separator: one symbol would name two listings upstream.
+            "600519.SH,000858.SZ", "AAPL,MSFT", "６００５１９．ＳＨ，０００８５８．ＳＺ",
             # A stem that names nothing.
             ".HK", "..XXXX", "..", ".", "AAPL.", "A..HK", "^.", "-.FX", "BTC-.CRYPTO",
             "^I:", "A" * 65,
@@ -678,6 +680,24 @@ class TestCnVenueInstruments:
         assert to_display(ref) == display
         # A venue-listed index keeps its venue spelling, never a bare family name.
         assert vendor_symbol(ref) == vendor_spelling(legacy)
+
+    @pytest.mark.parametrize(
+        ("spelling", "currency"),
+        [
+            ("900901.SH", "USD"),
+            ("900901.SS", "USD"),
+            ("200002.SZ", "HKD"),
+            ("200002.XSHE", "HKD"),
+            # Each range belongs to its own venue's code space.
+            ("900901.SZ", "CNY"),
+            ("200002.SH", "CNY"),
+        ],
+    )
+    def test_b_shares_carry_their_trading_currency(self, spelling, currency):
+        ref = to_canonical(spelling)
+        assert ref.asset_class is AssetClass.EQUITY and ref.calendar_id == "XSHG"
+        assert (ref.currency, ref.price_currency) == (currency, currency)
+        assert to_canonical(ref.instrument_key) == ref
 
     def test_equity_hint_cannot_demote_an_exchange_index(self):
         assert to_canonical("000001.SS", asset_class=AssetClass.EQUITY).asset_class is AssetClass.INDEX

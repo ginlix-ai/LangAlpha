@@ -8,6 +8,7 @@ invalidate that cache. Plan-gated features resolve against the platform
 access tier (Redis-cached, fetched only when a plan-gated feature exists).
 """
 
+import asyncio
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -78,8 +79,12 @@ async def effective_flags_for_user(
     """Resolved feature map for one user; ``overrides`` skips the prefs read
     when the caller already holds the user's ``feature_overrides``."""
     if overrides is None:
-        overrides = await _get_overrides(user_id)
-    return effective_flags(overrides, access_tier=await _access_tier(user_id))
+        overrides, access_tier = await asyncio.gather(
+            _get_overrides(user_id), _access_tier(user_id)
+        )
+    else:
+        access_tier = await _access_tier(user_id)
+    return effective_flags(overrides, access_tier=access_tier)
 
 
 async def user_feature_enabled(user_id: str, key: str) -> bool:
@@ -94,8 +99,10 @@ async def list_user_features(user_id: str) -> list[FeatureState]:
     catalog contract is that the kill switch hides every surface, and a listed
     entry would render a Settings toggle that can never turn on.
     """
-    overrides = await _get_overrides(user_id)
-    resolved = await effective_flags_for_user(user_id, overrides)
+    overrides, access_tier = await asyncio.gather(
+        _get_overrides(user_id), _access_tier(user_id)
+    )
+    resolved = effective_flags(overrides, access_tier=access_tier)
     features = []
     for key, spec in FEATURES.items():
         flag = system_flag(key)

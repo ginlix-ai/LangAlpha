@@ -2,10 +2,11 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from market_protocol import display_spelling
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, field_validator
 
 
 # =============================================================================
@@ -14,8 +15,17 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Strip whitespace and uppercase the instrument symbol."""
-    return symbol.strip().upper()
+    """The one spelling a row stores, so ``600519.SS`` and ``600519.SH`` are
+    one listing."""
+    return display_spelling(symbol)
+
+
+def _stored_symbol(v: Any) -> Any:
+    # A non-string is left for Pydantic to reject as one.
+    return normalize_symbol(v) if isinstance(v, str) else v
+
+
+StoredSymbol = Annotated[str, BeforeValidator(_stored_symbol)]
 
 
 # =============================================================================
@@ -312,7 +322,7 @@ class WatchlistResponse(WatchlistBase):
 class WatchlistItemBase(BaseModel):
     """Base watchlist item fields."""
 
-    symbol: str = Field(..., max_length=50, description="Instrument symbol")
+    symbol: StoredSymbol = Field(..., max_length=50, description="Instrument symbol")
     instrument_type: str = Field(
         ...,
         min_length=1,
@@ -333,13 +343,6 @@ class WatchlistItemBase(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(
         default_factory=dict, description="Additional metadata"
     )
-
-    @field_validator("symbol", mode="before")
-    @classmethod
-    def normalize_symbol_field(cls, v: Any) -> str:
-        if isinstance(v, str):
-            return normalize_symbol(v)
-        return v  # let Pydantic handle type validation
 
     @field_validator("instrument_type", mode="before")
     @classmethod
@@ -416,7 +419,7 @@ class WatchlistsResponse(BaseModel):
 class PortfolioHoldingBase(BaseModel):
     """Base portfolio holding fields."""
 
-    symbol: str = Field(..., max_length=50, description="Instrument symbol")
+    symbol: StoredSymbol = Field(..., max_length=50, description="Instrument symbol")
     instrument_type: str = Field(
         ...,
         min_length=1,
@@ -444,13 +447,6 @@ class PortfolioHoldingBase(BaseModel):
         None, description="First purchase date"
     )
 
-    @field_validator("symbol", mode="before")
-    @classmethod
-    def normalize_symbol_field(cls, v: Any) -> str:
-        if isinstance(v, str):
-            return normalize_symbol(v)
-        return v  # let Pydantic handle type validation
-
     @field_validator("instrument_type", mode="before")
     @classmethod
     def normalize_instrument_type_field(cls, v: Any) -> Any:
@@ -460,7 +456,15 @@ class PortfolioHoldingBase(BaseModel):
 class PortfolioHoldingCreate(PortfolioHoldingBase):
     """Request model for adding holding to portfolio."""
 
-    pass
+    currency: Optional[str] = Field(
+        None,
+        max_length=10,
+        description=(
+            "Currency of average_cost. Omitted, a new holding takes its listing's "
+            "quote currency (CNY for 600519.SH) and a merge keeps the existing "
+            "holding's. A currency other than the existing holding's is refused with 409."
+        ),
+    )
 
 
 class PortfolioHoldingUpdate(BaseModel):

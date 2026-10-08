@@ -14,7 +14,7 @@ interface PortfolioHoldingPayload {
   name: string;
   quantity: string;
   average_cost: string;
-  currency: string;
+  currency?: string;  // absent: the server takes the listing's
   account_name?: string;
   notes?: string;
   first_purchased_at: string;
@@ -110,7 +110,7 @@ function AddPortfolioHoldingDialog({
       name: selectedStock.name || '',
       quantity: String(quantityNum),
       average_cost: String(averageCostNum),
-      currency: selectedStock.currency || 'USD',
+      currency: selectedStock.currency || undefined,
       account_name: accountName.trim() || undefined,
       notes: notes.trim() || undefined,
       first_purchased_at: new Date().toISOString(),

@@ -8,8 +8,8 @@ changed and the paired normalizer logic must be revisited.
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from src.market_protocol.calendars import get_calendar
-from src.market_protocol.enums import MarketPhase
+from market_protocol.calendars import get_calendar
+from market_protocol.enums import MarketPhase
 
 HKT = ZoneInfo("Asia/Hong_Kong")
 ET = ZoneInfo("America/New_York")

@@ -9,10 +9,11 @@
  * setQueryData, so every widget showing that symbol shares one cache entry
  * (kills Context bug #8: overlapping watchlists never sharing a quote).
  *
- * Key = uppercase legacy symbol spelling (indexes stripped of a leading '^').
+ * Key = uppercase requested spelling (indexes stripped of a leading '^').
  * This is interim until Phase 4 re-keys the cache on the canonical
- * instrument_key; the spelling is intentionally the same one the legacy
- * snapshot endpoints already return so batch/single/WS all collapse to one key.
+ * instrument_key. A row may show a different spelling than the one asked for
+ * (`600519.SS` asked, `600519.SH` shown); its `requested` list names the
+ * asked spellings, so each lands under the key its consumer holds.
  *
  * In-flight dedup: a symbol already being fetched in the current window is not
  * re-requested — the pending promise is returned instead. Unknown/unresolvable
@@ -21,31 +22,15 @@
  */
 import type { QueryClient } from '@tanstack/react-query';
 import { getSnapshotStocks, getSnapshotIndexes } from './snapshotApi';
+import { snapshotRowSpellings } from './quoteAdapters';
 import { normalizeIndexKey } from '@/lib/marketUtils';
 import { queryKeys } from '@/lib/queryKeys';
+import { asQuoteTier } from '@/lib/freshness';
+import type { SnapshotData } from '@/types/market';
 
-/** The canonical quote row — the raw snapshot shape returned by the batch
- *  snapshot endpoints (and, shape-identically, the single-symbol endpoint). */
-export interface QuoteRow {
-  symbol: string;
-  name?: string;
-  price?: number | null;
-  change?: number | null;
-  change_percent?: number | null;
-  previous_close?: number | null;
-  open?: number | null;
-  high?: number | null;
-  low?: number | null;
-  volume?: number | null;
-  last_minute_close?: number | null;
-  regular_close?: number | null;
-  regular_trading_change?: number | null;
-  early_trading_change?: number | null;
-  early_trading_change_percent?: number | null;
-  late_trading_change?: number | null;
-  late_trading_change_percent?: number | null;
-  [key: string]: unknown;
-}
+/** The canonical quote row: the snapshot endpoints' wire row, with its tier
+ *  narrowed once here so a reader never meets an undeclared tier string. */
+export type QuoteRow = SnapshotData;
 
 /** Coalescing window. Kept short so the first paint isn't visibly delayed while
  *  still wide enough for co-mounted widgets to batch into one request. */
@@ -133,10 +118,15 @@ export class QuoteBatcher {
       const resp = isIndex
         ? await getSnapshotIndexes(keys)
         : await getSnapshotStocks(keys);
-      const list = (resp?.snapshots || resp?.results || resp?.data || []) as unknown as QuoteRow[];
+      const list = resp?.snapshots || resp?.results || resp?.data || [];
       if (Array.isArray(list)) {
-        for (const row of list) {
-          if (row && row.symbol != null) byKey.set(quoteKey(String(row.symbol), isIndex), row);
+        for (const wire of list) {
+          if (wire && wire.symbol != null) {
+            const row: QuoteRow = { ...wire, tier: asQuoteTier(wire.tier) };
+            for (const spelling of snapshotRowSpellings(row)) {
+              byKey.set(quoteKey(String(spelling), isIndex), row);
+            }
+          }
         }
       }
     } catch {
@@ -151,6 +141,12 @@ export class QuoteBatcher {
       // `undefined` queryFn result, and the hooks map null → `quote: undefined`.
       const value: QuoteRow | null = byKey.get(key) ?? null;
       this.queryClient.setQueryData(queryKeys.quote.detail(key), value);
+      // A row shown under another spelling also seeds that key, so a page
+      // adopting the shown spelling lands on a warm entry.
+      const shown = value ? quoteKey(String(value.symbol), isIndex) : key;
+      if (shown !== key && !pool.has(shown)) {
+        this.queryClient.setQueryData(queryKeys.quote.detail(shown), value);
+      }
       this.inFlight.delete(flightKey);
       deferred.resolve(value);
     }

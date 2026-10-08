@@ -112,4 +112,23 @@ describe('InlineMarketOverviewCard', () => {
     fireEvent.click(screen.getByText('XX'));
     expect(onClick).toHaveBeenCalledTimes(1);
   });
+  it('badges an index row whose provider declares a 15-minute delay', () => {
+    render(
+      <InlineMarketOverviewCard
+        artifact={{
+          type: 'market_overview',
+          region: 'us',
+          indices: {
+            type: 'market_indices',
+            indices: {
+              '^GSPC': { ...INDICES_ARTIFACT.indices['^GSPC'], tier: 'delayed_15m' },
+              '^IXIC': { name: 'Nasdaq', ohlcv: [{ close: 16000 }], stats: { period_change_pct: -0.4 }, tier: 'realtime' },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByLabelText(/Delayed 15 min/)).toHaveLength(1);
+  });
 });
