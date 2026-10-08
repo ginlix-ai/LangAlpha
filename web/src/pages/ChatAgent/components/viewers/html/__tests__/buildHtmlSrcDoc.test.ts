@@ -117,3 +117,21 @@ describe('buildHtmlSrcDoc — host color-scheme mirroring', () => {
     expect(buildHtmlSrcDoc('widget-inline', NO_DATA)).toBe(widgetInlineNodataFixture);
   });
 });
+
+describe('buildHtmlSrcDoc — scrollbar', () => {
+  const INSET_TRACK = '::-webkit-scrollbar-track { background: transparent; margin: 4px; }';
+
+  // The widget's WebKit rules would merge with the inset ones one property at
+  // a time, and a 6px lane less the 3px inset paints no thumb.
+  it('leaves a widget with WebKit scrollbar rules its own scrollbar', () => {
+    const html = '<style>::-webkit-scrollbar { width: 6px; }</style><div>hi</div>';
+    expect(buildHtmlSrcDoc('widget-inline', { html })).not.toContain(INSET_TRACK);
+  });
+
+  // The standard properties cannot merge into a thumbless scrollbar, and a
+  // browser without them (Chrome before 121) has only the inset rules.
+  it('keeps the inset scrollbar for a widget that sets only the standard properties', () => {
+    const html = '<style>html { scrollbar-width: thin; }</style><div>hi</div>';
+    expect(buildHtmlSrcDoc('widget-inline', { html })).toContain(INSET_TRACK);
+  });
+});
