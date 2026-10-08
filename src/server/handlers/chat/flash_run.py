@@ -21,6 +21,7 @@ from langgraph.types import Command
 
 from src.server.app import setup
 from src.server.database.home_workspace import get_flash_workspace_id
+from src.server.database.user import get_user_profile_for_prompt
 from src.server.database.workspace import get_or_create_flash_workspace
 from src.server.services.runs.sse_producer import RunSSEProducer
 from src.server.models.chat import (
@@ -48,7 +49,7 @@ from src.server.utils.multimodal_context import (
     parse_multimodal_contexts,
 )
 from ptc_agent.agent.flash import build_flash_graph
-from ptc_agent.agent.graph import fetch_user_data_counts, get_user_profile_for_prompt
+from ptc_agent.agent.graph import fetch_user_data_counts
 from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
 
 from .request_prep import (

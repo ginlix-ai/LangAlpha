@@ -394,6 +394,7 @@ export interface SecretaryActionProposalState {
   status: string;
   actionType: 'delete_workspace' | 'stop_workspace' | 'delete_thread';
   workspace_id?: string;
+  workspace_name?: string | null;
   thread_id?: string;
   interruptId?: string;
 }

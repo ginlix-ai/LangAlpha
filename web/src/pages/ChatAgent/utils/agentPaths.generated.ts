@@ -41,7 +41,7 @@ export const USER_DATA_DIRS = [
 /** The fixed DB-backed files, by the directory that serves them.
  *  Source: USER_DATA_FILES. */
 export const USER_DATA_FILES = {
-  '.agents/user/profile': ['portfolio.json', 'watchlist.json', 'preference.json'],
+  '.agents/user/profile': ['portfolio.json', 'watchlist.json', 'preference.json', 'user.json'],
 } as const;
 
 /** The names an automation's file in AUTOMATIONS_DIR may take, one

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
 import { useDisconnectMcpOauth, useRefreshMcpOauthSchemas } from '@/hooks/useMcpServers';
@@ -150,6 +150,18 @@ export function useMcpOauthActions({
   // The connect waiting on an answer, held whole so the surface that renders
   // the question does not have to reassemble the request to resume it.
   const [pendingConfirm, setPendingConfirm] = useState<ConnectRequest | null>(null);
+
+  // A connect is left showing when the page leaves for the vendor, and backing
+  // out of the vendor's page restores this one from the bfcache as it was.
+  // Nothing is out any more, so the row, and a sheet that locks on it, comes
+  // back to idle.
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setConnectingName(null);
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => window.removeEventListener('pageshow', onShow);
+  }, []);
 
   /**
    * Start a connect, or raise the question that has to be answered first.

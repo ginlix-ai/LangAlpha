@@ -56,7 +56,7 @@ function sendRaises(interrupt: Record<string, unknown>) {
 function renderChat(initial: { agentMode: string; onFileArtifact: (e: unknown) => void }) {
   let props = initial;
   const rendered = renderHookWithProviders(() =>
-    useChatMessages('ws-test', 'thread-1', null, null, null, null, props.onFileArtifact, null, props.agentMode),
+    useChatMessages('ws-test', 'thread-1', null, null, null, props.onFileArtifact, null, props.agentMode),
   );
   const flip = (next: Partial<typeof initial>) => {
     props = { ...props, ...next };

@@ -1433,7 +1433,6 @@ async def test_re_enabling_an_always_on_computer_skips_the_gate(
 @pytest.mark.parametrize(
     "action,method_name",
     [
-        ("stop", "stop_workspace"),
         ("archive", "archive_workspace"),
     ],
 )

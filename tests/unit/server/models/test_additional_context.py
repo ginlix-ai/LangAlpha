@@ -24,10 +24,10 @@ _adapter = TypeAdapter(AdditionalContext)
 class TestDiscriminator:
     def test_skills_routes_to_skill_context(self):
         ctx = _adapter.validate_python(
-            {"type": "skills", "name": "user-profile"}
+            {"type": "skills", "name": "onboarding"}
         )
         assert isinstance(ctx, SkillContext)
-        assert ctx.name == "user-profile"
+        assert ctx.name == "onboarding"
 
     def test_image_routes_to_multimodal(self):
         ctx = _adapter.validate_python(

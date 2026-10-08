@@ -584,12 +584,12 @@ class TestCreateWorkspace:
 
 
 # ---------------------------------------------------------------------------
-# stop_workspace
+# stopping the machine
 # ---------------------------------------------------------------------------
 
 
 class TestStopWorkspace:
-    """Test workspace stopping."""
+    """Stopping a machine through the computer surface."""
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -621,7 +621,7 @@ class TestStopWorkspace:
                 AsyncMock(return_value=dict(_STUB_COMPUTER)),
             ),
         ):
-            result = await wm.stop_workspace(ws_id)
+            result = await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=ws_id)
 
         assert result["status"] == "stopped"
         mock_session.stop.assert_awaited_once()
@@ -676,7 +676,7 @@ class TestStopWorkspace:
             patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=None)),
         ):
             with pytest.raises(ValueError, match="not found"):
-                await wm.stop_workspace(str(uuid.uuid4()))
+                await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=str(uuid.uuid4()))
 
     @pytest.mark.asyncio
     @cm_patch("db_get_workspace", new_callable=AsyncMock)
@@ -702,7 +702,7 @@ class TestStopWorkspace:
             ) as mock_status,
             _patch_resolve(stopped),
         ):
-            result = await wm.stop_workspace(ws_id)
+            result = await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=ws_id)
 
         assert result["status"] == "stopped"
         mock_status.assert_not_awaited()
@@ -720,7 +720,7 @@ class TestStopWorkspace:
             _patch_resolve(starting),
         ):
             with pytest.raises(RuntimeError, match="Cannot stop"):
-                await wm.stop_workspace(str(uuid.uuid4()))
+                await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=str(uuid.uuid4()))
 
 
 # ---------------------------------------------------------------------------

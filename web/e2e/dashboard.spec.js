@@ -655,6 +655,20 @@ test.describe('Personalization', () => {
         has_api_key: true,
         has_oauth_token: false,
       },
+      // Onboarding runs in Home, so the banner is offered only with the
+      // Chief of Staff on.
+      'GET /features': {
+        features: [{
+          key: 'all_workspaces_agent',
+          label: 'All workspaces agent',
+          description: '',
+          tradeoffs: null,
+          enabled: true,
+          gate: 'opt_in',
+          min_tier: null,
+          user_override: true,
+        }],
+      },
     }));
 
     await page.goto('/dashboard');

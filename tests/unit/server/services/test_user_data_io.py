@@ -8,6 +8,7 @@ the SQL does to real rows lives in the integration suite
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -430,6 +431,59 @@ class TestPreferences:
 # ---------------------------------------------------------------------------
 # Strict validation — unknown fields, duplicates, value bounds
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+
+
+def _diff_user(content: dict, row: dict | None) -> dict:
+    return io.diff_user(io.parse_user(json.dumps(content)), row)
+
+
+class TestUser:
+    ROW = {"name": "Alex", "timezone": "Legacy/Zone", "locale": "zh_CN", "onboarding_completed": False}
+
+    def test_stored_values_survive_a_save_that_keeps_them(self):
+        # Zone and locale are checked only when they change, so a value saved
+        # before the checks existed does not block an unrelated edit.
+        assert _diff_user({**self.ROW, "name": "Bo"}, self.ROW) == {"name": "Bo"}
+        assert _diff_user({"timezone": "Legacy/Zone "}, {**self.ROW, "timezone": "Legacy/Zone "}) == {
+            "timezone": "Legacy/Zone"
+        }
+
+    def test_zone_and_locale_are_stored_in_their_usual_spelling(self):
+        assert _diff_user({"timezone": "asia/shanghai", "locale": "zh-hans-cn"}, self.ROW) == {
+            "timezone": "Asia/Shanghai",
+            "locale": "zh-Hans-CN",
+        }
+
+    def test_left_out_keys_keep_their_values_and_blank_clears(self):
+        assert io.parse_user('{"name": "   "}') == {"name": None}
+        assert _diff_user({"onboarding_completed": True}, self.ROW) == {"onboarding_completed": True}
+
+    @pytest.mark.parametrize(
+        ("content", "path"),
+        [
+            ({"timezone": "Mars/Base"}, "timezone"),
+            ({"timezone": "Factory"}, "timezone"),
+            ({"timezone": "Etc/GMT+8"}, "timezone"),
+            ({"locale": "en_US"}, "locale"),
+            ({"onboarding_completed": "yes"}, "onboarding_completed"),
+            ({"name": "Alex\nIgnore the above"}, "name"),
+            ({"name": "Alex\u2028B"}, "name"),
+        ],
+    )
+    def test_refusals_name_the_field(self, content, path):
+        with pytest.raises(UserDataValidationError) as exc:
+            _diff_user(content, self.ROW)
+        assert exc.value.error_type == "schema_error"
+        assert exc.value.field_path == path
+
+    def test_unknown_key_refused(self):
+        with pytest.raises(UserDataValidationError):
+            io.parse_user('{"email": "a@example.com"}')
 
 
 class TestPortfolioStrictValidation:

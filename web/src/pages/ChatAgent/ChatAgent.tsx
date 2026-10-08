@@ -156,12 +156,14 @@ function ChatAgent(): React.ReactElement | null {
     }
   }, [needsThreadLookup, threadError, accessDenied, resolvedThread, navigate]);
 
-  // __default__ with lost state — redirect
+  // __default__ with lost state — redirect. The query goes along: a brokerage
+  // connect started on this page comes back to it by a full load, which loses
+  // the state, and its callback params are what the onboarding sheet reads.
   useEffect(() => {
     if (threadId === '__default__' && !resolvedWorkspaceId) {
-      navigate('/chat', { replace: true });
+      navigate({ pathname: '/chat', search: location.search }, { replace: true });
     }
-  }, [threadId, resolvedWorkspaceId, navigate]);
+  }, [threadId, resolvedWorkspaceId, navigate, location.search]);
 
   // Sync resolvedWorkspaceId when URL params or location state change
   // Use synchronous update to avoid stale workspace on first render after navigation

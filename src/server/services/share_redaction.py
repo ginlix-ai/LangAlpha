@@ -14,7 +14,6 @@ from ptc_agent.agent.middleware.direct_mcp import METADATA_KEY
 from ptc_agent.agent.middleware.order_governance import RECEIPT_KEY
 from src.tools.secretary import SECRETARY_TOOLS
 from src.tools.secretary.chief_of_staff import CHIEF_OF_STAFF_TOOLS
-from src.tools.user_profile import USER_PROFILE_TOOLS
 from src.utils.nested import without_keys
 
 # Five things a turn carries name the owner's brokerage account: the provenance
@@ -46,11 +45,14 @@ _DIRECT_TOOL_PREFIX = "mcp__"
 _SECRETARY_TOOL_NAMES = frozenset(
     t.name for t in (*SECRETARY_TOOLS, *CHIEF_OF_STAFF_TOOLS)
 )
-# The user data tools answered with raw rows until they dropped the owner's
-# user_id, and threads stored before then still spell it out in the answer
-# text, as a repr or JSON pair no key strip reaches. Another tool's answer is
-# its own content, so only theirs is rewritten.
-_USER_DATA_TOOL_NAMES = frozenset(t.name for t in USER_PROFILE_TOOLS)
+# The retired user data tools answered with raw rows until they dropped the
+# owner's user_id, and threads stored before then still spell it out in the
+# answer text, as a repr or JSON pair no key strip reaches. The tools are gone
+# but those threads are not, so the names stay spelled out here. Another
+# tool's answer is its own content, so only theirs is rewritten.
+_USER_DATA_TOOL_NAMES = frozenset(
+    {"get_user_data", "update_user_data", "remove_user_data"}
+)
 _USER_ID_PAIR = r"""(["'])user_id\1:\s*(["'])[^"'\\]*\2"""
 _USER_ID_PAIR_FIRST = re.compile(_USER_ID_PAIR + r",\s*")
 # The comma is matched whole or not at all: ``,?\s*`` lets a run of spaces

@@ -18,7 +18,7 @@ import {
 import { computeSteeringBoundary, keepSegmentsThrough, shouldSkipSteeringRollback } from './steeringRollback';
 import {
   buildModelFallbackSegment, appendNotificationSegmentOnce,
-  isOnboardingRelatedToolSuccess, isWorkspaceChangingToolSuccess, mapToolCallIdToAgentId,
+  isWorkspaceChangingToolSuccess, mapToolCallIdToAgentId,
 } from '../../hooks/utils/messageFinalizers';
 import { handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
 import {
@@ -969,11 +969,6 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       if (preapprovedReportBack(event.content)) deps.armReportBack();
 
       if (isWorkspaceChangingToolSuccess(event.content)) deps.refreshWorkspaces();
-
-      // When onboarding-related tools succeed, sync onboarding_completed via PUT
-      if (rt.onOnboardingRelatedToolComplete && isOnboardingRelatedToolSuccess(event.content)) {
-        rt.onOnboardingRelatedToolComplete();
-      }
 
       // Detect navigate_to_workspace action from start_question tool result
       if (rt.onWorkspaceCreated && typeof event.content === 'string') {

@@ -47,6 +47,9 @@ vi.mock('@/pages/Dashboard/hooks/useOnboarding', () => ({
 let mockIsMobile = false;
 vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => mockIsMobile }));
 
+let mockAllWorkspaces = true;
+vi.mock('@/hooks/useAllWorkspacesAgent', () => ({ useAllWorkspacesAgent: () => mockAllWorkspaces }));
+
 // Deterministic regardless of the .env loaded by vitest: provider tests run in
 // OSS mode (platform-only tasks filtered out).
 vi.mock('@/config/hostMode', () => ({ HOST_MODE: 'oss', isPlatformMode: false }));
@@ -135,6 +138,7 @@ describe('OnboardingProvider', () => {
     mockWorkspaces = [];
     mockSnoozed = false;
     mockIsMobile = false;
+    mockAllWorkspaces = true;
     vi.clearAllMocks();
     // drop any leftover mockResolvedValueOnce queues (clearAllMocks keeps them)
     listWatchlists.mockReset();
@@ -188,6 +192,18 @@ describe('OnboardingProvider', () => {
   it('suppresses intros on the dashboard while the personalization banner owns it', () => {
     mockUser = { user_id: 'u1' }; // personalization not completed
     renderAt('/dashboard');
+    expect(phase()).toBe('idle');
+  });
+
+  it('does not hold the dashboard intro for a banner that is not offered without the Chief of Staff', () => {
+    mockUser = { user_id: 'u1' };
+    mockAllWorkspaces = false;
+    renderAt('/dashboard');
+    expect(intro()).toBe('dashboard');
+  });
+
+  it('never pops an intro over the onboarding connect sheet', () => {
+    renderAt('/chat?onboarding=connect');
     expect(phase()).toBe('idle');
   });
 
@@ -356,6 +372,14 @@ describe('OnboardingProvider', () => {
     expect(screen.getByTestId('done').textContent).toBe('0');
     expect(screen.getByTestId('taskIds').textContent).toBe(
       'dashboard,market,stocks,preferences,createWorkspace,firstChat,models'
+    );
+  });
+
+  it('getting-started: the interview tasks drop out without the Chief of Staff, which runs it', () => {
+    mockAllWorkspaces = false;
+    renderAt('/settings');
+    expect(screen.getByTestId('taskIds').textContent).toBe(
+      'dashboard,market,createWorkspace,firstChat,models'
     );
   });
 

@@ -16,7 +16,7 @@ import { useSetupGate } from './hooks/useSetupGate';
 import { isPlatformMode, APP_ENTRY_PATH } from './config/hostMode';
 import { AUTH_BROADCAST_CHANNEL, type AuthBroadcastMessage } from './lib/oauthPopup';
 import { inAppPath } from './lib/inAppPath';
-import { OnboardingProvider, OnboardingHostGate } from './pages/Onboarding';
+import { OnboardingProvider, OnboardingHostGate, OnboardingConnectHost } from './pages/Onboarding';
 import { ThreadLifecycleFeed } from './lib/threadLifecycle/ThreadLifecycleFeed';
 import { WarmHome } from './components/WarmHome';
 import { markBooted, watchStaleBuild } from './lib/staleBuild';
@@ -305,6 +305,7 @@ function AuthenticatedShell() {
         </main>
       </div>
       <OnboardingHostGate />
+      <OnboardingConnectHost />
     </OnboardingProvider>
   );
 }

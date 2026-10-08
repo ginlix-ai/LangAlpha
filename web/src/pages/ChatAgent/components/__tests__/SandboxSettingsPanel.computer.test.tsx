@@ -119,19 +119,30 @@ describe('SandboxSettingsPanel start/stop', () => {
     await waitFor(() => expect(mockStartComputer).toHaveBeenCalledWith(COMPUTER_ID, { lazy: true }));
   });
 
-  it('falls back to the workspace route when the row names no machine', async () => {
-    const user = userEvent.setup();
+  it('offers no Stop when the row names no machine', async () => {
     mockGetWorkspace.mockResolvedValue({
       workspace_id: WORKSPACE_ID, name: 'Legacy', status: 'running', computer_id: null,
+    });
+    renderWithProviders(<SandboxSettingsContent workspaceId={WORKSPACE_ID} />);
+
+    expect(await screen.findByRole('button', { name: /refresh/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /stop/i })).not.toBeInTheDocument();
+  });
+
+  it('starts through the workspace route when the row names no machine', async () => {
+    const user = userEvent.setup();
+    mockGetSandboxStats.mockResolvedValue(stats('stopped'));
+    mockGetWorkspace.mockResolvedValue({
+      workspace_id: WORKSPACE_ID, name: 'Legacy', status: 'stopped', computer_id: null,
     });
     mockPost.mockResolvedValue({ data: {} });
     renderWithProviders(<SandboxSettingsContent workspaceId={WORKSPACE_ID} />);
 
-    await user.click(await screen.findByRole('button', { name: /stop/i }));
+    await user.click(await screen.findByRole('button', { name: /^start$/i }));
     await waitFor(() =>
-      expect(mockPost).toHaveBeenCalledWith(`/api/v1/workspaces/${WORKSPACE_ID}/stop`),
+      expect(mockPost).toHaveBeenCalledWith(`/api/v1/workspaces/${WORKSPACE_ID}/start`),
     );
-    expect(mockStopComputer).not.toHaveBeenCalled();
+    expect(mockStartComputer).not.toHaveBeenCalled();
   });
 
   it('names the machine and the folder, and warns that the siblings go with it', async () => {
@@ -150,7 +161,7 @@ describe('SandboxSettingsPanel start/stop', () => {
     });
     renderWithProviders(<SandboxSettingsContent workspaceId={WORKSPACE_ID} />);
 
-    await screen.findByRole('button', { name: /stop/i });
+    await screen.findByRole('button', { name: /refresh/i });
     expect(screen.queryByText(/^On /)).not.toBeInTheDocument();
     expect(screen.queryByText(/affects every workspace on it/)).not.toBeInTheDocument();
   });

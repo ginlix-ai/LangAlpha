@@ -32,12 +32,12 @@ def parse_skill_contexts(
 
     Example:
         >>> contexts = parse_skill_contexts([
-        ...     {"type": "skills", "name": "user-profile", "instruction": "Help onboard"},
+        ...     {"type": "skills", "name": "onboarding", "instruction": "Help onboard"},
         ... ])
         >>> len(contexts)
         1
         >>> contexts[0].name
-        'user-profile'
+        'onboarding'
     """
     if not additional_context:
         return []

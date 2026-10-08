@@ -1,23 +1,9 @@
-import { useState, useEffect, useCallback, type Dispatch, type SetStateAction } from 'react';
-import { useNavigate } from 'react-router';
-import { useTranslation } from 'react-i18next';
-import { useToast } from '@/components/ui/use-toast';
+import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
 import { useUser } from '@/hooks/useUser';
-import { FLASH_ROUTE_STATE } from '@/hooks/useFlashWorkspace';
-import { getFlashWorkspace } from '../../ChatAgent/utils/api';
 
 interface PersonalizationResult {
   showPersonalizationBanner: boolean;
   setShowPersonalizationBanner: Dispatch<SetStateAction<boolean>>;
-  isCreatingWorkspace: boolean;
-  navigateToPersonalization: () => Promise<void>;
-  navigateToModifyPreferences: () => Promise<void>;
-  /** @deprecated Use showPersonalizationBanner instead */
-  showOnboardingDialog: boolean;
-  /** @deprecated Use setShowPersonalizationBanner instead */
-  setShowOnboardingDialog: Dispatch<SetStateAction<boolean>>;
-  /** @deprecated Use navigateToPersonalization instead */
-  navigateToOnboarding: () => Promise<void>;
 }
 
 const PERSONALIZATION_SNOOZE_KEY = 'langalpha-personalization-snoozed-at';
@@ -54,22 +40,12 @@ export function subscribePersonalizationSnooze(callback: () => void): () => void
     return () => window.removeEventListener(PERSONALIZATION_SNOOZE_EVENT, callback);
 }
 
-/** @deprecated Use isPersonalizationSnoozed instead */
-export const isOnboardingIgnoredFor24h = isPersonalizationSnoozed;
-/** @deprecated Use snoozePersonalization instead */
-export const setOnboardingIgnoredFor24h = snoozePersonalization;
-
 /**
- * useOnboarding Hook
- * Shows an optional "Personalize your experience" banner if the user has not
- * completed personalization (formerly onboarding). The banner is non-blocking
- * and can be dismissed / snoozed for 24 hours.
+ * Whether to show the optional "Personalize your experience" banner: the user
+ * has not completed personalization and has not snoozed it in the last 24
+ * hours. Starting it is `useStartOnboarding`'s.
  */
 export function useOnboarding(): PersonalizationResult {
-    const navigate = useNavigate();
-    const { t } = useTranslation();
-    const { toast } = useToast();
-
     const { user: authUser } = useUser() as {
         user: {
             onboarding_completed?: boolean;
@@ -79,7 +55,6 @@ export function useOnboarding(): PersonalizationResult {
     };
 
     const [showPersonalizationBanner, setShowPersonalizationBanner] = useState(false);
-    const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
 
     // Check personalization / onboarding completion reactively from user data
     useEffect(() => {
@@ -94,60 +69,5 @@ export function useOnboarding(): PersonalizationResult {
         }
     }, [authUser]);
 
-    const navigateToPersonalization = useCallback(async (): Promise<void> => {
-        setIsCreatingWorkspace(true);
-        try {
-            const flashWs = await getFlashWorkspace() as { workspace_id: string };
-            navigate(`/chat/t/__default__`, {
-                state: {
-                    workspaceId: flashWs.workspace_id,
-                    isPersonalizing: true,
-                    // Keep isOnboarding for backward compat with ChatView
-                    isOnboarding: true,
-                    ...FLASH_ROUTE_STATE,
-                },
-            });
-        } catch (error) {
-            console.error('Error setting up personalization:', error);
-            toast({
-                variant: 'destructive',
-                title: t('common.error'),
-                description: t('dashboard.failedOnboarding'),
-            });
-        } finally {
-            setIsCreatingWorkspace(false);
-        }
-    }, [navigate, toast, t]);
-
-    const navigateToModifyPreferences = useCallback(async (): Promise<void> => {
-        try {
-            const flashWs = await getFlashWorkspace() as { workspace_id: string };
-            navigate(`/chat/t/__default__`, {
-                state: {
-                    workspaceId: flashWs.workspace_id,
-                    isModifyingPreferences: true,
-                    ...FLASH_ROUTE_STATE,
-                },
-            });
-        } catch (error) {
-            console.error('Error navigating to modify preferences:', error);
-            toast({
-                variant: 'destructive',
-                title: t('common.error'),
-                description: t('dashboard.failedPrefUpdate'),
-            });
-        }
-    }, [navigate, toast, t]);
-
-    return {
-        showPersonalizationBanner,
-        setShowPersonalizationBanner,
-        isCreatingWorkspace,
-        navigateToPersonalization,
-        navigateToModifyPreferences,
-        // Backward-compat aliases
-        showOnboardingDialog: showPersonalizationBanner,
-        setShowOnboardingDialog: setShowPersonalizationBanner,
-        navigateToOnboarding: navigateToPersonalization,
-    };
+    return { showPersonalizationBanner, setShowPersonalizationBanner };
 }

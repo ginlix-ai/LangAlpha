@@ -11,7 +11,6 @@ Endpoints:
 - GET /api/v1/workspaces/{workspace_id} - Get workspace details
 - PUT /api/v1/workspaces/{workspace_id} - Update workspace
 - POST /api/v1/workspaces/{workspace_id}/start - Start stopped workspace
-- POST /api/v1/workspaces/{workspace_id}/stop - Stop running workspace
 - DELETE /api/v1/workspaces/{workspace_id} - Delete workspace
 """
 
@@ -611,35 +610,6 @@ async def start_workspace(
             workspace_id=workspace_id,
             status="running",
             message="Workspace started successfully",
-        )
-
-
-@router.post("/{workspace_id}/stop", response_model=WorkspaceActionResponse)
-async def stop_workspace(workspace_id: str, x_user_id: CurrentUserId):
-    """
-    Stop a running workspace.
-
-    This stops the Daytona sandbox but preserves all data. The workspace
-    can be quickly restarted later.
-
-    Args:
-        workspace_id: Workspace UUID
-        x_user_id: Authenticated user ID
-
-    Returns:
-        Action result
-    """
-    async with _workspace_action_errors("stop", workspace_id):
-        workspace = await db_get_workspace(workspace_id)
-        require_workspace_owner(workspace, user_id=x_user_id)
-
-        updated = await WorkspaceManager.get_instance().stop_workspace(workspace_id)
-
-        logger.info(f"Stopped workspace {workspace_id}")
-        return WorkspaceActionResponse(
-            workspace_id=workspace_id,
-            status=(updated or {}).get("status") or "stopped",
-            message="Workspace stopped successfully",
         )
 
 

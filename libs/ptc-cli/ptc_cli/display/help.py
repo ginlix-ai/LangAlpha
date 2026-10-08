@@ -28,7 +28,7 @@ def show_help() -> None:
   /status                       Show workflow and background task status
   /cancel                       Cancel running workflow
   /compact [keep=N]             Compact conversation context (keep N recent messages)
-  /workspace                    List/switch/start/stop workspaces
+  /workspace                    List/switch/start workspaces
   /conversation                 List/open past conversations
   /reconnect                    Reconnect to running workflow after ESC
   /onboarding                   Start user profile onboarding flow

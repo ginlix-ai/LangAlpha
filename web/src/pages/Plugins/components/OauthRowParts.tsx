@@ -111,15 +111,19 @@ export function ToolCountText({
 export function ConnectButton({
   status,
   connecting,
+  disabled = false,
   vendor,
   rowKey,
   emphasis = 'quiet',
   registryUnavailable = false,
+  label,
   testid,
   onClick,
 }: {
   status: McpOauthStatus | null;
   connecting: boolean;
+  /** Another row's work is in flight; unlike `connecting`, shows no spinner. */
+  disabled?: boolean;
   /** Whose constraints decide this, matched to the row's own `VendorNotes`. */
   vendor: Brokerage | null | undefined;
   rowKey: string;
@@ -128,6 +132,8 @@ export function ConnectButton({
   /** The registry was asked and did not answer, so the list is carrying the
    *  note this button points at. False while it is merely still in flight. */
   registryUnavailable?: boolean;
+  /** In place of Connect / Reconnect, for a click that is not an OAuth flow. */
+  label?: string;
   testid?: string;
   onClick: () => void;
 }) {
@@ -161,7 +167,7 @@ export function ConnectButton({
       onClick={() => {
         if (!blocked) onClick();
       }}
-      disabled={connecting}
+      disabled={disabled || connecting}
       aria-disabled={blocked || undefined}
       aria-describedby={noteId}
       data-testid={testid}
@@ -191,7 +197,7 @@ export function ConnectButton({
       ) : (
         <Link2 className="h-3 w-3" />
       )}
-      {status ? t('plugins.oauth.reconnect') : t('plugins.oauth.connect')}
+      {label ?? (status ? t('plugins.oauth.reconnect') : t('plugins.oauth.connect'))}
     </button>
   );
 }

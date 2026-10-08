@@ -403,7 +403,6 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     null,                       // updateTodoListCard
     null,                       // updateSubagentCard
     null,                       // finalizePendingTodos
-    null,                       // onOnboardingRelatedToolComplete
     null,                       // onFileArtifact
     handlePreview,              // onPreviewUrl
     agentMode,

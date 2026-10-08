@@ -101,13 +101,13 @@ async def manage_workspaces(
     workspace_id: str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> Command:
-    """Manage user workspaces: list, create, delete, or stop.
+    """Manage user workspaces: list, create, or delete.
 
     Args:
-        action: One of "list", "create", "delete", "stop"
+        action: One of "list", "create", "delete"
         name: Workspace name (required for "create")
         description: Workspace description (optional, for "create")
-        workspace_id: Workspace ID (required for "delete" and "stop")
+        workspace_id: Workspace ID (required for "delete")
     """
     configurable = config.get("configurable", {})
     user_id = configurable.get("user_id")
@@ -123,11 +123,9 @@ async def manage_workspaces(
         )
     elif action == "delete":
         return await _workspaces_delete(user_id, workspace_id, tool_call_id)
-    elif action == "stop":
-        return await _workspaces_stop(user_id, workspace_id, tool_call_id)
     else:
         return error_command(
-            f"Unknown action: {action}. Use list, create, delete, or stop.",
+            f"Unknown action: {action}. Use list, create, or delete.",
             tool_call_id,
         )
 
@@ -143,11 +141,12 @@ async def workspaces_list(
     try:
         from src.server.database.workspace import get_workspace, get_workspaces_for_user
 
-        # Pinned, then most recently used: past the 20th the list stops, and
-        # the workspace a hand-off is for is far likelier to be recent than
-        # early in the user's custom order.
-        workspaces, total = await get_workspaces_for_user(
-            user_id=user_id, limit=20, sort_by="activity"
+        # Every workspace, since one left off the list is one the agent tells
+        # the user does not exist. Pinned, then most recently used: the one a
+        # hand-off is for is far likelier to be recent than early in the
+        # user's custom order.
+        workspaces, _ = await get_workspaces_for_user(
+            user_id=user_id, limit=None, sort_by="activity"
         )
         if home_id is not None:
             from src.tools.secretary.activity import folder_on
@@ -164,7 +163,6 @@ async def workspaces_list(
                     {field: ws.get(field) for field in _LISTED_WORKSPACE_FIELDS}
                     for ws in workspaces
                 ],
-                "total": total,
             },
             default=str,
         )
@@ -256,12 +254,22 @@ async def _workspaces_delete(
             "workspace_id is required for delete action", tool_call_id
         )
 
-    if err := await verify_workspace_owner(workspace_id, user_id, tool_call_id):
-        return err
+    from src.server.database.home_workspace import is_flash_row
+    from src.server.database.workspace import get_workspace
 
+    workspace = await get_workspace(workspace_id)
+    if not workspace or str(workspace.get("user_id")) != user_id:
+        return error_command("workspace not found", tool_call_id)
+    # Refused before the card, so the user is never asked to approve a delete
+    # that cannot happen.
+    if is_flash_row(workspace):
+        return error_command("Home cannot be deleted.", tool_call_id)
+
+    # The card shows the name: an id alone cannot tell the user which
+    # workspace they are approving the loss of.
     approved, _ = hitl_confirm(
         "delete_workspace",
-        {"workspace_id": workspace_id},
+        {"workspace_id": workspace_id, "workspace_name": workspace.get("name")},
     )
 
     if not approved:
@@ -269,54 +277,22 @@ async def _workspaces_delete(
             "User declined workspace deletion.", tool_call_id
         )
 
-    try:
-        from src.server.services.workspace_manager import WorkspaceManager
+    from src.server.database.workspace import WorkspaceBusyError
+    from src.server.services.workspace_manager import WorkspaceManager
 
+    try:
         workspace_manager = WorkspaceManager.get_instance()
         await workspace_manager.delete_workspace(workspace_id)
         return success_command(
             {"success": True, "workspace_id": workspace_id},
             tool_call_id,
         )
+    except (WorkspaceBusyError, ValueError) as e:
+        # Refusals the user should hear: active work, or Home/flash.
+        return error_command(str(e), tool_call_id)
     except Exception as e:
         logger.error(f"Failed to delete workspace: {e}")
         return error_command("failed to delete workspace", tool_call_id)
-
-
-async def _workspaces_stop(
-    user_id: str, workspace_id: str | None, tool_call_id: str
-) -> Command:
-    """Stop a workspace with HITL confirmation."""
-    if not workspace_id:
-        return error_command(
-            "workspace_id is required for stop action", tool_call_id
-        )
-
-    if err := await verify_workspace_owner(workspace_id, user_id, tool_call_id):
-        return err
-
-    approved, _ = hitl_confirm(
-        "stop_workspace",
-        {"workspace_id": workspace_id},
-    )
-
-    if not approved:
-        return decline_command(
-            "User declined workspace stop.", tool_call_id
-        )
-
-    try:
-        from src.server.services.workspace_manager import WorkspaceManager
-
-        workspace_manager = WorkspaceManager.get_instance()
-        await workspace_manager.stop_workspace(workspace_id)
-        return success_command(
-            {"success": True, "workspace_id": workspace_id},
-            tool_call_id,
-        )
-    except Exception as e:
-        logger.error(f"Failed to stop workspace: {e}")
-        return error_command("failed to stop workspace", tool_call_id)
 
 
 # ---------------------------------------------------------------------------

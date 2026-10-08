@@ -89,8 +89,8 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
   }, [workspaceId, computer?.status, loadStats]);
 
   // Start and stop belong to the machine: its sandbox is what runs, and every
-  // workspace on it moves together. Archive still goes through the workspace
-  // alias, which resolves to the same machine server-side.
+  // workspace on it moves together. Archive, and start on a row that names no
+  // machine, still go through the workspace alias; such a row cannot be stopped.
   async function handleStartStop(action: string) {
     setActionLoading(true);
     try {
@@ -178,6 +178,7 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
               actionLoading={actionLoading}
               refreshing={loading}
               onStartStop={handleStartStop}
+              canStop={computerId !== null}
               onRefresh={loadStats}
               computerName={computer?.name ?? null}
               recoverableCreating={computer?.status === 'creating'}

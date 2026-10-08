@@ -20,7 +20,8 @@ import { useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
 import { FLASH_ROUTE_STATE } from '@/hooks/useFlashWorkspace';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
-import { updateCurrentUser } from '../../Dashboard/utils/api';
+import { useLocale } from '@/hooks/useLocale';
+import { onboardingKickoff } from '@/pages/Onboarding/connect/kickoff';
 import { cardDownloadKey, trackPending } from '../utils/downloadNotice';
 import { summarizeThread, offloadThread, cancelSubagentTask, triggerFileDownload, resolveWorkspaceFile } from '../utils/api';
 import { downloadTarget } from '../utils/fileRefResolver';
@@ -112,6 +113,7 @@ const TRANSCRIPT_BOTTOM_PAD = 'pb-[calc(var(--composer-h,0px)+0.5rem)] *:[--comp
 
 function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName: initialWorkspaceName, isActive = true, onThreadResolved, warmingState = false }: ChatViewProps): React.ReactElement | null {
   const { t } = useTranslation();
+  const locale = useLocale();
   const isMobile = useIsMobile();
   const containerRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<ChatInputHandle>(null);
@@ -211,16 +213,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     [cards],
   );
 
-  // Sync onboarding_completed via PUT when ChatAgent completes onboarding (risk_preference + stocks)
-  const handleOnboardingRelatedToolComplete = useCallback(async () => {
-    try {
-      await updateCurrentUser({ onboarding_completed: true });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
-    } catch (e) {
-      console.warn('[ChatView] Failed to sync onboarding_completed:', e);
-    }
-  }, [queryClient]);
-
   // Navigate to a newly created workspace with an optional starter question
   // Always PTC mode — start_question creates a sandbox-backed workspace
   const handleWorkspaceCreated = useCallback(({ workspaceId: newWsId, question }: { workspaceId?: string; question?: string }) => {
@@ -251,6 +243,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const otherPanelFolders = useComputerFolders(panelWorkspaceId === workspaceId ? null : panelWorkspaceId);
   const panelFolders = panelWorkspaceId === workspaceId ? chatFolders : otherPanelFolders;
 
+  // Set when the agent writes the user's profile (onboarding saves it there,
+  // `user.json` included), and read at turn end.
+  const profileWrittenRef = useRef(false);
+
   // When the agent writes to a memory- or memo-tier path, invalidate the
   // matching queries so the Memory / Memo tab reflects the new content
   // without a manual refresh. classifyAgentPath is the single source of
@@ -272,6 +268,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       }
     } else if (info.kind === 'memo') {
       queryClient.invalidateQueries({ queryKey: queryKeys.memo.all });
+    } else if (info.kind === 'user-data' && info.entity !== 'automations') {
+      // Re-read at turn end rather than now: the profile files are rows the
+      // server writes on save, and the turn may write several.
+      profileWrittenRef.current = true;
     }
   }, [refreshOwnFiles, queryClient, isFlashMode, workspaceId, effectiveFileWorkspaceId]);
 
@@ -285,7 +285,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // Chat messages management - receives updateTodoListCard and updateSubagentCard from floating cards hook.
   // Send, edit, regenerate and retry come from useTranscriptFollow below.
-  const chat = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
+  const chat = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, finalizePendingTodos, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
   const {
     messages,
     liveMessages,
@@ -788,8 +788,20 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
     if (!isLoading && wasLoading) {
       refreshOwnFiles();
+      // Whether onboarding is done is the profile's to say, and the app reads
+      // it off the user row. A turn that wrote the profile re-reads that row
+      // and the preferences. So does any Home turn while onboarding is still
+      // open, or not known to be done, because a profile written through Bash
+      // or code reports no file.
+      const me = queryClient.getQueryData<{ onboarding_completed?: boolean }>(queryKeys.user.me());
+      const onboardingOpen = isHome && me?.onboarding_completed !== true;
+      if (profileWrittenRef.current || onboardingOpen) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.user.preferences() });
+      }
+      profileWrittenRef.current = false;
     }
-  }, [isLoading, refreshOwnFiles]);
+  }, [isLoading, refreshOwnFiles, queryClient, isHome]);
 
 
 
@@ -1073,6 +1085,17 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [currentThreadId, threadId, workspaceId, navigate, queryClient, isActive, onThreadResolved, activeAgentIdRef]);
 
+  // The opening turn of a profile conversation, worded in the language in
+  // force when it goes out. Revisiting preferences sends the message alone.
+  const sendProfileKickoff = useEffectEvent((kind: 'onboarding' | 'modify', brokerages: string[]) => {
+    if (kind === 'modify') {
+      handleSendMessage(t('onboarding.kickoff.modifyPreferences'));
+      return;
+    }
+    const { message, additionalContext } = onboardingKickoff(t, locale, brokerages);
+    handleSendMessage(message, additionalContext);
+  });
+
   // Auto-send initial message from navigation state (e.g., from Dashboard)
   useEffect(() => {
     // Hidden views must not send initial messages (R7 — all views share useLocation)
@@ -1082,42 +1105,29 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       return;
     }
 
-    // Handle personalization / onboarding flow (isPersonalizing is the new flag;
-    // isOnboarding is kept for backward compatibility)
-    if ((location.state?.isPersonalizing || location.state?.isOnboarding) && !initialMessageSentRef.current && !isLoading && !isLoadingHistory) {
+    // Onboarding, from the connect sheet, and its revisit from Settings. The
+    // wording is built when the message goes out (sendProfileKickoff).
+    if (
+      (location.state?.isOnboarding || location.state?.isModifyingPreferences) &&
+      !initialMessageSentRef.current &&
+      !isLoading &&
+      !isLoadingHistory
+    ) {
       initialMessageSentRef.current = true;
+      const kickoff = location.state.isOnboarding
+        ? {
+            kind: 'onboarding' as const,
+            // Router state survives a reload and is the user's to edit, so
+            // only names that are names reach the message.
+            brokerages: ((location.state as LocationState).onboardingBrokerages ?? []).filter(
+              (name: unknown): name is string => typeof name === 'string' && name !== '',
+            ),
+          }
+        : { kind: 'modify' as const, brokerages: [] };
       // Clear navigation state to prevent re-sending on re-renders
       navigate(location.pathname, { replace: true, state: {} });
       // Small delay to ensure component is fully mounted
-      setTimeout(() => {
-        const personalizationMessage = "I'd like to set up my investment profile";
-        const additionalContext = [
-          {
-            type: "skills",
-            name: "onboarding",
-            instruction: "Help the user set up their investment profile — watchlists, risk preferences, and alerts.",
-          }
-        ];
-        handleSendMessage(personalizationMessage, additionalContext);
-      }, 100);
-      return;
-    }
-
-    // Handle modify preferences flow (from settings panel)
-    if (location.state?.isModifyingPreferences && !initialMessageSentRef.current && !isLoading && !isLoadingHistory) {
-      initialMessageSentRef.current = true;
-      navigate(location.pathname, { replace: true, state: {} });
-      setTimeout(() => {
-        const modifyMessage = "I'd like to review and update my preferences.";
-        const additionalContext = [
-          {
-            type: "skills",
-            name: "user-profile",
-            instruction: "The user wants to review and update their existing preferences. Start by fetching their current preferences with get_user_data(entity='preferences'), show them what's currently set, then ask what they'd like to change. Use AskUserQuestion to offer options. Only update the fields they want to change.",
-          }
-        ];
-        handleSendMessage(modifyMessage, additionalContext);
-      }, 100);
+      setTimeout(() => sendProfileKickoff(kickoff.kind, kickoff.brokerages), 100);
       return;
     }
 

@@ -41,6 +41,11 @@ defaults:
   # for Flash, which has no sandbox. PTC overrides to true at render time.
   sandbox_enabled: false
 
+  # Whether the agent can read the profile files under .agents/user/profile/.
+  # Gates the component's file instructions, which subagents keep; only the
+  # baseline turns it off, for an agent with no sandbox.
+  profile_files: true
+
   # Which agent the main prompt is for: "analyst" works in one workspace,
   # "chief_of_staff" works from Home and hands workspace work to the analysts
   # (adds components/chief_of_staff.md.j2).

@@ -772,7 +772,7 @@ describe('MarketChatPanel', () => {
       const args = vi.mocked(useChatMessages).mock.lastCall!;
       expect(args[0]).toBe('flash-ws');
       // The agent mode the chat engine sends with.
-      expect(args[8]).toBe('ptc');
+      expect(args[7]).toBe('ptc');
     });
 
     it("reads Home's folder from the workspace detail, which a turn re-reads once Home is bound", async () => {
@@ -789,7 +789,7 @@ describe('MarketChatPanel', () => {
       await screen.findByTestId('chat-input');
       const args = vi.mocked(useChatMessages).mock.lastCall!;
       expect(args[0]).toBe('flash-ws');
-      expect(args[8]).toBe('flash');
+      expect(args[7]).toBe('flash');
     });
 
     it('explains an empty workspace list without naming PTC', async () => {

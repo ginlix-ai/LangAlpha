@@ -98,6 +98,17 @@ export function markConnectStarted(server: string, broughtLive: boolean): void {
 }
 
 /**
+ * Whether the connect a landing names left from this tab and is still open.
+ * Read it during render: `useConnectReturn` retires the marker in an effect.
+ * The callback's params are not proof on their own, since they arrive in the
+ * address bar and anyone can link to them.
+ */
+export function connectStartedHere(server: string | null): boolean {
+  const pending = readPending();
+  return server ? pending.some((p) => p.server === server) : pending.length === 1;
+}
+
+/**
  * What a landing owes the connects that left this tab.
  *
  * The marker is read on every landing, not only an unexplained one: the
@@ -117,7 +128,8 @@ export interface ConnectReturnHandlers {
   onStandDown: (server: string) => void;
 }
 
-export function useConnectReturn(handlers: ConnectReturnHandlers): void {
+/** `enabled` false leaves the landing to another surface that reads it. */
+export function useConnectReturn(handlers: ConnectReturnHandlers, enabled = true): void {
   // Captured during render, ahead of every effect. The component that owns the
   // callback params strips them from the URL in an effect of its own, and
   // whether that has happened yet is not a thing this hook should have to know.
@@ -126,6 +138,7 @@ export function useConnectReturn(handlers: ConnectReturnHandlers): void {
   const abandoned = useEffectEvent((server: string) => handlers.onAbandoned(server));
 
   useEffect(() => {
+    if (!enabled) return;
     const settle = (search: string) => {
       const pending = readPending();
       if (!pending.length) return;
@@ -168,5 +181,5 @@ export function useConnectReturn(handlers: ConnectReturnHandlers): void {
     };
     window.addEventListener('pageshow', onShow);
     return () => window.removeEventListener('pageshow', onShow);
-  }, [landedWith]);
+  }, [landedWith, enabled]);
 }

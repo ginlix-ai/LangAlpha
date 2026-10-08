@@ -4,10 +4,10 @@ Each workspace has its own agent, its analyst, and the Chief of Staff in Home
 hands work to them rather than doing it in their folders. A hand-off always
 names its workspace: a new one is created first, under its own approval or
 one the user gave in advance, so the user agrees to the workspace before any
-work is handed to it. It lists and creates workspaces but does not delete or
-stop them: Home runs on the computer a stop would take down, and deleting is
-the user's to do from the workspace itself. ``agent_output`` is how it reads a
-thread, so its ``manage_threads`` has no second way to.
+work is handed to it. It lists, creates and deletes workspaces but does not
+stop them: Home runs on the computer a stop would take down. A delete is the
+user's to confirm on its own card, never approved in advance. ``agent_output``
+is how it reads a thread, so its ``manage_threads`` has no second way to.
 """
 
 from typing import Annotated
@@ -21,6 +21,7 @@ from src.tools.secretary._commands import InjectedToolCallId, error_command
 from src.tools.secretary.approvals import preapproved
 from src.tools.secretary.dispatch import dispatch
 from src.tools.secretary.tools import (
+    _workspaces_delete,
     agent_output,
     threads_delete,
     threads_list,
@@ -37,14 +38,16 @@ async def chief_of_staff_workspaces(
     state: Annotated[dict, InjectedState],
     name: str | None = None,
     description: str | None = None,
+    workspace_id: str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> Command:
-    """List the user's workspaces, or create one once the user confirms.
+    """List the user's workspaces, or create or delete one once the user confirms.
 
     Args:
-        action: "list" or "create".
+        action: "list", "create" or "delete".
         name: Name for the new workspace; required for "create".
         description: What the new workspace is for; optional.
+        workspace_id: The workspace to delete; required for "delete". Home cannot be deleted.
 
     Returns:
         One short row per workspace, with its id, and its folder (dir_name) when it is on
@@ -64,8 +67,10 @@ async def chief_of_staff_workspaces(
             user_id, name, description, tool_call_id,
             preapproved=preapproved(state, tool_call_id),
         )
+    if action == "delete":
+        return await _workspaces_delete(user_id, workspace_id, tool_call_id)
     return error_command(
-        f"Unknown action: {action}. Use list or create.", tool_call_id
+        f"Unknown action: {action}. Use list, create or delete.", tool_call_id
     )
 
 

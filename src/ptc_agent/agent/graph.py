@@ -14,19 +14,6 @@ from ptc_agent.core.session import Session
 logger = logging.getLogger(__name__)
 
 
-_USER_PROFILE_TTL = 86400  # 24h — freshness via explicit invalidation
-
-# Cached-shape version, part of the key so a bump retires every entry the
-# previous shape wrote. Bump it whenever the dict below changes keys: a
-# migration can move preference data in raw SQL, under no application write
-# path, and nothing invalidates a profile cached before it ran.
-_USER_PROFILE_SHAPE = 1
-
-
-def _user_profile_cache_key(user_id: str) -> str:
-    return f"user_profile_prompt:v{_USER_PROFILE_SHAPE}:{user_id}"
-
-
 async def fetch_user_data_counts(user_id: str | None) -> dict[str, Any] | None:
     """Lightweight counts for the static `<user_profile>` block, plus the
     watchlist symbols the preferred-market vote reads.
@@ -56,72 +43,6 @@ async def fetch_user_data_counts(user_id: str | None) -> dict[str, Any] | None:
     except Exception:
         logger.warning("user-data counts fetch failed; awareness block will omit counts", exc_info=True)
         return None
-
-
-async def get_user_profile_for_prompt(user_id: str) -> dict[str, Any] | None:
-    """Fetch user profile for system prompt injection, cached in Redis for up to ``_USER_PROFILE_TTL`` seconds.
-
-    Explicitly invalidated by ``invalidate_user_profile_cache`` on profile/preferences updates.
-    Returns None on DB error; callers silently omit the profile block.
-    """
-    import json as _json
-
-    cache_key = _user_profile_cache_key(user_id)
-    try:
-        from src.utils.cache.redis_cache import get_cache_client
-
-        cache = get_cache_client()
-        if cache.enabled and cache.client:
-            try:
-                cached = await cache.client.get(cache_key)
-                if cached is not None:
-                    return _json.loads(cached) if cached != b"null" else None
-            except Exception:
-                pass
-    except Exception:
-        cache = None
-
-    profile = None
-    try:
-        from src.server.database import user as user_db
-
-        result = await user_db.get_user_with_preferences(user_id)
-        if result:
-            user = result.get("user", {})
-            preferences = result.get("preferences", {}) or {}
-            profile = {
-                "name": user.get("name"),
-                "timezone": user.get("timezone"),
-                "locale": user.get("locale"),
-                "agent_preference": preferences.get("agent_preference"),
-            }
-    except Exception as e:
-        logger.warning(f"Failed to fetch user profile for {user_id}: {e}")
-        return None
-
-    if cache and cache.enabled and cache.client:
-        try:
-            await cache.client.set(
-                cache_key,
-                _json.dumps(profile) if profile else b"null",
-                ex=_USER_PROFILE_TTL,
-            )
-        except Exception:
-            pass
-
-    return profile
-
-
-async def invalidate_user_profile_cache(user_id: str) -> None:
-    """Delete the cached ``get_user_profile_for_prompt`` result."""
-    try:
-        from src.utils.cache.redis_cache import get_cache_client
-
-        cache = get_cache_client()
-        if cache.enabled and cache.client:
-            await cache.client.delete(_user_profile_cache_key(user_id))
-    except Exception:
-        pass
 
 
 @runtime_checkable

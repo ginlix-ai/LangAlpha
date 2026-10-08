@@ -12,6 +12,7 @@ import {
 import { useLocation } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useUser } from '@/hooks/useUser';
+import { useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -22,6 +23,7 @@ import {
 import { listWatchlists, listWatchlistItems, listPortfolio } from '@/pages/Dashboard/utils/api';
 import { isPlatformMode } from '@/config/hostMode';
 import { useOnboardingPrefs } from './useOnboardingPrefs';
+import { ONBOARDING_CONNECT, ONBOARDING_PARAM } from './connect/useStartOnboarding';
 import { readMirror, type OnboardingMirror } from './mirror';
 import { ANNOUNCEMENTS, PAGE_INTROS, GETTING_STARTED_TASKS } from './registry';
 import { unseenReleases, latestReleaseVersion } from './engine/whatsNew';
@@ -46,7 +48,9 @@ interface GettingStartedState {
 }
 
 /** Tasks offered in this deployment — channel integrations are platform-hosted. */
-const OFFERED_TASKS = GETTING_STARTED_TASKS.filter((t) => !t.platformOnly || isPlatformMode);
+const DEPLOYED_TASKS = GETTING_STARTED_TASKS.filter((t) => !t.platformOnly || isPlatformMode);
+/** The interview runs on the Chief of Staff, so without it those tasks drop out. */
+const TASKS_WITHOUT_INTERVIEW = DEPLOYED_TASKS.filter((t) => !t.interview);
 
 /** Any non-empty string value in a preference object (mirrors the backend's check). */
 function hasFilledField(section: unknown): boolean {
@@ -87,6 +91,8 @@ export function useOnboarding(): OnboardingContextValue {
 export function OnboardingProvider({ children }: { children: ReactNode }) {
   const { pathname, search } = useLocation();
   const { user } = useUser();
+  const allWorkspaces = useAllWorkspacesAgent();
+  const offeredTasks = allWorkspaces ? DEPLOYED_TASKS : TASKS_WITHOUT_INTERVIEW;
   const { preferences } = usePreferences();
   const {
     prefs,
@@ -262,8 +268,10 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     user?.personalization_completed === true || user?.onboarding_completed === true;
   const suppress =
     inInterview ||
+    // The connect sheet is the first step of the same flow, over any page.
+    new URLSearchParams(search).get(ONBOARDING_PARAM) === ONBOARDING_CONNECT ||
     (!personalizationCompleted &&
-      ((pathname === '/dashboard' && !personalizationSnoozed) ||
+      ((pathname === '/dashboard' && allWorkspaces && !personalizationSnoozed) ||
         pathname === '/chat/t/__default__'));
 
   // Getting-started: auto-complete route-visit tasks. markTaskDone owns the
@@ -271,12 +279,12 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   // identities its rollback and refetch produce.
   useEffect(() => {
     if (isLoading) return;
-    for (const task of OFFERED_TASKS) {
+    for (const task of offeredTasks) {
       if (!task.visitRoute?.(pathname, search)) continue;
       if (prefs.gettingStartedDoneAt[task.id] != null) continue;
       markTaskDone(task.id);
     }
-  }, [isLoading, pathname, search, prefs, markTaskDone]);
+  }, [isLoading, pathname, search, prefs, markTaskDone, offeredTasks]);
 
   // "Tell us your preferences" — live from the prefs the interview writes, so
   // a preferences reset un-checks it. Deliberately NOT the user-row completion
@@ -349,7 +357,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   }, [hasWorkspace, workspaceStamped, markTaskDone]);
 
   const gettingStarted = useMemo<GettingStartedState>(() => {
-    const tasks = OFFERED_TASKS.map((def) => ({
+    const tasks = offeredTasks.map((def) => ({
       def,
       done:
         def.doneWhen === 'hasPreferences'
@@ -367,7 +375,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       dismiss: dismissGettingStarted,
       completeTask: markTaskDone,
     };
-  }, [prefs, hasPreferences, hasStocks, hasWorkspace, isLoading, dismissGettingStarted, markTaskDone]);
+  }, [offeredTasks, prefs, hasPreferences, hasStocks, hasWorkspace, isLoading, dismissGettingStarted, markTaskDone]);
 
   useOnboardingOrchestrator({
     isLoading,

@@ -73,9 +73,8 @@ export interface GettingStartedTaskDef {
   /** Where clicking the task navigates (router path, or a full URL when external). */
   to: string;
   /**
-   * Opens the Flash personalization interview instead of a plain navigation —
-   * `/chat/t/__default__` bounces back to /chat unless the flash workspace is
-   * resolved and passed as router state first.
+   * Starts onboarding (`useStartOnboarding`) instead of a plain navigation,
+   * and is offered only where the Chief of Staff runs it.
    */
   interview?: boolean;
   /** Cross-app destination: opens in a new tab and is stamped done on click. */

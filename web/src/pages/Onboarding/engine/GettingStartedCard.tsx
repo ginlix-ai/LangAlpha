@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog';
 import { useAllWorkspacesAgent } from '@/hooks/useAllWorkspacesAgent';
 import { cn } from '@/lib/utils';
-import { useOnboarding as usePersonalizationNav } from '@/pages/Dashboard/hooks/useOnboarding';
+import { useStartOnboarding } from '../connect/useStartOnboarding';
 import { useOnboarding } from '../OnboardingProvider';
 
 /**
@@ -25,9 +25,9 @@ export function GettingStartedCard() {
   // Words the tasks for a user on the all-workspaces agent.
   const allWorkspaces = useAllWorkspacesAgent();
   const navigate = useNavigate();
-  // Same flow as the dashboard banner: resolve the flash workspace and pass it
-  // as router state — /chat/t/__default__ without state bounces back to /chat.
-  const { navigateToPersonalization } = usePersonalizationNav();
+  // The same start as the dashboard banner: the brokerage connect sheet, then
+  // the Chief of Staff's interview in Home.
+  const onboarding = useStartOnboarding();
   // Interview tasks confirm first: the click opens a live agent conversation,
   // which is a bigger jump than the navigation the other tasks do.
   const [interviewPromptOpen, setInterviewPromptOpen] = useState(false);
@@ -186,7 +186,7 @@ export function GettingStartedCard() {
               type="button"
               onClick={() => {
                 setInterviewPromptOpen(false);
-                void navigateToPersonalization();
+                onboarding.start();
               }}
               className="rounded-lg px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               style={{

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.agent.graph import (
+from src.server.database.user import (
     _USER_PROFILE_SHAPE,
     _user_profile_cache_key,
     get_user_profile_for_prompt,

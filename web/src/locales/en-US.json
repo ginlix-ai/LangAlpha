@@ -464,7 +464,6 @@
     "prefIncomplete": "Preference Information Incomplete",
     "prefIncompleteMsg": "Your preference information is not complete. Please complete your preferences to get the best experience with the agent.",
     "ignoreFor24h": "Ignore for 24 hours",
-    "settingUp": "Setting up...",
     "proceed": "Proceed",
     "failedOnboarding": "Failed to set up onboarding. Please try again.",
     "failedPrefUpdate": "Failed to start preference update. Please try again.",
@@ -2734,7 +2733,8 @@
       "memo": "Memo",
       "portfolio": "Portfolio",
       "watchlist": "Watchlist",
-      "preference": "Preferences"
+      "preference": "Preferences",
+      "user": "Account"
     },
     "completed": {
       "activatedSkill": "Activated skill",
@@ -2752,6 +2752,8 @@
       "updated_portfolio": "Updated portfolio",
       "updated_watchlist": "Updated watchlist",
       "updated_preference": "Updated preferences",
+      "read_user": "Read account",
+      "updated_user": "Updated account",
       "read_automations": "Read automations",
       "updated_automations": "Updated automations"
     },
@@ -2781,6 +2783,8 @@
       "updating_portfolio": "updating portfolio...",
       "updating_watchlist": "updating watchlist...",
       "updating_preference": "updating preferences...",
+      "reading_user": "reading account...",
+      "updating_user": "updating account...",
       "reading_automations": "reading automations...",
       "updating_automations": "updating automations...",
       "fetchingSymbolPrices": "fetching {{symbol}} prices...",
@@ -3473,6 +3477,21 @@
       "replayDone": "Page tips and the getting-started guide will show again.",
       "reset": "Reset onboarding",
       "resetDone": "Onboarding reset — tips and the guide start fresh."
+    },
+    "connect": {
+      "title": "Connect your brokerage",
+      "description": "Your Chief of Staff loads your holdings and watchlists from it, then asks a few questions about the markets you follow.",
+      "continue": "Continue",
+      "turnOn": "Turn on",
+      "skip": "Continue without a brokerage",
+      "footnote": "You choose what it can do with your account on the next screen.",
+      "waiting": "Loading {{brokerage}}…",
+      "failed": "Couldn't connect {{brokerage}}. Try again, or continue without it."
+    },
+    "kickoff": {
+      "connected": "I connected {{brokerage}}. Let's set up my profile.",
+      "noBrokerage": "Let's set up my profile.",
+      "modifyPreferences": "I'd like to review and update my preferences."
     }
   },
   "mcp": {

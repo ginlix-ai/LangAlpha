@@ -67,6 +67,8 @@ interface OverviewTabProps {
   actionLoading: boolean;
   refreshing: boolean;
   onStartStop: (action: string) => void;
+  /** Only a computer stops; a workspace row that names none offers no Stop. */
+  canStop?: boolean;
   onRefresh: () => void;
   /** The machine this workspace lives on, when it names one. */
   computerName?: string | null;
@@ -75,7 +77,7 @@ interface OverviewTabProps {
   dirName?: string | null;
 }
 
-export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onStartStop, onRefresh, computerName, dirName, recoverableCreating = false }: OverviewTabProps) {
+export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onStartStop, canStop = true, onRefresh, computerName, dirName, recoverableCreating = false }: OverviewTabProps) {
   const { t } = useTranslation();
   const locale = useLocale();
   const isTransitioning =
@@ -201,7 +203,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               {t('computer.overview.archive')}
             </button>
           )}
-          {isRunning ? (
+          {isRunning ? (canStop && (
             <button
               onClick={() => onStartStop('stop')}
               disabled={isTransitioning}
@@ -212,7 +214,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               <Square className="h-3 w-3" />
               {computerName ? t('computer.stopComputer', 'Stop computer') : t('computer.stop', 'Stop')}
             </button>
-          ) : (
+          )) : (
             <button
               onClick={() => onStartStop('start')}
               disabled={isTransitioning}
