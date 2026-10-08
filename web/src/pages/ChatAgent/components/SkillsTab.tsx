@@ -11,6 +11,7 @@ import {
 } from '@/hooks/useSkills';
 import { SkillRow } from '@/pages/Plugins/components/SkillRow';
 import { SkillUploadModal } from '@/pages/Plugins/components/SkillUploadModal';
+import { useSkillOwners } from '@/pages/Plugins/hooks/useSkillOwners';
 import {
   ConfirmStrip,
   HeaderButton,
@@ -39,6 +40,7 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
   const uploadMutation = useUploadWorkspaceSkill(workspaceId);
   const toggleMutation = useToggleWorkspaceSkill();
   const deleteMutation = useDeleteWorkspaceSkill();
+  const ownerOf = useSkillOwners();
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [togglingName, setTogglingName] = useState<string | null>(null);
@@ -108,6 +110,7 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
               <SkillRow
                 key={skill.name}
                 skill={skill}
+                owner={ownerOf(skill)}
                 toggling={togglingName === `${skill.origin}:${skill.name}`}
                 onToggle={(enabled) => handleToggle(skill, enabled)}
                 onDelete={() => setDeletingName(skill.name)}
@@ -128,6 +131,7 @@ export function SkillsTab({ workspaceId }: { workspaceId: string }) {
               <SkillRow
                 key={`${skill.origin}-${skill.name}`}
                 skill={skill}
+                owner={ownerOf(skill)}
                 toggling={togglingName === `${skill.origin}:${skill.name}`}
                 onToggle={(enabled) => handleToggle(skill, enabled)}
               />

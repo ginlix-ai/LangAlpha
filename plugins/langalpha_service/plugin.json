@@ -16,5 +16,29 @@
     "scheduling",
     "memory",
     "platform"
-  ]
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "skills": {
+        "automation": {
+          "icon": "timer"
+        },
+        "langalpha-doc": {
+          "icon": "circle-question-mark"
+        },
+        "onboarding": {
+          "icon": "door-open"
+        },
+        "run-workflow": {
+          "icon": "workflow"
+        },
+        "secretary": {
+          "icon": "layers"
+        },
+        "self-improve": {
+          "icon": "sprout"
+        }
+      }
+    }
+  }
 }

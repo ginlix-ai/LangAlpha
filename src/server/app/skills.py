@@ -53,6 +53,7 @@ from src.server.database.user_skills import (
     upsert_user_skill,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.models.plugin import SkillMark
 from src.server.services import skill_archive_storage
 from src.server.services.features import (
     get_disabled_builtin_skills,
@@ -131,6 +132,14 @@ class SkillInfo(BaseModel):
     # Workspaces where an all-workspaces skill is switched off (deny-list) —
     # populated in the all-scopes view only, for the "active in" checklist.
     disabled_workspace_ids: list[str] = Field(default_factory=list)
+    # The tile the skill's package asks for (``SkillMark``); both None when it
+    # asks for none, and the page falls back to the package's own mark.
+    icon_url: str | None = None
+    icon_glyph: str | None = None
+
+    def apply_mark(self, mark: SkillMark | None) -> None:
+        if mark is not None:
+            self.icon_url, self.icon_glyph = mark.icon_url, mark.icon_glyph
 
 
 class SkillsResponse(BaseModel):
@@ -207,6 +216,7 @@ class _BundleState:
 
     owners: Mapping[str, str]
     disabled: Collection[str]
+    marks: Mapping[str, SkillMark]
 
     def of(self, name: str) -> tuple[str | None, bool | None]:
         owner = self.owners.get(name)
@@ -216,12 +226,57 @@ class _BundleState:
 
 
 async def _bundle_state(user_id: str) -> _BundleState:
-    from src.server.services.plugins.bundled import component_owners
+    from src.server.services.plugins.bundled import component_owners, skill_marks
 
+    owners = component_owners().skills
     return _BundleState(
-        owners=component_owners().skills,
+        owners=owners,
         disabled=(await list_account_disables(user_id)).bundles,
+        marks=skill_marks(owners),
     )
+
+
+async def _installed_marks(
+    user_id: str, rows: Collection[dict]
+) -> dict[tuple[str, str], SkillMark]:
+    """The glyphs installed packages ask for, by (plugin id, skill directory).
+
+    Glyphs only. A site is drawn for bundles alone, as an uploaded package's
+    own ``icon`` is, so the unauthenticated icon route never resolves a host a
+    user's manifest named. Read only when a row has an owner, which keeps the
+    ordinary listing at the queries it already makes.
+    """
+    owned = {r["plugin_id"] for r in rows if r.get("plugin_id")}
+    if not owned:
+        return {}
+    from ptc_agent.config.plugins import skill_icon
+    from src.server.database.plugins import list_plugins
+    from src.server.services.plugins.extension import NAMESPACE, parse_extension
+    from src.server.services.plugins.manifest import manifest_extension
+
+    marks: dict[tuple[str, str], SkillMark] = {}
+    for plugin in await list_plugins(user_id):
+        plugin_id = plugin["user_plugin_id"]
+        if plugin_id not in owned:
+            continue
+        extension = parse_extension(
+            manifest_extension(plugin.get("manifest") or {}, NAMESPACE)
+        )
+        if not isinstance(extension.skills, dict):
+            continue
+        for key, meta in extension.skills.items():
+            _site, glyph = skill_icon(meta.icon)
+            if glyph:
+                marks[(plugin_id, key)] = SkillMark(icon_glyph=glyph)
+    return marks
+
+
+def _installed_mark(
+    row: dict, marks: Mapping[tuple[str, str], SkillMark]
+) -> SkillMark | None:
+    if not row.get("plugin_id"):
+        return None
+    return marks.get((row["plugin_id"], row.get("plugin_skill_dir") or row["name"]))
 
 
 def _platform_info(
@@ -236,6 +291,7 @@ def _platform_info(
         info.command = command_override
     if bundles is not None:
         info.plugin_name, info.plugin_enabled = bundles.of(info.name)
+        info.apply_mark(bundles.marks.get(info.name))
     return info
 
 
@@ -321,10 +377,13 @@ async def _assemble_skills(
         if not include_disabled:
             ws_rows = [r for r in ws_rows if r["enabled"]]
     user_names = {r["name"] for r in user_rows}
+    marks = await _installed_marks(user_id, [*user_rows, *ws_rows])
 
     for r in user_rows:
         if workspace_id is None:
-            skills.append(_user_row_to_info(r))
+            info = _user_row_to_info(r)
+            info.apply_mark(_installed_mark(r, marks))
+            skills.append(info)
             continue
         if r["name"] in ws_names:
             # Shadowed — the workspace row below represents this name.
@@ -334,6 +393,7 @@ async def _assemble_skills(
         if (row_disabled or ws_dis) and not include_disabled:
             continue
         info = _user_row_to_info(r, editable=False, deletable=False)
+        info.apply_mark(_installed_mark(r, marks))
         if row_disabled:
             # A user-level disable is not workspace-reversible (mirrors the
             # MCP builtin-disable asymmetry) — surfaced so the UI can say why.
@@ -345,6 +405,7 @@ async def _assemble_skills(
 
     for r in ws_rows:
         info = _user_row_to_info(r)
+        info.apply_mark(_installed_mark(r, marks))
         info.shadows_inherited = r["name"] in user_names
         skills.append(info)
 
@@ -385,10 +446,12 @@ async def _assemble_all_scopes(
 
     rows = await list_all_user_skills(user_id)
     user_names = {r["name"] for r in rows if not r.get("workspace_id")}
+    marks = await _installed_marks(user_id, rows)
     for r in rows:
         if not r["enabled"] and not include_disabled:
             continue
         info = _user_row_to_info(r)
+        info.apply_mark(_installed_mark(r, marks))
         if r.get("workspace_id"):
             info.shadows_inherited = r["name"] in user_names
         else:

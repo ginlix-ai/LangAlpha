@@ -134,6 +134,18 @@ class PluginComponentRef(BaseModel):
     key: str
 
 
+class SkillMark(BaseModel):
+    """How a skill's tile is drawn, when its package says (``skills.<name>.icon``).
+
+    ``icon_url`` is a path on this origin, the same shape a package's own mark
+    takes; ``icon_glyph`` names a glyph from the set the web app ships, which
+    is also where an unknown name falls back. At most one is set.
+    """
+
+    icon_url: Optional[str] = None
+    icon_glyph: Optional[str] = None
+
+
 class PluginInfo(BaseModel):
     """One installed plugin (the user_plugins row, without the manifests)."""
 

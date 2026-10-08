@@ -20,6 +20,7 @@ import { useDetailParam } from '../hooks/useDetailParam';
 import { usePluginListSurface } from '../hooks/usePluginListSurface';
 import { useSkillActions, skillRowKey } from '../hooks/useSkillActions';
 import { useSkillBulkActions } from '../hooks/useSkillBulkActions';
+import { useSkillOwners } from '../hooks/useSkillOwners';
 import { useWorkspaceOptions } from '../hooks/useWorkspaceOptions';
 import { BulkActionBar } from './BulkActionBar';
 import { EmptyState } from './EmptyState';
@@ -63,6 +64,7 @@ export function SkillsList() {
   const { selection } = surface;
   const { workspaces: wsOptions, loading: wsLoading, nameById: wsNameById } = useWorkspaceOptions();
   const actions = useSkillActions();
+  const ownerOf = useSkillOwners();
 
   useAddIntent({ skill: () => setUploadOpen(true) });
 
@@ -134,6 +136,7 @@ export function SkillsList() {
       <SkillRow
         key={skillRowKey(skill)}
         skill={skill}
+        owner={ownerOf(skill)}
         toggling={actions.togglingName === skillRowKey(skill)}
         onToggle={(enabled) => actions.toggle(skill, enabled)}
         onCommandSave={(command) => actions.saveCommand(skill, command)}
@@ -428,6 +431,7 @@ export function SkillsList() {
           <SkillDetail
             key={skillRowKey(detailSkill)}
             skill={detailSkill}
+            owner={ownerOf(detailSkill)}
             onClose={detail.close}
             toggling={actions.togglingName === skillRowKey(detailSkill)}
             onToggle={(enabled) => actions.toggle(detailSkill, enabled)}

@@ -8,7 +8,8 @@ import {
 import { useSkillContent } from '@/hooks/useSkills';
 import { formatBytes, mediumDate } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
-import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
+import type { PluginInfo, SkillInfo } from '@/pages/ChatAgent/utils/api';
+import { skillMark } from '../utils/pluginSurface';
 import {
   DetailField,
   DetailHeader,
@@ -26,11 +27,14 @@ import { PluginOriginBadge, PluginSuppressedBadge } from './PluginBadges';
 
 export function SkillDetail({
   skill,
+  owner,
   onClose,
   onToggle,
   toggling = false,
 }: {
   skill: SkillInfo;
+  /** The package the skill came from; its mark stands in for the skill's. */
+  owner?: PluginInfo;
   onClose: () => void;
   /** Absent = the surface has no toggle for this row (render read-only). */
   onToggle?: (enabled: boolean) => void;
@@ -57,7 +61,7 @@ export function SkillDetail({
         <DetailHeader
           name={skill.name}
           labelId={labelId}
-          kind="skill"
+          {...skillMark(skill, owner)}
           kindLabel={t('plugins.detail.kindSkill')}
           meta={
             <>

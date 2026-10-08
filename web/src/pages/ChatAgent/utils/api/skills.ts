@@ -34,6 +34,10 @@ export interface SkillInfo {
   /** Workspaces where an all-workspaces skill is switched off (deny-list);
    * populated in the all-scopes view only. */
   disabled_workspace_ids?: string[];
+  /** The tile the skill's package asks for: this origin's path to a vendor
+   * mark, or a glyph name from `skillGlyphs`. At most one is set. */
+  icon_url?: string | null;
+  icon_glyph?: string | null;
 }
 
 function uploadConfig(onProgress: ((percent: number) => void) | null) {

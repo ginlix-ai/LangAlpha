@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ComponentType } from 'react';
 import { cn } from '@/lib/utils';
 import { IdentityTile, TILE_SIZES, type TileSize } from './IdentityTile';
 import { KindTile, type MarkKind } from './KindTile';
@@ -21,37 +21,48 @@ import type { BrandArt } from '@/lib/brandArt';
  * which is right where every row IS a brand and the only missing piece is our
  * copy of its mark.
  *
+ * `art` may be a list, tried in order, for a thing whose own mark is the best
+ * answer but whose owner's is a better stand-in than its kind: a skill that
+ * names a vendor, inside a package that wears one.
+ *
  * Decorative in both states: the row's accessible name is its text.
  */
 export function BrandMark({
   name,
   art,
   kind,
+  glyph,
   size = 'sm',
   className,
 }: {
   /** Seeds the monogram fallback and its tint; ignored when `kind` is given. */
   name: string;
-  art?: BrandArt;
+  /** The mark, or several in order of preference. */
+  art?: BrandArt | readonly BrandArt[];
   /** Draw this kind's glyph instead of a monogram when there is no art. */
   kind?: MarkKind;
+  /** With `kind`, a glyph chosen for this one item, drawn on the kind's tile. */
+  glyph?: ComponentType<{ className?: string }>;
   size?: TileSize;
   className?: string;
 }) {
-  // Keyed by src rather than a boolean, so swapping the art re-arms the load
-  // instead of inheriting the previous one's failure.
-  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  // The srcs that failed rather than a boolean, so swapping the art re-arms
+  // the load instead of inheriting the previous one's failure, and a list
+  // steps past each dead entry once.
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const candidates = !art ? [] : 'src' in art ? [art] : art;
+  const current = candidates.find((a) => !failed.has(a.src));
 
-  if (!art || failedSrc === art.src) {
+  if (!current) {
     return kind ? (
-      <KindTile kind={kind} size={size} className={className} />
+      <KindTile kind={kind} glyph={glyph} size={size} className={className} />
     ) : (
       <IdentityTile name={name} size={size} className={className} />
     );
   }
   return (
     <img
-      src={art.src}
+      src={current.src}
       alt=""
       aria-hidden
       className={cn(
@@ -59,10 +70,10 @@ export function BrandMark({
         TILE_SIZES[size],
         // A logo drawn as a transparent dark glyph disappears on a dark
         // surface; the ones that ship that way say so and get a light bed.
-        art.padded && 'bg-white p-0.5',
+        current.padded && 'bg-white p-0.5',
         className,
       )}
-      onError={() => setFailedSrc(art.src)}
+      onError={() => setFailed((prev) => new Set(prev).add(current.src))}
     />
   );
 }

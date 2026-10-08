@@ -7,19 +7,20 @@ from disk rather than installed -- nothing fetches them, they occupy none of a
 user's plugin slots, and uninstall has nothing to remove.
 
 A bundle's components are its files: the servers ``mcp.json`` names, and the
-directories under its own ``skills/``. Nothing here reads a skill declaration,
-so a package cannot claim a skill it does not carry.
+directories under its own ``skills/``. The manifest's ``skills`` block is read
+only to draw a skill the directory already holds, so a package cannot claim a
+skill it does not carry.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ptc_agent.config.plugins import Bundle, bundles
-from src.server.models.plugin import PluginComponentRef, PluginInfo
+from ptc_agent.config.plugins import Bundle, bundles, skill_icon, skill_metas
+from src.server.models.plugin import PluginComponentRef, PluginInfo, SkillMark
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,45 @@ def icon_site_for(name: str) -> str | None:
     for bundle in bundles():
         if _name(bundle) == name:
             return _icon_site(bundle)
+    return None
+
+
+def skill_marks(owners: Mapping[str, str]) -> dict[str, SkillMark]:
+    """Each shipped skill's declared mark, by skill name.
+
+    Read from the bundle ``owners`` credits the skill to (``component_owners``),
+    so the tile and the package the row sits under always name one bundle. A
+    site becomes this origin's path to it rather than the site itself, as a
+    package's mark does.
+    """
+    metas = {name: skill_metas(b) for b in bundles() if (name := _name(b))}
+    marks: dict[str, SkillMark] = {}
+    for skill, owner in owners.items():
+        meta = metas.get(owner, {}).get(skill)
+        site, glyph = skill_icon(meta.icon if meta else None)
+        if site:
+            marks[skill] = SkillMark(
+                icon_url=f"/api/v1/plugins/{owner}/skills/{skill}/icon"
+            )
+        elif glyph:
+            marks[skill] = SkillMark(icon_glyph=glyph)
+    return marks
+
+
+def skill_icon_site_for(name: str, skill: str) -> str | None:
+    """The site a bundle names as the owner of one of its skills' marks.
+
+    Found the way ``icon_site_for`` finds a package's, among the bundles on
+    disk and never joined onto a path, because it feeds the same kind of
+    unauthenticated route. Like ``skill_marks``, it answers only for a skill
+    the bundle carries.
+    """
+    for bundle in bundles():
+        if _name(bundle) == name:
+            meta = skill_metas(bundle).get(skill)
+            if meta is None or skill not in _skill_names(bundle)[0]:
+                return None
+            return skill_icon(meta.icon)[0]
     return None
 
 

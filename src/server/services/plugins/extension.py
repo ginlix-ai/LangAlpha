@@ -16,6 +16,9 @@ how much of its tool surface the agent sees. ``apply_server_metadata`` copies
 it onto the plans. The same key is read from the bundles that ship with the
 app (``ptc_agent.config.plugins``), which is why the model lives there.
 
+``skills{}`` says how each skill is drawn on the Plugins page, keyed the same
+way: by the skill's directory, never adding one the package does not carry.
+
 Nothing in this namespace is fatal. The block is our own invention, optional
 by construction, and every defect in it is an authoring slip in a field the
 spec does not even define — while the cost of refusing was the entire package,
@@ -24,17 +27,18 @@ land is dropped with a diagnostic and the install continues, which is the same
 isolation §7.1 already gives a defective entry.
 """
 
-from collections.abc import Container
+from collections.abc import Container, Iterable
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ptc_agent.config.core import VaultBlueprint
-from ptc_agent.config.plugins import NAMESPACE, ServerMeta
+from ptc_agent.config.plugins import NAMESPACE, ServerMeta, SkillMeta
 from src.server.models.mcp_server import DESCRIPTION_MAX, INSTRUCTION_MAX
 from src.server.models.plugin import Diagnostic
 from src.server.services.plugins.mcp import McpEntryPlan
+from src.server.services.plugins.skills import SkillPlan
 
 __all__ = [
     "NAMESPACE",
@@ -42,9 +46,11 @@ __all__ = [
     "PluginSecret",
     "SecretBind",
     "ServerMeta",
+    "SkillMeta",
     "apply_server_metadata",
     "materialize_binds",
     "parse_extension",
+    "report_skill_metadata",
     "resolve_binds",
 ]
 
@@ -85,10 +91,12 @@ class LangalphaExtension(BaseModel):
 
     secrets: list[PluginSecret] = Field(default_factory=list)
     servers: dict[str, ServerMeta] = Field(default_factory=dict)
-    # Accepted and ignored: a package's skills are the directories it carries,
-    # never a claim its manifest makes. Kept so a manifest still naming them
-    # is not rejected whole.
-    skills: list[str] = Field(default_factory=list)
+    #: How each skill is drawn, keyed by its directory. A package's skills are
+    #: the directories it carries, never a claim its manifest makes, so this
+    #: only describes them. The list form is an older manifest naming them,
+    #: accepted and ignored so it is not rejected whole. A site ``icon`` is
+    #: drawn for bundles only, like the package ``icon``; a glyph for any.
+    skills: list[str] | dict[str, SkillMeta] = Field(default_factory=dict)
     #: The site that owns a wrapper bundle's mark. Bundles only.
     icon: str | None = None
 
@@ -302,3 +310,33 @@ def apply_server_metadata(
             plan.config[field] = value
         if meta.tool_exposure_mode is not None:
             plan.config["tool_exposure_mode"] = meta.tool_exposure_mode
+
+
+def report_skill_metadata(
+    extension: LangalphaExtension,
+    plans: Iterable[SkillPlan],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Warn about a ``skills`` entry that names no directory in the package.
+
+    Nothing is dropped: the entry is simply never read, because a skill's mark
+    is looked up by the skill. The warning is for the author, whose icon would
+    otherwise go missing without a word.
+    """
+    if not isinstance(extension.skills, dict):
+        return
+    carried = {plan.dir for plan in plans}
+    for key in extension.skills:
+        if key not in carried:
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    scope="skill",
+                    target=key,
+                    code="skill_meta_unknown",
+                    message=(
+                        f"extensions.{NAMESPACE}: describes unknown skill "
+                        f"{key!r}"
+                    ),
+                )
+            )

@@ -15,7 +15,8 @@ import {
   ServerRowShell,
   TagBadge,
 } from '@/components/mcp/McpPrimitives';
-import type { SkillInfo } from '@/pages/ChatAgent/utils/api';
+import type { PluginInfo, SkillInfo } from '@/pages/ChatAgent/utils/api';
+import { skillMark } from '../utils/pluginSurface';
 import { PluginOriginBadge, PluginSuppressedBadge } from './PluginBadges';
 
 /**
@@ -91,6 +92,7 @@ function CommandChip({
 
 export function SkillRow({
   skill,
+  owner,
   toggling,
   onToggle,
   onDelete,
@@ -101,6 +103,8 @@ export function SkillRow({
   selection,
 }: {
   skill: SkillInfo;
+  /** The package the skill came from; its mark stands in for the skill's. */
+  owner?: PluginInfo;
   toggling: boolean;
   onToggle: (enabled: boolean) => void;
   onDelete?: () => void;
@@ -118,11 +122,12 @@ export function SkillRow({
 }) {
   const { t } = useTranslation();
   const lockedByUserTier = skill.disabled_scope === 'user';
+  const mark = skillMark(skill, owner);
   return (
     <ServerRowShell
       testid={`skill-row-${skill.name}`}
       {...(selection ?? {})}
-      tile={<BrandMark name={skill.name} kind="skill" />}
+      tile={<BrandMark name={skill.name} {...mark} />}
       onOpen={onOpen}
       main={
         <>

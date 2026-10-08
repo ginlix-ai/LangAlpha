@@ -39,6 +39,14 @@
           "instruction": "Use scrape_page for one URL, scrape_pages for batches. Start with mode='fast'; use 'browser' for JS-rendered pages, 'stealth' for bot-protected sites (add solve_cloudflare=true if still blocked). extraction: markdown|html|text.",
           "tool_exposure_mode": "summary"
         }
+      },
+      "skills": {
+        "web-scraping": {
+          "icon": "globe"
+        },
+        "x-api": {
+          "icon": "x.com"
+        }
       }
     }
   }

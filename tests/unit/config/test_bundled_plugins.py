@@ -418,6 +418,75 @@ class TestShippedBundles:
             declared = set(bundle.namespace.get("servers") or {})
             assert declared <= keys, f"{bundle.name} describes {declared - keys}"
 
+    def test_every_skill_icon_names_a_carried_skill_and_reads(self):
+        # A key naming no directory, a meta block that will not parse, or an
+        # icon that is neither a site nor a glyph name all fall back quietly
+        # at runtime, so this is the only place a typo in one shows up.
+        for bundle in bundles.bundles():
+            declared = bundle.namespace.get("skills") or {}
+            if not declared:
+                continue
+            carried = {
+                d.name
+                for d in (bundle.path / "skills").iterdir()
+                if (d / "SKILL.md").is_file()
+            }
+            assert set(declared) <= carried, (
+                f"{bundle.name} describes {set(declared) - carried}"
+            )
+            metas = bundles.skill_metas(bundle)
+            assert set(metas) == set(declared), f"{bundle.name} has a bad meta block"
+            unread = [k for k, m in metas.items() if bundles.skill_icon(m.icon) == (None, None)]
+            assert unread == [], f"{bundle.name}: {unread}"
+
+
+class TestSkillIcon:
+    """A declared skill icon is a site or a glyph name, and the dot decides."""
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("x.com", ("x.com", None)),
+            (" sec.gov ", ("sec.gov", None)),
+            ("calculator", (None, "calculator")),
+            ("chart-column-increasing", (None, "chart-column-increasing")),
+            # Unknown to the web's set but well formed: the web falls back.
+            ("not-a-real-glyph", (None, "not-a-real-glyph")),
+            ("Calculator", (None, None)),
+            ("chart_pie", (None, None)),
+            ("-zap", (None, None)),
+            ("a" * 65, (None, None)),
+            ("", (None, None)),
+            (None, (None, None)),
+        ],
+    )
+    def test_classifies(self, value, expected):
+        assert bundles.skill_icon(value) == expected
+
+    def test_one_bad_entry_costs_only_itself(self, bundles_dir):
+        manifest = _manifest("ours")
+        manifest["extensions"] = {
+            "ai.langalpha": {
+                "skills": {
+                    "good": {"icon": "zap"},
+                    "typo": {"icn": "zap"},
+                    "not-an-object": "zap",
+                }
+            }
+        }
+        _write(bundles_dir, "ours", manifest=manifest)
+        (bundle,) = bundles.bundles()
+        assert {k: m.icon for k, m in bundles.skill_metas(bundle).items()} == {
+            "good": "zap"
+        }
+
+    def test_the_older_list_form_reads_as_no_metadata(self, bundles_dir):
+        manifest = _manifest("ours")
+        manifest["extensions"] = {"ai.langalpha": {"skills": ["good"]}}
+        _write(bundles_dir, "ours", manifest=manifest)
+        (bundle,) = bundles.bundles()
+        assert bundles.skill_metas(bundle) == {}
+
 
 class TestABundleRootThatWillNotOpen:
     """The root itself, not one bundle inside it.
