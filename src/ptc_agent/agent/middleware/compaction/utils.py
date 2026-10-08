@@ -26,7 +26,7 @@ from ptc_agent.agent.middleware._message_utils import (
 )
 from ptc_agent.agent.middleware.skills.content import skill_bodies
 from ptc_agent.agent.transcript import TranscriptTarget
-from ptc_agent.agent.transcript.classify import is_summary_message
+from ptc_agent.agent.transcript.classify import LEGACY_SUMMARY_PREFIX, is_summary_message
 from ptc_agent.agent.transcript.pointer import SummarySpan, transcript_note
 from src.llms.attachment_payload import FILE_BLOCK_TYPES, IMAGE_BLOCK_TYPES
 from ptc_agent.agent.middleware.compaction.types import (
@@ -791,7 +791,14 @@ def summary_source(message: Any) -> str | None:
 def parse_summary_message(message: HumanMessage) -> str:
     """Recover the raw summary text from a ``build_summary_message`` message."""
     content = message.content if isinstance(message.content, str) else ""
-    text = content.removeprefix(CONTEXT_SUMMARY_PREFIX)
+    text = next(
+        (
+            content[len(prefix) :]
+            for prefix in (CONTEXT_SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX)
+            if content.startswith(prefix)
+        ),
+        content,
+    )
     # The exact length is stamped at build time; slice by it rather than
     # string-splitting on the note, which would mis-truncate a summary that
     # itself contains the note text.

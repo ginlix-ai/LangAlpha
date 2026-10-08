@@ -38,9 +38,11 @@ _MARKET_WATCH_STAMP_OPEN = "<market-watch>"
 # gate-stopped background tasks injected when a credit-paused turn resumes.
 _CREDIT_GATE_SOURCE = "credit_gate"
 
-# Written by middleware/compaction/ (CONTEXT_SUMMARY_PREFIX): how a summary
-# opens. Summaries from before the lc_source stamp carry only this.
-_SUMMARY_PREFIX = (
+# How middleware/compaction/ opened a summary before it said which side wins a
+# disagreement, as summaries already in checkpoints still do: all a summary
+# written before the lc_source stamp has to be known by, and an opening
+# parse_summary_message strips like the current one.
+LEGACY_SUMMARY_PREFIX = (
     "[Context Summary]\n"
     "This session is being continued from a previous conversation "
     "that ran out of context. The conversation is summarized below:\n\n"
@@ -96,4 +98,4 @@ def is_summary_message(message: AnyMessage) -> bool:
     if not isinstance(message, HumanMessage):
         return False
     content = message.content if isinstance(message.content, str) else ""
-    return human_kind(message) == "summarization" or content.startswith(_SUMMARY_PREFIX)
+    return human_kind(message) == "summarization" or content.startswith(LEGACY_SUMMARY_PREFIX)

@@ -25,7 +25,7 @@ from ptc_agent.agent.middleware.compaction.summarize import (
     preparer,
 )
 from ptc_agent.agent.middleware.compaction.summary_request import trim_for_summary
-from ptc_agent.agent.middleware.compaction.types import CONTEXT_SUMMARY_PREFIX
+from ptc_agent.agent.transcript.classify import LEGACY_SUMMARY_PREFIX
 from ptc_agent.agent.middleware.compaction.utils import build_summary_message
 
 PRIOR = "Earlier: NVDA gross margin held at 75 percent; the AMD model is pending."
@@ -78,7 +78,7 @@ def test_the_previous_summary_is_kept_whole_and_the_rest_trimmed():
 
 def test_a_summary_from_before_the_stamp_is_kept_whole_too():
     # Summaries once carried only their opening, no lc_source stamp.
-    legacy = HumanMessage(f"{CONTEXT_SUMMARY_PREFIX}{PRIOR}", id="old-summary")
+    legacy = HumanMessage(f"{LEGACY_SUMMARY_PREFIX}{PRIOR}", id="old-summary")
     history = [legacy, *_turns(8)]
     budget = _chars([legacy]) + _chars(history[-6:])
 
