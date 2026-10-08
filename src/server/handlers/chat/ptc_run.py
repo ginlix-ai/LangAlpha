@@ -25,6 +25,7 @@ from src.server.app import setup
 from src.server.database.conversation.threads_read import (
     read_thread_subagents_allowed,
 )
+from src.server.database.user import get_user_profile_for_prompt
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.computer_disk import TURN_MEASURE_MIN_INTERVAL_SECONDS
 from src.server.services.runs.sse_producer import RunSSEProducer
@@ -61,10 +62,7 @@ from src.server.utils.multimodal_context import (
 )
 
 from ptc_agent.agent.agent import AgentRole
-from ptc_agent.agent.graph import (
-    build_ptc_graph_with_session,
-    get_user_profile_for_prompt,
-)
+from ptc_agent.agent.graph import build_ptc_graph_with_session
 from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
 
 from .request_prep import (

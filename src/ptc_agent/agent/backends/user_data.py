@@ -1,8 +1,9 @@
-"""UserDataBackend: the user's portfolio, watchlists and preferences as JSON files.
+"""UserDataBackend: the user's portfolio, watchlists, preferences and account as JSON files.
 
 Mounted at `.agents/user/profile/` (``portfolio.json``, ``watchlist.json``,
-``preference.json``). Reads serialize the live DB rows on demand; a write is
-parsed, validated and diffed against the rows, then applied in one transaction.
+``preference.json``, ``user.json``). Reads serialize the live DB rows on
+demand; a write is parsed, validated and diffed against the rows, then applied
+in one transaction.
 Concurrent writes are serialized by the profile's advisory lock, and races with
 the dashboard are caught by the version (a hash of the agent-visible content).
 The file plumbing (read cache, save flow, Edit, Glob, Grep) is ``DbJsonRoute``'s;
@@ -13,12 +14,19 @@ from __future__ import annotations
 
 from ptc_agent.agent.backends.db_json_route import README_FILE, DbJsonRoute
 from ptc_agent.core.paths import SandboxLayout
-from src.server.services.profile_files import PORTFOLIO_FILE, PREFERENCE_FILE, PROFILE_FILES, WATCHLIST_FILE
+from src.server.services.profile_files import (
+    PORTFOLIO_FILE,
+    PREFERENCE_FILE,
+    PROFILE_FILES,
+    USER_FILE,
+    WATCHLIST_FILE,
+)
 
 __all__ = [
     "PORTFOLIO_FILE",
     "PREFERENCE_FILE",
     "README_FILE",
+    "USER_FILE",
     "WATCHLIST_FILE",
     "UserDataBackend",
 ]
@@ -47,6 +55,27 @@ your `old_string` must be the entire `{ "symbol": "AAPL", ... }` object so it
 matches exactly once; your `new_string` is the same object with the field
 swapped. Same rule for watchlist item edits and watchlist-level renames.
 Use `Write` (whole-file replace) if you want to make many edits at once.
+
+## user.json
+
+```json
+{
+  "name": "Alex",
+  "timezone": "America/New_York",
+  "locale": "en-US",
+  "onboarding_completed": false
+}
+```
+
+The user's own account. `locale` is the language answers default to, and
+`timezone` is the zone their turns and new automations run in.
+
+| Field | Required | Type | Max | Notes |
+|-------|----------|------|-----|-------|
+| name                 | no | string \\| null | 255 | What to call the user. |
+| timezone             | no | string \\| null | 100 | IANA zone, e.g. `Asia/Shanghai`. |
+| locale               | no | string \\| null | 20  | e.g. `en-US`, `zh-CN`. |
+| onboarding_completed | no | boolean         | —   | Set `true` when onboarding is done. |
 
 ## portfolio.json
 
@@ -180,7 +209,7 @@ state, internal flags) that you cannot see or edit.
 
 
 class UserDataBackend(DbJsonRoute):
-    """Filesystem surface backed by `user_portfolios` / `watchlists` / `user_preferences` tables."""
+    """Filesystem surface backed by `user_portfolios` / `watchlists` / `user_preferences` / `users` tables."""
 
     directory = SandboxLayout.USER_PROFILE_DIR
     files = PROFILE_FILES

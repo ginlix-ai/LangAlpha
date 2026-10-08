@@ -4,6 +4,8 @@
 - **Timezone**: {{ user_profile.timezone | default("UTC") }}
 - **Locale**: {{ user_profile.locale | default("en-US", true) }}
 
+To change one of these, edit `.agents/user/profile/user.json`.
+
 ## Response Language
 
 Answer in the language the user wrote in.{% if user_profile.locale and not user_profile.locale.startswith("en") %} Default to the user's locale ({{ user_profile.locale }}) when the message gives no signal. A message from an automation or another agent is often in English without meaning it: unless it asks for a language, the user's locale is the safe choice, because the user is who reads the result.{% endif %}

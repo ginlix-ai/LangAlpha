@@ -29,11 +29,11 @@ from src.server.database.user import (
     lock_user_preferences as db_lock_user_preferences,
     get_user_with_preferences,
     invalidate_user_prefs_cache,
+    invalidate_user_profile_cache,
     migrate_user_id,
     update_user as db_update_user,
     upsert_user_preferences,
 )
-from ptc_agent.agent.graph import invalidate_user_profile_cache
 from src.server.services.llm.config import FLASH_FOLLOWS
 from src.server.services.llm.thread_model import (
     DEFAULT_MODEL_KEYS,

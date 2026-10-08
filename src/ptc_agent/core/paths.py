@@ -460,12 +460,12 @@ MEMO_INDEX_FILENAME: str = "memo.md"
 WORKFLOW_DIR: str = SandboxLayout.WORKFLOWS_DIR
 
 # The directories whose files are rows in Postgres, each beside a README.md:
-# the user's portfolio, watchlists and preferences under the fixed names in
-# USER_DATA_FILES, and one file per automation under a name the agent picks,
-# which AUTOMATION_FILE_NAME matches. The routes, the file panel and the
+# the user's portfolio, watchlists, preferences and account under the fixed
+# names in USER_DATA_FILES, and one file per automation under a name the agent
+# picks, which AUTOMATION_FILE_NAME matches. The routes, the file panel and the
 # browser's path classifier all read these.
 USER_DATA_FILES: dict[str, tuple[str, ...]] = {
-    SandboxLayout.USER_PROFILE_DIR: ("portfolio.json", "watchlist.json", "preference.json"),
+    SandboxLayout.USER_PROFILE_DIR: ("portfolio.json", "watchlist.json", "preference.json", "user.json"),
 }
 USER_DATA_DIRS: tuple[str, ...] = (SandboxLayout.USER_PROFILE_DIR, SandboxLayout.AUTOMATIONS_DIR)
 AUTOMATION_FILE_NAME = r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.json"

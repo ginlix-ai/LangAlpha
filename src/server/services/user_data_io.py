@@ -1,7 +1,7 @@
-"""User-data IO layer: fetch + serialize + diff + apply for portfolio, watchlist, preferences.
+"""User-data IO layer: fetch + serialize + diff + apply for portfolio, watchlist, preferences, user.
 
-Called by ``profile_files`` to serve the three virtual files at
-``.agents/user/profile/{portfolio,watchlist,preference}.json`` and validate agent writes.
+Called by ``profile_files`` to serve the four virtual files at
+``.agents/user/profile/{portfolio,watchlist,preference,user}.json`` and validate agent writes.
 
 Decimal precision: stdlib ``json`` cannot emit ``Decimal`` as a JSON number, so
 quantity / cost fields are serialized as JSON strings (e.g. ``"quantity": "100.50"``).
@@ -12,14 +12,17 @@ across ``DECIMAL(18,8)`` / ``DECIMAL(18,4)`` columns.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import available_timezones
 
 from psycopg.types.json import Json
 
@@ -29,6 +32,7 @@ from src.server.database import user as user_db
 from src.server.database import watchlist as watchlist_db
 from src.server.database.pool import get_db_connection
 from src.server.models.user import normalize_instrument_type, normalize_symbol
+from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -1075,3 +1079,160 @@ async def write_preferences(
             ),
         )
     logger.info("[user_data_io] applied preferences user_id=%s", user_id)
+
+
+# =============================================================================
+# User (the account row)
+# =============================================================================
+
+
+_USER_KEYS: frozenset[str] = frozenset({"name", "timezone", "locale", "onboarding_completed"})
+# Column lengths from migrations/versions/001_initial_schema.py.
+_USER_MAX_LEN: dict[str, int] = {"name": 255, "timezone": 100, "locale": 20}
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+# A language, then an optional script and region: `en`, `en-US`, `zh-Hans-CN`,
+# `es-419`. At most 12 characters, inside the column. Variants and extensions
+# are left out, since no reader of the column (the app's language switch, the
+# prompt) has a use for them.
+_LOCALE_TAG = re.compile(r"([A-Za-z]{2,3})(?:-([A-Za-z]{4}))?(?:-([A-Za-z]{2}|[0-9]{3}))?")
+
+
+@functools.cache
+def _iana_zones() -> dict[str, str]:
+    """Every IANA zone name, keyed by its lowercase spelling. Not ``ZoneInfo``
+    alone, which also opens files under the zone directory that name no zone
+    a browser formats in (``posix/...``, ``right/...``). ``Factory`` and
+    ``localtime`` are left out for the same reason: browsers refuse both."""
+    return {
+        zone.lower(): zone
+        for zone in available_timezones()
+        if zone not in ("Factory", "localtime")
+    }
+
+
+async def fetch_user_for_user(user_id: str) -> dict[str, Any] | None:
+    """The user's row, None when there is none."""
+    return await user_db.get_user(user_id)
+
+
+def serialize_user(row: dict[str, Any] | None) -> dict[str, Any]:
+    """The columns the agent may set, from the user's row."""
+    src = row or {}
+    return _stamp_version({
+        "__version__": EMPTY_VERSION,
+        "name": src.get("name"),
+        "timezone": src.get("timezone"),
+        "locale": src.get("locale"),
+        "onboarding_completed": bool(src.get("onboarding_completed")),
+    })
+
+
+def parse_user(content: str) -> dict[str, Any]:
+    """The columns ``content`` sets. A key left out keeps its value, so only
+    the keys written are returned; a null clears a string column. Zone and
+    locale are checked only by ``diff_user``, against the row: a value saved
+    before these checks existed must survive a save that leaves it as it is."""
+    file = "user.json"
+    data = parse_json(content, file)
+    if not isinstance(data, dict):
+        raise UserDataValidationError("schema_error", file, "", "root must be a JSON object")
+
+    _reject_unknown_keys(data, _USER_KEYS, file=file, path="", tolerate=frozenset())
+
+    values: dict[str, Any] = {}
+    for key, max_len in _USER_MAX_LEN.items():
+        if key in data:
+            value = _coerce_str(data[key], file, key, required=False)
+            # Blank says no more than null does.
+            value = (value or "").strip() or None
+            _check_max_len(value, max_len, file=file, path=key)
+            # Each value is printed as one line of the prompt's profile block.
+            if value is not None and _CONTROL_CHARS.search(value):
+                raise UserDataValidationError(
+                    "schema_error", file, key, "must be one line, without control characters",
+                )
+            values[key] = value
+    if "onboarding_completed" in data:
+        flag = data["onboarding_completed"]
+        if not isinstance(flag, bool):
+            raise UserDataValidationError(
+                "schema_error", file, "onboarding_completed",
+                f"expected true or false, got {type(flag).__name__}",
+            )
+        values["onboarding_completed"] = flag
+    return values
+
+
+# POSIX signs: Etc/GMT+8 is eight hours behind UTC, the reverse of what a user
+# means by "GMT+8", so taking one for the other runs every turn and new
+# automation sixteen hours off.
+_ETC_OFFSET = re.compile(r"etc/gmt[+-][1-9][0-9]*")
+
+
+def _zone(value: str) -> str:
+    if _ETC_OFFSET.fullmatch(value.lower()):
+        raise UserDataValidationError(
+            "schema_error", "user.json", "timezone",
+            f"{value!r} counts its offset backwards ('Etc/GMT+8' is UTC-8). Use the zone of the "
+            "user's city, like 'Asia/Shanghai'.",
+        )
+    zone = _iana_zones().get(value.lower())
+    if zone is None:
+        raise UserDataValidationError(
+            "schema_error", "user.json", "timezone",
+            f"{value!r} is not an IANA time zone. Use a name like 'America/New_York' or 'Asia/Shanghai', "
+            "or null to clear it.",
+        )
+    return zone
+
+
+def _locale(value: str) -> str:
+    match = _LOCALE_TAG.fullmatch(value)
+    if match is None:
+        raise UserDataValidationError(
+            "schema_error", "user.json", "locale",
+            f"{value!r} is not a language tag. Use a language and region joined by a hyphen, "
+            "like 'en-US' or 'zh-CN', or null to clear it.",
+        )
+    # Tags compare without regard to case; the app matches the usual
+    # spelling, so `zh-cn` is stored as `zh-CN`.
+    language, script, region = match.groups()
+    return "-".join(
+        part for part in (language.lower(), script and script.title(), region and region.upper()) if part
+    )
+
+
+def diff_user(values: dict[str, Any], row: dict[str, Any] | None) -> dict[str, Any]:
+    """The columns writing ``parse_user``'s values over ``row`` changes, by
+    column, each value checked and in its stored spelling."""
+    current = row or {}
+    changes: dict[str, Any] = {}
+    for key, value in values.items():
+        stored = current.get(key)
+        # parse_user strips what it reads, so compare a stored value the same
+        # way, or one saved with stray spaces is checked as if it were new.
+        if isinstance(stored, str):
+            stored = stored.strip()
+        if value is not None and value != stored:
+            if key == "timezone":
+                value = _zone(value)
+            elif key == "locale":
+                value = _locale(value)
+        if value != current.get(key):
+            changes[key] = value
+    return changes
+
+
+async def write_user(cur: Any, changes: dict[str, Any], user_id: str) -> None:
+    """One UPDATE of the columns ``changes`` names, as the account's other
+    writers make it. Raises when the user has no row, since the save would
+    otherwise report a change it never made."""
+    builder = UpdateQueryBuilder()
+    for column, value in changes.items():
+        builder.add_field(column, value, nullable=True)
+    query, params = builder.build(table="users", where_clause="user_id = %s", where_params=[user_id])
+    await cur.execute(query, params)
+    if cur.rowcount == 0:
+        raise LookupError(f"no users row for user_id={user_id}")
+    logger.info("[user_data_io] applied user changes user_id=%s columns=%s", user_id, sorted(changes))
