@@ -281,26 +281,6 @@
       "write": "parameters.output_config.effort"
     }
   },
-  "claude-haiku-4-5": {
-    "model_id": "claude-haiku-4-5-20251001",
-    "provider": "anthropic",
-    "visible": true,
-    "speed": 4,
-    "intelligence": 1,
-    "context": 200000,
-    "input_modalities": [
-      "text",
-      "image",
-      "pdf"
-    ],
-    "parameters": {
-      "max_tokens": 64000,
-      "thinking": {
-        "type": "enabled",
-        "budget_tokens": 4096
-      }
-    }
-  },
   "gemini-3.1-pro": {
     "prompt_guidance": "lean",
     "model_id": "gemini-3.1-pro-preview",
@@ -1301,26 +1281,6 @@
       ],
       "default": "medium",
       "write": "parameters.output_config.effort"
-    }
-  },
-  "claude-haiku-4-5-oauth": {
-    "model_id": "claude-haiku-4-5-20251001",
-    "provider": "claude-oauth",
-    "visible": true,
-    "speed": 4,
-    "intelligence": 1,
-    "context": 200000,
-    "input_modalities": [
-      "text",
-      "image",
-      "pdf"
-    ],
-    "parameters": {
-      "max_tokens": 64000,
-      "thinking": {
-        "type": "enabled",
-        "budget_tokens": 8000
-      }
     }
   }
 }

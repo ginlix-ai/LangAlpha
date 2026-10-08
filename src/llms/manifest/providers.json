@@ -361,23 +361,6 @@
         }
       },
       {
-        "id": "claude-haiku-4-5-20251001",
-        "name": "Claude 4.5 Haiku",
-        "is_reasoning": true,
-        "description": "Fast and cost-efficient model",
-        "alias": [
-          "claude-haiku-4.5"
-        ],
-        "pricing": {
-          "input": 1.0,
-          "cached_input": 0.1,
-          "cache_5m": 1.25,
-          "cache_1h": 2.0,
-          "output": 5.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
         "id": "claude-fable-5",
         "name": "Claude Fable 5",
         "is_reasoning": true,
@@ -470,6 +453,23 @@
           "output_pricing_mode": "input_dependent",
           "cache_5m": 3.75,
           "cache_1h": 6.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "claude-haiku-4-5-20251001",
+        "name": "Claude 4.5 Haiku",
+        "is_reasoning": true,
+        "description": "Retired 2026-10-07, superseded by Claude Haiku 5.5. Kept until the next retirement so a custom model on this id still bills.",
+        "alias": [
+          "claude-haiku-4.5"
+        ],
+        "pricing": {
+          "input": 1.0,
+          "cached_input": 0.1,
+          "cache_5m": 1.25,
+          "cache_1h": 2.0,
+          "output": 5.0,
           "unit": "per_1m_tokens"
         }
       }

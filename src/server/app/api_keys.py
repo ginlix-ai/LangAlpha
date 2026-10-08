@@ -296,7 +296,7 @@ async def remove_api_key(provider: str, user_id: CurrentUserId):
 # Cheapest model per SDK type for key validation.
 # These are used for lightweight "say hello" test calls.
 _TEST_MODELS: dict[str, str] = {
-    "anthropic": "claude-haiku-4-5-20251001",
+    "anthropic": "claude-haiku-5-5",
     "openai": "gpt-4.1-nano",
     "gemini": "gemini-2.0-flash-lite",
 }
