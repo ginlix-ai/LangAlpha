@@ -113,6 +113,10 @@ def is_redis_warm_on_startup_enabled() -> bool:
     return get_infrastructure_config().redis_warm_on_startup
 
 
+def is_brokerage_marks_warm_on_startup_enabled() -> bool:
+    return get_infrastructure_config().brokerage_marks_warm_on_startup
+
+
 def is_langsmith_tracing_enabled() -> bool:
     return get_infrastructure_config().langsmith_tracing
 

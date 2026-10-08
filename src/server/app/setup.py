@@ -46,6 +46,7 @@ from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientErr
 from src.config.logging_config import configure_logging
 from src.config.settings import (
     get_allowed_origins,
+    is_brokerage_marks_warm_on_startup_enabled,
 )
 from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtime
 from src.observability.private_query import drop_span_query
@@ -656,6 +657,19 @@ async def lifespan(app: FastAPI):
 
     await warm_jwks()
 
+    # The shipped brokers' logos, fetched here rather than in front of the first
+    # person to open a page that draws one. In the background: a vendor's site
+    # can take seconds, and nothing at startup waits on a logo.
+    mark_warmup: asyncio.Task[None] | None = None
+    if is_brokerage_marks_warm_on_startup_enabled():
+        from src.server.services.brand_icons import warm_marks
+        from src.server.services.brokerages import BROKERAGES
+
+        mark_warmup = asyncio.create_task(
+            warm_marks(b.mark_sources for b in BROKERAGES),
+            name="warm-brokerage-marks",
+        )
+
     # Startup leaves ~700k import-time objects (pydantic schemas, routes,
     # module state) that never die, and every full collection re-walks them
     # while the loop is frozen. Freezing moves them out of the collector for
@@ -668,6 +682,15 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Application shutdown started...")
+    # Awaited, so a warm-up stopped midway releases its lock while Redis is
+    # still open; a lock left to expire skips the warm-up of a quick restart.
+    # The refreshes go after it, since the warm-up can start them.
+    if mark_warmup is not None:
+        mark_warmup.cancel()
+        await asyncio.gather(mark_warmup, return_exceptions=True)
+    from src.server.services.brand_icons import stop_refreshes
+
+    await stop_refreshes()
 
     # 0.0. Stop the recovery scanner first — no new recovery work while the
     # process drains (live runs hold their guards and are skipped anyway).

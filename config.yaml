@@ -36,6 +36,11 @@ sse_keepalive_interval: 15  # seconds
 # Feature Flags (operator-only infra toggles; never exposed to users)
 result_log_db_enabled: true
 redis_warm_on_startup: true
+# Fetch the built-in brokerages' logos at startup, so a cold cache never leaves
+# a viewer waiting on a broker's site. Off here, so a stack that never shows a
+# brokerage does not reach their sites as it boots; a deployment that does
+# turns it on in its APP_ENV overlay.
+brokerage_marks_warm_on_startup: false
 langsmith_tracing: false
 
 # User-facing product features. Each entry overrides the code catalog
