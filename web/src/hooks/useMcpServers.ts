@@ -282,6 +282,58 @@ export function useMcpCatalog(enabled = true) {
   });
 }
 
+/**
+ * Re-read the catalog until `name` reports discovered tools, or `timeoutMs`
+ * passes. Resolves whether the tools arrived; never rejects.
+ *
+ * For a caller about to start an agent turn that should be able to use a
+ * server just connected: a thread's tool roster is fixed when it starts, so a
+ * turn started before discovery lands runs without the server. Each read goes
+ * through the shared catalog entry, so every list showing the row sees it too.
+ */
+export async function waitForServerTools(
+  qc: QueryClient,
+  name: string,
+  { timeoutMs, intervalMs = 1_500, signal }: { timeoutMs: number; intervalMs?: number; signal?: AbortSignal },
+): Promise<boolean> {
+  // One switch for the whole wait: the caller's abort, the deadline, and the
+  // return all flip it, and every pending timer goes with it.
+  const stop = new AbortController();
+  const cancel = () => stop.abort();
+  if (signal?.aborted) stop.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const id = setTimeout(resolve, ms);
+      stop.signal.addEventListener('abort', () => {
+        clearTimeout(id);
+        resolve();
+      }, { once: true });
+    });
+  // Raced against every read as well as every pause, so a slow request cannot
+  // hold the caller past the cap.
+  const expired = sleep(timeoutMs).then(() => {
+    stop.abort();
+    return false;
+  });
+  const hasTools = () =>
+    qc
+      .fetchQuery({ queryKey: queryKeys.mcp.catalog(), queryFn: getMcpCatalog, staleTime: 0 })
+      .then((list) => (list.servers.find((s) => s.name === name)?.tool_count ?? 0) > 0)
+      .catch(() => false);
+  try {
+    while (!stop.signal.aborted) {
+      if (await Promise.race([hasTools(), expired])) return true;
+      if (stop.signal.aborted) break;
+      await Promise.race([sleep(intervalMs), expired]);
+    }
+    return false;
+  } finally {
+    stop.abort();
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
 /** Discovered tools for one catalog server — powers the detail overlay. */
 export function useMcpCatalogServerTools(name: string | null) {
   return useQuery({

@@ -22,6 +22,7 @@ import { usePortfolioData, type PortfolioRow } from './hooks/usePortfolioData';
 import { useTickerNews } from './hooks/useTickerNews';
 import { useDashboardData } from './hooks/useDashboardData';
 import { useOnboarding, snoozePersonalization } from './hooks/useOnboarding';
+import { useStartOnboarding } from '../Onboarding/connect/useStartOnboarding';
 import { useScrollMemory } from '@/lib/scrollMemory';
 import './Dashboard.css';
 
@@ -65,12 +66,8 @@ function Dashboard({ layoutToggle }: DashboardProps = {}) {
     marketStatus,
   } = useDashboardData();
 
-  const {
-    showPersonalizationBanner,
-    setShowPersonalizationBanner,
-    isCreatingWorkspace,
-    navigateToPersonalization,
-  } = useOnboarding();
+  const { showPersonalizationBanner, setShowPersonalizationBanner } = useOnboarding();
+  const onboarding = useStartOnboarding();
 
   const watchlist = useWatchlistData();
   const portfolio = usePortfolioData();
@@ -142,8 +139,9 @@ function Dashboard({ layoutToggle }: DashboardProps = {}) {
             )}
           </div>
 
-          {/* Personalize your experience — dismissible banner */}
-          {showPersonalizationBanner && (
+          {/* Personalize your experience: dismissible banner, offered only where
+              the Chief of Staff runs onboarding */}
+          {showPersonalizationBanner && onboarding.available && (
             <div
               className="mb-6 rounded-lg border px-4 py-3 flex items-center gap-3"
               style={{
@@ -162,15 +160,11 @@ function Dashboard({ layoutToggle }: DashboardProps = {}) {
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setShowPersonalizationBanner(false);
-                  navigateToPersonalization();
-                }}
-                disabled={isCreatingWorkspace}
-                className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium transition-colors hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={() => onboarding.start()}
+                className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium transition-colors hover:opacity-90"
                 style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
               >
-                {isCreatingWorkspace ? t('dashboard.settingUp') : t('dashboard.personalize')}
+                {t('dashboard.personalize')}
               </button>
               <button
                 type="button"

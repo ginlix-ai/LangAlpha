@@ -4,15 +4,17 @@ const PLATFORM_URL = (import.meta.env.VITE_PLATFORM_URL as string | undefined) |
 
 /**
  * The getting-started checklist, in presentation order: tour the pages first,
- * then the Flash interview, then create a PTC workspace and run a first
+ * then the onboarding interview, then create a PTC workspace and run a first
  * research in it, then model configuration, then channel integrations. Tasks
  * complete via a route visit (stamped into prefs), a derived signal
  * (`doneWhen`), or — for external destinations — the click itself; clicking a
  * pending task navigates to `to`.
  *
- * The two interview tasks both open the Flash personalization chat: it covers
- * watchlist/portfolio and preferences in one conversation, but each half has
- * its own completion signal so a partial interview shows what's still missing.
+ * The two interview tasks both start onboarding (the brokerage connect sheet,
+ * then the Chief of Staff's interview in Home): it covers watchlist/portfolio
+ * and preferences in one conversation, but each half has its own completion
+ * signal so a partial interview shows what's still missing. Offered only with
+ * the Chief of Staff on.
  */
 export const GETTING_STARTED_TASKS: GettingStartedTaskDef[] = [
   {

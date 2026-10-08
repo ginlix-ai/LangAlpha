@@ -80,7 +80,7 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   // Price Data (MCP)
   get_stock_data:           { displayName: 'Stock Data',           i18nKey: 'stockData',           icon: TrendingUp },
   get_asset_data:           { displayName: 'Asset Data',           i18nKey: 'assetData',           icon: TrendingUp },
-  // User Data
+  // User Data: retired tools, kept so threads that called them still render
   get_user_data:            { displayName: 'User Data',            i18nKey: 'userData',            icon: User },
   update_user_data:         { displayName: 'Update Data',          i18nKey: 'updateData',          icon: User },
   remove_user_data:         { displayName: 'Remove Data',          i18nKey: 'removeData',          icon: User },
@@ -158,6 +158,7 @@ function entityLabel(entity: UserDataEntity): string {
   if (entity === 'portfolio') return 'Portfolio';
   if (entity === 'watchlist') return 'Watchlist';
   if (entity === 'automations') return 'Automations';
+  if (entity === 'user') return 'Account';
   return 'Preference';
 }
 
@@ -529,7 +530,7 @@ export type ToolCategory =
                   // surface modifications distinctly so any future regression
                   // is visible to the user instead of being hidden behind the
                   // generic "read N memos" framing.)
-  | 'profileRead'   // Read on .agents/user/profile/{portfolio,watchlist,preference}.json
+  | 'profileRead'   // Read on .agents/user/profile/{user,portfolio,watchlist,preference}.json
   | 'profileWrite'  // Write/Edit on the same paths
   | 'automationsRead'   // Read on an automation's file in .agents/user/automations/
   | 'automationsWrite'  // Write/Edit on the same paths

@@ -462,7 +462,6 @@
     "prefIncomplete": "偏好信息不完整",
     "prefIncompleteMsg": "您的偏好信息尚未完善。请完善偏好设置以获得最佳体验。",
     "ignoreFor24h": "24小时内忽略",
-    "settingUp": "设置中...",
     "proceed": "继续",
     "failedOnboarding": "设置失败，请重试。",
     "failedPrefUpdate": "启动偏好更新失败，请重试。",
@@ -2710,7 +2709,8 @@
       "memo": "备忘录",
       "portfolio": "持仓",
       "watchlist": "自选股",
-      "preference": "偏好"
+      "preference": "偏好",
+      "user": "账号"
     },
     "completed": {
       "activatedSkill": "已激活技能",
@@ -2728,6 +2728,8 @@
       "updated_portfolio": "已更新持仓",
       "updated_watchlist": "已更新自选股",
       "updated_preference": "已更新偏好",
+      "read_user": "已读取账号",
+      "updated_user": "已更新账号",
       "read_automations": "已读取自动化",
       "updated_automations": "已更新自动化"
     },
@@ -2757,6 +2759,8 @@
       "updating_portfolio": "更新持仓...",
       "updating_watchlist": "更新自选股...",
       "updating_preference": "更新偏好...",
+      "reading_user": "读取账号...",
+      "updating_user": "更新账号...",
       "reading_automations": "读取自动化...",
       "updating_automations": "更新自动化...",
       "fetchingSymbolPrices": "获取 {{symbol}} 价格...",
@@ -3440,6 +3444,21 @@
       "replayDone": "页面提示与快速上手指南将重新显示。",
       "reset": "重置新手引导",
       "resetDone": "新手引导已重置，提示与指南将重新开始。"
+    },
+    "connect": {
+      "title": "连接你的券商账户",
+      "description": "幕僚长会从中读取你的持仓和自选股，再问你几个关于所关注市场的问题。",
+      "continue": "继续",
+      "turnOn": "开启",
+      "skip": "不连接券商，直接继续",
+      "footnote": "下一步由你决定它可以对你的账户做什么。",
+      "waiting": "正在加载 {{brokerage}}…",
+      "failed": "无法连接 {{brokerage}}。请重试，或不连接直接继续。"
+    },
+    "kickoff": {
+      "connected": "我已连接 {{brokerage}}，帮我设置个人资料吧。",
+      "noBrokerage": "帮我设置个人资料吧。",
+      "modifyPreferences": "我想查看并更新我的偏好设置。"
     }
   },
   "mcp": {

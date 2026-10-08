@@ -1,10 +1,7 @@
 import { MessageSquareText, Plus } from 'lucide-react';
-import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 
-import { FLASH_ROUTE_STATE } from '@/hooks/useFlashWorkspace';
-import { getFlashWorkspace } from '../../utils/api';
-import type { WorkspaceRecord } from './types';
+import { useStartOnboarding } from '@/pages/Onboarding';
 
 interface GalleryEmptyStateProps {
   /** A search that matched nothing says so; it does not re-pitch the product. */
@@ -14,7 +11,7 @@ interface GalleryEmptyStateProps {
 
 export function GalleryEmptyState({ isFiltered, onNewWorkspace }: GalleryEmptyStateProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
+  const onboarding = useStartOnboarding();
 
   if (isFiltered) {
     return (
@@ -23,21 +20,6 @@ export function GalleryEmptyState({ isFiltered, onNewWorkspace }: GalleryEmptySt
       </p>
     );
   }
-
-  const startOnboarding = async () => {
-    try {
-      const flashWsData = await getFlashWorkspace();
-      navigate('/chat/t/__default__', {
-        state: {
-          workspaceId: (flashWsData as WorkspaceRecord).workspace_id,
-          isOnboarding: true,
-          ...FLASH_ROUTE_STATE,
-        },
-      });
-    } catch (err) {
-      console.error('Error starting onboarding:', err);
-    }
-  };
 
   return (
     <>
@@ -48,17 +30,19 @@ export function GalleryEmptyState({ isFiltered, onNewWorkspace }: GalleryEmptySt
         {t('workspace.welcomeDesc')}
       </p>
       <div className="flex flex-col sm:flex-row items-center gap-3">
-        <button
-          onClick={() => void startOnboarding()}
-          className="flex items-center gap-2 px-6 py-3 rounded-lg transition-all hover:opacity-90 active:scale-[0.985]"
-          style={{
-            backgroundColor: 'var(--color-btn-primary-bg)',
-            color: 'var(--color-btn-primary-text)',
-          }}
-        >
-          <MessageSquareText className="h-5 w-5" />
-          <span className="font-medium">{t('settings.startOnboarding')}</span>
-        </button>
+        {onboarding.available && (
+          <button
+            onClick={() => onboarding.start()}
+            className="flex items-center gap-2 px-6 py-3 rounded-lg transition-all hover:opacity-90 active:scale-[0.985]"
+            style={{
+              backgroundColor: 'var(--color-btn-primary-bg)',
+              color: 'var(--color-btn-primary-text)',
+            }}
+          >
+            <MessageSquareText className="h-5 w-5" />
+            <span className="font-medium">{t('settings.startOnboarding')}</span>
+          </button>
+        )}
         <button
           onClick={onNewWorkspace}
           className="flex items-center gap-2 px-6 py-3 rounded-lg border transition-all hover:bg-foreground/5 hover:scale-[1.01] active:scale-[0.985]"

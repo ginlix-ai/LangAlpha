@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { Trans, useTranslation } from 'react-i18next';
 import { AnimatePresence, motion, useReducedMotion } from '@/lib/framer';
@@ -26,6 +26,7 @@ import { useToggleBrokerage } from '@/hooks/useMcpServers';
 import { canBeginMcpOAuth } from '@/lib/desktop';
 import { readConnectOutcome } from './connectOutcome';
 import { useConnectReturn } from './connectReturn';
+import { ONBOARDING_CONNECT, ONBOARDING_PARAM } from '@/pages/Onboarding/connect/useStartOnboarding';
 import { DesktopDownloadLink } from './components/DesktopDownloadLink';
 
 /**
@@ -132,6 +133,12 @@ function Plugins() {
   // provider that refuses our redirect_uri renders its own page and never
   // redirects, so the only return is the Back button — and the toast below is
   // the only thing that explains why nothing happened.
+  // A connect started from the onboarding sheet returns here with the sheet
+  // reopening over the page, and the landing is the sheet's to read: it decides
+  // whether the chat opens. Read once, as the landing itself is.
+  const [sheetOwnsLanding] = useState(
+    () => new URLSearchParams(window.location.search).get(ONBOARDING_PARAM) === ONBOARDING_CONNECT,
+  );
   useConnectReturn({
     onAbandoned: (server) => {
       toast({
@@ -157,13 +164,13 @@ function Plugins() {
     onStandDown: (server) => {
       void standDownMutation.mutateAsync({ name: server, enabled: false }).catch(() => {});
     },
-  });
+  }, !sheetOwnsLanding);
 
   // OAuth callback landing: toast the outcome once, then strip the params so a
   // refresh doesn't re-announce it.
   const callbackHandled = useRef(false);
   useEffect(() => {
-    if (callbackHandled.current) return;
+    if (callbackHandled.current || sheetOwnsLanding) return;
     const outcome = readConnectOutcome(searchParams);
     if (!outcome) return;
     callbackHandled.current = true;

@@ -66,6 +66,18 @@ export function formatTimestamp(ts: string | null | undefined, locale: string): 
   return dateTime(d, locale);
 }
 
+const listFormat = perLocale((locale) => new Intl.ListFormat(locale, { type: 'conjunction' }));
+
+/** Names joined as the locale says "A, B and C". A Chinese conjunction is a
+ *  word and is spaced from the names beside it (`moomoo 和 Webull`), since the
+ *  names are usually Latin; the enumeration comma needs no space. */
+export function formatList(items: readonly string[], locale: string): string {
+  return listFormat(locale)
+    .formatToParts(items)
+    .map((part) => (part.type === 'literal' && /^\p{Script=Han}+$/u.test(part.value) ? ` ${part.value} ` : part.value))
+    .join('');
+}
+
 const zoneNames = new Map<string, string>();
 
 /** A zone's name in `locale` ("Eastern Time", "中国标准时间"). UTC stays

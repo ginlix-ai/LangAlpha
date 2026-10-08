@@ -84,7 +84,6 @@ export function useChatMessages(
   updateTodoListCard: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null = null,
   updateSubagentCard: CardUpdater | null = null,
   finalizePendingTodos: (() => void) | null = null,
-  onOnboardingRelatedToolComplete: (() => void) | null = null,
   onFileArtifact: ((event: SSEEvent) => void) | null = null,
   onPreviewUrl: ((data: PreviewData) => void) | null = null,
   agentMode: string = 'ptc',
@@ -561,7 +560,6 @@ export function useChatMessages(
     setIsReconnecting,
     onFileArtifact,
     onPreviewUrl,
-    onOnboardingRelatedToolComplete,
     // setters (stable)
     setMessages,
     queueMessages: liveMessages.queue,

@@ -24,7 +24,7 @@ import {
   connectBlock,
   type Brokerage,
 } from '../brokerages';
-import { useMcpOauthActions } from '../hooks/useMcpOauthActions';
+import { useBrokerageConnect } from '../hooks/useBrokerageConnect';
 import { useWorkspaceOptions } from '../hooks/useWorkspaceOptions';
 import { useDetailParam } from '../hooks/useDetailParam';
 import { withDetail } from '../utils/detailParam';
@@ -57,7 +57,9 @@ export function Brokerages() {
   const { workspaces, loading: workspacesLoading } = useWorkspaceOptions();
   // Back to this tab, not the MCP one: the vendor round trip should return the
   // user to the page they left.
-  const oauth = useMcpOauthActions({ returnTo: '/plugins?tab=brokerages' });
+  const { oauth, requestConnect: connectBrokerage } = useBrokerageConnect({
+    returnTo: '/plugins?tab=brokerages',
+  });
   const toggleMutation = useToggleBrokerage();
   const deleteMutation = useDeleteMcpCatalogServer();
   const wsEnableMutation = useSetMcpServerEnabledInWorkspace();
@@ -91,42 +93,6 @@ export function Brokerages() {
     return { b, row, vendor: row ? brokerageForUrl(row.url, shipped) : b };
   });
 
-  /** Create-and-enable, the step a connect implies when there is no row yet. */
-  async function ensureLive(name: string): Promise<boolean> {
-    try {
-      await toggleMutation.mutateAsync({ name, enabled: true });
-      return true;
-    } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: t('plugins.brokerages.toggleFailed'),
-        description: formatApiErrorDetail(err),
-      });
-      return false;
-    }
-  }
-
-  /**
-   * Stand down a row `ensureLive` brought up for a connect that never happened.
-   *
-   * Switched off rather than deleted, which is the same outcome for both shapes
-   * of `wasInert` and the safe one for either: a disabled row is an inert
-   * template, in no workspace's effective set and carrying nothing. Deleting
-   * would also be right for a row this click created, and destructive for one
-   * the user had already made and merely switched off, and by the time this
-   * runs the two are no longer distinguishable.
-   */
-  async function revertLive(name: string) {
-    try {
-      await toggleMutation.mutateAsync({ name, enabled: false });
-    } catch {
-      // Silent by choice: the connect failure is already on screen and is the
-      // one the user can act on. A second toast about the tidying would bury
-      // it, and the row it leaves behind is visible and switchable on the row
-      // itself.
-    }
-  }
-
   async function handleToggle(name: string, enabled: boolean) {
     setTogglingName(name);
     try {
@@ -143,16 +109,8 @@ export function Brokerages() {
   }
 
   /**
-   * Hand the connect to the lifecycle, with the steps only this tab can do.
-   *
-   * The gate that used to sit here -- the confirmation a vendor allowing one
-   * connected AI platform per account has to raise -- moved into the hook, so
-   * the same row reached from the MCP tab asks it too. What stays is the pair
-   * of steps that are this tab's alone: a brokerage has no row until someone
-   * connects it, and an inert row's grant would be revoked the moment it
-   * landed, so bringing it to life is part of connecting rather than something
-   * to discover afterwards. It runs after the question, not before, and comes
-   * back off if the flow never reached the vendor.
+   * Hand the connect to the shared brokerage connect, closing this tab's own
+   * question first: only one question is ever open under the list.
    */
   function requestConnect(
     brokerage: Brokerage,
@@ -160,20 +118,7 @@ export function Brokerages() {
     vendor: Brokerage | null,
   ) {
     setRemovingName(null);
-    const wasInert = !row?.enabled;
-    oauth.connect({
-      name: brokerage.name,
-      vendor,
-      // The row's own address once it has one, and otherwise the address the
-      // row `prepare` is about to create will carry -- which is the registry's,
-      // the one thing on this tab the user does not choose.
-      url: row?.url ?? brokerage.url,
-      // What the row already grants, so the dialog opens on the answer the user
-      // gave last time rather than on the vendor's default.
-      granted: row?.remembered_capabilities ?? null,
-      prepare: wasInert ? () => ensureLive(brokerage.name) : undefined,
-      rollback: wasInert ? () => revertLive(brokerage.name) : undefined,
-    });
+    connectBrokerage(brokerage, row, vendor);
   }
 
   async function handleSetWorkspaceDisabled(

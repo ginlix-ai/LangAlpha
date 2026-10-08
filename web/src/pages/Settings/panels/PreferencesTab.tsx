@@ -14,7 +14,7 @@ import { readSubagentsDefault, subagentsDefaultPatch } from '@/lib/subagentsDefa
 import { getFlashWorkspace } from '@/pages/ChatAgent/utils/api';
 import { FLASH_ROUTE_STATE } from '@/hooks/useFlashWorkspace';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
-import { useOnboarding } from '@/pages/Onboarding';
+import { useOnboarding, useStartOnboarding } from '@/pages/Onboarding';
 import type { Preferences } from './types';
 import { AutoApproveSettings } from './AutoApproveSettings';
 import { TradingPermissionSection } from './TradingPermissionSection';
@@ -32,6 +32,9 @@ export function PreferencesTab() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { replayGuides, resetOnboarding } = useOnboarding();
+  // Both conversations run on the Chief of Staff, the agent that keeps the
+  // profile; without it neither is offered.
+  const onboarding = useStartOnboarding();
 
   const [preferences, setPreferences] = useState<Preferences | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -98,26 +101,6 @@ export function PreferencesTab() {
     }
   };
 
-  const handleStartOnboarding = async () => {
-    try {
-      const flashWs = await getFlashWorkspace();
-      navigate(`/chat/t/__default__`, {
-        state: {
-          workspaceId: flashWs.workspace_id,
-          isOnboarding: true,
-          ...FLASH_ROUTE_STATE,
-        },
-      });
-    } catch (err) {
-      console.error('Error setting up onboarding:', err);
-      toast({
-        variant: 'destructive',
-        title: t('common.error'),
-        description: t('dashboard.failedOnboarding'),
-      });
-    }
-  };
-
   const handleResetConfirm = async () => {
     setIsResetting(true);
     try {
@@ -162,7 +145,7 @@ export function PreferencesTab() {
   return (
     <>
     <div className="space-y-4">
-      {authUser?.onboarding_completed !== true && (
+      {onboarding.available && authUser?.onboarding_completed !== true && (
         <div
           className="rounded-lg p-3 flex items-center justify-between gap-3"
           style={{
@@ -180,7 +163,7 @@ export function PreferencesTab() {
           </div>
           <button
             type="button"
-            onClick={handleStartOnboarding}
+            onClick={() => onboarding.start()}
             className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
             style={{
               backgroundColor: 'var(--color-btn-primary-bg)',
@@ -342,9 +325,11 @@ export function PreferencesTab() {
         </div>
       )}
 
-      <p className="text-xs pt-1" style={{ color: 'var(--color-text-tertiary)' }}>
-        {t('settings.preferencesDesc')}
-      </p>
+      {onboarding.available && (
+        <p className="text-xs pt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('settings.preferencesDesc')}
+        </p>
+      )}
 
       <div className="flex gap-3 justify-between pt-4" style={{ borderTop: '1px solid var(--color-border-muted)' }}>
         <button
@@ -355,19 +340,21 @@ export function PreferencesTab() {
         >
           <Trash2 className="h-4 w-4" /> {t('settings.resetPreferences')}
         </button>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleModifyPreferences}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
-            style={{
-              backgroundColor: 'var(--color-btn-primary-bg)',
-              color: 'var(--color-btn-primary-text)',
-            }}
-          >
-            <MessageSquareText className="h-4 w-4" /> {t('settings.modifyWithAgent')}
-          </button>
-        </div>
+        {onboarding.available && (
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleModifyPreferences}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
+              style={{
+                backgroundColor: 'var(--color-btn-primary-bg)',
+                color: 'var(--color-btn-primary-text)',
+              }}
+            >
+              <MessageSquareText className="h-4 w-4" /> {t('settings.modifyWithAgent')}
+            </button>
+          </div>
+        )}
       </div>
     </div>
 

@@ -8,6 +8,7 @@ import type { ByokProvider } from '@/components/model/types';
 import { useTranslation } from 'react-i18next';
 import { modelPrefs } from '@/lib/modelPreferences';
 import { useModelSlotCopy } from '@/components/model/useModelSlotCopy';
+import { useStartOnboarding } from '@/pages/Onboarding';
 
 // ---------------------------------------------------------------------------
 // DoneStep — confirmation screen
@@ -19,6 +20,7 @@ export default function DoneStep() {
   const { apiKeys } = useApiKeys();
   const { t } = useTranslation();
   const copy = useModelSlotCopy();
+  const onboarding = useStartOnboarding();
 
   // ---------------------------------------------------------------------------
   // Derive summary data
@@ -94,19 +96,18 @@ export default function DoneStep() {
         >
           {t('setup.goToDashboard')}
         </Button>
-        <button
-          type="button"
-          className="text-sm font-medium transition-colors"
-          style={{ color: 'var(--color-accent-primary)' }}
-          onClick={() =>
-            navigate('/chat/t/__default__', {
-              replace: true,
-              state: { isPersonalizing: true },
-            })
-          }
-        >
-          {t('setup.personalizeLink')}
-        </button>
+        {/* Over the dashboard: the wizard sits outside the app shell, which
+            is where the connect sheet lives. */}
+        {onboarding.available && (
+          <button
+            type="button"
+            className="text-sm font-medium transition-colors"
+            style={{ color: 'var(--color-accent-primary)' }}
+            onClick={() => onboarding.start({ at: '/dashboard', replace: true })}
+          >
+            {t('setup.personalizeLink')}
+          </button>
+        )}
       </div>
     </div>
   );

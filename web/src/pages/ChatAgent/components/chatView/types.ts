@@ -18,8 +18,11 @@ export interface LocationState {
    * the thread that send starts. Absent leaves it to the user's default.
    */
   subagentsAllowed?: boolean;
+  /** Open with the onboarding interview's first turn (from the connect sheet). */
   isOnboarding?: boolean;
-  isPersonalizing?: boolean;
+  /** The brokerages connected on the way in, by label, for that first turn. */
+  onboardingBrokerages?: string[];
+  /** Open with a request to revisit the saved preferences (from Settings). */
   isModifyingPreferences?: boolean;
   workspaceId?: string;
   workspaceName?: string;

@@ -76,30 +76,6 @@ function appendNotificationSegmentOnce(
 
 
 /**
- * Checks if a tool result indicates an onboarding-related success.
- * Onboarding tools: update_user_data for risk_preference, watchlist_item, portfolio_holding.
- * @param {string|object} resultContent - Raw result content (JSON string or parsed object)
- * @returns {boolean}
- */
-function isOnboardingRelatedToolSuccess(resultContent: unknown): boolean {
-  if (resultContent == null) return false;
-  let parsed;
-  if (typeof resultContent === 'string') {
-    try {
-      parsed = JSON.parse(resultContent);
-    } catch {
-      return false;
-    }
-  } else if (typeof resultContent === 'object') {
-    parsed = resultContent;
-  } else {
-    return false;
-  }
-  if (!parsed || parsed.success !== true) return false;
-  return !!(parsed.risk_preference || parsed.watchlist_item || parsed.portfolio_holding);
-}
-
-/**
  * Whether a tool result changed the user's workspaces: an agent created one,
  * or handed work to one, which may create it and starts its computer. Both
  * answer with the workspace's id. The user's own changes refresh the cached
@@ -196,4 +172,4 @@ export function mapToolCallIdToAgentId(
   return rest;
 }
 
-export { collectRenderedInterruptIds, buildModelFallbackSegment, appendNotificationSegmentOnce, isOnboardingRelatedToolSuccess, isWorkspaceChangingToolSuccess };
+export { collectRenderedInterruptIds, buildModelFallbackSegment, appendNotificationSegmentOnce, isWorkspaceChangingToolSuccess };

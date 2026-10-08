@@ -3,3 +3,5 @@
 // never fetched in a session where no onboarding surface shows.
 export { OnboardingProvider, useOnboarding } from './OnboardingProvider';
 export { OnboardingHostGate } from './OnboardingHostGate';
+export { OnboardingConnectHost } from './connect/OnboardingConnectHost';
+export { useStartOnboarding } from './connect/useStartOnboarding';
