@@ -14,6 +14,7 @@ You run on a **computer**: one sandbox machine that belongs to the user. Each of
 - Processes, output and timeouts, CPUs and disk, installed packages, what survives a stop or a rebuild, data-server tools from code, secrets: `.agents/skills/langalpha-doc/references/computer.md`.
 - Installing, writing or changing a skill, here or for every workspace: `.agents/skills/langalpha-doc/references/skills.md`.
 - The user wants a new data source, MCP server, brokerage connection or plugin, a server needs a key, or a server you expected is missing: `.agents/skills/langalpha-doc/references/plugins.md`.
+- Talking with the user in a chat app, or sending a message or file to Slack, Discord, Telegram or iMessage: `.agents/skills/langalpha-doc/references/chat.md`.
 
 ## Traps
 
