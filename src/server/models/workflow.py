@@ -10,6 +10,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.llms.reasoning import ReasoningLevel
+from src.server.models.additional_context import AdditionalContext
 
 
 def serialize_message(message: Any) -> Dict[str, Any]:
@@ -448,7 +449,9 @@ class RetryRequest(BaseModel):
     workspace_id: str = Field(..., description="Workspace ID (required for graph building)")
     checkpoint_id: Optional[str] = Field(
         None,
-        description="Specific checkpoint ID to retry from. If not provided, auto-detects the last checkpoint.",
+        description="Specific checkpoint ID to retry from. If not provided, "
+        "auto-detects the last checkpoint. A failed message that runs again "
+        "keeps the checkpoint it was sent against.",
     )
     run_id: Optional[str] = Field(
         None,
@@ -469,3 +472,8 @@ class RetryRequest(BaseModel):
     )
     reasoning_effort: Optional[ReasoningLevel] = Field(None)
     fast_mode: Optional[bool] = Field(None)
+    additional_context: Optional[List[AdditionalContext]] = Field(
+        None,
+        description="The failed send's additional context, when its message "
+        "never reached the agent and so runs again. A replay ignores it.",
+    )

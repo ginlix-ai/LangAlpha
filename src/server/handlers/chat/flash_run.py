@@ -271,7 +271,9 @@ async def astream_flash_workflow(
         chart_selections = parse_chart_selection_contexts(request.additional_context)
         if request.additional_context:
             multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
-            if multimodal_ctxs:
+            # A retry writes no query row, so a second upload would be
+            # stored for nothing.
+            if multimodal_ctxs and not request.retry_of_run_id:
                 query_metadata["attachments"] = await build_attachment_metadata(
                     multimodal_ctxs, thread_id
                 )

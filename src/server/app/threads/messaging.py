@@ -246,6 +246,7 @@ async def _handle_send_message(
         astream_flash_workflow,
         astream_ptc_workflow,
     )
+    from src.server.handlers.chat.error_handling import end_after_failure_frame
     from src.server.services.turn_runtime import (
         ensure_home,
         requested_workspace,
@@ -537,13 +538,15 @@ async def _handle_send_message(
 
     if not is_dispatch:
         return StreamingResponse(
-            observe_chat_stream(
-                gen,
-                mode=runtime,
-                model=_model,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                thread_id=thread_id,
+            end_after_failure_frame(
+                observe_chat_stream(
+                    gen,
+                    mode=runtime,
+                    model=_model,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    thread_id=thread_id,
+                )
             ),
             media_type="text/event-stream",
             headers=sse_headers_with_loc,
@@ -1150,13 +1153,19 @@ async def retry_thread(
     Validates the target is the thread's LATEST attempt and terminally
     retryable (status=error), then starts attempt N+1 with
     ``retry_of_run_id`` chaining — no truncation, the failed attempt stays
-    archived. Graph-wise the retry resumes from the last checkpoint.
-    Returns an SSE stream.
+    archived. Graph-wise the retry resumes from the last checkpoint, unless
+    the failed attempt never reached the graph: then it runs that attempt's
+    message again, or replays the checkpoint a regenerate named
+    (``pending_input``). Returns an SSE stream.
     """
     from src.server.database.runs import lifecycle as tl_db
     from src.server.handlers.chat.admission_gate import admission_conflict_detail
     from src.server.handlers.checkpoint_handler import get_retry_checkpoint
     from src.server.services.runs.admission import RunScope
+    from src.server.services.runs.pending_input import (
+        input_rerun_request,
+        read_pending_input,
+    )
 
     scope = RunScope(user_id=auth.user_id, burst_slot_id=auth.burst_slot_id)
 
@@ -1204,11 +1213,6 @@ async def retry_thread(
                 },
             )
 
-        explicit_checkpoint_id = body.checkpoint_id if body else None
-        retry_checkpoint_id = await get_retry_checkpoint(
-            thread_id, explicit_checkpoint_id
-        )
-
         # Resolve workspace_id from body or from the thread record
         workspace_id = body.workspace_id if body and body.workspace_id else None
         if not workspace_id:
@@ -1218,6 +1222,36 @@ async def retry_thread(
                     status_code=404, detail=f"Thread {thread_id} not found"
                 )
             workspace_id = str(thread_record.get("workspace_id", ""))
+
+        pending = read_pending_input(latest)
+        if pending is not None and not pending.replay:
+            # No checkpoint holds the failed message (a new thread's first
+            # send has none at all), so a replay would answer the turn
+            # before it. The message runs again instead.
+            request = await input_rerun_request(
+                thread_id, latest, pending, workspace_id=workspace_id, body=body
+            )
+        else:
+            # A checkpoint replay carrying the attempt chain (no
+            # fork_from_turn: nothing is truncated). A failed regenerate
+            # replays its own fork base, which is no longer the thread's tip.
+            explicit_checkpoint_id = (body.checkpoint_id if body else None) or (
+                pending.checkpoint_id if pending else None
+            )
+            request = ChatRequest(
+                workspace_id=workspace_id,
+                messages=[],
+                checkpoint_id=await get_retry_checkpoint(
+                    thread_id, explicit_checkpoint_id
+                ),
+                subagents_enabled=(latest.get("metadata") or {}).get(
+                    "subagents_enabled"
+                ),
+                request_key=(body.request_key if body else None),
+                llm_model=(body.llm_model if body else None),
+                reasoning_effort=(body.reasoning_effort if body else None),
+                fast_mode=(body.fast_mode if body else None),
+            )
     except BaseException:
         # ChatRateLimited acquired a burst slot at the dependency; every
         # early exit above bypasses _handle_send_message, whose own guard
@@ -1226,19 +1260,8 @@ async def retry_thread(
         await scope.release_slot()
         raise
 
-    # Delegate to the message flow as a checkpoint replay carrying the
-    # attempt chain (no fork_from_turn: nothing is truncated). Retry
-    # provenance travels as a route-internal parameter, never in the body.
-    request = ChatRequest(
-        workspace_id=workspace_id,
-        messages=[],
-        checkpoint_id=retry_checkpoint_id,
-        request_key=(body.request_key if body else None),
-        llm_model=(body.llm_model if body else None),
-        reasoning_effort=(body.reasoning_effort if body else None),
-        fast_mode=(body.fast_mode if body else None),
-    )
-
+    # Retry provenance travels as a route-internal parameter, never in the
+    # body.
     return await _handle_send_message(
         request, auth, thread_id, retry_of_run_id=latest_run_id
     )

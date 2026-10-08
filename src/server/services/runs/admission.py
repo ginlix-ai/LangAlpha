@@ -42,12 +42,19 @@ class RunScope:
         self._user_id = user_id
         self._burst_slot_id = burst_slot_id
         self._slot_owned = True
+        self._handed_off = False
         self._admission_lock: Optional[asyncio.Lock] = None
         self._run_handle: Any = None
 
     @property
     def slot_owned(self) -> bool:
         return self._slot_owned
+
+    @property
+    def handed_off(self) -> bool:
+        """The executor holds the run: an error from here on is the
+        reader's, not the run's."""
+        return self._handed_off
 
     @property
     def owned_run_handle(self) -> Any:
@@ -90,6 +97,7 @@ class RunScope:
     def transfer_to_executor(self) -> None:
         """Executor's done-callback is armed — it owns cleanup from here."""
         self._slot_owned = False
+        self._handed_off = True
 
     async def fail_open(self, reason: str, *, status: str = "cancelled") -> None:
         """Death-path teardown: release the lease and settle the open run.
@@ -348,9 +356,11 @@ async def begin_run(
         workspace_id=workspace_id,
         user_id=user_id,
         is_byok=is_byok,
+        # A retry is another attempt at a turn whose first attempt wrote the
+        # query row; rewriting it would let a retry change what was asked.
         query=(
             None
-            if is_checkpoint_replay
+            if is_checkpoint_replay or retry_of is not None
             else QuerySpec(
                 query_id=str(uuid4()),
                 content=query_content,
@@ -379,6 +389,13 @@ async def begin_run(
         run_metadata={
             "user_id": user_id,
             "burst_slot_id": request.burst_slot_id,
+            # /retry builds its attempt from the row, and a retry body
+            # carries only the per-attempt model choices.
+            **(
+                {"subagents_enabled": request.subagents_enabled}
+                if request.subagents_enabled is not None
+                else {}
+            ),
             **(extra_run_metadata or {}),
         },
     )

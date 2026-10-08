@@ -32,11 +32,17 @@ def _consume(agen):
     return _drain()
 
 
-def _make_request():
+def _make_request(*, messages=(), checkpoint_id=None, hitl_response=None, additional_context=None):
+    from src.server.models.chat import ChatMessage
+
     return SimpleNamespace(
         workspace_id="ws-1",
         locale=None,
         timezone=None,
+        messages=[ChatMessage(**m) for m in messages],
+        checkpoint_id=checkpoint_id,
+        hitl_response=hitl_response,
+        additional_context=additional_context,
     )
 
 
@@ -251,3 +257,176 @@ async def test_query_conflict_branch_emits_turn_conflict_and_skips_finalize(
     assert "other content" not in events[0]
     coordinator.finalize_run.assert_not_awaited()
     coordinator.fail_open_run.assert_not_awaited()
+
+
+# --- Which recovery a failure names, and what the failed run row records ---
+
+
+def _frames(events):
+    import json as _json
+
+    frames = []
+    for ev in events:
+        head, data = ev.split("\ndata: ", 1)
+        frames.append((head.removeprefix("event: "), _json.loads(data.strip())))
+    return frames
+
+
+async def _fail(err, *, scope, request):
+    with patch(RELEASE, new=AsyncMock()), \
+         patch.object(error_handling, "get_max_workflow_retries", return_value=3):
+        return _frames(await _consume(error_handling.handle_workflow_error(
+            e=err,
+            thread_id="t-1",
+            user_id="u-1",
+            workspace_id="ws-1",
+            handler=None,
+            token_callback=None,
+            scope=scope,
+            start_time=0.0,
+            request=request,
+            is_byok=False,
+            msg_type="ptc",
+            log_prefix="CHAT",
+        )))
+
+
+_SEND = {"messages": [{"role": "user", "content": "what moved NVDA?"}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_kwargs, pending, recovery",
+    [
+        # A send runs on the thread's latest checkpoint, as its re-run will.
+        (_SEND, {"checkpoint_id": None}, "retry"),
+        # An edit keeps its fork base: the failed finalize re-pins the
+        # thread to the old branch tip.
+        ({**_SEND, "checkpoint_id": "cp-base"}, {"checkpoint_id": "cp-base"}, "retry"),
+        # A regenerate keeps its fork base for the same reason, and has no
+        # message to run again.
+        ({"checkpoint_id": "cp-1"}, {"checkpoint_id": "cp-1", "replay": True}, "retry"),
+        # A resume's answers are the client's to send again.
+        (
+            {**_SEND, "hitl_response": {"i-1": {"decision": "approve"}}},
+            {"resend": True},
+            "resend",
+        ),
+        # Context sent beside the text is kept by no row: a retry brings it.
+        (
+            {**_SEND, "additional_context": [{"type": "skills", "name": "dcf-model"}]},
+            {"checkpoint_id": None, "context": True},
+            "retry",
+        ),
+        # The query row keeps one text: anything more is only the client's.
+        (
+            {"messages": [
+                {"role": "system", "content": "Answer briefly."},
+                {"role": "user", "content": "what moved NVDA?"},
+            ]},
+            {"resend": True},
+            "resend",
+        ),
+        (
+            {"messages": [{"role": "user", "content": [
+                {"type": "text", "text": "what is in this chart?"},
+                {"type": "image", "image_url": "data:image/png;base64,iVBORw0KGgo="},
+            ]}]},
+            {"resend": True},
+            "resend",
+        ),
+    ],
+    ids=["send", "edit", "regenerate", "hitl-resume", "context", "history", "image-part"],
+)
+async def test_pre_graph_failure_records_pending_input_on_the_run(
+    coordinator, request_kwargs, pending, recovery
+):
+    frames = await _fail(
+        ConnectionError("connection refused"),
+        scope=_scope(_run_handle()),
+        request=_make_request(**request_kwargs),
+    )
+
+    _, outcome = coordinator.finalize_run.await_args.args
+    assert outcome.metadata.get("pending_input") == pending
+    assert [(name, data["recovery"]) for name, data in frames] == [("retry", recovery)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "err, attempt_no, event",
+    [
+        (ConnectionError("connection refused"), 1, "retry"),
+        (ConnectionError("connection refused"), 99, "error"),
+        (AttributeError("boom"), 1, "error"),
+    ],
+    ids=["recoverable", "retries-exhausted", "non-recoverable"],
+)
+async def test_failure_of_a_started_run_names_retry(
+    coordinator, err, attempt_no, event
+):
+    frames = await _fail(
+        err, scope=_scope(_run_handle(attempt_no)), request=_make_request(**_SEND)
+    )
+
+    assert [(name, data["recovery"]) for name, data in frames] == [(event, "retry")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "err, event",
+    [(ConnectionError("connection refused"), "retry"), (AttributeError("boom"), "error")],
+    ids=["recoverable", "non-recoverable"],
+)
+async def test_failure_before_any_run_names_resend(coordinator, err, event):
+    # No run row exists for /retry to chain onto: the client sends again.
+    frames = await _fail(err, scope=_scope(), request=_make_request(**_SEND))
+
+    assert [(name, data["recovery"]) for name, data in frames] == [(event, "resend")]
+    coordinator.finalize_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "err", [ConnectionError("stream read failed"), AttributeError("boom")]
+)
+async def test_reader_failure_after_handoff_emits_nothing(coordinator, err):
+    # The executor holds the run and writes its end; a frame here would fail
+    # a turn that is still running instead of letting the client reconnect.
+    scope = _scope(_run_handle())
+    scope.transfer_to_executor()
+
+    frames = await _fail(err, scope=scope, request=_make_request(**_SEND))
+
+    assert frames == []
+    coordinator.finalize_run.assert_not_awaited()
+
+
+# --- The HTTP body ends at the failure frame ---
+
+
+async def _turn(*frames, raises):
+    for frame in frames:
+        yield frame
+    raise raises
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["retry", "error"])
+async def test_http_body_ends_cleanly_after_the_failure_frame(event):
+    # The turn re-raises for in-process drainers; over HTTP that abort would
+    # leave a proxied client waiting on a turn that is already over.
+    frame = f'event: {event}\ndata: {{"recovery": "retry"}}\n\n'
+    stream = _turn("event: metadata\ndata: {}\n\n", frame, raises=ConnectionError())
+
+    events = await _consume(error_handling.end_after_failure_frame(stream))
+
+    assert events[-1] == frame
+
+
+@pytest.mark.asyncio
+async def test_http_body_still_aborts_on_a_failure_with_no_frame():
+    stream = _turn("event: message_chunk\ndata: {}\n\n", raises=ConnectionError())
+
+    with pytest.raises(ConnectionError):
+        await _consume(error_handling.end_after_failure_frame(stream))

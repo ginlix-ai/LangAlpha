@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING
 
 import psycopg
@@ -25,6 +26,7 @@ from ptc_agent.core.sandbox.runtime import (
 
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
+from src.server.services.runs.pending_input import needs_resend, pending_input_stamp
 from .admission_gate import ADMISSION_CONFLICT_CODES, admission_conflict_detail
 
 if TYPE_CHECKING:
@@ -165,6 +167,34 @@ def classify_error(e: Exception) -> dict:
     }
 
 
+_FAILURE_FRAME = re.compile(r"^event: (?:retry|error)$", re.MULTILINE)
+
+
+async def end_after_failure_frame(
+    stream: AsyncIterator[str | bytes],
+) -> AsyncIterator[str | bytes]:
+    """A chat turn's HTTP body, ended cleanly once its failure frame is out.
+
+    The turn generator re-raises after ``handle_workflow_error`` yields its
+    ``retry`` or ``error``, since an in-process drainer such as an automation
+    learns the outcome from the exception. Over HTTP the same raise aborts the
+    chunked body, and a proxy may hold an aborted response open, so the client
+    waits on a turn that is already over. The frame said everything the
+    client needs, so the response ends there. Wrap outside the observability
+    layer, which still has to see the failure.
+    """
+    after_failure = False
+    try:
+        async for chunk in stream:
+            text = chunk.decode() if isinstance(chunk, bytes) else chunk
+            after_failure = bool(_FAILURE_FRAME.search(text))
+            yield chunk
+    except Exception:
+        if not after_failure:
+            raise
+        logger.info("[CHAT] Turn stream ended after its failure frame")
+
+
 def _emit_sse_error(handler, payload: dict) -> str:
     """Format an ``error`` SSE frame via *handler* when present, else raw.
 
@@ -197,12 +227,17 @@ async def handle_workflow_error(
     ``error``).  Call it with ``async for event in handle_workflow_error(...): yield event``.
 
     ``scope`` owns the burst lease and the open START row; its
-    ``owned_run_handle`` is the run to finalize — ``None`` when the error
-    fired before START, or after handoff to BTM, whose ``_finalize_run``
-    owns the terminal write (and the durable slot release) from that point.
+    ``owned_run_handle`` is the run to finalize, ``None`` when the error
+    fired before START. After handoff to BTM, whose ``_finalize_run`` owns
+    the terminal write (and the durable slot release), this yields nothing.
     ``workspace_id`` accepts ``None`` to guard against the case where the
     error occurred before the workspace was resolved.
     ``turn_context`` is None only before START, where nothing is finalized.
+
+    Every ``retry`` and failure ``error`` frame names its ``recovery``:
+    ``retry`` when a failed run is on the ledger for ``/retry`` to chain
+    onto, ``resend`` when none was started, so the client sends its request
+    again.
     """
     from src.server.database.runs.subagent_runs import TaskRunSlotBusyError
     from src.server.services.runs.coordinator import (
@@ -214,9 +249,28 @@ async def handle_workflow_error(
         protected_finalize,
     )
 
+    # The run is the executor's, alive or settled by its own finalize, and
+    # this is the reader failing. A failure frame would end a turn that is
+    # still running; ending the stream bare sends the client to reconnect.
+    if scope.handed_off:
+        logger.warning(
+            f"[{log_prefix}] Stream reader failed after handoff, leaving the "
+            f"run to its executor: thread_id={thread_id} "
+            f"{type(e).__name__}: {str(e)[:100]}"
+        )
+        return
+
     # Captured before any release below flips ownership — the finalize
     # branches must see the run this scope owned at error time.
     run_handle = scope.owned_run_handle
+    # Only a run this scope still owns is finalized here, and that is a run
+    # the graph never started, so its message is in no checkpoint yet.
+    pending_stamp = pending_input_stamp(request)
+    recovery = (
+        "retry"
+        if run_handle is not None and not needs_resend(pending_stamp)
+        else "resend"
+    )
 
     # Metadata for persistence calls — built from parameters alone, up here so
     # ``_finalize_error`` never closes over a cell assigned below its def.
@@ -233,6 +287,7 @@ async def handle_workflow_error(
         persist_metadata["locale"] = request.locale
     if turn_context is not None:
         persist_metadata["timezone"] = turn_context.tool_timezone
+    persist_metadata.update(pending_stamp)
 
     async def _finalize_error(error_msg: str, extra_metadata: dict) -> bool:
         """Terminal-write the open run as error; CRITICAL on failure (row
@@ -464,8 +519,8 @@ async def handle_workflow_error(
     if is_recoverable:
         # v4: the retry count IS the attempt chain — this run's attempt_no,
         # durable and race-free (the Redis increment_retry_count counter is
-        # gone). Post-handoff calls have no handle; those errors surface via
-        # BTM's finalize, so 1 is only a display fallback here.
+        # gone). No handle means no run was started, and the client's resend
+        # counts its own attempts, so 1 is only a display fallback here.
         retry_count = run_handle.attempt_no if run_handle else 1
 
         if retry_count > MAX_RETRIES:
@@ -496,6 +551,7 @@ async def handle_workflow_error(
                 "retry_count": retry_count,
                 "max_retries": MAX_RETRIES,
                 "thread_id": thread_id,
+                "recovery": recovery,
             }
             yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
         else:
@@ -530,6 +586,7 @@ async def handle_workflow_error(
                 "error_class": type(e).__name__,
                 "retry_count": retry_count,
                 "max_retries": MAX_RETRIES,
+                "recovery": recovery,
             }
             yield f"event: retry\ndata: {json.dumps(retry_data)}\n\n"
 
@@ -555,5 +612,6 @@ async def handle_workflow_error(
             "type": "workflow_error",
             "error_type": error_type_label,
             "error_class": type(e).__name__,
+            "recovery": recovery,
         }
         yield _emit_sse_error(handler, error_payload)
