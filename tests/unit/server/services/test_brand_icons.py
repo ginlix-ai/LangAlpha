@@ -436,12 +436,14 @@ NEW_MARK = _png(180, 180)
 SITE_KEY = "brand-icon:v1:vendor.test"
 
 
-def _stored(content: bytes, *, fresh_for: float, found_ago: float = 0) -> dict:
+def _stored(
+    content: bytes, *, fresh_for: float, unfound_for: float | None = None
+) -> dict:
     return {
         "content": base64.b64encode(content).decode("ascii"),
         "content_type": "image/png",
         "fresh_until": time.time() + fresh_for,
-        "found_at": time.time() - found_ago,
+        "unfound_since": None if unfound_for is None else time.time() - unfound_for,
     }
 
 
@@ -508,6 +510,32 @@ class TestAStoredMarkIsServedWhileItRefreshes:
         assert base64.b64decode(entry["content"]) == OLD_MARK
         # Kept, but asked about again as soon as a miss would be.
         assert entry["fresh_until"] - time.time() <= brand_icons._MISS_FRESH
+
+    @pytest.mark.asyncio
+    async def test_the_week_of_keeping_starts_at_the_first_failed_refresh(
+        self, monkeypatch
+    ):
+        """A hit goes stale a week after it was found, so a week counted from
+        that find would be spent before its first refresh could fail."""
+        from src.server.services import brand_icons
+
+        now = [time.time()]
+        monkeypatch.setattr(brand_icons.time, "time", lambda: now[0])
+        cache = _Cache()
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        _resolving(monkeypatch, "_from_site", OLD_MARK)
+        await brand_icons.icon_for_site("vendor.test")
+
+        _resolving(monkeypatch, "_from_site", None)
+        now[0] += brand_icons._HIT_FRESH + 1
+        await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+        assert base64.b64decode(cache.entries[SITE_KEY]["content"]) == OLD_MARK
+
+        now[0] += brand_icons._KEEP_UNFOUND + 1
+        await brand_icons.icon_for_site("vendor.test")
+        await _settle()
+        assert cache.entries[SITE_KEY]["content"] is None
 
     @pytest.mark.asyncio
     async def test_a_current_mark_asks_nobody(self, monkeypatch):
@@ -671,7 +699,9 @@ class TestAStoredMarkIsServedWhileItRefreshes:
         from src.server.services import brand_icons
 
         week = brand_icons._KEEP_UNFOUND
-        cache = _Cache({SITE_KEY: _stored(OLD_MARK, fresh_for=-1, found_ago=week + 1)})
+        cache = _Cache(
+            {SITE_KEY: _stored(OLD_MARK, fresh_for=-1, unfound_for=week + 1)}
+        )
         monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
         _resolving(monkeypatch, "_from_site", None)
 
@@ -742,7 +772,7 @@ class TestABrokerMarkFallsBackToItsSite:
         week = brand_icons._KEEP_UNFOUND
         cache = _Cache(
             {
-                file_key: _stored(NEW_MARK, fresh_for=-1, found_ago=week + 1),
+                file_key: _stored(NEW_MARK, fresh_for=-1, unfound_for=week + 1),
                 SITE_KEY: _stored(OLD_MARK, fresh_for=3600),
             }
         )

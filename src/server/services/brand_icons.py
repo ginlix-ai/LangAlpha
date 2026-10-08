@@ -65,11 +65,11 @@ MIN_PIXELS = 32
 # seconds (moomoo's is two redirects and a 470 KB page), and no viewer should
 # wait on that more than once. A refresh that finds nothing keeps the mark it
 # had, so a bad day on a vendor's site does not turn its logo into a letter,
-# but only for a week past the last time the mark was found: art that is gone
-# for good gives way to the next source, or to the letter.
+# but only for a week from the first refresh that found nothing: art that is
+# gone for good gives way to the next source, or to the letter.
 _HIT_FRESH = 7 * 24 * 3600
 _MISS_FRESH = 6 * 3600
-_KEEP_UNFOUND = _HIT_FRESH
+_KEEP_UNFOUND = 7 * 24 * 3600
 # How long an answer outlives its last write. Each refresh rewrites it, so only
 # a source nobody has asked about in this long resolves in front of a viewer.
 # A miss holds nothing worth keeping that long, and an older build reads any
@@ -310,26 +310,25 @@ _REFRESHES: set[asyncio.Task[None]] = set()
 class _Stored:
     icon: BrandIcon | None
     fresh: bool
-    # When a resolver last returned ``icon``, which a refresh that finds
-    # nothing keeps only for so long.
-    found_at: float
+    # When a refresh first found nothing and kept ``icon``, which it keeps
+    # only for so long; None while the icon is still found.
+    unfound_since: float | None
 
 
 def _read(raw: object) -> _Stored | None:
     """A stored answer, or None when there is none worth serving.
 
     An entry with no ``fresh_until`` predates it and reads as stale, so it is
-    served once more while its refresh rewrites it. One with no ``found_at``
-    counts as found now, so its clock starts with that rewrite.
+    served once more while its refresh rewrites it.
     """
     if not isinstance(raw, dict):
         return None
     until = raw.get("fresh_until")
     fresh = isinstance(until, (int, float)) and time.time() < until
-    found = raw.get("found_at")
-    found_at = found if isinstance(found, (int, float)) else time.time()
+    since = raw.get("unfound_since")
+    unfound_since = since if isinstance(since, (int, float)) else None
     if not raw.get("content"):
-        return _Stored(icon=None, fresh=fresh, found_at=found_at)
+        return _Stored(icon=None, fresh=fresh, unfound_since=unfound_since)
     try:
         icon = BrandIcon(
             content=base64.b64decode(raw["content"]),
@@ -337,7 +336,7 @@ def _read(raw: object) -> _Stored | None:
         )
     except (ValueError, KeyError, TypeError):
         return None  # Unreadable: resolve again and overwrite it.
-    return _Stored(icon=icon, fresh=fresh, found_at=found_at)
+    return _Stored(icon=icon, fresh=fresh, unfound_since=unfound_since)
 
 
 async def _resolve(
@@ -358,13 +357,15 @@ async def _resolve(
         icon = None
     now = time.time()
     found = icon is not None
-    found_at = now
-    if not found and kept is not None and now - kept.found_at < _KEEP_UNFOUND:
-        icon, found_at = kept.icon, kept.found_at
+    unfound_since = None
+    if not found and kept is not None and kept.icon is not None:
+        since = now if kept.unfound_since is None else kept.unfound_since
+        if now - since < _KEEP_UNFOUND:
+            icon, unfound_since = kept.icon, since
     value: dict[str, object] = {
         "content": None,
         "fresh_until": now + (_HIT_FRESH if found else _MISS_FRESH),
-        "found_at": found_at,
+        "unfound_since": unfound_since,
     }
     if icon is not None:
         value["content"] = base64.b64encode(icon.content).decode("ascii")
