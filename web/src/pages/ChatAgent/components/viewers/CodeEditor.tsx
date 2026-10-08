@@ -30,6 +30,18 @@ const EDITOR_OPTIONS: editor.IStandaloneEditorConstructionOptions = {
   fontSize: 12,
   automaticLayout: true,
   padding: { top: 8 },
+  // Monaco draws its own scrollbar, so the app's inset (styles/tokens.css) is
+  // set here: a 6px slider centred in a 12px lane, and 4px arrows, hidden in
+  // CSS, that Monaco's own math keeps the track clear of at both ends.
+  scrollbar: {
+    verticalScrollbarSize: 12,
+    horizontalScrollbarSize: 12,
+    verticalSliderSize: 6,
+    horizontalSliderSize: 6,
+    verticalHasArrows: true,
+    horizontalHasArrows: true,
+    arrowSize: 4,
+  },
 };
 
 interface TextSelection {

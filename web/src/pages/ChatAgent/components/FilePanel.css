@@ -41,15 +41,8 @@
     inset: 0;
     overflow-y: auto;
   }
-  .file-panel-content::-webkit-scrollbar {
-    width: 6px;
-  }
   .file-panel-content::-webkit-scrollbar-thumb {
     background-color: var(--color-border-muted);
-    border-radius: 3px;
-  }
-  .file-panel-content::-webkit-scrollbar-track {
-    background: transparent;
   }
   
   /* ====== Resizable Split Layout ====== */

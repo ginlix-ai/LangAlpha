@@ -155,21 +155,12 @@
   padding: 2px 6px 0;
 }
 
-.market-sidebar-list::-webkit-scrollbar {
-  width: 4px;
-}
-
-.market-sidebar-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
 .market-sidebar-list::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 2px;
+  background-color: var(--color-border-muted);
 }
 
 .market-sidebar-list::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-default);
+  background-color: var(--color-border-default);
 }
 
 /* Row */

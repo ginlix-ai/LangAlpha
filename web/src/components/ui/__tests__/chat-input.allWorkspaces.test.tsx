@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, screen, within, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ChatInput, { type ChatInputProps } from '../chat-input';
@@ -71,15 +72,15 @@ let queryClient: QueryClient;
 // The toolbar also paints every item into an aria-hidden measure row, so the
 // visible controls are found by role, which skips it.
 const pill = (name: string) => screen.getByRole('button', { name });
-const pickerRow = (name: string) => {
-  const menu = document.querySelector<HTMLElement>('.workspace-dropdown');
-  if (!menu) throw new Error('scope picker is closed');
-  return within(menu).getByText(name);
-};
+const pickerRow = (name: string) => within(screen.getByRole('menu')).getByRole('menuitemradio', { name });
 
 function renderInput(props: Partial<ChatInputProps> = {}) {
   queryClient.setQueryData(queryKeys.user.preferences(), mocks.preferences);
-  return render(
+  return render(composer(props));
+}
+
+function composer(props: Partial<ChatInputProps> = {}) {
+  return (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ChatInput
@@ -95,7 +96,7 @@ function renderInput(props: Partial<ChatInputProps> = {}) {
           {...props}
         />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
 }
 
@@ -138,7 +139,7 @@ describe('ChatInput with the all-workspaces agent', () => {
     renderInput();
     expect(screen.queryByText('Flash')).not.toBeInTheDocument();
     expect(screen.queryByText('PTC')).not.toBeInTheDocument();
-    expect(pill('All workspaces')).toBeInTheDocument();
+    expect(pill('All workspaces')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(pill('Subagents')).toBeInTheDocument();
   });
 
@@ -149,7 +150,7 @@ describe('ChatInput with the all-workspaces agent', () => {
       onWorkspaceChange: (id) => calls.push(`ws:${id}`),
     });
     fireEvent.click(pill('All workspaces'));
-    fireEvent.mouseDown(pickerRow('Beta desk'));
+    fireEvent.click(pickerRow('Beta desk'));
     expect(calls).toEqual(['ws:ws-2', 'scope:workspace']);
   });
 
@@ -158,14 +159,99 @@ describe('ChatInput with the all-workspaces agent', () => {
     renderInput({ scope: 'workspace', onScopeChange });
     expect(pill('Subagents')).toBeInTheDocument();
     fireEvent.click(pill('Alpha desk'));
-    fireEvent.mouseDown(pickerRow('All workspaces'));
+    fireEvent.click(pickerRow('All workspaces'));
     expect(onScopeChange).toHaveBeenCalledWith('all');
+  });
+
+  it('names each section of the picker for a screen reader', () => {
+    renderInput();
+    fireEvent.click(pill('All workspaces'));
+    const groups = within(screen.getByRole('menu')).getAllByRole('group');
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['All workspaces', 'Workspaces']);
   });
 
   it('offers All workspaces to a user with no workspace yet', () => {
     renderInput({ workspaces: [], selectedWorkspaceId: null, emptyWorkspacesHint: 'Make one first' });
     fireEvent.click(pill('All workspaces'));
-    expect(pickerRow('Make one first')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toHaveTextContent('Make one first');
+  });
+
+  it('picks a workspace from the keyboard when the list is too short to search', async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    renderInput({
+      onScopeChange: (scope) => calls.push(`scope:${scope}`),
+      onWorkspaceChange: (id) => calls.push(`ws:${id}`),
+    });
+    pill('All workspaces').focus();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(document.activeElement).toBe(pickerRow('All workspaces')));
+    await user.keyboard('{ArrowDown}{ArrowDown}{Enter}');
+    expect(calls).toEqual(['ws:ws-2', 'scope:workspace']);
+    // A keyboard user keeps their place on the pill.
+    await waitFor(() => expect(document.activeElement).toBe(pill('All workspaces')));
+  });
+
+  it('returns to the draft after a pick made with the pointer', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    await user.click(pill('All workspaces'));
+    await user.click(pickerRow('Beta desk'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await user.keyboard('hello');
+    expect(screen.getByRole('textbox')).toHaveValue('hello');
+  });
+
+  it('keeps the draft focused through a pick started from it', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    const draft = screen.getByRole('textbox');
+    await user.click(draft);
+    await user.click(pill('All workspaces'));
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(draft));
+  });
+
+  it('leaves the page live while open and closes on a press outside it', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    await user.click(pill('All workspaces'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(document.documentElement.style.overflow).not.toBe('hidden');
+    await user.click(document.body);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('closes when its pill is pressed again', async () => {
+    const user = userEvent.setup();
+    renderInput();
+    await user.click(pill('All workspaces'));
+    await user.click(pill('All workspaces'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('stays shut when its pill comes back after leaving the toolbar mid-pick', async () => {
+    const user = userEvent.setup();
+    mocks.allWorkspaces = false;
+    const ptc = { scope: undefined, onScopeChange: undefined, mode: 'ptc' as const, onModeChange: vi.fn() };
+    const view = renderInput(ptc);
+    await user.click(pill('Alpha desk'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    view.rerender(composer({ ...ptc, mode: 'fast' }));
+    view.rerender(composer(ptc));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the picker open when its search field is clicked', async () => {
+    const user = userEvent.setup();
+    const workspaces = Array.from({ length: 8 }, (_, i) => ({ workspace_id: `ws-${i}`, name: `Desk ${i}` }));
+    renderInput({ workspaces: workspaces as ChatInputProps['workspaces'], selectedWorkspaceId: 'ws-0' });
+    await user.click(pill('All workspaces'));
+    const search = screen.getByRole('searchbox');
+    await user.click(search);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(document.activeElement).toBe(search);
   });
 
   it("lists Home's skills on All workspaces, where the turn runs", async () => {

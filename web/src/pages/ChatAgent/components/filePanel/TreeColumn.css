@@ -246,15 +246,8 @@
   overflow-y: auto;
   padding-bottom: 8px;
 }
-.file-panel-tree-list::-webkit-scrollbar {
-  width: 6px;
-}
 .file-panel-tree-list::-webkit-scrollbar-thumb {
   background-color: var(--color-border-muted);
-  border-radius: 3px;
-}
-.file-panel-tree-list::-webkit-scrollbar-track {
-  background: transparent;
 }
 
 /* An open file reads as a first-class row; the one on screen carries the

@@ -1518,8 +1518,10 @@
       "subagentsOn": "Subagents on",
       "subagentsOff": "Subagents off",
       "subagentsFailed": "Couldn't change this thread's subagents setting",
-      "watch": "Watch",
-      "watchTitle": "Market watch — live prices for tickers the agent tracks"
+      "watch": "Market watch",
+      "watchOn": "Market watch on",
+      "watchOff": "Market watch off",
+      "watchTitle": "Live prices for tickers the agent tracks"
     },
     "moreTools": "More tools",
     "widgetContext": {

@@ -57,13 +57,18 @@ body > :first-child {
  * The widget is a separate document, so it inherits none of the app's chrome and
  * draws the platform's default scrollbar: a bright slab against a dark surface.
  * Applies to both variants — an inline widget with its own scrolling table shows
- * the same one. Matches `styles/tokens.css`; keep them in step.
+ * the same one. Matches `styles/tokens.css`; keep them in step. A widget with
+ * WebKit scrollbar rules of its own gets none of it: the two would merge rule by
+ * rule, and a 6px scrollbar less this 3px inset on each side paints no thumb at
+ * all. `scrollbar-width` and `scrollbar-color` cannot merge that way, so a
+ * widget that sets only those still gets it, and a browser without them shows it.
  */
 const SCROLLBARS = `
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--color-border-elevated); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--color-text-tertiary); }`;
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; margin: 4px; }
+::-webkit-scrollbar-thumb { background-color: var(--color-border-elevated); background-clip: padding-box; border: 3px solid transparent; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--color-text-tertiary); }`;
+const STYLES_OWN_SCROLLBAR = /-webkit-scrollbar/i;
 
 /**
  * Fullscreen caps at the chat column the widget was authored for and centres in
@@ -222,7 +227,7 @@ export function buildHtmlSrcDoc(
 }
 *, *::before, *::after { box-sizing: border-box; }
 body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; ${VARIANTS[variant].bodyOverflow} }
-${VARIANTS[variant].layout}\n${SCROLLBARS}
+${VARIANTS[variant].layout}\n${STYLES_OWN_SCROLLBAR.test(html) ? '' : SCROLLBARS}
 </style>
 ${earlyScripts}${dataScript}<script>
 window.sendPrompt = function(text) {

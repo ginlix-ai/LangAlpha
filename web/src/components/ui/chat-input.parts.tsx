@@ -71,8 +71,8 @@ export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRe
 };
 
 /**
- * The single composer pill: every labeled control in the action bar (mode,
- * workspace, watch) is one of these, so pill geometry exists once and the
+ * The single composer pill: every labeled control in the action bar (scope,
+ * mode, workspace) is one of these, so pill geometry exists once and the
  * hidden measure row can render the very same component.
  *
  * Always transparent with a transient hover fill; active state is signaled by
@@ -103,7 +103,7 @@ export function PillToggle({
   trailing?: ReactNode;
   /** Inert pill: dimmed, not-allowed cursor, reason shown as the tooltip. */
   disabledReason?: string | null;
-  /** Which state the pill announces: a toggle, a menu trigger, or neither. */
+  /** Which state the pill announces: a toggle, a picker trigger, or neither. */
   aria?: 'pressed' | 'expanded' | 'none';
   gap?: number;
   className?: string;
@@ -152,9 +152,10 @@ export function PillToggle({
     );
   }
 
+  const opensPicker = aria === 'expanded';
   const ariaProps: ButtonHTMLAttributes<HTMLButtonElement> =
     aria === 'pressed' ? { 'aria-pressed': active }
-      : aria === 'expanded' ? { 'aria-haspopup': 'menu', 'aria-expanded': active }
+      : opensPicker ? { 'aria-haspopup': 'dialog', 'aria-expanded': active }
         : {};
 
   return (
@@ -163,6 +164,11 @@ export function PillToggle({
       className={cn('inline-flex items-center rounded-full border-none whitespace-nowrap', className)}
       style={style}
       onClick={(e) => { e.stopPropagation(); if (!blocked) onToggle?.(); }}
+      // A press leaves focus where it was, as a menu trigger's does: the picker
+      // hands focus back on close to whatever held it at open, which should
+      // be the draft, and a second press reaches the pill as a toggle rather
+      // than as a blur that has already closed the picker.
+      onMouseDown={opensPicker ? (e) => e.preventDefault() : undefined}
       onMouseEnter={(e) => { if (!blocked) e.currentTarget.style.background = 'var(--color-border-muted)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       type="button"

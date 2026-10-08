@@ -26,6 +26,7 @@ from fastapi import HTTPException
 from src.server.app.workspace_files.serve import (
     _guess_content_type,
     _has_traversal,
+    _inject_theme_into_html,
     render_workspace_file_pdf,
     serve_workspace_file,
     serve_workspace_file_endpoint,
@@ -163,6 +164,29 @@ def test_mime_mapping_common_web_types():
 
 def test_mime_mapping_unknown_extension_is_octet_stream():
     assert _guess_content_type("blob.zzz") == "application/octet-stream"
+
+
+# --- Scrollbar in the ?inject=theme splice ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("own_css", "inset"),
+    [
+        ("", True),
+        # The standard properties cannot merge into a thumbless scrollbar.
+        ("html{scrollbar-width:thin}", True),
+        # WebKit rules would merge with the inset ones and can leave no thumb.
+        ("::-webkit-scrollbar{width:6px}", False),
+    ],
+)
+def test_theme_splice_scrollbar(own_css, inset):
+    out = _inject_theme_into_html(
+        f"<html><head><style>{own_css}</style></head><body></body></html>"
+    )
+    assert (
+        "::-webkit-scrollbar-track{background:transparent;margin:4px}" in out
+    ) is inset
+    assert "__wsfiles_theme__" in out
 
 
 # --- Traversal rejection → uniform 404 ------------------------------------
