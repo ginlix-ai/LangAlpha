@@ -26,6 +26,7 @@ from langchain_openai import ChatOpenAI
 from src.llms.extension import ChatAnthropicOAuth, ChatCodexOpenAI
 from src.llms.llm import LLM
 from src.llms.operator_channel import (
+    anthropic_serves_midturn_system,
     build_operator_message,
     is_operator_system_message,
     operator_request,
@@ -235,19 +236,51 @@ def test_unproven_anthropic_hosts_stay_off(base_url):
         assert resolve_operator_channel(client) is None
 
 
-@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"])
-def test_official_anthropic_models_that_accept_the_role(model):
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-opus-4-8",
+        "claude-sonnet-5-5-20261001",
+        "claude-opus-4-10",
+        "claude-haiku-9",
+    ],
+)
+def test_official_anthropic_models_from_opus_4_8_on_take_the_role(model):
+    """The cutoff is a rule, so a release nobody listed (``claude-haiku-9``) needs no edit.
+
+    ``claude-opus-4-10`` pins the comparison as numeric rather than lexical.
+    """
     client = _anthropic("anthropic-test", model=model)
     with provider_entry("anthropic-test", {"sdk": "anthropic", "operator_channel": "system"}):
         assert resolve_operator_channel(client) == "system"
 
 
-@pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-4-20250514",
+        "claude-3-5-haiku-latest",
+    ],
+)
 def test_anthropic_models_without_midturn_system_forced_off(model):
-    """A provider entry is coarser than the feature: these 400 on the role."""
+    """A provider entry is coarser than the feature: these 400 on the role.
+
+    A custom model can name any of them on the official host.
+    """
     client = _anthropic("anthropic-test", model=model)
     with provider_entry("anthropic-test", {"sdk": "anthropic", "operator_channel": "system"}):
         assert resolve_operator_channel(client) is None
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [None, "", "claude-opus", "claude-opus-5-5-fast", "Claude-Opus-5-5", "gpt-5.6"],
+)
+def test_an_id_that_names_no_claude_generation_fails_closed(model_id):
+    assert anthropic_serves_midturn_system(None, model_id) is False
 
 
 def test_zai_resolves_system_on_the_model_that_reads_it():

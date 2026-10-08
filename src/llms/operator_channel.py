@@ -74,13 +74,13 @@ another endpoint while keeping its provider key. Config can only turn a channel
   probe is the only evidence that an endpoint serves the role rather than
   silently rewriting it.
 - ``"system"`` additionally requires a model the host serves it on. Which models
-  those are is per host: ``api.anthropic.com`` splits its own fleet
-  (:data:`_ANTHROPIC_MIDTURN_SYSTEM_MODELS`; Sonnet 4.6 and Haiku return ``role
-  'system' is not supported on this model``), the compatible hosts serve it on
-  every model, and GLM serves it on :data:`_ZAI_MIDTURN_SYSTEM_MODELS` only
+  those are is per host: ``api.anthropic.com`` serves it from Opus 4.8 on
+  (:data:`_ANTHROPIC_MIDTURN_SYSTEM_SINCE`) and answers every earlier model with
+  ``role 'system' is not supported on this model``, the compatible hosts serve it
+  on every model, and GLM serves it on :data:`_ZAI_MIDTURN_SYSTEM_MODELS` only
   (``glm-5.3-flash`` answers 200 but reads the entry as a user message, which is
-  worse than a 400). Unknown model ids fail closed onto the user-message
-  fallback.
+  worse than a 400). An id the host's rule cannot place fails closed onto the
+  user-message fallback.
 
 The Anthropic wire form also carries placement rules the caller must honor: a
 mid-conversation system message has to follow a user message (or an assistant
@@ -123,21 +123,17 @@ RUNTIME_CONTEXT_SOURCE = "runtime_context"
 _ANTHROPIC_HOST = "api.anthropic.com"
 _OFFICIAL_OPENAI_HOST = "api.openai.com"
 
-#: Anthropic models that accept ``role: "system"`` inside ``messages``. Sonnet
-#: 4.6, Haiku, and everything before Opus 4.8 reject it with a 400.
-_ANTHROPIC_MIDTURN_SYSTEM_MODELS = frozenset(
-    {
-        "claude-opus-5-5",
-        "claude-opus-5",
-        "claude-opus-4-8",
-        "claude-sonnet-5-5",
-        "claude-sonnet-5",
-        "claude-fable-5",
-        "claude-fable-5-1",
-        "claude-mythos-5",
-        "claude-mythos-5-1",
-    }
-)
+#: The first Claude generation, as ``(major, minor)``, that accepts
+#: ``role: "system"`` inside ``messages`` on the official host: Opus 4.8. Every
+#: model released since does, and every earlier one the host still serves answers
+#: 400. A cutoff rather than a list, so a new release needs no edit here. It
+#: stays because a custom model can still name a Claude 4 id the host refuses.
+_ANTHROPIC_MIDTURN_SYSTEM_SINCE = (4, 8)
+
+#: ``claude-<family>-<major>[-<minor>]``, matched once the date suffix is gone.
+#: The pair is compared across families because the line falls in the same place
+#: for all of them: every id below 4.8 refuses the role, whatever its family.
+_CLAUDE_GENERATION = re.compile(r"claude-[a-z]+-(\d+)(?:-(\d+))?")
 
 #: Third-party hosts speaking the Anthropic Messages protocol that were proven
 #: on live calls to place the entry at its own position, read it as the newest
@@ -355,7 +351,13 @@ def _in_allowlist(model_id: Any, allowed: frozenset[str]) -> bool:
 
 
 def _accepts_midturn_system(model_id: Any) -> bool:
-    return _in_allowlist(model_id, _ANTHROPIC_MIDTURN_SYSTEM_MODELS)
+    if not isinstance(model_id, str):
+        return False
+    generation = _CLAUDE_GENERATION.fullmatch(_DATE_SUFFIX.sub("", model_id))
+    if generation is None:
+        return False
+    major, minor = generation.groups(default="0")
+    return (int(major), int(minor)) >= _ANTHROPIC_MIDTURN_SYSTEM_SINCE
 
 
 def _any_model(_model_id: Any) -> bool:
