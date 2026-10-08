@@ -1125,7 +1125,7 @@ class TestGeneratedFrontendModule:
             "export const MEMO_INDEX_FILENAME = 'memo.md';",
             "  'home/workspace/',",
             "  'home/daytona/',",
-            "  '.agents/user/profile': ['portfolio.json', 'watchlist.json', 'preference.json'],",
+            "  '.agents/user/profile': ['portfolio.json', 'watchlist.json', 'preference.json', 'user.json'],",
             "export const AUTOMATIONS_DIR = '.agents/user/automations';",
             "export const USER_DATA_DIRS = [\n  '.agents/user/profile',\n  '.agents/user/automations',\n] as const;",
             # One file per automation, under a name the server also checks.

@@ -42,7 +42,12 @@ WORKSPACE = {
 ROOT = "/home/workspace"
 AUTOMATIONS = ".agents/user/automations/morning-brief.json"
 PORTFOLIO = ".agents/user/profile/portfolio.json"
-PROFILE = [PORTFOLIO, ".agents/user/profile/watchlist.json", ".agents/user/profile/preference.json"]
+PROFILE = [
+    PORTFOLIO,
+    ".agents/user/profile/watchlist.json",
+    ".agents/user/profile/preference.json",
+    ".agents/user/profile/user.json",
+]
 CATALOG = {**dict.fromkeys(PROFILE, UserDataBackend), AUTOMATIONS: AutomationsBackend}
 
 

@@ -27,6 +27,7 @@ from ptc_agent.agent.backends.user_data import (
     PORTFOLIO_FILE,
     PREFERENCE_FILE,
     README_FILE,
+    USER_FILE,
     WATCHLIST_FILE,
     UserDataBackend,
     _README_CONTENT,
@@ -40,6 +41,7 @@ PREFIX = "/home/workspace/.agents/user/profile/"
 PORTFOLIO_PATH = f"{PREFIX}{PORTFOLIO_FILE}"
 WATCHLIST_PATH = f"{PREFIX}{WATCHLIST_FILE}"
 PREFERENCE_PATH = f"{PREFIX}{PREFERENCE_FILE}"
+USER_PATH = f"{PREFIX}{USER_FILE}"
 README_PATH = f"{PREFIX}{README_FILE}"
 USER = "user-1"
 IO = "src.server.services.profile_files.io"
@@ -92,6 +94,7 @@ def mock_io():
         io.fetch_portfolio_for_user = AsyncMock(return_value=[])
         io.fetch_watchlist_for_user = AsyncMock(return_value=([], {}))
         io.fetch_preferences_for_user = AsyncMock(return_value=None)
+        io.fetch_user_for_user = AsyncMock(return_value=None)
         io.write_portfolio_diff = AsyncMock()
         io.write_watchlist_diff = AsyncMock()
         io.write_preferences = AsyncMock()
@@ -103,6 +106,14 @@ def prefs_cache(monkeypatch) -> AsyncMock:
     mock = AsyncMock()
     monkeypatch.setattr(profile_files.user_db, "invalidate_user_prefs_cache", mock)
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _after_commit(monkeypatch) -> None:
+    """What a save that wrote runs next reaches Redis and the database, which
+    these tests fake no further than the save's own connection."""
+    monkeypatch.setattr(profile_files.user_db, "invalidate_user_profile_cache", AsyncMock())
+    monkeypatch.setattr(profile_files, "maybe_complete_onboarding", AsyncMock(return_value=False))
 
 
 def _serve(mock_io, version: str, content: str = '{"holdings": []}\n', file: str = PORTFOLIO_FILE) -> None:
@@ -521,7 +532,8 @@ class TestGlobGrep:
         assert PORTFOLIO_PATH in results
         assert WATCHLIST_PATH in results
         assert PREFERENCE_PATH in results
-        assert len(results) == 3
+        assert USER_PATH in results
+        assert len(results) == 4
 
     @pytest.mark.asyncio
     async def test_glob_outside_prefix_empty(self, backend):
@@ -534,16 +546,19 @@ class TestGlobGrep:
         mock_io.fetch_portfolio_for_user = AsyncMock(return_value=[])
         mock_io.fetch_watchlist_for_user = AsyncMock(return_value=([], {}))
         mock_io.fetch_preferences_for_user = AsyncMock(return_value=None)
+        mock_io.fetch_user_for_user = AsyncMock(return_value=None)
         # serialize_* must include __version__ since _read_serialized extracts
         # it from the payload before serializing to JSON.
         mock_io.serialize_portfolio = MagicMock(return_value={"__version__": "v1"})
         mock_io.serialize_watchlist = MagicMock(return_value={"__version__": "v1"})
         mock_io.serialize_preferences = MagicMock(return_value={"__version__": "v1"})
+        mock_io.serialize_user = MagicMock(return_value={"__version__": "v1"})
         # Return JSON content with a pattern in the portfolio file only
         mock_io.serialize_json = MagicMock(side_effect=[
             '{"holdings":[{"symbol":"AAPL"}]}',
             '{"watchlists":[]}',
             '{"prefs":{}}',
+            '{"name":null}',
         ])
 
         results = await backend.agrep_rich("AAPL", path=PREFIX)
@@ -601,7 +616,7 @@ class TestReadme:
     async def test_glob_json_excludes_readme(self, backend):
         results = await backend.aglob_paths("*.json", PREFIX)
         assert README_PATH not in results
-        assert len(results) == 3
+        assert len(results) == 4
 
     @pytest.mark.asyncio
     async def test_aread_range_works(self, backend):
