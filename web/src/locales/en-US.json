@@ -1551,6 +1551,7 @@
     "errorUpstreamHeadline": "The model provider returned an error",
     "errorUpstreamHeadlineStatus": "The model provider returned an error ({{status}})",
     "errorInternalHeadline": "Something went wrong on our end",
+    "autoRetryExhausted": "This reply didn't go through after a few tries. Try again in a moment.",
     "errorHintApiKey": "Check that your API key is correct and hasn't been revoked.",
     "errorHintModelAccess": "Confirm your plan or subscription allows access to this model.",
     "errorHintProviderStatus": "Check the provider's status page for ongoing incidents.",

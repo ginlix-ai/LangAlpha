@@ -1549,6 +1549,7 @@
     "errorUpstreamHeadline": "模型提供商返回错误",
     "errorUpstreamHeadlineStatus": "模型提供商返回错误 ({{status}})",
     "errorInternalHeadline": "服务内部出错",
+    "autoRetryExhausted": "多次尝试后回复仍未完成，请稍后重试。",
     "errorHintApiKey": "请确认 API 密钥正确且未被撤销。",
     "errorHintModelAccess": "请确认您的套餐或订阅允许访问此模型。",
     "errorHintProviderStatus": "请查看提供商状态页，了解是否存在服务中断。",

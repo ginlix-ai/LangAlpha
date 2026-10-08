@@ -109,7 +109,9 @@ export async function sendChatMessageStream(
  * (v4 attempt chain). The backend validates the target is still the latest
  * attempt and resolves the retry checkpoint itself — no client-side
  * checkpoint fetch, no fork/truncation. Streams the same SSE contract as a
- * normal send.
+ * normal send. `runId` names the failed run, so the server refuses it (409)
+ * rather than retry a different turn's attempt. `additionalContext` is the
+ * failed send's, which the server uses only when that message runs again.
  */
 export async function sendRetryStream(
   workspaceId: string,
@@ -121,12 +123,16 @@ export async function sendRetryStream(
   onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
   signal: AbortSignal | null = null,
   requestKey: string | null = null,
+  runId: string | null = null,
+  additionalContext: Record<string, unknown>[] | null = null,
 ) {
   const body: Record<string, unknown> = { workspace_id: workspaceId };
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
   if (fastMode != null) body.fast_mode = fastMode;
   if (requestKey) body.request_key = requestKey;
+  if (runId) body.run_id = runId;
+  if (additionalContext) body.additional_context = additionalContext;
   return await postSSEStream(`/api/v1/threads/${threadId}/retry`, body, { onEvent, onRunIdResolved, signal });
 }
 
