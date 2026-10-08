@@ -32,7 +32,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -468,8 +468,8 @@ async def icon_for_source(source: str) -> BrandIcon | None:
     Three spellings arrive here and each announces itself: a ``data:`` URI
     carries the bytes, an absolute URL names one file to fetch, and anything
     else is a bare host meaning "read this site and find its mark". A server
-    describing itself in the handshake may use any of the three; a bundle or a
-    brokerage only ever names a host.
+    describing itself in the handshake may use any of the three; a bundle names
+    a host, and a brokerage a host and sometimes a file before it.
 
     Reading the prefix beats carrying a kind field beside the value, because
     the value already had to be unambiguous to be resolvable at all.
@@ -542,15 +542,23 @@ async def icon_response_for_handle(handle: str) -> Response:
     return await icon_response(source if isinstance(source, str) else None)
 
 
-async def icon_response(source: str | None) -> Response:
-    """``source``'s mark as an HTTP response, or a 404 that is safe to cache.
+async def _first_mark(sources: Iterable[str | None]) -> BrandIcon | None:
+    for source in sources:
+        if source and (icon := await icon_for_source(source)) is not None:
+            return icon
+    return None
+
+
+async def icon_response(*sources: str | None) -> Response:
+    """The first mark ``sources`` name as an HTTP response, or a cacheable 404.
 
     Every brand-art route answers identically and differs only in how it finds
     the name, so the answer lives here rather than once per router. 404 is an
     ordinary outcome, not a fault: a vendor may publish no usable mark, and the
-    caller draws its own stand-in.
+    caller draws its own stand-in. Later sources are fallbacks, for a vendor
+    whose better art lives at an address that may one day move.
     """
-    icon = await icon_for_source(source) if source else None
+    icon = await _first_mark(sources)
     if icon is None:
         return Response(
             status_code=404, headers={"Cache-Control": _MISS_CACHE, **_ART_SAFETY}

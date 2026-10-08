@@ -51,6 +51,15 @@ class Brokerage:
     # previous one on a new grant, which makes connecting here destructive to a
     # connection the user may still be relying on somewhere else.
     exclusive_connection: bool = False
+    # A file of the broker's own art, for a broker whose site declares only a
+    # mark too small to draw sharply. Asked before the site, which stays the
+    # fallback if the file ever moves.
+    icon: str | None = None
+
+    @property
+    def mark_sources(self) -> tuple[str, ...]:
+        """Where the broker's mark is looked for, best first."""
+        return (self.icon, self.site) if self.icon else (self.site,)
 
 
 BROKERAGES: tuple[Brokerage, ...] = (
@@ -96,6 +105,9 @@ BROKERAGES: tuple[Brokerage, ...] = (
         label="moomoo",
         url="https://mcp.moomoo.com/mcp",
         site="moomoo.com",
+        # The site declares only a 32px favicon. This is the same bull as
+        # moomoo's app icon, at 400px, from the CDN the site itself loads.
+        icon="https://cdn.futustatic.com/moomoo_common/dist/img/mm_logo-3fce2..png",
         description=(
             "moomoo brokerage account: balances, positions, and order history, "
             "real-time quotes and order book, option chains and volatility, "

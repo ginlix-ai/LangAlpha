@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import time
 
 import pytest
@@ -404,7 +405,7 @@ class TestAPortThatIsNotAPort:
 
 
 class _Cache:
-    """Redis as a dict, with the lock a refresh takes."""
+    """Redis as a dict, with the locks a refresh or a warm-up takes."""
 
     def __init__(self, entries=None, *, locked=False):
         self.entries = dict(entries or {})
@@ -695,3 +696,68 @@ class TestAStoredMarkIsServedWhileItRefreshes:
         assert await brand_icons.icon_for_site("vendor.test") is None
         assert cache.entries[SITE_KEY]["content"] is None
         assert cache.ttls[SITE_KEY] == brand_icons._MISS_KEEP
+
+
+class TestABrokerMarkFallsBackToItsSite:
+    """A broker may name a file of its own art ahead of its site.
+
+    moomoo's site declares only a 32px favicon, so the sharp mark is a file on
+    its CDN, under a name that carries a content hash and so can change. When
+    it stops resolving, the site's own mark is still a mark.
+    """
+
+    FILE = "https://cdn.vendor.test/logo-1a2b.png"
+
+    @pytest.mark.asyncio
+    async def test_the_named_file_comes_first(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: _Cache())
+        _resolving(monkeypatch, "_fetch_icon", NEW_MARK)
+        site = _resolving(monkeypatch, "_from_site", OLD_MARK)
+
+        response = await icon_response(self.FILE, "vendor.test")
+
+        assert response.body == NEW_MARK
+        assert site == []
+
+    @pytest.mark.asyncio
+    async def test_a_file_that_moved_falls_back_to_the_site(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: _Cache())
+        _resolving(monkeypatch, "_fetch_icon", None)
+        _resolving(monkeypatch, "_from_site", OLD_MARK)
+
+        response = await icon_response(self.FILE, "vendor.test")
+
+        assert response.status_code == 200
+        assert response.body == OLD_MARK
+
+    @pytest.mark.asyncio
+    async def test_a_file_gone_for_a_week_gives_way_to_the_site(self, monkeypatch):
+        from src.server.services import brand_icons
+
+        file_key = "brand-icon:v1:url:" + hashlib.sha256(self.FILE.encode()).hexdigest()
+        week = brand_icons._KEEP_UNFOUND
+        cache = _Cache(
+            {
+                file_key: _stored(NEW_MARK, fresh_for=-1, found_ago=week + 1),
+                SITE_KEY: _stored(OLD_MARK, fresh_for=3600),
+            }
+        )
+        monkeypatch.setattr(brand_icons, "get_cache_client", lambda: cache)
+        _resolving(monkeypatch, "_fetch_icon", None)
+
+        first = await icon_response(self.FILE, "vendor.test")
+        await _settle()
+        then = await icon_response(self.FILE, "vendor.test")
+
+        # Served while the file is re-checked, then the site from there on.
+        assert first.body == NEW_MARK
+        assert then.body == OLD_MARK
+
+    def test_moomoo_asks_for_its_app_icon_before_its_site(self):
+        moomoo = next(b for b in BROKERAGES if b.name == "moomoo")
+        assert moomoo.mark_sources == (moomoo.icon, "moomoo.com")
+        assert moomoo.icon.startswith("https://")

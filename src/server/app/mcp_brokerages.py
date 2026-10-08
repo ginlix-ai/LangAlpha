@@ -161,7 +161,7 @@ async def set_brokerage_enabled(
 
 @router.get("/brokerages/{name}/icon")
 async def get_brokerage_icon(name: str) -> Response:
-    """The broker's own logo, proxied from their site.
+    """The broker's own logo, proxied from where the broker publishes it.
 
     Unauthenticated because it has nothing to authenticate: the only input is
     a name this build ships, so the answer is the same public logo for every
@@ -175,4 +175,4 @@ async def get_brokerage_icon(name: str) -> Response:
     a page full of rows does not re-ask on every render.
     """
     brokerage = brokerage_by_name(name)
-    return await icon_response(brokerage.site if brokerage else None)
+    return await icon_response(*(brokerage.mark_sources if brokerage else ()))
