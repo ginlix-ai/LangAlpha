@@ -24,8 +24,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from ptc_agent.core.sandbox.assets import _read_unified_manifest
+from src.server.database.conversation import ThreadPrefixes
 from src.server.database.workspace_file import WorkspaceSyncBusy
 from src.server.services.persistence import restore
 from src.server.services.persistence.resolve import FileBytesUnavailable
@@ -996,12 +997,16 @@ async def test_maybe_restore_treats_an_unreadable_manifest_as_a_missing_guard(mo
     restore_flag.assert_not_awaited()
 
 
+def _kept(prefixes: set[str]) -> ThreadPrefixes:
+    return ThreadPrefixes(all=frozenset(prefixes), open=frozenset(prefixes))
+
+
 @pytest.mark.asyncio
 async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock():
     """Two workers' bring-ups can restore the same folder at once, and a row
     sent twice would undo an edit or a delete made in between, so each batch
     looks again under the lock, at its own paths, before it transfers."""
-    base = f"{restore.DEFERRED_RESTORE_DIR}/abcd1234"
+    base = f"{WorkspaceLayout.LARGE_TOOL_RESULTS_DIR}/abcd1234"
     rows = [_file(f"{base}/a.txt", "aaaaa"), _file(f"{base}/b.txt", "bbbbb")]
     probes = iter(["", f"f 5 {LAYOUT.join(base, 'a.txt')}\n"])
     commands = []
@@ -1014,9 +1019,9 @@ async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock(
     sandbox.runtime.exec = AsyncMock(side_effect=probe)
     fetched = []
 
-    async def get_files(_workspace_id, *, paths=None, **_kw):
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
         if paths is None:
-            return rows
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
         fetched.append(paths)
         return [r for r in rows if r["file_path"] in paths]
 
@@ -1031,7 +1036,7 @@ async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock(
         patch.object(restore, "_transfer_rows", transfer),
     ):
         result = await restore.restore_deferred(
-            "ws-1", sandbox, layout=LAYOUT, live_short_ids={"abcd1234"}
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
         )
 
     assert fetched == [[f"{base}/b.txt"]]
@@ -1042,10 +1047,40 @@ async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock(
 
 
 @pytest.mark.asyncio
+async def test_a_deferred_pass_leaves_a_note_the_turn_already_rewrote():
+    """The pass runs beside the first turn, which rewrites notes at fixed paths
+    without the sync lock. A note there at another size than its row's is that
+    later write, and sending the backup's copy over it would undo it."""
+    note = WorkspaceLayout.scratchpad_subdir("abcd1234", "note", "plan.md")
+    rows = [_file(note, "the plan as backed up")]
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock()
+
+    async def get_files(_workspace_id, *, under=None, **_kw):
+        return [r for r in rows if r["file_path"].startswith(under + "/")]
+
+    transfer = AsyncMock()
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "_transfer_rows", transfer),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1",
+            sandbox,
+            layout=LAYOUT,
+            kept=_kept({"abcd1234"}),
+            inventory=restore.parse_deferred(f"f 7 {note}\n"),
+        )
+
+    transfer.assert_not_awaited()
+    assert result == {"restored": 0, "errors": 0, "skipped": 1, "done": True}
+
+
+@pytest.mark.asyncio
 async def test_a_deferred_batch_whose_probe_failed_sends_nothing():
     """A timed-out exec comes back empty, which would read as every path
     missing and send the backup over what the sandbox holds."""
-    base = f"{restore.DEFERRED_RESTORE_DIR}/abcd1234"
+    base = f"{WorkspaceLayout.LARGE_TOOL_RESULTS_DIR}/abcd1234"
     rows = [_file(f"{base}/a.txt", "aaaaa")]
     probes = iter([MagicMock(stdout="", exit_code=0), MagicMock(stdout="", exit_code=-1)])
     sandbox = _mock_sandbox()
@@ -1057,13 +1092,13 @@ async def test_a_deferred_batch_whose_probe_failed_sends_nothing():
 
     transfer = AsyncMock()
     with (
-        patch.object(restore, "get_files_for_workspace", AsyncMock(return_value=rows)),
+        patch.object(restore, "get_files_for_workspace", AsyncMock(side_effect=[rows, []])),
         patch.object(restore, "workspace_sync_lock", lock),
         patch.object(restore, "_transfer_rows", transfer),
         pytest.raises(RuntimeError, match="probe failed"),
     ):
         await restore.restore_deferred(
-            "ws-1", sandbox, layout=LAYOUT, live_short_ids={"abcd1234"}
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
         )
 
     transfer.assert_not_awaited()
@@ -1081,7 +1116,7 @@ async def test_a_deferred_pass_given_an_inventory_does_not_probe_the_tree_again(
             "ws-1",
             sandbox,
             layout=LAYOUT,
-            live_short_ids=set(),
+            kept=_kept(set()),
             inventory=restore.parse_deferred("#done\n"),
         )
 

@@ -9,6 +9,7 @@ import hashlib
 import logging
 import shlex
 import uuid
+from typing import TYPE_CHECKING
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -52,7 +53,7 @@ from src.server.services.persistence.resolve import (
 from src.server.services.user_skills.reconcile import RECONCILE_TIMEOUT_SECONDS
 from src.server.services.persistence.transfer import (
     DEFERRED_MARKER,
-    DEFERRED_RESTORE_DIR,
+    DEFERRED_RESTORE_DIRS,
     SYNC_MARKER_NAME,
     transfer_mode,
     INPROCESS_MAX_INFLIGHT_BYTES,
@@ -64,6 +65,9 @@ from src.server.services.persistence.transfer import (
 )
 from src.utils.storage import get_signed_url
 
+if TYPE_CHECKING:
+    from src.server.database.conversation import ThreadPrefixes
+
 # Relayed restore uploads in flight. A restore holds each file's bytes in this
 # process exactly as a relayed backup does: _stage_relayed_file resolves the
 # whole row before it uploads. So this is a count only, and what those files
@@ -71,12 +75,12 @@ from src.utils.storage import get_signed_url
 RESTORE_UPLOAD_CONCURRENCY = 16
 
 # The deferred pass takes the sync lock per batch, so a backup or a strict
-# caller waits for one batch rather than for every evicted result.
+# caller waits for one batch rather than for every deferred file.
 DEFERRED_BATCH_BYTES = 64 * 1024 * 1024
 DEFERRED_BATCH_ROWS = 256
 # A batch looks again at its own paths, passed to one ``find`` in the command
 # string; a command string past 128 KiB is refused by the kernel, so a batch
-# whose quoted paths pass this looks at the whole deferred dir instead.
+# whose quoted paths pass this looks at the whole deferred dirs instead.
 _RECHECK_ARGS_MAX = 64 * 1024
 
 logger = logging.getLogger(__name__)
@@ -222,12 +226,12 @@ async def restore_to_sandbox(
 async def _restore_locked(
     workspace_id: str, sandbox: Any, conn: Any, layout: WorkspaceLayout
 ) -> dict[str, Any]:
-    # Evicted results come afterwards, in restore_deferred.
+    # Evicted results and scratchpads come afterwards, in restore_deferred.
     rows = await get_files_for_workspace(
         workspace_id,
         include_content=True,
         all_kinds=True,
-        outside=(DEFERRED_RESTORE_DIR, *MOUNTED_AGENT_SUBDIRS),
+        outside=(*DEFERRED_RESTORE_DIRS, *MOUNTED_AGENT_SUBDIRS),
         conn=conn,
     )
 
@@ -901,7 +905,7 @@ def _deferred_batches(due: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 
 @dataclass(frozen=True)
 class DeferredInventory:
-    """What the sandbox held under the deferred dir, by path, when probed.
+    """What the sandbox held under the deferred dirs, by path, when probed.
 
     ``present`` is None when the marker was there: an earlier pass finished
     on this sandbox.
@@ -914,11 +918,13 @@ def deferred_probe_script(layout: WorkspaceLayout) -> str:
     """The shell that takes a ``DeferredInventory``, for a caller to run inside
     a script of its own and hand back through ``parse_deferred``."""
     marker = shlex.quote(layout.join(DEFERRED_MARKER))
-    base = shlex.quote(layout.join(DEFERRED_RESTORE_DIR))
-    return (
-        f"if [ -e {marker} ]; then echo '#done'; "
-        f"else find {base} -printf '%y %s %P\\n' 2>/dev/null; fi; true"
+    # Each find prints its own dir's workspace-relative name, which has no
+    # space and no ``%``, before the path beneath it.
+    finds = "; ".join(
+        f"find {shlex.quote(layout.join(d))} -printf '%y %s {d}/%P\\n' 2>/dev/null"
+        for d in DEFERRED_RESTORE_DIRS
     )
+    return f"if [ -e {marker} ]; then echo '#done'; else {finds}; fi; true"
 
 
 def parse_deferred(stdout: str) -> DeferredInventory:
@@ -928,11 +934,10 @@ def parse_deferred(stdout: str) -> DeferredInventory:
     present: dict[str, tuple[str, int]] = {}
     for line in lines:
         parts = line.split(" ", 2)
-        if len(parts) < 2 or not parts[1].isdigit():
+        if len(parts) < 3 or not parts[1].isdigit():
             continue
-        rel = parts[2] if len(parts) == 3 else ""
-        path = f"{DEFERRED_RESTORE_DIR}/{rel}" if rel else DEFERRED_RESTORE_DIR
-        present[path] = (parts[0], int(parts[1]))
+        # A dir itself prints with an empty tail: ``.agents/scratchpad/``.
+        present[parts[2].removesuffix("/")] = (parts[0], int(parts[1]))
     return DeferredInventory(present)
 
 
@@ -982,10 +987,13 @@ async def _batch_present(
     return present
 
 
-def _result_thread(path: str) -> str | None:
-    """The thread prefix a deferred row sits under, if it sits under one."""
-    head = path[len(DEFERRED_RESTORE_DIR) :].lstrip("/").split("/", 1)[0]
-    return head if THREAD_DIR_NAME.match(head) else None
+def _kept(path: str, kept: "ThreadPrefixes") -> bool:
+    """Whether a deferred row's thread keeps it; a row under no thread is kept."""
+    for base in DEFERRED_RESTORE_DIRS:
+        if path == base or path.startswith(base + "/"):
+            head = path[len(base) :].lstrip("/").split("/", 1)[0]
+            return not THREAD_DIR_NAME.match(head) or head in kept.keeps(base)
+    return True
 
 
 def _in_place(row: dict[str, Any], present: dict[str, tuple[str, int]]) -> bool:
@@ -993,7 +1001,7 @@ def _in_place(row: dict[str, Any], present: dict[str, tuple[str, int]]) -> bool:
     have = present.get(row["file_path"])
     if kind == "dir":
         return have is not None and have[0] == "d"
-    return kind == "file" and have == ("f", int(row.get("file_size") or 0))
+    return kind == "file" and have is not None and have[0] == "f"
 
 
 async def restore_deferred(
@@ -1001,18 +1009,21 @@ async def restore_deferred(
     sandbox: Any,
     *,
     layout: WorkspaceLayout,
-    live_short_ids: set[str],
+    kept: "ThreadPrefixes",
     lock_wait: str = SYNC_LOCK_WAIT,
     inventory: DeferredInventory | None = None,
 ) -> dict[str, Any]:
-    """The second restore pass: the evicted results of live threads this sandbox lacks.
+    """The second restore pass: the evicted results and scratchpads of kept
+    threads this sandbox lacks.
 
-    A row whose file is already there at its size is skipped, and each batch
+    A row whose file is already there is skipped whatever its size: the pass
+    runs beside the first turn, and a restore places only whole copies, so a
+    file that differs from its row was written after the backup. Each batch
     looks again at its own paths under its lock: another worker's bring-up
     may be restoring the same folder, and a second copy would undo an edit or
     a delete made in between. The marker is written only when every row came
     back, and ``done`` says the sandbox has it; until then backups keep these
-    rows (see DEFERRED_RESTORE_DIR) and the next bring-up resumes. A lock held
+    rows (see DEFERRED_RESTORE_DIRS) and the next bring-up resumes. A lock held
     past ``lock_wait`` raises WorkspaceSyncBusy with the batches before it
     kept. ``inventory`` is a probe the caller already took.
     """
@@ -1026,13 +1037,16 @@ async def restore_deferred(
         result["done"] = True
         return result
 
-    rows = await get_files_for_workspace(
-        workspace_id, all_kinds=True, under=DEFERRED_RESTORE_DIR
-    )
+    rows = [
+        row
+        for base in DEFERRED_RESTORE_DIRS
+        for row in await get_files_for_workspace(
+            workspace_id, all_kinds=True, under=base
+        )
+    ]
     due = []
     for row in rows:
-        thread = _result_thread(row["file_path"])
-        if thread is not None and thread not in live_short_ids:
+        if not _kept(row["file_path"], kept):
             continue
         if _in_place(row, present):
             result["skipped"] += 1
@@ -1070,7 +1084,7 @@ async def restore_deferred(
     if result["errors"]:
         logger.warning(
             f"Deferred restore for workspace {workspace_id} left "
-            f"{result['errors']} evicted result(s) unrestored; the next "
+            f"{result['errors']} deferred file(s) unrestored; the next "
             f"bring-up retries and backups keep their rows until then"
         )
         return result

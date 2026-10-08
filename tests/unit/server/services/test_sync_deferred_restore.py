@@ -19,17 +19,19 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from src.server.services.persistence import backup, transfer
-from src.server.services.persistence.transfer import DEFERRED_MARKER, DEFERRED_RESTORE_DIR
+from src.server.services.persistence.transfer import DEFERRED_MARKER
 
 WS = "ws-deferred-restore"
 LAYOUT = SandboxLayout.for_root("/home/workspace").for_workspace("deferred-ab12")
 CLOCK = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
 MTIME_NS = 1_700_000_000_000_000_000
 
-THREAD_DIR = f"{DEFERRED_RESTORE_DIR}/a1b2c3d4"
+RESULTS_DIR = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR
+THREAD_DIR = f"{RESULTS_DIR}/a1b2c3d4"
 EVICTED = f"{THREAD_DIR}/call_1.txt"
+NOTE = WorkspaceLayout.scratchpad_subdir("a1b2c3d4", "note", "plan.md")
 GONE = "reports/gone.txt"
 
 
@@ -83,9 +85,10 @@ def _manifest() -> _Manifest:
     return _Manifest([
         _file("notes.txt", "n"),
         _dir(".agents"),
-        _dir(DEFERRED_RESTORE_DIR),
+        _dir(RESULTS_DIR),
         _dir(THREAD_DIR),
         _file(EVICTED, "e"),
+        _file(NOTE, "p"),
         _file(GONE, "g"),
     ])
 
@@ -134,7 +137,7 @@ async def test_evicted_results_missing_before_the_marker_keep_their_rows():
 
     result, mark = await _sync(manifest, [_file("notes.txt", "n"), _dir(".agents")])
 
-    assert {DEFERRED_RESTORE_DIR, THREAD_DIR, EVICTED} <= set(manifest.rows)
+    assert {RESULTS_DIR, THREAD_DIR, EVICTED, NOTE} <= set(manifest.rows)
     # Everything else still prunes.
     assert GONE not in manifest.rows
     assert result.deleted == 1
@@ -153,12 +156,12 @@ async def test_once_the_marker_is_listed_missing_results_prune_and_the_marker_is
         [
             _file("notes.txt", "n"),
             _dir(".agents"),
-            _dir(DEFERRED_RESTORE_DIR),
+            _dir(RESULTS_DIR),
             _file(DEFERRED_MARKER, "m", size=0),
         ],
     )
 
-    assert set(manifest.rows) == {"notes.txt", ".agents", DEFERRED_RESTORE_DIR}
-    assert result.deleted == 3
+    assert set(manifest.rows) == {"notes.txt", ".agents", RESULTS_DIR}
+    assert result.deleted == 4
     assert result.pruned is True
     mark.assert_awaited_once()

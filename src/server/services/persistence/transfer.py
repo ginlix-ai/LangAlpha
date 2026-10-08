@@ -32,6 +32,7 @@ from ptc_agent.core.paths import (
     BACKUP_EXCLUDE_AGENT_SUBDIRS,
     BACKUP_EXCLUDE_DIRS,
     HIDDEN_DIR_NAMES,
+    THREAD_DIRS_SET_ASIDE,
     SandboxLayout,
     WorkspaceLayout,
 )
@@ -72,7 +73,9 @@ EXCLUDE_REL_DIRS: tuple[str, ...] = (
     *BACKUP_EXCLUDE_AGENT_SUBDIRS,
     f"{SKILLS_DIR}/.staging",
 )
-EXCLUDE_REL_DIR_PREFIXES: tuple[str, ...] = (f"{SKILLS_DIR}/.trash-",)
+# The skill reconciler's trash and what a prune set aside: both on their way
+# out, and a copy of either would come back with a restore.
+EXCLUDE_REL_DIR_PREFIXES: tuple[str, ...] = (f"{SKILLS_DIR}/.trash-", THREAD_DIRS_SET_ASIDE)
 # The reconciler's lock file, at its one path; a user's own
 # ``results/.skills-sync.flock`` is a file like any other.
 EXCLUDE_REL_FILES: tuple[str, ...] = (f"{SKILLS_DIR}/.skills-sync.flock",)
@@ -84,19 +87,27 @@ EXCLUDE_BASENAMES: frozenset[str] = frozenset({".DS_Store", "Thumbs.db"})
 
 SYNC_MARKER_NAME = ".file_sync_marker"
 
-# Evicted tool results are most of a long thread's bytes and are read back
-# rarely, so a restore brings them after the rest of the folder rather than
-# before the first turn. Their rows are pruned only once the sandbox holds
-# DEFERRED_MARKER, which that second pass writes when every one came back:
-# until then a missing result is one still on its way, not one deleted.
-# The scan has to list the marker to see it, so no sandbox-side exclusion may
-# cover it; the server drops it from the manifest instead.
-DEFERRED_RESTORE_DIR = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR
-DEFERRED_MARKER = f"{DEFERRED_RESTORE_DIR}/.restored"
+# Evicted tool results are read back rarely, and with the agent's scratchpads
+# they are most of a long thread's bytes, so a restore brings both after the
+# rest of the folder rather than before the first turn. That turn can write a
+# note before the second pass reaches it, so a file the pass finds on the
+# sandbox is left alone: it was written there after the backup. Their rows are
+# pruned only once the sandbox holds DEFERRED_MARKER, which that pass writes
+# when every one came back: until then a missing file is one still on its way,
+# not one deleted. The scan has to list the marker to see it, so no
+# sandbox-side exclusion may cover it; the server drops it from the manifest
+# instead.
+DEFERRED_RESTORE_DIRS: tuple[str, ...] = (
+    WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
+    WorkspaceLayout.SCRATCHPAD_DIR,
+)
+# Where the first deferred dir always had it, so a sandbox restored before
+# the scratchpads were deferred still reads as done.
+DEFERRED_MARKER = f"{WorkspaceLayout.LARGE_TOOL_RESULTS_DIR}/.restored"
 
 
 def is_deferred(path: str) -> bool:
-    return path == DEFERRED_RESTORE_DIR or path.startswith(DEFERRED_RESTORE_DIR + "/")
+    return any(path == d or path.startswith(d + "/") for d in DEFERRED_RESTORE_DIRS)
 
 
 # Bounded by the disk rather than the workspace's history: a scan hashes only
