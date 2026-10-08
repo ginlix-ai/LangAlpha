@@ -205,6 +205,7 @@ class TestBothRolesBindThem:
                 user_id="u",
                 role=role,
             )
+        self.captured = captured
         main = {getattr(t, "name", None): t for t in captured["tools"]}
         inherited = [
             getattr(t, "name", None)
@@ -240,6 +241,29 @@ class TestBothRolesBindThem:
         main, _ = self._ptc_build()
 
         assert "workspace_id" not in main["send_message"].args
+
+    @pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
+    def test_the_prompt_says_how_to_talk_over_chat(self, configured, role):
+        from ptc_agent.agent.middleware.runtime_context.frozen_prompt import (
+            FrozenPromptMiddleware,
+        )
+
+        self._ptc_build(role)
+
+        assert "## Over Chat" in self.captured["system_prompt"]
+        # The prompt an older epoch is sent with keeps the section too.
+        (frozen,) = [
+            m
+            for m in self.captured["middleware"]
+            if isinstance(m, FrozenPromptMiddleware)
+        ]
+        assert "## Over Chat" in frozen._render(not frozen._built)
+
+    def test_the_prompt_has_no_chat_section_by_default(self, monkeypatch):
+        monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "")
+        self._ptc_build()
+
+        assert "## Over Chat" not in self.captured["system_prompt"]
 
 
 # -- what goes out --------------------------------------------------------------

@@ -178,6 +178,7 @@ class PTCAgent:
         files_mounted: bool = False,
         chart_annotation_enabled: bool = True,
         role: AgentRole = "analyst",
+        channels_enabled: bool = False,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
@@ -185,6 +186,9 @@ class PTCAgent:
         guidance) rather than (model), which only splits when a user pins the
         level themselves. The workspace folder varies it too, but a thread
         lives in one workspace, so a thread still reuses its own prefix.
+        ``channels_enabled`` adds the chat-app section; it follows the
+        deployment's messaging service and the turn having a user, neither of
+        which moves between a thread's turns.
         """
         loader = get_loader()
         return loader.get_system_prompt(
@@ -210,6 +214,7 @@ class PTCAgent:
             files_mounted=files_mounted,
             chart_annotation_enabled=chart_annotation_enabled,
             role=role,
+            channels_enabled=channels_enabled,
         )
 
     def _get_tool_summary(self, mcp_registry: MCPRegistry) -> str:
@@ -688,6 +693,7 @@ class PTCAgent:
             legacy_layout=bool(project is not None and project.layout_origin == 3),
             chart_annotation_enabled=chart_annotation,
             role=role,
+            channels_enabled=gates.channels,
         )
         # Read once: the baseline freezes this value per epoch, and the
         # prompt is sent with the frozen one (FrozenPromptMiddleware).
