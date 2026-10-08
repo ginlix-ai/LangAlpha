@@ -17,6 +17,7 @@ from src.server.services.thread_lifecycle_feed import (
     publish_thread_title,
     publish_thread_unarchived,
 )
+from src.server.services.workspace_manager import prune_thread_dirs_soon
 # require_thread_owner is called through the module (auth_api.…) so a single
 # definition-site patch governs every route — a consumer-site patch that stops
 # intercepting after a move would silently bypass auth in tests.
@@ -280,11 +281,7 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
                 pass
 
         if thread_row:
-            from src.server.services.workspace_manager import WorkspaceManager
-
-            manager = WorkspaceManager.current()
-            if manager is not None:
-                manager.prune_thread_dirs_soon(str(thread_row["workspace_id"]))
+            prune_thread_dirs_soon(str(thread_row["workspace_id"]))
 
         await publish_thread_deleted(
             user_id=x_user_id,
@@ -412,6 +409,9 @@ async def update_thread_endpoint(
                 thread_id=thread_id,
                 workspace_id=str(updated_thread["workspace_id"]),
             )
+            if updates["archived"]:
+                # Archiving ends the thread's scratchpad.
+                prune_thread_dirs_soon(str(updated_thread["workspace_id"]))
         return _thread_list_item(updated_thread)
 
     except HTTPException:

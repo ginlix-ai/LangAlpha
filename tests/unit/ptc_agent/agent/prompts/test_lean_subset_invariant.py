@@ -53,11 +53,15 @@ class _PinnedConfig:
 def _render_pair(surface: str) -> tuple[str, str]:
     """Return (detailed, lean) for a surface name."""
     loader = init_loader()
-    if surface in ("ptc", "chief-of-staff"):
+    base, _, scratchpad = surface.partition("+")
+    if base in ("ptc", "chief-of-staff"):
         # No tool_summary: the main agent's roster lives in the baseline now,
         # so the shipped render is the one that points at <mcp-servers>.
-        kwargs = dict(subagent_summary="STUB", crawl_enabled=True)
-        if surface == "chief-of-staff":
+        kwargs = dict(
+            subagent_summary="STUB", crawl_enabled=True,
+            scratchpad_enabled=bool(scratchpad),
+        )
+        if base == "chief-of-staff":
             kwargs["role"] = "chief_of_staff"
         return (
             loader.get_system_prompt(**guidance_template_vars("detailed"), **kwargs),
@@ -87,7 +91,16 @@ def _significant(text: str) -> Counter:
     return Counter(line.strip() for line in text.splitlines() if line.strip())
 
 
-SURFACES = ["ptc", "chief-of-staff", "flash", *SUBAGENTS]
+# "+scratchpad" renders the surface with the feature on; the bare name is the
+# flag-off render every user gets by default.
+SURFACES = [
+    "ptc",
+    "ptc+scratchpad",
+    "chief-of-staff",
+    "chief-of-staff+scratchpad",
+    "flash",
+    *SUBAGENTS,
+]
 
 
 @pytest.mark.parametrize("surface", SURFACES)

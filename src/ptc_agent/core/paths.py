@@ -286,6 +286,11 @@ class WorkspaceLayout:
     # workspace takes it along instead of leaving it flat on the machine.
     THREADS_DIR: ClassVar[str] = ".agents/threads"
     LARGE_TOOL_RESULTS_DIR: ClassVar[str] = ".agents/large_tool_results"
+    # The agent's own per-thread working files, when the scratchpad feature
+    # is on. Unlike thread scratch it is backed up, and it leaves the sandbox
+    # when its thread is archived.
+    SCRATCHPAD_DIR: ClassVar[str] = ".agents/scratchpad"
+    SCRATCHPAD_NOTE_DIR: ClassVar[str] = "note"
     # Rendered from each thread's checkpoint and served by the file mount.
     TRANSCRIPTS_DIR: ClassVar[str] = ".agents/transcripts"
     AGENT_MD_FILE: ClassVar[str] = "agent.md"
@@ -347,6 +352,10 @@ class WorkspaceLayout:
         return self.join(self.LARGE_TOOL_RESULTS_DIR)
 
     @property
+    def scratchpad(self) -> str:
+        return self.join(self.SCRATCHPAD_DIR)
+
+    @property
     def transcripts(self) -> str:
         return self.join(self.TRANSCRIPTS_DIR)
 
@@ -372,6 +381,11 @@ class WorkspaceLayout:
         scratch is regenerable and is not.
         """
         return "/".join((WorkspaceLayout.LARGE_TOOL_RESULTS_DIR, thread_id))
+
+    @staticmethod
+    def scratchpad_subdir(thread_id: str, *parts: str) -> str:
+        """A thread's scratchpad, or something under it, workspace-relative."""
+        return "/".join((WorkspaceLayout.SCRATCHPAD_DIR, thread_id, *parts))
 
     def thread_dir(self, thread_id: str) -> str:
         """One thread's scratch directory inside this folder, absolute."""
@@ -515,9 +529,18 @@ ALWAYS_HIDDEN_BASENAMES: tuple[str, ...] = (
 )
 ALWAYS_HIDDEN_SUFFIXES: tuple[str, ...] = (".pyc",)
 
-#: How a thread's scratch, results and transcript directories are named: the
-#: first 8 characters of its id.
+#: How a thread's scratch, results, scratchpad and transcript directories are
+#: named: the first 8 characters of its id.
 THREAD_DIR_NAME = re.compile(r"^[0-9a-f]{8}$")
+
+#: Where a prune moves dead thread dirs to delete them, workspace-relative;
+#: each prune's folder adds its own suffix. A backup never reads it, so what a
+#: failed delete leaves cannot come back with a restore.
+THREAD_DIRS_SET_ASIDE = f"{WorkspaceLayout.AGENTS_DIR}/.pruned."
+
+#: The per-thread dirs that end when their thread is archived and left idle;
+#: every other one lives as long as its thread.
+ARCHIVE_SCOPED_THREAD_DIRS: tuple[str, ...] = (WorkspaceLayout.SCRATCHPAD_DIR,)
 
 # Not the backup exclusions: these hide harness scratch from the agent's globs,
 # while a backup skips mounted and regenerated trees. Keep them separate.
@@ -526,10 +549,17 @@ THREAD_DIR_NAME = re.compile(r"^[0-9a-f]{8}$")
 # large results. The agent reaches each through a pointer that names its path,
 # so its own broad globs skip them rather than drown project files in copies of
 # them. Matched as a child of .agents, so a project's own threads/ stays visible.
+# The scratchpads are here for the same reason: every thread's working files,
+# which a turn reaches by the path its context names. Membership also keeps a
+# read of one out of provenance, and lets Tier 1 hide an old read of one even
+# when it is the latest: a note is the agent's own working file, corrected in
+# place and read again by path when it matters, not a source a deliverable
+# rests on.
 AGENT_HISTORY_DIRS: tuple[str, ...] = (
     WorkspaceLayout.THREADS_DIR,
     WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
     WorkspaceLayout.TRANSCRIPTS_DIR,
+    WorkspaceLayout.SCRATCHPAD_DIR,
 )
 
 

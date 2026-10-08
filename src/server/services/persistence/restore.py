@@ -5,13 +5,14 @@ transfer is ``direct``; everything else is uploaded from this process.
 """
 
 import asyncio
+import base64
 import hashlib
 import logging
 import shlex
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ptc_agent.agent.middleware.skills.lock import (
     LOCK_FILENAME,
@@ -51,18 +52,24 @@ from src.server.services.persistence.resolve import (
 )
 from src.server.services.user_skills.reconcile import RECONCILE_TIMEOUT_SECONDS
 from src.server.services.persistence.transfer import (
+    DEFERRED_LEDGER,
     DEFERRED_MARKER,
-    DEFERRED_RESTORE_DIR,
+    DEFERRED_RESTORE_DIRS,
     SYNC_MARKER_NAME,
     transfer_mode,
     INPROCESS_MAX_INFLIGHT_BYTES,
     PACK_MAX_BYTES,
     ByteBudget,
     all_unreachable,
+    is_deferred,
+    scratchpad_note_thread,
     pull_direct,
     transfer_timeout_s,
 )
 from src.utils.storage import get_signed_url
+
+if TYPE_CHECKING:
+    from src.server.database.conversation import ThreadPrefixes
 
 # Relayed restore uploads in flight. A restore holds each file's bytes in this
 # process exactly as a relayed backup does: _stage_relayed_file resolves the
@@ -71,12 +78,12 @@ from src.utils.storage import get_signed_url
 RESTORE_UPLOAD_CONCURRENCY = 16
 
 # The deferred pass takes the sync lock per batch, so a backup or a strict
-# caller waits for one batch rather than for every evicted result.
+# caller waits for one batch rather than for every deferred file.
 DEFERRED_BATCH_BYTES = 64 * 1024 * 1024
 DEFERRED_BATCH_ROWS = 256
 # A batch looks again at its own paths, passed to one ``find`` in the command
 # string; a command string past 128 KiB is refused by the kernel, so a batch
-# whose quoted paths pass this looks at the whole deferred dir instead.
+# whose quoted paths pass this looks at the whole deferred dirs instead.
 _RECHECK_ARGS_MAX = 64 * 1024
 
 logger = logging.getLogger(__name__)
@@ -222,14 +229,18 @@ async def restore_to_sandbox(
 async def _restore_locked(
     workspace_id: str, sandbox: Any, conn: Any, layout: WorkspaceLayout
 ) -> dict[str, Any]:
-    # Evicted results come afterwards, in restore_deferred.
+    # Evicted results and the rest of the scratchpads come afterwards, in
+    # restore_deferred.
     rows = await get_files_for_workspace(
         workspace_id,
         include_content=True,
         all_kinds=True,
-        outside=(DEFERRED_RESTORE_DIR, *MOUNTED_AGENT_SUBDIRS),
+        outside=(*DEFERRED_RESTORE_DIRS, *MOUNTED_AGENT_SUBDIRS),
         conn=conn,
     )
+    notes = await _kept_notes(workspace_id, conn)
+    if notes:
+        rows = sorted([*rows, *notes], key=lambda row: row["file_path"])
 
     if rows:
         # Object keys are scoped to the owner; read once for the whole restore.
@@ -293,9 +304,14 @@ async def _transfer_rows(
     *,
     user_id: str,
     layout: WorkspaceLayout,
+    placed: set[str] | None = None,
+    made: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Put manifest rows into the sandbox: direct pulls first, relay for the rest."""
+    """Put manifest rows into the sandbox: direct pulls first, relay for the
+    rest. ``placed`` collects each path the sandbox reported in place, and
+    ``made`` each ``keep_existing`` dir it reported making."""
     result = {"restored": 0, "errors": 0}
+    results: dict[str, dict[str, Any]] = {}
 
     mode = transfer_mode(sandbox)
     structural: list[dict[str, Any]] = []
@@ -358,17 +374,26 @@ async def _transfer_rows(
         # The store would not sign it, or the sandbox could not reach it:
         # both end in the same place, so they join the relay list together.
         relay += [r for r in direct if r["file_path"] in unreachable_paths]
-        _tally_pull(workspace_id, results, result)
+        _tally_pull(workspace_id, results, result, placed)
     elif structural:
         results = await pull_direct(
             sandbox, structural, layout=layout, defer_dir_modes=bool(relay)
         )
-        _tally_pull(workspace_id, results, result)
+        _tally_pull(workspace_id, results, result, placed)
 
+    ours = {p for p, r in results.items() if r.get("made")}
+    if made is not None:
+        made |= ours
     if relay:
-        dirs = [i for i in structural if i.get("kind") == "dir"]
+        # A deferred dir standing before the op above is the turn's, and
+        # keeps its own mode and mtime.
+        dirs = [
+            dict(i, made=True) if i["keep_existing"] else i
+            for i in structural
+            if i.get("kind") == "dir" and (not i["keep_existing"] or i["path"] in ours)
+        ]
         await _restore_relay(
-            user_id, workspace_id, sandbox, relay, result, dirs, layout=layout
+            user_id, workspace_id, sandbox, relay, result, dirs, layout=layout, placed=placed
         )
 
     return result
@@ -544,6 +569,36 @@ async def _signed_pull_items(
     return items, unsigned
 
 
+async def _kept_notes(workspace_id: str, conn: Any) -> list[dict[str, Any]]:
+    """The scratchpad notes that stay, by the rule the deferred rows follow
+    (``_kept``): a kept thread's, and any under a folder no thread names.
+
+    These come in the first pass, not the deferred one: a resumed turn reads
+    its notes by the path its summary names, and a note missing then is
+    written afresh, which the deferred pass would keep over the backup's copy.
+    The deferred pass leaves them alone too, since one the turn deletes before
+    that pass looks would otherwise come back.
+    """
+    from src.server.database.conversation import get_workspace_thread_prefixes
+
+    notes = [
+        row["file_path"]
+        for row in await get_files_for_workspace(
+            workspace_id, all_kinds=True, under=WorkspaceLayout.SCRATCHPAD_DIR, conn=conn
+        )
+        if scratchpad_note_thread(row["file_path"]) is not None
+    ]
+    if not notes:
+        return []
+    kept = await get_workspace_thread_prefixes(workspace_id, conn=conn)
+    paths = [path for path in notes if _kept(path, kept)]
+    if not paths:
+        return []
+    return await get_files_for_workspace(
+        workspace_id, include_content=True, all_kinds=True, paths=paths, conn=conn
+    )
+
+
 def _pull_item(row: dict[str, Any], *, url: str | None) -> dict[str, Any]:
     modified = row.get("sandbox_modified_at")
     micros = datetime_to_micros(modified)
@@ -560,6 +615,7 @@ def _pull_item(row: dict[str, Any], *, url: str | None) -> dict[str, Any]:
         "mode": _mode_int(row.get("permissions"), row.get("kind", "file")),
         "mtime_ns": mtime_ns,
         "symlink_target": row.get("symlink_target"),
+        "keep_existing": is_deferred(row["file_path"]),
     }
 
 
@@ -572,15 +628,21 @@ def _pack_member_item(row: dict[str, Any]) -> dict[str, Any]:
         "sha256": row.get("content_hash"),
         "mode": item["mode"],
         "mtime_ns": item["mtime_ns"],
+        "keep_existing": item["keep_existing"],
     }
 
 
 def _tally_pull(
-    workspace_id: str, results: dict[str, dict[str, Any]], result: dict[str, Any]
+    workspace_id: str,
+    results: dict[str, dict[str, Any]],
+    result: dict[str, Any],
+    placed: set[str] | None = None,
 ) -> None:
     for path, r in results.items():
         if r.get("status") == "ok":
             result["restored"] += 1
+            if placed is not None:
+                placed.add(path)
         else:
             result["errors"] += 1
             logger.warning(
@@ -598,6 +660,7 @@ async def _restore_relay(
     dirs: list[dict[str, Any]] | None = None,
     *,
     layout: WorkspaceLayout,
+    placed: set[str] | None = None,
 ) -> None:
     """Upload file rows from this process and let the runtime place them.
 
@@ -690,7 +753,7 @@ async def _restore_relay(
         result["errors"] += len(file_paths)
         return
     _tally_pull(
-        workspace_id, {p: r for p, r in outcomes.items() if p in file_paths}, result
+        workspace_id, {p: r for p, r in outcomes.items() if p in file_paths}, result, placed
     )
     for path, r in outcomes.items():
         if path not in file_paths and r.get("status") != "ok":
@@ -876,6 +939,35 @@ async def maybe_restore(
     )
 
 
+async def _restamp_dirs(
+    workspace_id: str,
+    sandbox: Any,
+    items: list[dict[str, Any]],
+    *,
+    layout: WorkspaceLayout,
+) -> None:
+    """Stamp the dirs the first batch made, once the last batch has written
+    beneath them, without making again any the turn has removed.
+
+    A failure is logged rather than counted: a retried pass finds these dirs
+    in place and would not stamp them either.
+    """
+    try:
+        outcomes = await pull_direct(sandbox, items, layout=layout)
+    except Exception as e:  # noqa: BLE001 - the files are in place either way
+        logger.warning(
+            f"Could not stamp {len(items)} deferred dir(s) for workspace "
+            f"{workspace_id}: {e}"
+        )
+        return
+    for path, r in outcomes.items():
+        if r.get("status") != "ok":
+            logger.warning(
+                f"Could not stamp {path} for workspace {workspace_id}: "
+                f"{r.get('status')} {r.get('error')}"
+            )
+
+
 def _deferred_batches(due: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     dirs = [r for r in due if r.get("kind") == "dir"]
     batches: list[list[dict[str, Any]]] = []
@@ -901,39 +993,72 @@ def _deferred_batches(due: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 
 @dataclass(frozen=True)
 class DeferredInventory:
-    """What the sandbox held under the deferred dir, by path, when probed.
+    """What the sandbox held under the deferred dirs, by path, when probed,
+    with what an earlier batch placed there.
 
     ``present`` is None when the marker was there: an earlier pass finished
-    on this sandbox.
+    on this sandbox. ``ledgered`` is the part of it the ledger lists.
     """
 
-    present: dict[str, tuple[str, int]] | None
+    present: frozenset[str] | None
+    ledgered: frozenset[str] = frozenset()
 
 
 def deferred_probe_script(layout: WorkspaceLayout) -> str:
     """The shell that takes a ``DeferredInventory``, for a caller to run inside
     a script of its own and hand back through ``parse_deferred``."""
+    # Each find prints its own dir's workspace-relative name, which has no
+    # ``%``, before the path beneath it.
+    finds = "; ".join(
+        f"find {shlex.quote(layout.join(d))} -printf '{d}/%P\\0' 2>/dev/null"
+        for d in DEFERRED_RESTORE_DIRS
+    )
+    return _probe_script(layout, f"{finds}; {_cat_ledger(layout)}")
+
+
+def _probe_script(layout: WorkspaceLayout, listing: str) -> str:
+    """``listing`` unless the marker is there, its NUL-ended paths sent as one
+    line of base64: a name may hold a newline, which a line per path would
+    read as two paths, and the exec output is text a NUL may not survive."""
     marker = shlex.quote(layout.join(DEFERRED_MARKER))
-    base = shlex.quote(layout.join(DEFERRED_RESTORE_DIR))
     return (
         f"if [ -e {marker} ]; then echo '#done'; "
-        f"else find {base} -printf '%y %s %P\\n' 2>/dev/null; fi; true"
+        f"else {{ {listing}; }} | base64 -w0; echo; fi; true"
     )
 
 
+# Printed before the ledger's paths, which, like the finds', all start with
+# the deferred dirs' names, so no path can spell it.
+_LEDGER_START = "#ledger"
+
+
+def _cat_ledger(layout: WorkspaceLayout) -> str:
+    """The shell that prints every path the ledger lists, workspace-relative
+    and NUL-ended, after ``_LEDGER_START``."""
+    return (
+        f"printf '{_LEDGER_START}\\0'; "
+        f"cat {shlex.quote(layout.join(DEFERRED_LEDGER))}/* 2>/dev/null"
+    )
+
+
+def _probed(stdout: str) -> list[str] | None:
+    """The paths a ``_probe_script`` listed, or None when it found the marker."""
+    text = stdout.strip()
+    if text == "#done":
+        return None
+    listed = base64.b64decode(text, validate=True).decode("utf-8", "surrogateescape")
+    return [path for path in listed.split("\0") if path]
+
+
 def parse_deferred(stdout: str) -> DeferredInventory:
-    lines = stdout.splitlines()
-    if lines[:1] == ["#done"]:
+    listed = _probed(stdout)
+    if listed is None:
         return DeferredInventory(None)
-    present: dict[str, tuple[str, int]] = {}
-    for line in lines:
-        parts = line.split(" ", 2)
-        if len(parts) < 2 or not parts[1].isdigit():
-            continue
-        rel = parts[2] if len(parts) == 3 else ""
-        path = f"{DEFERRED_RESTORE_DIR}/{rel}" if rel else DEFERRED_RESTORE_DIR
-        present[path] = (parts[0], int(parts[1]))
-    return DeferredInventory(present)
+    cut = listed.index(_LEDGER_START) if _LEDGER_START in listed else len(listed)
+    # A dir itself prints with an empty tail: ``.agents/scratchpad/``.
+    found = frozenset(path.removesuffix("/") for path in listed[:cut])
+    ledgered = frozenset(path.removesuffix("/") for path in listed[cut + 1 :])
+    return DeferredInventory(found | ledgered, ledgered)
 
 
 async def _probe(sandbox: Any, command: str) -> str:
@@ -946,54 +1071,74 @@ async def _probe(sandbox: Any, command: str) -> str:
     return probe.stdout or ""
 
 
+async def _deferred_inventory(sandbox: Any, layout: WorkspaceLayout) -> DeferredInventory:
+    return parse_deferred(await _probe(sandbox, deferred_probe_script(layout)))
+
+
 async def _deferred_present(
     sandbox: Any, layout: WorkspaceLayout
-) -> dict[str, tuple[str, int]] | None:
-    return parse_deferred(await _probe(sandbox, deferred_probe_script(layout))).present
+) -> frozenset[str] | None:
+    return (await _deferred_inventory(sandbox, layout)).present
 
 
 async def _batch_present(
     sandbox: Any, layout: WorkspaceLayout, batch: list[dict[str, Any]]
-) -> dict[str, tuple[str, int]] | None:
-    """What the sandbox holds at one batch's own paths; None when the marker
-    is there, because another worker's pass finished meanwhile.
+) -> frozenset[str] | None:
+    """What the sandbox holds at one batch's own paths, or placed there in an
+    earlier batch; None when the marker is there, because another worker's
+    pass finished meanwhile.
 
     The inventory taken before the batches holds for every path no other pass
     touched, and another pass writes only rows it found missing, so looking
-    again at the batch's own paths is enough to see its work.
+    again at the batch's own paths, and at the ledger, is enough to see its
+    work.
     """
-    by_abs = {layout.join(row["file_path"]): row["file_path"] for row in batch}
+    paths = {row["file_path"] for row in batch}
+    by_abs = {layout.join(path): path for path in paths}
     args = " ".join(shlex.quote(path) for path in by_abs)
     if len(args) > _RECHECK_ARGS_MAX:
         return await _deferred_present(sandbox, layout)
-    probe = await _probe(
-        sandbox,
-        f"if [ -e {shlex.quote(layout.join(DEFERRED_MARKER))} ]; then echo '#done'; "
-        f"else find {args} -maxdepth 0 -printf '%y %s %p\\n' 2>/dev/null; fi; true",
+    listed = _probed(
+        await _probe(
+            sandbox,
+            _probe_script(
+                layout,
+                f"find {args} -maxdepth 0 -printf '%p\\0' 2>/dev/null; {_cat_ledger(layout)}",
+            ),
+        )
     )
-    lines = probe.splitlines()
-    if lines[:1] == ["#done"]:
+    if listed is None:
         return None
-    present: dict[str, tuple[str, int]] = {}
-    for line in lines:
-        parts = line.split(" ", 2)
-        if len(parts) == 3 and parts[1].isdigit() and parts[2] in by_abs:
-            present[by_abs[parts[2]]] = (parts[0], int(parts[1]))
-    return present
+    # The finds print absolute paths and the ledger relative ones.
+    return frozenset(by_abs.get(path, path) for path in listed if path in by_abs or path in paths)
 
 
-def _result_thread(path: str) -> str | None:
-    """The thread prefix a deferred row sits under, if it sits under one."""
-    head = path[len(DEFERRED_RESTORE_DIR) :].lstrip("/").split("/", 1)[0]
-    return head if THREAD_DIR_NAME.match(head) else None
+async def _record_placed(
+    sandbox: Any, layout: WorkspaceLayout, rows: list[dict[str, Any]]
+) -> None:
+    """List paths this sandbox has held since the backup, placed by the pass
+    or found there, so a later look reads one the turn deleted since as placed
+    rather than missing. A batch lists its own under its lock; the ones the
+    pass's first look found need none, since that look took none either."""
+    ledger = layout.join(DEFERRED_LEDGER)
+    body = "".join(f"{row['file_path']}\0" for row in rows).encode("utf-8")
+    if not (
+        await sandbox.acreate_directory(ledger)
+        and await sandbox.aupload_file_bytes(f"{ledger}/{uuid.uuid4().hex}", body)
+    ):
+        logger.warning(
+            f"Could not record {len(rows)} deferred restore(s) in {ledger}; "
+            f"another pass may send one the turn has since deleted"
+        )
 
 
-def _in_place(row: dict[str, Any], present: dict[str, tuple[str, int]]) -> bool:
-    kind = row.get("kind") or "file"
-    have = present.get(row["file_path"])
-    if kind == "dir":
-        return have is not None and have[0] == "d"
-    return kind == "file" and have == ("f", int(row.get("file_size") or 0))
+def _kept(path: str, kept: "ThreadPrefixes") -> bool:
+    """Whether a deferred row's thread keeps it; a row under no thread is kept."""
+    for base in DEFERRED_RESTORE_DIRS:
+        if path == base or path.startswith(base + "/"):
+            head = path[len(base) :].lstrip("/").split("/", 1)[0]
+            return not THREAD_DIR_NAME.match(head) or head in kept.keeps(base)
+    return True
 
 
 async def restore_deferred(
@@ -1001,76 +1146,145 @@ async def restore_deferred(
     sandbox: Any,
     *,
     layout: WorkspaceLayout,
-    live_short_ids: set[str],
+    kept: "ThreadPrefixes",
     lock_wait: str = SYNC_LOCK_WAIT,
     inventory: DeferredInventory | None = None,
 ) -> dict[str, Any]:
-    """The second restore pass: the evicted results of live threads this sandbox lacks.
+    """The second restore pass: the evicted results and scratchpads, notes
+    aside, of kept threads this sandbox lacks. Each batch reads which threads keep them
+    again, so one archived or deleted while the pass runs gets nothing more.
 
-    A row whose file is already there at its size is skipped, and each batch
-    looks again at its own paths under its lock: another worker's bring-up
-    may be restoring the same folder, and a second copy would undo an edit or
-    a delete made in between. The marker is written only when every row came
-    back, and ``done`` says the sandbox has it; until then backups keep these
-    rows (see DEFERRED_RESTORE_DIR) and the next bring-up resumes. A lock held
-    past ``lock_wait`` raises WorkspaceSyncBusy with the batches before it
-    kept. ``inventory`` is a probe the caller already took.
+    A row whose path already holds anything is skipped: the pass runs beside
+    the first turn, and a restore places only whole copies, so whatever is
+    there, of any kind or size, was put there after the backup. One the turn
+    writes after a batch looks is kept too: the sandbox places a deferred
+    entry only where nothing is (``keep_existing``). Each batch looks again,
+    under its lock, at its own paths and at the ledger of what earlier
+    batches placed: another worker's bring-up may be restoring the same
+    folder, and a second copy would undo an edit made in between or bring
+    back a file deleted since. Rows found in place go in the ledger too: a
+    pass that does not finish runs again at the next bring-up, and a file the
+    turn deleted in between has to stay deleted. A batch with errors, or
+    whose transfer failed outright, lists each of its paths the sandbox
+    reported in place, and looks once more at them for any that landed
+    unreported.
+
+    The marker is written only when every row came back, and ``done`` says
+    the sandbox has it; until then backups keep these rows (see
+    DEFERRED_RESTORE_DIRS) and the next bring-up resumes. A lock held past
+    ``lock_wait`` raises WorkspaceSyncBusy with the batches before it kept.
+    ``inventory`` is a probe the caller already took.
     """
+    from src.server.database.conversation import get_workspace_thread_prefixes
+
     result = {"restored": 0, "errors": 0, "skipped": 0, "done": False}
-    present = (
-        inventory.present
-        if inventory is not None
-        else await _deferred_present(sandbox, layout)
-    )
+    if inventory is None:
+        inventory = await _deferred_inventory(sandbox, layout)
+    present = inventory.present
     if present is None:
         result["done"] = True
         return result
 
-    rows = await get_files_for_workspace(
-        workspace_id, all_kinds=True, under=DEFERRED_RESTORE_DIR
-    )
-    due = []
+    rows = [
+        row
+        for base in DEFERRED_RESTORE_DIRS
+        for row in await get_files_for_workspace(
+            workspace_id, all_kinds=True, under=base
+        )
+        if is_deferred(row["file_path"])
+    ]
+    due, there = [], []
     for row in rows:
-        thread = _result_thread(row["file_path"])
-        if thread is not None and thread not in live_short_ids:
-            continue
-        if _in_place(row, present):
-            result["skipped"] += 1
-        else:
-            due.append(row)
+        if _kept(row["file_path"], kept):
+            (there if row["file_path"] in present else due).append(row)
+    result["skipped"] = len(there)
+    # A retry finds in place all an earlier pass listed, and listing it again
+    # would add another copy of the ledger at every retry.
+    if unlisted := [r for r in there if r["file_path"] not in inventory.ledgered]:
+        await _record_placed(sandbox, layout, unlisted)
 
     if due:
         logger.info(
             f"Restoring {len(due)} deferred entries for workspace {workspace_id}"
         )
         user_id = await workspace_owner(workspace_id)
-    for batch in _deferred_batches(due):
+    batches = _deferred_batches(due)
+    made: set[str] = set()
+    dir_items: dict[str, dict[str, Any]] = {}
+    for batch in batches:
         async with workspace_sync_lock(workspace_id, wait=lock_wait) as conn:
             present = await _batch_present(sandbox, layout, batch)
             if present is None:
                 result["done"] = True
                 return result
-            todo = [r for r in batch if not _in_place(r, present)]
+            kept = await get_workspace_thread_prefixes(workspace_id, conn=conn)
+            todo, there = [], []
+            for r in batch:
+                if _kept(r["file_path"], kept):
+                    (there if r["file_path"] in present else todo).append(r)
             result["skipped"] += len(batch) - len(todo)
-            if not todo:
-                continue
-            full = await get_files_for_workspace(
-                workspace_id,
-                include_content=True,
-                all_kinds=True,
-                paths=[r["file_path"] for r in todo],
-                conn=conn,
-            )
-            part = await _transfer_rows(
-                workspace_id, sandbox, full, user_id=user_id, layout=layout
-            )
-        result["restored"] += part["restored"]
-        result["errors"] += part["errors"]
+            if todo:
+                full = await get_files_for_workspace(
+                    workspace_id,
+                    include_content=True,
+                    all_kinds=True,
+                    paths=[r["file_path"] for r in todo],
+                    conn=conn,
+                )
+                dir_items.update(
+                    (r["file_path"], _pull_item(r, url=None))
+                    for r in full
+                    if r.get("kind") == "dir"
+                )
+                placed: set[str] = set()
+                try:
+                    part = await _transfer_rows(
+                        workspace_id,
+                        sandbox,
+                        full,
+                        user_id=user_id,
+                        layout=layout,
+                        placed=placed,
+                        made=made,
+                    )
+                except Exception as e:  # noqa: BLE001 - some of the batch may be in place
+                    logger.warning(
+                        f"Deferred restore batch of {len(todo)} for workspace "
+                        f"{workspace_id} failed: {e}"
+                    )
+                    part = {"restored": 0, "errors": len(todo)}
+                result["restored"] += part["restored"]
+                result["errors"] += part["errors"]
+                if not part["errors"]:
+                    there += todo
+                else:
+                    # What the sandbox reported in place, which the turn may
+                    # have deleted since, and what is there now, which covers
+                    # a runtime that died before it reported. A look that
+                    # fails too leaves the report to be listed alone.
+                    try:
+                        placed |= await _batch_present(sandbox, layout, todo) or frozenset()
+                    except Exception as e:  # noqa: BLE001 - the report still lists
+                        logger.warning(
+                            f"Could not look again at a failed deferred batch "
+                            f"for workspace {workspace_id}: {e}"
+                        )
+                    there += [r for r in todo if r["file_path"] in placed]
+            if there:
+                await _record_placed(sandbox, layout, there)
+
+    if len(batches) > 1 and made:
+        await _restamp_dirs(
+            workspace_id,
+            sandbox,
+            [dict(dir_items[p], made=True) for p in made if p in dir_items],
+            layout=layout,
+        )
 
     if result["errors"]:
         logger.warning(
             f"Deferred restore for workspace {workspace_id} left "
-            f"{result['errors']} evicted result(s) unrestored; the next "
+            f"{result['errors']} deferred file(s) unrestored; the next "
             f"bring-up retries and backups keep their rows until then"
         )
         return result

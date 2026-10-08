@@ -16,6 +16,7 @@ budget are visible in CI.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -24,12 +25,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from ptc_agent.core.sandbox.assets import _read_unified_manifest
+from src.server.database.conversation import ThreadPrefixes
 from src.server.database.workspace_file import WorkspaceSyncBusy
 from src.server.services.persistence import restore
 from src.server.services.persistence.resolve import FileBytesUnavailable
-from src.server.services.persistence.transfer import TransferRuntimeError
+from src.server.services.persistence.transfer import DEFERRED_LEDGER, TransferRuntimeError
 
 import hashlib
 
@@ -192,6 +194,37 @@ async def test_relayed_files_are_staged_then_placed_by_the_runtime(mock_get, no_
 
 
 @pytest.mark.asyncio
+async def test_a_relay_stamps_only_the_deferred_dirs_the_structure_op_made(no_runtime):
+    """The relay places the files after the structure op made their dirs, and
+    so finds every deferred dir standing. It stamps those the structure op
+    reported making, after their files; one standing before it is the turn's."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [
+        _file(f"{base}/mine/x.md", "x"),
+        {"file_path": f"{base}/mine", "kind": "dir", "permissions": "0750"},
+        {"file_path": f"{base}/theirs", "kind": "dir", "permissions": "0750"},
+    ]
+
+    def _place(sandbox, items, **kw):
+        out = _place_everything(sandbox, items, **kw)
+        if kw.get("defer_dir_modes"):
+            out[f"{base}/mine"]["made"] = True
+        return out
+
+    no_runtime.side_effect = _place
+    made: set[str] = set()
+
+    await restore._transfer_rows(
+        "ws-1", _mock_sandbox(), rows, user_id="u", layout=LAYOUT, made=made
+    )
+
+    placement = no_runtime.await_args_list[1].args[1]
+    dirs = [(i["path"], i.get("made")) for i in placement if i["kind"] == "dir"]
+    assert dirs == [(f"{base}/mine", True)]
+    assert made == {f"{base}/mine"}
+
+
+@pytest.mark.asyncio
 @patch("src.server.services.persistence.restore.get_files_for_workspace", new_callable=AsyncMock)
 async def test_a_row_whose_file_size_disagrees_with_its_bytes_is_still_placed(
     mock_get, no_runtime
@@ -312,6 +345,27 @@ async def test_a_staged_file_the_runtime_rejects_is_an_error_and_keeps_the_flag(
 
 
 @pytest.mark.asyncio
+async def test_a_transfer_reports_which_paths_it_placed(no_runtime):
+    """The deferred pass lists them in its ledger even when a sibling fails."""
+    no_runtime.side_effect = lambda sb, items, **kw: {
+        i["path"]: {"status": "mismatch" if i["path"] == "a.txt" else "ok"} for i in items
+    }
+    placed: set[str] = set()
+
+    result = await restore._transfer_rows(
+        "ws-1",
+        _mock_sandbox(),
+        [_file("a.txt", "aaa"), _file("b.txt", "bbb")],
+        user_id="user-1",
+        layout=LAYOUT,
+        placed=placed,
+    )
+
+    assert result == {"restored": 1, "errors": 1}
+    assert placed == {"b.txt"}
+
+
+@pytest.mark.asyncio
 @patch("src.server.services.persistence.restore.get_files_for_workspace", new_callable=AsyncMock)
 async def test_a_placement_op_that_raises_counts_every_staged_file(mock_get, no_runtime, restore_flag):
     mock_get.return_value = [_file("a.txt"), _file("b.txt")]
@@ -373,6 +427,49 @@ async def test_a_clean_restore_raises_the_flag_then_clears_it(mock_get, restore_
 
     assert result == {"restored": 1, "errors": 0}
     assert [c.args for c in restore_flag.await_args_list] == [("ws-1", True), ("ws-1", False)]
+
+
+@pytest.mark.asyncio
+async def test_the_notes_of_threads_that_keep_their_scratchpad_come_in_the_first_pass(
+    no_runtime, restore_flag
+):
+    """A resumed turn reads its note by the path its summary names; one still
+    waiting on the deferred pass would read as missing and be written afresh.
+    The rest of the scratchpad, and an archived thread's notes, wait. A
+    folder no thread names is never pruned, so its notes come back too: the
+    deferred pass skips every note, and the backup would drop one left out."""
+    note = WorkspaceLayout.scratchpad_subdir("abcd1234", "note", "plan.md")
+    shared = WorkspaceLayout.scratchpad_subdir("shared", "note", "y.md")
+    scratch = [
+        _file(note, "the plan"),
+        _file(shared, "kept"),
+        _file(WorkspaceLayout.scratchpad_subdir("abcd1234", "tmp.csv"), "1,2"),
+        _file(WorkspaceLayout.scratchpad_subdir("ef012345", "note", "x.md"), "old"),
+    ]
+
+    async def get_files(_workspace_id, *, under=None, paths=None, **_kw):
+        if under is not None:
+            return [r for r in scratch if r["file_path"].startswith(under + "/")]
+        if paths is not None:
+            return [r for r in scratch if r["file_path"] in paths]
+        return [_file("a.txt")]
+
+    archived = ThreadPrefixes(
+        all=frozenset({"abcd1234", "ef012345"}), open=frozenset({"abcd1234"})
+    )
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=archived),
+        ),
+    ):
+        result = await restore.restore_to_sandbox("ws-1", _mock_sandbox(), layout=LAYOUT)
+
+    placed = {i["path"]: i for c in no_runtime.await_args_list for i in c.args[1]}
+    assert set(placed) == {"a.txt", note, shared}
+    assert not any(item["keep_existing"] for item in placed.values())
+    assert result == {"restored": 3, "errors": 0}
 
 
 @pytest.fixture
@@ -996,14 +1093,23 @@ async def test_maybe_restore_treats_an_unreadable_manifest_as_a_missing_guard(mo
     restore_flag.assert_not_awaited()
 
 
+def _kept(prefixes: set[str]) -> ThreadPrefixes:
+    return ThreadPrefixes(all=frozenset(prefixes), open=frozenset(prefixes))
+
+
+def _listed(*paths: str) -> str:
+    """A deferred probe's output for ``paths``, as the sandbox shell sends it."""
+    return base64.b64encode("".join(f"{p}\0" for p in paths).encode()).decode() + "\n"
+
+
 @pytest.mark.asyncio
 async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock():
     """Two workers' bring-ups can restore the same folder at once, and a row
     sent twice would undo an edit or a delete made in between, so each batch
     looks again under the lock, at its own paths, before it transfers."""
-    base = f"{restore.DEFERRED_RESTORE_DIR}/abcd1234"
+    base = f"{WorkspaceLayout.LARGE_TOOL_RESULTS_DIR}/abcd1234"
     rows = [_file(f"{base}/a.txt", "aaaaa"), _file(f"{base}/b.txt", "bbbbb")]
-    probes = iter(["", f"f 5 {LAYOUT.join(base, 'a.txt')}\n"])
+    probes = iter(["", _listed(LAYOUT.join(base, "a.txt"))])
     commands = []
 
     def probe(cmd):
@@ -1014,9 +1120,9 @@ async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock(
     sandbox.runtime.exec = AsyncMock(side_effect=probe)
     fetched = []
 
-    async def get_files(_workspace_id, *, paths=None, **_kw):
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
         if paths is None:
-            return rows
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
         fetched.append(paths)
         return [r for r in rows if r["file_path"] in paths]
 
@@ -1029,9 +1135,13 @@ async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock(
         patch.object(restore, "get_files_for_workspace", get_files),
         patch.object(restore, "workspace_sync_lock", lock),
         patch.object(restore, "_transfer_rows", transfer),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
     ):
         result = await restore.restore_deferred(
-            "ws-1", sandbox, layout=LAYOUT, live_short_ids={"abcd1234"}
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
         )
 
     assert fetched == [[f"{base}/b.txt"]]
@@ -1042,10 +1152,539 @@ async def test_a_deferred_batch_sends_only_what_is_still_missing_under_its_lock(
 
 
 @pytest.mark.asyncio
+async def test_a_file_an_earlier_batch_placed_is_never_sent_again():
+    """Another worker's pass placed it and the turn has deleted it since: the
+    ledger says it came back, so its absence is the delete, kept as made."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/gone.md", "aaaaa"), _file(f"{base}/new.md", "bbbbb")]
+    probes = iter(["", _listed(f"{base}/gone.md")])
+    commands = []
+
+    def probe(cmd):
+        commands.append(cmd)
+        return MagicMock(stdout=next(probes), exit_code=0)
+
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(side_effect=probe)
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    transfer = AsyncMock(return_value={"restored": 1, "errors": 0})
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", transfer),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    (sent,) = transfer.await_args.args[2:3]
+    assert [r["file_path"] for r in sent] == [f"{base}/new.md"]
+    assert result["skipped"] == 1
+    assert LAYOUT.join(DEFERRED_LEDGER) in commands[1]
+    ledger_writes = [
+        c.args for c in sandbox.aupload_file_bytes.await_args_list
+        if c.args[0].startswith(LAYOUT.join(DEFERRED_LEDGER) + "/")
+    ]
+    assert [body for _path, body in ledger_writes] == [f"{base}/gone.md\0{base}/new.md\0".encode()]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_lists_only_what_the_ledger_does_not_hold():
+    """A pass that did not finish runs again at every bring-up, and finds in
+    place all the last one listed; listing that again each time would grow
+    the ledger by a copy of itself per retry."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/old.md", "aaaaa"), _file(f"{base}/new.md", "bbbbb")]
+    sandbox = _mock_sandbox()
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        return [r for r in rows if r["file_path"].startswith(under + "/")]
+
+    inventory = restore.parse_deferred(
+        _listed(f"{base}/old.md", f"{base}/new.md", restore._LEDGER_START, f"{base}/old.md")
+    )
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "_transfer_rows", AsyncMock()) as transfer,
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"}), inventory=inventory
+        )
+
+    transfer.assert_not_awaited()
+    assert result["skipped"] == 2 and result["done"]
+    ledger_writes = [
+        c.args[1] for c in sandbox.aupload_file_bytes.await_args_list
+        if c.args[0].startswith(LAYOUT.join(DEFERRED_LEDGER) + "/")
+    ]
+    assert ledger_writes == [f"{base}/new.md\0".encode()]
+
+
+@pytest.mark.asyncio
+async def test_a_name_holding_a_newline_never_passes_for_another_path():
+    """Read a line per path, a file named ``x\\n<row>`` would list ``<row>`` as
+    there: the pass would skip it, write the marker, and the next backup would
+    prune its only copy."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    other = f"{base}/other.md"
+    crafted = f"{base}/x\n{other}"
+    rows = [_file(other, "aaaaa"), _file(crafted, "bbbbb")]
+    probes = iter([_listed(f"{base}/", crafted), _listed(LAYOUT.join(crafted))])
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(
+        side_effect=lambda _cmd: MagicMock(stdout=next(probes), exit_code=0)
+    )
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    transfer = AsyncMock(return_value={"restored": 1, "errors": 0})
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", transfer),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        await restore.restore_deferred("ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"}))
+
+    (sent,) = transfer.await_args.args[2:3]
+    assert [r["file_path"] for r in sent] == [other]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_reads_the_threads_on_the_session_holding_its_lock():
+    """A second pool slot taken under the lock lets concurrent passes, each
+    holding one, wait on each other until the pool times them all out."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/a.md", "aaaaa")]
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(return_value=MagicMock(stdout="", exit_code=0))
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    prefixes = AsyncMock(return_value=_kept({"abcd1234"}))
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(
+            restore, "_transfer_rows", AsyncMock(return_value={"restored": 1, "errors": 0})
+        ),
+        patch("src.server.database.conversation.get_workspace_thread_prefixes", prefixes),
+    ):
+        await restore.restore_deferred("ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"}))
+
+    assert prefixes.await_args.kwargs == {"conn": "conn"}
+
+
+@pytest.mark.asyncio
+async def test_the_deferred_pass_never_sends_a_note():
+    """The first pass brought the notes, so one the turn has deleted or
+    renamed since is missing on purpose."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/note/plan.md", "aaaaa"), _file(f"{base}/tmp.csv", "bbbbb")]
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(return_value=MagicMock(stdout="", exit_code=0))
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    transfer = AsyncMock(return_value={"restored": 1, "errors": 0})
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", transfer),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    (sent,) = transfer.await_args.args[2:3]
+    assert [r["file_path"] for r in sent] == [f"{base}/tmp.csv"]
+    assert result == {"restored": 1, "errors": 0, "skipped": 0, "done": True}
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_does_not_finish_lists_what_it_found_in_place():
+    """Without the marker, backups keep the rows and the next bring-up runs the
+    pass again; a file the turn wrote and has deleted since would come back."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [
+        _file(f"{base}/early.md", "aaaaa"),
+        _file(f"{base}/late.md", "bbbbb"),
+        _file(f"{base}/lost.md", "ccccc"),
+    ]
+    probes = iter(
+        [_listed(f"{base}/early.md"), _listed(LAYOUT.join(base, "late.md")), _listed()]
+    )
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(
+        side_effect=lambda _cmd: MagicMock(stdout=next(probes), exit_code=0)
+    )
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(
+            restore, "_transfer_rows", AsyncMock(return_value={"restored": 0, "errors": 1})
+        ),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    assert result["errors"] == 1 and not result["done"]
+    ledger_writes = [
+        c.args[1] for c in sandbox.aupload_file_bytes.await_args_list
+        if c.args[0].startswith(LAYOUT.join(DEFERRED_LEDGER) + "/")
+    ]
+    assert ledger_writes == [f"{base}/early.md\0".encode(), f"{base}/late.md\0".encode()]
+
+
+@pytest.mark.asyncio
+async def test_the_dirs_the_first_batch_made_are_stamped_after_the_last(no_runtime):
+    """The first batch makes every dir and later batches place files beneath
+    them, each of which moves the dir's mtime off the backup's."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [
+        {"file_path": f"{base}/d", "kind": "dir", "permissions": "0750"},
+        _file(f"{base}/d/a.md", "a"),
+        _file(f"{base}/d/b.md", "b"),
+    ]
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(return_value=MagicMock(stdout="", exit_code=0))
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    async def transfer(_workspace_id, _sandbox, batch, *, made, **_kw):
+        made.update(r["file_path"] for r in batch if r.get("kind") == "dir")
+        return {"restored": len(batch), "errors": 0}
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    with (
+        patch.object(restore, "DEFERRED_BATCH_ROWS", 1),
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", AsyncMock(side_effect=transfer)),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    assert result["done"] and not result["errors"]
+    [closing] = [c.args[1] for c in no_runtime.await_args_list]
+    assert [(i["path"], i["mode"], i["keep_existing"], i["made"]) for i in closing] == [
+        (f"{base}/d", 0o750, True, True)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_with_errors_lists_only_what_landed():
+    """The transfer does not say which of its paths came back, and a listed one
+    is never sent again, so the batch looks; one it placed and the turn then
+    deleted would otherwise come back at the retry."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/a.md", "aaaaa"), _file(f"{base}/b.md", "bbbbb")]
+    probes = iter(["", "", _listed(LAYOUT.join(base, "a.md"))])
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(
+        side_effect=lambda _cmd: MagicMock(stdout=next(probes), exit_code=0)
+    )
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(
+            restore, "_transfer_rows", AsyncMock(return_value={"restored": 1, "errors": 1})
+        ),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    assert result["errors"] == 1 and not result["done"]
+    ledger_writes = [
+        c.args[1] for c in sandbox.aupload_file_bytes.await_args_list
+        if c.args[0].startswith(LAYOUT.join(DEFERRED_LEDGER) + "/")
+    ]
+    assert ledger_writes == [f"{base}/a.md\0".encode()]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_whose_look_after_errors_fails_still_lists_what_it_placed():
+    """The runtime that failed the transfer is the likely reason the look
+    fails too, and a placed file left out of the ledger comes back at the
+    retry if the turn has deleted it since."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/a.md", "aaaaa"), _file(f"{base}/b.md", "bbbbb")]
+    probes = iter([("", 0), ("", 0), ("", 1)])
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(
+        side_effect=lambda _cmd: MagicMock(**dict(zip(("stdout", "exit_code"), next(probes))))
+    )
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    async def transfer(_workspace_id, _sandbox, _rows, *, placed, **_kw):
+        placed.add(f"{base}/a.md")
+        return {"restored": 1, "errors": 1}
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", AsyncMock(side_effect=transfer)),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    assert result["errors"] == 1 and not result["done"]
+    ledger_writes = [
+        c.args[1] for c in sandbox.aupload_file_bytes.await_args_list
+        if c.args[0].startswith(LAYOUT.join(DEFERRED_LEDGER) + "/")
+    ]
+    assert ledger_writes == [f"{base}/a.md\0".encode()]
+
+
+@pytest.mark.asyncio
+async def test_a_batch_with_errors_lists_what_was_placed_and_deleted_since():
+    """The turn can delete a file the batch placed before the batch's look,
+    which then cannot tell it from one that never came: the transfer's own
+    report says it was placed."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/a.md", "aaaaa"), _file(f"{base}/b.md", "bbbbb")]
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(return_value=MagicMock(stdout="", exit_code=0))
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    async def transfer(*_args, placed, **_kw):
+        placed.add(f"{base}/a.md")
+        return {"restored": 1, "errors": 1}
+
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", transfer),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        await restore.restore_deferred("ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"}))
+
+    ledger_writes = [
+        c.args[1] for c in sandbox.aupload_file_bytes.await_args_list
+        if c.args[0].startswith(LAYOUT.join(DEFERRED_LEDGER) + "/")
+    ]
+    assert ledger_writes == [f"{base}/a.md\0".encode()]
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_that_dies_partway_lists_what_landed_and_the_pass_goes_on():
+    """The runtime can time out after placing part of the batch; the rest of
+    the pass still runs, and the retry must not resend what the turn deleted."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/a.md", "aaaaa"), _file(f"{base}/b.md", "bbbbb")]
+    probes = iter(["", "", _listed(LAYOUT.join(base, "a.md"))])
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(
+        side_effect=lambda _cmd: MagicMock(stdout=next(probes), exit_code=0)
+    )
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        if paths is None:
+            return [r for r in rows if r["file_path"].startswith(under + "/")]
+        return [r for r in rows if r["file_path"] in paths]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    died = AsyncMock(side_effect=TransferRuntimeError("pull exited -1 without a result"))
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", died),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=_kept({"abcd1234"})),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    assert result == {"restored": 0, "errors": 2, "skipped": 0, "done": False}
+    ledger_writes = [
+        c.args[1] for c in sandbox.aupload_file_bytes.await_args_list
+        if c.args[0].startswith(LAYOUT.join(DEFERRED_LEDGER) + "/")
+    ]
+    assert ledger_writes == [f"{base}/a.md\0".encode()]
+
+
+@pytest.mark.asyncio
+async def test_a_thread_archived_during_the_pass_gets_nothing_more():
+    """Its archive prunes beside the pass, so a batch that read the threads
+    before it would put the scratchpad back; each batch reads them again."""
+    base = WorkspaceLayout.scratchpad_subdir("abcd1234")
+    rows = [_file(f"{base}/a.txt", "aaaaa")]
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock(return_value=MagicMock(stdout="", exit_code=0))
+
+    async def get_files(_workspace_id, *, paths=None, under=None, **_kw):
+        return [r for r in rows if r["file_path"].startswith(under + "/")]
+
+    @asynccontextmanager
+    async def lock(_workspace_id, *, wait):
+        yield "conn"
+
+    archived = ThreadPrefixes(all=frozenset({"abcd1234"}), open=frozenset())
+    transfer = AsyncMock()
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "workspace_sync_lock", lock),
+        patch.object(restore, "_transfer_rows", transfer),
+        patch(
+            "src.server.database.conversation.get_workspace_thread_prefixes",
+            AsyncMock(return_value=archived),
+        ),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
+        )
+
+    transfer.assert_not_awaited()
+    assert result["skipped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_pass_leaves_a_file_the_turn_already_rewrote():
+    """The pass runs beside the first turn, which writes to its scratchpad at
+    fixed paths without the sync lock. Anything at a row's path is that later
+    write, and sending the backup's copy over it would undo it."""
+    draft = WorkspaceLayout.scratchpad_subdir("abcd1234", "draft.md")
+    rows = [_file(draft, "the draft as backed up")]
+    sandbox = _mock_sandbox()
+    sandbox.runtime.exec = AsyncMock()
+
+    async def get_files(_workspace_id, *, under=None, **_kw):
+        return [r for r in rows if r["file_path"].startswith(under + "/")]
+
+    transfer = AsyncMock()
+    with (
+        patch.object(restore, "get_files_for_workspace", get_files),
+        patch.object(restore, "_transfer_rows", transfer),
+    ):
+        result = await restore.restore_deferred(
+            "ws-1",
+            sandbox,
+            layout=LAYOUT,
+            kept=_kept({"abcd1234"}),
+            inventory=restore.parse_deferred(_listed(draft)),
+        )
+
+    transfer.assert_not_awaited()
+    assert result == {"restored": 0, "errors": 0, "skipped": 1, "done": True}
+
+
+@pytest.mark.asyncio
 async def test_a_deferred_batch_whose_probe_failed_sends_nothing():
     """A timed-out exec comes back empty, which would read as every path
     missing and send the backup over what the sandbox holds."""
-    base = f"{restore.DEFERRED_RESTORE_DIR}/abcd1234"
+    base = f"{WorkspaceLayout.LARGE_TOOL_RESULTS_DIR}/abcd1234"
     rows = [_file(f"{base}/a.txt", "aaaaa")]
     probes = iter([MagicMock(stdout="", exit_code=0), MagicMock(stdout="", exit_code=-1)])
     sandbox = _mock_sandbox()
@@ -1057,13 +1696,13 @@ async def test_a_deferred_batch_whose_probe_failed_sends_nothing():
 
     transfer = AsyncMock()
     with (
-        patch.object(restore, "get_files_for_workspace", AsyncMock(return_value=rows)),
+        patch.object(restore, "get_files_for_workspace", AsyncMock(side_effect=[rows, []])),
         patch.object(restore, "workspace_sync_lock", lock),
         patch.object(restore, "_transfer_rows", transfer),
         pytest.raises(RuntimeError, match="probe failed"),
     ):
         await restore.restore_deferred(
-            "ws-1", sandbox, layout=LAYOUT, live_short_ids={"abcd1234"}
+            "ws-1", sandbox, layout=LAYOUT, kept=_kept({"abcd1234"})
         )
 
     transfer.assert_not_awaited()
@@ -1081,7 +1720,7 @@ async def test_a_deferred_pass_given_an_inventory_does_not_probe_the_tree_again(
             "ws-1",
             sandbox,
             layout=LAYOUT,
-            live_short_ids=set(),
+            kept=_kept(set()),
             inventory=restore.parse_deferred("#done\n"),
         )
 

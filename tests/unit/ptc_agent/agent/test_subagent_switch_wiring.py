@@ -7,6 +7,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from ptc_agent.agent.agent import PTCAgent
+from ptc_agent.agent.middleware import SubAgentMiddleware
 from ptc_agent.config.agent import AgentConfig, LLMConfig
 from ptc_agent.config.core import (
     DaytonaConfig,
@@ -86,3 +87,59 @@ def test_the_prompt_and_the_tools_are_the_same_either_way(machine):
     assert [convert_to_openai_tool(t) for t in with_switch["tools"]] == [
         convert_to_openai_tool(t) for t in without["tools"]
     ]
+
+
+def _scratchpad_build(machine) -> tuple[dict, list]:
+    """The main build with the scratchpad flag on, and the stack subagents get."""
+    from ptc_agent.core.paths import WorkspaceLayout
+
+    machine["sandbox"].workspace.return_value = WorkspaceLayout("/home/workspace", "acme")
+    handed: list = []
+    real = SubAgentMiddleware
+
+    def spy(*args, **kwargs):
+        handed.append(kwargs["default_middleware"])
+        return real(*args, **kwargs)
+
+    with (
+        patch.object(AgentConfig, "feature_enabled", lambda self, k: k == "scratchpad"),
+        patch("ptc_agent.agent.agent.SubAgentMiddleware", side_effect=spy),
+    ):
+        built = _build(**machine)
+    return built, handed
+
+
+def test_the_notes_prompt_sits_inside_compaction_on_the_main_stack_only(machine):
+    from ptc_agent.agent.middleware import CompactionMiddleware
+
+    built, handed = _scratchpad_build(machine)
+    names = _names(built)
+
+    order = [
+        names.index(n)
+        for n in (
+            "CompactionMiddleware",
+            "BaselineContextMiddleware",
+            "NotesDueMiddleware",
+            "TailEnvelopeMiddleware",
+        )
+    ]
+    assert order == sorted(order)
+
+    main = next(m for m in built["middleware"] if isinstance(m, CompactionMiddleware))
+    assert main._notes_dir.endswith("/.agents/scratchpad/t-1/note")
+
+    assert len(handed) == 1
+    sub_names = [type(m).__name__ for m in handed[0]]
+    assert "NotesDueMiddleware" not in sub_names
+    sub = next(m for m in handed[0] if isinstance(m, CompactionMiddleware))
+    assert sub._notes_dir is None
+
+
+def test_without_the_scratchpad_its_rows_stay_out_of_the_calls(machine):
+    names = _names(_build(**machine))
+
+    assert "NotesDueMiddleware" not in names
+    at = names.index("NotesOffMiddleware")
+    assert names[at - 1] == "BaselineContextMiddleware"
+    assert names[at + 1] == "TailEnvelopeMiddleware"

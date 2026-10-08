@@ -1006,3 +1006,40 @@ class TestTheBackendsFolder:
         assert events == (
             ["hold ws-1", "read", "release"] if moving == "staged" else ["hold ws-1"]
         )
+
+
+@pytest.mark.asyncio
+async def test_the_session_is_acquired_with_the_workspace_id_as_a_str(base_config):
+    """A cold-start /compact failed in asset sync, which encodes the id."""
+    import uuid
+
+    from src.server.handlers.thread_maintenance import _resolve_graph_and_state
+
+    workspace_id = uuid.uuid4()
+    received = []
+
+    async def get_session_for_workspace(ws, user_id=None):
+        received.append(ws)
+        raise ValueError("stop")
+
+    manager = MagicMock()
+    manager.get_session_for_workspace = get_session_for_workspace
+
+    with (
+        patch(
+            "src.server.database.conversation.get_thread_with_summary",
+            new=AsyncMock(return_value={"workspace_id": workspace_id}),
+        ),
+        patch(
+            "src.server.services.workspace_manager.WorkspaceManager.get_instance",
+            return_value=manager,
+        ),
+        pytest.raises(HTTPException),
+    ):
+        async with AsyncExitStack() as held:
+            await _resolve_graph_and_state(
+                "thread-1", "compact", config=base_config, held=held
+            )
+
+    assert received == [str(workspace_id)]
+    assert isinstance(received[0], str)

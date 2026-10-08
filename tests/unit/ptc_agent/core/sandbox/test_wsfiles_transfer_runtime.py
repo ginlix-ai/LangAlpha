@@ -702,6 +702,103 @@ def test_pull_symlink_replaces_file_link_or_empty_dir_but_not_a_populated_one(tm
     assert r["full_dir"]["status"] == "failed" and (tmp_path / "full_dir/child").is_file()
 
 
+def test_pull_symlink_keep_existing_leaves_whatever_is_there(tmp_path):
+    """A deferred link is placed only where nothing is: the turn may have
+    written that path since the look, as a file or a link of its own."""
+    _write(tmp_path, "was_file", b"f")
+    os.symlink("mine", tmp_path / "was_link")
+    items = [
+        {"path": p, "kind": "symlink", "sha256": None, "size": 0, "url": None, "mode": 0, "mtime_ns": 1_500_000_000_000_000_000, "symlink_target": "target", "keep_existing": True}
+        for p in ("was_file", "was_link", "fresh")
+    ]
+    out = rt.pull({"root": str(tmp_path), "items": items})
+    r = out["results"]
+    assert all(r[p]["status"] == "ok" for p in ("was_file", "was_link", "fresh"))
+    assert (tmp_path / "was_file").read_bytes() == b"f"
+    assert os.readlink(tmp_path / "was_link") == "mine"
+    assert os.readlink(tmp_path / "fresh") == "target"
+
+
+def test_pull_dir_keep_existing_leaves_a_standing_dir_as_it_is(tmp_path):
+    """A deferred dir the turn made since the look keeps its own mode and
+    mtime, even when another item's parent is made first; a missing one gets
+    the backup's, open to its owner."""
+    os.makedirs(tmp_path / "mine")
+    os.chmod(tmp_path / "mine", 0o755)
+    before = os.stat(tmp_path / "mine").st_mtime_ns
+    items = [
+        {"path": p, "kind": "dir", "sha256": None, "size": 0, "url": None, "mode": 0o500, "mtime_ns": 1_400_000_000_000_000_000, "symlink_target": None, "keep_existing": True}
+        for p in ("fresh/inner", "mine", "fresh")
+    ]
+    out = rt.pull({"root": str(tmp_path), "items": items})
+    assert all(r["status"] == "ok" for r in out["results"].values())
+    mine = os.stat(tmp_path / "mine")
+    assert stat.S_IMODE(mine.st_mode) == 0o755 and mine.st_mtime_ns == before
+    fresh = os.stat(tmp_path / "fresh")
+    assert stat.S_IMODE(fresh.st_mode) == 0o700
+    assert fresh.st_mtime_ns == 1_400_000_000_000_000_000
+
+
+def test_pull_dir_keep_existing_leaves_what_the_turn_puts_there_during_the_op(tmp_path, monkeypatch):
+    """The turn can make the directory, or a file of the same name, between
+    any look and the restore's own mkdir: either is the turn's, as a file
+    written there keeps its bytes."""
+    mkdir, mine = os.mkdir, str(tmp_path / "mine")
+
+    def turn_makes_it_first(path, *args, **kwargs):
+        if path == mine and not os.path.lexists(mine):
+            mkdir(mine)
+            os.chmod(mine, 0o700)
+            os.utime(mine, ns=(1, 1))
+        return mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(rt.os, "mkdir", turn_makes_it_first)
+    _write(tmp_path, "was_file", b"f")
+    items = [
+        {"path": p, "kind": "dir", "mode": 0o755, "mtime_ns": 1_400_000_000_000_000_000, "keep_existing": True}
+        for p in ("mine", "was_file")
+    ]
+    out = rt.pull({"root": str(tmp_path), "items": items})
+    assert all(r["status"] == "ok" and not r.get("made") for r in out["results"].values())
+    st = os.stat(mine)
+    assert stat.S_IMODE(st.st_mode) == 0o700 and st.st_mtime_ns == 1
+    assert (tmp_path / "was_file").read_bytes() == b"f"
+
+
+def test_pull_a_deferred_dir_an_earlier_op_made_is_stamped_after_its_files(tmp_path):
+    """A relayed batch makes its dirs in one op and places their files in the
+    next; by then a deferred dir is standing, so only the mark the first op
+    reported tells the second it is the restore's to stamp."""
+    item = {"path": "d", "kind": "dir", "mode": 0o750, "mtime_ns": 1_400_000_000_000_000_000, "keep_existing": True}
+    first = rt.pull({"root": str(tmp_path), "items": [item], "defer_dir_modes": True})
+    assert first["results"]["d"] == {"status": "ok", "http": None, "error": None, "made": True}
+    child = _staged(tmp_path, "d/f.md", b"f", keep_existing=True)
+    out = rt.pull({"root": str(tmp_path), "items": [child, dict(item, made=True)]})
+    assert out["results"]["d"]["status"] == "ok" and out["results"]["d/f.md"]["status"] == "ok"
+    st = os.stat(tmp_path / "d")
+    assert stat.S_IMODE(st.st_mode) == 0o750 | 0o300
+    assert st.st_mtime_ns == 1_400_000_000_000_000_000
+
+
+def test_pull_never_makes_again_a_dir_an_earlier_op_made_and_the_turn_removed(tmp_path):
+    item = {"path": "gone/d", "kind": "dir", "mode": 0o750, "mtime_ns": 1, "keep_existing": True, "made": True}
+    out = rt.pull({"root": str(tmp_path), "items": [item]})
+    assert out["results"]["gone/d"]["status"] == "ok"
+    assert not (tmp_path / "gone").exists()
+
+
+def test_pull_a_deferred_dir_takes_what_later_batches_place_beneath_it(tmp_path):
+    """The deferred pass places a dir in its first batch and the files under
+    it in later ones, beside a turn that writes there too: a backup's
+    read-only mode would refuse them all."""
+    ro = {"path": "ro", "kind": "dir", "mode": 0o500, "mtime_ns": 1, "keep_existing": True}
+    rt.pull({"root": str(tmp_path), "items": [ro]})
+    later = _staged(tmp_path, "ro/late.md", b"late", keep_existing=True)
+    out = rt.pull({"root": str(tmp_path), "items": [later]})
+    assert out["results"]["ro/late.md"]["status"] == "ok"
+    assert (tmp_path / "ro/late.md").read_bytes() == b"late"
+
+
 @pytest.mark.enable_socket
 def test_pull_dir_items_get_mode_and_mtime_after_children(tmp_path, bucket):
     dir_item = {
@@ -824,6 +921,90 @@ def test_pull_file_places_a_staged_relay_upload(tmp_path):
     assert out["results"]["n.txt"] == {"status": "failed", "http": None, "error": "missing url", "ms": out["results"]["n.txt"]["ms"]}
     assert not (tmp_path / "s.txt").exists() and not (tmp_path / "w.txt").exists()
     assert not [p for p in os.listdir(tmp_path) if p.startswith(".wsfiles-")]
+
+
+def _staged(root, rel: str, data: bytes, **over):
+    name = f".wsfiles-relay-{len(os.listdir(root))}"
+    (root / name).write_bytes(data)
+    return {"path": rel, "kind": "file", "file": name, "sha256": _sha(data), "size": len(data),
+            "mode": 0o644, "mtime_ns": 1, **over}
+
+
+def test_pull_keep_existing_never_replaces_a_file_written_after_the_look(tmp_path, monkeypatch):
+    """A deferred file the turn writes while its backup copy is on the way is
+    the newer one: placement keeps it, where a plain item is still replaced."""
+    place = rt._place
+
+    def turn_writes_first(tmp, final, item, http=None):
+        with open(final, "wb") as f:
+            f.write(b"turn")
+        return place(tmp, final, item, http)
+
+    monkeypatch.setattr(rt, "_place", turn_writes_first)
+    kept = _staged(tmp_path, "note.md", b"backup", keep_existing=True)
+    plain = _staged(tmp_path, "plain.md", b"backup")
+    out = rt.pull({"root": str(tmp_path), "items": [kept, plain]})
+    assert {p: r["status"] for p, r in out["results"].items()} == {"note.md": "ok", "plain.md": "ok"}
+    assert (tmp_path / "note.md").read_bytes() == b"turn"
+    assert (tmp_path / "plain.md").read_bytes() == b"backup"
+    assert not [p for p in os.listdir(tmp_path) if p.startswith(".wsfiles-")]
+
+
+def test_pull_stamps_the_bytes_before_they_are_placed(tmp_path, monkeypatch):
+    """A file written at the path just after the placement must keep its own
+    mtime: stamped with the backup's, a scan that trusts a size and mtime it
+    has seen would never read the new bytes."""
+    seen = {}
+
+    def watch(real):
+        def call(src, dst, *args, **kwargs):
+            seen[os.path.basename(dst)] = os.stat(src).st_mtime_ns
+            return real(src, dst, *args, **kwargs)
+        return call
+
+    monkeypatch.setattr(rt.os, "link", watch(os.link))
+    monkeypatch.setattr(rt.os, "replace", watch(os.replace))
+    when = 1_400_000_000_000_000_000
+    items = [_staged(tmp_path, "kept.md", b"backup", keep_existing=True, mtime_ns=when),
+             _staged(tmp_path, "plain.md", b"backup", mtime_ns=when)]
+    out = rt.pull({"root": str(tmp_path), "items": items})
+    assert {p: r["status"] for p, r in out["results"].items()} == {"kept.md": "ok", "plain.md": "ok"}
+    assert seen["kept.md"] == when and seen["plain.md"] == when
+
+
+def test_pull_keep_existing_places_a_missing_file_and_keeps_a_present_one(tmp_path, monkeypatch):
+    """Without hard links the placement falls back to a look then a rename."""
+    (tmp_path / "there.md").write_bytes(b"turn")
+    for no_links in (False, True):
+        if no_links:
+            def refuse(src, dst):
+                raise OSError(errno.EXDEV, "cross-device link")
+            monkeypatch.setattr(rt.os, "link", refuse)
+            (tmp_path / "missing.md").unlink()
+        items = [_staged(tmp_path, "there.md", b"backup", keep_existing=True),
+                 _staged(tmp_path, "missing.md", b"backup", keep_existing=True, mode=0o600)]
+        out = rt.pull({"root": str(tmp_path), "items": items})
+        assert {p: r["status"] for p, r in out["results"].items()} == {"there.md": "ok", "missing.md": "ok"}
+        assert (tmp_path / "there.md").read_bytes() == b"turn"
+        assert (tmp_path / "missing.md").read_bytes() == b"backup"
+        assert stat.S_IMODE(os.stat(tmp_path / "missing.md").st_mode) == 0o600
+        assert not [p for p in os.listdir(tmp_path) if p.startswith(".wsfiles-")]
+
+
+def test_pull_pack_keep_existing_member_leaves_a_present_file(tmp_path):
+    members = {"a.txt": b"aaa", "b.txt": b"bb"}
+    data = b"".join(members[p] for p in sorted(members))
+    (tmp_path / ".wsfiles-relay-x").write_bytes(data)
+    (tmp_path / "a.txt").write_bytes(b"turn")
+    entries, off = [], 0
+    for p in sorted(members):
+        entries.append({"path": p, "offset": off, "size": len(members[p]), "sha256": _sha(members[p]),
+                        "mode": 0o644, "mtime_ns": 1, "keep_existing": True})
+        off += len(members[p])
+    out = _pull(tmp_path, {"kind": "pack", "file": ".wsfiles-relay-x", "sha256": _sha(data), "size": len(data), "members": entries})
+    assert {p: r["status"] for p, r in out["results"].items()} == {"a.txt": "ok", "b.txt": "ok"}
+    assert (tmp_path / "a.txt").read_bytes() == b"turn"
+    assert (tmp_path / "b.txt").read_bytes() == b"bb"
 
 
 def test_pull_removes_staging_files_no_item_claims(tmp_path):

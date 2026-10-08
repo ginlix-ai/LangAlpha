@@ -314,8 +314,9 @@ def _summarizable(messages: list[AnyMessage]) -> list[AnyMessage]:
     they annotate is rebuilt at compaction, and so are subagent-switch
     notices, which restate themselves after a compaction while the switch is
     off and would otherwise leave a summary saying it is off once it is back
-    on. Change rows are relabelled as ``System:`` so what they say survives
-    without being attributed to anyone. An orchestrator's notice of a
+    on, and notes reminders, which the summary itself answers. Change rows
+    are relabelled as ``System:`` so what they say survives without being
+    attributed to anyone. An orchestrator's notice of a
     background task is relabelled the same way. Its steering trigger is
     dropped: it says only that the user wrote more, which the steering
     message after it shows, and the summarizer took it, under either label,

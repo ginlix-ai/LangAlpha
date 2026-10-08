@@ -17,6 +17,7 @@ from ptc_agent.agent.middleware.compaction.utils import (
     parse_summary_message,
 )
 from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript.classify import LEGACY_SUMMARY_PREFIX
 from ptc_agent.agent.transcript.pointer import (
     SummarySpan,
     TranscriptTurns,
@@ -52,9 +53,16 @@ def test_summary_containing_the_note_survives():
 def test_legacy_message_without_length_stamp_falls_back():
     # Pre-stamp checkpoints have no summarize_complete metadata → rsplit path.
     summary = "Legacy summary text."
-    content = f"{CONTEXT_SUMMARY_PREFIX}{summary}{_LEGACY_FILE_NOTE}work/history.md`."
+    content = f"{LEGACY_SUMMARY_PREFIX}{summary}{_LEGACY_FILE_NOTE}work/history.md`."
     legacy = HumanMessage(content=content)  # no additional_kwargs stamp
     assert parse_summary_message(legacy) == summary
+
+
+def test_stamped_summary_with_the_old_opening_still_parses():
+    summary = "Written before the opening said which side wins."
+    msg = build_summary_message(summary, TRANSCRIPT, span=SummarySpan(1, 2))
+    msg.content = msg.content.replace(CONTEXT_SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, 1)
+    assert parse_summary_message(msg) == summary
 
 
 def test_task_note_names_the_task_runs():

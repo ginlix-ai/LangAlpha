@@ -25,9 +25,23 @@ def test_the_skill_reconciler_scratch_is_reserved_under_its_own_directory_only()
     every scan and prune its rows."""
     spec = exclusion_spec(1)
     assert ".agents/skills/.staging" in spec["exclude_rel_dirs"]
-    assert spec["exclude_rel_dir_prefixes"] == [".agents/skills/.trash-"]
+    assert ".agents/skills/.trash-" in spec["exclude_rel_dir_prefixes"]
     assert ".staging" not in spec["exclude_dir_names"]
     assert "exclude_dir_name_prefixes" not in spec
+
+
+def test_what_a_prune_set_aside_is_never_backed_up():
+    """A delete that fails after the set-aside leaves the dead dirs there; a
+    backup that took them would bring a deleted thread's files back."""
+    spec = exclusion_spec(1)
+    assert ".agents/.pruned." in spec["exclude_rel_dir_prefixes"]
+
+
+def test_the_deferred_ledger_is_never_backed_up():
+    """It lists what one sandbox received; restored onto the next, it would
+    keep that sandbox from ever receiving those paths."""
+    spec = exclusion_spec(1)
+    assert ".agents/large_tool_results/.restored.d" in spec["exclude_rel_dirs"]
 
 
 def test_the_reconciler_lock_is_reserved_at_its_own_path_only():

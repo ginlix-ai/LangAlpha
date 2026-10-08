@@ -16,11 +16,17 @@ from ptc_agent.config.agent import CompactionConfig
 from ptc_agent.core.paths import AGENT_HISTORY_DIRS, SandboxLayout
 
 
-# Constant for context summary prefix - used in both standalone function and middleware
+# How a summary message opens. The summary is written from the history before
+# the cut while the newest messages stay after it word for word, so when work
+# finished or the user steered inside those, the two disagree; this says which
+# one stands. Summaries written before open with transcript.classify's
+# LEGACY_SUMMARY_PREFIX.
 CONTEXT_SUMMARY_PREFIX = (
     "[Context Summary]\n"
-    "This session is being continued from a previous conversation "
-    "that ran out of context. The conversation is summarized below:\n\n"
+    "This session is being continued from a previous conversation that ran out "
+    "of context. The summary below covers only the earlier messages, which are "
+    "no longer in your context. The messages after it are kept word for word and "
+    "happened later, so where they disagree with the summary, go by them.\n\n"
 )
 
 
@@ -100,8 +106,9 @@ class CompactionState(AgentState):
 # that bloat context in older messages.
 TRUNCATABLE_TOOLS = frozenset({"Write", "Edit", "ExecuteCode"})
 
-# Path prefixes for Read results considered non-critical — these files contain
-# previously offloaded content that the agent has already processed.
+# The dirs whose Read results are non-critical: content offloaded earlier that
+# the agent has already processed, and its own working files, which it reads
+# again by path when it needs them.
 NON_CRITICAL_READ_PREFIXES: tuple[str, ...] = tuple(
     f"{d}/" for d in (*AGENT_HISTORY_DIRS, SandboxLayout.TMP_DIR)
 )

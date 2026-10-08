@@ -32,6 +32,7 @@ from ptc_agent.core.paths import (
     BACKUP_EXCLUDE_AGENT_SUBDIRS,
     BACKUP_EXCLUDE_DIRS,
     HIDDEN_DIR_NAMES,
+    THREAD_DIRS_SET_ASIDE,
     SandboxLayout,
     WorkspaceLayout,
 )
@@ -67,12 +68,19 @@ EXCLUDE_ROOT_DIRS: tuple[str, ...] = tuple(
 # of a live reconcile. Matched by workspace-relative path: the same names
 # anywhere else (``work/model/.staging``) are the user's own directories.
 SKILLS_DIR = SandboxLayout.SKILLS_DIR
+# What the deferred restore passes placed or found in place, one file of
+# NUL-ended paths per write (see DEFERRED_RESTORE_DIRS). It speaks for the sandbox it was written
+# on: a copy restored onto the next would name paths that sandbox never received.
+DEFERRED_LEDGER = f"{WorkspaceLayout.LARGE_TOOL_RESULTS_DIR}/.restored.d"
 EXCLUDE_REL_DIRS: tuple[str, ...] = (
     *EXCLUDE_ROOT_DIRS,
     *BACKUP_EXCLUDE_AGENT_SUBDIRS,
     f"{SKILLS_DIR}/.staging",
+    DEFERRED_LEDGER,
 )
-EXCLUDE_REL_DIR_PREFIXES: tuple[str, ...] = (f"{SKILLS_DIR}/.trash-",)
+# The skill reconciler's trash and what a prune set aside: both on their way
+# out, and a copy of either would come back with a restore.
+EXCLUDE_REL_DIR_PREFIXES: tuple[str, ...] = (f"{SKILLS_DIR}/.trash-", THREAD_DIRS_SET_ASIDE)
 # The reconciler's lock file, at its one path; a user's own
 # ``results/.skills-sync.flock`` is a file like any other.
 EXCLUDE_REL_FILES: tuple[str, ...] = (f"{SKILLS_DIR}/.skills-sync.flock",)
@@ -84,19 +92,47 @@ EXCLUDE_BASENAMES: frozenset[str] = frozenset({".DS_Store", "Thumbs.db"})
 
 SYNC_MARKER_NAME = ".file_sync_marker"
 
-# Evicted tool results are most of a long thread's bytes and are read back
-# rarely, so a restore brings them after the rest of the folder rather than
-# before the first turn. Their rows are pruned only once the sandbox holds
-# DEFERRED_MARKER, which that second pass writes when every one came back:
-# until then a missing result is one still on its way, not one deleted.
-# The scan has to list the marker to see it, so no sandbox-side exclusion may
-# cover it; the server drops it from the manifest instead.
-DEFERRED_RESTORE_DIR = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR
-DEFERRED_MARKER = f"{DEFERRED_RESTORE_DIR}/.restored"
+# Evicted tool results are read back rarely, and with the agent's scratchpads
+# they are most of a long thread's bytes, so a restore brings both after the
+# rest of the folder rather than before the first turn. The notes are the
+# exception: a resumed turn reads them first, so they come with the folder and
+# are not deferred at all (see is_deferred); once that pass is done, a missing
+# one is one the turn deleted.
+# The turn can still write to a scratchpad before the second pass reaches it,
+# so a path the pass finds holding anything is left alone: it was written
+# after the backup. The sandbox makes the same check as it places each entry,
+# in one step with the placement, so one written while its backup copy
+# downloads is kept as well. A path a pass placed or found there goes in
+# DEFERRED_LEDGER, so a later look, by this pass, another worker's or a retry,
+# reads its absence as the turn deleting it rather than as a file still to send. Their rows are pruned
+# only once the sandbox holds DEFERRED_MARKER, which that pass writes when
+# every one came back: until then a missing file is one still on its way, not
+# one deleted. The scan has to list the marker to see it, so no sandbox-side
+# exclusion may cover it; the server drops it from the manifest instead.
+DEFERRED_RESTORE_DIRS: tuple[str, ...] = (
+    WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
+    WorkspaceLayout.SCRATCHPAD_DIR,
+)
+# Where the first deferred dir always had it, so a sandbox restored before
+# the scratchpads were deferred still reads as done.
+DEFERRED_MARKER = f"{WorkspaceLayout.LARGE_TOOL_RESULTS_DIR}/.restored"
+
+
+def scratchpad_note_thread(path: str) -> str | None:
+    """The thread whose checkpoint notes hold ``path``, or None for a path
+    outside every thread's notes."""
+    base = WorkspaceLayout.SCRATCHPAD_DIR + "/"
+    thread, _, rest = path.removeprefix(base).partition("/")
+    if path.startswith(base) and rest.split("/", 1)[0] == WorkspaceLayout.SCRATCHPAD_NOTE_DIR:
+        return thread
+    return None
 
 
 def is_deferred(path: str) -> bool:
-    return path == DEFERRED_RESTORE_DIR or path.startswith(DEFERRED_RESTORE_DIR + "/")
+    """Whether the second restore pass brings ``path`` back."""
+    return scratchpad_note_thread(path) is None and any(
+        path == d or path.startswith(d + "/") for d in DEFERRED_RESTORE_DIRS
+    )
 
 
 # Bounded by the disk rather than the workspace's history: a scan hashes only
@@ -288,7 +324,7 @@ class ScanResult:
     # Wall clock minus boot clock at the start: lets a sweep see a clock
     # stepped back since (see ScanMark).
     clock_offset_ns: int | None = None
-    # The sandbox holds DEFERRED_MARKER: its evicted results are complete.
+    # The sandbox holds DEFERRED_MARKER: its deferred dirs are complete.
     deferred_restored: bool = False
 
 

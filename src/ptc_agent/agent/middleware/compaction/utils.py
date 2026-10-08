@@ -26,7 +26,7 @@ from ptc_agent.agent.middleware._message_utils import (
 )
 from ptc_agent.agent.middleware.skills.content import skill_bodies
 from ptc_agent.agent.transcript import TranscriptTarget
-from ptc_agent.agent.transcript.classify import is_summary_message
+from ptc_agent.agent.transcript.classify import LEGACY_SUMMARY_PREFIX, is_summary_message
 from ptc_agent.agent.transcript.pointer import SummarySpan, transcript_note
 from src.llms.attachment_payload import FILE_BLOCK_TYPES, IMAGE_BLOCK_TYPES
 from ptc_agent.agent.middleware.compaction.types import (
@@ -338,7 +338,7 @@ def stale_read_ids(messages: list[AnyMessage], cutoff_index: int) -> set[str]:
 
     stale: set[str] = set()
     for (file_path, _, _), entries in reads.items():
-        non_critical = file_path.startswith(NON_CRITICAL_READ_PREFIXES)
+        non_critical = _is_non_critical_read(file_path)
         latest = entries[-1][0]
         for i, call_id in entries:
             if (
@@ -348,6 +348,16 @@ def stale_read_ids(messages: list[AnyMessage], cutoff_index: int) -> set[str]:
             ):
                 stale.add(call_id)
     return stale
+
+
+def _is_non_critical_read(file_path: str) -> bool:
+    """Whether ``file_path`` lies under a ``NON_CRITICAL_READ_PREFIXES`` dir,
+    matched wherever the dir sits in the path: the model names these files
+    workspace-relative or absolute, and the scratchpad's are always absolute."""
+    return any(
+        file_path.startswith(prefix) or f"/{prefix}" in file_path
+        for prefix in NON_CRITICAL_READ_PREFIXES
+    )
 
 
 def read_offload_marker(file_path: str) -> str:
@@ -638,6 +648,15 @@ def get_effective_messages(
     return [event["summary_message"], *tail]
 
 
+def measured_tokens(state: Mapping[str, Any]) -> int | None:
+    """The context size the last model call reported, which the next call's
+    summary trigger reads; None before any call has reported usage."""
+    cached_input = state.get("_cached_input_tokens") or 0
+    if cached_input <= 0:
+        return None
+    return cached_input + (state.get("_cached_output_tokens") or 0)
+
+
 def resolve_cutoff_index(messages: Sequence[AnyMessage], event: Mapping[str, Any]) -> int:
     """Where ``event``'s boundary falls in ``messages`` as they are now.
 
@@ -682,6 +701,7 @@ def build_summary_message(
     skills: Sequence[str] = (),
     skill_files: bool = False,
     source: str = "model",
+    notes: str = "",
 ) -> HumanMessage:
     """Build the summary HumanMessage, pointing at the transcript when there is one.
 
@@ -690,12 +710,15 @@ def build_summary_message(
     so checkpoint-sourced replay re-emits the event without the stored SSE
     stream. ``skills`` are listed for the agent to reload (see
     ``skill_reload_note``). ``source`` says what wrote the summary (see
-    ``summarize``).
+    ``summarize``). ``notes`` (the scratchpad pointer, already rendered) goes
+    last; the stamped length is what keeps it out of the summary a reader
+    parses back.
     """
     content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
     if transcript is not None:
         content += transcript_note(transcript, span, index)
     content += skill_reload_note(list(skills), files=skill_files)
+    content += notes
 
     return HumanMessage(
         content=content,
@@ -791,7 +814,14 @@ def summary_source(message: Any) -> str | None:
 def parse_summary_message(message: HumanMessage) -> str:
     """Recover the raw summary text from a ``build_summary_message`` message."""
     content = message.content if isinstance(message.content, str) else ""
-    text = content.removeprefix(CONTEXT_SUMMARY_PREFIX)
+    text = next(
+        (
+            content[len(prefix) :]
+            for prefix in (CONTEXT_SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX)
+            if content.startswith(prefix)
+        ),
+        content,
+    )
     # The exact length is stamped at build time; slice by it rather than
     # string-splitting on the note, which would mis-truncate a summary that
     # itself contains the note text.

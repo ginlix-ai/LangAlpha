@@ -135,6 +135,8 @@ EXPECTED_WORKSPACE_RELATIVE = {
     "MCP_CLIENT_CONFIG_FILE": ".agents/tools/mcp_client_config.json",
     "THREADS_DIR": ".agents/threads",
     "LARGE_TOOL_RESULTS_DIR": ".agents/large_tool_results",
+    "SCRATCHPAD_DIR": ".agents/scratchpad",
+    "SCRATCHPAD_NOTE_DIR": "note",
     "TRANSCRIPTS_DIR": ".agents/transcripts",
     "AGENT_MD_FILE": "agent.md",
     "DATA_DIR": "data",
@@ -154,6 +156,7 @@ EXPECTED_WORKSPACE_ABSOLUTE = {
     "large_tool_results": (
         "/home/workspace/acme-ab12/.agents/large_tool_results"
     ),
+    "scratchpad": "/home/workspace/acme-ab12/.agents/scratchpad",
     "transcripts": "/home/workspace/acme-ab12/.agents/transcripts",
     "agent_md": "/home/workspace/acme-ab12/agent.md",
 }
@@ -351,12 +354,13 @@ class TestWorkspaceLayout:
         # A turn's scratch follows the project it ran for, so deleting the
         # workspace folder takes it along. Naming it on the computer would put
         # every project's threads back in one flat pile at the root.
-        for name in ("THREADS_DIR", "LARGE_TOOL_RESULTS_DIR"):
+        for name in ("THREADS_DIR", "LARGE_TOOL_RESULTS_DIR", "SCRATCHPAD_DIR"):
             assert hasattr(WorkspaceLayout, name)
             assert not hasattr(SandboxLayout, name)
         layout = SandboxLayout.default().for_workspace("acme-ab12")
         assert layout.threads.startswith(layout.workspace + "/")
         assert layout.large_tool_results.startswith(layout.workspace + "/")
+        assert layout.scratchpad.startswith(layout.workspace + "/")
 
     def test_no_folder_means_the_workspace_owns_the_root(self):
         computer = SandboxLayout.default()

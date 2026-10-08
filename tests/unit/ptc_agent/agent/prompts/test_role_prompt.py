@@ -40,7 +40,7 @@ def test_no_shared_section_tells_the_chief_of_staff_to_keep_a_workspace_index():
     for analyst_only in (
         "index of what each task produced",
         "Key findings, what each task produced",
-        "`agent.md` indexes a single workspace",
+        "`agent.md` is about the workspace",
         "What this workspace is doing",
         "project_q2_rebalance_thesis.md",
     ):

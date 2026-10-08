@@ -68,6 +68,9 @@ async def _resolve_graph_and_state(
             status_code=400,
             detail=f"Thread {thread_id} has no associated workspace",
         )
+    # The row holds a uuid.UUID; the session and its asset sync key on the str
+    # the request paths pass.
+    workspace_id = str(workspace_id)
 
     # Session
     workspace_manager = WorkspaceManager.get_instance()
@@ -190,6 +193,7 @@ async def trigger_compaction(
     """
     try:
         from ptc_agent.agent.middleware.compaction import compact_messages
+        from ptc_agent.agent.middleware.compaction.notes import ThreadScratchpad
         from src.server.app import setup
 
         # The mutation fence FIRST — before any graph state reads or writes:
@@ -256,7 +260,13 @@ async def trigger_compaction(
             )
 
             # The same pipeline as automatic compaction, on the user's
-            # resolved config, so a manual /compact runs the same model.
+            # resolved config, so a manual /compact runs the same model and
+            # names the notes when the user's flag is on, as the agent build does.
+            scratchpad = (
+                ThreadScratchpad.resolve(agent_cfg, backend.workspace_dir, thread_id)
+                if backend is not None and agent_cfg is not None
+                else None
+            )
             try:
                 compaction = await compact_messages(
                     messages,
@@ -266,6 +276,7 @@ async def trigger_compaction(
                     keep_messages=keep_messages,
                     backend=backend,
                     workspace_id=workspace_id,
+                    notes_dir=scratchpad.notes_dir if scratchpad is not None else None,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))

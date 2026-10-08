@@ -56,10 +56,21 @@ TURN_ROW_KIND = "turn_opened"
 #: the same way.
 SUBAGENTS_ROW_KIND = "subagents_switched"
 
+#: Row kind of the scratchpad notes reminder (``compaction/notes.py``), which
+#: ``update_row.md.j2`` hardcodes the same way.
+NOTES_DUE_ROW_KIND = "notes_due"
+
+#: Row kind of the scratchpad notes check-in (``compaction/notes.py``), which
+#: ``update_row.md.j2`` hardcodes the same way.
+NOTES_CHECK_IN_ROW_KIND = "notes_check_in"
+
 #: Rows that are no change under the baseline: their writers state them again
-#: once a compaction takes them from view, so a rebuild does not count them
-#: and a summary does not carry them.
-NON_CHANGE_ROW_KINDS = frozenset({TURN_ROW_KIND, SUBAGENTS_ROW_KIND})
+#: once a compaction takes them from view (the notes reminder before the next
+#: summary, the check-in after the next run of tool calls), so a rebuild does
+#: not count them and a summary does not carry them.
+NON_CHANGE_ROW_KINDS = frozenset(
+    {TURN_ROW_KIND, SUBAGENTS_ROW_KIND, NOTES_DUE_ROW_KIND, NOTES_CHECK_IN_ROW_KIND}
+)
 
 # The key a manual follow-up in an automation's thread states under when it
 # has no surface of its own: the handoff is a rule, and a rule needs a key so

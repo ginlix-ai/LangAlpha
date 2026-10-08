@@ -601,3 +601,24 @@ def test_stale_reads_tolerate_args_read_never_accepted():
     ]
 
     assert utils.stale_read_ids(messages, len(messages)) == {"r2"}
+
+
+def test_stale_reads_match_history_dirs_in_absolute_paths():
+    # The scratchpad is given to the model as an absolute path, so a note read
+    # by it must count as the agent's own working file, as a relative read does.
+    paths = {
+        "r1": "/home/workspace/Semis Run/.agents/scratchpad/a1b2c3d4/note/task.md",
+        "r2": ".agents/scratchpad/a1b2c3d4/note/task.md",
+        "r3": "/home/workspace/Semis Run/report.md",
+        "r4": "/home/workspace/Semis Run/threads/a1b2c3d4/notes.md",
+    }
+    messages = []
+    for call_id, path in paths.items():
+        messages += [
+            AIMessage("", id=f"a-{call_id}", tool_calls=[
+                {"name": "Read", "id": call_id, "args": {"file_path": path}},
+            ]),
+            ToolMessage("body", tool_call_id=call_id, id=f"t-{call_id}"),
+        ]
+
+    assert utils.stale_read_ids(messages, len(messages)) == {"r1", "r2"}

@@ -1,4 +1,5 @@
-"""Seam: a machine's background bring-up and the deleted threads' dirs it prunes.
+"""Seam: a machine's background bring-up, and the dirs of deleted threads
+and the scratchpads of archived ones that it prunes.
 
 One file of the ComputerManager split; see the package __init__."""
 
@@ -8,7 +9,7 @@ import itertools
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from ptc_agent.core.paths import WorkspaceLayout
 from src.server.database.computer import DEFAULT_ROOT_DIR, get_computer_for_workspace
@@ -21,6 +22,9 @@ from src.server.services.persistence import restore
 from src.server.services.persistence.file import FilePersistenceService
 from src.server.services.workspace_layout import held_workspace_layout
 
+if TYPE_CHECKING:
+    from src.server.database.conversation import ThreadPrefixes
+
 logger = logging.getLogger(__name__)
 
 # A backup holds the workspace's sync lock for as long as it runs. The bring-up
@@ -32,12 +36,13 @@ _LOCK_WAIT = "2s"
 _BUSY_PAUSE_S = 15.0
 _LOCK_TRIES = 12
 
-# A pass that finished is stamped with its sandbox and the live threads it
-# judged. Only a thread's delete leaves a dir to prune, and the deferred marker
-# ends the restore for the sandbox's life, so a bring-up finding the same stamp
-# has nothing to do there. Redis only saves the work: a lost stamp costs a pass.
+# A pass that finished is stamped with its sandbox and the threads it judged.
+# Only a thread's delete, or its archive once it is no longer in use (see
+# ThreadPrefixes), leaves a dir to prune, and the deferred marker ends the
+# restore for the sandbox's life, so a bring-up finding the same stamp has
+# nothing to do there. Redis only saves the work: a lost stamp costs a pass.
 _STAMP_TTL_S = 7 * 24 * 3600
-# Splits the one exec's output: the thread dirs above, the deferred dir below.
+# Splits the one exec's output: the thread dirs above, the deferred dirs below.
 _INVENTORY_SPLIT = "#deferred"
 
 # Where a workspace's next step stands in the queue, first to last.
@@ -60,10 +65,11 @@ def _stamp_key(workspace_id: str) -> str:
     return f"bringup:{workspace_id}"
 
 
-def _stamp(sandbox_id: Optional[str], live_short_ids: set[str]) -> Optional[str]:
+def _stamp(sandbox_id: Optional[str], kept: "ThreadPrefixes") -> Optional[str]:
     if not sandbox_id:
         return None
-    digest = hashlib.sha256("\n".join(sorted(live_short_ids)).encode()).hexdigest()
+    listed = "\n".join(sorted(kept.all)) + "|" + "\n".join(sorted(kept.open))
+    digest = hashlib.sha256(listed.encode()).hexdigest()
     return f"{sandbox_id}|{digest[:16]}"
 
 
@@ -100,16 +106,16 @@ async def _drop_stamp(workspace_id: str) -> None:
         logger.debug(f"Could not drop the bring-up stamp of workspace {workspace_id}: {e}")
 
 
-async def _live_threads(workspace_id: str) -> set[str]:
-    from src.server.database.conversation import get_workspace_thread_short_ids
+async def _thread_prefixes(workspace_id: str) -> "ThreadPrefixes":
+    from src.server.database.conversation import get_workspace_thread_prefixes
 
-    return await get_workspace_thread_short_ids(workspace_id)
+    return await get_workspace_thread_prefixes(workspace_id)
 
 
 async def _inventory(
     runtime: Any, layout: WorkspaceLayout
 ) -> tuple[Optional[_thread_dirs.ThreadDirListing], Optional[restore.DeferredInventory]]:
-    """The thread dirs and the deferred dir, in one exec; both are None when
+    """The thread dirs and the deferred dirs, in one exec; both are None when
     the output came back without the split, and each step probes for itself."""
     listed = await runtime.exec(
         f"{_thread_dirs.listing_script(layout)}\n"
@@ -206,7 +212,7 @@ class BringUp:
         if stamp is None or stamp.split("|", 1)[0] != self.sandbox_id:
             return False
         try:
-            live = await _live_threads(workspace_id)
+            live = await _thread_prefixes(workspace_id)
         except Exception:  # noqa: BLE001 - the pass reads them again and reports
             return False
         return stamp == _stamp(self.sandbox_id, live)
@@ -223,22 +229,28 @@ class BringUp:
                 if layout is None:
                     raise WorkspaceFolderMoving(workspace_id)
                 listing, inventory = await _inventory(self.sandbox.runtime, layout)
-                live, pruned = await _thread_dirs.prune_dead_thread_dirs(
+                kept, pruned = await _thread_dirs.prune_dead_thread_dirs(
                     self.sandbox.runtime, layout, workspace_id, listing=listing
                 )
                 outcome = await FilePersistenceService.restore_deferred(
                     workspace_id,
                     self.sandbox,
                     layout=layout,
-                    live_short_ids=live,
+                    kept=kept,
                     lock_wait=_LOCK_WAIT,
                     inventory=inventory,
                 )
+                if await _thread_prefixes(workspace_id) != kept:
+                    # A delete or archive during the pass pruned beside a
+                    # batch that may have put its dirs back.
+                    kept, pruned = await _thread_dirs.prune_dead_thread_dirs(
+                        self.sandbox.runtime, layout, workspace_id
+                    )
             if outcome["restored"] or outcome["errors"]:
                 logger.info(f"Deferred restore for workspace {workspace_id}: {outcome}")
             done = bool(outcome.get("done"))
             if done and pruned:
-                await _write_stamp(workspace_id, _stamp(self.sandbox_id, live))
+                await _write_stamp(workspace_id, _stamp(self.sandbox_id, kept))
         except WorkspaceFolderMoving:
             logger.info(
                 f"Deferred restore for workspace {workspace_id} found no settled "
@@ -326,13 +338,32 @@ class BringUpMixin:
 
     def prune_thread_dirs_soon(self, workspace_id: str) -> None:
         """``prune_thread_dirs_if_running`` without holding up the thread
-        delete that asks for it."""
+        delete or archive that asks for it."""
         task = asyncio.create_task(self.prune_thread_dirs_if_running(workspace_id))
         self._prune_tasks.add(task)
         task.add_done_callback(self._prune_tasks.discard)
 
+    def prune_if_archived_soon(self, thread_id: str) -> None:
+        """At the end of a run: if its thread is archived, the scratchpad the
+        run kept open leaves now, not at the machine's next bring-up."""
+        task = asyncio.create_task(self._prune_if_archived(thread_id))
+        self._prune_tasks.add(task)
+        task.add_done_callback(self._prune_tasks.discard)
+
+    async def _prune_if_archived(self, thread_id: str) -> None:
+        from src.server.database.conversation import get_thread_by_id
+
+        try:
+            thread = await get_thread_by_id(thread_id)
+        except Exception as e:
+            logger.warning(f"Could not read thread {thread_id} for its archive prune: {e}")
+            return
+        if thread and thread.get("archived_at") is not None:
+            await self.prune_thread_dirs_if_running(str(thread["workspace_id"]))
+
     async def prune_thread_dirs_if_running(self, workspace_id: str) -> None:
-        """Deleted threads' dirs leave the machine now, if it is up.
+        """Deleted threads' dirs and archived threads' scratchpads leave the
+        machine now, if it is up.
 
         Never wakes a stopped machine: its next bring-up prunes what this
         misses, which the dropped stamp keeps it from skipping.

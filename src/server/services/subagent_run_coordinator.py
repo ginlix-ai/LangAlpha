@@ -226,6 +226,14 @@ class SubagentRunCoordinator:
                 schedule_thread_export(self.thread_id)
             except Exception:
                 pass
+            # The last writer of an archived thread's scratchpad may be this
+            # task, outliving the turn that dispatched it.
+            try:
+                from src.server.services.workspace_manager import prune_if_archived_soon
+
+                prune_if_archived_soon(self.thread_id)
+            except Exception:
+                pass
             if not defer_run_end:
                 await self._append_v2_frame(
                     task_run_id,

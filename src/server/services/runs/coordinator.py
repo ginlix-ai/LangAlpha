@@ -649,6 +649,7 @@ class RunCoordinator:
         transcript."""
         self._schedule_projection_refresh(thread_id)
         self._schedule_transcript_export(thread_id, run)
+        self._schedule_archive_prune(thread_id, run)
         self._nudge_hook_drainer()
 
     def _nudge_hook_drainer(self) -> None:
@@ -672,6 +673,24 @@ class RunCoordinator:
             logger.warning(
                 f"[RunCoordinator] projection refresh scheduling failed for "
                 f"{thread_id}",
+                exc_info=True,
+            )
+
+    def _schedule_archive_prune(
+        self, thread_id: str, run: Optional[Dict[str, Any]]
+    ) -> None:
+        # An archived thread keeps its scratchpad while a run writes to it,
+        # and nothing else asks for the prune once that run ends.
+        try:
+            meta = (run or {}).get("metadata") or {}
+            if meta.get("msg_type") != "ptc":
+                return
+            from src.server.services.workspace_manager import prune_if_archived_soon
+
+            prune_if_archived_soon(thread_id)
+        except Exception:
+            logger.warning(
+                f"[RunCoordinator] archive prune scheduling failed for {thread_id}",
                 exc_info=True,
             )
 

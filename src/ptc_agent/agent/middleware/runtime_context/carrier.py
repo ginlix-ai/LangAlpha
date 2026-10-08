@@ -161,7 +161,12 @@ def carry_durable_updates(messages: list[Any], shape: CarrierShape) -> list[Any]
     Rows are written at the turn boundary, so each one follows the user message
     of its turn. That ordering is what every shape needs: the operator shapes
     because a mid-conversation ``system`` entry has to follow a user message,
-    the reminder shape because it merges into the message in front of it.
+    the reminder shape because it merges into the message in front of it. A
+    row written mid-turn, such as the notes reminder or check-in, follows a
+    tool batch instead, where the per-call envelope already lands on every call
+    after one: an operator entry follows the results as the envelope's does,
+    and the reminder shape, with no user message in front, stands alone rather
+    than entering a tool result.
     """
     base = list(messages or [])
     if not any(is_runtime_update_message(m) for m in base):

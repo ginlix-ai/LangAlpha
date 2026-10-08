@@ -129,6 +129,25 @@ FEATURES: dict[str, FeatureSpec] = {
             "future release."
         ),
     ),
+    "scratchpad": FeatureSpec(
+        key="scratchpad",
+        label="Scratchpad and working notes",
+        description=(
+            "Gives the agent a scratchpad folder in each thread for its "
+            "intermediate files, and has it keep running notes there: key "
+            "findings, decisions and why, and corrections you give mid-task. "
+            "The notes carry a long task through after older messages in the "
+            "thread are summarized."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        tradeoffs=(
+            "The agent spends a few extra tool calls per task keeping its "
+            "notes. The scratchpad and its notes are deleted when you archive "
+            "the thread, so keep anything you want to last in the workspace's "
+            "own files."
+        ),
+    ),
 }
 
 

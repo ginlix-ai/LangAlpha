@@ -12,6 +12,7 @@ the checkpoint redo it.
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -20,7 +21,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ptc_agent.agent.transcript import TranscriptTarget, load_manifest
-from ptc_agent.core.paths import SandboxLayout
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
+from src.server.database.conversation import ThreadPrefixes
 from src.server.database.thread_transcripts import (
     StaleCopy,
     StoredTranscript,
@@ -52,10 +54,13 @@ class _Runtime:
         self.rm_exit = rm_exit
         self.commands: list[str] = []
 
-    async def exec(self, command: str):
+    async def exec(self, command: str, timeout: int = 60):
         self.commands.append(command)
-        if command.startswith("rm "):
+        # The delete after the fence is one line; the listing opens with its sweep.
+        if "rm -rf" in command and "\n" not in command:
             return SimpleNamespace(stdout="", stderr="", exit_code=self.rm_exit)
+        if "mktemp" in command:
+            return SimpleNamespace(stdout=_thread_dirs._SET_ASIDE_END, exit_code=0)
         return SimpleNamespace(stdout=self.stdout, exit_code=0)
 
 
@@ -448,42 +453,301 @@ def test_the_index_names_no_transcript_two_threads_share_a_directory_for():
 # -- the sync at bring-up ------------------------------------------------------
 
 
+def _prefixes(*open_ids: str, archived: tuple[str, ...] = ()) -> ThreadPrefixes:
+    return ThreadPrefixes(all=frozenset((*open_ids, *archived)), open=frozenset(open_ids))
+
+
+def _thread_reads(monkeypatch, plain: ThreadPrefixes, fenced: ThreadPrefixes | None = None) -> None:
+    """The plain read and the fenced one, which a run admitted in between can
+    make differ."""
+    monkeypatch.setattr(
+        "src.server.database.conversation.get_workspace_thread_prefixes",
+        AsyncMock(return_value=plain),
+    )
+
+    @asynccontextmanager
+    async def fenced_read(_workspace_id):
+        yield plain if fenced is None else fenced
+
+    monkeypatch.setattr(
+        "src.server.database.conversation.fenced_workspace_thread_prefixes", fenced_read
+    )
+
+
+def _set_aside(runtime) -> list[str]:
+    """The dirs the prune's set-aside script moves, in order."""
+    (script,) = [c for c in runtime.commands if "mktemp" in c]
+    return [line.split(" ")[1] for line in script.splitlines() if line.startswith("move ")]
+
+
+PRUNED = _thread_dirs._remove_set_aside(LAYOUT)
+
+
+# The listing leads each dir's line with the base it sits under.
+D = WorkspaceLayout.THREADS_DIR
+R = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR
+S = WorkspaceLayout.SCRATCHPAD_DIR
+
+
 @pytest.mark.asyncio
 async def test_the_prune_clears_dead_dirs(monkeypatch):
-    runtime = _Runtime(stdout=f"d {T1[:8]}\nd 33333333\nr 33333333\n")
-    monkeypatch.setattr(
-        "src.server.database.conversation.get_workspace_thread_short_ids",
-        AsyncMock(return_value={T1[:8], T2[:8]}),
-    )
+    runtime = _Runtime(stdout=f"{D} {T1[:8]}\n{D} 33333333\n{R} 33333333\n")
+    _thread_reads(monkeypatch, _prefixes(T1[:8], T2[:8]))
 
     live, pruned = await _thread_dirs.prune_dead_thread_dirs(runtime, LAYOUT, "ws-1")
 
-    assert live == {T1[:8], T2[:8]}
+    assert live.all == {T1[:8], T2[:8]}
     assert pruned
-    assert runtime.commands[-1] == (
-        f"rm -rf -- {LAYOUT.threads}/33333333 {LAYOUT.large_tool_results}/33333333"
+    assert _set_aside(runtime) == [
+        f"{LAYOUT.threads}/33333333",
+        f"{LAYOUT.large_tool_results}/33333333",
+    ]
+    assert runtime.commands[-1] == PRUNED
+
+
+@pytest.mark.asyncio
+async def test_a_dir_judged_dead_before_the_fence_stays_if_a_run_took_it_since(monkeypatch):
+    """The plain read only decides whether to take the fence: a turn admitted
+    on the archived thread before it is live under the fenced read."""
+    runtime = _Runtime(stdout=f"{S} {T2[:8]}\n")
+    _thread_reads(
+        monkeypatch,
+        _prefixes(T1[:8], archived=(T2[:8],)),
+        fenced=_prefixes(T1[:8], T2[:8]),
     )
+
+    _, pruned = await _thread_dirs.prune_dead_thread_dirs(runtime, LAYOUT, "ws-1")
+
+    assert pruned
+    assert len(runtime.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_nothing_dead_takes_no_fence(monkeypatch):
+    runtime = _Runtime(stdout=f"{D} {T1[:8]}\n{S} {T1[:8]}\n")
+    monkeypatch.setattr(
+        "src.server.database.conversation.get_workspace_thread_prefixes",
+        AsyncMock(return_value=_prefixes(T1[:8])),
+    )
+    fenced = AsyncMock(side_effect=AssertionError("fenced"))
+    monkeypatch.setattr(
+        "src.server.database.conversation.fenced_workspace_thread_prefixes", fenced
+    )
+
+    _, pruned = await _thread_dirs.prune_dead_thread_dirs(runtime, LAYOUT, "ws-1")
+
+    assert pruned
+    fenced.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_archived_thread_keeps_its_scratch_and_loses_its_scratchpad(monkeypatch):
+    runtime = _Runtime(stdout=f"{D} {T2[:8]}\n{R} {T2[:8]}\n{S} {T1[:8]}\n{S} {T2[:8]}\n")
+    _thread_reads(monkeypatch, _prefixes(T1[:8], archived=(T2[:8],)))
+
+    _, pruned = await _thread_dirs.prune_dead_thread_dirs(runtime, LAYOUT, "ws-1")
+
+    assert pruned
+    assert _set_aside(runtime) == [f"{LAYOUT.scratchpad}/{T2[:8]}"]
+    assert runtime.commands[-1] == PRUNED
 
 
 @pytest.mark.asyncio
 async def test_a_prune_whose_removal_failed_says_so(monkeypatch):
-    runtime = _Runtime(stdout="d 33333333\n", rm_exit=-1)
-    monkeypatch.setattr(
-        "src.server.database.conversation.get_workspace_thread_short_ids",
-        AsyncMock(return_value={T1[:8]}),
-    )
+    runtime = _Runtime(stdout=f"{D} 33333333\n", rm_exit=-1)
+    _thread_reads(monkeypatch, _prefixes(T1[:8]))
 
     live, pruned = await _thread_dirs.prune_dead_thread_dirs(runtime, LAYOUT, "ws-1")
 
-    assert live == {T1[:8]}
+    assert live.all == {T1[:8]}
     assert not pruned
+
+
+class _Shell:
+    """A sandbox runtime that runs each script in a local shell."""
+
+    async def exec(self, script, timeout=60):
+        import subprocess
+
+        ran = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+        return SimpleNamespace(stdout=ran.stdout, stderr=ran.stderr, exit_code=ran.returncode)
+
+
+@pytest.mark.asyncio
+async def test_the_set_aside_and_the_removal_run_in_a_real_shell(monkeypatch, tmp_path):
+    """Both bases hold a dir of the same name, so each needs its own slot in
+    the set-aside folder; the live thread's dirs stay where they are."""
+    from pathlib import Path
+
+    layout = SandboxLayout.for_root(str(tmp_path)).for_workspace("My Workspace")
+    for path in (
+        layout.join(D, T1[:8], "keep.txt"),
+        layout.join(D, "33333333", "a.txt"),
+        layout.join(R, "33333333", "b.txt"),
+    ):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text("x")
+
+    _thread_reads(monkeypatch, _prefixes(T1[:8]))
+
+    _, pruned = await _thread_dirs.prune_dead_thread_dirs(_Shell(), layout, "ws-1")
+
+    assert pruned
+    assert Path(layout.join(D, T1[:8], "keep.txt")).exists()
+    assert not Path(layout.join(D, "33333333")).exists()
+    assert not Path(layout.join(R, "33333333")).exists()
+    assert not list(Path(layout.agents).glob(".pruned.*"))
+
+
+@pytest.mark.asyncio
+async def test_what_an_earlier_prune_could_not_delete_goes_with_the_next_listing(
+    monkeypatch, tmp_path
+):
+    """With nothing newly dead no set-aside runs, and no later judgment would
+    find the folder a failed delete left: one the agent made read-only, here."""
+    from pathlib import Path
+
+    layout = SandboxLayout.for_root(str(tmp_path)).for_workspace("My Workspace")
+    left = Path(layout.agents, ".pruned.abc123", "0", "note.md")
+    left.parent.mkdir(parents=True)
+    left.write_text("x")
+    left.parent.chmod(0o500)
+    Path(layout.join(D, T1[:8])).mkdir(parents=True)
+
+    _thread_reads(monkeypatch, _prefixes(T1[:8]))
+
+    _, pruned = await _thread_dirs.prune_dead_thread_dirs(_Shell(), layout, "ws-1")
+
+    assert pruned
+    assert not list(Path(layout.agents).glob(".pruned.*"))
+    assert Path(layout.join(D, T1[:8])).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_a_set_aside_that_starts_too_late_moves_nothing(monkeypatch, tmp_path):
+    """A timed-out exec may still run once the fence is gone, when a turn
+    admitted since could be writing in the dir it would move."""
+    from pathlib import Path
+
+    layout = SandboxLayout.for_root(str(tmp_path)).for_workspace("My Workspace")
+    dead = Path(layout.join(D, "33333333", "a.txt"))
+    dead.parent.mkdir(parents=True)
+    dead.write_text("x")
+    monkeypatch.setattr(_thread_dirs, "_SET_ASIDE_MOVE_S", -5)
+    _thread_reads(monkeypatch, _prefixes(T1[:8]))
+
+    _, pruned = await _thread_dirs.prune_dead_thread_dirs(_Shell(), layout, "ws-1")
+
+    assert not pruned
+    assert dead.exists()
+    assert not list(Path(layout.agents).glob(".pruned.*"))
+
+
+@pytest.mark.asyncio
+async def test_a_set_aside_that_stalls_past_its_deadline_moves_nothing_more(
+    monkeypatch, tmp_path
+):
+    """Started in time is not enough: a stalled exec runs on once the fence
+    is gone, so each move looks at the clock again."""
+    import shutil
+    from pathlib import Path
+
+    layout = SandboxLayout.for_root(str(tmp_path)).for_workspace("My Workspace")
+    dead = [Path(layout.join(base, "33333333", "a.txt")) for base in (D, R)]
+    for path in dead:
+        path.parent.mkdir(parents=True)
+        path.write_text("x")
+    # The clock reads true for the start check and the first move, then
+    # jumps past the deadline, as it would after a stall.
+    bin_dir, calls = tmp_path / "bin", tmp_path / "date-calls"
+    bin_dir.mkdir()
+    (bin_dir / "date").write_text(
+        f'#!/bin/sh\nn=$(cat {calls} 2>/dev/null || echo 0)\necho $((n + 1)) > {calls}\n'
+        f'[ "$n" -lt 2 ] && exec {shutil.which("date")} "$@"\necho 9999999999\n'
+    )
+    (bin_dir / "date").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    _thread_reads(monkeypatch, _prefixes(T1[:8]))
+
+    _, pruned = await _thread_dirs.prune_dead_thread_dirs(_Shell(), layout, "ws-1")
+
+    assert not pruned
+    assert [path.exists() for path in dead].count(True) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["raised", "no word of its end"])
+async def test_the_fence_outlasts_a_set_aside_that_may_still_be_running(monkeypatch, ending):
+    """An exec that fails early can leave the script running in the sandbox
+    until its deadline, so admission stays fenced through the timeout."""
+    import time
+
+    monkeypatch.setattr(_thread_dirs, "_SET_ASIDE_TIMEOUT_S", 0.3)
+    live = _prefixes(T1[:8])
+    monkeypatch.setattr(
+        "src.server.database.conversation.get_workspace_thread_prefixes",
+        AsyncMock(return_value=live),
+    )
+    held = {}
+
+    @asynccontextmanager
+    async def fenced_read(_workspace_id):
+        held["from"] = time.monotonic()
+        try:
+            yield live
+        finally:
+            held["for"] = time.monotonic() - held["from"]
+
+    monkeypatch.setattr(
+        "src.server.database.conversation.fenced_workspace_thread_prefixes", fenced_read
+    )
+
+    class _Failing(_Runtime):
+        async def exec(self, command, timeout=60):
+            if "mktemp" not in command:
+                return await super().exec(command, timeout)
+            if ending == "raised":
+                raise ConnectionError("exec stream closed")
+            return SimpleNamespace(stdout="", stderr="", exit_code=-1)
+
+    runtime = _Failing(stdout=f"{D} 33333333\n")
+    if ending == "raised":
+        with pytest.raises(ConnectionError):
+            await _thread_dirs.prune_dead_thread_dirs(runtime, LAYOUT, "ws-1")
+    else:
+        _, pruned = await _thread_dirs.prune_dead_thread_dirs(runtime, LAYOUT, "ws-1")
+        assert not pruned
+
+    assert held["for"] >= 0.3
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.geteuid() == 0, reason="root deletes past any mode")
+async def test_a_sweep_that_cannot_finish_leaves_the_workspace_unpruned(monkeypatch, tmp_path):
+    """The set-aside is still on disk, so no bring-up may stamp the workspace
+    done and stop coming back to it."""
+    from pathlib import Path
+
+    layout = SandboxLayout.for_root(str(tmp_path)).for_workspace("My Workspace")
+    left = Path(layout.agents, ".pruned.abc123")
+    Path(left, "0").mkdir(parents=True)
+    Path(left, "0", "note.md").write_text("x")
+    Path(layout.agents).chmod(0o500)
+    _thread_reads(monkeypatch, _prefixes(T1[:8]))
+    try:
+        _, pruned = await _thread_dirs.prune_dead_thread_dirs(_Shell(), layout, "ws-1")
+    finally:
+        Path(layout.agents).chmod(0o755)
+
+    assert not pruned
+    assert left.exists()
 
 
 @pytest.mark.asyncio
 async def test_a_deleted_threads_dirs_leave_a_running_machine(monkeypatch):
     from src.server.services.computer_manager._bringup import BringUpMixin
 
-    runtime = _Runtime(stdout=f"d {T1[:8]}\nd {T2[:8]}\nr {T2[:8]}\n")
+    runtime = _Runtime(stdout=f"{D} {T1[:8]}\n{D} {T2[:8]}\n{R} {T2[:8]}\n")
 
     @asynccontextmanager
     async def computer_runtime(computer, sandbox_id):
@@ -503,15 +767,35 @@ async def test_a_deleted_threads_dirs_leave_a_running_machine(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        "src.server.database.conversation.get_workspace_thread_short_ids",
-        AsyncMock(return_value={T1[:8]}),
-    )
+    _thread_reads(monkeypatch, _prefixes(T1[:8]))
 
     await BringUpMixin.prune_thread_dirs_if_running(manager, "ws-1")
 
-    assert runtime.commands[-1] == (
-        f"rm -rf -- {LAYOUT.threads}/{T2[:8]} {LAYOUT.large_tool_results}/{T2[:8]}"
+    assert _set_aside(runtime) == [
+        f"{LAYOUT.threads}/{T2[:8]}",
+        f"{LAYOUT.large_tool_results}/{T2[:8]}",
+    ]
+    assert runtime.commands[-1] == PRUNED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("archived_at", "pruned"), [(datetime.now(timezone.utc), True), (None, False)])
+async def test_a_run_end_prunes_only_an_archived_thread(monkeypatch, archived_at, pruned):
+    import uuid
+
+    from src.server.services.computer_manager._bringup import BringUpMixin
+
+    workspace_id = uuid.uuid4()
+    manager = SimpleNamespace(prune_thread_dirs_if_running=AsyncMock())
+    monkeypatch.setattr(
+        "src.server.database.conversation.get_thread_by_id",
+        AsyncMock(return_value={"workspace_id": workspace_id, "archived_at": archived_at}),
+    )
+
+    await BringUpMixin._prune_if_archived(manager, T1)
+
+    assert manager.prune_thread_dirs_if_running.call_args_list == (
+        [((str(workspace_id),),)] if pruned else []
     )
 
 

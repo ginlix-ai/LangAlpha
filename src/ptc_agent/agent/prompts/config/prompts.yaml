@@ -59,6 +59,11 @@ defaults:
   # tool; the agent render and the subagent compiler pass the real value.
   todo_enabled: false
 
+  # Scratchpad (opt-in feature). Gates every scratchpad mention in the system
+  # prompt, which names only the folders' pattern; this thread's own folder
+  # rides the runtime-context baseline, so the prompt is the same across threads.
+  scratchpad_enabled: false
+
   # Tool-tier gates for tool_guide. The main agent binds all three, so the
   # default matches it; the subagent compiler passes the real per-agent value
   # because a subagent that cannot call a tool must not be taught to.
@@ -234,4 +239,13 @@ envelope:
       workspaces and threads, today's automation runs, holdings), wrapped in
       <activity> under one line dating the copy. Empty content renders
       nothing. Byte-deterministic.
+    kwargs: [content]
+
+  baseline_scratchpad:
+    template: envelope/baseline_scratchpad.md.j2
+    description: >-
+      This thread's scratchpad folder and its note/ folder as a <scratchpad>
+      element, when the scratchpad feature is on. content is the folder,
+      absolute with a trailing slash; empty renders nothing.
+      Byte-deterministic.
     kwargs: [content]

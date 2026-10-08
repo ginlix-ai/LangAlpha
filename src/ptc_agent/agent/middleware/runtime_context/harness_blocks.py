@@ -36,6 +36,14 @@ HARNESS_BLOCKS: dict[str, HarnessBlock] = {
         label="<skills>",
         subject="skills manifest",
     ),
+    # Here rather than in the static prompt because its path names the
+    # thread; it is absolute, so a rename of the workspace's folder moves it
+    # and files a row.
+    "scratchpad": HarnessBlock(
+        template="envelope/baseline_scratchpad.md.j2",
+        label="<scratchpad>",
+        subject="scratchpad folder",
+    ),
     "activity": HarnessBlock(
         template="envelope/baseline_activity.md.j2",
         label="<activity>",

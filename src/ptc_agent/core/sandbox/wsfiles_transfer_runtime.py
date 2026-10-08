@@ -1028,6 +1028,11 @@ def _download_to_temp(url: str, parent: str, timeout_s: float) -> tuple[str, str
         raise
 
 
+# What link(2) answers on a filesystem that has no hard links, or none
+# across these two names; ``_link_new`` then falls back to a rename.
+_NO_HARD_LINKS = frozenset({errno.EPERM, errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EMLINK})
+
+
 def _unlink_quiet(path: str) -> None:
     try:
         os.unlink(path)
@@ -1074,24 +1079,54 @@ def _verify(digest: str, n: int, item: dict[str, Any]) -> str | None:
 def _place(
     tmp: str, final: str, item: dict[str, Any], http: int | None = None
 ) -> dict[str, Any]:
-    """Rename verified bytes over ``final`` and stamp the item's mode and mtime.
+    """Stamp verified bytes with the item's mode and mtime, then rename them
+    over ``final``.
 
-    The temp is removed when placement fails, so a failed item never leaves
-    bytes under the transient prefix for the next sweep to find.
+    Stamped before they are placed: a file written at ``final`` once they are
+    would otherwise take the backup's mtime, and a scan that trusts a size and
+    mtime it has seen would never read its bytes. An item marked
+    ``keep_existing`` never replaces anything: an entry found at ``final``, of
+    any kind, was made after the backup, so the bytes are dropped and the item
+    counts as placed. The temp is removed when placement fails, so a failed
+    item never leaves bytes under the transient prefix for the next sweep to
+    find.
     """
     try:
-        _yield_empty_directory(final)
-        os.replace(tmp, final)
-        mode = item.get("mode")
-        if mode is not None:
-            os.chmod(final, int(mode))
-        mtime_ns = item.get("mtime_ns")
-        if mtime_ns is not None:
-            os.utime(final, ns=(int(mtime_ns), int(mtime_ns)))
+        _stamp(tmp, item)
+        if item.get("keep_existing"):
+            if not _link_new(tmp, final):
+                _unlink_quiet(tmp)
+                return _result("ok", http)
+        else:
+            _yield_empty_directory(final)
+            os.replace(tmp, final)
     except OSError as exc:
         _unlink_quiet(tmp)
         return _result("failed", http, str(exc))
     return _result("ok", http)
+
+
+def _link_new(tmp: str, final: str) -> bool:
+    """Put ``tmp`` at ``final`` only where nothing is; False when something is.
+
+    link(2) refuses an existing name, so the check and the placement are one
+    step and a write landing between a look and the placement is never
+    replaced. A filesystem without hard links gets a look then a rename, the
+    one window it cannot close.
+    """
+    try:
+        os.link(tmp, final)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        if exc.errno not in _NO_HARD_LINKS:
+            raise
+        if os.path.lexists(final):
+            return False
+        os.replace(tmp, final)
+        return True
+    _unlink_quiet(tmp)
+    return True
 
 
 def _holds_item_bytes(final: str, item: dict[str, Any]) -> bool:
@@ -1112,15 +1147,19 @@ def _holds_item_bytes(final: str, item: dict[str, Any]) -> bool:
 def _place_in_situ(final: str, item: dict[str, Any]) -> dict[str, Any]:
     """Stamp the item's mode and mtime on a file that already holds its bytes."""
     try:
-        mode = item.get("mode")
-        if mode is not None:
-            os.chmod(final, int(mode))
-        mtime_ns = item.get("mtime_ns")
-        if mtime_ns is not None:
-            os.utime(final, ns=(int(mtime_ns), int(mtime_ns)))
+        _stamp(final, item)
     except OSError as exc:
         return _result("failed", error=str(exc))
     return _result("ok")
+
+
+def _stamp(path: str, item: dict[str, Any]) -> None:
+    mode = item.get("mode")
+    if mode is not None:
+        os.chmod(path, int(mode))
+    mtime_ns = item.get("mtime_ns")
+    if mtime_ns is not None:
+        os.utime(path, ns=(int(mtime_ns), int(mtime_ns)))
 
 
 def _pull_file(
@@ -1129,7 +1168,8 @@ def _pull_file(
     final = _resolve_under_root(root, item.get("path", ""))
     if final is None:
         return _result("failed", error="path escapes root")
-    if _populated_directory(final):
+    keep = item.get("keep_existing")
+    if not keep and _populated_directory(final):
         return _result("failed", error="target is a populated directory")
     url = item.get("url")
     expected_size = item.get("size")
@@ -1137,6 +1177,8 @@ def _pull_file(
         return _place_staged(root, final, item)
     if not url:
         return _result("failed", error="missing url")
+    if keep and os.path.lexists(final):
+        return _result("ok")
     if _holds_item_bytes(final, item):
         # Reading the file here costs a hash; fetching it again costs the
         # same hash plus the transfer and a second copy on disk until the
@@ -1220,6 +1262,25 @@ def _reopen_dir(path: str) -> None:
         os.chmod(path, stat.S_IMODE(st.st_mode) | 0o300)
 
 
+def _make_dirs(path: str, made: set[str]) -> None:
+    """``os.makedirs`` that adds each directory it creates to ``made``.
+
+    mkdir(2) refuses a name that exists, as link(2) does for ``_link_new``, so
+    a directory the turn makes at any moment before this one is never counted
+    as the restore's, and step 4 never stamps the backup's mode and mtime on it.
+    """
+    parent = os.path.dirname(path)
+    if parent != path and not os.path.isdir(parent):
+        _make_dirs(parent, made)
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        if not os.path.isdir(path):
+            raise
+        return
+    made.add(path)
+
+
 def _pull_symlink(root: str, item: dict[str, Any]) -> dict[str, Any]:
     final = _resolve_under_root(root, item.get("path", ""))
     if final is None:
@@ -1230,13 +1291,21 @@ def _pull_symlink(root: str, item: dict[str, Any]) -> dict[str, Any]:
     if not target:
         return _result("failed", error="missing symlink_target")
     try:
-        if os.path.islink(final) or os.path.isfile(final):
-            os.unlink(final)
-        elif _populated_directory(final):
-            return _result("failed", error="target is a populated directory")
+        if item.get("keep_existing"):
+            # symlink(2) refuses an existing name, as link(2) does for
+            # ``_link_new``, so an entry made after the backup stays.
+            try:
+                os.symlink(target, final)
+            except FileExistsError:
+                return _result("ok")
         else:
-            _yield_empty_directory(final)
-        os.symlink(target, final)
+            if os.path.islink(final) or os.path.isfile(final):
+                os.unlink(final)
+            elif _populated_directory(final):
+                return _result("failed", error="target is a populated directory")
+            else:
+                _yield_empty_directory(final)
+            os.symlink(target, final)
     except OSError as exc:
         return _result("failed", error=str(exc))
     mtime_ns = item.get("mtime_ns")
@@ -1255,6 +1324,8 @@ def _extract_member(root: str, chunk: Any, member: dict[str, Any], http_status: 
         return _result("failed", error="path escapes root")
     if not _inside(root, os.path.dirname(final)):
         return _result("failed", error="path leaves root through a link")
+    if member.get("keep_existing") and os.path.lexists(final):
+        return _result("ok", http_status)
     if _populated_directory(final):
         return _result("failed", error="target is a populated directory")
     size = int(member.get("size") or 0)
@@ -1396,6 +1467,9 @@ def pull(spec: dict[str, Any]) -> dict[str, Any]:
     The server sets that when more files follow in a later op, so directory
     modes and mtimes are applied exactly once, by the op that places the last
     file; a read-only directory closed early would reject its own children.
+    A ``keep_existing`` dir this op makes comes back marked ``made``, and the
+    server carries that mark on the item to the later op, which then stamps
+    it if it still stands and never makes it again.
     """
     root = _root(spec)
     pack_base = _pack_base(spec, root)
@@ -1414,6 +1488,10 @@ def pull(spec: dict[str, Any]) -> dict[str, Any]:
     packs: list[dict[str, Any]] = []
     symlinks: list[dict[str, Any]] = []
     dirs: list[tuple[dict[str, Any], str]] = []
+    # Every directory this op creates, parents included. Anything else standing
+    # where a ``keep_existing`` dir goes was put there after the backup, so it
+    # keeps its own mode and mtime.
+    made: set[str] = set()
 
     # Step 1: parents first, then dir items, so a file lands in a directory
     # that already exists. Dir modes wait for step 4: a read-only directory
@@ -1432,9 +1510,25 @@ def pull(spec: dict[str, Any]) -> dict[str, Any]:
             results[path] = _result("failed", error="path leaves root through a link")
             continue
         try:
-            os.makedirs(os.path.dirname(final), exist_ok=True)
+            if kind == "dir" and item.get("made"):
+                # One the turn has removed since an earlier op made it stays
+                # removed.
+                if os.path.isdir(final) and not os.path.islink(final):
+                    _reopen_dir(final)
+                    dirs.append((item, final))
+                else:
+                    results[path] = _result("ok")
+                continue
+            _make_dirs(os.path.dirname(final), made)
             if kind == "dir":
-                os.makedirs(final, exist_ok=True)
+                try:
+                    _make_dirs(final, made)
+                except FileExistsError:
+                    if not item.get("keep_existing"):
+                        raise
+                if item.get("keep_existing") and final not in made:
+                    results[path] = _result("ok")
+                    continue
                 _reopen_dir(final)
                 dirs.append((item, final))
             elif kind == "symlink":
@@ -1466,17 +1560,25 @@ def pull(spec: dict[str, Any]) -> dict[str, Any]:
     # Step 4: dir modes and mtimes last, deepest first; writing children
     # above would disturb the mtimes, and a parent's mode may forbid writes.
     for item, final in sorted(dirs, key=lambda d: d[1], reverse=True):
+        done = _result("ok")
+        if item.get("keep_existing"):
+            # Only the restore's own get this far.
+            done["made"] = True
         if defer_dir_modes:
-            results[item["path"]] = _result("ok")
+            results[item["path"]] = done
             continue
         mode = item.get("mode")
+        if mode is not None and item.get("keep_existing"):
+            # Restored beside a running turn and ahead of later batches, both
+            # of which write beneath it, so it never closes to its owner.
+            mode = int(mode) | 0o300
         mtime_ns = item.get("mtime_ns")
         try:
             if mode is not None:
                 os.chmod(final, int(mode))
             if mtime_ns is not None:
                 os.utime(final, ns=(int(mtime_ns), int(mtime_ns)))
-            results[item["path"]] = _result("ok")
+            results[item["path"]] = done
         except OSError as exc:
             results[item["path"]] = _result("failed", error=str(exc))
 

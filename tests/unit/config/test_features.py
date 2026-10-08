@@ -35,6 +35,14 @@ def test_market_watch_is_cataloged_enabled_opt_in():
     assert spec.tradeoffs  # experiments state their cost
 
 
+def test_scratchpad_is_cataloged_enabled_opt_in():
+    spec = FEATURES["scratchpad"]
+    assert spec.enabled is True
+    assert spec.gate is FeatureGate.OPT_IN
+    assert spec.label and spec.description
+    assert spec.tradeoffs
+
+
 def test_all_workspaces_agent_is_cataloged_off_and_opt_out():
     """Every turn outside a workspace reads the flag by this key, and one the
     catalog lacks fails them all."""

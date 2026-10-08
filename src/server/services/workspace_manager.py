@@ -496,3 +496,18 @@ class WorkspaceManager(ComputerManager):
 
         self._cleanup_task = asyncio.create_task(cleanup_loop())
         logger.info("Workspace cleanup task started")
+
+
+def prune_thread_dirs_soon(workspace_id: str) -> None:
+    """``WorkspaceManager.prune_thread_dirs_soon`` on this process's manager.
+    A process without one leaves the dirs to the workspace's next bring-up."""
+    manager = WorkspaceManager.current()
+    if manager is not None:
+        manager.prune_thread_dirs_soon(workspace_id)
+
+
+def prune_if_archived_soon(thread_id: str) -> None:
+    """``WorkspaceManager.prune_if_archived_soon`` on this process's manager."""
+    manager = WorkspaceManager.current()
+    if manager is not None:
+        manager.prune_if_archived_soon(thread_id)
