@@ -89,6 +89,7 @@ from .request_prep import (
     turn_surface,
     user_skill_commands,
 )
+from src.server.services import automation_delivery
 from src.server.services.credit_gate_port import build_run_credit_gate
 from src.server.services.report_back.flash import carry
 from src.server.services.runs.admission import (
@@ -413,6 +414,12 @@ async def astream_ptc_workflow(
         # run read as unadmitted to the fenced-teardown probe.
         origin_meta = await _resolve_origin_meta(request, thread_id)
         carried = await carry.carried_pair(request, thread_id)
+        # A resume or a retry names no automation run of its own: it sends for
+        # the one the turn it continues sent for.
+        if automation_delivery.delivery_of_turn(extra_configurable or {}) is None:
+            sends_for = await carry.carried_delivery(request, thread_id)
+            if sends_for:
+                extra_configurable = {**(extra_configurable or {}), **sends_for}
         run_handle = await begin_run(
             request,
             scope=scope,
@@ -434,6 +441,7 @@ async def astream_ptc_workflow(
                 **surface_stamp(
                     request, prior_thread, inherits_rules=turn_context.inherits_rules
                 ),
+                **automation_delivery.turn_metadata(extra_configurable),
                 **(run_metadata or {}),
             },
         )

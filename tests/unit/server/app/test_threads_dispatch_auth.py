@@ -445,6 +445,75 @@ async def test_surface_rules_survive_only_a_service_token_request(monkeypatch, h
     assert seen["request"].surface_rules == expected
 
 
+_RUN = {
+    "id": "exec-1",
+    "targets": [
+        {"entry": "slack:T/C", "address": "slack:T/C", "name": "#desk", "ok": True}
+    ],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "carried"),
+    [({}, False), ({"X-Service-Token": TOKEN}, True)],
+    ids=["a user's request", "a service request"],
+)
+async def test_the_run_a_report_back_sends_for_reaches_only_a_service_turns_config(
+    monkeypatch, headers, carried
+):
+    """A report-back turn sends for the automation run it names, as the run's
+    own turn did; a user's own copy of the field is dropped, so no user can
+    send under a run's id."""
+    from src.server.services import automation_delivery
+
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return _stub_ptc_workflow(**kwargs)
+
+    with (
+        _stub_workflow(),
+        patch("src.server.handlers.chat.astream_ptc_workflow", new=_capture),
+    ):
+        resp = await _post(
+            app, headers=headers, body={**_BODY, "automation_delivery": _RUN}
+        )
+    assert resp.status_code == 200, resp.text
+    if carried:
+        assert seen["extra_configurable"] == automation_delivery.turn_configurable(
+            automation_delivery.read_stamp(_RUN)
+        )
+        assert seen["extra_configurable"]["automation_execution_id"] == "exec-1"
+    else:
+        assert seen["request"].automation_delivery is None
+        assert seen["extra_configurable"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_turn_naming_no_run_carries_none(monkeypatch):
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return _stub_ptc_workflow(**kwargs)
+
+    with (
+        _stub_workflow(),
+        patch("src.server.handlers.chat.astream_ptc_workflow", new=_capture),
+    ):
+        resp = await _post(app, headers={"X-Service-Token": TOKEN})
+    assert resp.status_code == 200, resp.text
+    assert seen["extra_configurable"] is None
+
+
 @pytest.mark.asyncio
 async def test_non_ascii_service_token_rejected_not_500(monkeypatch):
     """A non-ASCII X-Service-Token must 403, not 500. Header values arrive

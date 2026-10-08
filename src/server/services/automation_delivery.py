@@ -13,6 +13,11 @@ answers the same record to every later ask. Both calls name the run's
 thread, so what the service posts links back to it and a reply there
 continues it.
 
+The run's turn carries the run in its config (``turn_configurable``). Work it
+hands off is reported back by a later turn, after the run has settled; the
+hand-off records the run there, so that turn is told where the run delivers
+and sends there under the same id (``report_back.flash.requested_from``).
+
 A run the service never took (no service, no entries, the start failed, or
 no entry resolved) delivers through the webhook (``webhook_client``) instead,
 exactly as before; when the webhook has nowhere to post either, a start that
@@ -289,6 +294,14 @@ def delivery_of_turn(configurable: Dict[str, Any]) -> Optional[Delivery]:
     if delivery is None or delivery.id != delivery_id:
         return Delivery(id=delivery_id, targets=[])
     return delivery
+
+
+def turn_metadata(configurable: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The run-row stamp of the held run a turn sends for, by its config, so
+    the turn that resumes or retries it sends for the run too
+    (``carry.carried_delivery``); empty when it sends for none."""
+    run = delivery_of_turn(configurable or {})
+    return run_metadata(run) if run is not None and run.held else {}
 
 
 def unsent(delivery: Delivery) -> list[Dict[str, Any]]:

@@ -43,6 +43,16 @@ from src.server.app import setup
 from ._deps import SSE_HEADERS, _get_service_token, _track_task, logger, router
 
 
+def _automation_configurable(request: ChatRequest) -> Optional[dict]:
+    """The automation run a report-back turn sends for, as its config carries
+    it; None when the request names none. Only an internal request keeps the
+    field."""
+    from src.server.services import automation_delivery
+
+    run = automation_delivery.read_stamp(request.automation_delivery)
+    return automation_delivery.turn_configurable(run) if run is not None else None
+
+
 async def _assert_stream_transport_ready() -> None:
     """503 before any durable row when the Redis event transport is down (I6).
 
@@ -489,6 +499,8 @@ async def _handle_send_message(
                 internal_overrides["origin_flash_thread_id"] = None
             if request.origin_dispatch_gen:
                 internal_overrides["origin_dispatch_gen"] = None
+            if request.automation_delivery:
+                internal_overrides["automation_delivery"] = None
             if request.disable_subagents:
                 internal_overrides["disable_subagents"] = None
             # A channel gateway's field: the text rides the operator role on
@@ -554,6 +566,7 @@ async def _handle_send_message(
                 if request.report_back_ptc_thread_id
                 else None
             ),
+            extra_configurable=_automation_configurable(request),
         )
 
     if not is_dispatch:

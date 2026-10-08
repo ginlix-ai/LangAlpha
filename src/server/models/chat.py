@@ -430,6 +430,16 @@ class ChatRequest(BaseModel):
         description="Report-back dispatch generation token. Internal use only.",
     )
 
+    # Internal: the automation run a report-back turn sends for. A run whose
+    # delivery the messaging service holds can hand work off; the turn that
+    # reports it back gets the run's id and targets in its config, as the
+    # run's own turn had them, so its sends to those targets are the run's.
+    automation_delivery: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="The automation run (id and targets) a report-back turn "
+        "sends for. Internal use only.",
+    )
+
     # Internal: build this turn's agent without the subagent machinery
     # (no Task/TaskOutput tools). Task report-back turns deliberately do
     # NOT set it — TaskOutput is their retrieval path; re-announce

@@ -65,7 +65,8 @@ def _turn(config: RunnableConfig | None) -> dict[str, Any]:
         "run_id": configurable.get("run_id"),
         "workspace_id": configurable.get("workspace_id"),
         "turn_platform": configurable.get("platform"),
-        # Set on an automation's turn whose delivery the messaging service holds.
+        # Set on an automation's turn whose delivery the messaging service
+        # holds, and on the turn reporting back work that turn handed off.
         "automation_execution_id": configurable.get("automation_execution_id"),
     }
 

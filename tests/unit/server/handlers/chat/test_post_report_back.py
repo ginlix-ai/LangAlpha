@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services.report_back.flash import executor, leases
+from src.server.services import automation_delivery
+from src.server.services.automation_delivery import Delivery, Target
+from src.server.services.report_back.flash import executor, leases, requested_from
 
 _ORIGIN = {
     "ptc_workspace_id": "ws-ptc",
@@ -78,7 +80,7 @@ def _patch_session(steps):
     return session, patch("aiohttp.ClientSession", MagicMock(return_value=session))
 
 
-async def _run(steps, final_status="completed", **kwargs):
+async def _run(steps, final_status="completed", origin=_ORIGIN, **kwargs):
     """Drive _post_report_back over ``steps`` with sleeps stubbed out."""
     session, sess_patch = _patch_session(steps)
     with sess_patch, patch("asyncio.sleep", new=AsyncMock()):
@@ -86,7 +88,7 @@ async def _run(steps, final_status="completed", **kwargs):
             cache=None,
             flash_thread_id="flash-1",
             ptc_thread_id="ptc-1",
-            origin=_ORIGIN,
+            origin=origin,
             final_status=final_status,
             **kwargs,
         )
@@ -157,6 +159,59 @@ async def test_request_key_rides_in_the_post_payload():
 async def test_request_key_omitted_when_not_supplied():
     _, session = await _run([_FakeResp(200, json_data={"run_id": "rid-1"})])
     assert "request_key" not in session.last_json
+
+
+_DESK = Target(entry="slack:T/C", address="slack:T/C", name="#desk", ok=True)
+
+
+def _asked_from(*entries: dict) -> dict:
+    return {**_ORIGIN, "flash_thread_id": "flash-1", requested_from.KEY: list(entries)}
+
+
+@pytest.mark.asyncio
+async def test_a_hand_off_from_a_held_run_is_reminded_and_sends_for_the_run():
+    """The summary turn is told where the run delivers, and carries the run
+    so its sends there are the run's own."""
+    run = Delivery("exec-1", [_DESK])
+    entry = requested_from.of_turn(
+        automation_delivery.turn_configurable(run), "Value NVDA"
+    )
+    _, session = await _run(
+        [_FakeResp(200, json_data={"run_id": "rid-1"})], origin=_asked_from(entry)
+    )
+    assert session.last_json["additional_context"] == [
+        {
+            "type": "directive",
+            "content": requested_from.reminder(_asked_from(entry)),
+        }
+    ]
+    assert "`slack:T/C`" in session.last_json["additional_context"][0]["content"]
+    assert session.last_json["automation_delivery"] == automation_delivery.stamp(run)
+
+
+@pytest.mark.asyncio
+async def test_a_hand_off_from_a_chat_app_is_reminded_and_sends_for_no_run():
+    entry = requested_from.of_turn({"platform": "slack"}, "Value NVDA")
+    _, session = await _run(
+        [_FakeResp(200, json_data={"run_id": "rid-1"})], origin=_asked_from(entry)
+    )
+    (context,) = session.last_json["additional_context"]
+    assert context["content"].startswith("You handed this analysis off from a Slack")
+    assert "automation_delivery" not in session.last_json
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    [_ORIGIN, _asked_from(requested_from.of_turn({"platform": "web"}, "Value NVDA"))],
+    ids=["a record from before", "the web app"],
+)
+async def test_a_hand_off_from_this_conversation_adds_nothing(origin):
+    _, session = await _run(
+        [_FakeResp(200, json_data={"run_id": "rid-1"})], origin=origin
+    )
+    assert "additional_context" not in session.last_json
+    assert "automation_delivery" not in session.last_json
 
 
 @pytest.mark.asyncio

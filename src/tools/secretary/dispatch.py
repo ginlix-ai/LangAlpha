@@ -331,7 +331,9 @@ async def dispatch(
     # reserve() takes a cap slot + records the PTC origin, rolling back on any
     # non-committed exit; a no-op when flash_thread_id is None (report_back off).
     # ``slot.wired`` (not the request flag) is echoed as report_back so we never
-    # promise a report-back the completion gate would drop.
+    # promise a report-back the completion gate would drop. The origin also
+    # records where this turn came from, which the report-back turn is told.
+    from src.server.services.report_back.flash import requested_from
     from src.server.services.report_back.flash.reserve import reserve
 
     flash_thread_id = configurable.get("thread_id") if report_back else None
@@ -345,7 +347,12 @@ async def dispatch(
     service_token = os.environ.get("INTERNAL_SERVICE_TOKEN", "")
 
     async with reserve(
-        flash_thread_id, thread_id, workspace_id, flash_workspace_id, user_id
+        flash_thread_id,
+        thread_id,
+        workspace_id,
+        flash_workspace_id,
+        user_id,
+        requested_from=requested_from.of_turn(configurable, question),
     ) as slot:
 
         def dispatched(run_id: str | None = None) -> Command:

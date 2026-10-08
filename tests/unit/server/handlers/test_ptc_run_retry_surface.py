@@ -63,6 +63,7 @@ async def _start(request: ChatRequest, prior: PriorThread, failed_run: dict):
         patch(f"{PTC}._resolve_fork", return_value=("Q", None)),
         patch(f"{PTC}._resolve_origin_meta", new=AsyncMock(return_value={})),
         patch(f"{PTC}.carry.carried_pair", new=AsyncMock(return_value={})),
+        patch(f"{PTC}.carry.carried_delivery", new=AsyncMock(return_value=None)),
         patch(f"{PTC}.init_tracking", return_value=(MagicMock(), MagicMock())),
         patch(f"{PTC}.begin_run", new=AsyncMock(side_effect=_Admitted())) as begin,
         patch(f"{PREP}.tl_db.get_run", new=AsyncMock(return_value=failed_run)) as get_run,

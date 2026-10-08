@@ -231,7 +231,10 @@ events such a run fires. Same two headers:
   lets it lapse and posts nothing to the chats the user took off. A firing that ends before its
   turn could start (a usage limit, a workspace or thread it couldn't have) makes its start then,
   `thread_id` null when it has no thread, so a run the service takes ends with a `failed`
-  finish like any other, never by webhook.
+  finish like any other, never by webhook. Later turns that send for the run name the same id:
+  the report-back of work its agent handed off, and a turn that answers the interrupt of, or
+  retries, a turn that sent for the run, which reads the id and targets off that turn's run row.
+  None of them settles the run again.
 - `POST {base}/agent/automation-runs/{execution_id}/finish` takes `{"status", "final_text",
   "thread_id"}` as the run settles. `status` is `completed`, `failed` (an error, a refused key,
   a usage limit, a server fault, an interrupted run) or `stopped` (the user stopped it);

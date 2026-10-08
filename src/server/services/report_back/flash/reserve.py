@@ -16,6 +16,7 @@ import logging
 import uuid
 
 from src.server.services.report_back.flash import pointer
+from src.server.services.report_back.flash import requested_from as RF
 from src.server.services.report_back.flash.keys import (
     FLASH_RB_DONE_MAX,
     FLASH_RB_DONE_TTL,
@@ -805,6 +806,46 @@ class _DispatchSlot:
             pass
 
 
+async def _requests_to_report(
+    cache, flash_thread_id: str, ptc_thread_id: str, entry: dict
+) -> list[dict]:
+    """This dispatch's request, after the ones still waiting on the pair's report.
+
+    A continuation dispatched before the last result was reported folds that
+    report into its own: the older job finds a newer run on the thread and
+    stands down. Its requests are kept unless a report for the origin's
+    generation already claimed the run pointer. Read here, outside the
+    script: the requests are context for the report-back turn and nothing
+    decides by them, so a race with a rival reservation costs at most a line
+    of its reminder, and a failed read keeps only this dispatch's request.
+    """
+    previous = None
+    reported = False
+    try:
+        previous = await cache.get_strict(ptc_origin_key(ptc_thread_id))
+        if isinstance(previous, dict):
+            claim = await cache.get_strict(
+                flash_rb_run_key(flash_thread_id, ptc_thread_id)
+            )
+            reported = isinstance(claim, dict) and claim.get("dispatch_gen") in (
+                None,
+                previous.get("dispatch_gen"),
+            )
+    except Exception:
+        logger.debug(
+            f"[FLASH_REPORT_BACK] Could not read the requests waiting on "
+            f"{ptc_thread_id}; recording this dispatch's alone",
+            exc_info=True,
+        )
+        previous = None
+    return RF.recorded(
+        entry,
+        previous if isinstance(previous, dict) else None,
+        flash_thread_id=flash_thread_id,
+        reported=reported,
+    )
+
+
 @contextlib.asynccontextmanager
 async def reserve(
     flash_thread_id: str | None,
@@ -812,6 +853,8 @@ async def reserve(
     ptc_workspace_id: str | None,
     flash_workspace_id: str | None,
     user_id: str,
+    *,
+    requested_from: dict | None = None,
 ):
     """Reserve a report-back dispatch slot + record the PTC origin, as a CM.
 
@@ -831,6 +874,11 @@ async def reserve(
     through the caller's dispatch and commit/rollback — holds an in-process
     per-pair lock so overlapping same-pair cycles can't interleave their
     rollbacks (see ``_pair_lock``).
+
+    ``requested_from`` is where the dispatching turn came from
+    (``requested_from.of_turn``). The origin keeps it with the requests still
+    waiting on this pair's report, so the report-back turn can say where its
+    work was asked for.
     """
     from src.utils.cache.redis_cache import get_cache_client
 
@@ -868,6 +916,10 @@ async def reserve(
                 "user_id": user_id,
                 "dispatch_gen": dispatch_gen,
             }
+            if requested_from is not None:
+                origin_payload[RF.KEY] = await _requests_to_report(
+                    cache, flash_thread_id, ptc_thread_id, requested_from
+                )
             status = None
             for attempt in range(2):
                 try:
