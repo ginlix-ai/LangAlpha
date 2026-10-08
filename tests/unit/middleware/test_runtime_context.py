@@ -315,6 +315,26 @@ class TestDurableCarrier:
             assert result is not messages
             assert [(m, m.content) for m in messages] == snapshot
 
+    @pytest.mark.parametrize("shape", ["reminder", "system", "developer"])
+    def test_a_row_after_a_tool_result_stands_apart_from_it(self, shape):
+        """Harness text under a tool result would wear its untrusted label."""
+        tool_result = ToolMessage(content="ok", tool_call_id="c1")
+        messages = [
+            HumanMessage(content="go"),
+            AIMessage(content="", tool_calls=[{"name": "Bash", "args": {}, "id": "c1"}]),
+            tool_result,
+            self._row("write your notes", kind="notes_due"),
+        ]
+
+        result = carry_durable_updates(messages, shape)
+
+        assert len(result) == 4
+        assert result[2] == tool_result
+        assert result[2].content == "ok"
+        assert not isinstance(result[3], ToolMessage)
+        assert "write your notes" in str(result[3].content)
+        assert result[3].additional_kwargs["lc_source"] == RUNTIME_UPDATE_SOURCE
+
     def test_a_history_without_rows_is_left_alone(self):
         messages = [HumanMessage(content="hi"), AIMessage(content="ok")]
         assert carry_durable_updates(messages, "reminder") == messages

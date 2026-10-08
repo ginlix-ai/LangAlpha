@@ -63,6 +63,11 @@ def workspace_path_vars(
             "data": WorkspaceLayout.DATA_DIR,
             "skills": WorkspaceLayout.SKILLS_DIR,
             "memory": WorkspaceLayout.MEMORY_DIR,
+            "scratchpad": WorkspaceLayout.SCRATCHPAD_DIR,
+            # A pattern, not a path: the thread's own folder rides the baseline.
+            "scratchpad_notes": WorkspaceLayout.scratchpad_subdir(
+                "<thread>", WorkspaceLayout.SCRATCHPAD_NOTE_DIR
+            ),
             "tools_docs": SandboxLayout.TOOLS_DOCS_DIR,
             "user": SandboxLayout.USER_DIR,
         },

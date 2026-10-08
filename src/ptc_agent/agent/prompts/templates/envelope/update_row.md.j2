@@ -51,6 +51,13 @@
    agent has depends on its role and its build, and a list here would name
    one this reader never had.
 
+   A `notes_due` row (`turn.NOTES_DUE_ROW_KIND`) asks the agent, once before each
+   summary, to checkpoint its scratchpad notes. Its text carries the
+   numbers and the folder; the ask is here, so it reads the same on every row.
+   A `notes_check_in` row (`turn.NOTES_CHECK_IN_ROW_KIND`) asks between
+   summaries, once a run of tool calls has gone by with no write to the
+   notes, and splits its words the same way.
+
    A `turn_opened` row (`turn.TURN_ROW_KIND`) renders bare: it is the turn's own
    anchor, already prose with its own stamp, so a header would only label the
    clock with a second copy of the time.
@@ -98,6 +105,14 @@ Each line below gives the current value and what the frozen blocks still say. Tr
 The frozen blocks were rebuilt at this turn
 
 Every change row above this one is folded into the blocks now, so the blocks are current, and an earlier row that says to trust it over a block no longer applies. {{ update.text }}{% if update.provenance.still_in_force %} The exception is a row about {{ update.provenance.still_in_force | join(", ") }}: that read did not answer at this rebuild, so such a row still applies over its block until a later row replaces it.{% endif %}
+{% elif update.kind == "notes_due" %}
+This conversation will be summarized soon
+
+{{ update.text }} Checkpoint now: in the note of each task under way, add what it does not hold yet, one terse line each: the steps finished since your last checkpoint and what they produced, work you delegated and its id, findings with their source, what the user decided or told you, approaches you took or dropped and why, and, on a long task, the plan and what remains. Correct in place, or remove, any line that is no longer true, such as a step noted as pending that is now done, a plan the work has moved past, delegated work that has since reported back, or a request the user has since changed. A quick answer needs no note. The summary will paraphrase what came before it and send you back to the notes, so what they hold is what comes through exactly. Then carry on where you left off; this is asked once before each summary.
+{% elif update.kind == "notes_check_in" %}
+Your checkpoint notes have not been written for a while
+
+{{ update.text }} If something significant has happened since, add it to the note of the task it belongs to, starting that note if there is none, one terse line each: what the user decided or told you, an approach you took or dropped and why, a finding with its source, a step finished and what it produced, a hand-off sent or reported back. Correct in place, or remove, any line that is no longer true, a plan line included. If nothing significant happened, or this is a quick answer, carry on without writing: a line that only says the work continues adds nothing.
 {% elif update.kind == "workspace_changed" %}
 The workspace was renamed or redescribed after the copy in <workspace> was frozen
 

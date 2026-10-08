@@ -638,6 +638,15 @@ def get_effective_messages(
     return [event["summary_message"], *tail]
 
 
+def measured_tokens(state: Mapping[str, Any]) -> int | None:
+    """The context size the last model call reported, which the next call's
+    summary trigger reads; None before any call has reported usage."""
+    cached_input = state.get("_cached_input_tokens") or 0
+    if cached_input <= 0:
+        return None
+    return cached_input + (state.get("_cached_output_tokens") or 0)
+
+
 def resolve_cutoff_index(messages: Sequence[AnyMessage], event: Mapping[str, Any]) -> int:
     """Where ``event``'s boundary falls in ``messages`` as they are now.
 
@@ -682,6 +691,7 @@ def build_summary_message(
     skills: Sequence[str] = (),
     skill_files: bool = False,
     source: str = "model",
+    notes: str = "",
 ) -> HumanMessage:
     """Build the summary HumanMessage, pointing at the transcript when there is one.
 
@@ -690,12 +700,15 @@ def build_summary_message(
     so checkpoint-sourced replay re-emits the event without the stored SSE
     stream. ``skills`` are listed for the agent to reload (see
     ``skill_reload_note``). ``source`` says what wrote the summary (see
-    ``summarize``).
+    ``summarize``). ``notes`` (the scratchpad pointer, already rendered) goes
+    last; the stamped length is what keeps it out of the summary a reader
+    parses back.
     """
     content = f"{CONTEXT_SUMMARY_PREFIX}{summary}"
     if transcript is not None:
         content += transcript_note(transcript, span, index)
     content += skill_reload_note(list(skills), files=skill_files)
+    content += notes
 
     return HumanMessage(
         content=content,

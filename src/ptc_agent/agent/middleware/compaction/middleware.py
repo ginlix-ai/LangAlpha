@@ -19,6 +19,7 @@ Tier 1.
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -45,6 +46,7 @@ from ptc_agent.agent.middleware.compaction.compact import Compaction, Summarizer
 from ptc_agent.agent.middleware.compaction.utils import (
     find_group_safe_cutoff,
     get_effective_messages,
+    measured_tokens,
 )
 from ptc_agent.agent.middleware.compaction.offloading import (
     is_idle,
@@ -102,6 +104,8 @@ class CompactionMiddleware(AgentMiddleware):
         self._offload = offload
         self._backend = backend
         self._workspace_id = workspace_id
+        # The notes folder this agent's summaries name; see with_scratchpad_notes.
+        self._notes_dir: str | None = None
 
     @classmethod
     def for_agent(
@@ -172,9 +176,9 @@ class CompactionMiddleware(AgentMiddleware):
 
     def _context_tokens(self, request: ModelRequest, view: list[AnyMessage]) -> int:
         """What the last call measured, else a count of ``view``."""
-        cached_input = request.state.get("_cached_input_tokens", 0)
-        if cached_input > 0:
-            return cached_input + request.state.get("_cached_output_tokens", 0)
+        measured = measured_tokens(request.state)
+        if measured is not None:
+            return measured
         system = [request.system_message] if request.system_message is not None else []
         return self._summarizer.counter([*system, *view])
 
@@ -202,6 +206,7 @@ class CompactionMiddleware(AgentMiddleware):
                 workspace_id=self._workspace_id,
                 transcript=transcript,
                 fallback=request.model,
+                notes_dir=self._notes_dir,
             )
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
@@ -287,6 +292,17 @@ class CompactionMiddleware(AgentMiddleware):
                 "offload", "complete", kind="reads", offloaded_reads=len(reads)
             )
         return record_offloads(state, args, reads) or None
+
+    def with_scratchpad_notes(self, notes_dir: str) -> CompactionMiddleware:
+        """This middleware, with each summary naming ``notes_dir``'s files.
+
+        For the main agent's stack only: a subagent compacts its own run,
+        which keeps no notes, so its stack holds the plain instance. A copy
+        is enough because the instance keeps nothing per invocation.
+        """
+        main = copy.copy(self)
+        main._notes_dir = notes_dir
+        return main
 
     def _transcript_target(self) -> TranscriptTarget | None:
         """This agent's transcript, or None where no mount serves one."""

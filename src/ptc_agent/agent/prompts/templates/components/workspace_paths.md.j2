@@ -6,11 +6,7 @@
 
 Working directory: `{{ working_directory }}`
 
-{% if role | default("analyst") == "chief_of_staff" %}
-Everything below is relative to it, and so is every path you pass a tool.
-{% else %}
-Everything below is relative to it, and so is every path you write.
-{% endif %}
+Everything below is relative to it, and so is every path you {{ "pass a tool" if role | default("analyst") == "chief_of_staff" else "write" }}{% if scratchpad_enabled | default(false) %}, except paths into your scratchpad, which you write absolute, as `<scratchpad>` gives them, so they work from any directory{% endif %}.
 
 ## Directory Layout
 
@@ -21,7 +17,7 @@ Everything below is relative to it, and so is every path you write.
 {% else %}
 | `{{ workspace_paths.agent_md }}` | Workspace purpose, long-term goals, index of what each task produced |
 {% endif %}
-| `<task_name>/` | One directory per task, directly here: scripts, drafts, and the finished deliverable |
+| `<task_name>/` | One directory per task, directly here: {% if scratchpad_enabled | default(false) %}the scripts worth keeping and the finished deliverable{% else %}scripts, drafts, and the finished deliverable{% endif %} |
 | `<task_name>/data/` | Data for this task |
 | `<task_name>/charts/` | Visualizations for this task |
 | `{{ workspace_paths.data }}/` | Shared reusable datasets across tasks and threads |
@@ -32,13 +28,16 @@ Everything below is relative to it, and so is every path you write.
 {% else %}
 | `{{ workspace_paths.memory }}/` | This workspace's long-term memory |
 {% endif %}
+{% if scratchpad_enabled | default(false) %}
+| `{{ workspace_paths.scratchpad }}/` | One folder per thread, this thread's named in `<scratchpad>`: its temporary files and checkpoint notes |
+{% endif %}
 | `{{ workspace_paths.user }}/` | User profile, memory and memos; follows the user everywhere (memos read only) |
 
 Always organize data and charts into their subdirectories, never scatter loose files. The working directory itself holds only `{{ workspace_paths.agent_md }}`, `{{ workspace_paths.data }}/` and the task directories; a task file never sits loose here.
 
 ## Path Rules
 
-Always use RELATIVE paths for ExecuteCode and File tools. Bash accepts both.
+Always use RELATIVE paths for ExecuteCode and File tools{% if scratchpad_enabled | default(false) %}, except paths into your scratchpad, which stay absolute{% endif %}. Bash accepts both.
 {% if guidance | default("detailed") == "detailed" %}
 
 ```python

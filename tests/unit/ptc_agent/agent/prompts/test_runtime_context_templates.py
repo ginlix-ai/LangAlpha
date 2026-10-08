@@ -109,6 +109,9 @@ ENVELOPE_CASES: dict[str, dict] = {
         "content": "Recent threads, this one aside:\n"
         '- "NVDA earnings" in Semis: finished, 2026-10-04 (thread_id `t1`)',
     },
+    "envelope/baseline_scratchpad.md.j2": {
+        "content": "/home/workspace/NVDA/.agents/scratchpad/a1b2c3d4/",
+    },
 }
 
 STATIC_CASES: dict[str, dict] = {
@@ -125,6 +128,7 @@ BASELINE_TEMPLATES = [
     "envelope/baseline_mcp_servers.md.j2",
     "envelope/baseline_skills.md.j2",
     "envelope/baseline_activity.md.j2",
+    "envelope/baseline_scratchpad.md.j2",
 ]
 
 # Baseline fragments that must render their wrapper even with nothing to put in
@@ -281,6 +285,7 @@ class TestBaselineDeterminism:
             "envelope/baseline_mcp_servers.md.j2",
             "envelope/baseline_skills.md.j2",
             "envelope/baseline_activity.md.j2",
+            "envelope/baseline_scratchpad.md.j2",
         ],
     )
     def test_a_harness_block_with_nothing_in_it_renders_nothing(self, template):

@@ -9,6 +9,7 @@ idle pass does.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Mapping, Sequence
@@ -49,6 +50,7 @@ from ptc_agent.agent.middleware.compaction.utils import (
     summarized_span,
 )
 from ptc_agent.agent.middleware.compaction.model import resolve_compaction_client
+from ptc_agent.agent.middleware.compaction.notes import anotes_pointer
 from ptc_agent.agent.middleware.compaction.offloading import (
     Offloads,
     aoffload_base64_content,
@@ -144,6 +146,7 @@ class Summarizer:
         transcript: TranscriptTarget | None,
         fallback: Any | None,
         thread_id: str | None = None,
+        notes_dir: str | None = None,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, ``messages`` being the
         agent's whole checkpoint list, from this model, ``fallback`` or the
@@ -152,7 +155,9 @@ class Summarizer:
         The transcript is saved first: the summary cites its turn files and
         ends pointing at it only if that save lands and ``workspace_id``'s
         folder can read it. Admission holds the next turn for about the
-        compaction timeout, so the save counts against it too.
+        compaction timeout, so the save counts against it too. The notes in
+        ``notes_dir``, the main agent's scratchpad, are listed while the
+        summary is written, and the summary names them after its pointer.
         """
         to_summarize, preserved = partition_at_cutoff(view, cutoff)
         started = time.monotonic()
@@ -166,17 +171,26 @@ class Summarizer:
             trimmed = await aoffload_base64_content(backend, trimmed, thread_id=thread_id)
             return build_summary_request(DEFAULT_SUMMARY_PROMPT, trimmed, turns)
 
-        summary = await awrite_summary(
-            model=self.model,
-            fallback=fallback,
-            prepare=preparer(
-                to_summarize, limit=self.limit, counter=self.counter, render=render
-            ),
-            server=lambda: server_summary(
-                to_summarize, preserved, raw_messages=messages, turns=turns
-            ),
-            budget=budget - (time.monotonic() - started),
-        )
+        remaining = budget - (time.monotonic() - started)
+        # The notes are listed beside the summary and within its budget, so
+        # the listing never holds the compaction past it, and it is dropped
+        # with a summary that fails.
+        listing = asyncio.create_task(anotes_pointer(backend, notes_dir, remaining))
+        try:
+            summary = await awrite_summary(
+                model=self.model,
+                fallback=fallback,
+                prepare=preparer(
+                    to_summarize, limit=self.limit, counter=self.counter, render=render
+                ),
+                server=lambda: server_summary(
+                    to_summarize, preserved, raw_messages=messages, turns=turns
+                ),
+                budget=remaining,
+            )
+            notes = await listing
+        finally:
+            listing.cancel()
         event = build_summary_event(
             summary,
             turns,
@@ -185,6 +199,7 @@ class Summarizer:
             preserved=preserved,
             original_count=len(view),
             skill_files=backend is not None,
+            notes=notes,
         )
         return Compaction(event, summary, len(view), preserved)
 
@@ -198,6 +213,7 @@ def build_summary_event(
     preserved: list[AnyMessage],
     original_count: int,
     skill_files: bool = False,
+    notes: str = "",
 ) -> CompactionEvent:
     """The event putting ``summary`` in place of ``to_summarize``, pointing
     at the transcript ``turns`` numbers when there is one.
@@ -223,6 +239,7 @@ def build_summary_event(
         skills=compacted_skills(to_summarize, preserved),
         skill_files=skill_files,
         source=summary.source,
+        notes=notes,
     )
     return build_compaction_event(
         raw_messages=raw_messages,
@@ -241,10 +258,13 @@ async def compact_messages(
     keep_messages: int = 5,
     backend: SandboxBackend | None = None,
     workspace_id: str | None = None,
+    notes_dir: str | None = None,
 ) -> Compaction:
     """Manual /compact: summarize all but the last ``keep_messages`` of the
     view, ``messages`` being the thread's whole checkpoint list and ``state``
     its values. The user's main model is tried when the summary model fails.
+    ``notes_dir`` is the thread's scratchpad notes folder when the
+    scratchpad feature is on.
 
     Tier 1 has no part here: what it would trim is in the stretch the summary
     replaces.
@@ -280,6 +300,7 @@ async def compact_messages(
         transcript=transcript,
         fallback=_main_client(config),
         thread_id=thread_id,
+        notes_dir=notes_dir,
     )
 
 

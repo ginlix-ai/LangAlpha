@@ -42,7 +42,8 @@ RUNTIME_UPDATE_KEY = "runtime_update"
 class DurableUpdate:
     """One runtime-context row: something that moved, and who moved it.
 
-    A durable row is written once at a turn boundary and persisted as a message;
+    A durable row is written once, at a turn boundary or, like the notes
+    reminder and check-in, between tool batches, and persisted as a message;
     a per-call contributor puts the same shape on the request and it is gone
     with the call. ``schema_version`` travels with the row because a row
     outlives the code that wrote it: a reader replaying an old thread has to
@@ -131,19 +132,23 @@ def runtime_update_from_message(message: Any) -> DurableUpdate | None:
     return DurableUpdate.from_dict(data)
 
 
-def rows_in_view(state: Any) -> list[DurableUpdate]:
-    """The rows the model can still read, oldest first.
-
-    Only rows from the compaction cutoff onward count, resolved the way the
-    compaction slice is: a row the summary swallowed is one the model no longer
-    reads, so whatever it said is no longer said.
-    """
+def messages_in_view(state: Any) -> list[Any]:
+    """The checkpoint's messages from the compaction cutoff onward, resolved
+    the way the compaction slice is: what the model still reads after the
+    summary, which stands in for everything before."""
     messages = state_get(state, "messages")
     if not isinstance(messages, (list, tuple)):
         return []
     event = state_get(state, "_summarization_event")
     cutoff = resolve_cutoff_index(messages, event) if isinstance(event, dict) else 0
-    rows = (runtime_update_from_message(message) for message in list(messages)[cutoff:])
+    return list(messages)[cutoff:]
+
+
+def rows_in_view(state: Any) -> list[DurableUpdate]:
+    """The rows the model can still read, oldest first: a row the summary
+    swallowed is one the model no longer reads, so whatever it said is no
+    longer said."""
+    rows = (runtime_update_from_message(message) for message in messages_in_view(state))
     return [row for row in rows if row is not None]
 
 

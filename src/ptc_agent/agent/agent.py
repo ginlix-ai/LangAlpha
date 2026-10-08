@@ -49,6 +49,11 @@ from ptc_agent.agent.middleware import (
     SubagentSteeringMiddleware,
     ReasoningCompatibilityMiddleware,
 )
+from ptc_agent.agent.middleware.compaction.notes import (
+    NotesDueMiddleware,
+    NotesOffMiddleware,
+    ThreadScratchpad,
+)
 from ptc_agent.agent.middleware.direct_mcp import (
     DirectToolSet,
     direct_tool_middleware,
@@ -162,6 +167,7 @@ class PTCAgent:
         memo_enabled: bool = True,
         todo_enabled: bool = False,
         crawl_enabled: bool = False,
+        scratchpad_enabled: bool = False,
         direct_tool_summary: str = "",
         workspace: WorkspaceLayout | None = None,
         legacy_layout: bool = False,
@@ -195,6 +201,7 @@ class PTCAgent:
             market_watch_enabled=self.config.feature_enabled("market_watch"),
             todo_enabled=todo_enabled,
             crawl_enabled=crawl_enabled,
+            scratchpad_enabled=scratchpad_enabled,
             direct_tool_summary=direct_tool_summary,
             files_mounted=files_mounted,
             chart_annotation_enabled=chart_annotation_enabled,
@@ -297,6 +304,11 @@ class PTCAgent:
         # The one workspace root this build uses, read off the live computer
         # root plus the turn's folder rather than the config default.
         workspace_layout = sandbox.workspace(project)
+        # The scratchpad is named after its thread, so a build with no thread
+        # gets neither the prompt section nor the folder.
+        scratchpad = ThreadScratchpad.resolve(
+            self.config, workspace_layout.workspace, thread_id
+        )
 
         # Memory is opt-in: disabled entirely when identity is missing rather
         # than falling back to a shared namespace that would cross-pollinate
@@ -653,6 +665,7 @@ class PTCAgent:
             memo_enabled=gates.memo,
             todo_enabled=bool(todo_tools),
             crawl_enabled=bool(crawl_tools),
+            scratchpad_enabled=scratchpad is not None,
             direct_tool_summary=direct_tool_summary(direct_tools),
             workspace=workspace_layout,
             legacy_layout=bool(project is not None and project.layout_origin == 3),
@@ -675,6 +688,15 @@ class PTCAgent:
         compaction = CompactionMiddleware.for_agent(
             self.config, backend=backend, workspace_id=workspace_id_for_memory
         )
+        # The main agent is asked to update its scratchpad notes before each
+        # summary, and its summaries name them; a subagent's do not. Without
+        # the scratchpad, rows asked while it was on stay out of the calls.
+        main_compaction, notes_rows = compaction, None
+        if scratchpad is None:
+            notes_rows = NotesOffMiddleware()
+        elif compaction is not None:
+            main_compaction = compaction.with_scratchpad_notes(scratchpad.notes_dir)
+            notes_rows = NotesDueMiddleware(scratchpad, main_compaction)
 
         model_resilience = [build_model_resilience_middleware(self.config, turn)]
 
@@ -772,6 +794,12 @@ class PTCAgent:
                     kind: (lambda _state, text=text: text)
                     for kind, text in (harness_blocks or {}).items()
                 },
+                # Its path names the thread, which the static prompt must not.
+                **(
+                    {"scratchpad": lambda _state: scratchpad.folder}
+                    if scratchpad is not None
+                    else {}
+                ),
             },
             user_data_counts=user_data_counts,
             role=role,
@@ -847,6 +875,11 @@ class PTCAgent:
         #     appends the frozen per-thread baseline AFTER their breakpoint as
         #     one block and pins breakpoint 3 on it, so the static prefix stays
         #     shareable while the baseline caches per thread.
+        #   - NotesDueMiddleware (NotesOffMiddleware without the scratchpad)
+        #     sits after the turn and baseline rows, so a reminder written on
+        #     a resumed turn follows its anchor, and inside compaction, so it
+        #     sees the summary each call is sent with and drops the reminders
+        #     that summary answered.
         #   - TailEnvelopeMiddleware is innermost overall. It carries this
         #     turn's rows, appends an envelope only when the call has a
         #     market_watch stamp, and pins the tail cache breakpoint, so
@@ -871,7 +904,7 @@ class PTCAgent:
                 skill_loader_middleware,
                 *main_only_middleware,
                 image_capture,
-                compaction,
+                main_compaction,
                 *model_resilience,
                 multimodal_strip,
                 multimodal_read,
@@ -890,6 +923,7 @@ class PTCAgent:
                 PatchToolCallsMiddleware(),
                 context.turn,
                 context.baseline,
+                notes_rows,
                 context.tail,
                 ReasoningCompatibilityMiddleware(),
             ]

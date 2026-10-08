@@ -131,6 +131,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--crawl", action="store_true", help="Enable the site-crawl tool section (WebCrawl/WebMap)."
     )
     p.add_argument(
+        "--scratchpad",
+        action="store_true",
+        help="Enable the thread scratchpad section (its path rides the baseline, not this prompt).",
+    )
+    p.add_argument(
         "--storage",
         action="store_true",
         help="Enable cloud storage (affects visualizations).",
@@ -308,6 +313,7 @@ def render(args: argparse.Namespace) -> str:
         todo_enabled=args.todo,
         role=args.role,
         crawl_enabled=args.crawl,
+        scratchpad_enabled=args.scratchpad,
         storage_enabled=args.storage,
         ask_user_enabled=not args.no_ask_user,
         current_time=current_time,

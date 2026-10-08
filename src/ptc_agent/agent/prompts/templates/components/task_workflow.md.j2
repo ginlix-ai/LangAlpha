@@ -1,15 +1,21 @@
 # Task Workflow
 
-Every task gets a directory of its own, named for the task, directly in your working directory. Never write task files loose at the root: the root holds `agent.md`, the shared `data/` and the task directories.
+{% if scratchpad_enabled | default(false) %}Every task gets a checkpoint note, and a task that produces files gets a directory of its own, named for the task, directly in your working directory. A quick answer gets neither.{% else %}Every task gets a directory of its own, named for the task, directly in your working directory.{% endif %} Never write task files loose at the root: the root holds `agent.md`, the shared `data/` and the task directories.
 
+{% if scratchpad_enabled | default(false) %}
+1. **Start the task**:
+   - Write its checkpoint note: `{{ working_directory }}/{{ workspace_paths.scratchpad_notes }}/<task_name>.md` (`<scratchpad>` gives the full path), with the request as its first line. `Write` creates the folder.
+   - If the task will produce files, create its directory, under the same name, in your working directory: `mkdir -p <task_name>/` (e.g., `sector_analysis/`, `earnings_q3_review/`), with `data/` and `charts/` inside it as needed.
+{% else %}
 1. **Create task directory**: `mkdir -p <task_name>/` (e.g., `sector_analysis/`, `earnings_q3_review/`), with `data/` and `charts/` inside it as needed
+{% endif %}
 2. **Plan**: Break the task down before executing{% if todo_enabled | default(false) %}, tracking the steps with `TodoWrite`{% endif %}.
-3. **Execute**: All intermediate files go in your task directory. Delegate to sub-agents with the directory path.
+3. **Execute**: {% if scratchpad_enabled | default(false) %}Temporary files go in your scratchpad (`{{ working_directory }}/{{ workspace_paths.scratchpad }}/<thread>/`) instead of `/tmp`, everything else in your task directory. Write to the task's note as decisions and findings come, and when you finish a step.{% else %}All intermediate files go in your task directory.{% endif %} Delegate to sub-agents with the directory path.
 4. **Produce deliverables**: For complex analysis, write the report into the task directory; simple queries need no file. When unsure of the format, ask the user.
 {% if role | default("analyst") == "chief_of_staff" %}
 5. **Update agent.md** as `<role>` describes
 {% else %}
-5. **Update agent.md**: Key findings, what each task produced and where, reusable artifacts
+5. **Update agent.md**: Key findings{% if scratchpad_enabled | default(false) %} that are confirmed or final{% endif %}, what each task produced and where, reusable artifacts
 {% endif %}
 6. **Answer**: Close with your final message in chat, linking any deliverables.
 
