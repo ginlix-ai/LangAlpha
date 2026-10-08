@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
+from src.server.database.conversation import ThreadPrefixes
 from src.server.database.workspace_file import WorkspaceSyncBusy
 from src.server.database.workspace_folders import WorkspaceFolderMoving
 from src.server.services.computer_manager import _bringup
@@ -70,23 +71,30 @@ def steps():
         yield _layout(folder)
 
     listing, inventory = object(), object()
-    live: dict[str, set[str]] = {}
+    live: dict[str, ThreadPrefixes] = {}
+    #: What a delete or archive during a workspace's pass leaves its threads at.
+    moved: dict[str, ThreadPrefixes] = {}
+
+    def kept_of(workspace_id):
+        default = frozenset({f"live-{workspace_id}"})
+        return live.get(workspace_id, ThreadPrefixes(all=default, open=default))
 
     async def inventory_of(runtime, layout):
         order.append(f"inventory:{layout.dir_name}")
         return listing, inventory
 
-    async def prune(runtime, layout, workspace_id, *, listing):
-        assert listing is not None
-        return live.get(workspace_id, {f"live-{workspace_id}"}), workspace_id not in unpruned
+    async def prune(runtime, layout, workspace_id, *, listing=None):
+        if listing is None:
+            order.append(f"reprune:{workspace_id}")
+        return kept_of(workspace_id), workspace_id not in unpruned
 
     async def live_threads(workspace_id):
-        return live.get(workspace_id, {f"live-{workspace_id}"})
+        return kept_of(workspace_id)
 
     async def restore(
-        workspace_id, sandbox, *, layout, live_short_ids, lock_wait, inventory
+        workspace_id, sandbox, *, layout, kept: ThreadPrefixes, lock_wait, inventory
     ):
-        assert live_short_ids == live.get(workspace_id, {f"live-{workspace_id}"})
+        assert kept == kept_of(workspace_id)
         await asyncio.sleep(0)
         if busy.get(workspace_id):
             busy[workspace_id] -= 1
@@ -95,6 +103,8 @@ def steps():
         order.append(f"restore:{workspace_id}")
         if layout.dir_name != workspace_id:
             order[-1] += f"@{layout.dir_name}"
+        if workspace_id in moved:
+            live[workspace_id] = moved.pop(workspace_id)
         if workspace_id in short:
             return {"restored": 0, "errors": 1, "skipped": 0, "done": False}
         return {"restored": 0, "errors": 0, "skipped": 0, "done": True}
@@ -110,7 +120,7 @@ def steps():
     with (
         patch.object(_bringup, "held_workspace_layout", held),
         patch.object(_bringup, "_inventory", inventory_of),
-        patch.object(_bringup, "_live_threads", live_threads),
+        patch.object(_bringup, "_thread_prefixes", live_threads),
         patch.object(_bringup.cache, "client", lambda: None),
         patch.object(_bringup, "_BUSY_PAUSE_S", 0.0),
         patch.object(_bringup._thread_dirs, "prune_dead_thread_dirs", prune),
@@ -122,6 +132,7 @@ def steps():
             busy=busy,
             folders=folders,
             live=live,
+            moved=moved,
             short=short,
             unpruned=unpruned,
             unsynced=unsynced,
@@ -402,9 +413,9 @@ async def test_a_busy_restore_pauses_without_holding_up_the_others(
 async def test_a_finished_pass_is_skipped_until_its_threads_or_sandbox_change(
     steps, manager, sandbox
 ):
-    """Only a thread's delete leaves a dir to prune, and the marker ends the
-    restore, so a reconnect or a second worker finding the same sandbox and
-    live threads skips the probe and the restore; the sync still runs."""
+    """Only a thread's delete or archive leaves a dir to prune, and the marker
+    ends the restore, so a reconnect or a second worker finding the same
+    sandbox and threads skips the probe and the restore; the sync still runs."""
     redis = _Redis()
     with patch.object(_bringup.cache, "client", lambda: redis):
         _schedule(manager, sandbox, "A", urgent=False)
@@ -415,15 +426,21 @@ async def test_a_finished_pass_is_skipped_until_its_threads_or_sandbox_change(
         await _drain(manager)
         assert steps.order[3:] == ["sync:A"]
 
-        steps.live["A"] = set()
+        # Archived: the thread stays, its scratchpad has to go.
+        steps.live["A"] = ThreadPrefixes(all=frozenset({"live-A"}), open=frozenset())
         _schedule(manager, sandbox, "A", urgent=False)
         await _drain(manager)
         assert steps.order[4:] == ["inventory:A", "restore:A", "sync:A"]
 
+        steps.live["A"] = ThreadPrefixes(all=frozenset(), open=frozenset())
+        _schedule(manager, sandbox, "A", urgent=False)
+        await _drain(manager)
+        assert steps.order[7:] == ["inventory:A", "restore:A", "sync:A"]
+
         replacement = SimpleNamespace(runtime=object(), sandbox_id="sandbox-2")
         _schedule(manager, replacement, "A", urgent=False)
         await _drain(manager)
-        assert steps.order[7:] == ["inventory:A", "restore:A", "sync:A"]
+        assert steps.order[10:] == ["inventory:A", "restore:A", "sync:A"]
 
 
 async def test_one_exec_lists_the_thread_dirs_and_probes_the_deferred_dir(tmp_path):
@@ -431,6 +448,7 @@ async def test_one_exec_lists_the_thread_dirs_and_probes_the_deferred_dir(tmp_pa
     read; a marker ends the probe before ``find`` runs."""
     layout = SandboxLayout.for_root(str(tmp_path)).for_workspace("My Workspace")
     Path(layout.join(WorkspaceLayout.THREADS_DIR, "abcd1234")).mkdir(parents=True)
+    Path(layout.join(WorkspaceLayout.scratchpad_subdir("abcd1234", "note"))).mkdir(parents=True)
     marker = Path(layout.join(_bringup.restore.DEFERRED_MARKER))
     marker.parent.mkdir(parents=True)
     marker.write_text("done")
@@ -442,7 +460,11 @@ async def test_one_exec_lists_the_thread_dirs_and_probes_the_deferred_dir(tmp_pa
 
     listing, inventory = await _bringup._inventory(_Shell(), layout)
 
-    assert listing.thread_dirs == {"abcd1234"}
+    assert listing == {
+        WorkspaceLayout.THREADS_DIR: {"abcd1234"},
+        WorkspaceLayout.LARGE_TOOL_RESULTS_DIR: set(),
+        WorkspaceLayout.SCRATCHPAD_DIR: {"abcd1234"},
+    }
     assert inventory.present is None
 
 
@@ -465,6 +487,19 @@ async def test_a_pass_whose_prune_left_dead_dirs_is_not_stamped(steps, manager, 
         await _drain(manager)
     assert "restore:A" in steps.order
     assert redis.values == {}
+
+
+async def test_a_thread_archived_during_the_pass_is_pruned_again(steps, manager, sandbox):
+    """Its own prune ran beside a batch that may have put its scratchpad back,
+    and the stamp records the threads as they stand after."""
+    redis = _Redis()
+    after = ThreadPrefixes(all=frozenset({"live-A"}), open=frozenset())
+    steps.moved["A"] = after
+    with patch.object(_bringup.cache, "client", lambda: redis):
+        _schedule(manager, sandbox, "A", urgent=False)
+        await _drain(manager)
+    assert _steps(steps.order)[:2] == ["restore:A", "reprune:A"]
+    assert redis.values[_bringup._stamp_key("A")] == _bringup._stamp("sandbox-1", after)
 
 
 @pytest.mark.parametrize("ending", ["errors", "busy"])

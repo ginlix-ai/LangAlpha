@@ -599,11 +599,9 @@ async def threads_delete(
         # As the HTTP endpoint does: a bring-up skips a workspace whose live
         # threads look unchanged, so it would not prune this one's dirs.
         if thread_row:
-            from src.server.services.workspace_manager import WorkspaceManager
+            from src.server.services.workspace_manager import prune_thread_dirs_soon
 
-            manager = WorkspaceManager.current()
-            if manager is not None:
-                manager.prune_thread_dirs_soon(str(thread_row["workspace_id"]))
+            prune_thread_dirs_soon(str(thread_row["workspace_id"]))
 
         return success_command(
             {"success": True, "thread_id": thread_id},

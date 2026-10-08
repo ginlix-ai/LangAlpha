@@ -9,7 +9,7 @@ steps out of it until some later trigger.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -109,6 +109,18 @@ async def test_a_detached_finalize_exports():
         )
 
     export.assert_called_once_with("thread-1", "ws-1")
+
+
+@pytest.mark.parametrize(("msg_type", "asked"), [("ptc", True), ("flash", False)])
+def test_a_ptc_run_end_asks_for_its_threads_archive_prune(msg_type, asked):
+    """An archived thread keeps its scratchpad while a run writes to it, and
+    nothing else prunes it once that run ends."""
+    with patch(EXPORT), patch(
+        "src.server.services.workspace_manager.prune_if_archived_soon"
+    ) as prune:
+        _coordinator().post_finalize_tail("thread-1", _row("completed", msg_type))
+
+    assert prune.call_args_list == ([call("thread-1")] if asked else [])
 
 
 @pytest.mark.asyncio

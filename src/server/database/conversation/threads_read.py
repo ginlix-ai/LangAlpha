@@ -1,10 +1,14 @@
 """Read models over conversation_threads: lookups, listings, auth metadata."""
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple
 
 from psycopg.rows import dict_row
 
+from ptc_agent.core.paths import ARCHIVE_SCOPED_THREAD_DIRS
 from src.server.contracts.status import (
     RAW_LIVE_STATUSES,
     RAW_TERMINAL_SNAPSHOT_STATUSES,
@@ -473,23 +477,87 @@ async def get_thread_with_summary(
         raise
 
 
-async def get_workspace_thread_short_ids(workspace_id: str) -> set[str]:
-    """First 8 characters of every thread id in a workspace.
+@dataclass(frozen=True)
+class ThreadPrefixes:
+    """A workspace's thread id prefixes, which key its per-thread sandbox dirs.
 
-    A thread's sandbox scratch is keyed by that prefix, so two threads can
-    share a directory; cleanup keeps any prefix a live thread still uses.
+    Two threads can share a prefix, so cleanup keeps any prefix a kept thread
+    still uses. ``all`` is every thread that exists; ``open`` every one not
+    archived, or archived but still in use: its latest run is live or began
+    after the archive (nothing refuses a turn in an archived thread, and an
+    automation keeps running in its own), or a background subagent it
+    dispatched is still running.
     """
+
+    all: frozenset[str]
+    open: frozenset[str]
+
+    def keeps(self, base: str) -> frozenset[str]:
+        """The prefixes whose dirs under ``base`` stay."""
+        return self.open if base in ARCHIVE_SCOPED_THREAD_DIRS else self.all
+
+
+_THREAD_PREFIXES_SQL = f"""
+    SELECT left(ct.conversation_thread_id::text, 8) AS prefix,
+           bool_or(COALESCE(
+               ct.archived_at IS NULL
+               OR latest.status IN ({_sql.sql_literals(RAW_LIVE_STATUSES)})
+               OR latest.created_at > ct.archived_at
+               OR EXISTS (
+                   SELECT 1 FROM subagent_runs sr
+                   WHERE sr.thread_id = ct.conversation_thread_id
+                     AND sr.status = 'in_progress'
+               ),
+               false
+           )) AS open
+    FROM conversation_threads ct
+    LEFT JOIN LATERAL (
+        SELECT cr.status, cr.created_at
+        FROM conversation_responses cr
+        WHERE cr.conversation_thread_id = ct.conversation_thread_id
+          AND ct.archived_at IS NOT NULL
+        ORDER BY cr.run_seq DESC
+        LIMIT 1
+    ) latest ON true
+    WHERE ct.workspace_id = %s
+    GROUP BY 1
+"""
+
+
+async def _thread_prefixes(conn, workspace_id: str) -> ThreadPrefixes:
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(_THREAD_PREFIXES_SQL, (workspace_id,))
+        rows = await cur.fetchall()
+    return ThreadPrefixes(
+        all=frozenset(row["prefix"] for row in rows),
+        open=frozenset(row["prefix"] for row in rows if row["open"]),
+    )
+
+
+async def get_workspace_thread_prefixes(workspace_id: str) -> ThreadPrefixes:
     async with pool.get_db_connection() as conn:
+        return await _thread_prefixes(conn, workspace_id)
+
+
+@asynccontextmanager
+async def fenced_workspace_thread_prefixes(
+    workspace_id: str,
+) -> AsyncIterator[ThreadPrefixes]:
+    """The prefixes, with the workspace row held FOR UPDATE until the block
+    exits, for a caller removing the dirs of the threads that are not kept.
+
+    Admission holds that row FOR SHARE until its run row commits, root runs
+    and background subagents alike, so no run starts writing to a dir between
+    this read and the removal: a turn admitted before the read is live in it,
+    and one admitted after waits for the block to end.
+    """
+    async with pool.get_db_connection() as conn, conn.transaction():
         async with conn.cursor() as cur:
             await cur.execute(
-                """
-                SELECT DISTINCT left(conversation_thread_id::text, 8)
-                FROM conversation_threads
-                WHERE workspace_id = %s
-                """,
+                "SELECT 1 FROM workspaces WHERE workspace_id = %s FOR UPDATE",
                 (workspace_id,),
             )
-            return {row[0] for row in await cur.fetchall()}
+        yield await _thread_prefixes(conn, workspace_id)
 
 
 async def list_computer_threads(
