@@ -1517,7 +1517,9 @@
       "subagentsOff": "子 Agent 已关闭",
       "subagentsFailed": "无法更改此对话的子 Agent 设置",
       "watch": "盯盘",
-      "watchTitle": "盯盘模式：实时跟踪 Agent 关注的股票价格"
+      "watchOn": "盯盘已开启",
+      "watchOff": "盯盘已关闭",
+      "watchTitle": "实时跟踪 Agent 关注的股票价格"
     },
     "moreTools": "更多工具",
     "widgetContext": {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   Check, ChevronDown, FileStack, FolderOpen, Layers, Radar, Zap,
 } from 'lucide-react';
@@ -9,6 +9,7 @@ import {
 import { IconToggle, PillToggle, SubagentsGlyph } from './chat-input.parts';
 import type { ToolbarItem } from './chat-input.useToolbarFold';
 import type { ComposerScope, Workspace } from './chat-input.types';
+import { ALL_WORKSPACES_KEY, WorkspacePicker } from './chat-input.workspacePicker';
 
 /**
  * The composer's foldable toolbar, declared once in PRIORITY order: the first
@@ -33,6 +34,9 @@ export function useToolbarItems({
   scope,
   onScopeChange,
   emptyWorkspacesHint,
+  menuPlacement = 'top start',
+  menuContainer = null,
+  draftRef,
 }: {
   mode?: 'fast' | 'ptc';
   onModeChange?: (mode: 'fast' | 'ptc') => void;
@@ -49,24 +53,16 @@ export function useToolbarItems({
   scope?: ComposerScope;
   onScopeChange?: ((scope: ComposerScope) => void) | null;
   emptyWorkspacesHint?: string | null;
+  menuPlacement?: 'top start' | 'bottom start';
+  /** Where the pickers portal to; null portals to the body. */
+  menuContainer?: HTMLElement | null;
+  /** The composer's text field, where a pick made with the pointer leaves focus. */
+  draftRef?: RefObject<HTMLTextAreaElement | null>;
 }): ToolbarItem[] {
   const { t } = useTranslation();
 
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
-  const workspaceMenuRef = useRef<HTMLDivElement>(null);
   const workspaceBtnRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!showWorkspaceMenu) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (workspaceBtnRef.current?.contains(e.target as Node)) return;
-      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(e.target as Node)) {
-        setShowWorkspaceMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showWorkspaceMenu]);
 
   const hasModeToggle = mode !== undefined && onModeChange !== undefined;
   // Under the all-workspaces agent there is no Flash/PTC choice, only where the
@@ -126,45 +122,23 @@ export function useToolbarItems({
           />
         );
         if (measureOnly) return pill;
-        const choose = (pick: () => void) => (e: ReactMouseEvent) => {
-          e.preventDefault();
-          pick();
-          setShowWorkspaceMenu(false);
-        };
         return (
-          <div className="relative flex min-w-0" ref={workspaceMenuRef}>
+          <>
             {pill}
-            {showWorkspaceMenu && (
-              <div className="workspace-dropdown workspace-dropdown-up">
-                <div
-                  title={t('agents.allWorkspacesHint')}
-                  className={`workspace-dropdown-item ${allSelected ? 'active' : ''}`}
-                  onMouseDown={choose(pickAll)}
-                >
-                  <Layers className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                  <span>{t('agents.allWorkspaces')}</span>
-                </div>
-                {hasSecondSection && (
-                  <div aria-hidden style={{ height: 1, margin: '4px 0', background: 'var(--color-border-muted)' }} />
-                )}
-                {workspaces?.map((ws) => (
-                  <div
-                    key={ws.workspace_id}
-                    className={`workspace-dropdown-item ${!allSelected && ws.workspace_id === selectedWorkspaceId ? 'active' : ''}`}
-                    onMouseDown={choose(() => pickWorkspace(ws.workspace_id))}
-                  >
-                    <FolderOpen className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                    <span className="min-w-0 truncate" title={ws.name}>{ws.name}</span>
-                  </div>
-                ))}
-                {noWorkspacesHint && (
-                  <div style={{ padding: '6px 14px 8px', fontSize: '0.75rem', color: 'var(--color-text-tertiary)' }}>
-                    {noWorkspacesHint}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+            <WorkspacePicker
+              triggerRef={workspaceBtnRef}
+              isOpen={showWorkspaceMenu}
+              onOpenChange={setShowWorkspaceMenu}
+              workspaces={workspaces ?? []}
+              includeAll
+              selectedKey={allSelected ? ALL_WORKSPACES_KEY : selectedWorkspaceId ?? null}
+              onPick={(key) => (key === ALL_WORKSPACES_KEY ? pickAll() : pickWorkspace(key))}
+              emptyHint={noWorkspacesHint}
+              placement={menuPlacement}
+              portalContainer={menuContainer}
+              draftRef={draftRef}
+            />
+          </>
         );
       },
       menu: () => (
@@ -269,14 +243,15 @@ export function useToolbarItems({
       visible: ptcSelected && marketWatchEnabled,
       active: watchMode,
       inline: ({ measureOnly }) => (
-        <PillToggle
+        <IconToggle
           active={watchMode}
           onToggle={() => setWatchMode(!watchMode)}
-          icon={Radar}
           label={t('chat.pills.watch')}
-          title={t('chat.pills.watchTitle')}
+          tooltip={t(watchMode ? 'chat.pills.watchOn' : 'chat.pills.watchOff')}
           measureOnly={measureOnly}
-        />
+        >
+          <Radar className="h-4 w-4" />
+        </IconToggle>
       ),
       menu: () => (
         <DropdownMenuItem
@@ -313,27 +288,20 @@ export function useToolbarItems({
         );
         if (measureOnly) return pill;
         return (
-          <div className="relative flex min-w-0" ref={workspaceMenuRef}>
+          <>
             {pill}
-            {showWorkspaceMenu && (
-              <div className="workspace-dropdown workspace-dropdown-up">
-                {workspaces?.map((ws) => (
-                  <div
-                    key={ws.workspace_id}
-                    className={`workspace-dropdown-item ${ws.workspace_id === selectedWorkspaceId ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      onWorkspaceChange?.(ws.workspace_id);
-                      setShowWorkspaceMenu(false);
-                    }}
-                  >
-                    <FolderOpen className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                    <span>{ws.name}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+            <WorkspacePicker
+              triggerRef={workspaceBtnRef}
+              isOpen={showWorkspaceMenu}
+              onOpenChange={setShowWorkspaceMenu}
+              workspaces={workspaces ?? []}
+              selectedKey={selectedWorkspaceId ?? null}
+              onPick={(key) => { if (key !== selectedWorkspaceId) onWorkspaceChange?.(key); }}
+              placement={menuPlacement}
+              portalContainer={menuContainer}
+              draftRef={draftRef}
+            />
+          </>
         );
       },
       menu: () => (
@@ -363,6 +331,6 @@ export function useToolbarItems({
     showWorkspaceSelector, showWorkspaceMenu, selectedWorkspaceName,
     workspaces, selectedWorkspaceId, onWorkspaceChange, t,
     hasScopePicker, allSelected, scopeLabel, noWorkspacesHint, hasSecondSection,
-    pickAll, pickWorkspace,
+    pickAll, pickWorkspace, menuPlacement, menuContainer, draftRef,
   ]);
 }

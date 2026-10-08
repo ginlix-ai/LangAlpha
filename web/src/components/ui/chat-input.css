@@ -142,44 +142,6 @@
   margin-left: auto;
 }
 
-/* ====== Workspace dropdown ====== */
-
-.workspace-dropdown {
-  position: absolute;
-  left: 0;
-  width: 220px;
-  background-color: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-muted);
-  border-radius: 8px;
-  max-height: 200px;
-  overflow-y: auto;
-  z-index: 100;
-  opacity: 1;
-  isolation: isolate;
-}
-
-.workspace-dropdown-up {
-  bottom: 100%;
-  margin-bottom: 4px;
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
-}
-
-.workspace-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  color: var(--color-text-primary);
-  transition: background-color 0.1s;
-}
-
-.workspace-dropdown-item:hover,
-.workspace-dropdown-item.active {
-  background-color: var(--color-accent-soft);
-}
-
 /* ====== Model selector trigger (Radix data-state) ====== */
 
 .model-selector-trigger {
@@ -245,14 +207,6 @@
    an item and keeps its own padding. */
 .model-setting-options [role^='menuitem'] {
   padding-left: 24px;
-}
-
-/* ====== Mobile responsive dropdowns ====== */
-@media (max-width: 767px) {
-  .workspace-dropdown {
-    width: calc(100vw - 32px);
-    max-width: 280px;
-  }
 }
 
 /* ====== Stop button (quiet ink) ====== */

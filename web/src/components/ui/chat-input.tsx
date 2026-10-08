@@ -619,6 +619,9 @@ function ChatInput({
     subagentsAllowed: shownSubagents, onToggleSubagents: handleToggleSubagents,
     watchMode, setWatchMode, marketWatchEnabled,
     workspaces, selectedWorkspaceId, onWorkspaceChange,
+    menuPlacement: dropdownDirection === 'down' ? 'bottom start' : 'top start',
+    menuContainer: isMobile ? chatContainer : null,
+    draftRef: textareaRef,
   });
 
   const ringVisible = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
