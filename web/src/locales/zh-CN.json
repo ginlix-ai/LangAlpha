@@ -3447,7 +3447,7 @@
     },
     "connect": {
       "title": "连接你的券商账户",
-      "description": "幕僚长会从中读取你的持仓和自选股，再问你几个关于所关注市场的问题。",
+      "description": "Chief of Staff Agent 会从中读取你的持仓和自选股，再问你几个关于所关注市场的问题。",
       "continue": "继续",
       "turnOn": "开启",
       "skip": "不连接券商，直接继续",
@@ -4283,17 +4283,17 @@
   },
   "agents": {
     "allWorkspaces": "所有工作区",
-    "allWorkspacesHint": "幕僚长在这里回答，并把深度任务交给各工作区的分析师。",
+    "allWorkspacesHint": "Chief of Staff Agent 在这里回答，并把深度任务交给各工作区的分析师。",
     "home": "Home",
-    "chiefOfStaff": "幕僚长",
+    "chiefOfStaff": "CoS Agent",
     "analyst": "分析师",
     "pickWhere": "选择 Agent 的工作范围",
-    "backToChiefOfStaff": "返回幕僚长",
+    "backToChiefOfStaff": "返回 CoS Agent",
     "reportBackPending": "等待分析师汇报结果",
     "inWorkspace": "在 {{workspace}} 中",
     "workspaceRequired": "请选择一个工作区，或选择所有工作区。",
     "widgets": {
-      "allWorkspacesDesc": "随时提问，幕僚长会亲自处理或分派给分析师。",
+      "allWorkspacesDesc": "随时提问，Chief of Staff Agent 会亲自处理或分派给分析师。",
       "tagAllWorkspaces": "全部"
     },
     "models": {
@@ -4307,7 +4307,7 @@
       "fallbackModelsDesc": "当默认模型或后台模型不可用时，按顺序依次尝试。请只添加你有权访问的模型。未选择时不使用备用模型。",
       "chooseYourModelsDesc": "为对话选择一个模型，并为后台任务选择一个更经济的模型。之后可随时更改。",
       "explainerTitle": "两个模型",
-      "explainerDefaultBody": "运行所有对话：跨所有工作区的幕僚长，以及各工作区的分析师。",
+      "explainerDefaultBody": "运行所有对话：跨所有工作区的 Chief of Staff Agent，以及各工作区的分析师。",
       "explainerBackgroundBody": "不运行任何对话，只处理对话周边的工作，因此更快、更便宜的模型通常就够用。",
       "defaultPlaceholder": "选择默认模型..."
     },
@@ -4320,11 +4320,11 @@
     "tour": {
       "modes": {
         "title": "两种工作方式",
-        "body": "选择一个工作区，由该工作区的分析师在其中完成工作，使用该工作区的文件。选择所有工作区，则由幕僚长接手：快速问题它亲自回答，深度任务交给合适的分析师。接下来分别介绍两者。"
+        "body": "选择一个工作区，由该工作区的分析师在其中完成工作，使用该工作区的文件。选择所有工作区，则由 Chief of Staff Agent 接手：快速问题它亲自回答，深度任务交给合适的分析师。接下来分别介绍两者。"
       },
       "chiefOfStaff": {
-        "title": "所有工作区：你的幕僚长",
-        "body": "你只管提出需求。幕僚长会回答快速问题、创建和管理工作区、把深度任务交给各工作区的分析师并汇报结果，还会管理你的自动化。它的所有对话归入“所有工作区”卡片，它自己的文件存放在名为 Home 的文件夹中。"
+        "title": "所有工作区：你的 Chief of Staff Agent",
+        "body": "你只管提出需求。Chief of Staff Agent 会回答快速问题、创建和管理工作区、把深度任务交给各工作区的分析师并汇报结果，还会管理你的自动化。它的所有对话归入“所有工作区”卡片，它自己的文件存放在名为 Home 的文件夹中。"
       },
       "analyst": {
         "title": "工作区：由分析师完成工作",
@@ -4335,12 +4335,12 @@
       },
       "create": {
         "title": "为正式任务创建专属工作区",
-        "body": "涉及数据处理或需要产出交付物的任务，建议为其创建工作区：点击“新建工作区”并按任务命名，或让幕僚长替你创建。"
+        "body": "涉及数据处理或需要产出交付物的任务，建议为其创建工作区：点击“新建工作区”并按任务命名，或让 Chief of Staff Agent 替你创建。"
       },
       "createWorkspaceTask": "新建一个专属工作区，其分析师将在完整沙箱中执行正式分析任务。"
     },
     "intro": {
-      "chiefOfStaffRun": "幕僚长",
+      "chiefOfStaffRun": "CoS Agent",
       "handoff": "已交给分析师",
       "taskHandoff": "任务已交给分析师",
       "footer": "两种工作方式"
