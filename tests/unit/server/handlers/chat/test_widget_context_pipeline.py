@@ -95,7 +95,7 @@ def test_widget_directive_image_and_skill_coexist_without_conflict():
     + a skill all in the same additional_context list. Each parser only
     extracts its own type."""
     raw = [
-        {"type": "skills", "name": "user-profile"},
+        {"type": "skills", "name": "onboarding"},
         {"type": "directive", "content": "Be terse."},
         {
             "type": "widget",
