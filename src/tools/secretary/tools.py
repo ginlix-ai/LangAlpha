@@ -141,11 +141,12 @@ async def workspaces_list(
     try:
         from src.server.database.workspace import get_workspace, get_workspaces_for_user
 
-        # Pinned, then most recently used: past the 20th the list stops, and
-        # the workspace a hand-off is for is far likelier to be recent than
-        # early in the user's custom order.
-        workspaces, total = await get_workspaces_for_user(
-            user_id=user_id, limit=20, sort_by="activity"
+        # Every workspace, since one left off the list is one the agent tells
+        # the user does not exist. Pinned, then most recently used: the one a
+        # hand-off is for is far likelier to be recent than early in the
+        # user's custom order.
+        workspaces, _ = await get_workspaces_for_user(
+            user_id=user_id, limit=None, sort_by="activity"
         )
         if home_id is not None:
             from src.tools.secretary.activity import folder_on
@@ -162,7 +163,6 @@ async def workspaces_list(
                     {field: ws.get(field) for field in _LISTED_WORKSPACE_FIELDS}
                     for ws in workspaces
                 ],
-                "total": total,
             },
             default=str,
         )

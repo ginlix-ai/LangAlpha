@@ -889,7 +889,7 @@ async def get_workspace_name_and_description(
 
 async def get_workspaces_for_user(
     user_id: str,
-    limit: int = 20,
+    limit: int | None = 20,
     offset: int = 0,
     include_deleted: bool = False,
     sort_by: str = "custom",
@@ -938,6 +938,7 @@ async def get_workspaces_for_user(
                 ORDER BY {order_clause}, workspace_id DESC
                 LIMIT %(limit)s OFFSET %(offset)s
                 """,
+                # LIMIT NULL is no limit, so None returns every row.
                 {**params, "limit": limit, "offset": offset},
             )
             results = await cur.fetchall()
