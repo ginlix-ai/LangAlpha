@@ -143,6 +143,26 @@ _WSFILES_CSP = (
     "form-action 'none'"
 )
 
+# The viewer's scrollbar, matching the app's (web/src/styles/tokens.css): the
+# thumb inset from the frame's edge and short of both ends. The fallback colour
+# covers the moment before the first theme push. A document with WebKit
+# scrollbar rules of its own gets none of it: the two would merge rule by rule,
+# and a 6px scrollbar less this 3px inset on each side paints no thumb at all.
+# `scrollbar-width` and `scrollbar-color` cannot merge that way, so a document
+# that sets only those still gets it, and a browser without them shows it.
+_EMBED_SCROLLBARS = (
+    "<style>"
+    "::-webkit-scrollbar{width:12px;height:12px}"
+    "::-webkit-scrollbar-track{background:transparent;margin:4px}"
+    "::-webkit-scrollbar-thumb{"
+    "background-color:var(--color-border-elevated,rgba(128,128,128,.45));"
+    "background-clip:padding-box;border:3px solid transparent;border-radius:6px}"
+    "::-webkit-scrollbar-thumb:hover{"
+    "background-color:var(--color-text-tertiary,rgba(128,128,128,.7))}"
+    "</style>"
+)
+_STYLES_OWN_SCROLLBAR = re.compile(r"-webkit-scrollbar", re.IGNORECASE)
+
 # Viewer-embed script spliced after <head> when `?inject=theme` is set. Three
 # jobs: (1) theme sync — listens for `widget:themeUpdate` postMessages and
 # applies the `--color-*` custom properties to :root via a dedicated style
@@ -201,17 +221,20 @@ def _inject_theme_into_html(html: str) -> str:
     Falls back to prepending when no <head> tag is present so even fragment
     documents still receive the listener.
     """
+    snippet = _THEME_INJECTION
+    if _STYLES_OWN_SCROLLBAR.search(html) is None:
+        snippet = _EMBED_SCROLLBARS + snippet
     lower = html.lower()
     idx = lower.find("<head>")
     if idx != -1:
         insert_at = idx + len("<head>")
-        return html[:insert_at] + _THEME_INJECTION + html[insert_at:]
+        return html[:insert_at] + snippet + html[insert_at:]
     # No literal <head> — try <head ...> with attributes.
     match = re.search(r"<head\b[^>]*>", html, re.IGNORECASE)
     if match:
         insert_at = match.end()
-        return html[:insert_at] + _THEME_INJECTION + html[insert_at:]
-    return _THEME_INJECTION + html
+        return html[:insert_at] + snippet + html[insert_at:]
+    return snippet + html
 
 
 def _has_traversal(path: str) -> bool:

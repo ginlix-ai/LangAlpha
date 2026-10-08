@@ -6,6 +6,7 @@ SEC filings are immutable once published, so aggressive caching is safe.
 """
 
 import logging
+import re
 from urllib.parse import urlparse
 
 import httpx
@@ -21,6 +22,43 @@ ALLOWED_HOSTS = {"www.sec.gov", "sec.gov", "efts.sec.gov"}
 
 # SEC requires a User-Agent with contact info
 SEC_USER_AGENT = "PTC-Agent contact@example.com"
+
+# The viewer frames a filing in a rounded panel, and a filing rarely styles a
+# scrollbar of its own, so the browser's would run flush against that panel's
+# edge. This one matches the app's (web/src/styles/tokens.css). A filing gets
+# no theme, so its thumb is a fixed grey that reads on a white page.
+_FILING_SCROLLBARS = (
+    b"<style>"
+    b"::-webkit-scrollbar{width:12px;height:12px}"
+    b"::-webkit-scrollbar-track{background:transparent;margin:4px}"
+    b"::-webkit-scrollbar-thumb{background-color:rgba(128,128,128,.45);"
+    b"background-clip:padding-box;border:3px solid transparent;border-radius:6px}"
+    b"::-webkit-scrollbar-thumb:hover{background-color:rgba(128,128,128,.7)}"
+    b"</style>"
+)
+# A filing's <head> opens within its first few kilobytes. Bounding the search
+# keeps a multi-megabyte filing without one, or with a run of unclosed "<head",
+# from tying up the event loop on a scan of the whole document.
+_HEAD_OPEN = re.compile(rb"<head\b[^>]{0,1024}>", re.IGNORECASE)
+_HEAD_WINDOW = 64 * 1024
+_STYLES_OWN_SCROLLBAR = re.compile(rb"-webkit-scrollbar", re.IGNORECASE)
+
+
+def _with_filing_scrollbars(body: bytes) -> bytes:
+    """Splice the scrollbar style in after <head>.
+
+    Never ahead of the doctype, where it would drop the filing into quirks
+    mode, so a document without a <head> keeps the browser's scrollbar. A
+    filing with WebKit scrollbar rules of its own keeps those whole: the two
+    would merge rule by rule, and a narrow scrollbar less the inset paints no
+    thumb at all.
+    """
+    if _STYLES_OWN_SCROLLBAR.search(body):
+        return body
+    match = _HEAD_OPEN.search(body, 0, _HEAD_WINDOW)
+    if match is None:
+        return body
+    return body[: match.end()] + _FILING_SCROLLBARS + body[match.end() :]
 
 
 @router.get("/document")
@@ -60,9 +98,12 @@ async def proxy_sec_document(
         raise HTTPException(status_code=502, detail="Failed to fetch from SEC EDGAR")
 
     content_type = resp.headers.get("content-type", "text/html")
+    content = resp.content
+    if content_type.split(";", 1)[0].strip().lower() == "text/html":
+        content = _with_filing_scrollbars(content)
 
     return Response(
-        content=resp.content,
+        content=content,
         media_type=content_type,
         headers={
             "Cache-Control": "public, max-age=86400",
