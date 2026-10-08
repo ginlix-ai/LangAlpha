@@ -68,6 +68,9 @@ async def _resolve_graph_and_state(
             status_code=400,
             detail=f"Thread {thread_id} has no associated workspace",
         )
+    # The row holds a uuid.UUID; the session and its asset sync key on the str
+    # the request paths pass.
+    workspace_id = str(workspace_id)
 
     # Session
     workspace_manager = WorkspaceManager.get_instance()
