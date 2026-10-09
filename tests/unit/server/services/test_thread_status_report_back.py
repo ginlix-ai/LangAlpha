@@ -34,6 +34,14 @@ def _seed(cache: _FakeCache, flash: str, members: list[str], run_pointers: dict[
         )
 
 
+def _no_open_jobs():
+    """No report_back job queued beyond the ones the pointers name."""
+    return patch(
+        "src.server.database.runs.outbox.list_open_notification_jobs",
+        AsyncMock(return_value=[]),
+    )
+
+
 def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
     """Stub everything read_thread_runtime_status touches except the report-back block.
 
@@ -78,6 +86,7 @@ def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
         patch(
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
         ),
+        _no_open_jobs(),
     ]
 
 
@@ -170,8 +179,9 @@ async def test_report_back_status_success_returns_real_bool():
     # Pending: a watch member with a live run pointer -> explicit True + run id.
     pending = _FakeCache()
     _seed(pending, "flash-pending", ["ptc-1"], {"ptc-1": "rb-1"})
-    with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=pending
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=pending),
+        _no_open_jobs(),
     ):
         live = await status.read_report_back_status("flash-pending")
     assert live["pending_report_back"] is True
@@ -192,7 +202,10 @@ async def test_status_excludes_and_reaps_originless_members():
     _seed(cache, flash, ["ptc-live", "ptc-orphan"], {"ptc-live": "rb-live"})
     del cache.client.kv[keys.ptc_origin_key("ptc-orphan")]
 
-    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        _no_open_jobs(),
+    ):
         resp = await status.read_report_back_status(flash)
 
     assert resp["pending_report_back"] is True
@@ -377,6 +390,7 @@ async def test_a_ptc_thread_is_pending_on_an_analyst_hand_off():
 
     with (
         patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        _no_open_jobs(),
         patch(
             "src.server.services.report_back.subagent.read_task_report_back_status",
             AsyncMock(return_value=_task_slice(active_tasks=["task-1"])),
@@ -414,3 +428,110 @@ async def test_a_ptc_thread_lists_both_registries_drained_runs_in_thread_order()
 
     assert resp["pending_report_back"] is False
     assert resp["recent_report_back_run_ids"] == ["hand-off-2", "task-1", "hand-off-1"]
+
+
+# --- A member is owed until its summary run ends -----------------------------
+
+
+def _seed_summary(cache: _FakeCache, flash: str, ptc: str, *, origin_gen, ptr_gen, run_id="rb-1"):
+    cache.client.sets[keys.flash_watch_key(flash)] = {ptc}
+    cache.client.kv[keys.ptc_origin_key(ptc)] = json.dumps(
+        {"flash_thread_id": flash, "report_back": True, "dispatch_gen": origin_gen}
+    )
+    cache.client.kv[keys.flash_rb_run_key(flash, ptc)] = json.dumps(
+        {"run_id": run_id, "dispatch_gen": ptr_gen}
+    )
+
+
+def _job(ptc: str, run_id: str | None = None) -> dict:
+    payload = {"ptc_thread_id": ptc, "dispatch_gen": "g1"}
+    if run_id:
+        payload["dispatched_run_id"] = run_id
+    return {"hook_type": "report_back", "payload": payload}
+
+
+async def _read(cache: _FakeCache, flash: str, run_statuses, open_jobs=()):
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        patch("src.server.database.runs.lifecycle.get_run_statuses", run_statuses),
+        patch(
+            "src.server.database.runs.outbox.list_open_notification_jobs",
+            AsyncMock(return_value=list(open_jobs)),
+        ),
+    ):
+        return await status.read_report_back_status(flash)
+
+
+@pytest.mark.asyncio
+async def test_an_ended_summary_settles_its_member_before_the_clear():
+    """The member stays in the watch set until watch_clear runs behind the
+    report_back job's terminal wait; the tip must drop with the summary."""
+    cache = _FakeCache()
+    _seed_summary(cache, "flash-1", "ptc-1", origin_gen="g1", ptr_gen="g1")
+
+    resp = await _read(
+        cache,
+        "flash-1",
+        AsyncMock(return_value={"rb-1": "completed"}),
+        open_jobs=[_job("ptc-1", "rb-1")],
+    )
+
+    assert resp["pending_report_back"] is False
+    assert resp["report_back_run_id"] is None
+    assert resp["recent_report_back_run_ids"] == ["rb-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_report_queued_behind_the_ended_summary_keeps_the_member_owed():
+    """A later run on the analyst's thread (a continuation, a subagent's
+    report) queues another report_back under the same dispatch. The pointer
+    still names the summary that ended, so only the queued job says a second
+    report is on its way."""
+    cache = _FakeCache()
+    _seed_summary(cache, "flash-1", "ptc-1", origin_gen="g1", ptr_gen="g1")
+
+    resp = await _read(
+        cache,
+        "flash-1",
+        AsyncMock(return_value={"rb-1": "completed"}),
+        open_jobs=[_job("ptc-1", "rb-1"), _job("ptc-1")],
+    )
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] is None
+    assert resp["recent_report_back_run_ids"] == ["rb-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ptr_gen", ["g0", None])
+async def test_a_summary_of_an_earlier_dispatch_leaves_the_member_owed(ptr_gen):
+    """The analyst was handed work again since: its new report is still owed."""
+    cache = _FakeCache()
+    _seed_summary(cache, "flash-1", "ptc-1", origin_gen="g1", ptr_gen=ptr_gen)
+
+    resp = await _read(cache, "flash-1", AsyncMock(return_value={"rb-1": "completed"}))
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] is None
+    assert resp["recent_report_back_run_ids"] == ["rb-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "run_statuses",
+    [
+        AsyncMock(return_value={"rb-1": "in_progress"}),
+        AsyncMock(return_value={}),
+        AsyncMock(side_effect=RuntimeError("db down")),
+    ],
+    ids=["live", "no-row-yet", "read-failed"],
+)
+async def test_a_summary_not_known_to_have_ended_keeps_the_member_owed(run_statuses):
+    cache = _FakeCache()
+    _seed_summary(cache, "flash-1", "ptc-1", origin_gen="g1", ptr_gen="g1")
+
+    resp = await _read(cache, "flash-1", run_statuses)
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] == "rb-1"
+    assert resp["recent_report_back_run_ids"] == []

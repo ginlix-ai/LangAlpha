@@ -3,7 +3,7 @@
 ``read_report_back_slice`` routes by thread kind (flash pendingness lives in
 the Redis watch set; PTC task pendingness IS the open outbox row, and a PTC
 thread that hands work to analysts holds a watch set too); the flash status
-derivation and the terminal-pointer recents union live here.
+derivation and the ended-run rule both slices settle on live here.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Iterable
 
 from src.server.services.report_back.flash import reserve
 from src.server.services.report_back.flash.keys import (
@@ -26,48 +27,23 @@ from src.server.services.report_back.flash.keys import (
 logger = logging.getLogger("src.server.handlers.chat_handler")
 
 
-async def recents_with_terminal_pointer(
-    run_id: str | None, recents: list[str]
-) -> list[str]:
-    """Read-time union: a named run that is already terminal joins the recents
-    list. Terminal ⇒ its turn row is persisted, so the recents contract (every
-    listed run is replayable from history) holds — and the post-finalize/
-    pre-ack window (run terminal, job unacked, recents not yet written) stops
-    being invisible to the client's rendered-run dedup. The pointer itself
-    stays named: a wake-missed client that never rendered the turn still
-    attaches it. On a failed row read the list is returned unchanged (today's
-    behavior; the client-side replay dedup still covers the window)."""
-    if not run_id or run_id in recents:
-        return recents
-    try:
-        from src.server.database.runs import lifecycle as tl_db
-
-        run = await tl_db.get_run(run_id)
-    except Exception:
-        logger.warning(
-            f"Terminal-pointer recents check failed for run {run_id}",
-            exc_info=True,
-        )
-        return recents
-    if run is not None and run.get("status") != "in_progress":
-        return [run_id, *recents]
-    return recents
-
-
 async def read_report_back_status(thread_id: str) -> dict:
     """Report-back-only status slice for a flash thread.
 
     The JSON shape is a frontend contract; the recent list is NEWEST FIRST
     (LPUSH order) and every listed run is terminal — i.e. replayable from
-    history (drained runs by construction; the terminal-pointer union below
-    extends the same guarantee into the post-finalize/pre-teardown window).
-    On its own Redis-read failure ``pending_report_back`` is ``None``
-    (unknown — the frontend keeps watching), distinct from an explicit
-    ``False`` (drained).
+    history (drained runs by construction, and summary runs that ended
+    before their pair was torn down). A watch member is owed until a summary
+    of its current dispatch ends and no report_back job queued for the
+    thread is still waiting on its own (see ``ended_run_ids``). On its own
+    registry-read failure (Redis or the outbox) ``pending_report_back`` is
+    ``None`` (unknown — the frontend keeps watching), distinct from an
+    explicit ``False`` (drained).
     """
     pending_report_back: bool | None = False
     report_back_run_id = None
     recent_report_back_run_ids: list[str] = []
+    ended: list[str] = []
     try:
         from src.utils.cache.redis_cache import get_cache_client
 
@@ -82,6 +58,7 @@ async def read_report_back_status(thread_id: str) -> dict:
 
             recent_report_back_run_ids = [decode(r) for r in (recent_raw or [])]
             members = [decode(m) for m in (members_raw or [])]
+            origins: dict[str, dict | None] = {}
             if members:
                 # A member without an origin is dead state and must not keep
                 # this flash pending forever — under-cap flashes never hit the
@@ -92,6 +69,7 @@ async def read_report_back_status(thread_id: str) -> dict:
                 origins_raw = await cache.client.mget(
                     [ptc_origin_key(m) for m in members]
                 )
+                origins = {m: _json_dict(o) for m, o in zip(members, origins_raw)}
                 orphans = [m for m, o in zip(members, origins_raw) if o is None]
                 if orphans:
                     members = [m for m in members if m not in orphans]
@@ -110,23 +88,46 @@ async def read_report_back_status(thread_id: str) -> dict:
                             exc_info=True,
                         )
             if members:
-                pending_report_back = True
-                # Resolve the run to attach to from any live per-(flash, ptc)
-                # pointer (written when the report-back run is dispatched;
-                # cleared at teardown — so it can briefly name an already-
-                # terminal run). One MGET vs N serial GETs; values are raw
-                # serialized JSON.
-                ptr_keys = [flash_rb_run_key(thread_id, ptc) for ptc in members]
-                for raw in await cache.client.mget(ptr_keys):
-                    if raw is None:
-                        continue
-                    try:
-                        ptr = json.loads(raw)
-                    except (TypeError, ValueError):
-                        continue
-                    if isinstance(ptr, dict) and ptr.get("run_id"):
-                        report_back_run_id = ptr["run_id"]
-                        break
+                # Each member's per-(flash, ptc) run pointer names its summary
+                # run once one is dispatched, and survives until teardown, so
+                # it can name a run that already ended. One MGET vs N serial
+                # GETs; values are raw serialized JSON.
+                ptr_raw = await cache.client.mget(
+                    [flash_rb_run_key(thread_id, ptc) for ptc in members]
+                )
+                pointers = {
+                    m: ptr
+                    for m, ptr in zip(members, map(_json_dict, ptr_raw))
+                    if ptr and ptr.get("run_id")
+                }
+                # A later run on an analyst's thread under the same dispatch
+                # (a continuation, a subagent's report) queues another job
+                # behind the one its pointer names. Each job is owed until
+                # the summary it dispatched ends, as on the task slice.
+                from src.server.database.runs import outbox as outbox_db
+
+                jobs = await outbox_db.list_open_notification_jobs(
+                    thread_id, "report_back"
+                )
+                job_runs = [
+                    (job.get("payload") or {}).get("dispatched_run_id")
+                    for job in jobs
+                ]
+                ended = await ended_run_ids(
+                    [*(ptr["run_id"] for ptr in pointers.values()), *job_runs]
+                )
+                pending_report_back = any(r not in ended for r in job_runs) or any(
+                    not _settles(pointers.get(m), origins.get(m), ended)
+                    for m in members
+                )
+                report_back_run_id = next(
+                    (
+                        ptr["run_id"]
+                        for m in members
+                        if (ptr := pointers.get(m)) and ptr["run_id"] not in ended
+                    ),
+                    None,
+                )
     except Exception:
         logger.warning(
             f"Report-back status read failed for {thread_id}; reporting unknown",
@@ -135,16 +136,15 @@ async def read_report_back_status(thread_id: str) -> dict:
         pending_report_back = None
         report_back_run_id = None
         recent_report_back_run_ids = []
-
-    recent_report_back_run_ids = await recents_with_terminal_pointer(
-        report_back_run_id, recent_report_back_run_ids
-    )
+        ended = []
 
     return {
         "thread_id": thread_id,
         "pending_report_back": pending_report_back,
         "report_back_run_id": report_back_run_id,
-        "recent_report_back_run_ids": recent_report_back_run_ids,
+        "recent_report_back_run_ids": list(
+            dict.fromkeys([*ended, *recent_report_back_run_ids])
+        ),
         # Flash threads run no sandbox subagents; present for shape parity
         # with the task slice so watch snapshots decode uniformly.
         "active_tasks": [],
@@ -209,11 +209,67 @@ async def _newest_first(a: list[str], b: list[str]) -> list[str]:
     merged = list(dict.fromkeys([*a, *b]))
     if not a or not b:
         return merged
+    return await _newest_first_by_seq(merged)
+
+
+async def _newest_first_by_seq(run_ids: list[str]) -> list[str]:
+    """``run_ids`` by their sequence on the thread, newest first; unchanged
+    when the read fails, since the client dedups what it already rendered."""
     try:
         from src.server.database.runs import lifecycle as tl_db
 
-        seqs = await tl_db.get_run_seqs(merged)
+        seqs = await tl_db.get_run_seqs(run_ids)
     except Exception:
         logger.warning("Recents ordering read failed", exc_info=True)
-        return merged
-    return sorted(merged, key=lambda r: seqs.get(r, -1), reverse=True)
+        return run_ids
+    return sorted(run_ids, key=lambda r: seqs.get(r, -1), reverse=True)
+
+
+async def ended_run_ids(run_ids: Iterable[str | None]) -> list[str]:
+    """The delivery runs among ``run_ids`` that have ended, newest first.
+
+    Both registries hold a report a few seconds past the run that delivers
+    it (through the executor's terminal wait, then the ack or the pair's
+    watch_clear), so a slice reading the registry alone would keep the chat's
+    tip up under the turn it announced. A run with no row yet is live:
+    admission returns the run id before the START transaction commits. A
+    failed read finds none ended, so each report stays owed until its
+    registry lets go of it.
+    """
+    ids = list(dict.fromkeys(r for r in run_ids if r))
+    if not ids:
+        return []
+    try:
+        from src.server.database.runs import lifecycle as tl_db
+
+        statuses = await tl_db.get_run_statuses(ids)
+    except Exception:
+        logger.warning(
+            f"Report-back run status read failed for {ids}; counting them live",
+            exc_info=True,
+        )
+        return []
+    ended = [r for r in ids if statuses.get(r, "in_progress") != "in_progress"]
+    return await _newest_first_by_seq(ended) if len(ended) > 1 else ended
+
+
+def _settles(ptr: dict | None, origin: dict | None, ended: list[str]) -> bool:
+    """Whether a member's pointed summary has ended for the dispatch its
+    origin holds now. A pointer left from an earlier dispatch (the analyst
+    was handed work again since) or without a generation proves nothing
+    about the current one."""
+    if ptr is None or ptr["run_id"] not in ended:
+        return False
+    gen = ptr.get("dispatch_gen")
+    return bool(gen) and gen == (origin or {}).get("dispatch_gen")
+
+
+def _json_dict(raw) -> dict | None:
+    """A raw Redis JSON value as a dict, or None for a missing or malformed one."""
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None

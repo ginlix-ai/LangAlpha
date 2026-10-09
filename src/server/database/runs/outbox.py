@@ -656,16 +656,18 @@ async def defer_claimed_job(
             return row["status"] if row else None
 
 
-async def get_open_notification_job(
-    thread_id: str, hook_type: str
-) -> Optional[Dict[str, Any]]:
-    """Oldest open (pending-and-due or claimed) job of one type for a thread.
+async def list_open_notification_jobs(
+    thread_id: str, hook_type: str, *, limit: int = 20
+) -> List[Dict[str, Any]]:
+    """Open (pending, backing off included, or claimed) jobs of one type for a
+    thread, oldest first.
 
     The read-model behind a watcher thread's ``pending_report_back`` when the
-    outbox rows ARE the pending-registry: a job's open lifetime — enqueue
-    through the executor's terminal wait — is exactly the pending window.
-    Deferred rows (``next_retry_at='infinity'``) are invisible: their work
-    is parked, not in progress.
+    outbox rows ARE the pending-registry: a job stays open from enqueue
+    through the executor's terminal wait, so the reader decides from each
+    job's dispatched run whether it is still owed. Deferred rows
+    (``next_retry_at='infinity'``) are invisible: their work is parked, not
+    in progress.
     """
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -679,12 +681,11 @@ async def get_open_notification_job(
                   AND (next_retry_at IS NULL
                        OR next_retry_at != 'infinity'::timestamptz)
                 ORDER BY created_at, hook_outbox_id
-                LIMIT 1
+                LIMIT %s
                 """,
-                (thread_id, hook_type),
+                (thread_id, hook_type, limit),
             )
-            row = await cur.fetchone()
-            return dict(row) if row else None
+            return [dict(row) for row in await cur.fetchall()]
 
 
 async def get_recent_notification_run_ids(

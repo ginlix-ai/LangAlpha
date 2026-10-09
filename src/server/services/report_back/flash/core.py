@@ -171,9 +171,8 @@ async def _exec_watch_clear(job: dict) -> None:
             )
         else:
             # Consumption clear (summary consumed, pair drained): push the
-            # pending to idle transition so watchers drop the chip now.
-            # Without it the frontend's 60s status backstop becomes the
-            # de-facto clear signal.
+            # pending to idle transition so watchers re-read now. Without it
+            # a watcher holds its last read until its watch recycles.
             await wake.publish_wake(cache, flash_tid, cleared=True)
 
 
