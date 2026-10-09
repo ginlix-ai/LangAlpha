@@ -456,6 +456,10 @@ class RunSSEProducer:
         # When index changes (e.g., 0→1), a separator (\n\n) is needed between blocks
         self._reasoning_block_index: dict[str, int] = {}
         self._reasoning_separator_pending: Set[str] = set()
+        # Whitespace-only reasoning deltas seen before an agent's reasoning
+        # section opened, held with their message id until visible reasoning
+        # follows.
+        self._reasoning_whitespace_held: dict[str, tuple[str, str]] = {}
 
         # The OpenAI Responses `phase` of streamed text, per agent and message.
         self._text_phase = TextPhaseTracker()
@@ -1396,6 +1400,22 @@ class RunSSEProducer:
                 # Override content type to reasoning since we have reasoning content
                 content_type = "reasoning"
 
+        is_inner_llm_chunk = is_tool_node and isinstance(message_chunk, (AIMessage, AIMessageChunk))
+
+        # Whitespace alone never opens a reasoning section (the client would
+        # render an empty thought), but it is still text: hold it until visible
+        # reasoning follows, and drop it if the reply turns to text instead.
+        if text_content and not is_inner_llm_chunk:
+            held_id, held = self._reasoning_whitespace_held.pop(agent_name, ("", ""))
+            if content_type == "reasoning":
+                # A stream that fails mid-way sends no finish frame, so its held
+                # whitespace must not lead the retry's reasoning.
+                if held_id == message_id:
+                    text_content = held + text_content
+                if agent_name not in self.reasoning_active and not text_content.strip():
+                    self._reasoning_whitespace_held[agent_name] = (message_id, text_content)
+                    text_content = None
+
         # Prepend separator when transitioning between reasoning blocks
         if text_content and content_type == "reasoning" and agent_name in self._reasoning_separator_pending:
             text_content = "\n\n" + text_content
@@ -1416,7 +1436,6 @@ class RunSSEProducer:
         # result and leak the extraction model's reasoning to the user.
         # ToolMessages themselves carry the tool's actual return value and
         # MUST flow through (their content becomes ``tool_call_result``).
-        is_inner_llm_chunk = is_tool_node and isinstance(message_chunk, (AIMessage, AIMessageChunk))
         if text_content and content_type and not is_inner_llm_chunk:
             # Check if we need to emit reasoning completion signal
             if content_type != "reasoning" and agent_name in self.reasoning_active:
@@ -1496,6 +1515,7 @@ class RunSSEProducer:
             )
 
             self._text_phase.finish(agent_name)
+            self._reasoning_whitespace_held.pop(agent_name, None)
 
             # If finishing while reasoning is active, emit completion signal
             if agent_name in self.reasoning_active:

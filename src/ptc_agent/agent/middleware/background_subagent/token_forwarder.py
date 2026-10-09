@@ -63,6 +63,9 @@ class _SubagentTokenForwarder:
         # section's prose. Mirrors RunSSEProducer's main-agent path.
         self._reasoning_block_index: int | None = None
         self._reasoning_separator_pending = False
+        # Whitespace-only reasoning deltas seen before the reasoning section
+        # opened, held until visible reasoning follows.
+        self._reasoning_whitespace_held = ""
 
     def _signal_record(self, msg_id: str, content: str) -> dict[str, Any]:
         return {
@@ -134,11 +137,12 @@ class _SubagentTokenForwarder:
         msg_id = message_chunk.id or f"sg-{self.tool_call_id}"
 
         # A new assistant message begins a fresh reasoning stream — drop any
-        # carried-over section index / pending separator so the first chunk of
-        # the new message isn't falsely prefixed with a blank line.
+        # carried-over section index / pending separator / held whitespace so
+        # the first chunk of the new message isn't falsely prefixed.
         if self._last_msg_id is not None and msg_id != self._last_msg_id:
             self._reasoning_block_index = None
             self._reasoning_separator_pending = False
+            self._reasoning_whitespace_held = ""
 
         # Detect reasoning summary_text index transitions (mirror of the main
         # streaming handler): when the OpenAI summary index changes (0→1) a new
@@ -178,6 +182,17 @@ class _SubagentTokenForwarder:
                 self.tool_call_id, self._signal_record(self._last_msg_id, "complete")
             )
             self._reasoning_active = False
+
+        # Whitespace alone never opens a reasoning section (the client would
+        # render an empty thought), but it is still text: hold it until visible
+        # reasoning follows, and drop it if the reply turns to text instead.
+        if text:
+            held, self._reasoning_whitespace_held = self._reasoning_whitespace_held, ""
+            if content_type == "reasoning":
+                text = held + text
+                if not self._reasoning_active and not text.strip():
+                    self._reasoning_whitespace_held = text
+                    text = None
 
         if text and content_type:
             # Inline reasoning lifecycle — start on first reasoning chunk,
