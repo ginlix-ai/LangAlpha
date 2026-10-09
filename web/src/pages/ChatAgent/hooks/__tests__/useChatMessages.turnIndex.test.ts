@@ -281,3 +281,84 @@ describe('useChatMessages – turn index with steering messages', () => {
     expect(result.current.messageError).toBeNull();
   });
 });
+
+describe('useChatMessages – /turns entries named by turn_index', () => {
+  // Turn 1's run died before its first checkpoint: it has rows and bubbles but
+  // no /turns entry, so turns 2 and 3 sit one place below their numbers.
+  const TURNS = {
+    turns: [
+      { turn_index: 0, edit_checkpoint_id: null, regenerate_checkpoint_id: 'cp-in-0' },
+      { turn_index: 2, edit_checkpoint_id: 'cp-end-0', regenerate_checkpoint_id: 'cp-in-2' },
+      { turn_index: 3, edit_checkpoint_id: 'cp-end-2', regenerate_checkpoint_id: 'cp-in-3' },
+    ],
+    retry_checkpoint_id: 'cp-end-3',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetchTurns.mockResolvedValue(TURNS);
+    mockSendStream.mockImplementation(
+      async (_msg: string, _ws: string, _tid: string | null, { onEvent }: { onEvent: StreamCallback }) => {
+        onEvent({ event: 'thread_id', thread_id: 'thread-1' });
+        return { disconnected: false };
+      },
+    );
+  });
+
+  async function renderFourTurns() {
+    const hook = renderHookWithProviders(() => useChatMessages('ws-test'));
+    await settleMountLoad();
+    for (const text of ['q0', 'q1', 'q2', 'q3']) {
+      await act(async () => {
+        await hook.result.current.handleSendMessage(text);
+      });
+      // Bubble ids carry Date.now(); sends in the same millisecond would share them.
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    return hook;
+  }
+
+  const lastFork = () => {
+    const options = mockSendStream.mock.lastCall?.[3] as { checkpointId: string; forkFromTurn: number };
+    return { checkpointId: options.checkpointId, forkFromTurn: options.forkFromTurn };
+  };
+
+  it.each([
+    // [turn, checkpoint]: the failed turn forks where the next checkpointed one does.
+    [1, 'cp-end-0'],
+    [2, 'cp-end-0'],
+    [3, 'cp-end-2'],
+  ])('edits turn %i from %s', async (turn, checkpointId) => {
+    const { result } = await renderFourTurns();
+    const userId = result.current.messages.filter((m) => m.role === 'user')[turn].id;
+    await act(async () => {
+      await result.current.handleEditMessage(userId, 'changed');
+    });
+    expect(result.current.messageError).toBeNull();
+    expect(lastFork()).toEqual({ checkpointId, forkFromTurn: turn });
+  });
+
+  it.each([
+    [2, 'cp-in-2'],
+    [3, 'cp-in-3'],
+  ])('regenerates turn %i from %s', async (turn, checkpointId) => {
+    const { result } = await renderFourTurns();
+    const assistantId = result.current.messages.filter((m) => m.role === 'assistant')[turn].id;
+    await act(async () => {
+      await result.current.handleRegenerate(assistantId);
+    });
+    expect(result.current.messageError).toBeNull();
+    expect(lastFork()).toEqual({ checkpointId, forkFromTurn: turn });
+  });
+
+  it('refuses to regenerate a turn with no checkpoint', async () => {
+    const { result } = await renderFourTurns();
+    const sends = mockSendStream.mock.calls.length;
+    const assistantId = result.current.messages.filter((m) => m.role === 'assistant')[1].id;
+    await act(async () => {
+      await result.current.handleRegenerate(assistantId);
+    });
+    expect(result.current.messageError).toBe('Unable to regenerate: checkpoint data unavailable');
+    expect(mockSendStream.mock.calls.length).toBe(sends);
+  });
+});

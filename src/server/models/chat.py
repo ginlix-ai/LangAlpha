@@ -338,8 +338,9 @@ class ChatRequest(BaseModel):
     fork_from_turn: Optional[int] = Field(
         default=None,
         ge=0,
-        description="Turn index to truncate app DB from on edit/regenerate. "
-        "Deletes all queries/responses at turn_index >= this value before persisting.",
+        description="Marks the request as an edit/regenerate fork at checkpoint_id, "
+        "naming the turn it replaces. The server reads that turn from the "
+        "checkpoint and deletes queries/responses from it onward.",
     )
 
     # Localization and context

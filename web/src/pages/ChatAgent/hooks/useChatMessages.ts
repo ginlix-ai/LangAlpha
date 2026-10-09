@@ -2175,13 +2175,14 @@ export function useChatMessages(
   // =====================================================================
 
   /** Lazy-cached turn checkpoint data. Invalidated after each edit/regenerate. */
-  const turnCheckpointsRef = useRef<{ turns: Array<{ edit_checkpoint_id: string | null; regenerate_checkpoint_id: string; turn_index: number }> } | null>(null);
+  type ThreadTurns = { turns: Array<{ edit_checkpoint_id: string | null; regenerate_checkpoint_id: string; turn_index: number }> };
+  const turnCheckpointsRef = useRef<ThreadTurns | null>(null);
 
   /**
    * Helper: get or fetch turn checkpoints for the current thread.
    * Caches the result in turnCheckpointsRef until invalidated.
    */
-  const getTurnCheckpoints = useCallback(async () => {
+  const getTurnCheckpoints = useCallback(async (): Promise<ThreadTurns | null> => {
     if (turnCheckpointsRef.current) return turnCheckpointsRef.current;
     const currentThreadId = threadIdRef.current;
     if (!currentThreadId || currentThreadId === '__default__') return null;
@@ -2482,8 +2483,13 @@ export function useChatMessages(
       createAssistantMessage(`assistant-pending-${Date.now()}`),
     ]);
 
+    // /turns names each entry by its turn_index, not its position: a turn whose
+    // run died before its first checkpoint has no entry. Its message forks
+    // where the next checkpointed turn's does, from the state before both, so
+    // an edit takes the first entry at or after its turn.
     const turnsData = await getTurnCheckpoints();
-    if (!turnsData?.turns?.[turnIndex]) {
+    const turn = turnsData?.turns?.find((entry) => entry.turn_index >= turnIndex);
+    if (!turn) {
       setIsLoading(false);
       setMessages(snapshotMessages);
       setMessageError('Unable to edit: checkpoint data unavailable');
@@ -2491,7 +2497,7 @@ export function useChatMessages(
       return;
     }
 
-    const checkpointId = turnsData.turns[turnIndex].edit_checkpoint_id;
+    const checkpointId = turn.edit_checkpoint_id;
     if (!checkpointId) {
       setIsLoading(false);
       setMessages(snapshotMessages);
@@ -2548,8 +2554,11 @@ export function useChatMessages(
       createAssistantMessage(`assistant-pending-${Date.now()}`),
     ]);
 
+    // A regenerate re-runs the turn's own input checkpoint, so only that
+    // turn's entry will do (see handleEditMessage on why not its position).
     const turnsData = await getTurnCheckpoints();
-    if (!turnsData?.turns?.[turnIndex]) {
+    const turn = turnsData?.turns?.find((entry) => entry.turn_index === turnIndex);
+    if (!turn) {
       setIsLoading(false);
       setMessages(snapshotMessages);
       setMessageError('Unable to regenerate: checkpoint data unavailable');
@@ -2557,7 +2566,7 @@ export function useChatMessages(
       return;
     }
 
-    const checkpointId = turnsData.turns[turnIndex].regenerate_checkpoint_id;
+    const checkpointId = turn.regenerate_checkpoint_id;
     // Truncate at the turn's first assistant bubble (keep everything before it, including user msg)
     await streamFromCheckpoint(forkRequest(null, checkpointId, turnIndex), truncateIndex, transcript, modelOptions);
   // Same as handleEditMessage: the slot helpers reach only refs and threadId.
