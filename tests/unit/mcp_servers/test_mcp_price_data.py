@@ -213,6 +213,42 @@ class TestGetStockData:
         assert_error(result, "not_found")
 
     @pytest.mark.asyncio
+    async def test_refused_credential_falls_back_to_fmp(self):
+        """Routed on the status, so a detail that reads like another failure
+        does not decide it."""
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        err = {"error": "ginlix-data error (401): verifier not configured (500)", "status": 401}
+        client = _fmp_client()
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=err)), \
+             patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await mod.get_stock_data(
+                "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
+            )
+
+        assert_ok_envelope(result, source="fmp", count=2)
+
+    @pytest.mark.parametrize("fmp_rows", [None, [], {"Error Message": "Limit Reach"}])
+    @pytest.mark.asyncio
+    async def test_refused_credential_is_the_error_when_fmp_cannot_answer(self, fmp_rows):
+        """Otherwise the agent reads a missing FMP key, or no trading, as the cause."""
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
+
+        err = {"error": "ginlix-data error (403): not entitled", "status": 403}
+        fmp_patch = (
+            patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key"))
+            if fmp_rows is None
+            else patch(f"{_MOD}.get_fmp_client", return_value=_fmp_client(stock_price=fmp_rows))
+        )
+        with patch.object(mod._ginlix, "fetch_stock_data", new=AsyncMock(return_value=err)), \
+             fmp_patch:
+            result = await mod.get_stock_data(
+                "AAPL", interval="1day", start_date="2025-01-01", end_date="2025-01-05",
+            )
+
+        assert_error(result, "auth_failed")
+
+    @pytest.mark.asyncio
     async def test_empty_rows(self):
         import plugins.langalpha_market_data.price_data_mcp_server as mod
 

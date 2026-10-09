@@ -134,3 +134,31 @@ class TestTokenRefresh:
 
         assert [r.status_code for r in responses] == [200, 200, 200]
         assert refreshes == 1
+
+
+class TestFetchStockDataStatus:
+    @pytest.mark.parametrize(
+        ("status", "reported"),
+        [(401, True), (403, True), (400, True), (404, True), (429, False), (503, False)],
+    )
+    @pytest.mark.asyncio
+    async def test_a_4xx_reaches_the_caller_with_its_status(self, status, reported):
+        """price_data reads the status to decide whether FMP may still answer,
+        so a 401 that outlived the refresh has to arrive as one."""
+        client = GinlixMCPClient()
+        client._http = httpx.AsyncClient(
+            base_url="http://ginlix-data.test",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(status, json={"detail": "nope"})
+            ),
+        )
+        client._refresh_access_token = AsyncMock(return_value=None)
+        try:
+            result = await client.fetch_stock_data("AAPL", "1day", "2026-10-01", "2026-10-08")
+        finally:
+            await client.close()
+
+        if reported:
+            assert result == {"error": f"ginlix-data error ({status}): nope", "status": status}
+        else:
+            assert result is None

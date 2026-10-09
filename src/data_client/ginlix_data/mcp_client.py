@@ -344,14 +344,13 @@ class GinlixMCPClient(GinlixDataV2Routes):
                 normalized = filter_bars_by_time(normalized, start_time, end_time)
             return normalized
         except httpx.HTTPStatusError as e:
-            try:
-                detail = e.response.json().get("detail", e.response.text)
-            except Exception:
-                detail = e.response.text
+            error = self._error_dict("Stock data fetch", e)
             status = e.response.status_code
             if 400 <= status < 500 and status != 429:
-                return {"error": f"ginlix-data error ({status}): {detail}"}
-            logger.warning("ginlix-data %s for %s: %s", status, symbol, detail)
+                # The status rides along so the caller routes on it, not on
+                # whatever the detail text happens to say.
+                return {**error, "status": status}
+            logger.warning("%s for %s", error["error"], symbol)
             return None
         except Exception:
             logger.debug("ginlix-data fetch failed for %s", symbol, exc_info=True)

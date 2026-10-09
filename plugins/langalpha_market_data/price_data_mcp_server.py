@@ -256,13 +256,22 @@ async def _fetch_stock_bars(
 
     # ginlix-data's US tier (US equities only; returns None for anything else).
     ginlix_result = await _ginlix.fetch_stock_data(legacy, canonical, start_date, end_date)
+    refused: Optional[dict] = None
     if isinstance(ginlix_result, dict):
-        return None, error_from_upstream(
+        status = ginlix_result.get("status")
+        err = error_from_upstream(
             ginlix_result.get("error", "ginlix-data request failed"),
+            status=status,
             symbol=display,
             interval=canonical,
         )
-    if ginlix_result is not None:
+        if status not in (401, 403):
+            return None, err
+        # A refused credential says nothing about the request, so FMP may still
+        # answer it. The refusal stays the error unless FMP returns rows.
+        logger.warning("ginlix-data refused the credential for %s: %s", display, err["detail"])
+        refused = err
+    elif ginlix_result is not None:
         # Already-normalized display rows, descending → flip to ascending.
         data = list(reversed(ginlix_result))
         return {
@@ -278,7 +287,7 @@ async def _fetch_stock_bars(
     try:
         client = await get_fmp_client()
     except Exception:  # noqa: BLE001
-        return None, make_error(
+        return None, refused or make_error(
             "client_unavailable",
             "FMP client unavailable (FMP_API_KEY not configured).",
             symbol=display,
@@ -293,11 +302,18 @@ async def _fetch_stock_bars(
                 legacy, canonical, from_date=start_date, to_date=end_date
             )
     except Exception as e:  # noqa: BLE001
-        return None, error_from_exception(
+        return None, refused or error_from_exception(
             e, "FMP fetch failed.", symbol=display, interval=canonical
+        )
+    if not isinstance(rows or [], list):
+        # FMP answers some failures with a 200 and an error object, not rows.
+        return None, refused or make_error(
+            "upstream_error", "FMP fetch failed.", symbol=display, interval=canonical
         )
 
     data = _display_rows(rows or [], legacy, intraday=intraday, scale=scale)
+    if refused and not data:
+        return None, refused
     return {
         "data": data,
         "source": "fmp",
