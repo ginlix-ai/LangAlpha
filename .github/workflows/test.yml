@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# The backend image's Python (deploy/Dockerfile.backend). Left unset, uv
+# downloads the newest release, which a dependency may not ship wheels for yet.
+env:
+  UV_PYTHON: "3.13"
+
 jobs:
   backend-unit:
     runs-on: ubuntu-latest

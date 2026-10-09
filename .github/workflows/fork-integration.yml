@@ -24,6 +24,11 @@ concurrency:
   group: fork-integration-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# The backend image's Python (deploy/Dockerfile.backend). Left unset, uv
+# downloads the newest release, which a dependency may not ship wheels for yet.
+env:
+  UV_PYTHON: "3.13"
+
 jobs:
   backend-integration-fork:
     # Forks only — same-repo PRs are handled by test.yml's ungated job.
