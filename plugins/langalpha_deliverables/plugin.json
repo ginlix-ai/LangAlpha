@@ -17,5 +17,38 @@
     "dashboards",
     "pptx",
     "xlsx"
-  ]
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "skills": {
+        "chart-annotation": {
+          "icon": "chart-spline"
+        },
+        "docx": {
+          "icon": "file-text"
+        },
+        "html-report": {
+          "icon": "file-code"
+        },
+        "inline-widget": {
+          "icon": "app-window"
+        },
+        "interactive-dashboard": {
+          "icon": "layout-dashboard"
+        },
+        "pdf": {
+          "icon": "file-type"
+        },
+        "pptx": {
+          "icon": "presentation"
+        },
+        "ui-design": {
+          "icon": "palette"
+        },
+        "xlsx": {
+          "icon": "file-spreadsheet"
+        }
+      }
+    }
+  }
 }

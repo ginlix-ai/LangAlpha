@@ -44,6 +44,9 @@ instead of bending `mcp.json`:
         "vault_blueprints": [{ "name": "...", "label": "...", "regex": "..." }]
       }
     },
+    "skills": {
+      "<skills/ directory name>": { "icon": "calculator | vendor.example.com" }
+    },
     "icon": "vendor.example.com"
   }
 }
@@ -56,6 +59,13 @@ instead of bending `mcp.json`:
   `instruction` and `tool_exposure_mode` too; `vault_blueprints` is read here
   only, because a user plugin declares its credentials through the namespace's
   `secrets[]`, which also says where each one binds.
+- **`skills`** is keyed by the skill's directory under `skills/` and only says
+  how the Skills tab draws it; the directories are still what the package
+  ships. `icon` is either a site, resolved like the package `icon` below, or a
+  glyph name from the set in `web/src/pages/Plugins/utils/skillGlyphs.ts`. A
+  dot tells them apart. An unknown glyph, or a key naming no skill, falls back
+  to the package's mark. An uploaded plugin may declare glyphs; a site is drawn
+  for the bundles here only, the same as the package `icon`.
 - **`icon`** names the site that owns a wrapper bundle's mark. Ours ship their
   logo with the frontend instead, so a self-host with no outbound network
   still draws them.

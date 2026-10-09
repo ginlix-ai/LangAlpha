@@ -25,6 +25,7 @@ from src.server.database.computer import (
 )
 from src.server.database.home_workspace import is_flash_row
 from src.server.database.workspace import (
+    SERVER_OWNED_CONFIG_KEYS,
     complete_workspace_folder_cleanup,
     create_workspace_on_computer,
     delete_workspace as db_delete_workspace,
@@ -89,7 +90,11 @@ class WorkspaceManager(ComputerManager):
             name,
             computer_id,
             description=description,
-            config=config,
+            config={
+                key: value
+                for key, value in (config or {}).items()
+                if key not in SERVER_OWNED_CONFIG_KEYS
+            },
         )
         if workspace is None:
             raise RuntimeError(

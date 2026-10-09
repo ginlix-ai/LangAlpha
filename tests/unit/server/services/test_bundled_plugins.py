@@ -18,7 +18,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ptc_agent.config import plugins as bundle_reader
-from src.server.services.plugins.bundled import icon_site_for, list_bundled
+from src.server.services.plugins.bundled import (
+    component_owners,
+    icon_site_for,
+    list_bundled,
+    skill_icon_site_for,
+    skill_marks,
+)
 
 
 def _write(root: Path, name: str, *, manifest: dict, mcp: dict | None = None) -> Path:
@@ -96,6 +102,91 @@ class TestIconSiteLookup:
         assert info.icon_url == "/api/v1/plugins/other-name/icon"
         assert icon_site_for("other-name") == "example.test"
         assert icon_site_for("dir-name") is None
+
+
+class TestSkillMarks:
+    """A skill's tile, as the Skills tab is handed it.
+
+    A site travels as this origin's path, reached by the bundle's manifest
+    name like the package's own mark. The lookup behind that path answers an
+    unauthenticated route with a name and a skill, so it has to match both
+    against what is on disk, never join either onto a path.
+    """
+
+    def _bundle(self, root: Path, directory: str, name: str, **icons: str) -> Path:
+        bundle = _write(
+            root, directory,
+            manifest=_manifest(
+                name, skills={k.replace("_", "-"): {"icon": v} for k, v in icons.items()}
+            ),
+        )
+        for skill in icons:
+            _write_skill(bundle, skill.replace("_", "-"))
+        return bundle
+
+    def test_a_glyph_and_a_site_take_their_own_fields(self, bundles_dir):
+        self._bundle(bundles_dir, "dir-name", "pack", dcf_model="calculator", x_feed="x.com")
+        marks = skill_marks(component_owners().skills)
+        assert marks["dcf-model"].model_dump() == {
+            "icon_url": None, "icon_glyph": "calculator",
+        }
+        assert marks["x-feed"].model_dump() == {
+            "icon_url": "/api/v1/plugins/pack/skills/x-feed/icon", "icon_glyph": None,
+        }
+        assert skill_icon_site_for("pack", "x-feed") == "x.com"
+        # The directory is not the name the page reaches the route with.
+        assert skill_icon_site_for("dir-name", "x-feed") is None
+
+    def test_a_glyph_is_not_a_site(self, bundles_dir):
+        self._bundle(bundles_dir, "pack", "pack", dcf_model="calculator")
+        assert skill_icon_site_for("pack", "dcf-model") is None
+
+    def test_a_skill_with_no_entry_has_no_mark(self, bundles_dir):
+        bundle = self._bundle(bundles_dir, "pack", "pack", dcf_model="calculator")
+        _write_skill(bundle, "plain")
+        assert set(skill_marks(component_owners().skills)) == {"dcf-model"}
+
+    def test_a_key_naming_no_skill_is_never_read(self, bundles_dir):
+        _write(
+            bundles_dir, "pack",
+            manifest=_manifest("pack", skills={"ghost": {"icon": "x.com"}}),
+        )
+        assert skill_marks(component_owners().skills) == {}
+        assert skill_icon_site_for("pack", "ghost") is None
+
+    def test_one_bad_entry_costs_only_itself(self, bundles_dir):
+        bundle = _write(
+            bundles_dir, "pack",
+            manifest=_manifest(
+                "pack",
+                skills={"good": {"icon": "zap"}, "typo": {"icn": "zap"}},
+            ),
+        )
+        _write_skill(bundle, "good")
+        _write_skill(bundle, "typo")
+        assert set(skill_marks(component_owners().skills)) == {"good"}
+
+    def test_the_first_bundle_to_carry_a_skill_draws_it(self, bundles_dir):
+        # The same claim ``component_owners`` keeps, so the tile and the deck
+        # the row sits in name one package.
+        self._bundle(bundles_dir, "a", "first", shared="zap")
+        self._bundle(bundles_dir, "b", "second", shared="x.com")
+        assert skill_marks(component_owners().skills)["shared"].icon_glyph == "zap"
+
+    @pytest.mark.parametrize(
+        "name, skill",
+        [
+            ("..", "x-feed"),
+            ("../outside", "x-feed"),
+            ("pack", "../x-feed"),
+            ("pack", "../../outside/skills/x-feed"),
+            ("pack/skills", "x-feed"),
+        ],
+    )
+    def test_a_traversal_never_reaches_a_manifest(self, bundles_dir, tmp_path, name, skill):
+        self._bundle(tmp_path, "outside", "outside", x_feed="attacker.test")
+        self._bundle(bundles_dir, "pack", "pack", x_feed="x.com")
+        assert skill_icon_site_for(name, skill) is None
 
 
 class TestListing:

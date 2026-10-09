@@ -26,6 +26,7 @@ from src.server.services.plugins.extension import (
     LangalphaExtension,
     apply_server_metadata,
     parse_extension,
+    report_skill_metadata,
     resolve_binds,
 )
 from src.server.services.plugins.manifest import (
@@ -290,6 +291,7 @@ def validate_package(raw: bytes, *, subdir: str | None = None) -> ValidatedPacka
 
     skill_plans, skill_diags = collect_skills(files)
     diagnostics.extend(skill_diags)
+    report_skill_metadata(extension, skill_plans, diagnostics)
 
     dropped = sorted(
         {

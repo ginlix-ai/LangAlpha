@@ -97,6 +97,12 @@ def _stub_computer_minting():
             f"{_LIFECYCLE}.get_computer",
             new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
         ),
+        # A start through an unstamped folder asks whether a sibling verified
+        # the machine's settings.
+        patch(
+            f"{_LIFECYCLE}.computer_has_config_hash",
+            new=AsyncMock(return_value=False),
+        ),
     ):
         yield
 
@@ -451,6 +457,32 @@ class TestCreateWorkspace:
         args, kwargs = mock_insert.call_args
         assert args[0] == "user-1"
         assert args[2] == _STUB_COMPUTER_ID
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_a_new_workspaces_config_never_carries_server_owned_keys(
+        self, mock_insert
+    ):
+        """A forged stamp would skip the migration the first start owes."""
+        mock_insert.return_value = self._created(str(uuid.uuid4()))
+
+        wm = WorkspaceManager(_make_config())
+        await wm.create_workspace(
+            user_id="user-1",
+            name="Test",
+            config={
+                "custom": "kept",
+                "sandbox_config_hash": "forged",
+                "sandbox_provider": "daytona",
+                "sandbox_working_dir": "/elsewhere",
+                "folder_landings": ["Sibling"],
+            },
+        )
+
+        assert mock_insert.call_args.kwargs["config"] == {"custom": "kept"}
 
     @pytest.mark.asyncio
     @patch(
@@ -879,7 +911,7 @@ class TestBackupFilesStrict:
             workspace_id="workspace", computer_id=_STUB_COMPUTER_ID,
             root_dir="/persisted/root", kind="daytona", provider_config={},
         )
-        wm._update_workspace_config_fields = AsyncMock()
+        wm._write_sandbox_stamp = AsyncMock()
         wm._backup_machine_files_to_db = AsyncMock()
         wm._recover_sandbox = AsyncMock()
 
@@ -888,7 +920,7 @@ class TestBackupFilesStrict:
         assert result is None
         wm._backup_machine_files_to_db.assert_not_awaited()
         wm._recover_sandbox.assert_not_awaited()
-        assert wm._update_workspace_config_fields.call_args.args[1]["sandbox_working_dir"] == "/persisted/root"
+        wm._write_sandbox_stamp.assert_awaited_once_with(binding)
 
     @pytest.mark.asyncio
     async def test_migration_waits_for_every_sibling_run(self):
@@ -1016,7 +1048,7 @@ class TestBackupFilesStrict:
         wm._machine_has_active_tasks = AsyncMock(return_value=False)
         wm._backup_machine_files_to_db = AsyncMock()
         wm._recover_sandbox = AsyncMock(return_value=replacement)
-        wm._update_workspace_config_fields = AsyncMock()
+        wm._write_sandbox_stamp = AsyncMock()
         mock_sessions.cleanup_session = AsyncMock(
             side_effect=SandboxGoneError("sandbox-abc", "gone")
         )
@@ -3406,6 +3438,48 @@ class TestOnStateObservedForwarding:
         forwarded("stopped")
         assert observed == ["stopped"]
         session.initialize_lazy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
+    async def test_restart_through_an_unstamped_folder_of_a_verified_machine_stays_lazy(
+        self, mock_claim, mock_status, mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        """A Home or workspace no build stamped takes the stamp a sibling earned
+        on the same sandbox, instead of a full init under the machine lock."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        manager._compute_sandbox_config_hash = MagicMock(return_value="current")
+        workspace = _make_workspace(workspace_id=ws_id, status="stopped", config={})
+        mock_get_ws.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
+        session = _make_mock_session(initialized=False)
+        session.sandbox.is_ready = MagicMock(return_value=True)
+        session.sandbox.has_failed = MagicMock(return_value=False)
+        mock_session_mgr.get_session.return_value = session
+
+        with (
+            patch(
+                f"{_LIFECYCLE}.computer_has_config_hash",
+                new=AsyncMock(return_value=True),
+            ) as verified,
+            patch.object(
+                manager, "_write_sandbox_stamp", new_callable=AsyncMock
+            ) as stamp,
+        ):
+            await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        verified.assert_awaited_once_with(_STUB_COMPUTER_ID, "current")
+        stamp.assert_awaited()
+        assert {
+            (call.args[0].workspace_id, call.args[0].computer_id)
+            for call in stamp.await_args_list
+        } == {(ws_id, _STUB_COMPUTER_ID)}
+        session.initialize_lazy.assert_awaited_once()
+        session.initialize.assert_not_awaited()
 
     @pytest.mark.asyncio
     @cm_patch("db_get_workspace")
@@ -5917,7 +5991,7 @@ class TestDuplicateWorkspace:
         manager._sync_sandbox_assets = AsyncMock()
         manager._restore_files = AsyncMock()
         manager._record_sync = MagicMock()
-        manager._update_workspace_config_fields = AsyncMock()
+        manager._write_sandbox_stamp = AsyncMock()
         manager._sandbox_config_stamp = MagicMock(return_value={})
 
     @pytest.mark.asyncio

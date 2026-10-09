@@ -289,6 +289,49 @@ async def test_the_handle_owns_the_guard_until_finalize_takes_it_over():
     assert guard.release.await_args.kwargs == {"discard": True}
 
 
+@pytest.mark.asyncio
+async def test_a_disconnect_during_the_start_announcements_leaves_the_run_to_the_scope():
+    """The row commits before START announces it, and no executor takes a run
+    whose START raised, so the scope must already hold it when a disconnect
+    lands there, or the death path settles nothing and the thread stays fenced
+    until recovery. The guard goes with START's exit, so that settle runs on
+    the pool."""
+    guard = MagicMock(mutex=asyncio.Lock(), release=AsyncMock())
+    row = {
+        "turn_index": 0,
+        "attempt_no": 1,
+        "created_at": datetime.now(timezone.utc),
+        "run_seq": 1,
+    }
+    scope = RunScope(user_id="u-1", burst_slot_id=None)
+    with (
+        patch(f"{wg_module.__name__}.guard_enabled", return_value=True),
+        patch.object(
+            wg_module.WriterGuard, "acquire_root", new=AsyncMock(return_value=guard)
+        ),
+        patch(
+            "src.server.database.runs.lifecycle.start_run",
+            new=AsyncMock(return_value=row),
+        ),
+        patch(
+            "src.server.services.thread_control_stream.announce_run_started",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+        patch(
+            "src.server.services.thread_lifecycle_feed.publish_run_started",
+            new=AsyncMock(),
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await RunCoordinator().start_run(
+            thread_id="t-1", run_id="r-1", msg_type="ptc", on_started=scope.attach_run
+        )
+
+    handle = scope.owned_run_handle
+    assert (handle.run_id, handle.guard) == ("r-1", None)
+    guard.release.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # RecoveryScanner fenced-run warning
 # ---------------------------------------------------------------------------

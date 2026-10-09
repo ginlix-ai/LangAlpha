@@ -17,5 +17,71 @@
     "comps",
     "equity-research",
     "earnings"
-  ]
+  ],
+  "extensions": {
+    "ai.langalpha": {
+      "skills": {
+        "3-statements": {
+          "icon": "columns-3"
+        },
+        "catalyst-calendar": {
+          "icon": "calendar-clock"
+        },
+        "check-deck": {
+          "icon": "clipboard-check"
+        },
+        "check-model": {
+          "icon": "list-checks"
+        },
+        "company-profile": {
+          "icon": "building-complex"
+        },
+        "competitive-analysis": {
+          "icon": "swords"
+        },
+        "comps-analysis": {
+          "icon": "scale"
+        },
+        "dcf-model": {
+          "icon": "calculator"
+        },
+        "earnings-analysis": {
+          "icon": "chart-column-increasing"
+        },
+        "earnings-preview": {
+          "icon": "telescope"
+        },
+        "idea-generation": {
+          "icon": "lightbulb"
+        },
+        "impact-analysis": {
+          "icon": "activity"
+        },
+        "initiating-coverage": {
+          "icon": "flag"
+        },
+        "market-watch": {
+          "icon": "binoculars"
+        },
+        "model-update": {
+          "icon": "refresh-cw"
+        },
+        "morning-note": {
+          "icon": "sunrise"
+        },
+        "research-conventions": {
+          "icon": "ruler"
+        },
+        "sector-overview": {
+          "icon": "chart-pie"
+        },
+        "thesis-tracker": {
+          "icon": "target"
+        },
+        "trade-pitch": {
+          "icon": "megaphone"
+        }
+      }
+    }
+  }
 }

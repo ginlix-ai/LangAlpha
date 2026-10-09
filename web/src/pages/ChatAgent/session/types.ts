@@ -10,6 +10,7 @@ import type { ActionRequest, ToolCallData } from '@/types/sse';
 import type { SubagentTokenUsage } from '../utils/tokenUsage';
 import type { DecisionTarget } from './interrupts/toolApprovalCard';
 import type { StreamRefs, UpdateSubagentCard } from './streamRefs';
+import type { RetryNotice } from './stream/autoRetry';
 
 // --- Internal types for useChatMessages ---
 
@@ -244,6 +245,10 @@ interface StreamProcessorRefs extends StreamRefs {
   steeringAtOrderRef?: { current: number | null };
   updateSubagentCard?: UpdateSubagentCard;
   unresolvedHistoryInterruptRef?: React.MutableRefObject<HistoryInterruptInfo[]>;
+  /** Set when the stream ended on the server's `retry`, or on an `error` that
+   *  names its recovery; whoever ends the stream hands it to
+   *  `settleRetryNotice` instead of finalizing the bubble. */
+  retryNotice?: RetryNotice;
 }
 
 /** Pair state tracked per turn_index during history replay. */

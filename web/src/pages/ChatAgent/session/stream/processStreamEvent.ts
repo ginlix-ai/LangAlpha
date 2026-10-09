@@ -5,6 +5,7 @@
  */
 
 import { finalizeAssistantMessage } from './finalizeMessage';
+import { readRetryNotice } from './autoRetry';
 import { isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
 import { applyAnnotationArtifact } from '@/pages/MarketView/stores/chartAnnotationStore';
 import type { AssistantMessage, ChatMessage } from '@/types/chat';
@@ -86,6 +87,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
   // old bubble due to stream-mode multiplexing (custom events can arrive after
   // message chunks from the post-injection model call).
   let steeringAtOrder: number | null = null;
+  // Whether this stream has carried the run's `metadata`, which the server
+  // writes only once the run is with the background executor.
+  let metadataSeen = false;
 
   // FIFO queue for matching Task tool call IDs to artifact 'spawned' events.
   // Populated by the tool_calls handler, drained by the artifact/spawned handler.
@@ -150,6 +154,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     // and carries the authoritative run_id for this turn. Latch it so
     // reconnect targets ``workflow:stream:{tid}:{rid}`` precisely.
     if (eventType === 'metadata') {
+      metadataSeen = true;
       if (event.run_id) {
         rt.currentRunIdRef.current = event.run_id;
       }
@@ -458,6 +463,18 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       return;
     }
 
+    // A `retry` ends the stream of a run that failed before it reached the
+    // agent. After `metadata` the run lives on in the background executor, so
+    // a `retry` there, which only an older server sends, means only this
+    // reader broke, and the transport drop that follows reconnects to the run.
+    if (eventType === 'retry') {
+      if (!isSubagent && !metadataSeen) {
+        deps.clearModelStatus();
+        refs.retryNotice = readRetryNotice(event);
+      }
+      return;
+    }
+
     // Handle provenance events BEFORE the isSubagent filter so subagent-emitted
     // accessed-data records still attach to the main turn's assistant message
     // (with their `agent="task:..."` attribution preserved on the record).
@@ -684,7 +701,14 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // switch suggestion (the fallback model didn't save the turn either).
       deps.clearModelStatus();
       rt.setFallbackSuggestion(null);
-      const errorMessage = event.error || event.message || 'An error occurred while processing your request.';
+      // A failure that names its recovery ended before the run reached the
+      // agent: there is nothing to reconnect to, and the reply's Retry sends
+      // what the recovery says.
+      if (event.recovery) refs.retryNotice = readRetryNotice(event);
+      // Only the frame that ends the server's own retries carries `max_retries`.
+      const errorMessage = typeof event.max_retries === 'number'
+        ? rt.t('chat.autoRetryExhausted')
+        : event.error || event.message || 'An error occurred while processing your request.';
       // Backend (streaming_handler.format_error_event) enriches the event
       // with ``error_kind``, ``status_code`` and ``hints``. We route the
       // display by kind to avoid showing the same error twice:

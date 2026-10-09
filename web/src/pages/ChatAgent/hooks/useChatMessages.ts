@@ -64,6 +64,7 @@ import { createSubagentMuxController, getTaskIdFromEvent } from '../session/suba
 import { sendTaskInstruction } from '../session/subagents/sendTaskInstruction';
 import { loadConversationHistory as replayConversationHistory } from '../session/history/replayHistory';
 import { createStreamEventProcessor, type StreamRouterDeps } from '../session/stream/processStreamEvent';
+import { forkRequest, retryRequestFor, sendRequest, settleRetryNotice, type HeldRetry, type RetryNotice, type TurnRequest } from '../session/stream/autoRetry';
 import { createLiveTranscript, type LiveMessages } from '../session/stream/liveMessages';
 import { useSubagentHistory } from '../session/subagents/useSubagentHistory';
 import {
@@ -460,6 +461,8 @@ export function useChatMessages(
   // v4 idempotent delivery: one request_key per logical send, reused across
   // retransmits of the same send until response headers prove acceptance.
   const requestKeyRef = useRef(createRequestKeyTracker());
+  // What the failed reply's Retry sends, once the client stops retrying it.
+  const heldRetryRef = useRef<HeldRetry | null>(null);
 
   // The CURRENT stream processor for subagent frames off the thread mux.
   // Send, reconnect and HITL resume each install theirs at attach time, so
@@ -1429,6 +1432,7 @@ export function useChatMessages(
     let demotedProcessor: ((event: SSEEvent) => void) | null = null;
     let demotedAssistantId: string | null = null;
     const demotedInterruptedRef = { current: false };
+    const demotedRefs: { current: StreamProcessorRefs | null } = { current: null };
     // Controller for the steering POST. If this POST is demoted to a fresh
     // turn it becomes the active main stream, so we register it on
     // mainStreamAbortRef in demoteToNewTurn — stopWorkflow can then abort it.
@@ -1473,6 +1477,7 @@ export function useChatMessages(
       backgroundReconnectRef.current = false;
       mainStreamAbortRef.current = steeringAbort;
       const refs = buildStreamRefs();
+      demotedRefs.current = refs;
       demotedProcessor = createStreamEventProcessor(runtime, streamRouterDeps, newAssistantId, refs, getTaskIdFromEvent, demotedInterruptedRef);
     };
 
@@ -1555,9 +1560,16 @@ export function useChatMessages(
         }
         return;
       }
+      // The demoted turn is a new run, so it can end on a retry notice like a
+      // send, ahead of the drop the server follows it with.
+      const demotedRetry = demotedRefs.current?.retryNotice;
+      const demotedId = currentMessageRef.current || demotedAssistantId;
+      if (demotedToNewTurn && demotedRetry && demotedId && settleRetry(demotedRetry, demotedId, 0, {}, sendRequest(message, additionalContext))) {
+        return;
+      }
       // Natural transport drop on the demoted turn: reconnect rather than
       // finalizing — the turn may still be running on the backend.
-      if (result?.disconnected && demotedToNewTurn) {
+      if (result?.disconnected && demotedToNewTurn && !demotedRetry) {
         const reconnectId = currentMessageRef.current || demotedAssistantId;
         if (reconnectId) {
           attemptReconnectAfterDisconnect(reconnectId);
@@ -1811,7 +1823,15 @@ export function useChatMessages(
         return;
       }
 
-      if (result?.disconnected) {
+      // Checked before the disconnect: the server drops the connection right
+      // after a retry notice, and the run it names is already over, so there
+      // is nothing to reconnect to. A scheduled resend owns finalization.
+      if (refs.retryNotice && settleRetry(refs.retryNotice, currentMessageRef.current || assistantMessageId, 0, { model, reasoningEffort, fastMode }, sendRequest(message, additionalContext, subagentsAllowed))) {
+        wasDisconnected = true;
+        return;
+      }
+
+      if (result?.disconnected && !refs.retryNotice) {
         console.log('[Send] Stream disconnected, attempting reconnect');
         wasDisconnected = true;
         attemptReconnectAfterDisconnect(assistantMessageId);
@@ -1824,7 +1844,9 @@ export function useChatMessages(
         setMessages((prev) =>
           updateMessage(prev, finalId, (msg) => finalizeAssistantMessage(msg, wasInterruptedRef.current ? 'paused' : 'completed'))
         );
-        markTranscriptPersisted();
+        // A send the server never started left nothing to replay, so its
+        // bubbles have to outlive a reload.
+        if (refs.retryNotice?.recovery !== 'resend') markTranscriptPersisted();
       }
     } catch (err: unknown) {
           // An aborted stream (user hit stop) is intentional, not a failure.
@@ -2041,7 +2063,18 @@ export function useChatMessages(
         return;
       }
 
-      if (result?.disconnected) {
+      // Ahead of the disconnect for the same reason as a send: the run a
+      // retry notice names is over, and the drop after it is the server's. A
+      // resume the server never started is not kept here to send again; the
+      // reconnect finds no run and reloads the thread, whose pause still waits.
+      // The server ends that body cleanly, so the notice stands in for the drop.
+      const notice = refs.retryNotice?.recovery === 'retry' ? refs.retryNotice : undefined;
+      if (notice && settleRetry(notice, currentMessageRef.current || assistantMessageId, 0, { model, reasoningEffort, fastMode }, null)) {
+        wasDisconnected = true;
+        return;
+      }
+
+      if ((result?.disconnected || refs.retryNotice?.recovery === 'resend') && !notice) {
         console.log('[HITL] Stream disconnected, attempting reconnect');
         wasDisconnected = true;
         // A dropped link, not a refusal: the run is live and reconnect owns it.
@@ -2186,9 +2219,13 @@ export function useChatMessages(
    * Stable, and always the last committed render's body, like resume: an edit
    * can come long after the transcript last changed, and has to send the
    * current platform, locale, timezone and runtime. `snapshot` is the render
-   * the caller computed `truncateIndex` against.
+   * the caller computed `truncateIndex` against. `rerun` marks another attempt
+   * at a turn the transcript already shows, a send included, so its user
+   * bubble stays as it is; `spent` counts the automatic resends before it.
    */
-  const streamFromCheckpoint = useStableHandler(async (message: string | null, checkpointId: string | null, truncateIndex: number, snapshot: readonly ChatMessage[], forkFromTurn: number | null = null, modelOptions: ModelOptions = {}, viaRetryEndpoint: boolean = false) => {
+  const streamFromCheckpoint = useStableHandler(async (request: TurnRequest, truncateIndex: number, snapshot: readonly ChatMessage[], modelOptions: ModelOptions = {}, rerun: { spent: number } | null = null) => {
+    const { message, checkpointId, forkFromTurn, retryOf } = request;
+    const viaRetryEndpoint = retryOf !== null;
     // Callers check the slot is free: an edit or regenerate already holds it
     // for its checkpoint read, and takes it again below with the same result.
 
@@ -2226,7 +2263,7 @@ export function useChatMessages(
     mainStreamAbortRef.current = abortController;
 
     const assistantMessage = createAssistantMessage(assistantMessageId);
-    const userMessage = message ? createUserMessage(message) : null;
+    const userMessage = message && !rerun ? createUserMessage(message) : null;
 
     if (userMessage) {
       recentlySentTrackerRef.current.track(message!.trim(), userMessage.timestamp, userMessage.id);
@@ -2287,9 +2324,12 @@ export function useChatMessages(
             latchRunId,
             abortController.signal,
             requestKey,
+            retryOf.runId,
+            request.additionalContext,
           )
         : await sendChatMessageStream(message || '', workspaceId, threadId, {
             onEvent: processEvent,
+            additionalContext: request.additionalContext,
             agentMode,
             locale: userLocale,
             timezone: userTimezone,
@@ -2302,6 +2342,7 @@ export function useChatMessages(
             onRunIdResolved: latchRunId,
             signal: abortController.signal,
             requestKey,
+            threadSettings: { subagentsAllowed: request.subagentsAllowed },
           });
 
       // User hit stop: stopWorkflow already finalized + tore down. Exception: a
@@ -2317,7 +2358,14 @@ export function useChatMessages(
         return;
       }
 
-      if (result?.disconnected) {
+      // A resend that fails the same way counts against the same turn's
+      // budget, which is what keeps a chain of notices from looping.
+      if (refs.retryNotice && settleRetry(refs.retryNotice, currentMessageRef.current || assistantMessageId, rerun?.spent ?? 0, modelOptions, request)) {
+        wasDisconnected = true;
+        return;
+      }
+
+      if (result?.disconnected && !refs.retryNotice) {
         wasDisconnected = true;
         attemptReconnectAfterDisconnect(assistantMessageId);
         return;
@@ -2327,7 +2375,8 @@ export function useChatMessages(
       setMessages((prev) =>
         updateMessage(prev, finalId, (msg) => finalizeAssistantMessage(msg, wasInterruptedRef.current ? 'paused' : 'completed'))
       );
-      markTranscriptPersisted();
+      // As for a send: nothing to replay when the server started no run.
+      if (refs.retryNotice?.recovery !== 'resend') markTranscriptPersisted();
     } catch (err: unknown) {
       if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
         return;
@@ -2362,6 +2411,36 @@ export function useChatMessages(
       }
     }
   });
+
+  /**
+   * Ends a stream that closed on a retry notice: schedules the resend the
+   * notice's recovery calls for, or marks the reply failed and hands its Retry
+   * that recovery. True when the resend owns the turn, so the caller skips its
+   * own finalize and cleanup. `request` is what the stream sent.
+   */
+  const settleRetry = (notice: RetryNotice, bubbleId: string, spent: number, modelOptions: ModelOptions, request: TurnRequest | null): boolean =>
+    settleRetryNotice(
+      {
+        setMessages,
+        getMessages: liveMessages.get,
+        request,
+        failedRunId: currentRunIdRef.current,
+        resend: (next, truncateIndex, snapshot, nextSpent) => {
+          void streamFromCheckpoint(next, truncateIndex, snapshot, modelOptions, { spent: nextSpent });
+        },
+        holdRetry: (held) => {
+          heldRetryRef.current = held;
+        },
+        wasStoppedRef,
+        sessionEpochRef,
+        threadIdRef,
+        failedText: t('chat.errorInternalHeadline'),
+        exhaustedText: t('chat.autoRetryExhausted'),
+      },
+      notice,
+      bubbleId,
+      spent,
+    );
 
   /**
    * Edit a user message: truncate to before that message, send modified content
@@ -2421,7 +2500,7 @@ export function useChatMessages(
       return;
     }
 
-    await streamFromCheckpoint(newContent, checkpointId, msgIndex, transcript, turnIndex, modelOptions);
+    await streamFromCheckpoint(forkRequest(newContent, checkpointId, turnIndex), msgIndex, transcript, modelOptions);
   // The slot helpers reach only refs and threadId.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages]);
@@ -2480,7 +2559,7 @@ export function useChatMessages(
 
     const checkpointId = turnsData.turns[turnIndex].regenerate_checkpoint_id;
     // Truncate at the turn's first assistant bubble (keep everything before it, including user msg)
-    await streamFromCheckpoint(null, checkpointId, truncateIndex, transcript, turnIndex, modelOptions);
+    await streamFromCheckpoint(forkRequest(null, checkpointId, turnIndex), truncateIndex, transcript, modelOptions);
   // Same as handleEditMessage: the slot helpers reach only refs and threadId.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveMessages, threadId, getTurnCheckpoints, streamFromCheckpoint, setMessages]);
@@ -2491,13 +2570,17 @@ export function useChatMessages(
    * checkpoint itself — no client checkpoint fetch, no fork/truncation of
    * persisted turns. The UI still replaces the errored bubble in place so the
    * positional assistant-bubble count stays aligned with backend turn_index.
+   * A reply this session saw fail sends the recovery its failure named, with
+   * the context the send carried.
    */
   const handleRetry = useCallback(async (modelOptions: ModelOptions = {}) => {
     if (isStreamingRef.current) return;
     const transcript = liveMessages.get();
     const lastErrorIndex = transcript.findLastIndex((m) => m.role === 'assistant' && (m as AssistantMessage).error);
     const truncateIndex = lastErrorIndex !== -1 ? lastErrorIndex : transcript.length;
-    await streamFromCheckpoint(null, null, truncateIndex, transcript, null, modelOptions, true);
+    const request = retryRequestFor(heldRetryRef.current, transcript[lastErrorIndex]?.id);
+    heldRetryRef.current = null;
+    await streamFromCheckpoint(request, truncateIndex, transcript, modelOptions, { spent: 0 });
   }, [liveMessages, streamFromCheckpoint]);
 
   // A PTC run's sandbox acquisition settles every folder on its computer, which

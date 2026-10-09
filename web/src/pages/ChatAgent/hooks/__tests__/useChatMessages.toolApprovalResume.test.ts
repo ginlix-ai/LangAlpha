@@ -145,6 +145,39 @@ describe('useChatMessages: a refused resume of a tool approval', () => {
       [INTERRUPT_ID]: { decisions: [{ type: 'approve' }] },
     });
   });
+
+  // A resume the server never started ends with a `resend` notice and a clean
+  // close, not a drop. Settling the turn there would leave the stopped call
+  // unanswered behind a card that reads answered; the reconnect finds no run
+  // and reloads the thread, whose pause still waits.
+  it('looks for the run when the server started none, instead of settling the turn', async () => {
+    const result = await raiseApproval();
+    mockSendHitl.mockImplementation(async (...args: unknown[]) => {
+      const opts = args[3] as {
+        onEvent: (e: Record<string, unknown>) => void;
+        onRunIdResolved?: (runId: string) => void;
+      };
+      opts.onRunIdResolved?.('run-unstarted');
+      opts.onEvent({
+        event: 'retry',
+        thread_id: 'th-x',
+        auto_retry: true,
+        retry_count: 1,
+        max_retries: 3,
+        recovery: 'resend',
+      });
+      return { disconnected: false, aborted: false };
+    });
+    const statusCalls = mockStatus.mock.calls.length;
+
+    await act(async () => {
+      result.current.handleApproveToolCall(INTERRUPT_ID, INTERRUPT_ID, { index: 0, count: 1 });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await waitFor(() => expect(mockSendHitl).toHaveBeenCalledTimes(1));
+
+    await waitFor(() => expect(mockStatus.mock.calls.length).toBeGreaterThan(statusCalls));
+  });
 });
 
 describe('useChatMessages: an interrupt that stopped two calls', () => {

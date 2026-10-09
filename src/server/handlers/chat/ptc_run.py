@@ -356,7 +356,9 @@ async def astream_ptc_workflow(
         chart_selections = parse_chart_selection_contexts(request.additional_context)
         if request.additional_context and not request.hitl_response:
             multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
-            if multimodal_ctxs:
+            # A retry writes no query row, so a second upload would be
+            # stored for nothing.
+            if multimodal_ctxs and not request.retry_of_run_id:
                 query_metadata["attachments"] = await build_attachment_metadata(
                     multimodal_ctxs, thread_id
                 )
@@ -401,6 +403,7 @@ async def astream_ptc_workflow(
         carried = await carry.carried_pair(request, thread_id)
         run_handle = await begin_run(
             request,
+            scope=scope,
             thread_id=thread_id,
             run_id=run_id,
             msg_type="ptc",
@@ -415,7 +418,6 @@ async def astream_ptc_workflow(
             is_checkpoint_replay=is_checkpoint_replay,
             extra_run_metadata={**origin_meta, **carried, **(run_metadata or {})},
         )
-        scope.attach_run(run_handle)
         if not is_checkpoint_replay:
             logger.debug(
                 f"[PTC_CHAT] Run started: workspace_id={workspace_id} "

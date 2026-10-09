@@ -9,9 +9,12 @@
  * pinned marketplace entry, a read-only org install) one edit here instead of
  * a dozen across four files.
  */
+import type { ComponentType } from 'react';
 import type { PluginInfo } from '@/pages/ChatAgent/utils/api/plugins';
+import type { SkillInfo } from '@/pages/ChatAgent/utils/api/skills';
 import { bundleArt, type BrandArt } from '@/lib/brandArt';
 import type { MarkKind } from '@/pages/ChatAgent/components/mcp/KindTile';
+import { skillGlyph } from './skillGlyphs';
 
 type SourceShape = Pick<PluginInfo, 'source_type'>;
 
@@ -56,4 +59,24 @@ export function sourceLabelKey(plugin: SourceShape): string {
 export function pluginMark(plugin: PluginInfo): { art?: BrandArt; kind: MarkKind } {
   const art = bundleArt(plugin);
   return { art, kind: isBundled(plugin) && !art ? 'langalpha' : 'plugin' };
+}
+
+/**
+ * The tile a skill draws: the icon its package chose for it, then the
+ * package's own mark, then the book every skill shares.
+ *
+ * A glyph is settled here because it cannot fail to load. A vendor's mark can,
+ * so it travels as the first of an ordered list with the package's behind it.
+ * Our own package's mark is not art but a kind, which is why that step lands
+ * on `kind` rather than in the list.
+ */
+export function skillMark(
+  skill: Pick<SkillInfo, 'icon_url' | 'icon_glyph'>,
+  owner?: PluginInfo,
+): { art: BrandArt[]; glyph?: ComponentType<{ className?: string }>; kind: MarkKind } {
+  const glyph = skillGlyph(skill.icon_glyph);
+  if (glyph) return { art: [], glyph, kind: 'skill' };
+  const pkg = owner ? pluginMark(owner) : undefined;
+  const art = [bundleArt(skill), pkg?.art].filter((a): a is BrandArt => a !== undefined);
+  return { art, kind: pkg?.kind === 'langalpha' ? 'langalpha' : 'skill' };
 }

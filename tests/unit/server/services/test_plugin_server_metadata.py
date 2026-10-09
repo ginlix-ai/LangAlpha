@@ -21,8 +21,10 @@ from src.server.services.plugins.extension import (
     LangalphaExtension,
     apply_server_metadata,
     parse_extension,
+    report_skill_metadata,
 )
 from src.server.services.plugins.mcp import McpEntryPlan
+from src.server.services.plugins.skills import SkillPlan
 
 
 def _plan(key: str, *, skip: str | None = None) -> McpEntryPlan:
@@ -145,3 +147,71 @@ class TestNamespaceParsing:
         extension = parse_extension({"nonsense": 1}, diagnostics)
         assert [d.code for d in diagnostics] == ["extension_invalid"]
         assert extension.servers == {}
+
+    def test_skills_describe_each_skill_by_its_directory(self):
+        diagnostics: list[Diagnostic] = []
+        extension = parse_extension(
+            {
+                "skills": {
+                    "dcf-model": {"icon": "calculator"},
+                    "x-feed": {"icon": "x.com"},
+                    "bare": {},
+                }
+            },
+            diagnostics,
+        )
+        assert diagnostics == []
+        assert {k: m.icon for k, m in extension.skills.items()} == {
+            "dcf-model": "calculator",
+            "x-feed": "x.com",
+            "bare": None,
+        }
+
+    def test_an_unknown_glyph_is_not_a_defect_here(self):
+        # Which glyphs exist is the web app's set; it falls back from one it
+        # does not ship. Refusing here would cost the package its secrets.
+        diagnostics: list[Diagnostic] = []
+        extension = parse_extension(
+            {"skills": {"dcf-model": {"icon": "no-such-glyph"}}}, diagnostics
+        )
+        assert diagnostics == []
+        assert extension.skills["dcf-model"].icon == "no-such-glyph"
+
+    def test_an_unknown_key_in_a_skill_costs_the_namespace_like_a_server(self):
+        # Exactly as strict as ``servers``: extra=forbid at every level.
+        diagnostics: list[Diagnostic] = []
+        extension = parse_extension(
+            {
+                "skills": {"dcf-model": {"icon": "calculator", "colour": "red"}},
+                "servers": {"remote": {"tool_exposure_mode": "detailed"}},
+            },
+            diagnostics,
+        )
+        assert [d.code for d in diagnostics] == ["extension_invalid"]
+        assert extension.servers == {}
+
+
+class TestSkillMetadataReport:
+    def _report(self, skills, dirs: list[str]) -> list[Diagnostic]:
+        diagnostics: list[Diagnostic] = []
+        report_skill_metadata(
+            LangalphaExtension(skills=skills),
+            [SkillPlan(dir=d) for d in dirs],
+            diagnostics,
+        )
+        return diagnostics
+
+    def test_a_key_naming_no_skill_is_a_warning_not_a_drop(self):
+        (diag,) = self._report(
+            {"dcf-model": {"icon": "calculator"}, "ghost": {"icon": "zap"}},
+            ["dcf-model"],
+        )
+        assert (diag.level, diag.scope, diag.target, diag.code) == (
+            "warning", "skill", "ghost", "skill_meta_unknown",
+        )
+
+    def test_a_skill_the_package_carries_says_nothing(self):
+        assert self._report({"dcf-model": {"icon": "calculator"}}, ["dcf-model"]) == []
+
+    def test_the_older_list_form_is_not_checked(self):
+        assert self._report(["ghost"], ["dcf-model"]) == []

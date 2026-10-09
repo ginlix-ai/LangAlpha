@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { type ComponentType } from 'react';
 import { ModalShell } from '@/components/ui/ModalShell';
 import type { BrandArt } from '@/lib/brandArt';
 import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
@@ -49,6 +49,7 @@ export function DetailHeader({
   kind,
   kindLabel,
   art,
+  glyph,
   meta,
   controls,
 }: {
@@ -58,14 +59,16 @@ export function DetailHeader({
   kind: MarkKind;
   /** The item's kind, spelled out ("Skill", "MCP server", "Plugin"). */
   kindLabel: string;
-  /** The item's own mark; falls back to `kind`'s glyph without it. */
-  art?: BrandArt;
+  /** The item's own mark, or marks in order; falls back to `kind`'s glyph. */
+  art?: BrandArt | readonly BrandArt[];
+  /** A glyph chosen for this item, drawn on `kind`'s tile in place of its own. */
+  glyph?: ComponentType<{ className?: string }>;
   meta?: React.ReactNode;
   controls?: React.ReactNode;
 }) {
   return (
     <div className="flex items-start gap-3.5 pr-8">
-      <BrandMark name={name} kind={kind} art={art} size="lg" />
+      <BrandMark name={name} kind={kind} art={art} glyph={glyph} size="lg" />
       <div className="min-w-0 flex-1 flex flex-col gap-1">
         <div className="flex items-baseline gap-2 flex-wrap">
           <h2

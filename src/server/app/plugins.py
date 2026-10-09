@@ -89,6 +89,7 @@ from src.server.services.plugins.bundled import (
     enforcement_owners,
     icon_site_for,
     list_bundled,
+    skill_icon_site_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -581,3 +582,14 @@ async def get_bundle_icon(name: str) -> Response:
     already holds those files -- so a 404 is the ordinary answer, not a fault.
     """
     return await icon_response(icon_site_for(name))
+
+
+@router.get("/{name}/skills/{skill}/icon")
+async def get_bundle_skill_icon(name: str, skill: str) -> Response:
+    """The mark a bundle names for one of its skills, proxied like its own.
+
+    Unauthenticated for the reason ``get_bundle_icon`` is, and resolvable only
+    for a site a shipped manifest declares. An uploaded package's skills never
+    point here, the same way its package mark does not.
+    """
+    return await icon_response(skill_icon_site_for(name, skill))

@@ -271,7 +271,9 @@ async def astream_flash_workflow(
         chart_selections = parse_chart_selection_contexts(request.additional_context)
         if request.additional_context:
             multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
-            if multimodal_ctxs:
+            # A retry writes no query row, so a second upload would be
+            # stored for nothing.
+            if multimodal_ctxs and not request.retry_of_run_id:
                 query_metadata["attachments"] = await build_attachment_metadata(
                     multimodal_ctxs, thread_id
                 )
@@ -312,6 +314,7 @@ async def astream_flash_workflow(
         carried = await carry.carried_pair(request, thread_id)
         run_handle = await begin_run(
             request,
+            scope=scope,
             thread_id=thread_id,
             run_id=run_id,
             msg_type="flash",
@@ -336,7 +339,6 @@ async def astream_flash_workflow(
                 **(run_metadata or {}),
             },
         )
-        scope.attach_run(run_handle)
 
         logger.info(
             f"[FLASH_CHAT] Run started: workspace_id={workspace_id} "
