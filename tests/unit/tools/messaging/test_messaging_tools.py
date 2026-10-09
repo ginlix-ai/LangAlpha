@@ -309,7 +309,10 @@ class TestTheSendRequest:
             {**CONFIGURABLE, "automation_execution_id": "exec-9"},
         )
 
-        assert json.loads(gateway.requests[0].content)["automation_execution_id"] == "exec-9"
+        assert (
+            json.loads(gateway.requests[0].content)["automation_execution_id"]
+            == "exec-9"
+        )
 
     @pytest.mark.asyncio
     async def test_any_other_turn_names_no_run(self, gateway):
@@ -560,6 +563,72 @@ class TestTheSendResult:
         assert content.startswith("status: sent\nto: imessage\n")
         assert "nothing was sent twice" in content
 
+    @pytest.mark.asyncio
+    async def test_a_replay_while_the_first_is_still_delivering_says_not_to_resend(
+        self, gateway
+    ):
+        gateway.reply = httpx.Response(
+            200,
+            json={
+                "status": "unknown",
+                "code": "in_flight",
+                "message": "Still going.",
+                "address": "discord:@me",
+                "current": False,
+                "duplicate": False,
+                "files": [],
+            },
+        )
+
+        content = await _call(_tool("send_message"), {"text": "hi"})
+
+        assert content.splitlines() == [
+            "status: unknown",
+            "code: in_flight",
+            "to: discord:@me",
+            "An earlier attempt of this same call is still delivering it, and it will "
+            "arrive or fail on its own. Do not send it again, and do not tell the user "
+            "it was sent.",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_code_this_build_does_not_know_shows_the_words(self, gateway):
+        gateway.reply = httpx.Response(
+            200,
+            json={
+                "status": "unknown",
+                "code": "some_new_code",
+                "message": "Here is what happened.",
+            },
+        )
+
+        content = await _call(_tool("send_message"), {"text": "hi"})
+
+        assert content == "status: unknown\ncode: some_new_code\nHere is what happened."
+
+    @pytest.mark.asyncio
+    async def test_a_repeat_answered_as_before_the_in_flight_code_reads_as_before(
+        self, gateway
+    ):
+        # The same repeat, answered by a messaging service without the code.
+        words = (
+            "This same message is still being delivered. Don't send it again; it "
+            "will arrive or fail on its own."
+        )
+        gateway.reply = httpx.Response(
+            200,
+            json={
+                "status": "failed",
+                "code": "unavailable",
+                "message": words,
+                "address": "discord:@me",
+            },
+        )
+
+        content = await _call(_tool("send_message"), {"text": "hi"})
+
+        assert content == f"status: failed\ncode: unavailable\nto: discord:@me\n{words}"
+
 
 class TestNoAnswerIsStillAResult:
     """A gateway that is down, slow or misconfigured must not fail the turn,
@@ -735,6 +804,25 @@ class TestTheDeliveryArtifact:
 
         assert artifact["duplicate"] is True
         assert artifact["status"] == "sent"
+
+    @pytest.mark.asyncio
+    async def test_a_replay_still_being_delivered_is_not_a_failure(self, gateway):
+        gateway.reply = httpx.Response(
+            200,
+            json={
+                "status": "unknown",
+                "code": "in_flight",
+                "message": "Still going.",
+                "address": "discord:@me",
+            },
+        )
+
+        artifact = (await _message(_tool("send_message"), {"text": "hi"})).artifact
+
+        assert artifact["status"] == "unknown"
+        assert artifact["code"] == "in_flight"
+        assert artifact["message"] == "Still going."
+        assert artifact["platform"] == "discord"
 
     @pytest.mark.asyncio
     async def test_an_unreachable_gateway_failed_with_no_files(self, gateway):

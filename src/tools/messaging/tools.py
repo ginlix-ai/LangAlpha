@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 MAX_TEXT_CHARS = 20_000
 MAX_FILES = 10
 
+# The ``code`` of a send that repeats a call the messaging service is still
+# delivering, with ``status`` unknown: neither sent nor failed yet.
+IN_FLIGHT = "in_flight"
+
 # A send fetches each file from the workspace and uploads it to the app
 # before answering, so it gets far longer than a listing does.
 _SEND_TIMEOUT = httpx.Timeout(90.0, connect=5.0)
@@ -143,7 +147,15 @@ def format_send_result(data: dict[str, Any]) -> str:
         lines.append(
             "An earlier attempt of this same call already delivered it; nothing was sent twice."
         )
-    if data.get("message"):
+    if data.get("code") == IN_FLIGHT:
+        # The tool's own words, as for a duplicate: both describe a replay of
+        # this call. The messaging service's message says the same.
+        lines.append(
+            "An earlier attempt of this same call is still delivering it, and it will "
+            "arrive or fail on its own. Do not send it again, and do not tell the user "
+            "it was sent."
+        )
+    elif data.get("message"):
         lines.append(str(data["message"]))
     files = data.get("files") or []
     if files:

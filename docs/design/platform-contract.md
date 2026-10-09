@@ -146,10 +146,13 @@ turn's sends none, whatever the thread is bound to.
   `new_thread` (true starts a fresh thread in the chat instead of continuing this conversation's;
   always sent), plus `automation_execution_id` on an automation's turn whose delivery the
   messaging service holds (see Automation delivery), and only then. Every
-  delivery outcome is a 200 carrying `status` (`sent`, `partial`, `failed`), `code`, `message`,
-  `address`, `current`, `duplicate` and per-file `files` (`path`, `status`, `reason`). The same
-  `tool_call_id` twice is the graph replaying a tool step after a resume, and must not send
-  twice.
+  delivery outcome is a 200 carrying `status` (`sent`, `partial`, `failed`, `unknown`), `code`,
+  `message`, `address`, `current`, `duplicate` and per-file `files` (`path`, `status`, `reason`).
+  The same `tool_call_id` twice is the graph replaying a tool step after a resume, and must not
+  send twice: a repeat after the first delivered gets the first answer with `duplicate` true, and
+  one while the first is still being delivered gets `status` `unknown` with `code` `in_flight`.
+  The tool tells the model the message is still on its way and must not be sent again; any other
+  `code` reaches the model with the answer's `message`.
 
 `send_message` also returns a `message_delivery` artifact beside the text the model reads: `status`,
 `code`, `address`, `platform` (the address's app), `current`, `duplicate`, `message` and `files`
