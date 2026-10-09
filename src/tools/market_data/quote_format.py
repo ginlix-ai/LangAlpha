@@ -230,13 +230,13 @@ def stamp_quote(
     artifact's ET header does not locate a foreign or delayed print. *ref*
     names the listing when the row's own spelling may not.
     """
-    at = at or datetime.now(timezone.utc)
     if ref is None:
         ref = _ref_of(snap)
     printed = print_time(snap)
-    local = _venue_clock(ref, printed or at)
+    local = _venue_clock(ref, printed or at or datetime.now(timezone.utc))
     return {
         "tier": snap.get("tier"),
+        # *at* stays None when unset so measure_quote reads its own clock.
         "freshness": _measure(snap, ref, at).model_dump(mode="json"),
         **({"source": snap["source"]} if snap.get("source") else {}),
         **({"regular_only": True} if snap.get("regular_only") else {}),
