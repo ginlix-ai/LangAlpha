@@ -31,6 +31,15 @@ class BackgroundExecutionConfig(BaseModel):
     max_stored_messages_per_agent: int = Field(
         default=150000, description="Maximum events to buffer per workflow"
     )
+    max_stream_bytes_per_run: int = Field(
+        default=96 * 1024 * 1024,
+        description=(
+            "Maximum bytes one run's event stream may hold in Redis, counting "
+            "every copy a frame is kept as (a subagent's task stream keeps up "
+            "to three); a run past it finalizes error(transport_lost), as at "
+            "the event cap"
+        ),
+    )
     event_storage_backend: Literal["redis", "memory"] = Field(
         default="redis", description='Backend for event buffering: "redis" or "memory"'
     )

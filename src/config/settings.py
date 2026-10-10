@@ -457,6 +457,10 @@ def get_max_stored_messages_per_agent() -> int:
     return get_infrastructure_config().background_execution.max_stored_messages_per_agent
 
 
+def get_max_stream_bytes_per_run() -> int:
+    return get_infrastructure_config().background_execution.max_stream_bytes_per_run
+
+
 def get_subagent_collector_timeout() -> float:
     return get_infrastructure_config().background_execution.subagent_collector_timeout
 

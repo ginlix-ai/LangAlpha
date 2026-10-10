@@ -30,6 +30,7 @@ from src.config.settings import (
     get_cleanup_interval,
     is_intermediate_storage_enabled,
     get_max_stored_messages_per_agent,
+    get_max_stream_bytes_per_run,
     get_event_storage_backend,
     get_redis_ttl_workflow_events,
     get_shutdown_timeout,
@@ -103,6 +104,10 @@ class LocalRunExecution:
 
     graph: Optional[Any] = None
 
+    # Bytes this run has written to its event stream, for the byte quota.
+    # Only the run's own consume loop writes it, one awaited append at a time.
+    stream_bytes: int = 0
+
 
 # Type alias for the key used throughout the manager.
 TaskKey = tuple[str, str]
@@ -135,6 +140,7 @@ class LocalRunExecutor:
         self.cleanup_interval = get_cleanup_interval()
         self.enable_storage = is_intermediate_storage_enabled()
         self.max_stored_messages = get_max_stored_messages_per_agent()
+        self.max_stream_bytes = get_max_stream_bytes_per_run()
 
         self.event_storage_backend = get_event_storage_backend()
         self.redis_event_ttl = get_redis_ttl_workflow_events()
@@ -830,15 +836,18 @@ class LocalRunExecutor:
         """
         key = (thread_id, run_id)
         async with self.task_lock:
-            if key not in self.executions:
-                return
+            info = self.executions.get(key)
+        if info is None:
+            return
 
         if self.event_storage_backend != "redis":
             return  # memory backend: no stream transport to lose
 
-        await stream_writer.buffer_event(
+        info.stream_bytes = await stream_writer.buffer_event(
             thread_id, run_id, event,
             max_stored_messages=self.max_stored_messages,
+            max_stream_bytes=self.max_stream_bytes,
+            stream_bytes=info.stream_bytes,
         )
 
     async def append_run_end_event(

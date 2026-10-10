@@ -453,6 +453,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         if spool_cleared:
             task.captured_event_seq = 0
             task.captured_event_seq_base = 0
+            # The byte quota follows the stream, like the sequence.
+            task.stream_bytes = 0
         else:
             task.captured_event_seq_base = task.captured_event_seq
         # Reset timestamps so the LLM sees honest staleness for the

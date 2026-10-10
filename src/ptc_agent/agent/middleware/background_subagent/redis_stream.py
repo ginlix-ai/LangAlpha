@@ -251,6 +251,7 @@ async def spill_task_records(
     try:
         from src.config.settings import (
             get_max_stored_messages_per_agent,
+            get_max_stream_bytes_per_run,
             is_subagent_event_redis_spill_enabled,
         )
     except Exception:
@@ -283,6 +284,7 @@ async def spill_task_records(
     stream_key = task_stream_key(thread_id, task.task_id)
     try:
         quota = get_max_stored_messages_per_agent()
+        byte_quota = get_max_stream_bytes_per_run()
     except Exception as exc:
         task.redis_write_failed = True
         logger.warning(
@@ -315,6 +317,7 @@ async def spill_task_records(
                 record,
                 stream_key,
                 quota=quota,
+                byte_quota=byte_quota,
             )
 
 
@@ -326,6 +329,7 @@ async def _spill_one_locked(
     stream_key: str,
     *,
     quota: int,
+    byte_quota: int,
 ) -> None:
     """Append one record to the task's streams; the caller holds
     ``task.redis_spill_lock``. Every failure opens the circuit."""
@@ -540,6 +544,14 @@ async def _spill_one_locked(
                 error=append_error,
             )
             return
+        # Bytes as well as events, as on the root lane: the stream has no
+        # TTL until terminal, so nothing evicts it while the run lives. A
+        # record lands up to three times (the v1 wire frame and record, and
+        # the v2 payload), and the quota bounds what Redis holds.
+        record_bytes = len(payload.encode("utf-8"))
+        task.stream_bytes += len(stream_payload.encode("utf-8")) + record_bytes * (
+            2 if task.task_run_id else 1
+        )
         if seq > quota:
             # Quota breach tears the transport by contract: opening the
             # circuit here (instead of trimming FIFO) makes the abort
@@ -553,6 +565,17 @@ async def _spill_one_locked(
                 task_id=task.task_id,
                 seq=record.get("seq"),
                 quota=quota,
+            )
+        elif task.stream_bytes > byte_quota:
+            task.redis_write_failed = True
+            logger.warning(
+                "subagent_event_spill_failed",
+                phase="byte_quota",
+                tool_call_id=task.tool_call_id,
+                task_id=task.task_id,
+                seq=record.get("seq"),
+                stream_bytes=task.stream_bytes,
+                byte_quota=byte_quota,
             )
     except asyncio.TimeoutError:
         task.redis_write_failed = True

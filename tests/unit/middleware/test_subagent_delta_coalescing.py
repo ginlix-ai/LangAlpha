@@ -324,6 +324,36 @@ async def test_a_batch_spills_under_one_lock_hold(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_byte_quota_opens_the_circuit(monkeypatch) -> None:
+    cache = MagicMock()
+    cache.enabled = True
+    cache.pipelined_event_buffer = AsyncMock(return_value=None)
+    monkeypatch.setattr("src.utils.cache.redis_cache.get_cache_client", lambda: cache)
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr("src.config.settings.get_max_stream_bytes_per_run", lambda: 600)
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await _task(registry)
+
+    await registry.append_captured_event("tc1", _tool_calls())
+    first = task.stream_bytes
+    assert 0 < first < 600
+    assert not task.redis_write_failed
+
+    for _ in range(600 // first + 1):
+        await registry.append_captured_event("tc1", _tool_calls())
+
+    assert task.redis_write_failed
+    assert task.stream_bytes > 600
+    # The circuit is sticky: nothing past the breach reaches Redis.
+    spilled = cache.pipelined_event_buffer.await_count
+    await registry.append_captured_event("tc1", _tool_calls())
+    assert cache.pipelined_event_buffer.await_count == spilled
+
+
+@pytest.mark.asyncio
 async def test_the_forwarder_never_records_a_heartbeat() -> None:
     registry = _CapturingRegistry()
     await _task(registry)

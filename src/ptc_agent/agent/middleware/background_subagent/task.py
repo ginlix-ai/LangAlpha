@@ -152,6 +152,11 @@ class BackgroundTask:
     writes, and the run ends as ``error(transport_lost)`` rather than degrading
     to the in-memory tail — a gap in the replay archive is not recoverable."""
 
+    stream_bytes: int = 0
+    """SSE bytes spilled to this task's stream since it last restarted, for
+    the byte quota. Unlike ``captured_event_bytes`` it follows the stream,
+    not the round: a resume that keeps the stream keeps the total."""
+
     delta_coalescer: Any = field(default=None, repr=False)
     """The registry's ``DeltaCoalescer`` holding this task's unsent delta,
     created on the first append. Typed loosely so this module stays a leaf."""

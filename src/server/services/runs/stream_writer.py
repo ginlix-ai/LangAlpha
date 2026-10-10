@@ -52,7 +52,8 @@ class TransportLostError(RuntimeError):
 
 
 class StreamQuotaExceededError(TransportLostError):
-    """The run produced more events than its replay archive may hold.
+    """The run produced more events, or more bytes, than its replay archive
+    may hold.
 
     A subtype so dashboards can tell a runaway run from a sick Redis: both
     finalize the run, but only one of them is an infrastructure problem.
@@ -60,14 +61,23 @@ class StreamQuotaExceededError(TransportLostError):
 
 
 async def buffer_event(
-    thread_id: str, run_id: str, event: str, *, max_stored_messages: int
-) -> None:
+    thread_id: str,
+    run_id: str,
+    event: str,
+    *,
+    max_stored_messages: int,
+    max_stream_bytes: int,
+    stream_bytes: int = 0,
+) -> int:
     """Append a workflow event to the per-run Redis Stream.
 
     Buffer failure is FATAL to the run (I6): a dropped event means the
     replay archive and any attached consumer silently diverge from what
     the model actually produced, so the run must finalize
     ``failed(transport_lost)`` instead of completing with holes.
+
+    ``stream_bytes`` is what the run has written so far, kept by the caller
+    because this module holds no per-run state; the return is the new total.
     """
     key = (thread_id, run_id)
     try:
@@ -115,6 +125,25 @@ async def buffer_event(
 
     logger.debug(f"[EventBuffer] Buffered event to Redis: {key} (id={event_id})")
 
+    # Bytes as well as events: live streams carry no TTL, so nothing evicts
+    # them, and the event count bounds no size (one tool result can be
+    # megabytes, and joined deltas make every frame larger).
+    written = stream_bytes
+    stream_bytes += len(event.encode("utf-8"))
+    if stream_bytes > max_stream_bytes:
+        raise StreamQuotaExceededError(
+            f"transport_lost: stream byte quota exceeded for {key} "
+            f"({stream_bytes}/{max_stream_bytes} bytes); finalizing "
+            "instead of growing a stream nothing can evict"
+        )
+    byte_threshold = int(max_stream_bytes * 0.9)
+    if written < byte_threshold <= stream_bytes:
+        logger.warning(
+            f"[EventBuffer] Buffer near byte quota for {key}: "
+            f"{stream_bytes}/{max_stream_bytes} bytes. "
+            "At quota the run finalizes error(transport_lost)."
+        )
+
     # The frame's own id is the event count: it is assigned sequentially from 1
     # per run, and it counts every event the run emitted — including any the
     # buffer never saw — so gating on it can only ever fire early.
@@ -132,6 +161,7 @@ async def buffer_event(
             f"{event_id}/{max_stored_messages} events. "
             "At quota the run finalizes error(transport_lost)."
         )
+    return stream_bytes
 
 
 async def append_run_end_event(
