@@ -1,6 +1,6 @@
 ---
 name: langalpha-doc
-description: "How the platform under you works: the computer and its workspaces, files and what survives a restart, conversation transcripts, saved tool results, memory, and adding skills, MCP servers, brokerages or plugins. Read it when the user points back at an earlier conversation, when something is missing or behaves unexpectedly, and before adding any of those."
+description: "How the platform under you works: the computer and its workspaces, files and what survives a restart, conversation transcripts, saved tool results, memory, chat apps, and adding skills, MCP servers, brokerages or plugins. Read it when the user points back at an earlier conversation, asks how their chat messages reach you, when something is missing or behaves unexpectedly, and before adding any of those."
 ---
 
 # How LangAlpha Works
@@ -15,6 +15,7 @@ You run on a **computer**: one sandbox machine that belongs to the user. Each of
 - Installing, writing or changing a skill, here or for every workspace: `.agents/skills/langalpha-doc/references/skills.md`.
 - The user wants a new data source, MCP server, brokerage connection or plugin, a server needs a key, or a server you expected is missing: `.agents/skills/langalpha-doc/references/plugins.md`.
 - Talking with the user in a chat app, or sending a message or file to Slack, Discord, Telegram or iMessage: `.agents/skills/langalpha-doc/references/chat.md`.
+- The user asks which conversation or workspace their chat message reached, why an answer came from another conversation, or how `/new`, `/workspace` and replies pick one: `.agents/skills/langalpha-doc/references/chat-conversations.md`.
 
 ## Traps
 

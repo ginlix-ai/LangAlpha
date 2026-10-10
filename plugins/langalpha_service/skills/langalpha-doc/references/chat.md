@@ -39,7 +39,7 @@ In a chat the user sees what you send, not your updates between tool calls.
 | Math | Not rendered | Not rendered | Shown; as written in the fallback | As written |
 | One message holds | 12,000 characters, then it is split | 2,000 characters, then it is split | A send's 20,000 characters (4,096 in the fallback); a long list or table splits sooner | 2,000 characters a bubble, at most 3 bubbles |
 | Files | 20 MB each | 10 together, 20 MB each or the server's lower limit | Photos (PNG, JPEG, GIF, WebP) up to 10 MB show as photos; other files go as documents, up to 20 MB | 10 MB each, 25 MB in all; larger ones, up to 20 MB, go as links |
-| `reply: true` | No effect | Works in server channels | Works in groups | Works |
+| `reply: true` | No effect | Works in server channels | Works in groups | Works in group chats |
 
 - **Slack**: an image written in Markdown shows as a link, not a picture. Write links as `[text](url)`.
 - **Discord**: underline is `__text__` and a spoiler is `||text||`. Mentions you write don't notify anyone.
