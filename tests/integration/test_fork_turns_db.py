@@ -5,7 +5,7 @@ That turn holds a turn number and rows but no boundary on the branch, so
 every turn after it sits one place lower among the boundaries than its
 number. A fork deletes rows from the turn it replaces onward, and the
 turn it replaces is fixed by the checkpoint it forks at: deleting by
-position would drop the rows of a turn the branch keeps.
+position would drop the rows (and the slice) of a turn the branch keeps.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ async def _start(thread_id, text, *, fork=None, turn_index=None, query=True):
 async def _run(graph, thread_id, run_id, turn_index, text, *, checkpoint_id=None):
     """The graph half of a turn: stamped the way ``build_graph_config`` stamps
     a run, then committed the way the finalize commits it."""
-    from src.server.database.runs.lifecycle import finalize_run
+    from src.server.database.runs.lifecycle import RunOutcome, finalize_run
 
     configurable = {"thread_id": thread_id}
     if checkpoint_id:
@@ -79,7 +79,7 @@ async def _run(graph, thread_id, run_id, turn_index, text, *, checkpoint_id=None
     await finalize_run(
         run_id=run_id,
         thread_id=thread_id,
-        status="completed",
+        outcome=RunOutcome(status="completed"),
         checkpoint_id=state.config["configurable"]["checkpoint_id"],
     )
 
@@ -87,9 +87,10 @@ async def _run(graph, thread_id, run_id, turn_index, text, *, checkpoint_id=None
 @pytest_asyncio.fixture(loop_scope="session")
 async def thread(seed_workspace, test_db_pool, patched_get_db_connection):
     """Turns 0, 2 and 3 ran; turn 1's run failed before the graph wrote
-    anything."""
+    anything. Turn 2's slice is stored, as the turn finalize stores it."""
     from src.server.database.conversation import create_thread
-    from src.server.database.runs.lifecycle import finalize_run
+    from src.server.database.conversation import turn_slices as slices_db
+    from src.server.database.runs.lifecycle import RunOutcome, finalize_run
 
     saver = AsyncPostgresSaver(test_db_pool)
     graph = _graph(saver)
@@ -105,9 +106,20 @@ async def thread(seed_workspace, test_db_pool, patched_get_db_connection):
         run_id, turn_index = await _start(thread_id, text)
         runs[turn_index] = run_id
         if turn_index == DEAD_TURN:
-            await finalize_run(run_id=run_id, thread_id=thread_id, status="error")
+            await finalize_run(
+                run_id=run_id, thread_id=thread_id, outcome=RunOutcome(status="error")
+            )
         else:
             await _run(graph, thread_id, run_id, turn_index, text)
+    await slices_db.upsert_turn_slices(
+        [
+            slices_db.TurnRow(
+                runs[2],
+                thread_id,
+                slices_db.StoredSlice("in-2", "tail-2", "k", "msgpack", b"\x80"),
+            )
+        ]
+    )
     with patch(
         "src.server.handlers.checkpoint_handler.get_checkpointer",
         return_value=saver,
@@ -147,6 +159,16 @@ async def _rows(conn, table, thread_id):
     return [r["turn_index"] for r in await cur.fetchall()]
 
 
+async def _slices(conn, thread_id):
+    cur = await conn.execute(
+        "SELECT r.turn_index FROM turn_slices s "
+        "JOIN conversation_responses r USING (conversation_response_id) "
+        "WHERE s.conversation_thread_id = %s",
+        (thread_id,),
+    )
+    return [r["turn_index"] for r in await cur.fetchall()]
+
+
 async def test_turns_carry_the_turn_number_not_the_position(thread):
     turns = await _turns(thread.id)
 
@@ -172,6 +194,7 @@ async def test_editing_the_latest_turn_keeps_every_turn_before_it(thread, db_con
     assert turn_index == 3
     assert await _rows(db_conn, "conversation_responses", thread.id) == [0, 1, 2, 3]
     assert await _rows(db_conn, "conversation_queries", thread.id) == [0, 1, 2, 3]
+    assert await _slices(db_conn, thread.id) == [2]
     # Every boundary on the new branch still names a turn with rows.
     assert [t.turn_index for t in await _turns(thread.id)] == [0, 2, 3]
 
@@ -189,6 +212,7 @@ async def test_regenerating_the_latest_turn_keeps_its_question(thread, db_conn):
     assert turn_index == 3
     assert await _rows(db_conn, "conversation_responses", thread.id) == [0, 1, 2, 3]
     assert await _rows(db_conn, "conversation_queries", thread.id) == [0, 1, 2, 3]
+    assert await _slices(db_conn, thread.id) == [2]
 
 
 async def test_a_client_count_cannot_move_the_fork(thread, db_conn):
@@ -204,6 +228,7 @@ async def test_a_client_count_cannot_move_the_fork(thread, db_conn):
     assert (edit.from_turn, regenerate.from_turn) == (3, 3)
     await _start(thread.id, "q3 edited", fork=edit)
     assert await _rows(db_conn, "conversation_responses", thread.id) == [0, 1, 2, 3]
+    assert await _slices(db_conn, thread.id) == [2]
 
 
 async def test_rewriting_the_failed_message_replaces_it(thread, db_conn):
@@ -224,6 +249,7 @@ async def test_rewriting_the_failed_message_replaces_it(thread, db_conn):
 
     assert turn_index == DEAD_TURN
     assert await _rows(db_conn, "conversation_responses", thread.id) == [0, 1]
+    assert await _slices(db_conn, thread.id) == []
     assert [t.turn_index for t in await _turns(thread.id)] == [0, 1]
 
 

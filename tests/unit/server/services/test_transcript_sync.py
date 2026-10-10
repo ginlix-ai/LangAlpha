@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ptc_agent.agent.transcript import TranscriptTarget, load_manifest
+from ptc_agent.agent.transcript import TranscriptTarget, Window, load_manifest
 from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from src.server.database.conversation import ThreadPrefixes
 from src.server.database.thread_transcripts import (
@@ -385,7 +385,7 @@ def test_a_carried_file_whose_row_moved_is_a_stale_copy():
 
 
 def _job(messages) -> _Job:
-    return _Job(TranscriptTarget(T1), messages, {"thread_id": T1}, FP, "cp-1", None)
+    return _Job(TranscriptTarget(T1), messages, {"thread_id": T1}, FP, "cp-1", None, Window())
 
 
 def _big():
@@ -846,7 +846,7 @@ def live(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_live_save_keeps_the_rendered_checkpoint_and_empties_the_fingerprint(live):
     live.stored[""] = _stored(manifest='{"thread_id": "%s", "checkpoint_id": "cp-1"}' % T1)
-    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")])
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")], window=Window())
     [(prefix, copy)] = live.saves
     assert prefix == ""
     assert copy.fingerprint == "" and copy.checkpoint_id == "cp-1"
@@ -860,7 +860,7 @@ async def test_a_live_save_takes_the_threads_checkpoint_when_its_export_is_late(
     must not look older than it."""
     live.stored[""] = _stored(checkpoint_id="cp-1")
     live.stamped.return_value = "cp-2"
-    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")])
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")], window=Window())
     [(_, copy)] = live.saves
     assert copy.checkpoint_id == "cp-2"
 
@@ -871,7 +871,7 @@ async def test_a_first_turn_live_save_takes_the_checkpoint_tip(live):
     replaced: an export that read the checkpoint before this compaction then
     dropped what the live save had added until the turn ended."""
     live.tip.return_value = "cp-3"
-    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")])
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")], window=Window())
     [(_, copy)] = live.saves
     assert copy.checkpoint_id == "cp-3"
     live.tip.assert_awaited_once_with(T1)
@@ -880,7 +880,7 @@ async def test_a_first_turn_live_save_takes_the_checkpoint_tip(live):
     # end's render down too.
     live.saves.clear()
     live.stamped.return_value = "cp-2"
-    assert await transcripts.save_live(TranscriptTarget(T1), [_message("bye")])
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("bye")], window=Window())
     [(_, copy)] = live.saves
     assert copy.checkpoint_id == "cp-2"
     live.tip.assert_awaited_once()
@@ -917,7 +917,7 @@ async def test_a_live_save_of_a_task_replaces_only_that_task(live):
         manifest='{"task_id": "k1", "description": "d"}',
         **{"tasks__k1__run-0001.jsonl": "b" * 64},
     )
-    assert await transcripts.save_live(TranscriptTarget(T1, "k1"), [_message("go")])
+    assert await transcripts.save_live(TranscriptTarget(T1, "k1"), [_message("go")], window=Window())
     [(prefix, copy)] = live.saves
     assert prefix == "tasks/k1/"
     assert copy.files.keys() == {"tasks/k1/meta.json", "tasks/k1/run-0001.jsonl"}
@@ -931,7 +931,7 @@ async def test_a_live_save_of_a_task_takes_the_tasks_latest_checkpoint(live):
     live.stored["tasks/k1/"] = _stored(checkpoint_id="task-cp-1")
     live.stamped.return_value = "cp-9"
     live.tip.return_value = "task-cp-2"
-    assert await transcripts.save_live(TranscriptTarget(T1, "k1"), [_message("go")])
+    assert await transcripts.save_live(TranscriptTarget(T1, "k1"), [_message("go")], window=Window())
     [(_, copy)] = live.saves
     assert copy.fingerprint == "" and copy.checkpoint_id == "task-cp-2"
     live.tip.assert_awaited_once_with(T1, "task:k1")
@@ -940,8 +940,8 @@ async def test_a_live_save_of_a_task_takes_the_tasks_latest_checkpoint(live):
 
 @pytest.mark.asyncio
 async def test_a_live_save_with_nothing_new_writes_nothing(live):
-    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")])
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")], window=Window())
     [(_, first)] = live.saves
     live.stored[""] = first
-    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")])
+    assert await transcripts.save_live(TranscriptTarget(T1), [_message("hi")], window=Window())
     assert len(live.saves) == 1

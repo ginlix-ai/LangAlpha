@@ -824,139 +824,109 @@ async def replay_thread_messages(
         description=(
             "Replay source: 'checkpoint' projects the transcript from LangGraph "
             "checkpoints, 'sse' replays persisted sse_events, 'auto' prefers "
-            "checkpoint and falls back to sse when coverage is incomplete."
+            "checkpoint, replaying from sse a turn it cannot project, or the "
+            "whole thread when coverage is incomplete."
         ),
     ),
     limit: int | None = Query(
         None,
         ge=1,
         description=(
-            "Windowed replay: build only the most recent N turns from "
-            "checkpoints (bounds initial-load latency to the window). "
-            "Checkpoint-sourced only; ignored for source='sse'."
+            "Paged replay: only the most recent N turns (before "
+            "``before_turn`` when given), plus a leading ``history_page`` "
+            "event naming the oldest turn sent and whether older ones remain."
+        ),
+    ),
+    before_turn: int | None = Query(
+        None,
+        ge=0,
+        description=(
+            "Paged replay: only turns older than this turn_index, the "
+            "previous page's ``history_page.first_turn_index``."
         ),
     ),
 ):
     """Replay a thread as SSE.
 
     Stream includes:
+    - history_page: first, only when ``limit`` or ``before_turn`` is given
     - user_message: emitted once per turn_index (query content)
     - message_chunk/tool_* events: projected from checkpoints or emitted from
       stored sse_events, per ``source``
+    - snapshot: cursors for the runs replay could not project (newest page only)
     - replay_done: terminal sentinel
     """
     try:
-        owner_id, thread, queries, responses, usages, provenance = (
-            await get_replay_thread_data(thread_id)
-        )
+        rows = await get_replay_thread_data(thread_id)
 
         # Preserve existing 404/403 semantics from require_thread_owner
-        if owner_id is None:
+        if rows is None:
             raise HTTPException(status_code=404, detail="Thread not found")
-        if owner_id != x_user_id:
+        if rows.owner_id != x_user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
-        if not thread:
-            raise HTTPException(
-                status_code=404, detail=f"Thread not found: {thread_id}"
-            )
-
-        responses_by_turn = {
-            r.get("turn_index"): r for r in responses if isinstance(r, dict)
-        }
 
         from src.server.services.history.replay import (
             CheckpointReplayUnavailable,
-            build_checkpoint_replay_items,
-            build_sse_replay_items,
+            finish_lines,
+            read_replay_page,
         )
 
-        checkpoint_items: list[dict] | None = None
-        if source in ("auto", "checkpoint"):
-            try:
-                if thread.get("latest_checkpoint_id") is None:
-                    # The commit pointer (stamped at turn persist) is the only
-                    # tip checkpoint replay may read — without it the reader
-                    # would walk the newest checkpoint, which mid-run is
-                    # uncommitted partial state.
-                    raise CheckpointReplayUnavailable(
-                        "thread has no committed checkpoint pointer"
-                    )
-                checkpoint_items = await build_checkpoint_replay_items(
-                    thread_id,
-                    queries,
-                    responses_by_turn,
-                    branch_tip_checkpoint_id=thread.get("latest_checkpoint_id"),
-                    last_n_turns=limit,
-                    usages=usages,
-                    provenance=provenance,
-                )
-            except CheckpointReplayUnavailable as e:
-                if source == "checkpoint":
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Checkpoint replay unavailable: {e}",
-                    )
-                logger.info(
-                    f"[REPLAY] Checkpoint replay unavailable for {thread_id}, "
-                    f"falling back to sse: {e}"
-                )
-            except HTTPException:
-                raise
-            except Exception as e:
-                if source == "checkpoint":
-                    raise
-                logger.warning(
-                    f"[REPLAY] Checkpoint replay failed for {thread_id}, "
-                    f"falling back to sse: {e}",
-                    exc_info=True,
-                )
+        try:
+            page, resolved_source = await read_replay_page(
+                rows, source=source, before_turn=before_turn, limit=limit
+            )
+        except CheckpointReplayUnavailable as e:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Checkpoint replay unavailable: {e}",
+            )
 
-        replay_items = (
-            checkpoint_items
-            if checkpoint_items is not None
-            else build_sse_replay_items(thread_id, queries, responses_by_turn)
-        )
-
-        # After source selection and outside the projection cache: task
-        # artifacts replay their spawn-time payload, so the card's status is
-        # stamped here from current liveness (see history/task_status.py).
-        from src.server.services.history.task_status import (
-            stamp_replay_task_status,
-        )
-
-        await stamp_replay_task_status(thread_id, replay_items)
+        # After source selection and outside the stored lines: task artifacts
+        # replay their spawn-time payload, so the card's status is stamped
+        # here from current liveness (see history/task_status.py).
+        replay_lines = page.lines
+        await finish_lines(thread_id, replay_lines)
+        paged = limit is not None or before_turn is not None
 
         async def event_generator():
             seq = 0
-            for item in replay_items:
+            if paged:
                 seq += 1
+                history_page = {
+                    "first_turn_index": page.first_turn_index,
+                    "has_more": page.has_more,
+                }
                 yield (
                     f"id: {seq}\n"
-                    f"event: {item['event']}\n"
-                    f"data: {json.dumps(item['data'], ensure_ascii=False, default=str)}\n\n"
+                    f"event: history_page\n"
+                    f"data: {json.dumps(history_page, default=str)}\n\n"
                 )
+            for line in replay_lines:
+                seq += 1
+                yield f"id: {seq}\nevent: {line.event}\ndata: {line.data_json}\n\n"
 
             # Cursors for the runs replay could not project — an in-flight run
             # belongs to its stream, so the snapshot hands the client where to
             # resume instead of its content. Additive: a snapshot outage (None)
             # just omits the frame, and v1 clients ignore the unknown event.
-            from src.server.services.history.snapshot import (
-                build_thread_snapshot,
-            )
-
-            snapshot = await build_thread_snapshot(thread_id)
-            if snapshot is not None:
-                seq += 1
-                yield (
-                    f"id: {seq}\n"
-                    f"event: snapshot\n"
-                    f"data: {json.dumps(snapshot, ensure_ascii=False, default=str)}\n\n"
+            # An older page holds no in-flight run.
+            if before_turn is None:
+                from src.server.services.history.snapshot import (
+                    build_thread_snapshot,
                 )
+
+                snapshot = await build_thread_snapshot(thread_id)
+                if snapshot is not None:
+                    seq += 1
+                    yield (
+                        f"id: {seq}\n"
+                        f"event: snapshot\n"
+                        f"data: {json.dumps(snapshot, ensure_ascii=False, default=str)}\n\n"
+                    )
 
             seq += 1
             yield f"id: {seq}\nevent: replay_done\ndata: {json.dumps({'thread_id': thread_id}, default=str)}\n\n"
 
-        resolved_source = "checkpoint" if checkpoint_items is not None else "sse"
         return StreamingResponse(
             observe_replay_stream(event_generator(), source="private"),
             media_type="text/event-stream",

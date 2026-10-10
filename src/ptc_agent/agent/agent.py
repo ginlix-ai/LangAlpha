@@ -19,7 +19,7 @@ from ptc_agent.agent.backends import SandboxBackend
 from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.agent.middleware import SubAgentMiddleware
-from ptc_agent.agent.state import DeltaAgentState
+from ptc_agent.agent.main_state import MainAgentState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
@@ -53,7 +53,9 @@ from ptc_agent.agent.middleware.compaction.notes import (
     NotesDueMiddleware,
     NotesOffMiddleware,
     ThreadScratchpad,
+    notes_window_carry,
 )
+from ptc_agent.agent.middleware.compaction.window import WindowCoverage
 from ptc_agent.agent.middleware.direct_mcp import (
     DirectToolSet,
     direct_tool_middleware,
@@ -63,6 +65,7 @@ from ptc_agent.agent.middleware.order_governance import OrderLedger
 from ptc_agent.agent.middleware.subagent_switch import (
     SubagentSwitchMiddleware,
     SubagentSwitchReader,
+    subagents_window_carry,
 )
 from ptc_agent.agent.context_stack import build_context_middleware
 from ptc_agent.agent.roles import AgentRole
@@ -245,6 +248,7 @@ class PTCAgent:
         role: AgentRole = "analyst",
         harness_blocks: Mapping[str, str | None] | None = None,
         subagent_switch: SubagentSwitchReader | None = None,
+        window_coverage: WindowCoverage | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -281,6 +285,10 @@ class PTCAgent:
                 row to read (thread maintenance, a synthetic turn), which
                 leaves subagents as built. It never changes the tools or the
                 prompt: it adds a history row and refuses launches instead.
+            window_coverage: Asks the server whether turn slices hold the
+                runs the main agent's window would trim from its checkpoint
+                (see ``compaction.window``). None for a build with no server
+                behind it, which never trims.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
@@ -697,6 +705,13 @@ class PTCAgent:
         elif compaction is not None:
             main_compaction = compaction.with_scratchpad_notes(scratchpad.notes_dir)
             notes_rows = NotesDueMiddleware(scratchpad, main_compaction)
+        # Each carry writes a field ``MainAgentState`` declares, so a build
+        # without the carry's reader (a notification turn has no switch)
+        # trims too.
+        if main_compaction and window_coverage and thread_id:
+            main_compaction = main_compaction.with_window(
+                window_coverage, [notes_window_carry(thread_id), subagents_window_carry]
+            )
 
         model_resilience = [build_model_resilience_middleware(self.config, turn)]
 
@@ -947,7 +962,7 @@ class PTCAgent:
             middleware=deepagent_middleware,
             checkpointer=checkpointer,
             store=store,
-            state_schema=DeltaAgentState,
+            state_schema=MainAgentState,
         ).with_config({"recursion_limit": 2000})
 
         return BackgroundSubagentOrchestrator(

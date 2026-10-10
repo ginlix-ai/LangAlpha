@@ -28,6 +28,7 @@ from src.server.database.conversation.threads_read import (
 from src.server.database.user import get_user_profile_for_prompt
 from src.server.database.workspace import update_workspace_activity
 from src.server.services.computer_disk import TURN_MEASURE_MIN_INTERVAL_SECONDS
+from src.server.services.history.window import runs_held
 from src.server.services.runs.sse_producer import RunSSEProducer
 from src.server.models.chat import (
     ChatRequest,
@@ -664,6 +665,7 @@ async def astream_ptc_workflow(
             # A port, not a value: the switch can flip mid-turn from any
             # worker, so the agent re-reads the row on every call.
             subagent_switch=partial(read_thread_subagents_allowed, thread_id),
+            window_coverage=partial(runs_held, thread_id),
         )
 
         _mark_phase("graph_build")

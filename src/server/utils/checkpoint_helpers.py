@@ -4,9 +4,10 @@ Consolidates repeated checkpoint config building and checkpointer validation
 patterns used across workflow endpoints.
 """
 
-import logging
+import asyncio
 from collections import defaultdict
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
@@ -15,8 +16,6 @@ from langgraph.checkpoint.base import CheckpointTuple
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-
-logger = logging.getLogger(__name__)
 
 
 def _setup():
@@ -110,6 +109,44 @@ def get_checkpointer():
     return checkpointer
 
 
+# LangGraph records a pending write on this channel when a node pauses via
+# interrupt(). We match the stored channel name directly rather than importing
+# the constant, which langgraph made private in v1.0 (deprecated import); the
+# on-disk channel name is a stable storage-format detail.
+INTERRUPT_CHANNEL = "__interrupt__"
+
+
+@dataclass
+class Boundary:
+    """A turn boundary on the current branch."""
+
+    checkpoint_id: str
+    parent_checkpoint_id: str | None
+    metadata: dict[str, Any]
+    # The checkpoint's interrupt records. On a resume boundary they are the
+    # answered interrupts of the turn it resumes: interrupt and resume writes
+    # attach to the same checkpoint.
+    interrupts: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def is_input(self) -> bool:
+        """A new message; any other boundary resumes the turn before it."""
+        return self.metadata.get("source") == "input"
+
+
+def interrupt_records(pending_writes: Any) -> list[dict[str, Any]]:
+    """``{"id", "value"}`` records from a checkpoint's ``__interrupt__`` writes."""
+    records: list[dict[str, Any]] = []
+    for _task_id, channel, value in pending_writes or ():
+        if channel != INTERRUPT_CHANNEL:
+            continue
+        for intr in value if isinstance(value, (list, tuple)) else [value]:
+            records.append(
+                {"id": getattr(intr, "id", None), "value": getattr(intr, "value", None)}
+            )
+    return records
+
+
 def is_turn_boundary(cp_tuple: Any) -> bool:
     """A checkpoint that starts a conversational turn.
 
@@ -137,7 +174,7 @@ def _resumed_by_later_run(branch: list[Any], i: int) -> bool:
     """
     cp = branch[i]
     if not any(
-        channel == "__interrupt__" for _, channel, _ in (cp.pending_writes or [])
+        channel == INTERRUPT_CHANNEL for _, channel, _ in (cp.pending_writes or [])
     ):
         return False
     run_id = (cp.metadata or {}).get("run_id")
@@ -150,24 +187,123 @@ def _resumed_by_later_run(branch: list[Any], i: int) -> bool:
     return False
 
 
-# Pending-write channels the walk consumers read: ``__resume__`` marks a HITL
-# resume boundary (is_turn_boundary), ``__interrupt__`` carries the answered
-# interrupt payloads (history reader).
-_BOUNDARY_WRITE_CHANNELS = ("__resume__", "__interrupt__")
+_BRANCH_TIP_SQL = """
+    SELECT
+        (SELECT checkpoint_id FROM checkpoints
+         WHERE thread_id = %(thread_id)s AND checkpoint_ns = %(ns)s
+           AND checkpoint_id = %(requested)s) AS requested,
+        (SELECT checkpoint_id FROM checkpoints
+         WHERE thread_id = %(thread_id)s AND checkpoint_ns = %(ns)s
+         ORDER BY checkpoint_id DESC LIMIT 1) AS newest
+"""
 
-_warned_skeleton_fallback = False
+# Parent links from the tip, filtered by is_turn_boundary and
+# _resumed_by_later_run, oldest first. Each step is a LATERAL primary-key
+# probe: as a plain join, a generic plan (the checkpointer prepares every
+# statement) may hash the thread's whole history once per step, which goes
+# quadratic on a long thread. The LIMIT keeps the planner from flattening the
+# probe back into that join. For the later-run test, ``moves_after`` counts the
+# non-update checkpoints after each one and ``move_no`` numbers them from the
+# tip, so the first non-update checkpoint after a row is the one whose
+# ``move_no`` equals that row's ``moves_after``.
+_BRANCH_BOUNDARIES_SQL = """
+    WITH RECURSIVE branch AS (
+        SELECT checkpoint_id, parent_checkpoint_id,
+               metadata->>'source' AS source, metadata->>'run_id' AS run_id
+        FROM checkpoints
+        WHERE thread_id = %(thread_id)s AND checkpoint_ns = %(ns)s
+          AND checkpoint_id = %(tip)s
+      UNION ALL
+        SELECT p.checkpoint_id, p.parent_checkpoint_id, p.source, p.run_id
+        FROM branch b CROSS JOIN LATERAL (
+            SELECT c.checkpoint_id, c.parent_checkpoint_id,
+                   c.metadata->>'source' AS source,
+                   c.metadata->>'run_id' AS run_id
+            FROM checkpoints c
+            WHERE c.thread_id = %(thread_id)s AND c.checkpoint_ns = %(ns)s
+              AND c.checkpoint_id = b.parent_checkpoint_id
+            LIMIT 1
+        ) p
+    ), marks AS (
+        SELECT checkpoint_id,
+               bool_or(channel = '__resume__') AS resumed,
+               bool_or(channel = '__interrupt__') AS interrupted
+        FROM checkpoint_writes
+        WHERE thread_id = %(thread_id)s AND checkpoint_ns = %(ns)s
+          AND channel IN ('__resume__', '__interrupt__')
+        GROUP BY checkpoint_id
+    ), steps AS (
+        SELECT b.checkpoint_id, b.parent_checkpoint_id, b.source, b.run_id,
+               coalesce(m.resumed, false) AS resumed,
+               coalesce(m.interrupted, false) AS interrupted,
+               count(*) FILTER (WHERE b.source IS DISTINCT FROM 'update') OVER (
+                   ORDER BY b.checkpoint_id DESC
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+               ) AS moves_after,
+               count(*) FILTER (WHERE b.source IS DISTINCT FROM 'update') OVER (
+                   ORDER BY b.checkpoint_id DESC ROWS UNBOUNDED PRECEDING
+               ) AS move_no
+        FROM branch b LEFT JOIN marks m USING (checkpoint_id)
+    ), bounds AS (
+        SELECT s.checkpoint_id, s.parent_checkpoint_id
+        FROM steps s
+        LEFT JOIN steps nxt
+          ON nxt.move_no = s.moves_after
+         AND nxt.source IS DISTINCT FROM 'update'
+        WHERE s.source = 'input'
+           OR s.resumed
+           OR (s.interrupted
+               AND nxt.source = 'loop'
+               AND nxt.run_id IS NOT NULL
+               AND nxt.run_id IS DISTINCT FROM s.run_id)
+    )
+    SELECT b.checkpoint_id, b.parent_checkpoint_id, m.metadata
+    FROM bounds b CROSS JOIN LATERAL (
+        SELECT c.metadata
+        FROM checkpoints c
+        WHERE c.thread_id = %(thread_id)s AND c.checkpoint_ns = %(ns)s
+          AND c.checkpoint_id = b.checkpoint_id
+        LIMIT 1
+    ) m
+    ORDER BY b.checkpoint_id
+"""
+
+# The boundary rule needs only which channels were written, which the walk
+# reads in SQL; the one payload a consumer reads is the interrupts.
+_BOUNDARY_INTERRUPTS_SQL = """
+    SELECT checkpoint_id, task_id, channel, type, blob
+    FROM checkpoint_writes
+    WHERE thread_id = %(thread_id)s AND checkpoint_ns = %(ns)s
+      AND checkpoint_id = ANY(%(ids)s) AND channel = '__interrupt__'
+    ORDER BY checkpoint_id, task_id, idx
+"""
 
 
-async def _list_skeletons_via_tables(
-    checkpointer: AsyncPostgresSaver, thread_id: str, checkpoint_ns: str = ""
-) -> list[CheckpointTuple]:
-    """Single-namespace checkpoint skeletons straight from the saver's tables.
+def _pick_tip(
+    thread_id: str,
+    requested: str | None,
+    requested_exists: bool,
+    newest: str | None,
+    strict: bool,
+) -> str | None:
+    if requested is not None and not requested_exists and strict:
+        raise CheckpointBranchTipNotFound(thread_id, requested)
+    return requested if requested_exists else newest
 
-    ``alist`` eagerly joins every checkpoint's channel blobs and writes —
-    hundreds of ms on long threads — while the walk only needs ids, parents,
-    metadata, and the two boundary write channels. Couples to the
-    checkpoint-postgres *schema* (stable, versioned) instead of its API; any
-    failure here falls back to the ``alist`` path.
+
+async def _walk_via_tables(
+    checkpointer: AsyncPostgresSaver,
+    thread_id: str,
+    requested: str | None,
+    strict: bool,
+    checkpoint_ns: str,
+) -> tuple[list[Boundary], str | None]:
+    """The branch walk run in Postgres.
+
+    A long thread has tens of thousands of checkpoints and a few hundred
+    turns, and decoding every row's metadata to keep the boundaries held the
+    event loop for seconds. Couples to the checkpoint-postgres *schema*
+    (stable, versioned) instead of its API.
     """
     conn_or_pool = checkpointer.conn
     if isinstance(conn_or_pool, AsyncConnectionPool):
@@ -175,137 +311,77 @@ async def _list_skeletons_via_tables(
     else:
         conn_ctx = nullcontext(conn_or_pool)  # caller-owned single connection
 
+    params = {"thread_id": thread_id, "ns": checkpoint_ns, "requested": requested}
+    write_rows: list[dict[str, Any]] = []
     async with conn_ctx as conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(
-            """SELECT checkpoint_id, parent_checkpoint_id, metadata
-               FROM checkpoints
-               WHERE thread_id = %s AND checkpoint_ns = %s
-               ORDER BY checkpoint_id DESC""",
-            (thread_id, checkpoint_ns),
+        await cur.execute(_BRANCH_TIP_SQL, params)
+        tip_row = await cur.fetchone()
+        tip_id = _pick_tip(
+            thread_id,
+            requested,
+            tip_row["requested"] is not None,
+            tip_row["newest"],
+            strict,
         )
+        if tip_id is None:
+            return [], None
+        await cur.execute(_BRANCH_BOUNDARIES_SQL, {**params, "tip": tip_id})
         rows = await cur.fetchall()
-        await cur.execute(
-            """SELECT checkpoint_id, task_id, channel, type, blob
-               FROM checkpoint_writes
-               WHERE thread_id = %s AND checkpoint_ns = %s
-                 AND channel = ANY(%s)
-               ORDER BY checkpoint_id, task_id, idx""",
-            (thread_id, checkpoint_ns, list(_BOUNDARY_WRITE_CHANNELS)),
-        )
-        write_rows = await cur.fetchall()
+        if rows:
+            await cur.execute(
+                _BOUNDARY_INTERRUPTS_SQL,
+                {**params, "ids": [r["checkpoint_id"] for r in rows]},
+            )
+            write_rows = await cur.fetchall()
 
     writes_by_cp: dict[str, list[tuple[str, str, Any]]] = defaultdict(list)
     for w in write_rows:
         value = checkpointer.serde.loads_typed((w["type"], bytes(w["blob"])))
         writes_by_cp[w["checkpoint_id"]].append((w["task_id"], w["channel"], value))
-
-    def _config(checkpoint_id: str) -> dict[str, Any]:
-        return {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint_id,
-            }
-        }
-
-    return [
-        CheckpointTuple(
-            config=_config(r["checkpoint_id"]),
-            checkpoint={},  # skeleton: channel values are never read by the walk
+    boundaries = [
+        Boundary(
+            checkpoint_id=r["checkpoint_id"],
+            parent_checkpoint_id=r["parent_checkpoint_id"],
             metadata=r["metadata"] or {},
-            parent_config=(
-                _config(r["parent_checkpoint_id"])
-                if r["parent_checkpoint_id"]
-                else None
-            ),
-            pending_writes=writes_by_cp.get(r["checkpoint_id"], []),
+            interrupts=interrupt_records(writes_by_cp.get(r["checkpoint_id"])),
         )
         for r in rows
     ]
+    return boundaries, tip_id
 
 
-async def _list_skeletons_via_alist(
-    checkpointer: Any, thread_id: str, checkpoint_ns: str = ""
-) -> list[CheckpointTuple]:
-    """Public-API fallback: full tuples via ``alist``, one namespace only."""
-    config = build_checkpoint_config(thread_id)
-    config["configurable"]["checkpoint_ns"] = checkpoint_ns
-    return [cp_tuple async for cp_tuple in checkpointer.alist(config)]
+def _boundary(cp: CheckpointTuple) -> Boundary:
+    parent = (cp.parent_config or {}).get("configurable") or {}
+    return Boundary(
+        checkpoint_id=cp.config["configurable"]["checkpoint_id"],
+        parent_checkpoint_id=parent.get("checkpoint_id"),
+        metadata=dict(cp.metadata or {}),
+        interrupts=interrupt_records(cp.pending_writes),
+    )
 
 
-async def _list_checkpoint_skeletons(
-    checkpointer: Any, thread_id: str, checkpoint_ns: str = ""
-) -> list[CheckpointTuple]:
-    """Newest-first single-namespace checkpoints, as walk-sufficient skeletons.
-
-    Skeletons carry config/metadata/parent_config plus pending writes for the
-    boundary channels only — no channel values. Fast path reads the postgres
-    tables directly; anything else (in-memory savers, schema drift) uses the
-    public ``alist`` API, so the walk survives either the schema or the API
-    changing — just not both at once.
-    """
-    global _warned_skeleton_fallback
-    if isinstance(checkpointer, AsyncPostgresSaver):
-        try:
-            return await _list_skeletons_via_tables(
-                checkpointer, thread_id, checkpoint_ns
-            )
-        except Exception:
-            if not _warned_skeleton_fallback:
-                _warned_skeleton_fallback = True
-                logger.warning(
-                    "[CHECKPOINT] Table-level checkpoint listing failed; "
-                    "falling back to alist (slow). Check checkpoint-postgres "
-                    "schema compatibility.",
-                    exc_info=True,
-                )
-    return await _list_skeletons_via_alist(checkpointer, thread_id, checkpoint_ns)
-
-
-async def walk_current_branch_boundaries(
+async def _walk_via_alist(
     checkpointer: Any,
     thread_id: str,
-    branch_tip_checkpoint_id: str | None = None,
-    *,
-    strict_branch_tip: bool = False,
-    checkpoint_ns: str = "",
-) -> tuple[list[Any], str | None]:
-    """Chronological turn-boundary checkpoints on the thread's current branch.
-
-    Edit/regenerate fork the checkpoint graph, so only ancestors of the branch
-    tip count as turns: the tip is ``branch_tip_checkpoint_id`` when present and
-    on the graph, else the newest checkpoint. With ``strict_branch_tip=True``, a
-    supplied-but-missing tip raises ``CheckpointBranchTipNotFound`` instead of
-    silently reading the newest (possibly uncommitted) state. Canonical branch
-    walk shared by ``checkpoint_handler.get_thread_turns`` (turn CRUD) and the
-    history reader.
-
-    Returns ``(boundaries, tip_id)`` — boundaries oldest-first as skeleton
-    ``CheckpointTuple``s (no channel values; pending writes limited to the
-    boundary channels); ``tip_id`` is None only when the thread has none.
-    """
-    checkpoints = await _list_checkpoint_skeletons(
-        checkpointer, thread_id, checkpoint_ns
+    requested: str | None,
+    strict: bool,
+    checkpoint_ns: str,
+) -> tuple[list[Boundary], str | None]:
+    """The walk for any other saver: every checkpoint via ``alist``, walked
+    in process."""
+    config = build_checkpoint_config(thread_id)
+    config["configurable"]["checkpoint_ns"] = checkpoint_ns
+    checkpoints = [cp_tuple async for cp_tuple in checkpointer.alist(config)]
+    cp_by_id = {cp.config["configurable"]["checkpoint_id"]: cp for cp in checkpoints}
+    tip_id = _pick_tip(
+        thread_id,
+        requested,
+        requested in cp_by_id,
+        checkpoints[0].config["configurable"]["checkpoint_id"] if checkpoints else None,
+        strict,
     )
-    if not checkpoints:
-        if strict_branch_tip and branch_tip_checkpoint_id is not None:
-            raise CheckpointBranchTipNotFound(thread_id, branch_tip_checkpoint_id)
+    if tip_id is None:
         return [], None
-
-    cp_by_id = {
-        cp.config["configurable"]["checkpoint_id"]: cp for cp in checkpoints
-    }
-    if branch_tip_checkpoint_id is not None:
-        tip = cp_by_id.get(branch_tip_checkpoint_id)
-        if tip is None:
-            if strict_branch_tip:
-                raise CheckpointBranchTipNotFound(
-                    thread_id, branch_tip_checkpoint_id
-                )
-            tip = checkpoints[0]
-    else:
-        tip = checkpoints[0]  # alist is newest-first
-    tip_id: str = tip.config["configurable"]["checkpoint_id"]
 
     current_branch: set[str] = set()
     cursor: str | None = tip_id
@@ -316,12 +392,86 @@ async def walk_current_branch_boundaries(
 
     branch = [
         cp
-        for cp in reversed(checkpoints)
+        for cp in reversed(checkpoints)  # alist is newest-first
         if cp.config["configurable"]["checkpoint_id"] in current_branch
     ]
     boundaries = [
-        cp
+        _boundary(cp)
         for i, cp in enumerate(branch)
         if is_turn_boundary(cp) or _resumed_by_later_run(branch, i)
     ]
     return boundaries, tip_id
+
+
+async def walk_current_branch_boundaries(
+    checkpointer: Any,
+    thread_id: str,
+    branch_tip_checkpoint_id: str | None = None,
+    *,
+    strict_branch_tip: bool = False,
+    checkpoint_ns: str = "",
+) -> tuple[list[Boundary], str | None]:
+    """Chronological turn boundaries on the thread's current branch.
+
+    Edit/regenerate fork the checkpoint graph, so only ancestors of the branch
+    tip count as turns: the tip is ``branch_tip_checkpoint_id`` when present and
+    on the graph, else the newest checkpoint. With ``strict_branch_tip=True``, a
+    supplied-but-missing tip raises ``CheckpointBranchTipNotFound`` instead of
+    silently reading the newest (possibly uncommitted) state. Returns
+    ``(boundaries, tip_id)``, boundaries oldest-first; ``tip_id`` is None only
+    when the thread has none.
+
+    A Postgres saver walks in SQL only, and an error there raises: the
+    in-process walk decodes every checkpoint of the thread on the event loop,
+    the stall the SQL walk exists to remove, so it is no fallback.
+    """
+    walk = (
+        _walk_via_tables
+        if isinstance(checkpointer, AsyncPostgresSaver)
+        else _walk_via_alist
+    )
+    return await walk(
+        checkpointer,
+        thread_id,
+        branch_tip_checkpoint_id,
+        strict_branch_tip,
+        checkpoint_ns,
+    )
+
+
+async def update_at_commit(
+    graph: Any,
+    thread_id: str,
+    built_on: str | None,
+    values: dict[str, Any],
+    *,
+    timeout: float | None = None,
+) -> bool:
+    """Write ``values`` onto the thread's checkpoint ``built_on``, and move the
+    thread's commit pointer onto the write when it still points there. True
+    when the pointer moved; ``timeout`` bounds the write alone.
+
+    ``built_on`` is both the write's anchor and the CAS guard. Unanchored, a
+    turn that starts on another worker between the caller's read and the
+    write would re-parent the write onto that turn's uncommitted checkpoint
+    while the CAS still passed, publishing partial state as the commit
+    pointer; so with no checkpoint to build on, nothing is written.
+    """
+    if not built_on:
+        return False
+    from src.server.database.conversation import threads_write
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "checkpoint_ns": "",
+            "checkpoint_id": built_on,
+        }
+    }
+    new_config = await asyncio.wait_for(graph.aupdate_state(config, values), timeout)
+    new_id = ((new_config or {}).get("configurable") or {}).get("checkpoint_id")
+    if not new_id:
+        return False
+    return await threads_write.advance_thread_checkpoint_id(
+        thread_id, from_checkpoint_id=built_on, to_checkpoint_id=new_id
+    )

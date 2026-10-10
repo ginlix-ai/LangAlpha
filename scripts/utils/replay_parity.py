@@ -1,25 +1,41 @@
 """Replay parity gate: checkpoint-sourced vs sse-sourced, without the merge layer.
 
-Cutover step 3 of single-source replay: before sse_events writes stop, every
-turn must replay UI-equivalently from checkpoints + tables alone. This script
-runs ``build_checkpoint_replay_items`` with the stored-event merge disabled
-(``_stored_events`` patched to empty) against ``build_sse_replay_items`` for a
-thread corpus and reports per-turn diffs — each diff is a turn still dependent
-on the dual-write (legacy payloads, unresolved images, historical event shapes).
+Before sse_events writes stop, every turn must replay UI-equivalently from
+checkpoints, tables and run facts alone. ``--compare`` picks the two sides:
+
+- ``sse`` (default): ``build_checkpoint_replay_items`` with the stored-event
+  merge disabled (``_stored_events`` patched to empty) against
+  ``build_sse_replay_items``. Each diff is a turn still dependent on the
+  dual-write (legacy payloads, unresolved images, historical event shapes),
+  except on a stopped or failed turn whose checkpoints hold the start of what
+  it streamed: it is expected to differ by the output it never committed, and
+  is reported apart.
+- ``sse-merged``: the same with the merge on, a sanity check.
+- ``facts``: each turn replayed twice with the merge on, once with its replay
+  facts and once with them hidden, reporting where the facts do not
+  reproduce what the stored events gave. The facts are the run facts and a
+  backfilled row's legacy facts, so after the backfill this checks that each
+  row's legacy facts replay as its stored events do.
+
+Every replay runs with ``cache=False``: turns and runs are cut from their
+checkpoints, stored slices and lines are neither read nor written, so a
+stale or wrong cache row cannot hide a diff, and the script writes nothing.
 
 Run inside the backend container (needs DB env + venv):
 
     /app/.venv/bin/python scripts/utils/replay_parity.py --all
     /app/.venv/bin/python scripts/utils/replay_parity.py --thread <id> [--verbose]
-    /app/.venv/bin/python scripts/utils/replay_parity.py --all --merge   # sanity: with merge on
+    /app/.venv/bin/python scripts/utils/replay_parity.py --all --compare sse-merged
+    /app/.venv/bin/python scripts/utils/replay_parity.py --all --compare facts
 
-Exit code 0 = all compared turns equivalent; 1 = diffs found.
+Exit code 0 = no unexpected diffs; 1 = diffs found.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import os
 import sys
@@ -29,6 +45,8 @@ from typing import Any
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src")))
 
+from scripts.utils._thread_job import app_infra  # noqa: E402
+
 # Event types that never replay (mirrors the ledger's live-only set).
 _IGNORED = {
     "metadata",
@@ -36,7 +54,6 @@ _IGNORED = {
     "warning",
     "retry",
     "steering_accepted",
-    "steering_returned",
     "model_retry",
     "model_fallback",  # ckpt-projected from the ui channel on new turns, but
     # legacy checkpoints predate the ui record → corpus-wide compare is noise
@@ -48,6 +65,29 @@ _IGNORED = {
 
 # Fields that legitimately differ between the sources.
 _VOLATILE_KEYS = {"timestamp", "record_id", "artifact_id", "threshold", "response_id"}
+
+# A turn that ended here may hold streamed output its checkpoints never
+# committed, which replay no longer shows.
+_UNCOMMITTED_STATUSES = {"cancelled", "error", "interrupted"}
+
+
+def _streamed_past_commit(key: str, committed: Any, streamed: Any) -> bool:
+    """Whether a stopped turn's committed ``key`` is the start of what it
+    streamed, so the two differ only by output after its last checkpoint. A
+    change to what the checkpoints did commit, or to any other key, is a diff
+    like any other."""
+    if key == "tool_calls":
+        return (committed or set()) <= (streamed or set())
+    committed, streamed = committed or {}, streamed or {}
+    if key == "text":
+        return all(streamed.get(k, "").startswith(v) for k, v in committed.items())
+    if key == "signals":
+        return all(v <= streamed.get(k, 0) for k, v in committed.items())
+    if key == "elapsed_ms":
+        return all(streamed.get(k, [])[: len(v)] == v for k, v in committed.items())
+    if key == "results":
+        return all(streamed.get(k) == v for k, v in committed.items())
+    return False
 
 
 def _lane(data: dict) -> str:
@@ -76,6 +116,9 @@ def _normal_form(items: list[dict]) -> dict[Any, dict]:
             "user": [],
             "text": defaultdict(str),
             "signals": defaultdict(int),
+            "elapsed_ms": defaultdict(list),
+            "widgets": [],
+            "steering_returned": [],
             "tool_calls": set(),
             "results": {},
             "artifacts": [],
@@ -98,6 +141,8 @@ def _normal_form(items: list[dict]) -> dict[Any, dict]:
             content_type = data.get("content_type")
             if content_type == "reasoning_signal":
                 turn["signals"][_lane(data)] += 1
+                if data.get("elapsed_ms") is not None:
+                    turn["elapsed_ms"][_lane(data)].append(data.get("elapsed_ms"))
             elif content_type in ("text", "reasoning"):
                 turn["text"][(_lane(data), content_type)] += data.get("content") or ""
         elif event == "tool_calls":
@@ -110,6 +155,10 @@ def _normal_form(items: list[dict]) -> dict[Any, dict]:
             )
         elif event == "artifact":
             payload = data.get("payload") or {}
+            if data.get("artifact_type") == "html_widget":
+                turn["widgets"].append(
+                    (payload.get("title"), _canon(payload.get("data")))
+                )
             turn["artifacts"].append(
                 (
                     data.get("artifact_type"),
@@ -144,6 +193,15 @@ def _normal_form(items: list[dict]) -> dict[Any, dict]:
                     data.get("tool_call_id"),
                 )
             )
+        elif event == "steering_returned":
+            turn[event].append(
+                (
+                    _lane(data),
+                    data.get("input_id"),
+                    data.get("reason"),
+                    data.get("content"),
+                )
+            )
         elif event in ("steering_delivered", "interrupt", "error", "credit_usage"):
             turn[event].append(_strip(data))
     return dict(turns)
@@ -153,11 +211,11 @@ def _diff_turn(a: dict, b: dict) -> list[str]:
     reasons = []
     for key in a.keys() | b.keys():
         va, vb = a.get(key), b.get(key)
-        if key in ("text", "signals"):
+        if key in ("text", "signals", "elapsed_ms"):
             va, vb = dict(va or {}), dict(vb or {})
         if key == "artifacts":
             va, vb = sorted(map(_canon, va or [])), sorted(map(_canon, vb or []))
-        if key == "context":
+        if key in ("context", "widgets", "steering_returned"):
             va, vb = sorted(map(_canon, va or [])), sorted(map(_canon, vb or []))
         if key in ("steering_delivered", "interrupt", "error", "credit_usage"):
             va = sorted(map(_canon, va or []))
@@ -165,28 +223,6 @@ def _diff_turn(a: dict, b: dict) -> list[str]:
         if va != vb:
             reasons.append(key)
     return reasons
-
-
-async def _open_infra():
-    from src.server.app import setup
-    from src.server.database import pool as db_pool
-    from src.server.utils.checkpointer import (
-        get_checkpointer,
-        open_checkpointer_pool,
-    )
-
-    pool = db_pool.get_or_create_pool()
-    await pool.open()
-    checkpointer = get_checkpointer(
-        "postgres",
-        db_host=os.getenv("DB_HOST", "localhost"),
-        db_port=int(os.getenv("DB_PORT", "5432")),
-        db_name=os.getenv("DB_NAME", "postgres"),
-        db_user=os.getenv("DB_USER", "postgres"),
-        db_password=os.getenv("DB_PASSWORD", "postgres"),
-    )
-    await open_checkpointer_pool(checkpointer)
-    setup.checkpointer = checkpointer
 
 
 async def _thread_ids(only: list[str]) -> list[str]:
@@ -203,78 +239,130 @@ async def _thread_ids(only: list[str]) -> list[str]:
         return [str(r[0]) for r in await cur.fetchall()]
 
 
-async def _compare_thread(thread_id: str, merge: bool, verbose: bool) -> tuple[int, int]:
-    """Returns (turns_compared, turns_diff)."""
-    from src.server.database.conversation.replay_rows import get_replay_thread_data
+async def _checkpoint_items(rows, tip, *, merge=True, facts=True):
+    """One uncached checkpoint replay of the whole thread, with the
+    stored-event merge and the run facts each on or off. A row's legacy facts
+    are the merge's output, so they go with either."""
     from src.server.services.history import replay
+    from src.server.services.history.replay import facts as replay_facts
+    from src.server.services.history.replay import legacy
 
-    _, thread, queries, responses, usages, provenance = await get_replay_thread_data(
-        thread_id
-    )
-    if not thread or thread.get("latest_checkpoint_id") is None:
-        print(f"{thread_id}  SKIP (no commit pointer)")
-        return 0, 0
-    responses_by_turn = {
-        r.get("turn_index"): r for r in responses if isinstance(r, dict)
-    }
-
-    sse_items = replay.build_sse_replay_items(thread_id, queries, responses_by_turn)
-
-    original_stored_events = replay.stored_merge._stored_events
+    saved_events = replay.stored_merge._stored_events
+    saved_durations = replay_facts.reasoning_durations
+    saved_legacy = legacy.facts_of
     if not merge:
         replay.stored_merge._stored_events = lambda response: []
+    if not merge or not facts:
+        legacy.facts_of = lambda response: None
+    if not facts:
+        replay_facts.reasoning_durations = lambda response: None
+        rows = dataclasses.replace(rows, run_facts=[])
     try:
-        checkpoint_items = await replay.build_checkpoint_replay_items(
-            thread_id,
-            queries,
-            responses_by_turn,
-            branch_tip_checkpoint_id=thread.get("latest_checkpoint_id"),
-            usages=usages,
-            provenance=provenance,
-        )
+        return await replay.build_checkpoint_replay_items(rows, tip, cache=False)
+    finally:
+        replay.stored_merge._stored_events = saved_events
+        replay_facts.reasoning_durations = saved_durations
+        legacy.facts_of = saved_legacy
+
+
+async def _compare_thread(
+    thread_id: str, compare: str, verbose: bool
+) -> tuple[int, int, int]:
+    """Returns (turns_compared, turns_diff, turns_expected_diff)."""
+    from src.server.services.history import replay
+
+    loaded = await replay.load_thread_inputs(thread_id)
+    if loaded is None:
+        print(f"{thread_id}  SKIP (no commit pointer)")
+        return 0, 0, 0
+    rows, tip = loaded
+    # Rows arrive without their stored events; both sides need them here,
+    # including the rows whose legacy facts stand in for them.
+    responses_by_turn = await replay.with_stored_events(
+        rows.responses_by_turn, list(rows.responses_by_turn), verbatim=True
+    )
+    rows = dataclasses.replace(rows, responses_by_turn=responses_by_turn)
+
+    try:
+        if compare == "facts":
+            left = await _checkpoint_items(rows, tip)
+            right = await _checkpoint_items(rows, tip, facts=False)
+            labels = ("facts", "stored")
+        else:
+            left = await _checkpoint_items(rows, tip, merge=compare == "sse-merged")
+            right = replay.build_sse_replay_items(
+                thread_id, rows.queries, responses_by_turn
+            )
+            labels = ("ckpt", "sse")
     except replay.CheckpointReplayUnavailable as e:
         print(f"{thread_id}  FALLBACK ({e})")
-        return 0, 0
-    finally:
-        replay.stored_merge._stored_events = original_stored_events
+        return 0, 0, 0
 
-    ckpt, sse = _normal_form(checkpoint_items), _normal_form(sse_items)
-    diffs = 0
-    for turn_index in sorted(ckpt.keys() | sse.keys(), key=lambda x: (x is None, x)):
-        reasons = _diff_turn(ckpt.get(turn_index, {}), sse.get(turn_index, {}))
-        if reasons:
+    a, b = _normal_form(left), _normal_form(right)
+    diffs = expected = 0
+    for turn_index in sorted(a.keys() | b.keys(), key=lambda x: (x is None, x)):
+        ckpt, sse = a.get(turn_index, {}), b.get(turn_index, {})
+        reasons = _diff_turn(ckpt, sse)
+        if not reasons:
+            continue
+        status = (responses_by_turn.get(turn_index) or {}).get("status")
+        if (
+            compare != "facts"
+            and status in _UNCOMMITTED_STATUSES
+            and all(
+                _streamed_past_commit(key, ckpt.get(key), sse.get(key))
+                for key in reasons
+            )
+        ):
+            expected += 1
+            verdict = f"EXPECTED ({status}, uncommitted output)"
+        else:
             diffs += 1
-            print(f"{thread_id}  turn {turn_index}  DIFF: {', '.join(sorted(reasons))}")
-            if verbose:
-                for key in reasons:
-                    print(f"    ckpt {key}: {_canon(ckpt.get(turn_index, {}).get(key))[:400]}")
-                    print(f"    sse  {key}: {_canon(sse.get(turn_index, {}).get(key))[:400]}")
-    total = len(ckpt.keys() | sse.keys())
-    if not diffs:
+            verdict = "DIFF"
+        print(f"{thread_id}  turn {turn_index}  {verdict}: {', '.join(sorted(reasons))}")
+        if verbose:
+            for key in reasons:
+                print(f"    {labels[0]:<6} {key}: {_canon(a.get(turn_index, {}).get(key))[:400]}")
+                print(f"    {labels[1]:<6} {key}: {_canon(b.get(turn_index, {}).get(key))[:400]}")
+    total = len(a.keys() | b.keys())
+    if not diffs and not expected:
         print(f"{thread_id}  OK ({total} turns)")
-    return total, diffs
+    return total, diffs, expected
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--thread", action="append", default=[], help="thread id (repeatable)")
     parser.add_argument("--all", action="store_true", help="all threads with a commit pointer")
-    parser.add_argument("--merge", action="store_true", help="keep the stored-event merge on")
+    parser.add_argument(
+        "--compare",
+        choices=("sse", "sse-merged", "facts"),
+        default="sse",
+        help="sse: unmerged replay vs stored events; sse-merged: merged replay "
+        "vs stored events; facts: replay with replay facts vs with them hidden",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     if not args.thread and not args.all:
         parser.error("pass --thread <id> or --all")
+    async with app_infra(redis=False, agent_config=False):
+        return await _run(args)
 
-    await _open_infra()
-    total_turns = total_diffs = threads = 0
+
+async def _run(args: argparse.Namespace) -> int:
+    total_turns = total_diffs = total_expected = threads = 0
     for thread_id in await _thread_ids(args.thread):
-        compared, diffs = await _compare_thread(thread_id, args.merge, args.verbose)
+        compared, diffs, expected = await _compare_thread(
+            thread_id, args.compare, args.verbose
+        )
         threads += 1
         total_turns += compared
         total_diffs += diffs
+        total_expected += expected
     print(
         f"\n{threads} threads, {total_turns} turns compared, "
-        f"{total_diffs} turn diffs ({'merge ON' if args.merge else 'merge OFF'})"
+        f"{total_diffs} turn diffs, {total_expected} expected on stopped or "
+        f"failed turns (--compare {args.compare})"
     )
     return 1 if total_diffs else 0
 

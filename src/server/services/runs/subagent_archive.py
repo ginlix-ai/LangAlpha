@@ -161,12 +161,8 @@ async def persist_collected_events(
     """
     if sandbox:
         try:
-            from src.server.services.persistence.image_capture import (
-                capture_and_rewrite_images,
-            )
-
-            await capture_and_rewrite_images(
-                events, sandbox, thread_id=thread_id, workspace_id=workspace_id,
+            await _capture_lane_images(
+                events, sandbox, response_id, thread_id, workspace_id
             )
         except Exception:
             logger.warning(
@@ -199,6 +195,44 @@ async def persist_collected_events(
                 exc_info=True,
             )
     return False
+
+
+async def _capture_lane_images(
+    events: list[dict],
+    sandbox,
+    response_id: str,
+    thread_id: str,
+    workspace_id: str,
+) -> None:
+    """Hook B: capture the images the lanes reference and rewrite them in the
+    events, recording each lane's path-to-URL map on the runs the turn
+    launched for it.
+
+    Not on the thread's checkpoint, as the main turn's capture is: these
+    lanes settle after their turn did, and a record appended now would land
+    on whatever turn is newest, after the stored projection of this one.
+    """
+    from src.server.services.persistence.image_capture import (
+        capture_images,
+        sandbox_image_paths,
+    )
+    from src.server.services.subagent_run_coordinator import record_lane_images
+
+    by_task: dict[str, list[dict]] = {}
+    for event in events:
+        data = event.get("data")
+        agent = data.get("agent") if isinstance(data, dict) else None
+        if isinstance(agent, str) and agent.startswith("task:"):
+            by_task.setdefault(agent.removeprefix("task:"), []).append(event)
+    # Read before the capture: it rewrites the paths it resolves.
+    paths = {task_id: sandbox_image_paths(lane) for task_id, lane in by_task.items()}
+    path_to_url = await capture_images(
+        events, sandbox, thread_id=thread_id, workspace_id=workspace_id
+    )
+    for task_id, lane_paths in paths.items():
+        images = {p: path_to_url[p] for p in lane_paths if p in path_to_url}
+        if images:
+            await record_lane_images(thread_id, response_id, task_id, images)
 
 
 @dataclass

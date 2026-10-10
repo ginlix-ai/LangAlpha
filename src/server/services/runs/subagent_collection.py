@@ -197,9 +197,10 @@ def _owned_pending(tasks: list, response_id: str) -> dict[asyncio.Task, Any]:
 
 
 async def _replay_into(buf: ArchiveBuffer, task) -> None:
-    buf.withheld |= not await replay_owned_task_events(
+    replayed = await replay_owned_task_events(
         buf.thread_id, task, buf.response_id, buf.unwritten
     )
+    buf.withheld |= not replayed
 
 
 async def _replay_settled(tasks: list, pending: dict, buf: ArchiveBuffer) -> None:
@@ -555,8 +556,7 @@ async def collect_orphaned_subagent_results(
     try:
         # ``unwritten``: the turn collector's events that have not landed yet.
         buf = ArchiveBuffer(
-            response_id, thread_id, workspace_id, user_id, sandbox,
-            unwritten=unwritten,
+            response_id, thread_id, workspace_id, user_id, sandbox, unwritten
         )
 
         _settle_finished(tasks, response_id)

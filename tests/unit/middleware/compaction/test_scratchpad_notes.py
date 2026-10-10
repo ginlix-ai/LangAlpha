@@ -43,7 +43,7 @@ from ptc_agent.agent.middleware.runtime_context.turn import (
     TURN_ROW_KIND,
 )
 from ptc_agent.agent.prompts import init_loader
-from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.core.paths import WorkspaceLayout
 
 THREAD = "a1b2c3d4-0000-4000-8000-000000000000"
@@ -192,6 +192,7 @@ async def _compact(backend):
         transcript=None,
         fallback=None,
         notes_dir=NOTES,
+        window=Window(),
     )
 
 

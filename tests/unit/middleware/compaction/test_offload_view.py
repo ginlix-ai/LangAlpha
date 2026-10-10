@@ -24,7 +24,7 @@ from ptc_agent.agent.middleware.compaction.offloading import (
     record_offloads,
 )
 from ptc_agent.agent.middleware.compaction.types import OffloadSettings
-from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
 from ptc_agent.config.agent import CompactionConfig
 
@@ -55,7 +55,7 @@ class _Mount:
         self.saves = saves
         self.saved: list[int] = []
 
-    async def save_transcript(self, target, messages):
+    async def save_transcript(self, target, messages, *, window):
         self.saved.append(len(messages))
         return self.saves
 
@@ -286,7 +286,7 @@ def test_legacy_merged_id_sets_only_hit_their_own_tool():
     # Older /offload merged arg and read ids into both sets.
     ids = {"w0", "r0"}
     msgs = _history(1)
-    turns = TranscriptTurns.of(TranscriptTarget(THREAD), msgs)
+    turns = TranscriptTurns.of(TranscriptTarget(THREAD), msgs, window=Window())
     out = {m.id: m for m in apply_recorded_offloads(msgs, ids, ids, 200, turns)}
 
     assert out["tw0"].content == "wrote"

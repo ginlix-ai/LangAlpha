@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Annotated, NotRequired
+from typing import Annotated, Any, NotRequired
 
 from langchain_core.messages import MessageLikeRepresentation
 from langchain_core.messages.human import HumanMessage
@@ -12,6 +12,7 @@ from typing_extensions import TypedDict
 
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 
+from ptc_agent.agent.transcript.identity import WindowState
 from ptc_agent.config.agent import CompactionConfig
 from ptc_agent.core.paths import AGENT_HISTORY_DIRS, SandboxLayout
 
@@ -84,8 +85,8 @@ class CompactionState(AgentState):
 
     Extends AgentState with private fields for tracking compaction events,
     offloaded tool call IDs, and when the model last answered (epoch seconds),
-    which gates Tier 1. The PrivateStateAttr annotation hides them from
-    input/output schemas.
+    which gates Tier 1, and what the window trimmed (``Window``). The
+    PrivateStateAttr annotation hides them from input/output schemas.
 
     Note: The ``_summarization_event`` field name is preserved because values are
     stored under that key in the LangGraph checkpointer — renaming it would
@@ -100,6 +101,10 @@ class CompactionState(AgentState):
     _cached_input_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _cached_output_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _last_model_response_at: Annotated[NotRequired[float], PrivateStateAttr]
+    _window: Annotated[NotRequired[WindowState], PrivateStateAttr]
+    #: The summary anchor and cut the server last refused a trim at, so the
+    #: next turns do not ask again until a summary or a trim moves them.
+    _window_refused: Annotated[NotRequired[dict[str, Any]], PrivateStateAttr]
 
 
 # Tool names whose arguments carry large payloads (file contents, code strings)

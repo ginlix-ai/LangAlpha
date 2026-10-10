@@ -1,12 +1,14 @@
 """conversation_responses: SSE-event patches, provenance sync, and per-thread readers."""
 
 import logging
+from collections.abc import Collection
 from typing import Optional, List, Dict, Any, Tuple
 
 from psycopg.rows import dict_row
 
 from src.server.database import pool
 from src.server.database.conversation import _sql
+from src.server.database.replay_facts import DROP_LEGACY_SQL
 from src.server.utils.pg_sanitize import SafeJson, safe_jsonb_array
 
 logger = logging.getLogger(__name__)
@@ -30,12 +32,14 @@ async def _sync_provenance_for_response(
     sse_events: Optional[Any],
     strict: bool = False,
     appended_only: bool = True,
+    lanes: Collection[str],
 ) -> None:
     """(Re)derive provenance_records from sse_events on the caller's connection.
 
     Imported lazily to avoid a circular import (provenance imports this module).
     Best-effort by default; ``strict=True`` re-raises so a transaction-bound
     caller (the finalize CAS) aborts instead of committing over a poisoned txn.
+    ``lanes`` scopes the rewrite to those agents' rows.
     """
     # Most persists carry no provenance (a turn with no external data access, or
     # a non-provenance event drain). A write that only appends cannot have
@@ -54,6 +58,7 @@ async def _sync_provenance_for_response(
         turn_index=turn_index,
         sse_events=sse_events,
         strict=strict,
+        lanes=lanes,
     )
 
 
@@ -76,19 +81,17 @@ def _event_agents(events: List[Dict[str, Any]]) -> frozenset[str]:
 # One statement, so the row lock it takes orders it against append_sse_event:
 # under READ COMMITTED a waiting UPDATE re-reads the newest row. The strip is
 # one jsonpath filter over the stored array, so the kept rows are never
-# unnested or sorted, and the blob never leaves Postgres: only its provenance
-# entries come back, read from the written value, for the sync that follows.
-_REPLACE_AGENT_EVENTS_SQL = """
+# unnested or sorted, and the blob never leaves Postgres.
+_REPLACE_AGENT_EVENTS_SQL = f"""
     UPDATE conversation_responses
     SET sse_events = jsonb_path_query_array(
             COALESCE(sse_events, '[]'::jsonb),
             '$[*] ? (!exists(@.data.agent ? (@ == $drop[*])))',
             jsonb_build_object('drop', %(drop)s::text[])
-        ) || %(append)s::jsonb
+        ) || %(append)s::jsonb,
+        {DROP_LEGACY_SQL}
     WHERE conversation_response_id = %(id)s
-    RETURNING conversation_thread_id, turn_index,
-        jsonb_path_query_array(sse_events, '$[*] ? (@.event == "provenance")')
-            AS provenance
+    RETURNING conversation_thread_id, turn_index
 """
 
 
@@ -104,6 +107,7 @@ async def replace_agent_events(
     when the row is missing.
     """
     appended = await safe_jsonb_array(events)
+    agents = _event_agents(events)
     async with pool.get_db_connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -111,7 +115,7 @@ async def replace_agent_events(
                     _REPLACE_AGENT_EVENTS_SQL,
                     {
                         "id": conversation_response_id,
-                        "drop": sorted(_event_agents(events)),
+                        "drop": sorted(agents),
                         "append": appended,
                     },
                 )
@@ -122,16 +126,18 @@ async def replace_agent_events(
                     f"response_id={conversation_response_id}"
                 )
                 return False
-            # Re-derive provenance_records inside the same transaction: this
-            # is the choke point for the background subagent drain, which
-            # bypasses the turn-finalize path.
+            # The batch is the whole record of every lane it names, so those
+            # lanes' provenance is rewritten from it in the same transaction,
+            # and a lane it empties loses its rows with them. Other lanes keep
+            # theirs: the main lane is written when the run settles.
             await _sync_provenance_for_response(
                 conn,
                 conversation_response_id=conversation_response_id,
                 conversation_thread_id=str(urow["conversation_thread_id"]),
                 turn_index=urow["turn_index"],
-                sse_events=urow["provenance"],
+                sse_events=events,
                 appended_only=False,
+                lanes=agents,
             )
             logger.info(
                 f"[conversation_db] replace_agent_events response_id="
@@ -154,9 +160,10 @@ async def append_sse_event(
     (the read-modify-write it replaces is not). Returns True when a row was
     updated, False when the thread has no response row yet.
     """
-    sql = """
+    sql = f"""
         UPDATE conversation_responses
-        SET sse_events = COALESCE(sse_events, '[]'::jsonb) || %s::jsonb
+        SET sse_events = COALESCE(sse_events, '[]'::jsonb) || %s::jsonb,
+            {DROP_LEGACY_SQL}
         WHERE conversation_response_id = (
             SELECT conversation_response_id
             FROM conversation_responses
@@ -241,13 +248,14 @@ async def get_recent_responses_for_thread(
     Selects the newest ``limit`` settled turns (latest attempt each) via
     ``turn_index DESC`` (so a window keeps the latest turns, not the oldest)
     and reverses them to chronological order. ``limit=None`` returns every
-    turn.
+    turn. Without ``sse_events`` and ``replay_facts``, which grow with the
+    turn: ``get_replay_responses`` reads a row whole when needed.
     """
     try:
         async with pool.get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 base = f"""
-                    SELECT {_sql._RESPONSE_COLUMNS}
+                    SELECT {_sql._LIGHT_RESPONSE_COLUMNS}
                     FROM ({_sql._SETTLED_ATTEMPTS}) r
                     ORDER BY turn_index DESC
                 """
@@ -263,3 +271,4 @@ async def get_recent_responses_for_thread(
     except Exception as e:
         logger.error(f"Error getting recent responses for thread: {e}")
         raise
+

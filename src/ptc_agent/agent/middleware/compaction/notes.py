@@ -131,15 +131,39 @@ class ThreadScratchpad:
         user's flag is off or there is no thread to name the folder after."""
         if not thread_id or not config.feature_enabled("scratchpad"):
             return None
-        short_id = thread_id[:8]
-        notes_subdir = WorkspaceLayout.scratchpad_subdir(
-            short_id, WorkspaceLayout.SCRATCHPAD_NOTE_DIR
-        )
+        notes_subdir = thread_notes_subdir(thread_id)
         return cls(
-            folder=posixpath.join(workspace, WorkspaceLayout.scratchpad_subdir(short_id)) + "/",
+            folder=posixpath.join(
+                workspace, WorkspaceLayout.scratchpad_subdir(thread_id[:8])
+            )
+            + "/",
             notes_dir=posixpath.join(workspace, notes_subdir),
             notes_subdir=notes_subdir,
         )
+
+
+def thread_notes_subdir(thread_id: str) -> str:
+    """The thread's notes folder, workspace-relative, whether or not the
+    scratchpad is on."""
+    return WorkspaceLayout.scratchpad_subdir(thread_id[:8], WorkspaceLayout.SCRATCHPAD_NOTE_DIR)
+
+
+def _notes_pattern(notes_subdir: str) -> re.Pattern[str]:
+    return re.compile(re.escape(notes_subdir) + r"(?![\w.-])")
+
+
+def notes_window_carry(thread_id: str) -> Callable[[Sequence[Any], Mapping[str, Any]], dict[str, Any]]:
+    """The window's carry (see ``compaction.window``) for the check-in's
+    count, which runs back to the last write to the notes however far back
+    that was. Kept with the scratchpad off too: it can be turned on later."""
+    folder = _notes_pattern(thread_notes_subdir(thread_id))
+
+    def carry(trimmed: Sequence[Any], state: Mapping[str, Any]) -> dict[str, Any]:
+        held = state.get("_notes_calls_trimmed") or 0
+        total = _calls_since_write(trimmed, folder, held)
+        return {"_notes_calls_trimmed": total} if total != held else {}
+
+    return carry
 
 
 async def anotes_pointer(
@@ -199,9 +223,12 @@ def _quotable(name: str) -> bool:
 class NotesDueState(AgentState):
     """``_notes_below_mark`` names the summary under which a call last
     measured the context below the reminder's mark, None before the first
-    summary: the reminder is asked only after one has."""
+    summary: the reminder is asked only after one has.
+    ``_notes_calls_trimmed`` is the tool calls since the last write to the
+    notes in the runs the window trimmed, for the check-in's count."""
 
     _notes_below_mark: Annotated[NotRequired[str | None], PrivateStateAttr]
+    _notes_calls_trimmed: Annotated[NotRequired[int], PrivateStateAttr]
 
 
 class NotesDueMiddleware(AgentMiddleware):
@@ -233,7 +260,7 @@ class NotesDueMiddleware(AgentMiddleware):
         # summarizes at, measured as it measures, so the two cannot drift.
         self._token_threshold = compaction._token_threshold
         self._counter = compaction._summarizer.counter
-        self._notes_folder = re.compile(re.escape(scratchpad.notes_subdir) + r"(?![\w.-])")
+        self._notes_folder = _notes_pattern(scratchpad.notes_subdir)
 
     def wrap_model_call(
         self,
@@ -306,7 +333,9 @@ class NotesDueMiddleware(AgentMiddleware):
         since_asked = _calls_since_notes(messages_in_view(state), folder, rows_end=True)
         if since_asked < NOTES_CHECK_IN_CALLS:
             return None
-        count = _calls_since_notes(state.get("messages") or (), folder, rows_end=False)
+        count = _calls_since_write(
+            state.get("messages") or (), folder, state.get("_notes_calls_trimmed") or 0
+        )
         return DurableUpdate(
             kind=NOTES_CHECK_IN_ROW_KIND,
             schema_version=UPDATE_SCHEMA_VERSION,
@@ -359,15 +388,30 @@ def _calls_since_notes(messages: Sequence[Any], folder: re.Pattern[str], *, rows
     check-in reports runs from the last write alone, since that is what its
     text claims.
     """
+    return _count_back(messages, folder, rows_end=rows_end)[0]
+
+
+def _calls_since_write(messages: Sequence[Any], folder: re.Pattern[str], carried: int) -> int:
+    """The tool calls after the latest write to the notes, ``carried`` being
+    the count the window kept for the messages it trimmed before these."""
+    count, wrote = _count_back(messages, folder, rows_end=False)
+    return count if wrote else count + carried
+
+
+def _count_back(
+    messages: Sequence[Any], folder: re.Pattern[str], *, rows_end: bool
+) -> tuple[int, bool]:
+    """``_calls_since_notes``, and whether a write (or row) ended the count
+    rather than the start of ``messages``."""
     count = 0
     for message in reversed(messages):
         if rows_end and _notes_row(message) is not None:
-            break
+            return count, True
         if isinstance(message, AIMessage):
             if any(_writes_notes(call, folder) for call in message.tool_calls):
-                break
+                return count, True
             count += len(message.tool_calls)
-    return count
+    return count, False
 
 
 def _writes_notes(call: Mapping[str, Any], folder: re.Pattern[str]) -> bool:

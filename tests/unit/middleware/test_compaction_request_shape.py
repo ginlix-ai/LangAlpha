@@ -193,14 +193,14 @@ class TestTranscriptMarkers:
 
     def test_turns_are_numbered_over_the_full_checkpoint(self):
         from ptc_agent.agent.middleware.compaction.utils import build_summary_message
-        from ptc_agent.agent.transcript import TranscriptTarget
+        from ptc_agent.agent.transcript import TranscriptTarget, Window
         from ptc_agent.agent.transcript.pointer import SummarySpan, TranscriptTurns
 
         raw = self._raw(5)
         target = TranscriptTarget("abcd1234-0000")
         prior = build_summary_message("turns 1-2", target, span=SummarySpan(1, 2))
         sent = [prior, *raw[4:8]]
-        turns = TranscriptTurns.of(target, raw)
+        turns = TranscriptTurns.of(target, raw, window=Window())
 
         system, human = _build_summary_request("sys", sent, turns)
 
@@ -218,12 +218,13 @@ class TestTranscriptMarkers:
         assert "(turn-0007.jsonl)" in system.content
 
     def test_a_subagent_cites_its_own_runs(self):
-        from ptc_agent.agent.transcript import TranscriptTarget
+        from ptc_agent.agent.transcript import TranscriptTarget, Window
         from ptc_agent.agent.transcript.pointer import TranscriptTurns
 
         raw = self._raw(2)
         target = TranscriptTarget.for_agent("abcd1234-0000", "task:t1")
-        system, human = _build_summary_request("sys", raw, TranscriptTurns.of(target, raw))
+        turns = TranscriptTurns.of(target, raw, window=Window())
+        system, human = _build_summary_request("sys", raw, turns)
 
         assert "[transcript: run-0002.jsonl]\nHuman: q2" in human.content
         assert "(run-0007.jsonl)" in system.content
@@ -524,7 +525,7 @@ class TestCompactWindowClose:
 
     async def _summarize(self, mw):
         messages = [HumanMessage(content="hi", id="h")]
-        request = SimpleNamespace(messages=messages, model=None)
+        request = SimpleNamespace(messages=messages, model=None, state={})
         return (await mw._compact(request, messages, 1, None)).summary
 
     @pytest.mark.asyncio
@@ -631,6 +632,7 @@ class TestServerSummaryAfterAnEarlierSummary:
 
         from ptc_agent.agent.middleware.compaction.summarize import server_summary
         from ptc_agent.agent.middleware.compaction.utils import build_summary_message
+        from ptc_agent.agent.transcript import Window
 
         raw = [
             HumanMessage(content="first request", id="h1"),
@@ -643,7 +645,9 @@ class TestServerSummaryAfterAnEarlierSummary:
         earlier = build_summary_message("First and second requests.", None)
         to_summarize = [earlier, raw[3], raw[4]]
 
-        text = server_summary(to_summarize, [raw[5]], raw_messages=raw, turns=None).text
+        text = server_summary(
+            to_summarize, [raw[5]], raw_messages=raw, turns=None, window=Window()
+        ).text
 
         second, third = text.split("## Turn 2\n", 1)[1].split("## Turn 3\n", 1)
         assert second.strip() == "Last reply: second reply"

@@ -20,7 +20,7 @@ from src.server.contracts.status import (
     RAW_TERMINAL_SNAPSHOT_STATUSES,
     TERMINAL_PUBLIC_STATUSES,
     TERMINAL_STATUSES,
-    classify_interrupt_reason,
+    classify_interrupts,
     is_live,
     is_terminal,
     to_public,
@@ -122,6 +122,10 @@ def _pause(*requests):
     return [Interrupt(value={"action_requests": list(requests)})]
 
 
+def _reason(interrupts):
+    return classify_interrupts(interrupts)[0]
+
+
 class TestInterruptReason:
     """The reason column is the run ledger's classification of a pause.
 
@@ -133,35 +137,35 @@ class TestInterruptReason:
     def test_credit_pause_keeps_its_exact_spelling(self):
         # Load-bearing, not cosmetic: the subagent resume query selects on this
         # literal, so a rename here silently strands stopped tasks.
-        assert classify_interrupt_reason(
+        assert _reason(
             _pause({"type": "credit_pause", "message": "out of credits"})
         ) == "credit_pause"
 
     def test_a_question_reads_as_a_question(self):
-        assert classify_interrupt_reason(
+        assert _reason(
             _pause({"type": "ask_user_question", "question": "which ticker?"})
         ) == "user_question"
 
     def test_a_proposal_is_an_approval(self):
         for kind in ("create_workspace", "delete_workspace", "delete_thread"):
-            assert classify_interrupt_reason(
+            assert _reason(
                 _pause({"type": kind, "workspace_id": "w-1"})
             ) == "approval_required"
 
     def test_an_unknown_action_generalizes_instead_of_guessing(self):
-        assert classify_interrupt_reason(
+        assert _reason(
             _pause({"type": "some_future_action", "detail": "x"})
         ) == "approval_required"
 
     def test_an_unreadable_payload_is_unclassified_rather_than_labelled(self):
-        assert classify_interrupt_reason(_pause({"detail": "no discriminator"})) is None
-        assert classify_interrupt_reason([Interrupt(value="not a dict")]) is None
-        assert classify_interrupt_reason([]) is None
+        assert _reason(_pause({"detail": "no discriminator"})) is None
+        assert _reason([Interrupt(value="not a dict")]) is None
+        assert _reason([]) is None
 
     def test_credit_pause_outranks_a_proposal_buffered_ahead_of_it(self):
         # A pause can carry several payloads; the one with behaviour attached
         # has to win regardless of the order they were buffered in.
-        assert classify_interrupt_reason(
+        assert _reason(
             _pause({"type": "create_workspace", "workspace_name": "scratch"})
             + _pause({"type": "credit_pause", "message": "out of credits"})
         ) == "credit_pause"
@@ -171,7 +175,7 @@ class TestInterruptReason:
         # payload, so precedence has to hold within a payload and not just
         # across them: reading only the leading request would make the answer
         # depend on which request happened to come first.
-        assert classify_interrupt_reason(
+        assert _reason(
             _pause({"name": "run_backtest", "args": {}},
                    {"type": "ask_user_question", "question": "which ticker?"})
         ) == "user_question"
@@ -203,7 +207,7 @@ class TestInterruptReasonVocabulary:
             {"type": "some_future_action"},
             {"name": "any_approved_tool", "args": {}},
         ):
-            assert classify_interrupt_reason(_pause(request)) in INTERRUPT_REASONS
+            assert _reason(_pause(request)) in INTERRUPT_REASONS
 
     def test_the_resume_query_binds_the_constant_not_a_literal(self):
         from src.server.database.runs import credit_ledger

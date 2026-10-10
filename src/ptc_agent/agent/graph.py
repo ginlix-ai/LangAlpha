@@ -6,6 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ptc_agent.agent.agent import AgentRole, PTCAgent
 from ptc_agent.agent.middleware.runtime_context import TurnContext
+from ptc_agent.agent.middleware.compaction.window import WindowCoverage
 from ptc_agent.agent.middleware.subagent_switch import SubagentSwitchReader
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.project_context import ProjectContext
@@ -199,6 +200,7 @@ async def build_ptc_graph_with_session(
     tool_view: Any | None = None,
     role: AgentRole = "analyst",
     subagent_switch: SubagentSwitchReader | None = None,
+    window_coverage: WindowCoverage | None = None,
 ) -> Any:
     """Build a BackgroundSubagentOrchestrator from a pre-acquired session (WorkspaceManager path).
 
@@ -215,7 +217,9 @@ async def build_ptc_graph_with_session(
     own fields belong to whichever project on the machine resolved last.
 
     ``subagent_switch`` reads the thread's subagent switch on every call; a
-    build without one leaves subagents as built.
+    build without one leaves subagents as built. ``window_coverage`` lets the
+    main agent trim its checkpoint to its window (see ``compaction.window``);
+    a build without one never trims.
     """
     mcp_registry = (
         tool_view.mcp_registry if tool_view is not None else session.mcp_registry
@@ -289,6 +293,7 @@ async def build_ptc_graph_with_session(
         role=role,
         harness_blocks=harness_blocks,
         subagent_switch=subagent_switch,
+        window_coverage=window_coverage,
     )
 
     logger.debug(

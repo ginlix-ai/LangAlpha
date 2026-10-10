@@ -373,11 +373,12 @@ async def advance_thread_checkpoint_id(
     from_checkpoint_id: Optional[str],
     to_checkpoint_id: str,
 ) -> bool:
-    """CAS tip advance for root-namespace ui appends after a turn finalized.
+    """CAS tip advance for a root-namespace write outside a turn: a ui append
+    after a turn finalized, a manual compaction or offload.
 
     Not the turn-lifecycle writer (``database/runs/lifecycle.py`` owns that):
     this only moves the tip when it still points at the exact checkpoint the
-    append built on, so a concurrent turn or branch switch keeps ownership.
+    write built on, so a concurrent turn or branch switch keeps ownership.
     """
     try:
         sql = """

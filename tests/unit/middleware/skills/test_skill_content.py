@@ -268,12 +268,15 @@ def test_compute_no_compaction_trusts_loaded_set():
     assert result == {"chart-annotation"}
 
 
-def test_compute_event_without_cutoff_trusts_loaded_set():
-    """A summarization event with no/zero cutoff_index means nothing was actually
-    summarized away, so trust the loaded set as-is."""
+def test_compute_event_at_index_zero_still_reads_the_view():
+    """A summary whose boundary sits at index 0 still stands in for history:
+    once the window trims the messages before its run, a later summary's
+    boundary can be the first message left. The body has to be in view."""
     assert compute_already_loaded(
-        ["chart-annotation"], [{"content": "hi"}], {"cutoff_index": 0}
-    ) == {"chart-annotation"}
+        ["chart-annotation"],
+        [{"content": "hi", "id": "m0"}],
+        {"cutoff_index": 0, "summary_message": {"content": "compacted summary"}},
+    ) == set()
 
 
 def test_compute_compaction_drops_body_before_cutoff():

@@ -16,7 +16,7 @@ from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_message,
     parse_summary_message,
 )
-from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.agent.transcript.classify import LEGACY_SUMMARY_PREFIX
 from ptc_agent.agent.transcript.pointer import (
     SummarySpan,
@@ -91,7 +91,7 @@ def _turns(n):
 
 def test_span_names_the_turns_the_summary_covers():
     raw = _turns(5)
-    turns = message_turns(raw)
+    turns = message_turns(raw, base=0)
     assert summary_span(turns, raw[:8], raw[:8]) == SummarySpan(1, 4)
     assert summary_span(turns, raw[:8], raw[4:8]) == SummarySpan(3, 4, (1, 2))
     # An earlier summary heads the summarized list and is not in raw. Kept,
@@ -106,7 +106,7 @@ def test_span_names_the_turns_the_summary_covers():
 def test_span_flags_a_message_cut_partway():
     # One huge message dominates: trimming keeps its tail under the same id.
     raw = _turns(3)
-    turns = message_turns(raw)
+    turns = message_turns(raw, base=0)
     tail = raw[2].model_copy(update={"content": "q2 (tail)"})
     assert summary_span(turns, raw[:4], [tail, raw[3]]).gap == (1, 2)
     head_cut = raw[0].model_copy(update={"content": "1 (tail)"})
@@ -125,7 +125,7 @@ def test_a_second_summary_keeps_the_turns_the_first_left_out():
     stretch = [first, raw[6]]
     event = build_summary_event(
         Summary("second", "model", stretch),
-        TranscriptTurns.of(TRANSCRIPT, raw),
+        TranscriptTurns.of(TRANSCRIPT, raw, window=Window()),
         raw_messages=raw,
         to_summarize=stretch,
         preserved=raw[7:],
@@ -150,7 +150,7 @@ def test_event_hands_back_skills_whose_body_was_summarized():
     ):
         event = build_summary_event(
             Summary("the summary", "model", raw[:4]),
-            TranscriptTurns.of(TRANSCRIPT, raw),
+            TranscriptTurns.of(TRANSCRIPT, raw, window=Window()),
             raw_messages=raw,
             to_summarize=raw[:4],
             preserved=raw[4:],

@@ -298,10 +298,11 @@ def _join_recent_turns(turn_texts: list[str]) -> str:
 async def extract_text_from_thread(
     thread_id: str, turns: int = 1, timezone: str = "UTC"
 ) -> dict[str, Any]:
-    """Extract text content from a thread's SSE events, one labeled block per run.
+    """Extract the text each run of a thread committed, one labeled block per run.
 
     Reads from Redis if the thread is actively running, otherwise reads
-    from the database. Filters for message_chunk events with text content.
+    from the database: each settled run's text comes from its turn slice,
+    falling back to the main lane of its stored events.
 
     Args:
         thread_id: The conversation thread ID
@@ -360,7 +361,7 @@ async def extract_text_from_thread(
         text = _join_recent_turns([
             _run_block(
                 run,
-                _qualify_file_paths(_text_from_response(run), workspace_id),
+                _qualify_file_paths(run["main_text"], workspace_id),
                 zone,
             )
             for run in runs
@@ -464,7 +465,7 @@ async def _extract_from_redis(thread_id: str, run_id: str) -> str:
 
 
 def _text_from_response(response: dict[str, Any]) -> str:
-    """Concatenate the text of one turn's ``message_chunk`` SSE events."""
+    """The fallback text of one turn: its stored main-lane ``message_chunk`` events."""
     chunks: list[str] = []
     for event in response.get("sse_events") or []:
         if not isinstance(event, dict):
@@ -474,11 +475,55 @@ def _text_from_response(response: dict[str, Any]) -> str:
         data = event.get("data", {})
         if not isinstance(data, dict):
             continue
+        agent = data.get("agent")
+        if isinstance(agent, str) and agent.startswith("task:"):
+            continue  # a subagent lane, not what the main agent said
         if data.get("content_type") == "text":
             content = data.get("content", "")
             if content:
                 chunks.append(content)
     return "".join(chunks)
+
+
+async def _with_main_text(
+    thread_id: str, runs: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Copies of ``runs`` each carrying ``main_text``, what the turn committed
+    (``committed_texts``). A run that has no slice to read falls back to its
+    stored events' main lane, read for those runs alone."""
+    if not runs:
+        return []
+    # Local import: this module loads at agent import time.
+    from src.server.services.history.committed import committed_texts
+
+    texts = await committed_texts(
+        thread_id,
+        {str(run["conversation_response_id"]): run.get("turn_index") for run in runs},
+    )
+    events = await _stored_events_of(
+        [
+            response_id
+            for run in runs
+            if (response_id := str(run["conversation_response_id"])) not in texts
+        ]
+    )
+    out: list[dict[str, Any]] = []
+    for run in runs:
+        response_id = str(run["conversation_response_id"])
+        text = texts.get(response_id)
+        if text is None:
+            text = _text_from_response({"sse_events": events.get(response_id)})
+        out.append({**run, "main_text": text})
+    return out
+
+
+async def _stored_events_of(response_ids: list[str]) -> dict[str, Any]:
+    if not response_ids:
+        return {}
+    from src.server.database.conversation.replay_rows import get_replay_responses
+
+    rows = await get_replay_responses(response_ids)
+    return {response_id: row.get("sse_events") for response_id, row in rows.items()}
 
 
 async def _runs_to_read(thread_id: str, turns: int = 1) -> list[dict[str, Any]]:
@@ -496,21 +541,28 @@ async def _runs_to_read(thread_id: str, turns: int = 1) -> list[dict[str, Any]]:
 
     if turns != 1:
         limit = _MAX_HISTORY_TURNS if turns <= 0 else min(turns, _MAX_HISTORY_TURNS)
-        return await get_recent_responses_for_thread(thread_id, limit=limit)
+        return await _with_main_text(
+            thread_id, await get_recent_responses_for_thread(thread_id, limit=limit)
+        )
 
     # Hot path is limit=1; a text-less newest run pays one wider read.
-    runs = await get_recent_responses_for_thread(thread_id, limit=1)
-    if not runs or _text_from_response(runs[0]):
+    runs = await _with_main_text(
+        thread_id, await get_recent_responses_for_thread(thread_id, limit=1)
+    )
+    if not runs or runs[0]["main_text"]:
         return runs
-    window = await get_recent_responses_for_thread(
-        thread_id, limit=_EMPTY_LATEST_FALLBACK_TURNS
+    window = await _with_main_text(
+        thread_id,
+        await get_recent_responses_for_thread(
+            thread_id, limit=_EMPTY_LATEST_FALLBACK_TURNS
+        ),
     )
     if not window:
         return runs
     newest = window[-1]
-    if _text_from_response(newest):  # a newer run settled between the reads
+    if newest["main_text"]:  # a newer run settled between the reads
         return [newest]
     for run in reversed(window[:-1]):
-        if _text_from_response(run):
+        if run["main_text"]:
             return [run, newest]
     return [newest]

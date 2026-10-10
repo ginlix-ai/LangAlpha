@@ -81,17 +81,16 @@ async def read_run_excerpt(thread_id: str, run_id: str) -> Optional[str]:
     from src.server.services.history.reader import CheckpointHistoryReader
 
     try:
-        history = await CheckpointHistoryReader.get_instance().aget_recent_history(
-            thread_id, 1
-        )
+        reader = CheckpointHistoryReader.get_instance()
+        anchors, _ = await reader.aget_turn_anchors(thread_id)
+        if not anchors or anchors[-1].run_id != run_id:
+            return None
+        (turn,) = await reader.aget_turn_slices(thread_id, anchors[-1:])
     except Exception as e:
         logger.warning(
             f"[AUTOMATION] Excerpt read failed: thread_id={thread_id} "
             f"run_id={run_id}: {e}"
         )
-        return None
-    turn = history.turns[-1] if history.turns else None
-    if turn is None or turn.run_id != run_id:
         return None
     for message in reversed(turn.messages):
         if not isinstance(message, AIMessage):

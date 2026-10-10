@@ -28,6 +28,8 @@ from ptc_agent.agent.middleware.credit_gate import (
 from ptc_agent.agent.middleware.background_subagent.outcomes import Outcome
 from ptc_agent.agent.middleware.background_subagent.redis_stream import (
     parse_steering_payload,
+    record_returned,
+    returned_entry,
     steering_queue_key,
 )
 from ptc_agent.agent.middleware.background_subagent.registry import (
@@ -105,14 +107,14 @@ async def _return_unconsumed_steering(
     ``steering_returned`` events — accepted input a run never consumed is
     surfaced, not left for a later resume or a silent TTL death.
 
-    Read → surface → remove, in that order: an entry leaves the queue only
-    after it made it into the event archive, so a spill failure (or a crash)
-    between the two leaves the entries in Redis until TTL instead of
-    silently destroying acknowledged input. Only the entries read are
-    removed, one by one, never the key: a producer that pushes behind the
-    read sees the terminal meta (written before this sweep) on its
-    post-push verify and reclaims its own entry, and it reads an entry gone
-    from the queue as one the run settled."""
+    Read → surface → record → remove, in that order: an entry leaves the
+    queue only after it made it into the event archive and onto the run's
+    ledger row, so a failure of either (or a crash) before the removal
+    leaves the entries in Redis until TTL instead of silently destroying
+    acknowledged input. Only the entries read are removed, one by one, never
+    the key: a producer that pushes behind the read sees the terminal meta
+    (written before this sweep) on its post-push verify and reclaims its own
+    entry, and it reads an entry gone from the queue as one the run settled."""
     try:
         from src.utils.cache.redis_cache import get_cache_client
 
@@ -130,11 +132,14 @@ async def _return_unconsumed_steering(
         ts = time.time()
         seq_before = task.captured_event_seq
         appended = 0
+        returned: list[dict] = []
         for raw in raw_messages:
             payload = parse_steering_payload(raw)
             if payload is None:
                 continue
             appended += 1
+            entry = returned_entry(payload, "run_ended")
+            returned.append(entry)
             # Identity-exact append: this settle may run after cancel
             # teardown evicted the entry (or its tool_call_id was reused
             # by a re-registration) — resolving by id would drop the frame
@@ -143,12 +148,7 @@ async def _return_unconsumed_steering(
                 task,
                 {
                     "event": "steering_returned",
-                    "data": {
-                        "agent": f"task:{task.task_id}",
-                        "content": payload["content"],
-                        "input_id": payload["input_id"],
-                        "reason": "run_ended",
-                    },
+                    "data": {"agent": f"task:{task.task_id}", **entry},
                     "ts": ts,
                 },
                 # A kill seals the task's streams; the returned-input record
@@ -167,6 +167,14 @@ async def _return_unconsumed_steering(
             # rather than erase acknowledged input nothing surfaced.
             logger.warning(
                 "unconsumed-steering sweep withheld; appends did not land",
+                task_id=task.task_id,
+                task_run_id=task.task_run_id,
+                pending=appended,
+            )
+            return
+        if not await record_returned(registry, task.task_run_id, returned):
+            logger.warning(
+                "unconsumed-steering sweep withheld; returns not recorded",
                 task_id=task.task_id,
                 task_run_id=task.task_run_id,
                 pending=appended,

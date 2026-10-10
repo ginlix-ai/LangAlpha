@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from urllib.parse import quote_plus
 
+from psycopg.conninfo import conninfo_to_dict
+
 
 def build_db_uri(prefix: str = "DB_") -> str:
     """Assemble ``<prefix>HOST``/``PORT``/``NAME``/``USER``/``PASSWORD`` into a URI.
@@ -28,3 +30,20 @@ def build_db_uri(prefix: str = "DB_") -> str:
         f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
         f"@{host}:{port}/{name}?sslmode={sslmode}"
     )
+
+
+def point_app_pool_at(conninfo: str) -> None:
+    """Make the app's pool, which builds its target from DB_*, connect where
+    the script writes. Must run before the app is imported, whose dotenv
+    load fills only what is unset."""
+    params = conninfo_to_dict(conninfo)
+    for key, param in (
+        ("DB_HOST", "host"),
+        ("DB_PORT", "port"),
+        ("DB_NAME", "dbname"),
+        ("DB_USER", "user"),
+        ("DB_PASSWORD", "password"),
+        ("DB_SSLMODE", "sslmode"),
+    ):
+        if params.get(param):
+            os.environ[key] = str(params[param])

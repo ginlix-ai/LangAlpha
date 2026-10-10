@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from src.server.database.runs import lifecycle as tl_db
+from src.server.contracts.status import TERMINAL_STATUSES
 from src.server.database.provenance import provenance_row_to_event
-from src.server.services.history.replay import stopped, stored_merge
-from src.server.services.runs.sse_producer import build_credit_usage_data
+from src.server.services.history.replay import stopped
+from src.server.services.runs.credit_usage import build_credit_usage_data
 from src.server.utils.error_sanitization import (
     sanitize_error_text as _sanitize_error_text,
 )
@@ -35,7 +35,7 @@ def _user_message_item(
     # carry it: its content hasn't rendered, and marking it would suppress the
     # attach that streams it — hence the positive terminal check (an unknown
     # or legacy status must not stamp).
-    if response is not None and response.get("status") in tl_db.TERMINAL_STATUSES:
+    if response is not None and response.get("status") in TERMINAL_STATUSES:
         payload["run_id"] = str(response.get("conversation_response_id"))
     completed_at = run_completed_at(response)
     if completed_at is not None:
@@ -56,7 +56,7 @@ def run_completed_at(response: dict[str, Any] | None) -> str | None:
     ``user_message`` payload and needs the same answer. Two copies of the
     fallback chain would drift the moment one of them learned a new column.
     """
-    if response is None or response.get("status") not in tl_db.TERMINAL_STATUSES:
+    if response is None or response.get("status") not in TERMINAL_STATUSES:
         return None
     settled = response.get("usage_settled_at")
     if settled is not None:
@@ -260,11 +260,9 @@ def _stub_turn_items(
     never checkpointed. The user_message stub, plus the terminal error or stop
     close the response row records, is the whole replay. Never cached.
 
-    A stopped or failed turn replays its stored rows as a lane that projected
-    nothing, since nothing the user watched stream is on the committed
-    branch. A stop during bring-up has no such rows; a turn that streamed
-    lands here when the finalize's tip read failed and left the commit
-    pointer behind its boundary.
+    Output the turn streamed before it stopped or failed is not on the
+    committed branch, so it is not in the model's context either, and replay
+    leaves it out.
     """
     response = responses_by_turn.get(turn_index)
     response_id = str(response.get("conversation_response_id")) if response else None
@@ -272,13 +270,7 @@ def _stub_turn_items(
         _user_message_item(thread_id, q, response)
         for q in queries_by_turn.get(turn_index, [])
     ]
-    turn_items: list[dict[str, Any]] = []
-    resurrect_lanes = stopped.resurrect_lanes(response, frozenset())
-    if resurrect_lanes:
-        turn_items = stored_merge._merge_stored_payloads(
-            [], stored_merge._stored_events(response), resurrect_lanes
-        )
-    turn_items += terminal_items(thread_id, response, turn_items)
+    turn_items = terminal_items(thread_id, response, [])
     for item in turn_items:
         _enrich(item, thread_id, turn_index, response_id)
     return items + turn_items

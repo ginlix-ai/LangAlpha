@@ -40,15 +40,36 @@ def _chunk(text: str) -> dict:
     return {"event": "message_chunk", "data": {"content_type": "text", "content": text}}
 
 
+# Each run's stored events by response id, as ``_response`` built them.
+_STORED: dict[str, list[dict]] = {}
+
+
 def _response(turn_index: int, *texts: str, **fields) -> dict:
+    events = _STORED[f"r-{turn_index}"] = [_chunk(t) for t in texts]
     return {
         "conversation_response_id": f"r-{turn_index}",
         "conversation_thread_id": "t-1",
         "turn_index": turn_index,
         "status": "completed",
-        "sse_events": [_chunk(t) for t in texts],
+        "sse_events": events,
         **fields,
     }
+
+
+@pytest.fixture(autouse=True)
+def _stored_events():
+    """The reader's rows come without their stored events, so a run's are
+    read by id; here, from what ``_response`` built."""
+    _STORED.clear()
+
+    async def read(response_ids):
+        return {i: {"sse_events": _STORED[i]} for i in response_ids if i in _STORED}
+
+    events = AsyncMock(side_effect=read)
+    with patch(
+        "src.server.database.conversation.replay_rows.get_replay_responses", events
+    ):
+        yield events
 
 
 def _ids(runs: list[dict]) -> list[str]:
@@ -302,3 +323,44 @@ def test_join_multi_turn_huge_newest_keeps_newest_head():
     assert "NEWSTART " in out  # newest turn's head survives
     assert "OLD answer" not in out  # older turn dropped
     assert out.endswith("[truncated — full output available in workspace]")
+
+
+# --- main_text: where a run's text comes from --------------------------------
+
+_COMMITTED = "src.server.services.history.committed.committed_texts"
+
+
+@pytest.mark.asyncio
+async def test_a_run_reads_the_text_its_turn_committed():
+    committed = AsyncMock(return_value={"r-1": "committed text"})
+    with patch(_RECENT, AsyncMock(return_value=[_response(1, "stored text")])), patch(
+        _COMMITTED, committed
+    ):
+        runs = await _runs_to_read("t-1")
+    assert runs[0]["main_text"] == "committed text"
+    committed.assert_awaited_once_with("t-1", {"r-1": 1})
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_committed_text_reads_its_stored_main_lane():
+    sub = {
+        "event": "message_chunk",
+        "data": {"content_type": "text", "content": "sub", "agent": "task:abc"},
+    }
+    run = _response(1, "main")
+    run["sse_events"].append(sub)
+    with patch(_RECENT, AsyncMock(return_value=[run])):
+        runs = await _runs_to_read("t-1")
+    assert runs[0]["main_text"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_only_runs_without_committed_text_read_their_stored_events(
+    _stored_events,
+):
+    with patch(
+        _RECENT, AsyncMock(return_value=[_response(1), _response(2, "stored")])
+    ), patch(_COMMITTED, AsyncMock(return_value={"r-1": "committed"})):
+        runs = await _runs_to_read("t-1", turns=2)
+    assert [r["main_text"] for r in runs] == ["committed", "stored"]
+    _stored_events.assert_awaited_once_with(["r-2"])

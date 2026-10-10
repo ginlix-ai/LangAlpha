@@ -10,6 +10,9 @@ on the one before.
   transcript file that keeps them and stale Read results are hidden.
 - Tier 2: when the context reaches its threshold, the start of the view is
   summarized (see ``compact``).
+- The window: on the main agent, at each pass through ``before_agent``, the
+  runs a summary stands in for are trimmed from the checkpoint once the
+  server holds them (see ``window``).
 
 Each step is reported as a ``context_window`` event, whose ``action`` values
 are wire protocol: ``token_usage`` after each model call, ``summarize``
@@ -19,10 +22,11 @@ Tier 1.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.exceptions import ContextOverflowError
@@ -55,7 +59,13 @@ from ptc_agent.agent.middleware.compaction.offloading import (
     recorded_offloads,
     select_offloads,
 )
-from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.middleware.compaction.window import (
+    WindowCarry,
+    WindowCoverage,
+    trim,
+    window_cut,
+)
+from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_target
 
 if TYPE_CHECKING:
@@ -63,6 +73,11 @@ if TYPE_CHECKING:
     from ptc_agent.config.agent import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+# The coverage read sits in front of a turn. It walks the thread's turn
+# boundaries, which takes tens of milliseconds; past this the trim waits for
+# the next pass rather than hold the turn.
+_COVERAGE_TIMEOUT_S = 5.0
 
 
 class CompactionMiddleware(AgentMiddleware):
@@ -106,6 +121,9 @@ class CompactionMiddleware(AgentMiddleware):
         self._workspace_id = workspace_id
         # The notes folder this agent's summaries name; see with_scratchpad_notes.
         self._notes_dir: str | None = None
+        # The main agent's window; see with_window.
+        self._coverage: WindowCoverage | None = None
+        self._carries: tuple[WindowCarry, ...] = ()
 
     @classmethod
     def for_agent(
@@ -207,6 +225,7 @@ class CompactionMiddleware(AgentMiddleware):
                 transcript=transcript,
                 fallback=request.model,
                 notes_dir=self._notes_dir,
+                window=Window.of(request.state),
             )
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
@@ -269,20 +288,31 @@ class CompactionMiddleware(AgentMiddleware):
 
     @override
     async def abefore_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        """Tier 1 when the turn starts after a long pause, then the window's
+        trim. A resume after an interrupt does not pass through here, since
+        the graph picks up where it stopped; an orchestrator re-entry does."""
+        update = await self._offload_idle(state)
+        trimmed = await self._trim({**state, **update})
+        return {**update, **(trimmed or {})} or None
+
+    async def _offload_idle(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """Tier 1, once per turn and only when the model last answered more
         than the idle threshold ago: by then the provider's prompt cache has
         expired, so hiding part of the prefix costs no cache hit, while doing
-        it mid-turn would throw a warm one away. A resume after an interrupt
-        does not pass through here, since the graph picks up where it stopped.
-        An argument is hidden only once the transcript holding it is saved
-        where the workspace can read it, since that is then its one copy."""
+        it mid-turn would throw a warm one away. An argument is hidden only
+        once the transcript holding it is saved where the workspace can read
+        it, since that is then its one copy."""
         if not is_idle(state, self._offload, time.time()):
-            return None
+            return {}
         messages = state["messages"]
         effective = get_effective_messages(messages, state.get("_summarization_event"))
         args, reads = select_offloads(effective, self._offload, recorded_offloads(state))
         if args and await aexport_transcript(
-            self._backend, self._transcript_target(), messages, workspace_id=self._workspace_id
+            self._backend,
+            self._transcript_target(),
+            messages,
+            workspace_id=self._workspace_id,
+            window=Window.of(state),
         ) is None:
             args = set()
         if args:
@@ -291,7 +321,64 @@ class CompactionMiddleware(AgentMiddleware):
             self._emit_context_signal(
                 "offload", "complete", kind="reads", offloaded_reads=len(reads)
             )
-        return record_offloads(state, args, reads) or None
+        return record_offloads(state, args, reads)
+
+    async def _trim(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The window's trim (see ``window``), or None while it may not:
+        without the server to ask (any stack but the main agent's, see
+        ``with_window``), before a summary with an anchor, or while the
+        server's slices do not hold exactly the messages it would drop, in
+        which case the update keeps the refusal.
+
+        A refusal is kept in the checkpoint with the anchor and cut it was
+        for, and not asked again until a summary moves them: a thread whose
+        slices do not match pays for the check once per summary, not per
+        turn, and one backfilled since trims after its next summary.
+        """
+        if self._coverage is None:
+            return None
+        messages = state["messages"]
+        event = state.get("_summarization_event")
+        cut = window_cut(messages, event)
+        if cut <= 0:
+            return None
+        asked = {"anchor": event["anchor_message_id"], "cut": cut}
+        if state.get("_window_refused") == asked:
+            return None
+        # Hashing the head is CPU over every message it drops.
+        head = await asyncio.to_thread(Window.of(state).extend, messages[:cut])
+        try:
+            async with asyncio.timeout(_COVERAGE_TIMEOUT_S):
+                covered = await self._coverage(head)
+        except Exception:  # noqa: BLE001 - an unanswered check only delays the trim
+            logger.warning("[Compaction] window coverage unread", exc_info=True)
+            return None
+        if not covered:
+            logger.info(
+                "[Compaction] window waits for the next summary: slices do not "
+                "hold runs 1-%d",
+                head.runs,
+            )
+            return {"_window_refused": asked}
+        logger.info(
+            "[Compaction] window trimmed %d messages, runs up to %d", cut, head.runs
+        )
+        return trim(state, cut, self._carries, head=head)
+
+    def with_window(
+        self, coverage: WindowCoverage, carries: Sequence[WindowCarry] = ()
+    ) -> CompactionMiddleware:
+        """This middleware, trimming the main agent's checkpoint to its window.
+
+        ``coverage`` asks the server whether turn slices hold the runs a trim
+        would drop; ``carries`` keep what other readers counted in them. For
+        the main agent's stack only: a subagent's run is bounded, and its
+        transcript reads its namespace's whole history.
+        """
+        main = copy.copy(self)
+        main._coverage = coverage
+        main._carries = tuple(carries)
+        return main
 
     def with_scratchpad_notes(self, notes_dir: str) -> CompactionMiddleware:
         """This middleware, with each summary naming ``notes_dir``'s files.

@@ -172,7 +172,9 @@ def stamp_task_artifact_data(
     return {**data, "payload": payload}
 
 
-async def stamp_replay_task_status(thread_id: str, items: list[dict]) -> None:
+async def stamp_replay_task_status(
+    thread_id: str, items: list[dict], *, status_only: bool = False
+) -> None:
     """Stamp every task artifact in an assembled replay item list, in place
     by positional replacement. Best-effort: a failure leaves the items
     unstamped (the client's live reconciliation still applies)."""
@@ -182,7 +184,9 @@ async def stamp_replay_task_status(thread_id: str, items: list[dict]) -> None:
             return
         for i, item in enumerate(items):
             if isinstance(item, dict):
-                stamped = stamp_task_artifact_data(item.get("data"), details)
+                stamped = stamp_task_artifact_data(
+                    item.get("data"), details, status_only=status_only
+                )
                 if stamped is not item.get("data"):
                     items[i] = {**item, "data": stamped}
     except Exception:

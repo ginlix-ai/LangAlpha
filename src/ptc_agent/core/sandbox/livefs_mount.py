@@ -29,7 +29,7 @@ from ptc_agent.core.sandbox.retry import RetryPolicy
 if TYPE_CHECKING:
     from langchain_core.messages import AnyMessage
 
-    from ptc_agent.agent.transcript import TranscriptTarget
+    from ptc_agent.agent.transcript import TranscriptTarget, Window
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 # Covers a cold start's wait for its mount, plus the probe and links.
@@ -82,10 +82,11 @@ class MountHandle(Protocol):
         ``output`` showing the mount dead restarts it."""
 
     async def save_transcript(
-        self, target: TranscriptTarget, messages: Sequence[AnyMessage]
+        self, target: TranscriptTarget, messages: Sequence[AnyMessage], *, window: Window
     ) -> bool:
-        """Store one agent's transcript from the messages in hand, where the
-        mount serves it; whether it landed."""
+        """Store one agent's transcript from the messages in hand, ``window``
+        having been trimmed from their head, where the mount serves it;
+        whether it landed."""
 
 
 async def through_mount(

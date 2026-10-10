@@ -16,7 +16,7 @@ replay endpoint from persisted sources, not synthesized here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
@@ -33,6 +33,9 @@ from src.server.utils.error_sanitization import (
     sanitize_error_text as _sanitize_error_text,
 )
 from src.server.utils.text_phase import agreed_phase, block_phase
+
+if TYPE_CHECKING:
+    from src.server.services.history.slices import SpanDelta
 
 MAIN_AGENT = "main"
 
@@ -532,7 +535,7 @@ MODEL_FALLBACK_FIELDS = (
 
 
 def context_signal_items(
-    thread_id: str, turn: Any, *, agent: str = MAIN_AGENT
+    thread_id: str, turn: SpanDelta, *, agent: str = MAIN_AGENT
 ) -> list[dict[str, Any]]:
     """Project a turn's compaction signals from its private-state deltas.
 
@@ -577,7 +580,7 @@ _LEDGER_TO_RUN_STATUS = {"completed": "completed", "cancelled": "cancelled"}
 
 
 def workflow_run_items(
-    history: Any,
+    history: SpanDelta,
     *,
     task_id: str | None = None,
     ledger_status: str | None = None,
@@ -662,7 +665,7 @@ def _reconcile_terminal_frame(
 
 
 def model_fallback_items(
-    thread_id: str, turn: Any, *, agent: str = MAIN_AGENT
+    thread_id: str, turn: SpanDelta, *, agent: str = MAIN_AGENT
 ) -> list[dict[str, Any]]:
     """Project a turn's model_fallback notices from its new ``ui`` records.
 

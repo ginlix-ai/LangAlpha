@@ -23,23 +23,8 @@ from src.utils.storage import is_storage_enabled
 logger = logging.getLogger(__name__)
 
 
-async def capture_and_rewrite_images(
-    sse_events: list[dict],
-    sandbox,
-    thread_id: str = "",
-    *,
-    project: ProjectContext | None = None,
-    workspace_id: str | None = None,
-) -> int:
-    """Scan SSE events for sandbox image paths, upload to storage, rewrite in-place.
-
-    Returns number of images captured. No-op if storage is disabled.
-    Non-fatal: logs warnings on failure, never raises.
-    """
-    if not is_storage_enabled() or not sse_events:
-        return 0
-
-    # Collect all unique sandbox image paths from text message_chunks
+def sandbox_image_paths(sse_events: list[dict]) -> set[str]:
+    """Every sandbox image path the events' text references."""
     image_paths: set[str] = set()
     for evt in sse_events:
         if evt.get("event") != "message_chunk":
@@ -48,12 +33,34 @@ async def capture_and_rewrite_images(
         if data.get("content_type") != "text":
             continue
         content = data.get("content", "")
+        if not isinstance(content, str):
+            continue
         for match in IMAGE_MD_RE.finditer(content):
             if is_sandbox_image_path(match.group(2)):
                 image_paths.add(match.group(2))
+    return image_paths
 
+
+async def capture_images(
+    sse_events: list[dict],
+    sandbox,
+    thread_id: str = "",
+    *,
+    project: ProjectContext | None = None,
+    workspace_id: str | None = None,
+) -> dict[str, str]:
+    """Upload the sandbox images the events reference and rewrite them in
+    place, returning each captured path's URL.
+
+    Empty if storage is disabled. Non-fatal: logs warnings on failure,
+    never raises.
+    """
+    if not is_storage_enabled() or not sse_events:
+        return {}
+
+    image_paths = sandbox_image_paths(sse_events)
     if not image_paths:
-        return 0
+        return {}
 
     if project is None and workspace_id:
         path_to_url = await _capture_from_held_folder(
@@ -63,6 +70,43 @@ async def capture_and_rewrite_images(
         path_to_url = await capture_sandbox_images(
             sandbox, image_paths, thread_id, project=project
         )
+    if not path_to_url:
+        return {}
+
+    for evt in sse_events:
+        if evt.get("event") != "message_chunk":
+            continue
+        data = evt.get("data", {})
+        if data.get("content_type") != "text":
+            continue
+        content = data.get("content", "")
+        if content:
+            data["content"] = rewrite_image_paths(content, path_to_url)
+    return path_to_url
+
+
+async def capture_and_rewrite_images(
+    sse_events: list[dict],
+    sandbox,
+    thread_id: str = "",
+    *,
+    project: ProjectContext | None = None,
+    workspace_id: str | None = None,
+) -> int:
+    """``capture_images``, plus the captured map recorded on the thread's
+    checkpoint for replay. Returns the number of images captured.
+
+    For the main turn only, whose checkpoint is still its own when this
+    runs. A subagent's archive lands after its turn settled, so its map goes
+    to the run's replay facts instead (``subagent_archive``).
+    """
+    path_to_url = await capture_images(
+        sse_events,
+        sandbox,
+        thread_id,
+        project=project,
+        workspace_id=workspace_id,
+    )
     if not path_to_url:
         return 0
 
@@ -74,23 +118,13 @@ async def capture_and_rewrite_images(
     if thread_id:
         try:
             from src.server.services.history.reader import CheckpointHistoryReader
+            from src.server.services.history.replay.turn import IMAGE_CAPTURE_UI_NAME
 
             await CheckpointHistoryReader.get_instance().append_ui_record(
-                thread_id, "image_capture", {"path_to_url": path_to_url}
+                thread_id, IMAGE_CAPTURE_UI_NAME, {"path_to_url": path_to_url}
             )
         except Exception as e:
             logger.warning(f"[IMAGE_CAPTURE] Failed to persist ui record: {e}")
-
-    # Rewrite image paths in SSE events in-place
-    for evt in sse_events:
-        if evt.get("event") != "message_chunk":
-            continue
-        data = evt.get("data", {})
-        if data.get("content_type") != "text":
-            continue
-        content = data.get("content", "")
-        if content:
-            data["content"] = rewrite_image_paths(content, path_to_url)
 
     return len(path_to_url)
 

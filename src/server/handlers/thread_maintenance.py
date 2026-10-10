@@ -16,6 +16,7 @@ from src.server.handlers.cancellation import cancellation_as_http
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
     get_checkpointer,
+    update_at_commit,
 )
 
 # Import setup module to access initialized globals
@@ -43,7 +44,7 @@ async def _resolve_graph_and_state(
     folder in place until the caller's block ends.
 
     Returns:
-        (graph, lg_config, state, messages, workspace_id, backend)
+        (graph, state, messages, workspace_id, backend)
     """
     from src.server.database import conversation as qr_db
     from src.server.database.workspace import get_workspace
@@ -101,9 +102,10 @@ async def _resolve_graph_and_state(
     )
 
     # State with timeout
-    lg_config = build_checkpoint_config(thread_id)
     try:
-        state = await asyncio.wait_for(graph.aget_state(lg_config), timeout=10.0)
+        state = await asyncio.wait_for(
+            graph.aget_state(build_checkpoint_config(thread_id)), timeout=10.0
+        )
     except asyncio.TimeoutError:
         logger.error(f"aget_state timed out for thread {thread_id} during {verb}")
         raise HTTPException(
@@ -140,20 +142,35 @@ async def _resolve_graph_and_state(
         layout = SandboxLayout(session.sandbox.working_dir).for_workspace(dir_name)
         backend = SandboxBackend(session.sandbox, layout.workspace)
 
-    return graph, lg_config, state, messages, workspace_id, backend
+    return graph, state, messages, workspace_id, backend
 
 
 async def _update_graph_state(
-    graph, config: dict, values: dict, thread_id: str, verb: str
+    graph, state, values: dict, thread_id: str, verb: str
 ) -> None:
-    """Timeout-wrapped aupdate_state call."""
+    """Write ``values`` onto the checkpoint ``state`` was read at, and move
+    the thread's commit pointer onto the write when it still points there
+    (``update_at_commit``).
+
+    Left beside the pointer, the write is seen by the next turn, which runs
+    from the latest checkpoint, but not by anything reading the committed
+    branch until that turn ends: replay, and the window's slice coverage.
+    """
+    built_on = ((state.config or {}).get("configurable") or {}).get("checkpoint_id")
     try:
-        await asyncio.wait_for(graph.aupdate_state(config, values), timeout=10.0)
+        advanced = await update_at_commit(
+            graph, thread_id, built_on, values, timeout=10.0
+        )
     except asyncio.TimeoutError:
         logger.error(f"aupdate_state timed out for thread {thread_id} during {verb}")
         raise HTTPException(
             status_code=504,
             detail=f"Timed out updating state for thread: {thread_id}",
+        )
+    if not advanced:
+        logger.info(
+            f"[{verb}] thread {thread_id}: commit pointer is not at {built_on}, "
+            "left in place"
         )
 
 
@@ -253,7 +270,7 @@ async def trigger_compaction(
                     agent_cfg = setup.agent_config
 
             (
-                graph, lg_config, state, messages, workspace_id, backend
+                graph, state, messages, workspace_id, backend
             ) = await _resolve_graph_and_state(
                 thread_id, "compact", config=agent_cfg,
                 checkpointer=mutation.saver, user_id=user_id, held=held,
@@ -282,7 +299,11 @@ async def trigger_compaction(
                 raise HTTPException(status_code=400, detail=str(e))
 
             await _update_graph_state(
-                graph, lg_config, compaction.update(state.values), thread_id, "compact"
+                graph,
+                state,
+                compaction.update(state.values),
+                thread_id,
+                "compact",
             )
 
             # The view that was compacted, as automatic compaction counts it,
@@ -370,7 +391,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             AsyncExitStack() as held,
         ):
             (
-                graph, lg_config, state, messages, workspace_id, backend
+                graph, state, messages, workspace_id, backend
             ) = await _resolve_graph_and_state(
                 thread_id, "offload", checkpointer=mutation.saver, user_id=user_id, held=held
             )
@@ -398,7 +419,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             # user asked for it now.
             await _update_graph_state(
                 graph,
-                lg_config,
+                state,
                 record_offloads(state.values, offloaded_arg_ids, offloaded_read_ids),
                 thread_id,
                 "offload",

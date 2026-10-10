@@ -115,7 +115,7 @@ def _simulate_hard_stop_flush(graph, config) -> None:
 def test_head_checkpoint_omits_messages_on_non_snapshot_step():
     """Head ``channel_values`` omits ``messages`` (sentinel / non-snapshot step).
 
-    With ``snapshot_frequency=50`` (DeltaAgentState's default) a thread of
+    With DeltaAgentState's ``MESSAGES_SNAPSHOT_FREQUENCY`` a thread of
     ~18 messages never hits a snapshot step, so the latest checkpoint blob is a
     sentinel and the raw ``channel_values`` dict has no ``messages`` key. This is
     the precondition that makes the determinism property meaningful — without it,

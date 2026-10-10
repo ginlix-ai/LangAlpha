@@ -9,6 +9,7 @@ submodule directly.
 from src.server.database.conversation._sql import (
     _RESPONSE_COLUMNS,
     _SETTLED_ATTEMPTS,
+    settled_attempts,
 )
 from src.server.database.conversation.errors import (
     EXTERNAL_ID_CONFLICT_ERROR_TYPE,
@@ -75,6 +76,7 @@ from src.server.database.conversation.feedback import (
     upsert_feedback,
 )
 from src.server.database.conversation.replay_rows import (
+    get_replay_responses,
     get_replay_thread_data,
 )
 
@@ -99,6 +101,7 @@ __all__ = [
     "get_latest_turn_index",
     "get_queries_for_thread",
     "get_recent_responses_for_thread",
+    "get_replay_responses",
     "get_replay_thread_data",
     "get_responses_for_thread",
     "get_thread_auth_meta",
@@ -120,6 +123,7 @@ __all__ = [
     "promote_flash_thread",
     "_RESPONSE_COLUMNS",
     "_SETTLED_ATTEMPTS",
+    "settled_attempts",
     "_sse_has_provenance",
     "_sync_provenance_for_response",
     "thread_exists_key",

@@ -224,11 +224,14 @@ def run_failure_message(run: Dict[str, Any]) -> Optional[str]:
     error, else a line naming it.
 
     A credit pause records no error. Its words are the quota service's
-    denial, which the pause's interrupt carries on the row, and they are
-    relayed verbatim or not at all.
+    denial, which every finalize stamps into the row's metadata, and they
+    are relayed verbatim or not at all.
     """
     if run.get("interrupt_reason") == INTERRUPT_REASON_CREDIT_PAUSE:
-        return _pause_message(run.get("sse_events"))
+        stamped = (run.get("metadata") or {}).get("credit_pause_message")
+        if isinstance(stamped, str):
+            return stamped
+        return stored_pause_message(run.get("sse_events"))
     errors = run.get("errors")
     if errors:
         return clean_error_text(str(errors[-1]))
@@ -238,7 +241,14 @@ def run_failure_message(run: Dict[str, Any]) -> Optional[str]:
     )
 
 
-def _pause_message(events: Any) -> Optional[str]:
+def stored_pause_message(events: Any) -> Optional[str]:
+    """A credit pause's denial, read off its stored ``interrupt`` event.
+
+    For rows a release before the stamp finalized: turns an old worker
+    drains across a deploy, and older rows the replay-facts backfill has not
+    reached yet. Both still settle through here, so this goes with the
+    stored events column, after the backfill's last run.
+    """
     for event in reversed(events if isinstance(events, list) else []):
         if not isinstance(event, dict) or event.get("event") != "interrupt":
             continue

@@ -1,5 +1,6 @@
 """
-Tests for src/server/services/runs/sse_producer.py
+Tests for the run SSE producer (src/server/services/runs/sse_producer.py), its
+event archive (event_archive.py) and its error classification (stream_errors.py).
 
 Covers:
 - StreamEventAccumulator: accumulation, merging, max buffer size
@@ -21,7 +22,7 @@ class TestStreamEventAccumulator:
     """Tests for the StreamEventAccumulator class."""
 
     def _make_accumulator(self, max_bytes=16 * 1024):
-        from src.server.services.runs.sse_producer import StreamEventAccumulator
+        from src.server.services.runs.event_archive import StreamEventAccumulator
 
         return StreamEventAccumulator(max_merged_bytes=max_bytes)
 
@@ -471,7 +472,7 @@ class TestRunSSEProducerFormatting:
 
     def test_classify_stream_exception_parses_status_from_message(self):
         """When status_code isn't on the exception, parse it from the message."""
-        from src.server.services.runs.sse_producer import classify_stream_exception
+        from src.server.services.runs.stream_errors import classify_stream_exception
         import httpx
 
         exc = httpx.HTTPError("got HTTP 429 from upstream, backing off")

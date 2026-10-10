@@ -9,9 +9,7 @@ import asyncio
 import copy
 import json
 import logging
-import re
 import time
-from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple, cast
 
 import json_repair
@@ -23,13 +21,21 @@ from src.server.utils.content_normalizer import (
     is_thinking_status_signal,
 )
 from src.server.utils.pg_sanitize import finite_json_dumps
+from src.server.contracts.status import classify_interrupts
+from src.server.database.provenance import MAIN_PROVENANCE_LANE
+from src.server.database.runs.lifecycle import ProducerRecord
+from src.server.services.runs.credit_usage import build_credit_usage_data
+from src.server.services.runs.event_archive import (
+    MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT,
+    StreamEventAccumulator,
+)
+from src.server.services.runs.reasoning_facts import ReasoningDurations
+from src.server.services.runs.stream_errors import error_event_data
 from src.server.utils.text_phase import TextPhaseTracker
 from src.llms.content_utils import extract_reasoning_summary_index
-from src.config import settings as app_settings
 from src.config.settings import (
     get_workflow_timeout,
     is_sse_event_log_enabled,
-    get_merged_chunk_max_bytes,
 )
 from opentelemetry.trace import Status, StatusCode
 from src.observability.tracing import tracer as _otel_tracer
@@ -44,8 +50,6 @@ sse_logger = logging.getLogger("sse_events")
 
 WORKFLOW_TIMEOUT = get_workflow_timeout()  # seconds
 SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
-
-MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = get_merged_chunk_max_bytes()
 
 DEFAULT_TOKEN_THRESHOLD = 120000
 
@@ -64,38 +68,6 @@ def resolve_token_threshold(agent_config=None) -> int:
     if cfg is None:
         return DEFAULT_TOKEN_THRESHOLD
     return cfg.compaction.token_threshold
-
-
-def build_credit_usage_data(
-    thread_id: str,
-    token_usage: dict,
-    total_credits: float,
-    timestamp: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Aggregate per-model usage into the ``credit_usage`` wire payload.
-
-    Intentionally omits USD costs and model names (hidden from the client).
-    Shared by the live handler and table-sourced replay so both wires carry
-    the same shape.
-    """
-    total_input_tokens = 0
-    total_output_tokens = 0
-    total_tokens = 0
-    for usage in (token_usage or {}).get("by_model", {}).values():
-        total_input_tokens += usage.get("input_tokens", 0)
-        total_output_tokens += usage.get("output_tokens", 0)
-        total_tokens += usage.get("total_tokens", 0)
-
-    return {
-        "thread_id": thread_id,
-        "tokens": {
-            "input_tokens": total_input_tokens,
-            "output_tokens": total_output_tokens,
-            "total_tokens": total_tokens,
-        },
-        "total_credits": round(total_credits, 2),
-        "timestamp": timestamp or datetime.now().isoformat(),
-    }
 
 
 def _parse_tool_args(
@@ -136,275 +108,6 @@ def _parse_tool_args(
     if isinstance(repaired, dict):
         return repaired, "", ""
     return None, err_repr, err_window
-
-
-# ---------------------------------------------------------------------------
-# Stream error classification
-# ---------------------------------------------------------------------------
-#
-# Chat-stream failures fall into two buckets and the user-facing remedy is
-# different for each:
-#
-#   - ``upstream``  — the LLM provider we called returned an error (their
-#                     server 500'd, the key is rejected, rate-limited, etc).
-#                     User should check their key / plan / provider status.
-#   - ``internal``  — our own pipeline failed (middleware bug, our DB, a
-#                     schema mismatch in the payload we built). User can't
-#                     do anything; we should log loudly and show a generic
-#                     retry message.
-#
-# Classification is a module-prefix check with exception-chain walking — any
-# exception in the chain sourced from a known provider SDK flips the whole
-# failure to ``upstream``.
-
-# Provider SDK and LangChain-wrapper module prefixes. Any exception in the
-# cause chain whose ``__module__`` matches one of these flips the whole
-# failure to ``upstream``. Keep in sync with the SDKs wired up in
-# ``src/llms/llm.py`` — missing a prefix means the user sees "our service
-# failed" for what's really a provider error.
-#
-# ``httpx`` is in this list as a last-resort catch: a bare httpx exception
-# that reaches the stream error handler has almost always come from the
-# LangChain call path (SDKs raise via httpx). If our own service calls
-# (credit checks, workspace manager) ever start raising bare httpx errors to
-# the stream path we should wrap them in a distinct exception type before
-# they bubble; classification is a UI hint, not a diagnostic source of truth.
-_UPSTREAM_MODULE_PREFIXES: tuple[str, ...] = (
-    # Raw provider SDKs
-    "anthropic",
-    "openai",
-    "google.api_core",
-    "google.genai",
-    "google.generativeai",
-    "cohere",
-    "httpx",
-    # Our own wrappers around a provider stream. They quote the provider and
-    # are raised fresh rather than chained, so nothing below would match them.
-    "src.llms.extension",
-    # LangChain wrappers — their exceptions may not chain through the raw SDK
-    # when the wrapper normalizes errors, so match them directly.
-    "langchain_openai",
-    "langchain_anthropic",
-    "langchain_deepseek",
-    "langchain_qwq",
-    "langchain_google_genai",
-    "langchain_google_vertexai",
-    "langchain_mistralai",
-    "langchain_together",
-    "langchain_groq",
-    "groq",
-)
-
-_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
-
-
-def _parse_status_from_message(text: str) -> Optional[int]:
-    match = _STATUS_CODE_RE.search(text)
-    return int(match.group(1)) if match else None
-
-
-# Statuses meaning the provider refused the request we sent: bad shape,
-# unsupported content, oversized payload. Never the caller's credential and
-# never the provider's health, so the only honest hint is to move to a model
-# that accepts the request. 401/403/404 are absent because they have their own
-# branches; they are about access, not about the request body.
-_REQUEST_REFUSED_STATUSES: frozenset[int] = frozenset({400, 405, 413, 422})
-
-# Hints that ask the user to go fix a credential. Only truthful when the user
-# is the one holding it.
-_CREDENTIAL_HINTS: frozenset[str] = frozenset({"api_key", "model_access"})
-
-
-def user_owns_credential(credential_source: Any) -> bool:
-    """Whether the reader of the error holds the credential that ran the call.
-
-    Both halves are load-bearing, because ``platform`` means opposite things in
-    the two host modes: in OSS the key is the operator's own ``.env`` entry and
-    the operator is the user, while on the hosted service the user has no key at
-    all and "check your API key" sends them to a page that is not the cause.
-    An unknown source fails closed, since a wrong credential hint is worse than
-    a missing one.
-    """
-    if app_settings.HOST_MODE == "oss":
-        return True
-    return str(credential_source) in ("oauth", "byok")
-
-
-def find_resilience_trace(exc: BaseException) -> Optional[Dict[str, Any]]:
-    """Find the attempt trace attached by ``ModelResilienceMiddleware``.
-
-    The middleware sets ``__model_resilience__`` (see ``RESILIENCE_TRACE_ATTR``
-    in ``src/ptc_agent/agent/middleware/model_resilience.py``) on the primary
-    model's exception before re-raising it. Walks the cause chain defensively
-    in case a wrapper exception ends up on top.
-    """
-    seen: set[int] = set()
-    current: Optional[BaseException] = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        trace = getattr(current, "__model_resilience__", None)
-        if isinstance(trace, dict):
-            return trace
-        current = current.__cause__ or current.__context__
-    return None
-
-
-def model_call_failure(
-    exc: BaseException, credential_source: Any
-) -> Dict[str, Any]:
-    """Ledger metadata for a run that failed on its model call; ``{}`` when
-    the failure was anything else.
-
-    The resilience trace is the signal, not the provider SDK prefix
-    ``classify_stream_exception`` matches: the middleware attaches it only to
-    a model call's exception, while an httpx 401 from a tool or data API
-    would pass for a rejected model key. The primary's status is the one its
-    credential earned, and that credential is the run's own.
-    """
-    trace = find_resilience_trace(exc)
-    attempted = trace.get("attempted_models") if trace else None
-    if not (isinstance(attempted, list) and attempted and isinstance(attempted[0], dict)):
-        return {}
-    status = attempted[0].get("status_code")
-    if not isinstance(status, int):
-        return {}
-    return {
-        "error_status_code": status,
-        "error_credential_owned": user_owns_credential(credential_source),
-    }
-
-
-def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
-    """Classify a chat-stream exception as ``upstream`` or ``internal``.
-
-    Walks ``__cause__`` / ``__context__`` so a wrapped provider error (e.g.
-    a LangChain exception caused by ``anthropic.InternalServerError``) is
-    still recognized as upstream. Returns a dict with ``kind``,
-    ``status_code`` (when carried on the exception or parseable from its
-    message), and ``provider_module`` (the matched SDK prefix, or None).
-    """
-    seen: set[int] = set()
-    current: Optional[BaseException] = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        module = getattr(type(current), "__module__", "") or ""
-        for prefix in _UPSTREAM_MODULE_PREFIXES:
-            if module == prefix or module.startswith(prefix + "."):
-                status = getattr(current, "status_code", None)
-                if not isinstance(status, int):
-                    status = _parse_status_from_message(str(current))
-                return {
-                    "kind": "upstream",
-                    "status_code": status if isinstance(status, int) else None,
-                    "provider_module": prefix,
-                }
-        current = current.__cause__ or current.__context__
-
-    return {"kind": "internal", "status_code": None, "provider_module": None}
-
-
-class StreamEventAccumulator:
-    """Accumulates and merges token-level SSE events for persistence."""
-
-    def __init__(self, max_merged_bytes: int = MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT):
-        self._max_merged_bytes = max_merged_bytes
-        self._events: List[Dict[str, Any]] = []
-
-    def get_events(self) -> List[Dict[str, Any]]:
-        return copy.deepcopy(self._events)
-
-    def add(self, event_type: str, data: Dict[str, Any]) -> None:
-        if not isinstance(data, dict):
-            return
-
-        incoming = copy.deepcopy(data)
-
-        if not self._events:
-            self._events.append({"event": event_type, "data": incoming})
-            return
-
-        prev = self._events[-1]
-        if prev.get("event") != event_type:
-            self._events.append({"event": event_type, "data": incoming})
-            return
-
-        if event_type == "message_chunk" and self._try_merge_message_chunk(prev, incoming):
-            return
-
-        if event_type == "tool_call_chunks" and self._try_merge_tool_call_chunks(prev, incoming):
-            return
-
-        self._events.append({"event": event_type, "data": incoming})
-
-    def _try_merge_message_chunk(self, prev_event: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
-        prev_data = prev_event.get("data")
-        if not isinstance(prev_data, dict):
-            return False
-
-        if incoming.get("content_type") == "reasoning_signal":
-            return False
-        if prev_data.get("content_type") == "reasoning_signal":
-            return False
-
-        merge_keys = ("thread_id", "agent", "id", "role", "content_type", "phase")
-        if any(prev_data.get(k) != incoming.get(k) for k in merge_keys):
-            return False
-
-        prev_content = prev_data.get("content") or ""
-        incoming_content = incoming.get("content") or ""
-        incoming_finish = incoming.get("finish_reason")
-
-        if incoming_content:
-            if len(prev_content.encode("utf-8")) + len(incoming_content.encode("utf-8")) > self._max_merged_bytes:
-                return False
-            prev_data["content"] = f"{prev_content}{incoming_content}"
-
-        if incoming_finish is not None:
-            prev_data["finish_reason"] = incoming_finish
-
-        return bool(incoming_content) or (incoming_finish is not None)
-
-    def _try_merge_tool_call_chunks(self, prev_event: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
-        prev_data = prev_event.get("data")
-        if not isinstance(prev_data, dict):
-            return False
-
-        merge_keys = ("thread_id", "agent", "id")
-        if any(prev_data.get(k) != incoming.get(k) for k in merge_keys):
-            return False
-
-        prev_chunks = prev_data.get("tool_call_chunks")
-        incoming_chunks = incoming.get("tool_call_chunks")
-        if not (isinstance(prev_chunks, list) and isinstance(incoming_chunks, list)):
-            return False
-        if len(prev_chunks) != 1 or len(incoming_chunks) != 1:
-            return False
-
-        prev_chunk = prev_chunks[0]
-        incoming_chunk = incoming_chunks[0]
-        if not (isinstance(prev_chunk, dict) and isinstance(incoming_chunk, dict)):
-            return False
-
-        prev_call_id = prev_chunk.get("id")
-        incoming_call_id = incoming_chunk.get("id")
-        if prev_call_id is not None or incoming_call_id is not None:
-            if prev_call_id != incoming_call_id:
-                return False
-        else:
-            if prev_chunk.get("index") != incoming_chunk.get("index"):
-                return False
-
-        prev_args = prev_chunk.get("args") or ""
-        incoming_args = incoming_chunk.get("args") or ""
-        if not isinstance(prev_args, str) or not isinstance(incoming_args, str):
-            return False
-
-        if incoming_args:
-            if len(prev_args.encode("utf-8")) + len(incoming_args.encode("utf-8")) > self._max_merged_bytes:
-                return False
-            prev_chunk["args"] = f"{prev_args}{incoming_args}"
-
-        return bool(incoming_args)
 
 
 class RunSSEProducer:
@@ -448,9 +151,13 @@ class RunSSEProducer:
         # Track reasoning status per agent for lifecycle management
         self.reasoning_active: Set[str] = set()
         # Monotonic clock at each agent's open reasoning block, so its closing
-        # signal can carry how long the model thought. Stored frames replay
-        # verbatim, so the duration survives a reload without a schema change.
+        # signal can carry how long the model thought.
         self._reasoning_started_at: Dict[str, float] = {}
+        # How long the main agent thought, for replay.
+        self._reasoning = ReasoningDurations()
+        # The main agent's provenance records as emitted, for the finalize to
+        # write without reading them back out of the event archive.
+        self.provenance_events: List[Dict[str, Any]] = []
 
         # Track reasoning block index per agent to detect block transitions
         # When index changes (e.g., 0→1), a separator (\n\n) is needed between blocks
@@ -523,6 +230,8 @@ class RunSSEProducer:
         # resume from is the I8 lie).
         self.interrupt_verified: Optional[bool] = None
         self.interrupt_reason: Optional[str] = None
+        # A credit pause's denial, which the finalize stamps on the row.
+        self.pause_message: Optional[str] = None
 
         # ---- Stop reconciliation state (decision T3-A) -------------------
         # Open artifacts whose last-emitted status was not terminal. Keyed by
@@ -748,6 +457,9 @@ class RunSSEProducer:
                             prov_data = self._resolve_provenance_event(
                                 event_data, agent_from_stream
                             )
+                            self.provenance_events.append(
+                                {"event": "provenance", "data": dict(prov_data)}
+                            )
                             yield self._format_sse_event("provenance", prov_data)
                             continue
 
@@ -890,8 +602,11 @@ class RunSSEProducer:
 
                 # State updates (stream_mode="updates") carry no SSE payloads of
                 # their own — the mode stays subscribed because interrupts
-                # arrive through it (handled above via "__interrupt__").
+                # arrive through it (handled above via "__interrupt__"). A
+                # main-graph node's update names the message it committed.
                 if stream_mode == "updates":
+                    if not agent_from_stream and isinstance(event_data, dict):
+                        self._reasoning.node_updated(event_data)
                     continue
 
                 # Process message chunks (stream_mode="messages")
@@ -933,6 +648,16 @@ class RunSSEProducer:
                             f"[RAW_REASONING] agent={agent_name} reasoning_content={reasoning_raw}"
                         )
 
+                node = (message_metadata or {}).get("langgraph_node")
+                if (
+                    not agent_from_stream
+                    and not is_compaction_chunk
+                    and node != "tools"
+                    and isinstance(message_chunk, (AIMessage, AIMessageChunk))
+                    and message_chunk.id
+                ):
+                    self._reasoning.saw_root_chunk(str(node), message_chunk.id)
+
                 # Process the message chunk
                 async for event in self._process_message_chunk(
                     message_chunk,
@@ -949,7 +674,11 @@ class RunSSEProducer:
             if self._pending_interrupts:
                 self.interrupt_verified = await self._verify_interrupt_durable(graph)
                 if self.interrupt_verified:
-                    self.interrupt_reason = self._derive_interrupt_reason()
+                    self.interrupt_reason, self.pause_message = classify_interrupts(
+                        intr
+                        for pending in self._pending_interrupts
+                        for intr in pending.get("__interrupt__", ())
+                    )
                     for pending in self._pending_interrupts:
                         interrupt_event = self._handle_interrupt(pending)
                         if interrupt_event:
@@ -1097,16 +826,6 @@ class RunSSEProducer:
             )
             return False
 
-    def _derive_interrupt_reason(self) -> Optional[str]:
-        """Classify the buffered interrupt into the ledger's reason column."""
-        from src.server.contracts.status import classify_interrupt_reason
-
-        return classify_interrupt_reason(
-            intr
-            for event_data in self._pending_interrupts
-            for intr in event_data.get("__interrupt__", ())
-        )
-
     def _handle_interrupt(self, event_data: dict) -> Optional[str]:
         """Format an ``__interrupt__`` event as an SSE string."""
         interrupt_obj = event_data["__interrupt__"][0]
@@ -1161,7 +880,7 @@ class RunSSEProducer:
         if namespace_tuple:
             agent = self._extract_agent_name(namespace_tuple, event_data)
         else:
-            agent = "main"
+            agent = MAIN_PROVENANCE_LANE
         prov_data = {
             key: value for key, value in event_data.items() if key != "type"
         }
@@ -1788,7 +1507,23 @@ class RunSSEProducer:
             started = self._reasoning_started_at.pop(agent_name, None)
             if started is not None:
                 data["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+                if not is_compaction:
+                    self._reasoning.closed(message_id, data["elapsed_ms"])
         return self._format_sse_event(event_type, data)
+
+    def record(self, stop_events: Optional[List[Dict[str, Any]]] = None) -> ProducerRecord:
+        """What the finalize stores beside the status that the checkpoint
+        does not keep. ``stop_events`` are the lanes a stop drained, whose
+        provenance reaches the row only through this finalize."""
+        return ProducerRecord(
+            provenance=self.provenance_events
+            + [
+                e
+                for e in stop_events or ()
+                if isinstance(e, dict) and e.get("event") == "provenance"
+            ],
+            reasoning_ms=self._reasoning.as_facts(),
+        )
 
     def _format_sse_event(self, event_type: str, data: dict[str, Any], *, accumulate: bool = True) -> str:
         """
@@ -1841,110 +1576,17 @@ class RunSSEProducer:
         *,
         exc: Optional[BaseException] = None,
     ) -> str:
-        """Format an error event as SSE string.
-
-        When ``exc`` is passed the event carries ``error_kind`` (``upstream``
-        or ``internal``), ``status_code`` (when available), and ``hints`` for
-        the frontend to render user-actionable guidance. The legacy ``error``
-        and ``message`` fields stay so older clients keep working.
-
-        Hints are chosen by status and then filtered by who holds the credential
-        (see ``user_owns_credential``), so a platform-billed turn never asks the
-        user to check a key they do not have.
-
-        Args:
-            error_message: Raw error text (usually ``str(exc)``).
-            exc: The exception itself — enables classification. Optional to
-                keep the legacy signature working for paths that only have
-                a prebuilt message.
-
-        Returns:
-            SSE-formatted error event.
-        """
-        data: Dict[str, Any] = {
-            "thread_id": self.thread_id,
-            "error": _sanitize_error_text(error_message),
-            "message": "An error occurred during processing",
-        }
-        if exc is not None:
-            info = classify_stream_exception(exc)
-            trace = find_resilience_trace(exc)
-            if trace is not None and info["kind"] == "internal":
-                # The trace proves the failure happened inside a model call.
-                # A generic wrapper exception (no recognizable SDK module in
-                # the chain) must not demote it to "internal" — the frontend
-                # routes internal errors to a generic banner that drops the
-                # model / attempted-models context.
-                primary_status: Any = None
-                attempted_raw = trace.get("attempted_models")
-                if (
-                    isinstance(attempted_raw, list)
-                    and attempted_raw
-                    and isinstance(attempted_raw[0], dict)
-                ):
-                    primary_status = attempted_raw[0].get("status_code")
-                info = {
-                    "kind": "upstream",
-                    "status_code": primary_status
-                    if isinstance(primary_status, int)
-                    else None,
-                    "provider_module": None,
-                }
-            data["error_kind"] = info["kind"]
-            if info["status_code"] is not None:
-                data["status_code"] = info["status_code"]
-            if info["provider_module"]:
-                data["provider_module"] = info["provider_module"]
-            if info["kind"] == "upstream":
-                # Order matters — frontend renders the hints as a list, so the
-                # most relevant hint for this status goes first. 5xx/429 are
-                # provider outages, not the user's credentials; showing
-                # "check your API key" first on a 503 is misleading.
-                status = info.get("status_code")
-                if status in (401, 403):
-                    hints = ["api_key", "model_access", "try_another_model"]
-                elif status == 404:
-                    hints = ["model_access", "try_another_model"]
-                elif status in _REQUEST_REFUSED_STATUSES:
-                    hints = ["try_another_model"]
-                elif status == 429 or (isinstance(status, int) and status >= 500):
-                    hints = ["provider_status", "try_another_model"]
-                else:
-                    # No status (network error) — could be anything; show all.
-                    hints = [
-                        "api_key",
-                        "model_access",
-                        "provider_status",
-                        "try_another_model",
-                    ]
-                # The status says what failed; the credential says who can act
-                # on it. Drop the hints that would send a user to fix a key
-                # they do not hold. Every branch above keeps
-                # "try_another_model", so the list never empties.
-                if not user_owns_credential(
-                    getattr(self.agent_config, "credential_source", None)
-                ):
-                    hints = [h for h in hints if h not in _CREDENTIAL_HINTS]
-                data["hints"] = hints
-            if trace is not None:
-                primary_model = trace.get("model")
-                if isinstance(primary_model, str) and primary_model:
-                    data["model"] = primary_model
-                attempted = trace.get("attempted_models")
-                if isinstance(attempted, list):
-                    data["attempted_models"] = [
-                        {
-                            "model": entry.get("model"),
-                            "error": _sanitize_error_text(
-                                str(entry.get("error") or "")
-                            ),
-                            "status_code": entry.get("status_code"),
-                            "attempts": entry.get("attempts"),
-                        }
-                        for entry in attempted
-                        if isinstance(entry, dict)
-                    ]
-        return self._format_sse_event("error", data)
+        """Format an error event as SSE string; ``exc`` enables the
+        classification ``error_event_data`` describes."""
+        return self._format_sse_event(
+            "error",
+            error_event_data(
+                self.thread_id,
+                error_message,
+                exc=exc,
+                credential_source=getattr(self.agent_config, "credential_source", None),
+            ),
+        )
 
     def _format_credit_usage_event(
         self,

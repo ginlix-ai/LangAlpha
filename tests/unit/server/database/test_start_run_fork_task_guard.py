@@ -22,6 +22,7 @@ from src.server.database.runs.lifecycle import ForkSpec, TurnLifecycleError, sta
 
 QR_DB = "src.server.database.runs.lifecycle.qr_db"
 SR_DB = "src.server.database.runs.lifecycle.sr_db"
+REPAIR = "src.server.database.runs.lifecycle.subagent_repair"
 
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 RUN_ID = "22222222-2222-2222-2222-222222222222"
@@ -78,7 +79,7 @@ async def test_guard_is_scoped_to_the_truncated_turns(mock_connection, mock_curs
     with (
         patch(f"{SR_DB}.find_open_run_from_turn", new=probe),
         patch(f"{QR_DB}.truncate_thread_from_turn", new=AsyncMock(return_value=3)),
-        patch(f"{SR_DB}.repair_task_chains", new=AsyncMock()),
+        patch(f"{REPAIR}.repair_task_chains", new=AsyncMock()),
         patch(f"{QR_DB}.update_thread_checkpoint_id", new=AsyncMock(return_value=False)),
     ):
         # Fails at the checkpoint pin, well past the guard.
@@ -110,7 +111,7 @@ async def test_repair_follows_the_truncation_in_the_same_transaction(
     with (
         patch(f"{SR_DB}.find_open_run_from_turn", new=AsyncMock(return_value=None)),
         patch(f"{QR_DB}.truncate_thread_from_turn", new=_truncate),
-        patch(f"{SR_DB}.repair_task_chains", new=_repair),
+        patch(f"{REPAIR}.repair_task_chains", new=_repair),
         patch(f"{QR_DB}.update_thread_checkpoint_id", new=_pin),
     ):
         with pytest.raises(TurnLifecycleError):
@@ -129,7 +130,7 @@ async def test_repair_runs_on_the_forks_own_session(mock_connection, mock_cursor
     with (
         patch(f"{SR_DB}.find_open_run_from_turn", new=AsyncMock(return_value=None)),
         patch(f"{QR_DB}.truncate_thread_from_turn", new=AsyncMock(return_value=1)),
-        patch(f"{SR_DB}.repair_task_chains", new=repair),
+        patch(f"{REPAIR}.repair_task_chains", new=repair),
         patch(f"{QR_DB}.update_thread_checkpoint_id", new=AsyncMock(return_value=False)),
     ):
         with pytest.raises(TurnLifecycleError):

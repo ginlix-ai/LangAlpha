@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from ptc_agent.agent.middleware.background_subagent.registry import TaskRunRejected
 
 from src.server.contracts.status import REPORT_BACK_STATUSES
+from src.server.database import replay_facts as facts_db
 from src.server.database.runs import subagent_runs as sr_db
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,44 @@ def v2_stream_key(thread_id: str, task_run_id: str) -> str:
     nothing resets or re-incarnates a key readers may hold cursors into.
     """
     return f"subagent:stream:{thread_id}:{task_run_id}"
+
+
+def _refresh_launching_turn(thread_id: Any, parent_run_id: Any) -> None:
+    """Re-project the turn that launched a run, whose stored replay was keyed
+    on the run as it was. A run with no parent launched no turn."""
+    if not parent_run_id:
+        return
+    try:
+        from src.server.services.history.replay.refresh import (
+            schedule_replay_refresh,
+        )
+
+        schedule_replay_refresh(str(thread_id), str(parent_run_id))
+    except Exception:
+        pass
+
+
+async def record_lane_images(
+    thread_id: str, response_id: str, task_id: str, images: Dict[str, str]
+) -> None:
+    """Record a lane's captured images on the runs the turn launched for it,
+    then re-project that turn, whose stored lines were keyed on the facts
+    before these. Best effort: images that fail to land only leave replay
+    showing the sandbox paths.
+    """
+    try:
+        recorded = await facts_db.append_lane_images(
+            thread_id, response_id, task_id, images
+        )
+    except Exception:
+        logger.warning(
+            f"[subagent_coordinator] lane images not recorded for task "
+            f"{task_id} of run {response_id}",
+            exc_info=True,
+        )
+        return
+    if recorded:
+        _refresh_launching_turn(thread_id, response_id)
 
 
 class SubagentRunCoordinator:
@@ -234,6 +273,9 @@ class SubagentRunCoordinator:
                 prune_if_archived_soon(self.thread_id)
             except Exception:
                 pass
+            # The launching turn's replay could not be stored while this run
+            # still wrote; now it can.
+            _refresh_launching_turn(self.thread_id, run.get("parent_run_id"))
             if not defer_run_end:
                 await self._append_v2_frame(
                     task_run_id,
@@ -253,6 +295,29 @@ class SubagentRunCoordinator:
                 except Exception:
                     pass
         return result
+
+    async def record_replay_facts(
+        self, task_run_id: str, *, steering_returned: list
+    ) -> bool:
+        """Keep the steering a settled run handed back for its replay, then
+        re-project the turn that launched it. Best effort: False when the
+        returns did not land, which only leaves replay without them.
+        """
+        try:
+            row = await facts_db.append_returned_steering(
+                task_run_id, steering_returned
+            )
+        except Exception:
+            logger.warning(
+                f"[subagent_coordinator] returned steering not recorded for "
+                f"run {task_run_id}",
+                exc_info=True,
+            )
+            return False
+        if row is None:
+            return False
+        _refresh_launching_turn(row["thread_id"], row.get("parent_run_id"))
+        return True
 
     async def append_run_end(
         self, task_run_id: str, *, task_id: str, outcome: str

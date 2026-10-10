@@ -8,6 +8,7 @@ not a replay failure, so the None path is part of the contract.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.server.services.history.replay_builders import replay_rows
 
 THREADS_MOD = "src.server.app.threads.messaging"
 
@@ -18,7 +19,7 @@ def _replay_data():
     """Owner matches create_test_app's override; no checkpoint pointer, so
     replay takes the (empty) sse path without touching a DB."""
     thread = {"conversation_thread_id": THREAD, "latest_checkpoint_id": None}
-    return ("test-user-123", thread, [], [], {}, {})
+    return replay_rows(thread, [], [], owner_id="test-user-123")
 
 
 def _parse(body: str) -> list[tuple[str, str]]:

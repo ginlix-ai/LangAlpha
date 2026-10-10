@@ -1,6 +1,4 @@
-"""Stopped-turn knowledge: which lanes a lossy terminal leaves unfinished, and the close a user stop owes.
-
-Builds only on ``lanes``; ``stored_merge`` and ``items`` both build on it."""
+"""The close a user-stopped turn owes its last assistant message."""
 
 from __future__ import annotations
 
@@ -8,33 +6,6 @@ from typing import Any
 
 from src.server.contracts.status import is_user_stop
 from src.server.services.history.replay.lanes import MAIN_LANE, agent_lane
-
-
-# Run terminals where the live capture can exceed the checkpoint: a run that
-# raised or was stopped mid-write streamed output whose message never
-# committed. Read from a task run's ledger row for its lane, and from the
-# turn's response row for the main lane (see ``resurrect_lanes``).
-# completed/interrupted runs end on a committed boundary, and a completed
-# run's archive may hold phantom partials from a mid-stream model retry;
-# resurrecting those would double-render.
-LOSSY_TERMINAL_STATUSES = frozenset({"error", "cancelled"})
-
-
-def resurrect_lanes(
-    response: dict[str, Any] | None, task_lanes: set[str] | frozenset[str]
-) -> set[str]:
-    """The claimed task lanes whose run ended lossy, plus the main lane when
-    the turn itself did.
-
-    A stopped or failed turn loses its in-flight step from the checkpoint
-    (the stop flush deliberately writes no in-flight messages, and a node
-    that raises commits nothing), yet the same finalize that records the
-    status archives every row the user watched stream.
-    """
-    lanes = set(task_lanes)
-    if (response or {}).get("status") in LOSSY_TERMINAL_STATUSES:
-        lanes.add(MAIN_LANE)
-    return lanes
 
 
 def stop_close_item(
@@ -53,9 +24,6 @@ def stop_close_item(
     has no message to name, so its close carries no ``id``: clients apply a
     close to the turn's bubble by ``turn_index``. System cancels are not
     stops and get no close.
-
-    Public: the shared replay in ``server/app/public.py`` streams stored
-    events itself and needs the same close.
     """
     if not is_user_stop(response):
         return None

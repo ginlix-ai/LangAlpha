@@ -773,7 +773,7 @@ async def test_replay_data_excludes_subagent_usage_rows(
             "latest_checkpoint_id": "cp-1",
         },
     ]
-    mock_cursor.fetchall.side_effect = [[], [], [], []]
+    mock_cursor.fetchall.side_effect = [[], [], [], [], []]
 
     await get_replay_thread_data(thread_id)
 
@@ -790,7 +790,7 @@ async def test_get_replay_thread_data_malformed_id_skips_database(
 
     result = await get_replay_thread_data("results")
 
-    assert result == (None, None, [], [], [], [])
+    assert result is None
     mock_cursor.execute.assert_not_awaited()
 
 

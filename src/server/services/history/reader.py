@@ -3,7 +3,7 @@
 ``messages`` is a ``DeltaChannel`` (see ``ptc_agent.agent.state``), so a raw
 ``checkpointer.aget_tuple`` cannot materialize it: deltas live in
 ``checkpoint_writes`` and are only replayed by a compiled graph. This module
-compiles a no-op ``StateGraph(_ReaderState)`` against the server checkpointer
+compiles a no-op ``StateGraph(MainAgentState)`` against the server checkpointer
 purely to read state — in the ``task_namespace_graph`` shape, since background
 subagents checkpoint under the parent ``thread_id`` with
 ``checkpoint_ns="task:{task_id}"``.
@@ -14,53 +14,34 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from bisect import bisect_right
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Any
 
-from langchain.agents.middleware.types import PrivateStateAttr
-from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph import START, StateGraph
-from typing_extensions import NotRequired
 
-from ptc_agent.agent.middleware.compaction.types import CompactionEvent
-from ptc_agent.agent.state import DeltaAgentState
-from ptc_agent.agent.transcript.classify import is_run_boundary_message
-from src.server.utils.checkpoint_helpers import walk_current_branch_boundaries
+from ptc_agent.agent.main_state import MainAgentState
+from src.server.services.history import slices
+from src.server.utils.checkpoint_helpers import (
+    INTERRUPT_CHANNEL,
+    Boundary,
+    interrupt_records,
+    update_at_commit,
+    walk_current_branch_boundaries,
+)
 
 logger = logging.getLogger(__name__)
-
-# LangGraph records a pending write on this channel when a node pauses via
-# interrupt(). We match the stored channel name directly rather than importing
-# the constant, which langgraph made private in v1.0 (deprecated import); the
-# on-disk channel name is a stable storage-format detail.
-_INTERRUPT_CHANNEL = "__interrupt__"
 
 
 def _has_pending_interrupt(tup: Any) -> bool:
     return tup is not None and any(
-        w[1] == _INTERRUPT_CHANNEL for w in (tup.pending_writes or ())
+        w[1] == INTERRUPT_CHANNEL for w in (tup.pending_writes or ())
     )
 
 # Concurrent aget_state reads per history materialization. Each read holds a
 # checkpointer-pool connection (pool max defaults to 25), so this stays well
 # below the pool to keep long-thread replays from starving live runs.
 _STATE_READ_CONCURRENCY = 8
-
-
-class _ReaderState(DeltaAgentState):
-    """DeltaAgentState plus middleware-private channels replay materializes.
-
-    ``aget_state`` only surfaces channels the reading graph declares. Live
-    agents get ``_summarization_event`` from the compaction middleware's state
-    schema; the reader graph must declare it itself (same annotation, so
-    channel semantics match the checkpointed writes).
-    """
-
-    _summarization_event: Annotated[
-        NotRequired[CompactionEvent | None], PrivateStateAttr
-    ]
-    _offloaded_tool_call_ids: Annotated[NotRequired[set[str]], PrivateStateAttr]
-    _offloaded_read_result_ids: Annotated[NotRequired[set[str]], PrivateStateAttr]
 
 
 def _silence_pending_sends_noise() -> None:
@@ -89,67 +70,11 @@ def _silence_pending_sends_noise() -> None:
 
 
 @dataclass
-class TurnSlice:
-    """Messages of one conversational turn on the current checkpoint branch."""
+class TaskHistory(slices.SpanDelta):
+    """A background task's whole namespace: what it added from nothing."""
 
-    turn_ordinal: int
-    input_checkpoint_id: str
-    end_checkpoint_id: str
-    user_message: HumanMessage | None
-    messages: list[AnyMessage] = field(default_factory=list)
-    run_id: str | None = None
-    turn_index: int | None = None
-    # The ``_summarization_event`` that landed during this turn (end-state
-    # event differing from start-state), or None. Compaction's summary message
-    # lives in this state key — never in the messages channel — so replay
-    # re-emits the summarize signal from here.
-    new_summarization_event: dict[str, Any] | None = None
-    # Per-turn growth of the compaction offload sets — replay re-emits the
-    # offload signals from these counts (one aggregated event per kind).
-    newly_offloaded_args: int = 0
-    newly_offloaded_reads: int = 0
-    # Answered interrupts this turn raised, read from the FOLLOWING resume
-    # boundary's ``__interrupt__`` writes. Pending (unanswered) interrupts at
-    # the branch tip surface via ``ThreadHistory.interrupts`` instead.
-    ending_interrupts: list[dict[str, Any]] = field(default_factory=list)
-    # ``ui``-channel records that landed during this turn (id-diff between the
-    # boundary states) — e.g. model_fallback notices pushed by middleware.
-    new_ui_records: list[dict[str, Any]] = field(default_factory=list)
-    # The turn's own last checkpoint — the projection-cache key (see TurnAnchor).
-    tail_checkpoint_id: str | None = None
-
-
-@dataclass
-class ThreadHistory:
-    thread_id: str
-    turns: list[TurnSlice] = field(default_factory=list)
-    interrupts: list[dict[str, Any]] = field(default_factory=list)
-    ui: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
-class TaskHistory:
-    """Materialized state for one background-task checkpoint namespace."""
-
-    messages: list[AnyMessage] = field(default_factory=list)
     #: The namespace checkpoint these were read at.
     checkpoint_id: str | None = None
-    new_summarization_event: dict[str, Any] | None = None
-    newly_offloaded_args: int = 0
-    newly_offloaded_reads: int = 0
-    new_ui_records: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
-class _InputBoundary:
-    checkpoint_id: str
-    metadata: dict[str, Any]
-    is_resume: bool = False
-    # ``__interrupt__`` pending writes riding a resume boundary — the answered
-    # interrupts of the turn this boundary resumes (interrupt and resume writes
-    # attach to the same checkpoint).
-    interrupts: list[dict[str, Any]] = field(default_factory=list)
-    parent_checkpoint_id: str | None = None
 
 
 @dataclass
@@ -167,76 +92,94 @@ class TurnAnchor:
     tail_checkpoint_id: str | None
     turn_index: Any | None = None
     run_id: str | None = None
+    # Where the turn's message diff ends: the next boundary, or the tip for
+    # the last turn. A boundary's state is the thread before its turn
+    # applies, so the next boundary's state is this turn's result.
+    end_checkpoint_id: str | None = None
+    # Answered interrupts this turn raised, from the next resume boundary.
+    # Pending ones at the branch tip come from ``aget_tip_interrupts``.
+    ending_interrupts: list[dict[str, Any]] = field(default_factory=list)
+    # A HITL resume opens on the interrupt's answer, never a message of its
+    # own: it carries on the turn before it.
+    is_resume: bool = False
+    # The state before the turn, where an edit of its message forks; a
+    # resume has no message of its own to edit.
+    parent_checkpoint_id: str | None = None
 
 
-def _tail_of_turn(
-    boundaries: list[_InputBoundary], i: int, tip_id: str
-) -> str | None:
+def pair_turns(anchors: list[TurnAnchor], persisted: list[int]) -> list[int | None]:
+    """Each turn's persisted turn_index, given the thread's persisted ones
+    ascending.
+
+    A turn's input checkpoint carries the turn_index its run was admitted
+    under. A resume's checkpoint belongs to the run it answers, and threads
+    from before the stamp carry none, so those take the next persisted turn
+    after the one before: a turn whose run died before its first checkpoint
+    has rows and no boundary, so position alone would name every later turn
+    one too low. None when no persisted turn is left to name.
+    """
+    numbers: list[int | None] = []
+    previous: int | None = None
+    for anchor in anchors:
+        number = anchor.turn_index
+        if number is None:
+            at = 0 if previous is None else bisect_right(persisted, previous)
+            number = persisted[at] if at < len(persisted) else None
+        numbers.append(number)
+        if number is not None:
+            previous = number
+    return numbers
+
+
+@dataclass
+class TaskRun:
+    """One run of a background task: the span its namespace wrote between
+    its own input boundary and the next run's (or the namespace tip)."""
+
+    task_id: str
+    ordinal: int
+    input_checkpoint_id: str
+    end_checkpoint_id: str
+    # The run's own last checkpoint, which validates a stored run slice.
+    tail_checkpoint_id: str
+    # The ledger's run id stamped on the boundary; None before the ledger.
+    task_run_id: str | None = None
+
+
+def _tail_of_turn(boundaries: list[Boundary], i: int, tip_id: str) -> str | None:
     """Turn *i*'s last checkpoint: the tip for the last turn; otherwise the
     next boundary's parent — except a resume boundary IS the interrupted
     turn's tip (interrupt and resume writes ride the same checkpoint)."""
     if i == len(boundaries) - 1:
         return tip_id
     nxt = boundaries[i + 1]
-    return nxt.checkpoint_id if nxt.is_resume else nxt.parent_checkpoint_id
+    return nxt.parent_checkpoint_id if nxt.is_input else nxt.checkpoint_id
 
 
-def _interrupt_writes(cp_tuple: Any) -> list[dict[str, Any]]:
-    """``{"id", "value"}`` records from a checkpoint's ``__interrupt__`` writes."""
-    interrupts: list[dict[str, Any]] = []
-    for _task_id, channel, value in (cp_tuple.pending_writes or []) if cp_tuple else []:
-        if channel != _INTERRUPT_CHANNEL:
-            continue
-        values = value if isinstance(value, (list, tuple)) else [value]
-        for intr in values:
-            interrupts.append(
-                {
-                    "id": getattr(intr, "id", None),
-                    "value": getattr(intr, "value", None),
-                }
+def turn_anchors(boundaries: list[Boundary], tip_id: str) -> list[TurnAnchor]:
+    """The branch's turns, one per boundary of its walk."""
+    anchors: list[TurnAnchor] = []
+    for i, boundary in enumerate(boundaries):
+        is_last = i == len(boundaries) - 1
+        # A resume checkpoint's metadata belongs to the interrupted run,
+        # not the resume turn — don't propagate its run_id/turn_index.
+        metadata = boundary.metadata if boundary.is_input else {}
+        anchors.append(
+            TurnAnchor(
+                turn_ordinal=i,
+                input_checkpoint_id=boundary.checkpoint_id,
+                tail_checkpoint_id=_tail_of_turn(boundaries, i, tip_id),
+                turn_index=metadata.get("turn_index"),
+                run_id=metadata.get("run_id"),
+                end_checkpoint_id=(
+                    tip_id if is_last else boundaries[i + 1].checkpoint_id
+                ),
+                ending_interrupts=[] if is_last else boundaries[i + 1].interrupts,
+                is_resume=not boundary.is_input,
+                parent_checkpoint_id=boundary.parent_checkpoint_id,
             )
-    return interrupts
-
-
-def _new_summarization_event(start_state: Any, end_state: Any) -> dict[str, Any] | None:
-    """The turn's freshly landed ``_summarization_event``, or None.
-
-    Events are identified by their summary message id (uuid-stamped at build);
-    an end-state event matching the start state predates this turn.
-    """
-
-    def _identity(state: Any) -> tuple[Any, Any] | None:
-        event = state.values.get("_summarization_event")
-        if not isinstance(event, dict):
-            return None
-        summary_message = event.get("summary_message")
-        return (getattr(summary_message, "id", None), event.get("cutoff_index"))
-
-    end_event = end_state.values.get("_summarization_event")
-    if isinstance(end_event, dict) and _identity(end_state) != _identity(start_state):
-        return end_event
-    return None
-
-
-def _set_growth(start_state: Any, end_state: Any, key: str) -> int:
-    """How many ids ``key``'s set gained between the two states."""
-    start = start_state.values.get(key) or set()
-    end = end_state.values.get(key) or set()
-    return len(set(end) - set(start))
-
-
-def _new_ui_records(start_state: Any, end_state: Any) -> list[dict[str, Any]]:
-    """``ui``-channel records the end state has that the start state lacks."""
-    start_ids = {
-        r.get("id")
-        for r in (start_state.values.get("ui") or [])
-        if isinstance(r, dict)
-    }
-    return [
-        r
-        for r in (end_state.values.get("ui") or [])
-        if isinstance(r, dict) and r.get("id") not in start_ids
-    ]
+        )
+    return anchors
 
 
 class CheckpointHistoryReader:
@@ -253,15 +196,20 @@ class CheckpointHistoryReader:
 
         _silence_pending_sends_noise()
         self._checkpointer = checkpointer
-        # Same shape the snapshot writer uses, so what it wrote into
-        # task:{id} is what this reads back.
-        self._graph = task_namespace_graph(_ReaderState, checkpointer)
+        # The main agent's own schema, for two reasons: ``aget_state`` only
+        # surfaces channels the reading graph declares, and the ui-record
+        # append writes through this graph, which would erase any primitive
+        # field it left undeclared (see ``main_state``). Same shape the
+        # snapshot writer uses, so what it wrote into task:{id} is what this
+        # reads back. Public: checkpoint storage maintenance decodes channels
+        # through the same declaration.
+        self.graph = task_namespace_graph(MainAgentState, checkpointer)
         # Separate single-node graph for ui-record appends: with exactly one
         # node, aupdate_state auto-attributes the write (no as_node needed),
         # and the update checkpoint carries source="update" — never a turn
         # boundary.
         self._updater = (
-            StateGraph(_ReaderState)
+            StateGraph(MainAgentState)
             .add_node("noop", lambda state: {})
             .add_edge(START, "noop")
             .compile(checkpointer=checkpointer)
@@ -281,127 +229,100 @@ class CheckpointHistoryReader:
     def reset_instance(cls) -> None:
         cls._instance = None
 
-    async def aget_thread_history(
-        self, thread_id: str, branch_tip_checkpoint_id: str | None = None
-    ) -> ThreadHistory:
-        """Materialize per-turn message slices for the current branch.
+    @property
+    def serde(self) -> Any:
+        """The checkpointer's serializer, which stored slices share."""
+        return self._checkpointer.serde
 
-        Turn boundaries are ``source=input`` checkpoints plus HITL resume
-        points (``__resume__`` pending writes) — each persists its own query
-        row, so boundaries stay 1:1 with turns. A boundary checkpoint's state
-        is the thread BEFORE its turn applies (the input/resume rides pending
-        writes), so turn *i* = id-diff between boundary *i* and boundary *i+1*
-        (or the tip). Id-diff, not count-diff, so compaction/REMOVE_ALL is
-        safe.
-        """
-        boundaries, tip_id = await self._current_branch_input_boundaries(
-            thread_id, branch_tip_checkpoint_id
-        )
-        history = ThreadHistory(thread_id=thread_id)
-        if not boundaries or tip_id is None:
-            return history
-
-        # Materialize each boundary state once, plus the branch tip.
-        *boundary_states, tip_state = await self._aget_states_at(
-            thread_id, [b.checkpoint_id for b in boundaries] + [tip_id]
-        )
-        history.turns = self._build_turn_slices(
-            boundaries, boundary_states, tip_id, tip_state
-        )
-        history.interrupts = await self._extract_interrupts(thread_id, tip_id)
-        history.ui = list(tip_state.values.get("ui", []) or [])
-        return history
-
-    async def aget_recent_history(
-        self,
-        thread_id: str,
-        n_turns: int,
-        branch_tip_checkpoint_id: str | None = None,
-    ) -> ThreadHistory:
-        """Materialize only the last ``n_turns`` turns (windowed replay).
-
-        Same id-diff slicing as ``aget_thread_history``, but materializes just
-        the tail boundaries + tip — ``n_turns + 1`` state reads instead of one
-        per turn — so initial-load latency is bounded by the window, not by
-        thread length. ``turn_ordinal`` stays absolute.
-        """
-        boundaries, tip_id = await self._current_branch_input_boundaries(
-            thread_id, branch_tip_checkpoint_id
-        )
-        history = ThreadHistory(thread_id=thread_id)
-        if not boundaries or tip_id is None:
-            return history
-
-        n = max(1, min(n_turns, len(boundaries)))
-        kept = boundaries[-n:]
-        *kept_states, tip_state = await self._aget_states_at(
-            thread_id, [b.checkpoint_id for b in kept] + [tip_id]
-        )
-        history.turns = self._build_turn_slices(
-            kept, kept_states, tip_id, tip_state, ordinal_offset=len(boundaries) - n
-        )
-        history.interrupts = await self._extract_interrupts(thread_id, tip_id)
-        history.ui = list(tip_state.values.get("ui", []) or [])
-        return history
-
-    @staticmethod
-    def _build_turn_slices(
-        boundaries: list[_InputBoundary],
-        states: list[Any],
-        tip_id: str,
-        tip_state: Any,
-        ordinal_offset: int = 0,
-    ) -> list[TurnSlice]:
-        """Id-diff each boundary against the next (or the tip) into a TurnSlice.
-
-        ``boundaries``/``states`` are a contiguous run; the last boundary's end
-        is the tip (callers pass the run that ends at the branch tip).
-        """
-        turns: list[TurnSlice] = []
-        for i, boundary in enumerate(boundaries):
-            start_msgs: list[AnyMessage] = states[i].values.get("messages", [])
-            is_last = i == len(boundaries) - 1
-            end_state = tip_state if is_last else states[i + 1]
-            end_id = tip_id if is_last else boundaries[i + 1].checkpoint_id
-            end_msgs: list[AnyMessage] = end_state.values.get("messages", [])
-
-            start_ids = {m.id for m in start_msgs if m.id is not None}
-            slice_msgs = [m for m in end_msgs if m.id not in start_ids]
-
-            # A stamped injection is not the turn's input: a runtime-update
-            # row lands in the same slice, right after the real user message.
-            user_message = next(
-                (m for m in slice_msgs if is_run_boundary_message(m)), None
+    async def aget_turn_slices(
+        self, thread_id: str, anchors: list[TurnAnchor]
+    ) -> list[slices.TurnSlice]:
+        """Materialize only these turns: each reads its boundary and the
+        state its diff ends at, shared between adjacent turns, so the cost
+        follows the turns asked for rather than the thread's length."""
+        ids = list(
+            dict.fromkeys(
+                cid
+                for a in anchors
+                for cid in (a.input_checkpoint_id, a.end_checkpoint_id)
+                if cid
             )
-            # A resume checkpoint's metadata belongs to the interrupted run,
-            # not the resume turn — don't propagate its run_id/turn_index.
-            metadata = {} if boundary.is_resume else (boundary.metadata or {})
-            turns.append(
-                TurnSlice(
-                    turn_ordinal=ordinal_offset + i,
-                    input_checkpoint_id=boundary.checkpoint_id,
-                    end_checkpoint_id=end_id,
-                    user_message=user_message,
-                    messages=slice_msgs,
-                    run_id=metadata.get("run_id"),
-                    turn_index=metadata.get("turn_index"),
-                    new_summarization_event=_new_summarization_event(
-                        states[i], end_state
+        )
+        states = dict(zip(ids, await self._aget_states_at(thread_id, ids)))
+        return [
+            slices.turn_slice(
+                a,
+                states[a.input_checkpoint_id].values,
+                states[a.end_checkpoint_id].values,
+            )
+            for a in anchors
+        ]
+
+    async def aget_task_runs(self, thread_id: str, task_id: str) -> list[TaskRun]:
+        """A task namespace's runs, oldest first, from a light walk.
+
+        Each spawn or resume opens a run at a ``source=input`` boundary
+        stamped with its ledger run id; any other boundary resumes the run
+        before it.
+        """
+        boundaries, tip_id = await walk_current_branch_boundaries(
+            self._checkpointer, thread_id, checkpoint_ns=f"task:{task_id}"
+        )
+        if not boundaries or tip_id is None:
+            return []
+        starts = [b for i, b in enumerate(boundaries) if i == 0 or b.is_input]
+        runs: list[TaskRun] = []
+        for k, start in enumerate(starts):
+            nxt = starts[k + 1] if k + 1 < len(starts) else None
+            stamp = start.metadata.get("task_run_id")
+            runs.append(
+                TaskRun(
+                    task_id=task_id,
+                    ordinal=k,
+                    input_checkpoint_id=start.checkpoint_id,
+                    end_checkpoint_id=nxt.checkpoint_id if nxt else tip_id,
+                    tail_checkpoint_id=(
+                        (nxt.parent_checkpoint_id or nxt.checkpoint_id)
+                        if nxt
+                        else tip_id
                     ),
-                    newly_offloaded_args=_set_growth(
-                        states[i], end_state, "_offloaded_tool_call_ids"
-                    ),
-                    newly_offloaded_reads=_set_growth(
-                        states[i], end_state, "_offloaded_read_result_ids"
-                    ),
-                    ending_interrupts=(
-                        [] if is_last else boundaries[i + 1].interrupts
-                    ),
-                    new_ui_records=_new_ui_records(states[i], end_state),
-                    tail_checkpoint_id=_tail_of_turn(boundaries, i, tip_id),
+                    task_run_id=str(stamp) if stamp else None,
                 )
             )
-        return turns
+        return runs
+
+    async def aget_run_slices(
+        self, thread_id: str, task_id: str, runs: list[TaskRun]
+    ) -> list[slices.SpanDelta]:
+        """What each run added to its namespace, two state reads per run,
+        shared between adjacent runs. Diffing each run's own boundaries keeps
+        early runs whole after the namespace compacts them away."""
+        ids = list(
+            dict.fromkeys(
+                cid for r in runs for cid in (r.input_checkpoint_id, r.end_checkpoint_id)
+            )
+        )
+        semaphore = asyncio.Semaphore(_STATE_READ_CONCURRENCY)
+
+        async def _one(checkpoint_id: str) -> Any:
+            async with semaphore:
+                return await self.graph.aget_state(
+                    {
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_ns": f"task:{task_id}",
+                            "checkpoint_id": checkpoint_id,
+                        }
+                    }
+                )
+
+        states = dict(zip(ids, await asyncio.gather(*(_one(c) for c in ids))))
+        return [
+            slices.delta(
+                states[r.input_checkpoint_id].values, states[r.end_checkpoint_id].values
+            )
+            for r in runs
+        ]
 
     async def append_ui_record(
         self, thread_id: str, name: str, props: dict[str, Any]
@@ -417,16 +338,10 @@ class CheckpointHistoryReader:
 
         The image-capture hook runs after the turn finalized, so the append
         sits beyond the recorded branch tip where the replay walk cannot see
-        it — the recorded tip is CAS-advanced onto the new checkpoint (no-op
-        when a concurrent turn or branch switch moved the tip first).
-
-        The append is anchored to the tip it read rather than to the
-        checkpointer's latest, because the same value is also the CAS guard:
-        left unanchored, a turn that starts on another worker between the read
-        and the write re-parents the record onto that turn's uncommitted
-        checkpoint while the CAS still passes, publishing partial state as the
-        thread's commit pointer. Anchoring costs a dead-branch record when the
-        tip moves — which is the no-op case this already accepts.
+        it: it is written at the tip read here and the recorded tip
+        CAS-advanced onto it (``update_at_commit``). A concurrent turn or
+        branch switch that moved the tip first leaves a dead-branch record,
+        and a thread with no checkpoint gets none.
         """
         try:
             tip = await self._checkpointer.aget_tuple(
@@ -457,52 +372,23 @@ class CheckpointHistoryReader:
             "props": props,
             "metadata": {},
         }
-        tip_cfg = (tip.config.get("configurable") or {}) if tip is not None else {}
-        built_on = tip_cfg.get("checkpoint_id")
-        configurable: dict[str, Any] = {"thread_id": thread_id}
-        if built_on:
-            # The saver keys a write by (thread_id, checkpoint_ns, checkpoint_id),
-            # so the namespace has to ride along with the id.
-            configurable["checkpoint_ns"] = tip_cfg.get("checkpoint_ns", "")
-            configurable["checkpoint_id"] = built_on
-        new_config = await self._updater.aupdate_state(
-            {"configurable": configurable}, {"ui": [record]}
+        built_on = (
+            (tip.config.get("configurable") or {}).get("checkpoint_id") if tip else None
         )
-        await self._advance_branch_tip(thread_id, built_on, new_config)
-
-    async def _advance_branch_tip(
-        self, thread_id: str, built_on: str | None, new_config: Any
-    ) -> None:
-        """CAS the recorded tip from the checkpoint the append was anchored to.
-
-        ``built_on`` is the caller's write anchor, not a re-read: passing the
-        same value to both is what keeps the guard honest.
-        """
-        from src.server.database.conversation.threads_write import (
-            advance_thread_checkpoint_id,
-        )
-
-        new_id = ((new_config or {}).get("configurable") or {}).get(
-            "checkpoint_id"
-        )
-        if not new_id:
-            return
-        await advance_thread_checkpoint_id(
-            thread_id, from_checkpoint_id=built_on, to_checkpoint_id=new_id
-        )
+        await update_at_commit(self._updater, thread_id, built_on, {"ui": [record]})
 
     async def aget_state(self, thread_id: str, checkpoint_id: str | None = None):
         """The thread's state at ``checkpoint_id``, or at its latest checkpoint."""
         configurable = {"thread_id": thread_id}
         if checkpoint_id:
             configurable["checkpoint_id"] = checkpoint_id
-        return await self._graph.aget_state({"configurable": configurable})
+        return await self.graph.aget_state({"configurable": configurable})
 
     async def aget_task_history(
         self, thread_id: str, task_id: str
     ) -> TaskHistory:
         """Materialize replay-relevant state from a ``task:{task_id}`` namespace."""
-        snapshot = await self._graph.aget_state(
+        snapshot = await self.graph.aget_state(
             {
                 "configurable": {
                     "thread_id": thread_id,
@@ -510,29 +396,11 @@ class CheckpointHistoryReader:
                 }
             }
         )
-        values = snapshot.values
-        summarization_event = values.get("_summarization_event")
         return TaskHistory(
-            messages=list(values.get("messages", []) or []),
             checkpoint_id=(snapshot.config or {})
             .get("configurable", {})
             .get("checkpoint_id"),
-            new_summarization_event=(
-                summarization_event
-                if isinstance(summarization_event, dict)
-                else None
-            ),
-            newly_offloaded_args=len(
-                set(values.get("_offloaded_tool_call_ids") or ())
-            ),
-            newly_offloaded_reads=len(
-                set(values.get("_offloaded_read_result_ids") or ())
-            ),
-            new_ui_records=[
-                record
-                for record in (values.get("ui") or [])
-                if isinstance(record, dict)
-            ],
+            **vars(slices.delta({}, snapshot.values)),
         )
 
     async def alatest_checkpoint_id(
@@ -548,49 +416,19 @@ class CheckpointHistoryReader:
             return None
         return (tip.config.get("configurable") or {}).get("checkpoint_id")
 
-    async def aget_task_run_stamps(
-        self, thread_id: str, task_id: str
-    ) -> list[str | None]:
-        """Per-run ``task_run_id`` stamps for a task namespace, oldest-first.
-
-        Each spawn/resume writes a ``source=input`` boundary whose metadata
-        carries the execution's ledger identity (stamped at spawn via the
-        child-graph config) — stamp k belongs to run segment k of the
-        namespace transcript. None entries are pre-ledger runs.
-        """
-        boundaries, _tip = await walk_current_branch_boundaries(
-            self._checkpointer,
-            thread_id,
-            checkpoint_ns=f"task:{task_id}",
-        )
-        return [(b.metadata or {}).get("task_run_id") for b in boundaries]
-
     async def aget_turn_anchors(
         self, thread_id: str, branch_tip_checkpoint_id: str | None = None
     ) -> tuple[list[TurnAnchor], str | None]:
-        """Turn identities on the current branch — light walk, no state reads.
-
-        Lets the projection cache pair and key turns without materializing
-        any checkpoint state.
-        """
-        boundaries, tip_id = await self._current_branch_input_boundaries(
-            thread_id, branch_tip_checkpoint_id
+        """Turn identities on the current branch — light walk, no state reads."""
+        boundaries, tip_id = await walk_current_branch_boundaries(
+            self._checkpointer,
+            thread_id,
+            branch_tip_checkpoint_id,
+            strict_branch_tip=branch_tip_checkpoint_id is not None,
         )
         if not boundaries or tip_id is None:
             return [], tip_id
-        anchors: list[TurnAnchor] = []
-        for i, boundary in enumerate(boundaries):
-            metadata = {} if boundary.is_resume else (boundary.metadata or {})
-            anchors.append(
-                TurnAnchor(
-                    turn_ordinal=i,
-                    input_checkpoint_id=boundary.checkpoint_id,
-                    tail_checkpoint_id=_tail_of_turn(boundaries, i, tip_id),
-                    turn_index=metadata.get("turn_index"),
-                    run_id=metadata.get("run_id"),
-                )
-            )
-        return anchors, tip_id
+        return turn_anchors(boundaries, tip_id), tip_id
 
     async def aget_tip_interrupts(
         self, thread_id: str, tip_checkpoint_id: str
@@ -598,17 +436,8 @@ class CheckpointHistoryReader:
         """Pending (unanswered) interrupts at the branch tip."""
         return await self._extract_interrupts(thread_id, tip_checkpoint_id)
 
-    async def acount_input_boundaries(
-        self, thread_id: str, branch_tip_checkpoint_id: str | None = None
-    ) -> int:
-        """Number of turn boundaries on the current branch (auto-mode coverage)."""
-        boundaries, _ = await self._current_branch_input_boundaries(
-            thread_id, branch_tip_checkpoint_id
-        )
-        return len(boundaries)
-
     async def _aget_state_at(self, thread_id: str, checkpoint_id: str):
-        return await self._graph.aget_state(
+        return await self.graph.aget_state(
             {"configurable": {"thread_id": thread_id, "checkpoint_id": checkpoint_id}}
         )
 
@@ -623,37 +452,6 @@ class CheckpointHistoryReader:
                 return await self._aget_state_at(thread_id, checkpoint_id)
 
         return list(await asyncio.gather(*(_one(cid) for cid in checkpoint_ids)))
-
-    async def _current_branch_input_boundaries(
-        self, thread_id: str, branch_tip_checkpoint_id: str | None
-    ) -> tuple[list[_InputBoundary], str | None]:
-        """Turn boundaries on the current branch, as ``_InputBoundary`` records.
-
-        Wraps the canonical ``walk_current_branch_boundaries`` — every boundary
-        is a ``source=input`` checkpoint or (by construction of the walk) a HITL
-        resume, so ``is_resume`` is simply "not input".
-        """
-        boundaries, tip_id = await walk_current_branch_boundaries(
-            self._checkpointer,
-            thread_id,
-            branch_tip_checkpoint_id,
-            strict_branch_tip=branch_tip_checkpoint_id is not None,
-        )
-        records = [
-            _InputBoundary(
-                checkpoint_id=cp.config["configurable"]["checkpoint_id"],
-                metadata=dict(cp.metadata or {}),
-                is_resume=(cp.metadata or {}).get("source") != "input",
-                interrupts=_interrupt_writes(cp),
-                parent_checkpoint_id=(
-                    (cp.parent_config or {})
-                    .get("configurable", {})
-                    .get("checkpoint_id")
-                ),
-            )
-            for cp in boundaries
-        ]
-        return records, tip_id
 
     async def _extract_interrupts(
         self, thread_id: str, tip_checkpoint_id: str
@@ -672,4 +470,4 @@ class CheckpointHistoryReader:
                 }
             }
         )
-        return _interrupt_writes(cp_tuple)
+        return interrupt_records(cp_tuple.pending_writes if cp_tuple else None)

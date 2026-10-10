@@ -60,7 +60,7 @@ async def get_subagent_task_history(
     transcript belongs to its live stream).
     """
     await auth_api.require_thread_owner(thread_id, x_user_id)
-    from src.server.services.history.replay.task_lane import (
+    from src.server.services.history.replay.run_lane import (
         project_task_transcript,
     )
 
