@@ -600,6 +600,26 @@ def computer_tier_relative_path(path: str | None) -> str | None:
     return None
 
 
+def grep_working_dir(search_path: str, *, folder: str, root: str) -> str:
+    """The directory Grep runs rg in, which is where rg matches a ``glob``
+    filter from: the computer root for a search of the root's ``.agents`` or
+    below, and the turn's folder for any other.
+
+    rg matches the filter against each path relative to its directory. The
+    root's ``.agents`` holds the computer tier, whose files Grep prints as
+    ``/.agents/...``, spelled from the root, so ``.agents/tmp/*.csv`` matches
+    them as printed; from the folder they would sit outside rg's directory
+    and meet the filter by their whole absolute path. The root itself and the
+    other folders keep the folder, where Bash starts.
+    """
+    root = root.rstrip("/")
+    agents = f"{root}/{SandboxLayout.AGENTS_DIR}"
+    path = search_path.rstrip("/")
+    if path == agents or path.startswith(f"{agents}/"):
+        return root or "/"
+    return folder
+
+
 def strip_previous_dir_name(
     relative: str, previous_dir_names: Sequence[str]
 ) -> str | None:

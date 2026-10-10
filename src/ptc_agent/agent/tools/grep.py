@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool, tool
 
 from ptc_agent.agent.backends import FilesystemBackend
 from ptc_agent.core.paths import logged_path
+from ptc_agent.core.sandbox.grep_render import GrepLine
 from src.observability.private_errors import failure
 
 logger = structlog.get_logger(__name__)
@@ -123,13 +124,11 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
             elif output_mode == "content":
                 result = f"Matches for pattern '{pattern}':\n\n"
                 for entry in results:
-                    # Content entries may contain file paths - virtualize them
-                    # Format is typically "filepath:line:content" or just content
-                    if isinstance(entry, str) and ":" in entry:
-                        parts = entry.split(":", 2)
-                        if len(parts) >= 2:
-                            virtual_path = backend.virtualize_path(parts[0])
-                            entry = ":".join([virtual_path, *parts[1:]])
+                    # A line names its file by the path it holds, as a path
+                    # may hold the `:` or `-` that ends it in the text. A
+                    # group's `--` and an error name none.
+                    if isinstance(entry, GrepLine):
+                        entry = entry.at(backend.virtualize_path(entry.path))
                     result += f"{entry}\n"
             elif output_mode == "count":
                 result = f"Match counts for pattern '{pattern}':\n"

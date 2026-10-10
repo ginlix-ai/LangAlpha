@@ -223,8 +223,9 @@ class TestSearchFanOut:
         matches = await composite.aglob_paths("*.md", WORKING_DIR)
         # Sandbox-returned matches are included
         assert f"{WORKING_DIR}/work/sandbox_match.md" in matches
-        # Memory-tier matches are included too
-        assert USER_PREFIX + "a.md" in matches
+        # The workspace's memory is included too, but not the user tier's,
+        # whose folder is the file mount's link, which a wildcard passes by
+        assert USER_PREFIX + "a.md" not in matches
         assert WORKSPACE_PREFIX + "b.md" in matches
 
     @pytest.mark.asyncio

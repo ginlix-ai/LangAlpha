@@ -315,10 +315,20 @@ class DbJsonRoute:
         """The name of every file there is, the README aside."""
         return sorted(cls.files)
 
+    @property
+    def fixed_names(self) -> frozenset[str] | None:
+        """Every name a file here can take, the README's too. They are the
+        same for every user, so a search knows them without a read."""
+        return self.data_files | {README_FILE}
+
     @classmethod
     async def rendered(cls, user_id: str) -> dict[str, tuple[str, str]]:
         """Every file there is, by name: its content and version."""
-        names = sorted(cls.files)
+        return await cls._render(user_id, sorted(cls.files))
+
+    @classmethod
+    async def _render(cls, user_id: str, names: list[str]) -> dict[str, tuple[str, str]]:
+        """``rendered`` for the files ``names`` alone, fetching no other."""
         files = [cls.files[name] for name in names]
         fetched = await asyncio.gather(*(file.fetch(user_id) for file in files))
         return {
@@ -823,7 +833,14 @@ class DbJsonRoute:
         # are accepted for signature parity with the sandbox grep but are not
         # honored: these files are small JSON documents the agent should
         # just Read whole instead of grep-context-paging.
-        if not self._covers(self.normalize_path(path)):
+        normalized = self.normalize_path(path)
+        if not self._covers(normalized):
+            return []
+        # A path at one file searches that file alone, as on disk, and a
+        # path at no file here finds nothing.
+        whole = normalized.rstrip("/") == self._root_prefix.rstrip("/")
+        only = None if whole else self._filename(normalized)
+        if not whole and only is None:
             return []
 
         flags = re.IGNORECASE if case_insensitive else 0
@@ -832,8 +849,19 @@ class DbJsonRoute:
         except re.error:
             return []
 
+        def searched(filename: str) -> bool:
+            if only is not None and filename != only:
+                return False
+            absolute = self._absolute(filename)
+            return not glob or fnmatch.fnmatch(filename, glob) or fnmatch.fnmatch(absolute, glob)
+
         try:
-            live = await self.rendered(self._user_id)
+            if self.fixed_names is None:
+                # The rows name the files, so all of them are read.
+                live = await self.rendered(self._user_id)
+            else:
+                names = [name for name in sorted(self.files) if searched(name)]
+                live = await self._render(self._user_id, names)
         except Exception:
             logger.exception("db json route listing failed", path=self._root_prefix)
             live = {}
@@ -843,12 +871,11 @@ class DbJsonRoute:
             # Grep is no Read a Write can stand on.
             served = self._read_cache.get(filename)
             contents[filename] = served.content if served else content
-        texts: list[tuple[str, str]] = []
-        for filename, content in sorted(contents.items()):
-            absolute = self._absolute(filename)
-            if glob and not fnmatch.fnmatch(filename, glob) and not fnmatch.fnmatch(absolute, glob):
-                continue
-            texts.append((absolute, content))
+        texts = [
+            (self._absolute(filename), content)
+            for filename, content in sorted(contents.items())
+            if searched(filename)
+        ]
         return grep_texts(
             texts, compiled, output_mode, show_line_numbers=show_line_numbers, head_limit=head_limit, offset=offset
         )

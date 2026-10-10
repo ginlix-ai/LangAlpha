@@ -1755,5 +1755,6 @@ class PTCSandbox:
         multiline: bool = False,
         head_limit: int | None = None,
         offset: int = 0,
+        folder: str | None = None,
     ) -> Any:
-        return await _files.agrep_content(self, pattern, path, output_mode, glob, type, case_insensitive=case_insensitive, show_line_numbers=show_line_numbers, lines_after=lines_after, lines_before=lines_before, lines_context=lines_context, multiline=multiline, head_limit=head_limit, offset=offset)
+        return await _files.agrep_content(self, pattern, path, output_mode, glob, type, case_insensitive=case_insensitive, show_line_numbers=show_line_numbers, lines_after=lines_after, lines_before=lines_before, lines_context=lines_context, multiline=multiline, head_limit=head_limit, offset=offset, folder=folder)

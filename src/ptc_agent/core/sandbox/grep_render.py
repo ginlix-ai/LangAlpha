@@ -4,6 +4,38 @@ import base64
 import json
 from typing import Any
 
+
+class GrepLine(str):
+    """A line Grep prints in content mode, holding the path of the file it is
+    from. A path may hold the ``:`` and ``-`` that end it in the line, so the
+    path is never read back out of the text.
+
+    ``named`` is whether the line starts with the path, which rg leaves off
+    when it searches the one file it was given.
+    """
+
+    __slots__ = ("path", "named")
+
+    path: str
+    named: bool
+
+    def __new__(cls, text: str, path: str, named: bool = True) -> "GrepLine":
+        line = super().__new__(cls, text)
+        line.path = path
+        line.named = named
+        return line
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (GrepLine, (str(self), self.path, self.named))
+
+    def at(self, path: str) -> "GrepLine":
+        """The line with its file spelled ``path``."""
+        if path == self.path:
+            return self
+        text = path + self[len(self.path) :] if self.named else str(self)
+        return GrepLine(text, path, self.named)
+
+
 # A matching line can be a whole JSON event or a minified bundle, and one line
 # returned whole can outweigh the model's context. Past this many characters a
 # line comes back as windows around its first few matches.
@@ -51,7 +83,8 @@ def _cut_grep_line(line: bytes, spans: list[tuple[int, int]]) -> str:
 def render_grep_json(
     output: str, search_path: str, *, line_numbers: bool, grouped: bool
 ) -> list[str]:
-    """rg ``--json`` events as the lines plain rg prints, long lines cut.
+    """rg ``--json`` events as the lines plain rg prints, long lines cut,
+    each a ``GrepLine``; a ``--`` between groups and an error are plain.
 
     rg writes its errors (a pattern it rejects, a missing or unreadable path)
     as plain text on stderr, which the exec folds into the output. They follow
@@ -97,7 +130,7 @@ def render_grep_json(
             prefix = f"{path}{sep}" if named else ""
             if line_numbers:
                 prefix += f"{number}{sep}"
-            lines.append(prefix + _cut_grep_line(line, own))
+            lines.append(GrepLine(prefix + _cut_grep_line(line, own), path, named))
             begin = end + 1
             last = (path, number)
     return lines + errors

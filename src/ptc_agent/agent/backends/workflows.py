@@ -26,6 +26,7 @@ from ptc_agent.agent.backends.langgraph_store import (
 )
 from ptc_agent.agent.backends.results import EditTextResult
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.core.sandbox.grep_render import GrepLine
 
 logger = structlog.get_logger(__name__)
 
@@ -353,9 +354,9 @@ class WorkflowsBackend:
         builtin = await self._prebuilt.agrep_rich(pattern, path, **kwargs)
         shadowed = await self._saved_paths()
 
-        def _path_of(entry: Any) -> str:
+        def _path_of(entry: Any) -> str | None:
             if output_mode == "content":
-                return str(entry).split(":", 1)[0]
+                return entry.path if isinstance(entry, GrepLine) else None
             if output_mode == "count":
                 return str(entry[0])
             return str(entry)

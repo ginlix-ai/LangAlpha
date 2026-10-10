@@ -48,7 +48,7 @@ Use Bash for anything outside the workspaces and `/tmp`. Tool output prints your
 ## Search
 
 - **Glob**: a pattern with no `/` searches every depth, and results come newest first, at most 1000. Dependency and cache folders (`node_modules`, `.venv`, `venv`, `vendor`, `.git`, `.cache`, `__pycache__` and similar) are skipped at any depth, and so are the history folders under `.agents/` (`threads/`, `transcripts/`, `large_tool_results/`, `scratchpad/`) unless the pattern or `path` spells them out. Braces do not expand: `*.{csv,json}` matches nothing, so run one pattern per extension.
-- **Grep**: skips hidden and git-ignored files and folders unless `path` points inside one. `.agents/memory/` is the exception and is searched by default. Content mode cuts a line over 500 characters to windows around its first matches.
+- **Grep**: skips hidden and git-ignored files and folders unless `path` points inside one. `.agents/memory/` is the exception and is searched by default. Its `glob` matches each path as Grep prints it, from your workspace, not from `path`, and takes rg's syntax: `!*.json` excludes and `*.{md,json}` expands. Content mode cuts a line over 500 characters to windows around its first matches. A sibling's files print as absolute paths, so start a filter for them with `**/`, as in `**/<sibling>/*.md`.
 - Data-server docs and shared skills are links, which Grep and a pattern starting `**/` do not follow. Spell the folder in the pattern, for example Glob `.agents/tools/docs/**/*.md`, or Read the file directly.
 
 ## Memory, memos, profile, workflows and automations live on the server
@@ -57,11 +57,10 @@ Use Bash for anything outside the workspaces and `/tmp`. Tool output prints your
 
 - With the mount up they are ordinary files at the same paths. A save the server refuses (invalid JSON, a file changed since you read it) does not fail the command: the tool result lists it under NOT SAVED, so check there before relying on the write. In the profile and automations folders, save in place: `sed -i` and write-then-rename helpers write a temporary file first, which the profile folder refuses, as does the automations folder for a name without `.json`, like sed's. A temporary `.json` file there is saved as an automation of its own, and moving it onto the original is refused, so `rm` it.
 - Without the mount, ExecuteCode and Bash refuse a call whose text names a memory, memo or automations path, even in a comment. Read the file first and put what you need into the code.
-- From the workspace, Glob and Grep reach `.agents/memory/` by default; set `path` to `.agents/user` for the rest.
+- Glob finds them by their path from the workspace, such as `.agents/user/profile/*`. Like the links above, `.agents/user` and `.agents/workflows` are not followed by a pattern starting `**/`, so `**/*.json` skips them. Grep searches `.agents/memory/` by default; set `path` to `.agents/user` or `.agents/workflows` for the rest.
 - A file holds at most 256 KB. Each part of a name uses only ASCII letters, digits and `- _ . @ + ~`, so no spaces; subfolders are fine.
 - The file tools cannot delete a memory file; `rm` through the mount can. To retire one without it, remove its line from `memory.md` and overwrite the file with what is still true.
 - Your context holds a copy of `memory.md` (its first 32,768 characters) taken when the thread starts. A change, by you or another thread, reaches it as a diff at the next turn. Read always returns the current file.
-- With `path` set to one of these folders, `*` also matches `/`: Glob `*.md` finds every file, and `**/*.md` misses the top-level ones.
 - Read a memo by its relative path, `.agents/user/memo/<file>`. Memo names are lowercase, and a PDF memo is stored as text with `--- Page N ---` markers, skipping pages that had no text.
 
 ## What the user sees

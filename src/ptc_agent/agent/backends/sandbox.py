@@ -48,6 +48,7 @@ from deepagents.backends.protocol import (
 from ptc_agent.agent.backends.results import EditTextResult
 from ptc_agent.core.paths import resolve_agent_path
 from ptc_agent.core.sandbox import ExecutionResult, PTCSandbox
+from ptc_agent.core.sandbox.grep_render import GrepLine
 from ptc_agent.core.sandbox.livefs_mount import MountHandle
 from ptc_agent.core.sandbox.runtime import PreviewInfo
 
@@ -374,6 +375,18 @@ class SandboxBackend(SandboxBackendProtocol):
                 )
                 continue
 
+            if isinstance(item, GrepLine):
+                # The path is held apart, as it may hold a `:` itself.
+                rest = item[len(item.path) + 1 :] if item.named else str(item)
+                number, _, text = rest.partition(":")
+                if number.isdigit():
+                    matches.append(
+                        cast(GrepMatch, {"path": item.path, "line": int(number), "text": text})
+                    )
+                else:
+                    matches.append(cast(GrepMatch, {"path": item.path, "line": 0, "text": rest}))
+                continue
+
             if isinstance(item, str) and ":" in item:
                 parts = item.split(":", 2)
                 if len(parts) >= 3:
@@ -407,6 +420,7 @@ class SandboxBackend(SandboxBackendProtocol):
                 output_mode="content",
                 glob=glob,
                 show_line_numbers=True,
+                folder=self.workspace_dir,
             )
         except Exception as exc:
             logger.debug("agrep failed", pattern=pattern, error=str(exc))
@@ -589,7 +603,8 @@ class SandboxBackend(SandboxBackendProtocol):
 
         Used by the Grep tool to preserve its full feature set. The
         protocol-surface `agrep` above is a thin adapter that only exposes
-        (pattern, path, glob) per the deepagents contract.
+        (pattern, path, glob) per the deepagents contract. rg runs from this
+        backend's folder, which the composite matches a filter from as well.
         """
         return await self.sandbox.agrep_content(
             pattern=pattern,
@@ -605,6 +620,7 @@ class SandboxBackend(SandboxBackendProtocol):
             multiline=multiline,
             head_limit=head_limit,
             offset=offset,
+            folder=self.workspace_dir,
         )
 
     async def aglob_paths(self, pattern: str, path: str = ".") -> list[str]:
