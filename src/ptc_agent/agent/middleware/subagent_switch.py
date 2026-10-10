@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Annotated, Any, NotRequired
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ToolCallRequest
+from langchain.agents.middleware.types import AgentState, PrivateStateAttr, ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
@@ -53,6 +53,13 @@ SUBAGENTS_REFUSAL = (
 SubagentSwitchReader = Callable[[], Awaitable[bool | None]]
 
 
+class SubagentSwitchState(AgentState):
+    """``_subagents_trimmed`` is set once the window trims a notice (see
+    ``compaction.window``), so that one was ever written outlives it."""
+
+    _subagents_trimmed: Annotated[NotRequired[bool], PrivateStateAttr]
+
+
 def last_announced(state: Any) -> bool | None:
     """The switch as the last notice the model can still read stated it.
 
@@ -64,15 +71,31 @@ def last_announced(state: Any) -> bool | None:
     stated = last_stated(state, SUBAGENTS_ROW_KIND, "allowed")
     if stated is not None:
         return stated is not False
-    for message in state_get(state, "messages") or ():
+    if state_get(state, "_subagents_trimmed") or _has_notice(state_get(state, "messages") or ()):
+        return None
+    return True
+
+
+def _has_notice(messages: Sequence[Any]) -> bool:
+    for message in reversed(messages):
         row = runtime_update_from_message(message)
         if row is not None and row.kind == SUBAGENTS_ROW_KIND:
-            return None
-    return True
+            return True
+    return False
+
+
+def subagents_window_carry(trimmed: Sequence[Any], state: Mapping[str, Any]) -> dict[str, Any]:
+    """The window's carry (see ``compaction.window``) for the notices it
+    trims, which ``last_announced`` would otherwise read as never written."""
+    if state.get("_subagents_trimmed") or not _has_notice(trimmed):
+        return {}
+    return {"_subagents_trimmed": True}
 
 
 class SubagentSwitchMiddleware(AgentMiddleware):
     """Announces the user's subagent switch in history and holds launches to it."""
+
+    state_schema = SubagentSwitchState
 
     def __init__(self, read: SubagentSwitchReader) -> None:
         super().__init__()

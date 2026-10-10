@@ -36,6 +36,7 @@ from ptc_agent.agent.transcript.classify import (
     is_run_boundary_message,
     is_summary_message,
 )
+from ptc_agent.agent.transcript import Window
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
 from ptc_agent.agent.transcript.render import message_turns, visible_text
 
@@ -178,13 +179,17 @@ def server_summary(
     *,
     raw_messages: Sequence[AnyMessage],
     turns: TranscriptTurns | None,
+    window: Window,
 ) -> Summary:
     """A summary built without a model: each request and the reply to it,
     the newest first to stay when they do not all fit, plus an earlier
     summary and the todo list. ``turns`` is set when the transcript is
-    readable, and names the file each turn is in."""
+    readable, and names the file each turn is in. ``window`` is what was
+    trimmed from the head of ``raw_messages``."""
     head = list(to_summarize[:1]) if to_summarize and is_summary_message(to_summarize[0]) else []
-    numbers = turns.turns if turns is not None else message_turns(raw_messages)
+    numbers = (
+        turns.turns if turns is not None else message_turns(raw_messages, base=window.runs)
+    )
     covered: set[str] = set()
     sections: list[str] = []
     budget = _SERVER_CHARS

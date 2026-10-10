@@ -59,7 +59,7 @@ from ptc_agent.agent.middleware.compaction.offloading import (
     select_offloads,
     tool_call_ids,
 )
-from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.agent.transcript.pointer import (
     TranscriptTurns,
     aexport_transcript,
@@ -147,10 +147,11 @@ class Summarizer:
         fallback: Any | None,
         thread_id: str | None = None,
         notes_dir: str | None = None,
+        window: Window,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, ``messages`` being the
-        agent's whole checkpoint list, from this model, ``fallback`` or the
-        server (see ``summarize``).
+        agent's checkpoint list (what ``window`` trimmed of it aside), from
+        this model, ``fallback`` or the server (see ``summarize``).
 
         The transcript is saved first: the summary cites its turn files and
         ends pointing at it only if that save lands and ``workspace_id``'s
@@ -163,9 +164,14 @@ class Summarizer:
         started = time.monotonic()
         budget = get_compaction_timeout()
         exported = await aexport_transcript(
-            backend, transcript, messages, workspace_id=workspace_id, budget=budget
+            backend,
+            transcript,
+            messages,
+            workspace_id=workspace_id,
+            budget=budget,
+            window=window,
         )
-        turns = TranscriptTurns.of(exported, messages) if exported else None
+        turns = TranscriptTurns.of(exported, messages, window=window) if exported else None
 
         async def render(trimmed: list[AnyMessage]) -> list[AnyMessage]:
             trimmed = await aoffload_base64_content(backend, trimmed, thread_id=thread_id)
@@ -184,7 +190,11 @@ class Summarizer:
                     to_summarize, limit=self.limit, counter=self.counter, render=render
                 ),
                 server=lambda: server_summary(
-                    to_summarize, preserved, raw_messages=messages, turns=turns
+                    to_summarize,
+                    preserved,
+                    raw_messages=messages,
+                    turns=turns,
+                    window=window,
                 ),
                 budget=remaining,
             )
@@ -261,8 +271,8 @@ async def compact_messages(
     notes_dir: str | None = None,
 ) -> Compaction:
     """Manual /compact: summarize all but the last ``keep_messages`` of the
-    view, ``messages`` being the thread's whole checkpoint list and ``state``
-    its values. The user's main model is tried when the summary model fails.
+    view, ``messages`` being the thread's checkpoint list and ``state`` its
+    values. The user's main model is tried when the summary model fails.
     ``notes_dir`` is the thread's scratchpad notes folder when the
     scratchpad feature is on.
 
@@ -301,6 +311,7 @@ async def compact_messages(
         fallback=_main_client(config),
         thread_id=thread_id,
         notes_dir=notes_dir,
+        window=Window.of(state),
     )
 
 
@@ -348,7 +359,11 @@ async def offload_tool_args(
         if transcript is None:
             arg_ids = set()
         elif await aexport_transcript(
-            backend, transcript, messages, workspace_id=workspace_id
+            backend,
+            transcript,
+            messages,
+            workspace_id=workspace_id,
+            window=Window.of(state),
         ) is None:
             if not read_ids:
                 # A failure to retry, not "nothing to offload": the caller

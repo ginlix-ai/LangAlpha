@@ -30,7 +30,7 @@ class _Mount:
     def __init__(self, outcome):
         self.outcome = outcome
 
-    async def save_transcript(self, target, messages):
+    async def save_transcript(self, target, messages, *, window):
         if self.outcome == "raises":
             raise ConnectionError("store down")
         if self.outcome == "hangs":

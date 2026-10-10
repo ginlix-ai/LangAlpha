@@ -22,7 +22,7 @@ from ptc_agent.agent.middleware.compaction.utils import (
     strip_base64_from_messages,
     truncate_tool_call,
 )
-from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.agent.transcript.pointer import TranscriptTurns
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ def offload_view(
     effective = get_effective_messages(messages, state.get("_summarization_event"))
     arg_ids, read_ids = recorded_offloads(state)
     turns = (
-        TranscriptTurns.of(transcript, messages)
+        TranscriptTurns.of(transcript, messages, window=Window.of(state))
         if arg_ids and transcript is not None
         else None
     )

@@ -445,7 +445,9 @@ def compute_already_loaded(
         return set()
 
     event = summarization_event
-    if not isinstance(event, dict) or not event.get("cutoff_index"):
+    # Presence, not the boundary's index: once the window trims the history
+    # (compaction.window), a summary's boundary can sit at index 0.
+    if not isinstance(event, dict):
         return loaded_set
 
     from ptc_agent.agent.middleware.compaction import get_effective_messages

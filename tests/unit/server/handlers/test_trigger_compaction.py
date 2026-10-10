@@ -101,13 +101,12 @@ def _stub_resolve_graph_and_state():
     state.values = {"_summarization_event": None}
     messages = [MagicMock(id="m1"), MagicMock(id="m2")]
     backend = None
-    lg_config = {"configurable": {"thread_id": "thread-1"}}
 
     async def _stub(thread_id, verb, config=None, checkpointer=None, user_id=None, held=None):
         _stub.captured_config = config
         _stub.captured_checkpointer = checkpointer
         _stub.captured_user_id = user_id
-        return graph, lg_config, state, messages, "ws-1", backend
+        return graph, state, messages, "ws-1", backend
 
     _stub.captured_config = None
     _stub.captured_checkpointer = None

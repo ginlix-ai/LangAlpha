@@ -35,7 +35,7 @@ from typing import Any
 
 from langchain_core.messages import AnyMessage
 
-from ptc_agent.agent.transcript import TranscriptTarget
+from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox import livefs_mount
 from ptc_agent.core.sandbox.livefs_mount import CallContext, MountOutcome
@@ -593,9 +593,9 @@ class Handle:
         return await livefs_mount.answers(self._sandbox) is False
 
     async def save_transcript(
-        self, target: TranscriptTarget, messages: Sequence[AnyMessage]
+        self, target: TranscriptTarget, messages: Sequence[AnyMessage], *, window: Window
     ) -> bool:
-        return await transcripts.save_live(target, messages)
+        return await transcripts.save_live(target, messages, window=window)
 
 
 async def restarted(computer_id: Any, sandbox_id: str) -> None:

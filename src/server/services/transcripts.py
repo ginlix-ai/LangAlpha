@@ -20,14 +20,16 @@ import json
 import logging
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AnyMessage
 
 from ptc_agent.agent.transcript import (
+    EarlierTurnsMissing,
     TranscriptTarget,
+    Window,
     build_directory,
     load_manifest,
 )
@@ -143,13 +145,17 @@ class _Job:
     checkpoint_id: str | None
     #: The manifest of the stored copy this one replaces, if there is one.
     previous: str | None
+    #: What the window trimmed from the head of ``messages``.
+    window: Window
     #: A task's render from the checkpoint: the run it read.
     run: TaskRun | None = None
 
     def render(self, *, inline: bool, full: bool = False) -> _Rendered:
         """The copy, each file named by digest. Only the segments that changed
         since ``previous`` render and carry bytes; the rest are carried over.
-        CPU only, so it runs in a worker thread."""
+        CPU only, so it runs in a worker thread. Raises
+        ``EarlierTurnsMissing`` when ``previous`` cannot stand in for the
+        trimmed runs (see ``_whole``)."""
         from src.server.database.thread_transcripts import StoredTranscript
 
         directory = build_directory(
@@ -157,6 +163,7 @@ class _Job:
             unit=self.agent.unit,
             header=self.header,
             previous=None if full else load_manifest(self.previous),
+            window=self.window,
         )
         copy = StoredTranscript(
             self.fingerprint, self.checkpoint_id, directory.manifest, run=self.run
@@ -178,6 +185,30 @@ class _Job:
             else:
                 blobs[sha] = data
         return _Rendered(copy, blobs)
+
+
+async def _whole(job: _Job) -> _Job:
+    """``job`` over the thread's whole message list: the runs the window
+    trimmed are read back from the turn slices, for a render with no stored
+    copy to carry them from (a first export, a schema change, a fork that
+    dropped the copy, a copy moved under its render)."""
+    from src.server.services.history.window import earlier_runs
+
+    earlier = await earlier_runs(job.agent.thread_id, job.checkpoint_id, job.window)
+    if earlier is None:
+        raise EarlierTurnsMissing(
+            f"{job.agent.directory}: {job.window.runs} trimmed runs unreadable"
+        )
+    return replace(job, messages=[*earlier, *job.messages], window=Window())
+
+
+async def _render_job(job: _Job, *, inline: bool, full: bool = False) -> _Rendered:
+    try:
+        return await asyncio.to_thread(job.render, inline=inline, full=full)
+    except EarlierTurnsMissing:
+        logger.info(f"Transcript {job.agent.directory} renders its trimmed runs from slices")
+    whole = await _whole(job)
+    return await asyncio.to_thread(whole.render, inline=inline, full=full)
 
 
 async def _store_blobs(user_id: str, contents: dict[str, bytes]) -> None:
@@ -206,7 +237,7 @@ async def _save(target: _Target, job: _Job, rendered: _Rendered) -> bool:
         if job.previous is None:
             raise
         logger.info(f"Transcript {agent.directory} moved under its render; rendering it in full")
-    full = await asyncio.to_thread(job.render, inline=target.inline, full=True)
+    full = await _render_job(job, inline=target.inline, full=True)
     await _store_blobs(target.user_id, full.blobs)
     return await save_stored(agent.thread_id, agent.prefix, target.user_id, full.copy)
 
@@ -256,7 +287,7 @@ async def behind_in_store(threads: list[tuple[str, str | None]]) -> list[Behind]
 
 
 async def _render_and_save(target: _Target, job: _Job) -> bool:
-    rendered = await asyncio.to_thread(job.render, inline=target.inline)
+    rendered = await _render_job(job, inline=target.inline)
     return await _save(target, job, rendered)
 
 
@@ -270,7 +301,8 @@ async def _render_own(
     rendered_at = (state.config or {}).get("configurable", {}).get("checkpoint_id")
     if own is not None and _newer(own.checkpoint_id, rendered_at):
         return None
-    messages = list((state.values or {}).get("messages") or [])
+    values = state.values or {}
+    messages = list(values.get("messages") or [])
     if not messages:
         # Nothing to show; a copy already stored is left for the next
         # render that has something, rather than emptied.
@@ -282,6 +314,7 @@ async def _render_own(
         _fingerprint(thread.checkpoint_id),
         rendered_at,
         own.manifest if own is not None else None,
+        Window.of(values),
     )
     return await _render_and_save(target, job)
 
@@ -310,6 +343,8 @@ async def _render_task(
         _fingerprint(_task_print(run)),
         history.checkpoint_id,
         previous.manifest if previous is not None else None,
+        # Only the main agent's checkpoint is trimmed (``with_window``).
+        Window(),
         run,
     )
     return await _render_and_save(target, job)
@@ -480,7 +515,9 @@ async def sync_workspace(workspace_id: str) -> dict[str, int]:
     return counts
 
 
-async def save_live(transcript: TranscriptTarget, messages: Sequence[AnyMessage]) -> bool:
+async def save_live(
+    transcript: TranscriptTarget, messages: Sequence[AnyMessage], *, window: Window
+) -> bool:
     """Store one agent's transcript from messages in hand, ahead of the render
     from the checkpoint: compaction points the model at it mid-turn, before
     the turn end renders it. Only the segments that changed since the stored
@@ -490,8 +527,9 @@ async def save_live(transcript: TranscriptTarget, messages: Sequence[AnyMessage]
     to that checkpoint, so a render from there (a turn end whose export has
     not landed, an export that read a running task before this compaction)
     leaves the copy in place; the next checkpoint the agent writes still
-    renders over it, and only what came after this save. Returns whether it
-    landed or had nothing to change."""
+    renders over it, and only what came after this save. ``window`` was
+    trimmed from the head of ``messages``. Returns whether it landed or had
+    nothing to change."""
     from src.server.database.conversation import (
         get_thread_by_id,
         get_thread_checkpoint_id,
@@ -532,8 +570,9 @@ async def save_live(transcript: TranscriptTarget, messages: Sequence[AnyMessage]
         LIVE_FINGERPRINT,
         checkpoint_id,
         stored.manifest if stored is not None else None,
+        window,
     )
-    rendered = await asyncio.to_thread(job.render, inline=target.inline)
+    rendered = await _render_job(job, inline=target.inline)
     if stored is not None and rendered.copy.manifest == stored.manifest:
         return True
     return await _save(target, job, rendered)

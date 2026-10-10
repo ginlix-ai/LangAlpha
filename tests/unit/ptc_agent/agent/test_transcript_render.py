@@ -20,7 +20,7 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
     build_update_message,
 )
 from ptc_agent.agent.middleware.runtime_context.turn import TURN_ROW_KIND
-from ptc_agent.agent.transcript import build_directory, load_manifest
+from ptc_agent.agent.transcript import Window, build_directory, load_manifest
 from ptc_agent.agent.transcript.render import message_turns
 
 
@@ -43,53 +43,53 @@ def _thread(turns: int) -> list:
 
 
 def test_a_turn_end_renders_only_the_turn_that_grew():
-    before = build_directory(_thread(3))
+    before = build_directory(_thread(3), window=Window())
     steering = HumanMessage(
         content="steer", id="h-3b", additional_kwargs={"lc_source": "steering"}
     )
     grown = [*_thread(3), steering]
 
-    after = build_directory(grown, previous=load_manifest(before.manifest))
+    after = build_directory(grown, previous=load_manifest(before.manifest), window=Window())
 
     assert set(after.rendered) == {"turn-0003.jsonl"}
-    full = build_directory(grown)
+    full = build_directory(grown, window=Window())
     assert after.manifest == full.manifest
     assert after.files == full.files
 
 
 def test_a_new_turn_renders_alone():
-    before = build_directory(_thread(3))
-    after = build_directory(_thread(4), previous=load_manifest(before.manifest))
+    before = build_directory(_thread(3), window=Window())
+    after = build_directory(_thread(4), previous=load_manifest(before.manifest), window=Window())
     assert set(after.rendered) == {"turn-0004.jsonl"}
-    assert after.files == build_directory(_thread(4)).files
+    assert after.files == build_directory(_thread(4), window=Window()).files
 
 
 def test_a_rewritten_turn_renders_again_with_every_turn_after_it():
-    before = build_directory(_thread(4))
+    before = build_directory(_thread(4), window=Window())
     rewritten = _thread(4)
     rewritten[7] = AIMessage(content="regenerated", id="r-2-new")
 
-    after = build_directory(rewritten, previous=load_manifest(before.manifest))
+    after = build_directory(rewritten, previous=load_manifest(before.manifest), window=Window())
 
     assert set(after.rendered) == {"turn-0002.jsonl", "turn-0003.jsonl", "turn-0004.jsonl"}
-    assert after.files == build_directory(rewritten).files
+    assert after.files == build_directory(rewritten, window=Window()).files
 
 
 def test_a_message_replaced_under_its_id_with_same_length_text_renders_again():
-    before = build_directory(_thread(3))
+    before = build_directory(_thread(3), window=Window())
     edited = _thread(3)
     # "question 2" -> "question 9": the reducer replaces by id, the length holds.
     edited[4] = HumanMessage(content="question 9", id="h-2")
 
-    after = build_directory(edited, previous=load_manifest(before.manifest))
+    after = build_directory(edited, previous=load_manifest(before.manifest), window=Window())
 
     assert set(after.rendered) == {"turn-0002.jsonl", "turn-0003.jsonl"}
     assert b"question 9" in after.rendered["turn-0002.jsonl"]
-    assert after.files == build_directory(edited).files
+    assert after.files == build_directory(edited, window=Window()).files
 
 
 def test_a_tool_call_whose_args_changed_renders_again():
-    before = build_directory(_thread(2))
+    before = build_directory(_thread(2), window=Window())
     edited = _thread(2)
     edited[1] = AIMessage(
         content="",
@@ -97,17 +97,17 @@ def test_a_tool_call_whose_args_changed_renders_again():
         tool_calls=[{"id": "call-1", "name": "execute_code", "args": {"code": "2"}}],
     )
 
-    after = build_directory(edited, previous=load_manifest(before.manifest))
+    after = build_directory(edited, previous=load_manifest(before.manifest), window=Window())
 
     assert set(after.rendered) == {"turn-0001.jsonl", "turn-0002.jsonl"}
     assert b'"code": "2"' in after.rendered["turn-0001.jsonl"]
-    assert after.files == build_directory(edited).files
+    assert after.files == build_directory(edited, window=Window()).files
 
 
 def test_a_manifest_of_another_schema_renders_everything():
-    before = load_manifest(build_directory(_thread(2)).manifest)
+    before = load_manifest(build_directory(_thread(2), window=Window()).manifest)
     before["schema"] = 1
-    after = build_directory(_thread(2), previous=before)
+    after = build_directory(_thread(2), previous=before, window=Window())
     assert set(after.rendered) == {"turn-0001.jsonl", "turn-0002.jsonl"}
 
 
@@ -117,12 +117,12 @@ def test_a_message_ahead_of_the_first_user_message_stays_with_the_first_turn():
     and number every real turn one too high, the compaction pointer's too."""
     thread = [SystemMessage(content="Answer tersely.", id="s-0"), *_thread(2)]
 
-    directory = build_directory(thread)
+    directory = build_directory(thread, window=Window())
 
     assert set(directory.files) == {"turn-0001.jsonl", "turn-0002.jsonl"}
     first = json.loads(directory.rendered["turn-0001.jsonl"].splitlines()[0])
     assert (first["type"], first["text"]) == ("user", "question 1")
-    turns = message_turns(thread)
+    turns = message_turns(thread, base=0)
     assert (turns["s-0"], turns["h-1"], turns["h-2"]) == (1, 1, 2)
 
 
@@ -132,12 +132,12 @@ def test_a_lone_surrogate_renders_as_the_checkpoint_stores_it():
     thread = _thread(2)
     thread[2] = ToolMessage(content="bad \ud800 byte", tool_call_id="call-1", id="t-1")
 
-    before = build_directory(thread[:4])
-    after = build_directory(thread, previous=load_manifest(before.manifest))
+    before = build_directory(thread[:4], window=Window())
+    after = build_directory(thread, previous=load_manifest(before.manifest), window=Window())
 
     assert b"bad ? byte" in before.rendered["turn-0001.jsonl"]
     assert set(after.rendered) == {"turn-0002.jsonl"}
-    full = build_directory(thread)
+    full = build_directory(thread, window=Window())
     assert after.manifest == full.manifest
     assert after.files == full.files
 
@@ -163,7 +163,7 @@ def test_the_turn_row_and_the_eviction_pointer_read_as_their_producers_write_the
         ToolMessage(content=pointer, tool_call_id="call-1", id="t-1"),
     ]
 
-    data = build_directory(messages).rendered["turn-0001.jsonl"]
+    data = build_directory(messages, window=Window()).rendered["turn-0001.jsonl"]
     events = [json.loads(line) for line in data.splitlines()]
 
     assert events[0]["type"] == "user"

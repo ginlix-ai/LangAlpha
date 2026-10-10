@@ -13,12 +13,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from langchain_core.messages import AnyMessage
 
 from ptc_agent.agent.transcript.classify import is_summary_message
+from ptc_agent.agent.transcript.identity import Window, newest_lines
 from ptc_agent.agent.transcript.render import turn_map
 from ptc_agent.agent.transcript.store import TranscriptTarget, segment_file
 
@@ -51,31 +52,27 @@ _GAP_ONE_NOTE = (
 )
 _INDEX_HEAD = "\n\nEach {unit}'s file and the request that opened it:\n"
 
-# The index lists the newest turns by request and one line stands for the
-# rest, so a long thread does not grow every summary without bound.
-_INDEX_LIMIT = 20
-# Each request is copied from the checkpoint at every compaction, so the
-# user's instructions keep their wording here while summaries paraphrase
-# them; the cap only stops a paste from riding in every summary.
-_REQUEST_CHARS = 1_000
-
 
 @dataclass(frozen=True)
 class TranscriptTurns:
     """Which transcript file holds each message.
 
-    Numbered over the agent's whole checkpoint list, as the renderer numbers
-    its files: a trimmed or summarized view would number from the wrong turn.
+    Numbered over the agent's checkpoint list from ``Window.runs`` on, as
+    the renderer numbers its files: a summarized view would number from the
+    wrong turn, and so would a list the window trimmed, counted from one.
     """
 
     target: TranscriptTarget
     turns: Mapping[str, int]
-    #: The text of the user message that opened each turn, by turn number.
-    requests: Mapping[int, str] = field(default_factory=dict)
+    #: The index text of each turn, by number (``Window.lines``).
+    lines: Mapping[int, str]
 
     @classmethod
-    def of(cls, target: TranscriptTarget, messages: Sequence[AnyMessage]) -> TranscriptTurns:
-        return cls(target, *turn_map(messages))
+    def of(
+        cls, target: TranscriptTarget, messages: Sequence[AnyMessage], *, window: Window
+    ) -> TranscriptTurns:
+        turns, requests = turn_map(messages, base=window.runs)
+        return cls(target, turns, window.lines(requests))
 
     def file(self, message_id: str | None) -> str | None:
         number = self.turns.get(message_id or "")
@@ -97,10 +94,10 @@ class TranscriptTurns:
         them and the agent find them.
         """
         unit = self.target.unit
-        start = max(1, last - _INDEX_LIMIT + 1)
+        newest = newest_lines(self.lines, last)
+        earlier = next(iter(newest), 1) - 1
         lines = []
-        if start > 1:
-            earlier = start - 1
+        if earlier:
             names = f"`{segment_file(unit, 1)}`"
             if earlier > 1:
                 names += f" to `{segment_file(unit, earlier)}`"
@@ -108,12 +105,7 @@ class TranscriptTurns:
                 f"- {names}: {earlier} earlier {unit}{'s' if earlier > 1 else ''}, "
                 f"not listed here; `{self.target.manifest}` lists every file"
             )
-        for number in range(start, last + 1):
-            request = self.requests.get(number)
-            lines.append(
-                f"- `{segment_file(unit, number)}`: "
-                f"{_one_line(request) if request else '(no request)'}"
-            )
+        lines += [f"- `{segment_file(unit, n)}`: {text}" for n, text in newest.items()]
         return lines
 
 
@@ -125,15 +117,6 @@ class SummarySpan:
     first: int
     last: int
     gap: tuple[int, int] | None = None
-
-
-def _one_line(text: str) -> str:
-    from ptc_agent.agent.middleware.skills.content import skill_blocks_as_names
-
-    line = " ".join(skill_blocks_as_names(text).split())
-    if len(line) <= _REQUEST_CHARS:
-        return line
-    return line[: _REQUEST_CHARS - 1].rstrip() + "\u2026"
 
 
 def _mount(backend: SandboxBackend | None) -> MountHandle | None:
@@ -155,10 +138,13 @@ async def aexport_transcript(
     *,
     workspace_id: str | None,
     budget: float = _EXPORT_TIMEOUT,
+    window: Window,
 ) -> TranscriptTarget | None:
     """Bring the transcript up to date within ``budget`` seconds (at most
     ``_EXPORT_TIMEOUT``); the one a summary may point at, or None unless the
     save landed and the mount serves ``workspace_id``'s folder. Never raises.
+    ``window`` is what was trimmed from the head of ``messages``, whose
+    files the store keeps.
 
     The turn-end export comes only after this agent finishes, so a pointer
     left on a failed save sends it for history that is not there for the
@@ -174,7 +160,7 @@ async def aexport_transcript(
         # A task group, not gather: when one fails, the other is cancelled
         # rather than left saving past the timeout.
         async with asyncio.TaskGroup() as group:
-            saved = group.create_task(mount.save_transcript(transcript, messages))
+            saved = group.create_task(mount.save_transcript(transcript, messages, window=window))
             settled = group.create_task(backend.settled_livefs(workspace_id))
         return saved.result(), settled.result()
 

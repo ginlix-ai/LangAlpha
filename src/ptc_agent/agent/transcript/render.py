@@ -251,17 +251,24 @@ def _args_checksum(args: Any) -> str:
     )
 
 
-def message_turns(messages: Iterable[AnyMessage]) -> dict[str, int]:
+def message_turns(messages: Iterable[AnyMessage], *, base: int) -> dict[str, int]:
     """The turn each message belongs to, by message id."""
-    return turn_map(messages)[0]
+    return turn_map(messages, base=base)[0]
 
 
-def turn_map(messages: Iterable[AnyMessage]) -> tuple[dict[str, int], dict[int, str]]:
+def turn_map(
+    messages: Iterable[AnyMessage], *, base: int
+) -> tuple[dict[str, int], dict[int, str]]:
     """The turn each message belongs to, by message id, and the text of the
-    user message that opened each turn, by turn number."""
+    user message that opened each turn, by turn number.
+
+    ``base`` is how many turns the window trimmed from the head of
+    ``messages`` (``Window.runs``): numbers stay those of the whole thread,
+    the ones its files and earlier summaries already name.
+    """
     turns: dict[str, int] = {}
     requests: dict[int, str] = {}
-    for number, run in enumerate(split_runs(messages), start=1):
+    for number, run in enumerate(split_runs(messages), start=base + 1):
         for message in run:
             if message.id:
                 turns[message.id] = number

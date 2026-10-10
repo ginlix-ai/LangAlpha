@@ -15,6 +15,7 @@ from typing import Any
 
 from langchain_core.messages import AnyMessage
 
+from ptc_agent.agent.transcript.identity import Window, extend
 from ptc_agent.agent.transcript.render import (
     SCHEMA_VERSION,
     Segment,
@@ -105,7 +106,7 @@ def dump_manifest(manifest: dict[str, Any]) -> str:
     return json.dumps(manifest, ensure_ascii=False, indent=1, default=str)
 
 
-def _entry(segment: Segment, unit: str, shape: str) -> dict[str, Any]:
+def _entry(segment: Segment, unit: str, shape: str, through: str) -> dict[str, Any]:
     return {
         "file": segment_file(unit, segment.number),
         unit: segment.number,
@@ -116,13 +117,18 @@ def _entry(segment: Segment, unit: str, shape: str) -> dict[str, Any]:
         "bytes": len(segment.data),
         "sha256": segment.sha256,
         "shape": shape,
+        "through": through,
     }
 
 
 def _reusable(entry: Any, unit: str, number: int, shape: str) -> bool:
+    return _carriable(entry, unit, number) and entry.get("shape") == shape
+
+
+def _carriable(entry: Any, unit: str, number: int) -> bool:
     return (
         isinstance(entry, dict)
-        and entry.get("shape") == shape
+        and isinstance(entry.get("shape"), str)
         and entry.get("file") == segment_file(unit, number)
         and isinstance(entry.get("sha256"), str)
         and len(entry["sha256"]) == 64
@@ -142,12 +148,18 @@ class Directory:
     rendered: dict[str, bytes]
 
 
+class EarlierTurnsMissing(LookupError):
+    """The previous manifest cannot stand in for the turns trimmed from the
+    head of the messages: they have to be passed to render them."""
+
+
 def build_directory(
     messages: list[AnyMessage],
     *,
     unit: str = "turn",
     header: dict[str, Any] | None = None,
     previous: dict[str, Any] | None = None,
+    window: Window,
 ) -> Directory:
     """Render the segments that changed since ``previous``, the manifest the
     stored copy was rendered with, and carry the rest over from it.
@@ -155,6 +167,15 @@ def build_directory(
     A turn end adds to one turn, so this renders one segment where a whole
     thread's render costs its size in CPU. With no previous manifest, or one
     of another schema, every segment renders.
+
+    ``window`` was trimmed from the head of ``messages`` (see
+    ``compaction.window``): its runs' entries are carried from ``previous``
+    as they are, and the first turn of ``messages`` is ``window.runs + 1``.
+    Each entry records the digest of every message through its turn
+    (``identity``), and the last carried one must match ``window``'s: a
+    copy rendered from another branch (a live save labelled with an edit's
+    fork point) shares its numbering, not its turns. Raises
+    ``EarlierTurnsMissing`` when ``previous`` does not hold them.
     """
     held: list[Any] = []
     if previous and previous.get("schema") == SCHEMA_VERSION:
@@ -162,14 +183,34 @@ def build_directory(
     names: dict[str, str] = {}
     entries: list[dict[str, Any]] = []
     rendered: dict[str, bytes] = {}
-    shape = ""
-    for number, run in enumerate(split_runs(messages), start=1):
+    shape = through = ""
+    base = window.runs
+    if base:
+        carried = held[:base]
+        if (
+            len(carried) < base
+            or not all(
+                _carriable(entry, unit, number)
+                for number, entry in enumerate(carried, start=1)
+            )
+            or carried[-1].get("through") != window.digest
+        ):
+            raise EarlierTurnsMissing(f"{len(carried)} of {base} trimmed turns held")
+        entries.extend(carried)
+        # The key chains through every turn before it, the trimmed ones too.
+        shape, through = carried[-1]["shape"], window.digest
+    for number, run in enumerate(split_runs(messages), start=base + 1):
         shape = segment_shape(number, run, unit=unit, previous=shape, tool_names=names)
+        through = extend(through, run)
         entry = held[number - 1] if number <= len(held) else None
         if not _reusable(entry, unit, number, shape):
             segment = render_segment(number, run, unit=unit, tool_names=names)
-            entry = _entry(segment, unit, shape)
+            entry = _entry(segment, unit, shape, through)
             rendered[entry["file"]] = segment.data
+        elif entry.get("through") != through:
+            # Its render reads the same in messages that differ where no
+            # render looks (reasoning, say), or it predates the field.
+            entry = {**entry, "through": through}
         entries.append(entry)
     manifest = {"schema": SCHEMA_VERSION, **(header or {}), "segments": entries}
     return Directory(

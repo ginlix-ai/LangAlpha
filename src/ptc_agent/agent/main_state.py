@@ -14,6 +14,7 @@ from __future__ import annotations
 from ptc_agent.agent.middleware.compaction.notes import NotesDueState
 from ptc_agent.agent.middleware.compaction.types import CompactionState
 from ptc_agent.agent.middleware.skills.middleware import LoadedSkillsState
+from ptc_agent.agent.middleware.subagent_switch import SubagentSwitchState
 from ptc_agent.agent.state import DeltaAgentState
 
 
@@ -22,6 +23,7 @@ from ptc_agent.agent.state import DeltaAgentState
 class MainAgentState(
     CompactionState,
     NotesDueState,
+    SubagentSwitchState,
     LoadedSkillsState,
     DeltaAgentState,
 ):
