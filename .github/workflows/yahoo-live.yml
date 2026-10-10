@@ -33,6 +33,11 @@ on:
       - ".github/workflows/yahoo-live.yml"
   workflow_dispatch:
 
+# The backend image's Python (deploy/Dockerfile.backend). Left unset, uv
+# downloads the newest release, which a dependency may not ship wheels for yet.
+env:
+  UV_PYTHON: "3.13"
+
 jobs:
   yahoo-live:
     runs-on: ubuntu-latest
