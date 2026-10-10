@@ -25,35 +25,19 @@ import argparse
 import asyncio
 import os
 import sys
-import time
+from collections.abc import AsyncIterator
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src")))
 
+from scripts.utils._thread_job import (  # noqa: E402
+    add_selection_args,
+    app_infra,
+    for_each_thread,
+    selection_sql,
+)
+
 _BATCH = 200
-
-
-async def _open_infra():
-    from src.server.app import setup
-    from src.server.database import pool as db_pool
-    from src.server.utils.checkpointer import get_checkpointer, open_checkpointer_pool
-    from src.utils.cache.redis_cache import init_cache
-
-    pool = db_pool.get_or_create_pool()
-    await pool.open()
-    # Raises when Redis is down: an export without the lock could land over a
-    # server's.
-    await init_cache()
-    checkpointer = get_checkpointer(
-        "postgres",
-        db_host=os.getenv("DB_HOST", "localhost"),
-        db_port=int(os.getenv("DB_PORT", "5432")),
-        db_name=os.getenv("DB_NAME", "postgres"),
-        db_user=os.getenv("DB_USER", "postgres"),
-        db_password=os.getenv("DB_PASSWORD", "postgres"),
-    )
-    await open_checkpointer_pool(checkpointer)
-    setup.checkpointer = checkpointer
 
 
 async def _threads(args: argparse.Namespace) -> list[tuple[str, str, str]]:
@@ -61,24 +45,12 @@ async def _threads(args: argparse.Namespace) -> list[tuple[str, str, str]]:
     from src.server.database.pool import get_db_connection
 
     # Only workspaces on a computer: nothing else ever places a transcript.
-    where = [
+    where, params = selection_sql(args)
+    where += [
         "t.latest_checkpoint_id IS NOT NULL",
         "w.computer_id IS NOT NULL",
         "w.status <> 'deleted'",
     ]
-    params: list = []
-    if args.thread:
-        where.append("t.conversation_thread_id = ANY(%s::uuid[])")
-        params.append(args.thread)
-    if args.workspace:
-        where.append("t.workspace_id = %s::uuid")
-        params.append(args.workspace)
-    if args.user:
-        where.append("w.user_id = %s")
-        params.append(args.user)
-    if args.days:
-        where.append("t.updated_at >= NOW() - make_interval(days => %s)")
-        params.append(args.days)
     async with get_db_connection() as conn:
         cur = await conn.execute(
             "SELECT t.conversation_thread_id, t.workspace_id, t.latest_checkpoint_id "
@@ -101,15 +73,14 @@ async def _stale(batch: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--apply", action="store_true", help="store; without it, count only")
-    parser.add_argument("--days", type=int, help="only threads active in the last N days")
-    parser.add_argument("--user", help="only this user's threads")
-    parser.add_argument("--workspace", help="only this workspace's threads")
-    parser.add_argument("--thread", action="append", help="only these threads")
-    parser.add_argument("--concurrency", type=int, default=2)
-    parser.add_argument("--pause", type=float, default=0.2, help="seconds between threads")
+    add_selection_args(parser, concurrency=2, pause=0.2)
     args = parser.parse_args()
+    # Redis is required: an export without the lock could land over a server's.
+    async with app_infra(redis=True, agent_config=False):
+        return await _run(args)
 
-    await _open_infra()
+
+async def _run(args: argparse.Namespace) -> int:
     from src.server.services.transcripts import export_thread
 
     threads = await _threads(args)
@@ -121,37 +92,27 @@ async def main() -> int:
         return 0
 
     # A page at a time, each checked against the store as it comes up, so a
-    # thread a turn end brought current meanwhile is skipped and at most
-    # ``concurrency`` exports are ever in hand.
-    done = stored = failed = 0
-    began = time.monotonic()
+    # thread a turn end brought current meanwhile is skipped.
+    async def behind() -> AsyncIterator[tuple[str, str]]:
+        for start in range(0, len(threads), _BATCH):
+            for item in await _stale(threads[start : start + _BATCH]):
+                yield item
 
-    async def worker(queue: asyncio.Queue[tuple[str, str]]) -> None:
-        nonlocal done, stored, failed
-        while True:
-            try:
-                thread_id, workspace_id = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            try:
-                counts = await export_thread(workspace_id, thread_id)
-                stored += counts["stored"]
-                failed += counts["failed"]
-            except Exception as e:
-                failed += 1
-                print(f"{thread_id} failed: {e}")
-            done += 1
-            if done % 25 == 0:
-                rate = done / max(time.monotonic() - began, 1e-6)
-                print(f"{done} done, {stored} stored, {failed} failed, {rate:.1f}/s")
-            await asyncio.sleep(args.pause)
+    stored = failed = 0
 
-    for start in range(0, len(threads), _BATCH):
-        queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
-        for item in await _stale(threads[start : start + _BATCH]):
-            queue.put_nowait(item)
-        await asyncio.gather(*(worker(queue) for _ in range(max(1, args.concurrency))))
-    print(f"{len(threads)} threads, {done} exported, {stored} stored, {failed} failed")
+    async def export(item: tuple[str, str]) -> None:
+        nonlocal stored, failed
+        thread_id, workspace_id = item
+        counts = await export_thread(workspace_id, thread_id)
+        stored += counts["stored"]
+        failed += counts["failed"]
+
+    tally = await for_each_thread(
+        behind(), export, concurrency=args.concurrency, pause=args.pause,
+        name=lambda item: item[0],
+    )
+    failed += tally.failed + tally.unavailable
+    print(f"{len(threads)} threads, {tally.done} exported, {stored} stored, {failed} failed")
     return 1 if failed else 0
 
 
