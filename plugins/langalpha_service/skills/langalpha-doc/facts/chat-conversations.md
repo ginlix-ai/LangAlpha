@@ -1,6 +1,6 @@
 # Where a Chat Message Goes
 
-Use this page to explain, when the user asks, which conversation a message they send in a chat app reaches, and why an answer came from a different conversation than the one they expected. You don't need it to answer an ordinary chat message.
+Which conversation a message the user sends in a chat app reaches, and why an answer can come from a different conversation than the one they expected.
 
 ## The rules every app shares
 

@@ -1,10 +1,11 @@
-"""langalpha-doc's reference pages and the pointers into them.
+"""langalpha-doc's pages and the pointers into them.
 
-The agent reaches a reference page two ways: the skill's own index under
-"## Reference files", and a prompt section that names a page directly. A page
-missing from the index is found only by a prompt that happens to name it, and
-a pointer to a page that does not ship sends the agent to read a file that is
-not there, so both directions are pinned here.
+The agent reaches a page two ways: the skill's own index (reference pages
+under "## Reference files", facts pages under "## Facts"), and a prompt
+section that names a page directly. A page missing from its index is found
+only by a prompt that happens to name it, and a pointer to a page that does
+not ship sends the agent to read a file that is not there, so both directions
+are pinned here.
 """
 
 import re
@@ -19,23 +20,28 @@ SANDBOX_PREFIX = ".agents/skills/langalpha-doc/"
 _POINTER_RE = re.compile(re.escape(SANDBOX_PREFIX) + r"([\w./-]+\.md)")
 
 
-def _index() -> str:
-    """The "## Reference files" section of SKILL.md."""
+# Each folder of pages and the SKILL.md section that indexes it.
+_INDEXES = {"references": "## Reference files", "facts": "## Facts"}
+
+
+def _index(heading: str) -> str:
+    """The section of SKILL.md under ``heading``."""
     body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-    section = body.split("## Reference files", 1)[1]
+    section = body.split(f"\n{heading}\n", 1)[1]
     return section.split("\n## ", 1)[0]
 
 
-def _shipped_pages() -> list[str]:
+def _shipped_pages() -> list[tuple[str, str]]:
     return sorted(
-        p.relative_to(SKILL_DIR).as_posix()
-        for p in (SKILL_DIR / "references").glob("*.md")
+        (p.relative_to(SKILL_DIR).as_posix(), heading)
+        for folder, heading in _INDEXES.items()
+        for p in (SKILL_DIR / folder).glob("*.md")
     )
 
 
-@pytest.mark.parametrize("page", _shipped_pages())
-def test_every_reference_page_is_in_the_index(page):
-    assert f"`{SANDBOX_PREFIX}{page}`" in _index()
+@pytest.mark.parametrize("page,heading", _shipped_pages())
+def test_every_page_is_in_its_index(page, heading):
+    assert f"`{SANDBOX_PREFIX}{page}`" in _index(heading)
 
 
 def _pointers() -> list[tuple[str, str]]:
