@@ -71,7 +71,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import random
 import sys
 import uuid
@@ -81,14 +80,13 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
-from psycopg.conninfo import conninfo_to_dict
 
 # Run as a script, sys.path[0] is scripts/ops, not the repo root the sibling
 # helpers and the app are imported from.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts._errors import where  # noqa: E402
-from scripts.ops._db import build_db_uri  # noqa: E402
+from scripts.ops._db import build_db_uri, point_app_pool_at  # noqa: E402
 from scripts.ops._delta_loads import (  # noqa: E402
     MESSAGES,
     Check,
@@ -206,23 +204,6 @@ ON CONFLICT (thread_id, checkpoint_ns, channel, version) DO UPDATE
     SET type = EXCLUDED.type, blob = EXCLUDED.blob
     WHERE checkpoint_blobs.type = 'empty' OR checkpoint_blobs.blob IS NULL
 """
-
-
-def point_app_pool_at(conninfo: str) -> None:
-    """Make the app's pool, which builds its target from DB_*, connect where
-    this script writes. Must run before the app is imported, whose dotenv
-    load fills only what is unset."""
-    params = conninfo_to_dict(conninfo)
-    for key, param in (
-        ("DB_HOST", "host"),
-        ("DB_PORT", "port"),
-        ("DB_NAME", "dbname"),
-        ("DB_USER", "user"),
-        ("DB_PASSWORD", "password"),
-        ("DB_SSLMODE", "sslmode"),
-    ):
-        if params.get(param):
-            os.environ[key] = str(params[param])
 
 
 # --------------------------------------------------------------------------
