@@ -1,6 +1,6 @@
-# Where a Chat Message Goes
+# Channel Routing
 
-Which conversation a message the user sends in a chat app reaches, and why an answer can come from a different conversation than the one they expected.
+Which conversation a message the user sends on a channel (Slack, Discord, Telegram, iMessage or Feishu) reaches, and why an answer can come from a different conversation than the one they expected.
 
 ## The rules every app shares
 

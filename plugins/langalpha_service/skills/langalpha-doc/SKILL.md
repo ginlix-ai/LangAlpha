@@ -32,4 +32,4 @@ You run on a **computer**: one sandbox machine that belongs to the user. Each of
 
 How the platform behaves, for answering the user. Your work doesn't need these pages, so don't read them ahead of time. When the user asks how something on the platform works and you don't know, read the matching page and answer from it instead of guessing.
 
-- Which conversation or workspace a message in a chat app reaches, why an answer came from another conversation, and how `/new`, `/workspace` and replies pick one: `.agents/skills/langalpha-doc/facts/chat-conversations.md`.
+- Channels (Slack, Discord, Telegram, iMessage, Feishu): which conversation or workspace a message the user sends there reaches, why an answer came from another conversation, and how `/new`, `/workspace` and replies pick one: `.agents/skills/langalpha-doc/facts/channel-routing.md`.
