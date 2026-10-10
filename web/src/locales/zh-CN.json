@@ -1732,6 +1732,8 @@
     "accessDeniedDesc": "请联系对话所有者分享此对话。",
     "goToChats": "返回对话列表",
     "loadingHistory": "加载历史记录...",
+    "loadingOlderHistory": "正在加载更早的消息",
+    "olderHistoryFailed": "无法加载更早的消息。",
     "workspaceFiles": "工作区文件",
     "workspaceSettings": "工作区设置",
     "agents": "Agent",

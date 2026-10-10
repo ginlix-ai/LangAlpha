@@ -1736,6 +1736,8 @@
     "accessDeniedDesc": "Ask the owner to share the conversation to view it.",
     "goToChats": "Go to Chats",
     "loadingHistory": "Loading history...",
+    "loadingOlderHistory": "Loading earlier messages",
+    "olderHistoryFailed": "Couldn't load earlier messages.",
     "workspaceFiles": "Workspace Files",
     "workspaceSettings": "Workspace Settings",
     "agents": "Agents",

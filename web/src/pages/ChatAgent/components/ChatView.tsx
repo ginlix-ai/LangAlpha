@@ -94,6 +94,7 @@ import { useNavPanel } from './chatView/useNavPanel';
 import { MobileNavDrawer } from './chatView/MobileNavDrawer';
 import { resolveChatMode } from './chatView/chatMode';
 import { useChatScroll } from './chatView/useChatScroll';
+import { OlderHistoryRow } from './chatView/OlderHistoryRow';
 import { isTurnOpen, useTranscriptFollow } from './chatView/useTranscriptFollow';
 import { useSubagentTabs } from './chatView/useSubagentTabs';
 import { publishSidebarAgents, clearSidebarAgents } from './sidebarAgentsBridge';
@@ -300,6 +301,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     isLoadingHistory,
     historyLoadFailed,
     isLoadingThread,
+    olderHistory: { status: olderHistoryStatus, load: loadOlderHistory },
     isReconnecting,
     modelStatus,
     fallbackSuggestion,
@@ -431,6 +433,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     restoredForThreadRef,
     pinToMessage,
     revealFiles,
+    holdPlace,
+    entryRestored,
     pinTargetRef,
   } = scroll;
   const { handleSendMessage, handleEditMessage, handleRegenerate, handleRetry } = useTranscriptFollow(
@@ -439,6 +443,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     () => getScrollContainer(scrollAreaRef),
     readTurnEndScroll(preferences),
   );
+  // Older turns of a paged thread, asked for as the reader nears the top and
+  // landed under a hold on what they are reading.
+  const getMainScrollRoot = useCallback(() => getScrollContainer(scrollAreaRef), [getScrollContainer, scrollAreaRef]);
+  const loadOlderPage = useCallback(() => {
+    void loadOlderHistory(holdPlace);
+  }, [loadOlderHistory, holdPlace]);
 
   // One value for both transcripts below (main thread and subagent tab), so a
   // flip in Settings reaches them together and neither re-renders on the other's
@@ -1450,6 +1460,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <ScrollArea ref={scrollAreaRef} className={`h-full w-full${!isMobile && !rightPanelType ? ' chat-scroll-hide-scrollbar' : ''}`}>
                   <div className={`${isMobile ? 'px-3 pt-3' : 'px-6 pt-4'} ${TRANSCRIPT_BOTTOM_PAD} flex justify-center`}>
                     <div className="w-full max-w-3xl overflow-x-hidden">
+                      <OlderHistoryRow
+                        getRoot={getMainScrollRoot}
+                        status={olderHistoryStatus}
+                        canLoad={isActive && entryRestored && olderHistoryStatus === 'idle'}
+                        onLoad={loadOlderPage}
+                      />
                       <MessageActionsProvider actions={messageActions}>
                         {/* Above the list's chunk boundary: one batched
                             dispatch-liveness query for every PTC card in the

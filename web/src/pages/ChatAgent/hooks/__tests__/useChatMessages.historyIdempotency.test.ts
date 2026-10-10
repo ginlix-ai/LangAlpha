@@ -60,6 +60,7 @@ vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMo
 
 import { replayThreadHistory } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
+import { HISTORY_PAGE_TURNS } from '../../session/history/historyWindow';
 
 const mockReplay = replayThreadHistory as Mock;
 
@@ -75,7 +76,8 @@ describe('useChatMessages – history idempotency guard', () => {
     await waitFor(() => {
       expect(mockReplay).toHaveBeenCalledTimes(1);
     });
-    expect(mockReplay).toHaveBeenCalledWith('thread-A', expect.any(Function));
+    // A first open asks for the newest page only.
+    expect(mockReplay).toHaveBeenCalledWith('thread-A', expect.any(Function), { limit: HISTORY_PAGE_TURNS });
   });
 
   it('surfaces non-404 load errors via messageError without locking history-loading', async () => {

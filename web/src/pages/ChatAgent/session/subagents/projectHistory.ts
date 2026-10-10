@@ -17,6 +17,7 @@ import {
   type DeliveredInstruction,
 } from './liveEventHandlers';
 import { countToolCalls } from './subagentMetrics';
+import { createSubagentHistoryStore } from './historyStore';
 import {
   type SubagentTokenUsage, ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage,
 } from '../../utils/tokenUsage';
@@ -310,4 +311,57 @@ export function projectSubagentHistory(
   }
 
   rt.subagentHistory.putEntries(projected);
+}
+
+/**
+ * Put the runs an older page holds of a task ahead of what its live stream
+ * wrote. Replay leaves a running run to its stream and projects each finished
+ * run whole at the turn that launched it, so every run on an older page came
+ * before anything held for the task. Each run opens an assistant message
+ * numbered by run, so the held ones move up by the runs put ahead of them, and
+ * the stream goes on writing to the message it was writing to.
+ */
+export function prependSubagentRuns(
+  rt: Pick<
+    SubagentRuntime,
+    't' | 'subagentHistory' | 'subagentStateRefsRef' | 'subagentTokenUsageRef' | 'updateSubagentCard'
+  >,
+  taskId: string,
+  runs: SubagentHistoryData,
+): void {
+  const held = rt.subagentStateRefsRef.current[taskId];
+  if (!held) {
+    projectSubagentHistory(rt, new Map([[taskId, runs]]));
+    return;
+  }
+  // The page's runs alone, projected as replay projects any runs.
+  const page = {
+    t: rt.t,
+    subagentHistory: createSubagentHistoryStore(),
+    subagentStateRefsRef: { current: {} as Record<string, TaskRefs> },
+  };
+  projectSubagentHistory(page, new Map([[taskId, runs]]));
+  const front = page.subagentHistory.get().entries[taskId];
+  const shift = page.subagentStateRefsRef.current[taskId].runIndex;
+  const prefix = `subagent-${taskId}-assistant-`;
+  const moved = held.messages.map((m) => {
+    const id = String(m.id);
+    const run = id.startsWith(prefix) ? Number(id.slice(prefix.length)) : NaN;
+    return Number.isInteger(run) ? { ...m, id: `${prefix}${run + shift}` } : m;
+  });
+  held.messages = [...front.messages, ...moved];
+  held.runIndex += shift;
+
+  const prior = rt.subagentHistory.get().entries[taskId];
+  const tokenUsage = accumulateTokenUsage(prior?.tokenUsage ?? ZERO_USAGE, front.tokenUsage);
+  rt.subagentHistory.putEntries({
+    [taskId]: { ...(prior ?? front), messages: held.messages, toolCalls: countToolCalls(held.messages), tokenUsage },
+  });
+  // The live total was seeded from the entry and counts on from there.
+  const live = rt.subagentTokenUsageRef.current[taskId];
+  if (live) rt.subagentTokenUsageRef.current[taskId] = accumulateTokenUsage(live, front.tokenUsage);
+  rt.updateSubagentCard?.(taskId, {
+    messages: held.messages,
+    tokenUsage: rt.subagentTokenUsageRef.current[taskId] ?? tokenUsage,
+  });
 }

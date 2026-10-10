@@ -52,6 +52,7 @@ import {
   deleteThread,
   sendHitlResponse,
   sendChatMessageStream,
+  replayThreadHistory,
   fetchMarketWatch,
   streamWorkspaceEvents,
   watchThread,
@@ -1067,5 +1068,79 @@ describe('sendChatMessageStream: the subagents setting', () => {
     expect('subagents_allowed' in (await send('t-1', {})).body).toBe(false);
     (global.fetch as Mock).mockClear();
     expect('subagents_allowed' in (await send('t-1')).body).toBe(false);
+  });
+});
+
+// A paged replay names its page in the query string, and an unpaged one sends
+// none, which the backend reads as the whole thread. The signal is what lets a
+// reload or thread switch drop an older page still on its way.
+describe('replayThreadHistory: the page request', () => {
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: {
+        getReader: () => ({
+          read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+        }),
+      },
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  const requested = () => {
+    const [url, opts] = (global.fetch as Mock).mock.calls[0];
+    return { url: new URL(url as string), opts: opts as RequestInit };
+  };
+
+  it('asks for the whole thread when no page is named', async () => {
+    await replayThreadHistory('t-1');
+    const { url } = requested();
+    expect(url.pathname).toBe('/api/v1/threads/t-1/messages/replay');
+    expect(url.search).toBe('');
+  });
+
+  it('asks for the newest N turns with limit alone', async () => {
+    await replayThreadHistory('t-1', () => {}, { limit: 20 });
+    const { url } = requested();
+    expect(url.searchParams.get('limit')).toBe('20');
+    expect(url.searchParams.has('before_turn')).toBe(false);
+  });
+
+  it('asks for the page before a turn with limit and before_turn', async () => {
+    await replayThreadHistory('t-1', () => {}, { limit: 20, beforeTurn: 75 });
+    const { url } = requested();
+    expect(url.searchParams.get('limit')).toBe('20');
+    expect(url.searchParams.get('before_turn')).toBe('75');
+  });
+
+  it('sends before_turn 0 rather than dropping it as falsy', async () => {
+    await replayThreadHistory('t-1', () => {}, { beforeTurn: 0 });
+    const { url } = requested();
+    expect(url.searchParams.get('before_turn')).toBe('0');
+    expect(url.searchParams.has('limit')).toBe(false);
+  });
+
+  it('passes the abort signal through to the fetch', async () => {
+    const controller = new AbortController();
+    await replayThreadHistory('t-1', () => {}, { limit: 20, beforeTurn: 40, signal: controller.signal });
+    expect(requested().opts.signal).toBe(controller.signal);
+  });
+
+  it('reports an abort as aborted rather than throwing', async () => {
+    const abort = Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+    global.fetch = vi.fn().mockRejectedValue(abort) as unknown as typeof fetch;
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      replayThreadHistory('t-1', () => {}, { limit: 20, beforeTurn: 40, signal: controller.signal }),
+    ).resolves.toMatchObject({ aborted: true, disconnected: false });
   });
 });

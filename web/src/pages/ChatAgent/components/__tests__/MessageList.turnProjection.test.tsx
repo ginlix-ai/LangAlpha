@@ -15,7 +15,8 @@ import '@testing-library/jest-dom';
 import { renderWithProviders } from '@/test/utils';
 import MessageList from '../MessageList';
 import { MessageActionsProvider, type MessageActions } from '../messageList/MessageActionsContext';
-import { computeTurnTails, projectTurns, visibleProjection } from '../messageList/turnProjection';
+import { computeTurnTails, newestTurn, projectTurns } from '../messageList/turnProjection';
+import { visibleProjection } from '../messageList/contentProjection';
 import type { MessageRecord } from '../messageList/types';
 
 vi.mock('@/lib/framer', async () => {
@@ -159,6 +160,60 @@ describe('turnProjection — raw turn semantics', () => {
     const visible = visibleProjection(projectTurns(messages as MessageRecord[]));
     // [u0, a0, a0-cont, u1, a1] → a0 is mid-turn, a0-cont and a1 are tails.
     expect(computeTurnTails(visible)).toEqual([false, false, true, false, true]);
+  });
+});
+
+// A paged transcript opens mid-thread, so position alone would name turn 0 for
+// its first bubble. The chat view stamps every bubble with its backend turn.
+describe('turnProjection — stamped turns on a paged transcript', () => {
+  const page: Msg[] = [
+    userMsg('history-user-75', { turnIndex: 75 }),
+    assistant('history-assistant-75', { turnIndex: 75 }),
+    userMsg('history-user-76', { turnIndex: 76 }),
+    assistant('history-assistant-76', { turnIndex: 76 }),
+  ];
+  const turns = (messages: Msg[]) => projectTurns(messages as MessageRecord[]).map((p) => p.turnIndex);
+
+  it('keeps the turns a page that starts at turn 75 is stamped with', () => {
+    expect(turns(page)).toEqual([75, 75, 76, 76]);
+  });
+
+  it('continues an unstamped bubble from the last stamped turn', () => {
+    expect(turns([...page, userMsg('user-live'), assistant('assistant-live')])).toEqual([75, 75, 76, 76, 77, 77]);
+  });
+
+  it('keeps a stamped steering bubble on the turn it steered without opening one', () => {
+    const steered: Msg[] = [
+      ...page.slice(0, 2),
+      userMsg('history-steering-user-75-0-0', { turnIndex: 75, steeringDelivered: true }),
+      assistant('history-assistant-steering-75-0', { turnIndex: 75, isSteering: true }),
+      userMsg('user-live'),
+      assistant('assistant-live'),
+    ];
+    expect(turns(steered)).toEqual([75, 75, 75, 75, 76, 76]);
+  });
+
+  it('folds an unstamped steering continuation into the stamped turn it continues', () => {
+    expect(turns([...page.slice(0, 2), assistant('a75-cont', { isSteering: true })])).toEqual([75, 75, 75]);
+  });
+
+  it('ends a turn a reconnect continued on its last bubble, not on each', () => {
+    // A dropped stream resumes on a bubble of its own, on the turn it continues.
+    const continued: Msg[] = [
+      ...page.slice(0, 2),
+      assistant('assistant-reconnect-75', { turnIndex: 75 }),
+      ...page.slice(2),
+    ];
+    const visible = visibleProjection(projectTurns(continued as MessageRecord[]));
+    expect(computeTurnTails(visible)).toEqual([false, false, true, false, true]);
+  });
+
+  it('names the newest turn by its assistant bubbles alone', () => {
+    expect(newestTurn(page as MessageRecord[])).toBe(76);
+    // A parked message has not opened its turn yet.
+    expect(newestTurn([...page, userMsg('parked')] as MessageRecord[])).toBe(76);
+    expect(newestTurn([userMsg('first')] as MessageRecord[])).toBeNull();
+    expect(newestTurn([])).toBeNull();
   });
 });
 

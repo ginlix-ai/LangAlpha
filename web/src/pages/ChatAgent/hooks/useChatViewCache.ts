@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 
 const MAX_ENTRIES = 5;
 
@@ -20,6 +20,12 @@ function makeKey(workspaceId: string, threadId: string): string {
 export function useChatViewCache() {
   const [entries, setEntries] = useState<CacheEntry[]>([]);
   const nextIdRef = useRef(1);
+  // Each key's instanceId, given once. touch runs in a state updater, which
+  // React may run again: an entry the route makes during render is dropped
+  // when a later update is rebased past it, and that update makes it again.
+  // A fresh id there was a new React key, so the view remounted and loaded
+  // its thread a second time.
+  const idsRef = useRef(new Map<string, number>());
 
   // Idempotent: if entry already exists with same key and is already active, no state update.
   const touch = useCallback((params: TouchParams) => {
@@ -47,9 +53,16 @@ export function useChatViewCache() {
         const entry = prev[idx];
         newEntries = [{ ...entry, ...params, key, instanceId: entry.instanceId }, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
       } else {
-        // New entry
-        const instanceId = nextIdRef.current++;
-        newEntries = [{ ...params, key, instanceId }, ...prev];
+        // New entry. One view per thread: a thread lives in one workspace, so
+        // a view of it under another is a stray that loads it a second time.
+        // `__default__` is a new thread, one per workspace.
+        let instanceId = idsRef.current.get(key);
+        if (instanceId === undefined) {
+          instanceId = nextIdRef.current++;
+          idsRef.current.set(key, instanceId);
+        }
+        const others = params.threadId === '__default__' ? prev : prev.filter(e => e.threadId !== params.threadId);
+        newEntries = [{ ...params, key, instanceId }, ...others];
       }
 
       // Evict LRU if over cap
@@ -69,9 +82,19 @@ export function useChatViewCache() {
       if (idx === -1) return prev;
       const updated = [...prev];
       updated[idx] = { ...updated[idx], ...updates, key: newKey };
+      // The id goes with the view: one made under the old key again is new.
+      idsRef.current.set(newKey, updated[idx].instanceId);
+      idsRef.current.delete(oldKey);
       return updated;
     });
   }, []);
 
-  return { entries, touch, updateKey };
+  // The order to render the views in: creation order, which a promotion never
+  // changes. Rendered in MRU order, a promotion moves the views that were ahead
+  // of the promoted one, and React moves a node by re-inserting it, which
+  // resets every scroll position inside it: a cached thread came back at the
+  // top of its transcript.
+  const mounted = useMemo(() => [...entries].sort((a, b) => a.instanceId - b.instanceId), [entries]);
+
+  return { entries, mounted, touch, updateKey };
 }

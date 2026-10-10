@@ -1,6 +1,7 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
-import { projectSubagentHistory } from '../projectHistory';
+import { describe, it, expect, vi } from 'vitest';
+import { prependSubagentRuns, projectSubagentHistory } from '../projectHistory';
+import { handleSubagentMessageChunk, handleTaskSteeringAccepted } from '../liveEventHandlers';
 import { createSubagentHistoryStore, type SubagentHistorySnapshot } from '../historyStore';
 import type { SubagentRuntime } from '../../runtime';
 import type { SSEEvent } from '../../types';
@@ -180,5 +181,87 @@ describe('projectSubagentHistory steering', () => {
   it('replays a delivery captured before entries as its joined text', () => {
     expect(replayDelivery({ content: 'Focus on margins\nSkip 2019' }))
       .toEqual(['Focus on margins\nSkip 2019']);
+  });
+});
+
+describe('prependSubagentRuns', () => {
+  const run = (instruction: string, says: string, input: number, output: number) => [
+    { event: 'user_message', role: 'user', content: instruction },
+    { event: 'message_chunk', role: 'assistant', content_type: 'text', content: says },
+    { event: 'context_window', action: 'token_usage', input_tokens: input, output_tokens: output },
+  ] as unknown as SSEEvent[];
+
+  it('puts the older runs ahead of a live run and keeps the stream writing to its own message', () => {
+    const updateSubagentCard = vi.fn();
+    const rt = {
+      t: (key: string) => key,
+      subagentHistory: createSubagentHistoryStore(),
+      subagentStateRefsRef: { current: {} },
+      subagentTokenUsageRef: { current: {} },
+      updateSubagentCard,
+    } as unknown as SubagentRuntime;
+    // The newest page holds the task's second run.
+    projectSubagentHistory(rt, new Map([['task:t', { messages: [], events: run('second', 'B', 10, 5), status: 'running' }]]));
+    rt.subagentTokenUsageRef.current['task:t'] = { input: 10, output: 5, total: 15 };
+
+    // Its third run streams live, as processStreamEvent writes it.
+    const refs = {
+      contentOrderCounterRef: { current: 0 },
+      currentReasoningIdRef: { current: null },
+      currentToolCallIdRef: { current: null },
+      subagentStateRefs: rt.subagentStateRefsRef.current,
+    };
+    const stream = (says: string) => handleSubagentMessageChunk({
+      taskId: 'task:t',
+      assistantMessageId: `subagent-task:t-assistant-${rt.subagentStateRefsRef.current['task:t'].runIndex}`,
+      contentType: 'text',
+      content: says,
+      finishReason: undefined,
+      refs,
+      updateSubagentCard,
+    });
+    handleTaskSteeringAccepted({ taskId: 'task:t', content: 'third', refs, updateSubagentCard });
+    stream('C');
+    rt.subagentTokenUsageRef.current['task:t'] = { input: 13, output: 7, total: 20 };
+
+    // An older page holds its first run.
+    prependSubagentRuns(rt, 'task:t', { messages: [], events: run('first', 'A', 100, 50), status: 'completed' });
+    stream(' and more');
+
+    const messages = rt.subagentStateRefsRef.current['task:t'].messages;
+    expect(messages.map((m) => [m.role, m.content])).toEqual([
+      ['user', 'first'], ['assistant', 'A'],
+      ['user', 'second'], ['assistant', 'B'],
+      ['user', 'third'], ['assistant', 'C and more'],
+    ]);
+    expect(new Set(messages.map((m) => m.id)).size).toBe(messages.length);
+
+    const entry = rt.subagentHistory.get().entries['task:t'];
+    expect(entry.messages).toHaveLength(6);
+    // The task's status stays what the live side knew, not the page's.
+    expect(entry.status).toBe('running');
+    expect(entry.tokenUsage).toEqual({ input: 110, output: 55, total: 165 });
+    expect(rt.subagentTokenUsageRef.current['task:t']).toEqual({ input: 113, output: 57, total: 170 });
+    expect(updateSubagentCard).toHaveBeenCalledWith('task:t', {
+      messages: expect.any(Array),
+      tokenUsage: { input: 113, output: 57, total: 170 },
+    });
+  });
+
+  it('projects the runs as replay would when nothing is held for the task yet', () => {
+    const rt = {
+      t: (key: string) => key,
+      subagentHistory: createSubagentHistoryStore(),
+      subagentStateRefsRef: { current: {} },
+      subagentTokenUsageRef: { current: {} },
+      updateSubagentCard: vi.fn(),
+    } as unknown as SubagentRuntime;
+    prependSubagentRuns(rt, 'task:t', { messages: [], events: run('first', 'A', 100, 50), status: 'running' });
+
+    expect(rt.subagentStateRefsRef.current['task:t'].runIndex).toBe(1);
+    expect(rt.subagentHistory.get().entries['task:t']).toMatchObject({
+      status: 'running',
+      tokenUsage: { input: 100, output: 50, total: 150 },
+    });
   });
 });

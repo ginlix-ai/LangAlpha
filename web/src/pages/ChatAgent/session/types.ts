@@ -144,6 +144,8 @@ interface OffloadBatch {
   reads: number;
   timer: ReturnType<typeof setTimeout> | null;
   msgId?: string | null;
+  /** What the timer will write, so a replay that ends can write it now. */
+  flush?: () => void;
 }
 
 /** Callbacks for handleContextWindowEvent. */
