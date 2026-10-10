@@ -4,9 +4,10 @@ Vendors deepagents' batch reducer as a public `messages_delta_reducer` and
 defines `DeltaAgentState` (an `AgentState` whose `messages` uses `DeltaChannel`
 for O(1)-per-step checkpoint storage instead of re-serializing the full list).
 `DeltaAgentState` is structurally identical to deepagents 0.6.11's
-`DeepAgentState` (`AgentState` + `DeltaChannel(reducer, snapshot_frequency=50)`);
-we vendor the reducer rather than import the private `deepagents._messages_reducer`
-symbol so on-disk reconstruction stays frozen to our release. The parity test
+`DeepAgentState` (`AgentState` + `DeltaChannel(reducer)`) apart from a sparser
+snapshot frequency; we vendor the reducer rather than import the private
+`deepagents._messages_reducer` symbol so on-disk reconstruction stays frozen to
+our release. The parity test
 `test_messages_delta_reducer.py::test_vendored_reducer_matches_deepagents` fails
 CI if our copy drifts.
 
@@ -35,10 +36,15 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.ui import AnyUIMessage, ui_message_reducer
 from typing_extensions import NotRequired, Required
 
-# A full snapshot blob is written every N updates, bounding delta replay depth
-# (matches deepagents' tested default). Single source of truth for the
-# `DeltaChannel` snapshot frequency, consumed by `DeltaAgentState` below.
-MESSAGES_SNAPSHOT_FREQUENCY = 50
+# A full snapshot blob is written every N updates, bounding delta replay depth.
+# Storage per message written is about 1 + W/N for a list of W messages. At 250
+# a long thread stores a fifth of the snapshot bytes it did at 50 while a tip
+# load still reads one scan page; at 1000 loads cost half again as much. A
+# thread from before DeltaChannel walks to its root until its first snapshot,
+# so run scripts/ops/thin_message_snapshots.py --keep all over those first.
+# Single source of truth for the `DeltaChannel` snapshot frequency, consumed
+# by `DeltaAgentState` below.
+MESSAGES_SNAPSHOT_FREQUENCY = 250
 
 
 def ensure_message_ids(messages: list[AnyMessage]) -> list[AnyMessage]:
