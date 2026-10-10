@@ -279,6 +279,8 @@ class InsightService:
         # Schedule times (overridden by config)
         self._pre_market = datetime.strptime("04:00", "%H:%M").time()
         self._post_market = datetime.strptime("20:30", "%H:%M").time()
+        self._email_types: set[str] = {"pre_market", "post_market"}
+        self._email_tasks: set[asyncio.Task] = set()  # strong refs until done
         self._update_start = datetime.strptime("10:00", "%H:%M").time()
         self._update_end = datetime.strptime("20:00", "%H:%M").time()
         self._update_interval_min = 60
@@ -294,6 +296,9 @@ class InsightService:
         self._dedup_window_minutes = config.get(
             "dedup_window_minutes", DEFAULT_DEDUP_WINDOW_MINUTES
         )
+
+        # Hourly market_update briefs are too frequent to email by default.
+        self._email_types = set(config.get("email_types", ["pre_market", "post_market"]))
 
         tz_name = config.get("timezone", "America/New_York")
         self._tz = ZoneInfo(tz_name)
@@ -359,6 +364,9 @@ class InsightService:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        # A stored brief has no email retry path, so let in-flight sends finish (bounded).
+        if self._email_tasks:
+            await asyncio.wait(set(self._email_tasks), timeout=15)
         logger.info("[MARKET_INSIGHT] Shutdown complete")
 
     # ------------------------------------------------------------------
@@ -747,6 +755,18 @@ class InsightService:
                 f"[MARKET_INSIGHT] {job_type} completed: "
                 f"id={insight_id}, time={elapsed_ms}ms"
             )
+
+            if job_type in self._email_types:
+                from src.server.services.email_delivery import deliver_insight_email
+
+                # Detached: SMTP can take ~30s per step, which must not count against
+                # the generation timeout or turn a stored brief into a failure.
+                task = asyncio.create_task(
+                    deliver_insight_email(job_type, parsed, self._tz.key),
+                    name=f"insight_email_{insight_id}",
+                )
+                self._email_tasks.add(task)
+                task.add_done_callback(self._email_tasks.discard)
 
         except (asyncio.TimeoutError, asyncio.CancelledError):
             elapsed_ms = int((time.monotonic() - start_time) * 1000)

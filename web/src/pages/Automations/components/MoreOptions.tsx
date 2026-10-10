@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/aria-select';
+import { HOST_MODE } from '@/config/hostMode';
 import { Disclosure } from '@/components/ui/Disclosure';
 import { Input } from '@/components/ui/input';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -21,7 +22,7 @@ import { MIN_COOLDOWN_MINUTES, RETRIGGER_MODES } from '../utils/price';
 import CountInput from './CountInput';
 import FormRow from './FormRow';
 
-type DeliveryChoice = 'none' | 'slack' | 'discord';
+type DeliveryChoice = 'none' | 'email' | 'slack' | 'discord';
 
 /** The one segment the delivery control can press, or null for a set it
  *  cannot show: several channels, or one the agent chose that the form does
@@ -29,7 +30,7 @@ type DeliveryChoice = 'none' | 'slack' | 'discord';
 function deliveryChoice(methods: string[]): DeliveryChoice | null {
   if (methods.length === 0) return 'none';
   if (methods.length > 1) return null;
-  return methods[0] === 'slack' || methods[0] === 'discord' ? methods[0] : null;
+  return methods[0] === 'email' || methods[0] === 'slack' || methods[0] === 'discord' ? methods[0] : null;
 }
 
 interface MoreOptionsProps {
@@ -142,6 +143,8 @@ export default function MoreOptions({ form, patch, open, onOpenChange }: MoreOpt
             onChange={(choice) => patch('delivery_methods', choice === 'none' ? [] : [choice])}
             options={[
               { value: 'none', label: t('automation.deliverNone') },
+              // Email goes to one operator-configured list, so the backend refuses it outside OSS.
+              ...(HOST_MODE === 'oss' ? [{ value: 'email' as const, label: deliveryMethodName('email', t) }] : []),
               { value: 'slack', label: deliveryMethodName('slack', t) },
               { value: 'discord', label: deliveryMethodName('discord', t) },
             ]}

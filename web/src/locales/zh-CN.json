@@ -962,7 +962,14 @@
         "title": "自选股",
         "description": "紧凑标的列表，附实时价格。",
         "header": "自选股",
-        "addSymbol": "添加标的"
+        "addSymbol": "添加标的",
+        "sort": {
+          "label": "排序",
+          "added": "添加顺序",
+          "symbol": "代码",
+          "price": "价格",
+          "change": "涨跌幅"
+        }
       },
       "portfolio": {
         "title": "投资组合",
@@ -2305,6 +2312,7 @@
     "delivery": "推送",
     "deliverNone": "无",
     "deliverToSlack": "Slack",
+    "deliverToEmail": "邮件",
     "deliverToDiscord": "Discord",
     "marketIndex": "指数",
     "priceSymbol": "代码",

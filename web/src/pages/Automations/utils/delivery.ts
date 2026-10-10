@@ -1,6 +1,7 @@
 import type { TFunction } from 'i18next';
 
 const METHOD_KEY: Record<string, string> = {
+  email: 'automation.deliverToEmail',
   slack: 'automation.deliverToSlack',
   discord: 'automation.deliverToDiscord',
 };

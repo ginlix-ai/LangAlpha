@@ -5,7 +5,21 @@ These are resolved once at import time from .env / process environment.
 No YAML dependency — pure os.getenv.
 """
 
+import logging
 import os
+
+
+def _int_env(name: str, default: int) -> int:
+    """An integer env var; a malformed value is logged and ignored, not fatal at import."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning(f"Ignoring malformed {name}={raw!r}; using {default}")
+        return default
+
 
 # Deployment mode: "oss" (self-hosted, no auth) or "platform" (Supabase auth + quota service)
 HOST_MODE: str = os.getenv("HOST_MODE", "oss")
@@ -89,6 +103,14 @@ USD_TO_CREDITS_RATE: int = int(os.getenv("USD_TO_CREDITS_RATE", "1000"))
 # Automation webhook delivery (channel gateway)
 AUTOMATION_WEBHOOK_URL: str = os.getenv("AUTOMATION_WEBHOOK_URL", "")
 AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")
+
+# Automation email delivery (SMTP). Gmail needs an app password, not the account password.
+SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT: int = _int_env("SMTP_PORT", 587)
+SMTP_USER: str = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM: str = os.getenv("SMTP_FROM", "")
+AUTOMATION_EMAIL_TO: str = os.getenv("AUTOMATION_EMAIL_TO", "")  # comma-separated
 
 # Host IP for local LLM providers (Ollama, LM Studio, vLLM).
 # In Docker, "localhost" means the container — use host.docker.internal to reach the host.

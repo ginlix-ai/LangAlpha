@@ -1,5 +1,6 @@
 """Generic webhook client for firing automation lifecycle events."""
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -37,6 +38,20 @@ class WebhookClient:
         except Exception as e:
             logger.error(f"[WEBHOOK] Request failed: url={url} error={e}")
             return False
+
+    async def _email_with_deadline(
+        self, automation: Dict[str, Any], thread_id: str | None, run_id: str | None
+    ) -> dict:
+        """Email delivery is awaited while the automation settles; bound the total."""
+        from src.server.services.email_delivery import deliver_automation_email
+
+        try:
+            return await asyncio.wait_for(
+                deliver_automation_email(automation, thread_id, run_id), timeout=25
+            )
+        except asyncio.TimeoutError:
+            logger.error("[EMAIL] delivery exceeded 25s; abandoned")
+            return {"method": "email", "success": False, "error": "timed out after 25s"}
 
     async def fire_event(
         self,
@@ -80,10 +95,18 @@ class WebhookClient:
 
             from src.config import settings
 
+            # Email goes out in-process over SMTP; every other method rides the webhook.
+            wants_email = "email" in methods and event == "automation.completed"
+            if "email" in methods and not wants_email:
+                logger.debug(f"[WEBHOOK] email is sent on automation.completed only; skipping for {event}")
+            methods = [m for m in methods if m != "email"]
+
             webhook_url = settings.AUTOMATION_WEBHOOK_URL
             webhook_secret = settings.AUTOMATION_WEBHOOK_SECRET
-            if not webhook_url:
+            if methods and not webhook_url:
                 logger.warning("[WEBHOOK] AUTOMATION_WEBHOOK_URL not configured, skipping delivery")
+                methods = []
+            if not methods and not wants_email:
                 return None
 
             base_payload = {
@@ -108,8 +131,8 @@ class WebhookClient:
             )
             return None
 
-        return [
-            {
+        async def send(method: str) -> dict:
+            return {
                 "method": method,
                 "success": await self.fire(
                     webhook_url,
@@ -117,5 +140,9 @@ class WebhookClient:
                     webhook_secret or None,
                 ),
             }
-            for method in methods
-        ]
+
+        # Concurrent so a slow SMTP handshake doesn't hold up the webhook sends.
+        jobs = [send(m) for m in methods]
+        if wants_email:
+            jobs.insert(0, self._email_with_deadline(automation, thread_id, run_id))
+        return list(await asyncio.gather(*jobs))
