@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 from src.config.settings import get_checkpoint_flush_timeout
-from src.server.contracts.status import is_user_stop
+from src.server.contracts.status import (
+    INTERRUPT_REASON_CREDIT_PAUSE,
+    classify_interrupts,
+    is_user_stop,
+)
+from src.server.database.runs.lifecycle import ProducerRecord, RunOutcome
+from src.server.services.runs.stream_errors import model_call_failure
 from src.server.utils.persistence_utils import (
     calculate_execution_time,
     get_sse_events_from_handler,
@@ -53,12 +59,13 @@ async def classify_outcome(
     graph,
     thread_id: str,
     error: Optional[str],
-) -> tuple[str, str, Optional[str], Optional[str]]:
+) -> tuple[str, str, Optional[str], Optional[str], Optional[str]]:
     """In-band outcome classification -> (status, phase, interrupt_reason,
-    error). Interrupted-vs-completed comes from the streaming handler's
-    durability barrier; the timeout-prone aget_state probe survives only
-    for handler-less runs."""
+    pause_message, error). Interrupted-vs-completed comes from the streaming
+    handler's durability barrier; the timeout-prone aget_state probe survives
+    only for handler-less runs."""
     interrupt_reason: Optional[str] = None
+    pause_message: Optional[str] = None
     if kind == "cancelled":
         status, phase = "cancelled", "cancellation"
     elif kind == "failed":
@@ -67,9 +74,10 @@ async def classify_outcome(
         if handler.interrupt_verified:
             status, phase = "interrupted", "interrupt"
             # Already classified by the handler's durability barrier
-            # (classify_interrupt_reason over the buffered payloads) —
-            # never respelled here.
+            # (classify_interrupts over the buffered payloads) — never
+            # respelled here.
             interrupt_reason = handler.interrupt_reason
+            pause_message = handler.pause_message
         else:
             # I8: a pause that never reached the checkpointer must not
             # advertise resumability.
@@ -89,12 +97,8 @@ async def classify_outcome(
                     timeout=get_checkpoint_flush_timeout(),
                 )
                 if snapshot and snapshot.next:
-                    from src.server.contracts.status import (
-                        classify_interrupt_reason,
-                    )
-
                     status, phase = "interrupted", "interrupt"
-                    interrupt_reason = classify_interrupt_reason(
+                    interrupt_reason, pause_message = classify_interrupts(
                         intr
                         for task in (snapshot.tasks or ())
                         for intr in (getattr(task, "interrupts", ()) or ())
@@ -105,7 +109,7 @@ async def classify_outcome(
                 f"({thread_id}, ...)",
                 exc_info=True,
             )
-    return status, phase, interrupt_reason, error
+    return status, phase, interrupt_reason, pause_message, error
 
 
 async def assemble_finalize_artifacts(
@@ -114,14 +118,19 @@ async def assemble_finalize_artifacts(
     metadata: dict,
     status: str,
     phase: str,
+    interrupt_reason: Optional[str],
+    pause_message: Optional[str],
+    error: Optional[str],
     handler,
     cancelled_by_user: bool,
     workspace_id: Optional[str],
     user_id: Optional[str],
     stop_events: Optional[list[dict]] = None,
-) -> tuple:
-    """Build everything the finalize CAS archives: usage records, the
-    (possibly stop-reconciled) sse_events, and the persist metadata.
+    exc: Optional[BaseException] = None,
+) -> RunOutcome:
+    """Build everything the finalize CAS writes: usage records, the
+    (possibly stop-reconciled) sse_events, the persist metadata and the
+    producer's record.
 
     ``stop_events`` are the subagent events a stop teardown drained from the
     tasks its kill evicted, which the caller passes only for a cancelled run.
@@ -165,6 +174,21 @@ async def assemble_finalize_artifacts(
             persist_metadata[extra] = metadata[extra]
     if status == "cancelled":
         persist_metadata["cancelled_by_user"] = cancelled_by_user
+    if exc is not None:
+        persist_metadata.update(
+            model_call_failure(
+                exc,
+                getattr(
+                    getattr(handler, "agent_config", None), "credential_source", None
+                ),
+            )
+        )
+    # The pause's own words, which settling the run's automation relays, so
+    # that reader never has to open the turn's event archive for them. A
+    # pause without words is stamped null: the interrupts that classified it
+    # are the ones the archive holds, so it has none either.
+    if interrupt_reason == INTERRUPT_REASON_CREDIT_PAUSE:
+        persist_metadata["credit_pause_message"] = pause_message
     # Steering inputs archive on the owning response (v4 identity model:
     # steering = no run, no turn). Replaces the old backfill that
     # fabricated query rows for orphan turn indexes.
@@ -191,7 +215,30 @@ async def assemble_finalize_artifacts(
                 f"[Finalize] artifact hook failed for {key}",
                 exc_info=True,
             )
-    return execution_time, per_call_records, tool_usage, sse_events, persist_metadata
+    return RunOutcome(
+        status=status,
+        interrupt_reason=interrupt_reason,
+        metadata=persist_metadata,
+        errors=[error] if error else None,
+        execution_time=execution_time,
+        sse_events=sse_events,
+        per_call_records=per_call_records,
+        tool_usage=tool_usage,
+        record=_producer_record(key, handler, stop_events),
+    )
+
+
+def _producer_record(key: tuple, handler, stop_events) -> Optional[ProducerRecord]:
+    """The producer's record, or None when it cannot be read: a raise here
+    would leave the row in_progress, where a missing record only costs the
+    row its replay facts."""
+    if handler is None:
+        return None
+    try:
+        return handler.record(stop_events)
+    except Exception:
+        logger.warning(f"[Finalize] producer record unavailable for {key}", exc_info=True)
+        return None
 
 
 async def drive_finalize_cas(

@@ -1,9 +1,8 @@
 """The shared replay has to carry the turn's end, or its fold row has no duration.
 
-``build_sse_replay_items`` is not on this path: ``public.py`` hand-builds its own
-``user_message`` payload so it can drop the keys a viewer must not read. That
-makes it a second construction site for the same event, and the completion stamp
-the fold row pairs with the query timestamp has to be mirrored into it.
+The public route builds its pages with the owner's assembly and then drops the
+keys a viewer must not read from each ``user_message``; the completion stamp the
+fold row pairs with the query timestamp has to survive that copy.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app
+from tests.unit.server.services.history.replay_builders import replay_rows
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,8 +24,7 @@ _SHARE_TOKEN = "share_abc123"
 _THREAD_ID = "44444444-4444-4444-8444-444444444444"
 
 _THREAD_BY_TOKEN = "src.server.app.share_access.get_thread_by_share_token"
-_QUERIES = "src.server.app.public.get_queries_for_thread"
-_RESPONSES = "src.server.app.public.get_responses_for_thread"
+_REPLAY_DATA = "src.server.app.public.get_replay_thread_data"
 _TASK_DETAILS = "src.server.services.history.task_status.resolve_task_details"
 
 _STARTED = datetime(2026, 9, 21, 15, 4, 0, tzinfo=timezone.utc)
@@ -59,8 +58,19 @@ async def _replay(client, response_row: dict) -> list[dict]:
     ]
     with (
         patch(_THREAD_BY_TOKEN, new=AsyncMock(return_value=thread)),
-        patch(_QUERIES, new=AsyncMock(return_value=(queries, None))),
-        patch(_RESPONSES, new=AsyncMock(return_value=([response_row], None))),
+        patch(
+            _REPLAY_DATA,
+            new=AsyncMock(
+                return_value=replay_rows(
+                    {
+                        "conversation_thread_id": _THREAD_ID,
+                        "latest_checkpoint_id": None,
+                    },
+                    queries,
+                    [response_row],
+                )
+            ),
+        ),
         patch(_TASK_DETAILS, new=AsyncMock(return_value={})),
     ):
         resp = await client.get(f"/api/v1/public/shared/{_SHARE_TOKEN}/replay")
@@ -99,14 +109,13 @@ def _user_message(events: list[dict]) -> dict:
 def test_the_public_query_actually_selects_the_settle_instant():
     """The mock above can hand the route any shape; production cannot.
 
-    The owner's replay reads ``_SETTLED_ATTEMPTS`` directly and gets the column
-    from its ``*``. The public route goes through ``get_responses_for_thread``,
-    which projects ``_RESPONSE_COLUMNS``, so the preferred branch is only
-    reachable while that list carries the column.
+    The public route reads the light response columns through
+    ``get_replay_thread_data``, so the preferred branch is only reachable
+    while that list carries the column.
     """
     from src.server.database.conversation import _sql
 
-    assert "usage_settled_at" in _sql._RESPONSE_COLUMNS
+    assert "usage_settled_at" in _sql._LIGHT_RESPONSE_COLUMNS
 
 
 async def test_settled_turn_carries_its_end(client):

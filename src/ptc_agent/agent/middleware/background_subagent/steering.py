@@ -27,6 +27,8 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 )
 from ptc_agent.agent.middleware.background_subagent.redis_stream import (
     parse_steering_payload,
+    record_returned,
+    returned_entry,
     steering_queue_key,
 )
 
@@ -110,20 +112,23 @@ class SubagentSteeringMiddleware(AgentMiddleware):
             agent_id = f"task:{task_id}" if task_id else f"subagent:{tool_call_id}"
             ts = time.time()
             if returned and self.registry:
-                for payload in returned:
+                entries = [returned_entry(p, "run_mismatch") for p in returned]
+                for entry in entries:
                     await self._capture(
                         tool_call_id,
                         {
                             "event": "steering_returned",
-                            "data": {
-                                "agent": agent_id,
-                                "content": payload["content"],
-                                "input_id": payload["input_id"],
-                                "reason": "run_mismatch",
-                            },
+                            "data": {"agent": agent_id, **entry},
                             "ts": ts,
                         },
                     )
+                # ``after`` places each return after the message it followed.
+                after = _last_message_id(state)
+                await record_returned(
+                    self.registry,
+                    own_run_id,
+                    [{**entry, "after": after} for entry in entries],
+                )
 
             if not parsed:
                 return None
@@ -182,3 +187,10 @@ class SubagentSteeringMiddleware(AgentMiddleware):
             await self.registry.append_captured_event(tool_call_id, event)
         except Exception:
             pass
+
+
+def _last_message_id(state: Any) -> str | None:
+    messages = state.get("messages") if isinstance(state, dict) else None
+    if not messages:
+        return None
+    return getattr(messages[-1], "id", None)

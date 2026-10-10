@@ -2,7 +2,7 @@
 
 The strip and append run in SQL under a row lock, so only a real database can
 show that a concurrent append survives, that other agents' rows keep their
-order, and that provenance is re-derived from the rows the write leaves.
+order, and that the written lanes' provenance is rewritten from the batch.
 """
 
 from __future__ import annotations
@@ -155,8 +155,25 @@ async def test_append_waiting_on_the_lock_survives(
     assert events.count(STALE_TASK_ROW) == 1
 
 
-async def test_provenance_follows_the_rows_the_write_leaves(response_row, db_conn):
+async def test_a_lane_write_leaves_other_lanes_records(response_row, db_conn):
+    """The main lane's records are the finalize's to write; a subagent's
+    archive replaces its own lane and nothing else."""
     from src.server.database.conversation.responses import replace_agent_events
+    from src.server.database.provenance import (
+        MAIN_PROVENANCE_LANE,
+        sync_provenance_for_response,
+    )
+
+    async with db_conn.transaction():
+        await sync_provenance_for_response(
+            db_conn,
+            conversation_response_id=response_row,
+            conversation_thread_id=await _thread_of(db_conn, response_row),
+            turn_index=0,
+            sse_events=[MAIN_PROVENANCE],
+            strict=True,
+            lanes=(MAIN_PROVENANCE_LANE,),
+        )
 
     assert await replace_agent_events(response_row, [TASK_PROVENANCE])
 
@@ -164,6 +181,15 @@ async def test_provenance_follows_the_rows_the_write_leaves(response_row, db_con
         "https://a.example",
         "https://b.example",
     ]
+
+
+async def _thread_of(conn, response_id: str) -> str:
+    cur = await conn.execute(
+        "SELECT conversation_thread_id FROM conversation_responses "
+        "WHERE conversation_response_id = %s",
+        (response_id,),
+    )
+    return str((await cur.fetchone())["conversation_thread_id"])
 
 
 async def test_a_stripped_agents_provenance_leaves_with_it(

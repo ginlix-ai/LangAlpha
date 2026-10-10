@@ -28,6 +28,7 @@ async def test_skips_when_no_provenance_event():
             conversation_thread_id="t",
             turn_index=0,
             sse_events=events,
+            lanes=(),
         )
     inner.assert_not_awaited()  # no extract + delete-then-insert on context_window
 
@@ -42,6 +43,7 @@ async def test_skips_on_empty_or_none():
                 conversation_thread_id="t",
                 turn_index=0,
                 sse_events=events,
+                lanes=(),
             )
     inner.assert_not_awaited()
 
@@ -64,5 +66,6 @@ async def test_runs_when_provenance_event_present():
             conversation_thread_id="t",
             turn_index=0,
             sse_events=events,
+            lanes=(),
         )
     inner.assert_awaited_once()

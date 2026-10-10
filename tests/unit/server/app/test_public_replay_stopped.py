@@ -1,7 +1,7 @@
 """A shared transcript keeps the Stopped chip of a turn its owner stopped.
 
-``public.py`` streams stored events itself, so the stop close the owner's
-replay derives from the response row has to be added on this path too.
+The public route shares the owner's replay assembly, so the stop close derived
+from the response row has to reach the shared stream too.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app
+from tests.unit.server.services.history.replay_builders import replay_rows
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,8 +23,7 @@ _THREAD_ID = "44444444-4444-4444-8444-444444444444"
 _RESPONSE_ID = "55555555-5555-4555-8555-555555555555"
 
 _THREAD_BY_TOKEN = "src.server.app.share_access.get_thread_by_share_token"
-_QUERIES = "src.server.app.public.get_queries_for_thread"
-_RESPONSES = "src.server.app.public.get_responses_for_thread"
+_REPLAY_DATA = "src.server.app.public.get_replay_thread_data"
 _TASK_DETAILS = "src.server.services.history.task_status.resolve_task_details"
 
 _TEXT = {
@@ -83,8 +83,19 @@ async def _closes(client, sse_events: list[dict], metadata: dict) -> list[dict]:
     }
     with (
         patch(_THREAD_BY_TOKEN, new=AsyncMock(return_value=thread)),
-        patch(_QUERIES, new=AsyncMock(return_value=(queries, None))),
-        patch(_RESPONSES, new=AsyncMock(return_value=([row], None))),
+        patch(
+            _REPLAY_DATA,
+            new=AsyncMock(
+                return_value=replay_rows(
+                    {
+                        "conversation_thread_id": _THREAD_ID,
+                        "latest_checkpoint_id": None,
+                    },
+                    queries,
+                    [row],
+                )
+            ),
+        ),
         patch(_TASK_DETAILS, new=AsyncMock(return_value={})),
     ):
         resp = await client.get(f"/api/v1/public/shared/{_SHARE_TOKEN}/replay")

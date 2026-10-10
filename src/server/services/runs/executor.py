@@ -44,7 +44,6 @@ from src.server.services.runs import (
     teardown,
 )
 from src.server.services.runs.finalization import FinalizeVerdict
-from src.server.services.runs.sse_producer import model_call_failure
 from src.server.services.runs.stream_writer import TransportLostError
 from src.server.services.runs.teardown import StopTeardown
 from src.server.dependencies.usage_limits import release_burst_slot
@@ -946,8 +945,6 @@ class LocalRunExecutor:
         transaction carrying usage rows with it, so a persist failure can no
         longer be swallowed into a zombie-ACTIVE turn.
         """
-        from src.server.services.runs.coordinator import RunOutcome
-
         key = (thread_id, run_id)
         async with self.task_lock:
             task_info = self.executions.get(key)
@@ -964,7 +961,13 @@ class LocalRunExecutor:
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
-        status, phase, interrupt_reason, error = await finalization.classify_outcome(
+        (
+            status,
+            phase,
+            interrupt_reason,
+            pause_message,
+            error,
+        ) = await finalization.classify_outcome(
             kind, handler=handler, graph=graph, thread_id=thread_id, error=error
         )
         # The stop drain's events the finalize archives, copied: a teardown a
@@ -972,35 +975,21 @@ class LocalRunExecutor:
         # lanes it adds then are archived once their writers settle instead.
         carried_events = list(stop.events) if stop and status == "cancelled" else []
 
-        (
-            execution_time,
-            per_call_records,
-            tool_usage,
-            sse_events,
-            persist_metadata,
-        ) = await finalization.assemble_finalize_artifacts(
+        outcome = await finalization.assemble_finalize_artifacts(
             key,
             metadata=metadata,
             status=status,
             phase=phase,
+            interrupt_reason=interrupt_reason,
+            pause_message=pause_message,
+            error=error,
             handler=handler,
             cancelled_by_user=cancelled_by_user,
             workspace_id=workspace_id,
             user_id=user_id,
             stop_events=carried_events,
+            exc=exc,
         )
-        if exc is not None:
-            persist_metadata = {
-                **persist_metadata,
-                **model_call_failure(
-                    exc,
-                    getattr(
-                        getattr(handler, "agent_config", None),
-                        "credential_source",
-                        None,
-                    ),
-                ),
-            }
 
         # ---- the single terminal transition ----
         # verdict.applied gates every terminal business effect below: losers
@@ -1011,16 +1000,6 @@ class LocalRunExecutor:
             # needs-input wake, watch clear) ride the finalize transaction
             # as durable outbox jobs — finalize_run derives them from the
             # row's START-stamped metadata, so no explicit factory here.
-            outcome = RunOutcome(
-                status=status,
-                interrupt_reason=interrupt_reason,
-                metadata=persist_metadata,
-                errors=[error] if error else None,
-                execution_time=execution_time,
-                sse_events=sse_events,
-                per_call_records=per_call_records,
-                tool_usage=tool_usage,
-            )
             # I2 tail mode: subagent writers that survive the turn checkpoint
             # through the run's pinned session, so its release must wait for
             # them (N(root) drops at finalize either way).
@@ -1072,7 +1051,7 @@ class LocalRunExecutor:
                 carried_events=carried_events,
                 task_info=task_info,
                 completion_callback=completion_callback,
-                execution_time=execution_time,
+                execution_time=outcome.execution_time,
                 interrupt_reason=interrupt_reason,
                 error=error,
                 metadata=metadata,

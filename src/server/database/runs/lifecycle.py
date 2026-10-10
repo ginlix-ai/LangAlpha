@@ -11,7 +11,7 @@ happen inside these two transactions and nowhere else.
 
 import logging
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -22,6 +22,7 @@ from src.server.database import conversation as qr_db
 from src.server.database import order_attempts as oa_db
 from src.server.database import pool
 from src.server.database import thread_transcripts as tt_db
+from src.server.database.runs import subagent_repair
 from src.server.database.runs import subagent_runs as sr_db
 from src.server.database.runs.outbox import (
     build_finalize_jobs_from_run_row,
@@ -29,6 +30,7 @@ from src.server.database.runs.outbox import (
     release_deferred_jobs,
 )
 from src.server.contracts.status import TERMINAL_STATUSES
+from src.server.database.provenance import MAIN_PROVENANCE_LANE
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid
 
 logger = logging.getLogger(__name__)
@@ -91,10 +93,50 @@ class ForkSpec:
     preserve_query_at_fork: bool = False
 
 
+# The row a finalize hands back: the terminal status plus what the post-CAS
+# effects read (outbox jobs, the transcript export). Never sse_events: a long
+# turn's archive runs to tens of MB, and decoding it holds the event loop.
+_FINALIZE_ROW_COLUMNS = """
+    conversation_response_id, conversation_thread_id, turn_index, run_seq,
+    status, interrupt_reason, metadata
+"""
+
+
 @dataclass
 class FinalizeResult:
     applied: bool  # False = run was already terminal (idempotent no-op)
-    run: Optional[Dict[str, Any]] = None
+    run: Optional[Dict[str, Any]] = None  # _FINALIZE_ROW_COLUMNS only
+
+
+@dataclass(frozen=True)
+class ProducerRecord:
+    """What a run's stream kept apart for its row, beside the status.
+
+    ``provenance`` is every provenance record the stream held: the main
+    lane's, plus the task lanes a stop drained. ``reasoning_ms`` is None when
+    nothing timed the main agent's thinking (a recovered run), so the row's
+    facts stay unset and replay takes the durations from its stored events.
+    """
+
+    provenance: List[Dict[str, Any]] = field(default_factory=list)
+    reasoning_ms: Optional[Dict[str, List[int]]] = None
+
+
+@dataclass
+class RunOutcome:
+    """Everything finalize writes, resolved in-band by the run's own executor."""
+
+    status: str  # completed | interrupted | error | cancelled
+    interrupt_reason: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    warnings: Optional[List[str]] = None
+    errors: Optional[List[str]] = None
+    execution_time: Optional[float] = None
+    sse_events: Optional[List[Dict[str, Any]]] = None
+    per_call_records: Optional[list] = None
+    tool_usage: Optional[Dict[str, int]] = None
+    # None for a run with no stream to keep apart (one that never started).
+    record: Optional[ProducerRecord] = None
 
 
 @asynccontextmanager
@@ -238,7 +280,7 @@ async def start_run(
                     # branch no longer owns; re-anchor the task rows in the
                     # same transaction so no window exists where a resume can
                     # read an empty latest_run_id.
-                    await sr_db.repair_task_chains(thread_id, conn=conn)
+                    await subagent_repair.repair_task_chains(thread_id, conn=conn)
                     # update_thread_checkpoint_id swallows failures into
                     # False; inside this transaction that must abort loudly,
                     # not commit a truncation with an unpinned checkpoint.
@@ -348,13 +390,7 @@ async def finalize_run(
     *,
     run_id: str,
     thread_id: str,
-    status: str,
-    interrupt_reason: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    warnings: Optional[List[str]] = None,
-    errors: Optional[List[str]] = None,
-    execution_time: Optional[float] = None,
-    sse_events: Optional[List[Dict[str, Any]]] = None,
+    outcome: RunOutcome,
     checkpoint_id: Optional[str] = None,
     usage_writer: Optional[Callable[[Any, str], Awaitable[None]]] = None,
     conn=None,
@@ -377,9 +413,21 @@ async def finalize_run(
     flag is the user-provenance marker, the timestamp only the decision time. usage_writer runs inside the transaction on the
     same connection so a persist failure aborts the terminal transition
     with it (no more swallowed-exception zombie turns).
+
+    The outcome's record lands with the status it describes, so a settled
+    row never lacks the facts its replay reads, and its provenance replaces
+    the main lane's rows. Subagent lanes are their archive's to write.
     """
+    status = outcome.status
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"finalize_run: {status!r} is not a terminal status")
+    record = outcome.record or ProducerRecord()
+    replay_facts = (
+        {"reasoning_ms": record.reasoning_ms}
+        if record.reasoning_ms is not None
+        else None
+    )
+    sse_events = outcome.sse_events
 
     try:
         async with _lifecycle_connection(conn) as conn:
@@ -422,24 +470,28 @@ async def finalize_run(
                             -- Merge, never replace: mid-run appenders
                             -- (append_sse_event, e.g. manual compact/offload
                             -- context_window persists) may have durably written
-                            -- to the open row already.
-                            sse_events = CASE
-                                WHEN %s::jsonb IS NULL THEN sse_events
-                                ELSE COALESCE(sse_events, '[]'::jsonb) || %s::jsonb
-                            END
+                            -- to the open row already. The events bind once,
+                            -- since every bind encodes them on the event loop;
+                            -- jsonb || NULL is NULL, so a finalize without
+                            -- events leaves the column as it was.
+                            sse_events = COALESCE(
+                                COALESCE(sse_events, '[]'::jsonb) || %s::jsonb,
+                                sse_events
+                            ),
+                            replay_facts = COALESCE(%s::jsonb, replay_facts)
                         WHERE conversation_response_id = %s AND status = 'in_progress'
-                        RETURNING *
-                        """,
+                        RETURNING """
+                        + _FINALIZE_ROW_COLUMNS,
                         (
                             status,
-                            interrupt_reason,
+                            outcome.interrupt_reason,
                             status,
-                            SafeJson(metadata or {}),
-                            warnings or [],
-                            errors or [],
-                            execution_time,
+                            SafeJson(outcome.metadata or {}),
+                            outcome.warnings or [],
+                            outcome.errors or [],
+                            outcome.execution_time,
                             SafeJson(sse_events) if sse_events else None,
-                            SafeJson(sse_events) if sse_events else None,
+                            SafeJson(replay_facts) if replay_facts else None,
                             run_id,
                         ),
                     )
@@ -475,11 +527,9 @@ async def finalize_run(
                     conversation_response_id=run_id,
                     conversation_thread_id=thread_id,
                     turn_index=run_row["turn_index"],
-                    # The RETURNING row carries the MERGED archive (pre-existing
-                    # mid-run appends || this finalize's events) — provenance
-                    # must derive from what was actually persisted.
-                    sse_events=run_row.get("sse_events"),
+                    sse_events=record.provenance,
                     strict=True,
+                    lanes=(MAIN_PROVENANCE_LANE,),
                 )
 
                 if usage_writer is not None:
@@ -527,7 +577,7 @@ async def finalize_run(
         )
         return FinalizeResult(applied=True, run=run_row)
     except _AlreadyTerminal:
-        run = await get_run(run_id)
+        run = await _get_finalize_row(run_id)
         if run is None:
             raise RunNotFoundError(run_id)
         logger.info(
@@ -535,6 +585,20 @@ async def finalize_run(
             f"{run['status']} (wanted {status})"
         )
         return FinalizeResult(applied=False, run=run)
+
+
+async def _get_finalize_row(run_id: str) -> Optional[Dict[str, Any]]:
+    """The survivor of a lost finalize, in the shape a won one returns."""
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT "
+                + _FINALIZE_ROW_COLUMNS
+                + " FROM conversation_responses WHERE conversation_response_id = %s",
+                (run_id,),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 async def request_run_cancel(

@@ -675,6 +675,39 @@ def parse_steering_payload(raw: Any) -> dict[str, Any] | None:
     return None
 
 
+def returned_entry(payload: dict[str, Any], reason: str) -> dict[str, Any]:
+    """A returned steering input, as its ``steering_returned`` event and the
+    run's replay fact both name it."""
+    return {
+        "content": payload["content"],
+        "input_id": payload["input_id"],
+        "reason": reason,
+    }
+
+
+async def record_returned(
+    registry: Any, run_id: str | None, returned: list[dict[str, Any]]
+) -> bool:
+    """Keep returned steering on the run's ledger row for replay, which reads
+    the run's transcript from its checkpoint, where nothing returned ever
+    lands. Never raises; False only when a ledger that should hold the
+    returns did not take them, so a caller can keep its queue entries."""
+    ledger = getattr(registry, "run_ledger", None) if registry else None
+    if not returned or ledger is None or not run_id:
+        return True
+    try:
+        return bool(
+            await ledger.record_replay_facts(run_id, steering_returned=returned)
+        )
+    except Exception:
+        logger.warning(
+            "returned steering not recorded for replay",
+            task_run_id=run_id,
+            exc_info=True,
+        )
+        return False
+
+
 async def read_task_meta(thread_id: str, task_id: str) -> dict[str, str] | None:
     """Read the cross-worker task meta hash written by ``write_task_meta``.
 

@@ -21,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app
 from src.server.utils.secret_redactor import SecretRedactor
+from tests.unit.server.services.history.replay_builders import replay_rows
 
 pytestmark = pytest.mark.asyncio
 
@@ -797,8 +798,7 @@ class TestPublicReadTruncation:
 # TestReplayStripsWorkspaceId — workspace_id is a bearer credential
 # ---------------------------------------------------------------------------
 
-_QUERIES = "src.server.app.public.get_queries_for_thread"
-_RESPONSES = "src.server.app.public.get_responses_for_thread"
+_REPLAY_DATA = "src.server.app.public.get_replay_thread_data"
 
 
 def _parse_sse_events(body: str):
@@ -849,8 +849,19 @@ class TestReplayStripsWorkspaceId:
         query = {"turn_index": 0, "content": "hi", "created_at": "2026-01-01T00:00:00Z"}
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_QUERIES, AsyncMock(return_value=([query], 1))),
-            patch(_RESPONSES, AsyncMock(return_value=([stored], 1))),
+            patch(
+                _REPLAY_DATA,
+                AsyncMock(
+                    return_value=replay_rows(
+                        {
+                            "conversation_thread_id": _THREAD_ID,
+                            "latest_checkpoint_id": None,
+                        },
+                        [query],
+                        [stored],
+                    )
+                ),
+            ),
         ):
             resp = await public_client.get(
                 f"/api/v1/public/shared/{_SHARE_TOKEN}/replay"

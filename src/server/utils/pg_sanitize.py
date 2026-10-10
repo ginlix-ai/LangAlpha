@@ -92,6 +92,12 @@ def _safe_dumps(value: Any) -> str:
     return _NUL_ESCAPE.sub(r"\1", s)
 
 
+def jsonb_round_trip(value: Any) -> Any:
+    """``value`` as a ``SafeJson`` bind stores it, read back: what a reader of
+    the column will get."""
+    return json.loads(_safe_dumps(value))
+
+
 # Items per slice: a few milliseconds of encoding between event-loop yields.
 _JSON_ARRAY_SLICE = 2000
 

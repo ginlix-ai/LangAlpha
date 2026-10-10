@@ -15,6 +15,7 @@ import pytest
 from src.server.services.runs.recovery import RecoveryScanner
 
 SR_DB = "src.server.services.runs.recovery.sr_db"
+REPAIR = "src.server.services.runs.recovery.subagent_repair"
 TL_DB = "src.server.services.runs.recovery.tl_db"
 
 
@@ -44,7 +45,7 @@ async def test_sweep_runs_even_when_there_is_nothing_to_recover():
 async def test_heal_reports_what_it_repaired():
     repair = AsyncMock(return_value={"rewound": 2, "deleted": 1})
 
-    with patch(f"{SR_DB}.repair_dangling_task_chains", new=repair):
+    with patch(f"{REPAIR}.repair_dangling_task_chains", new=repair):
         healed = await RecoveryScanner().heal_task_chains()
 
     assert healed == {"rewound": 2, "deleted": 1}
@@ -57,7 +58,7 @@ async def test_heal_failure_never_aborts_the_scan():
     concerns are independent and only one of them is time-critical."""
     repair = AsyncMock(side_effect=RuntimeError("connection reset"))
 
-    with patch(f"{SR_DB}.repair_dangling_task_chains", new=repair):
+    with patch(f"{REPAIR}.repair_dangling_task_chains", new=repair):
         healed = await RecoveryScanner().heal_task_chains()
 
     assert healed == {"rewound": 0, "deleted": 0}
@@ -69,7 +70,7 @@ async def test_scan_survives_a_failing_sweep():
     repair = AsyncMock(side_effect=RuntimeError("connection reset"))
 
     with open_runs, open_task_runs, patch(
-        f"{SR_DB}.repair_dangling_task_chains", new=repair
+        f"{REPAIR}.repair_dangling_task_chains", new=repair
     ):
         assert await RecoveryScanner().scan_once(assume_dead=True) == 0
 

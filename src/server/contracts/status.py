@@ -186,12 +186,24 @@ def _classify_one(request: dict) -> Optional[str]:
     return "approval_required" if request.get("name") else None
 
 
-def classify_interrupt_reason(interrupts: Any) -> Optional[str]:
-    """Classify HITL interrupt payloads into the ``interrupt_reason`` column.
+def classify_interrupts(interrupts: Any) -> tuple[Optional[str], Optional[str]]:
+    """Classify HITL interrupt payloads -> (``interrupt_reason``, the credit
+    pause's denial).
 
-    One authority for the spelling: the live streaming path and the recovery
-    scanner must never drift apart on it. ``None`` when no payload carries a
-    discriminator at all, which the column already stores as NULL.
+    One authority for both: the live producer, the finalize fallback and the
+    recovery scanner must never drift apart on the spelling or on which
+    words a pause stamps. The reason is ``None`` when no payload carries a
+    discriminator, which the column stores as NULL. The denial is the quota
+    service's own words, relayed verbatim or not at all; the last pause wins.
     """
-    reasons = [r for r in map(_classify_one, _action_requests(interrupts)) if r]
-    return min(reasons, key=INTERRUPT_REASONS.index, default=None)
+    reasons: list[str] = []
+    message: Optional[str] = None
+    for request in _action_requests(interrupts):
+        reason = _classify_one(request)
+        if reason:
+            reasons.append(reason)
+        if reason == INTERRUPT_REASON_CREDIT_PAUSE and isinstance(
+            request.get("message"), str
+        ):
+            message = request["message"]
+    return min(reasons, key=INTERRUPT_REASONS.index, default=None), message

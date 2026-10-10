@@ -1,14 +1,16 @@
 """Provenance records: a derived index of external data the agent accessed.
 
-Rows are extracted from the accumulated `conversation_responses.sse_events`
-(top-level `event == "provenance"` entries) and written delete-then-insert
-keyed by conversation_response_id, so the same turn can be re-persisted
-(background subagent drains overwrite sse_events repeatedly) without
-duplicating rows. All binds pass through the shared NUL sanitizers.
+Rows are extracted from the ``provenance`` events an agent lane emitted and
+written delete-then-insert per lane of a response: the main lane when the run
+settles, a subagent's lane each time its archive lands. A lane is rewritten
+whole by the one writer that holds all of it, so re-persisting it (subagent
+drains repeat) never duplicates rows, and never touches another lane's.
+All binds pass through the shared NUL sanitizers.
 """
 
 import logging
 import math
+from collections.abc import Collection
 from datetime import datetime
 from typing import Any
 
@@ -32,6 +34,10 @@ _TEXT_FIELDS = (
     "agent",
     "provider",
 )
+
+# The main agent's records, pinned to this name at emit time whatever graph
+# node produced them; a subagent's are ``task:{id}``.
+MAIN_PROVENANCE_LANE = "main"
 
 # Signed 64-bit range of the result_size BIGINT column.
 _BIGINT_MIN = -(2**63)
@@ -221,6 +227,12 @@ def _row_binds(
     )
 
 
+def record_lane(record: dict[str, Any]) -> str:
+    """The lane a record belongs to: its agent, ``""`` when it has none."""
+    agent = record.get("agent")
+    return agent if isinstance(agent, str) else ""
+
+
 def provenance_row_to_event(row: dict[str, Any]) -> dict[str, Any]:
     """Wire ``provenance`` event data from one table row (inverse of extraction).
 
@@ -255,6 +267,7 @@ async def insert_provenance_records(
     conversation_thread_id: str,
     turn_index: int,
     records: list[dict[str, Any]],
+    lanes: Collection[str],
 ) -> int:
     """Delete-then-insert provenance rows for one response (idempotent, atomic).
 
@@ -271,6 +284,10 @@ async def insert_provenance_records(
     than executemany, which re-parses per row because finalize SQL is never prepared.
     Every TEXT bind is NUL-stripped and the JSONB ``args_fingerprint`` / ``args``
     binds are wrapped in ``SafeJson``. Returns the number of rows inserted.
+
+    ``lanes`` limits the delete to those agents' rows (an agentless row counts
+    as lane ``""``), and every record's own agent joins it, so a write always
+    replaces what it inserts.
     """
     async with conn.cursor() as cur, conn.transaction():
         # Serialize concurrent writers for this response (xact-scoped lock).
@@ -278,11 +295,15 @@ async def insert_provenance_records(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
             (conversation_response_id,),
         )
-        # Delete-then-insert keyed by response_id: re-runs (background drains)
-        # replace the prior set rather than accumulating duplicates.
+        # Delete-then-insert keyed by response_id and lane: re-runs
+        # (background drains) replace the prior set rather than accumulating
+        # duplicates.
+        scope = set(lanes) | {record_lane(r) for r in records}
         await cur.execute(
-            "DELETE FROM provenance_records WHERE conversation_response_id = %s",
-            (conversation_response_id,),
+            "DELETE FROM provenance_records "
+            "WHERE conversation_response_id = %s "
+            "AND COALESCE(agent, '') = ANY(%s)",
+            (conversation_response_id, sorted(scope)),
         )
 
         if not records:
@@ -317,6 +338,7 @@ async def sync_provenance_for_response(
     turn_index: int,
     sse_events: list[dict[str, Any]] | None,
     strict: bool = False,
+    lanes: Collection[str],
 ) -> int:
     """Extract provenance from sse_events and (re)write rows for one response.
 
@@ -324,7 +346,8 @@ async def sync_provenance_for_response(
     default so a provenance failure can't break a standalone persist;
     ``strict=True`` re-raises for transaction-bound callers, where a
     swallowed SQL error would poison the enclosing transaction and turn its
-    commit into a silent rollback.
+    commit into a silent rollback. ``lanes`` as in
+    ``insert_provenance_records``.
     """
     try:
         records = extract_provenance_from_sse_events(sse_events)
@@ -334,6 +357,7 @@ async def sync_provenance_for_response(
             conversation_thread_id=conversation_thread_id,
             turn_index=turn_index,
             records=records,
+            lanes=lanes,
         )
     except Exception as e:
         if strict:

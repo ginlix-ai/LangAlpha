@@ -4,7 +4,7 @@ Drives ``insert_provenance_records`` / ``sync_provenance_for_response`` against 
 mocked psycopg3 cursor (the ``mock_connection`` / ``mock_cursor`` fixtures) and
 asserts:
 
-* the write is delete-then-insert keyed by conversation_response_id, batched via
+* the write is delete-then-insert keyed by conversation_response_id and lane, batched via
   a single multi-row INSERT, guarded by a per-response advisory lock inside a
   transaction (savepoint) so a failed write can't poison the turn-persist commit,
 * every TEXT bind is NUL-stripped and JSONB ``args_fingerprint`` wraps in SafeJson,
@@ -19,6 +19,7 @@ from psycopg.types.json import Json
 
 from src.server.database.provenance import (
     _INSERT_COLUMNS,
+    MAIN_PROVENANCE_LANE,
     insert_provenance_records,
     sync_provenance_for_response,
 )
@@ -66,6 +67,7 @@ class TestInsertProvenanceRecords:
             conversation_response_id=RESPONSE_ID,
             conversation_thread_id=THREAD_ID,
             turn_index=0,
+            lanes=(MAIN_PROVENANCE_LANE,),
             records=[_record(), _record(identifier="https://example.test/b")],
         )
         assert n == 2
@@ -73,10 +75,10 @@ class TestInsertProvenanceRecords:
         sqls = _execute_sqls(mock_cursor)
         # Advisory lock first (serializes concurrent drains for this response).
         assert any("pg_advisory_xact_lock" in s for s in sqls)
-        # Then the DELETE keyed by response_id.
+        # Then the DELETE keyed by response_id and the lane written.
         delete = next(c for c in mock_cursor.execute.call_args_list
                       if "DELETE FROM provenance_records" in c.args[0])
-        assert delete.args[1] == (RESPONSE_ID,)
+        assert delete.args[1] == (RESPONSE_ID, [MAIN_PROVENANCE_LANE])
 
         # Rows go in one multi-row INSERT, not per-row executemany.
         mock_cursor.executemany.assert_not_awaited()
@@ -96,6 +98,7 @@ class TestInsertProvenanceRecords:
             conversation_response_id=RESPONSE_ID,
             conversation_thread_id=THREAD_ID,
             turn_index=0,
+            lanes=(MAIN_PROVENANCE_LANE,),
             records=[_record(detail="daily_prices")],
         )
         _, params = _insert_call(mock_cursor).args
@@ -108,6 +111,7 @@ class TestInsertProvenanceRecords:
             conversation_response_id=RESPONSE_ID,
             conversation_thread_id=THREAD_ID,
             turn_index=0,
+            lanes=(MAIN_PROVENANCE_LANE,),
             records=[],
         )
         assert n == 0
@@ -138,6 +142,7 @@ class TestInsertProvenanceRecords:
             conversation_response_id=RESPONSE_ID,
             conversation_thread_id=THREAD_ID,
             turn_index=0,
+            lanes=(MAIN_PROVENANCE_LANE,),
             records=[dirty],
         )
         _, params = _insert_call(mock_cursor).args
@@ -154,6 +159,7 @@ class TestInsertProvenanceRecords:
             conversation_response_id=RESPONSE_ID,
             conversation_thread_id=THREAD_ID,
             turn_index=0,
+            lanes=(MAIN_PROVENANCE_LANE,),
             records=[_record(args_fingerprint={"sha256": "te\x00st"})],
         )
         _, params = _insert_call(mock_cursor).args
@@ -171,6 +177,7 @@ class TestInsertProvenanceRecords:
             conversation_response_id=RESPONSE_ID,
             conversation_thread_id=THREAD_ID,
             turn_index=0,
+            lanes=(MAIN_PROVENANCE_LANE,),
             records=[_record(args_fingerprint=None)],
         )
         _, params = _insert_call(mock_cursor).args
@@ -184,6 +191,7 @@ class TestInsertProvenanceRecords:
             conversation_response_id=RESPONSE_ID,
             conversation_thread_id=THREAD_ID,
             turn_index=0,
+            lanes=(MAIN_PROVENANCE_LANE,),
             records=[_record(args_fingerprint=None, args={"symbol": "AA\x00PL"})],
         )
         _, params = _insert_call(mock_cursor).args
@@ -209,6 +217,7 @@ class TestSyncProvenanceForResponse:
             conversation_thread_id=THREAD_ID,
             turn_index=0,
             sse_events=events,
+            lanes=(MAIN_PROVENANCE_LANE,),
         )
         assert n == 1
         assert any("INSERT INTO provenance_records" in s
@@ -236,5 +245,6 @@ class TestSyncProvenanceForResponse:
                 conversation_thread_id=THREAD_ID,
                 turn_index=0,
                 sse_events=events,
+                lanes=(MAIN_PROVENANCE_LANE,),
             )
         assert n == 0  # swallowed, never re-raised

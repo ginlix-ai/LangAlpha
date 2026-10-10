@@ -24,6 +24,17 @@ def _every_workspace_name_is_free():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_committed_texts():
+    """No test reaches the stored slices or the checkpoints: no turn has a
+    committed text to read, so every run's comes from its stored events."""
+    with patch(
+        "src.server.services.history.committed.committed_texts",
+        AsyncMock(return_value={}),
+    ):
+        yield
+
+
 def workspace_manager(
     row: dict | None = None, delete: AsyncMock | None = None
 ) -> MagicMock:

@@ -26,7 +26,6 @@ Endpoints:
 """
 
 import json
-import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -46,18 +45,11 @@ from src.server.app.workspace_sandbox import (
     signed_url_expires_at,
     with_preview_path,
 )
-from src.server.database.conversation import (
-    get_queries_for_thread,
-    get_responses_for_thread,
-)
+from src.server.database.conversation.replay_rows import get_replay_thread_data
 from src.server.database.share_links import KIND_APP
 from src.server.services.file_grants import grant_prefix, mint_file_grant, seconds_left
 from src.server.utils.api import PageViewer, Viewer
-from src.server.services.history.replay.items import run_completed_at
-from src.server.services.history.replay.stopped import stop_close_item
 from src.server.services.share_redaction import ShareRedaction
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/public", tags=["Public Sharing"])
 # The file routes live next door and mount here, so the token prefix and the
@@ -164,120 +156,44 @@ async def get_shared_thread_metadata(
 async def replay_shared_thread(share_token: str):
     """Replay a shared thread as SSE. No auth required.
 
-    Same replay logic as the authenticated endpoint, but resolves
-    thread via share_token and strips sensitive fields.
+    The same assembly as the owner's replay, so a viewer sees the turns the
+    owner sees; the thread resolves through the share token and every event
+    passes ``ShareRedaction`` on the way out.
     """
+    from src.server.services.history.replay import finish_lines, read_replay_page
+
     thread = await get_shared_thread(share_token)
     thread_id = str(thread["conversation_thread_id"])
 
-    queries, _ = await get_queries_for_thread(thread_id)
-    responses, _ = await get_responses_for_thread(thread_id)
-    responses_by_turn = {r.get("turn_index"): r for r in responses if isinstance(r, dict)}
-
+    rows = await get_replay_thread_data(thread_id)
+    if rows is None:
+        raise HTTPException(status_code=404, detail="Shared thread not found")
+    page, _ = await read_replay_page(rows)
     # Public replay has no /status reconciliation at all, so without the
     # stamp its task cards would be stuck "running" forever (see
-    # history/task_status.py). Only the whitelisted status value is added.
-    from src.server.services.history.task_status import (
-        collect_task_ids,
-        resolve_task_details,
-        stamp_task_artifact_data,
-    )
-
-    stored_events = [
-        item
-        for r in responses_by_turn.values()
-        if isinstance(r.get("sse_events"), list)
-        for item in r["sse_events"]
-        if isinstance(item, dict)
-    ]
-    redaction = ShareRedaction(stored_events)
-
-    task_details: dict[str, dict] = {}
-    try:
-        task_details = await resolve_task_details(
-            thread_id, collect_task_ids(stored_events)
-        )
-    except Exception:
-        logger.warning(
-            f"[PUBLIC REPLAY] task-status stamping failed for {thread_id}",
-            exc_info=True,
-        )
+    # history/task_status.py). Only the whitelisted status value is added,
+    # which redaction leaves as it is.
+    await finish_lines(thread_id, page.lines, status_only=True)
+    items = [line.item() for line in page.lines]
+    redaction = ShareRedaction(items)
 
     async def event_generator():
         seq = 0
-
-        for q in queries:
-            if not isinstance(q, dict):
-                continue
-
-            turn_index = q.get("turn_index")
-            seq += 1
-
-            content, metadata = redaction.query(q)
-            payload = {
-                "thread_id": thread_id,
-                "turn_index": turn_index,
-                "content": content,
-                "timestamp": q.get("created_at"),
-                "metadata": metadata,
-            }
-            # Tag system queries so the frontend can hide the user bubble
-            query_type = q.get("type")
-            if query_type == "system":
-                payload["query_type"] = "system"
-            # The turn's end, paired with the query timestamp above to give the
-            # fold row its duration. This payload is hand-built rather than
-            # taken from the replay builder, so the field has to be mirrored
-            # here or a shared transcript folds with no duration to show. The
-            # run id the builder also stamps stays out: it exists for the
-            # report-back catch-up, which a public viewer never runs.
-            completed_at = run_completed_at(responses_by_turn.get(turn_index))
-            if completed_at is not None:
-                payload["run_completed_at"] = completed_at
-
-            yield (
-                f"id: {seq}\n"
-                f"event: user_message\n"
-                f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
-            )
-
-            response = responses_by_turn.get(turn_index)
-            if not response:
-                continue
-
-            sse_events = response.get("sse_events")
-            if not isinstance(sse_events, list):
-                sse_events = []
-            # A stop during bring-up can archive nothing and still owes its close.
-            stop_close = stop_close_item(thread_id, response, sse_events)
-            if stop_close:
-                sse_events = [*sse_events, stop_close]
-
-            for item in sse_events:
-                if not isinstance(item, dict):
-                    continue
-                event_type = item.get("event")
-                data = item.get("data")
-                if not event_type or not isinstance(data, dict):
-                    continue
+        for item in items:
+            event_type, data = item["event"], item["data"]
+            if event_type == "user_message":
+                replay_data = _shared_user_message(redaction, data)
+            else:
                 replay_data = redaction.event(event_type, data)
                 if replay_data is None:
                     continue
-
-                seq += 1
                 replay_data.setdefault("thread_id", thread_id)
-                replay_data["turn_index"] = turn_index
-                replay_data["response_id"] = str(response.get("conversation_response_id"))
-                if task_details:
-                    replay_data = stamp_task_artifact_data(
-                        replay_data, task_details, status_only=True
-                    )
-
-                yield (
-                    f"id: {seq}\n"
-                    f"event: {event_type}\n"
-                    f"data: {json.dumps(replay_data, ensure_ascii=False, default=str)}\n\n"
-                )
+            seq += 1
+            yield (
+                f"id: {seq}\n"
+                f"event: {event_type}\n"
+                f"data: {json.dumps(replay_data, ensure_ascii=False, default=str)}\n\n"
+            )
 
         seq += 1
         yield f"id: {seq}\nevent: replay_done\ndata: {json.dumps({'thread_id': thread_id}, default=str)}\n\n"
@@ -287,3 +203,23 @@ async def replay_shared_thread(share_token: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+def _shared_user_message(redaction: ShareRedaction, data: dict[str, Any]) -> dict[str, Any]:
+    """A turn's user message as a viewer may read it.
+
+    The run id stays out: it exists for the owner's report-back catch-up,
+    which a public viewer never runs.
+    """
+    content, metadata = redaction.query(
+        {
+            "type": data.get("query_type"),
+            "content": data.get("content"),
+            "metadata": data.get("metadata"),
+        }
+    )
+    return {
+        **{k: v for k, v in data.items() if k != "run_id"},
+        "content": content,
+        "metadata": metadata,
+    }

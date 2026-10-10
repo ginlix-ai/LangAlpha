@@ -25,6 +25,7 @@ from src.server.database.runs.subagent_runs import TaskRunSlotBusyError
 OA_DB = "src.server.database.runs.lifecycle.oa_db"
 QR_DB = "src.server.database.runs.lifecycle.qr_db"
 SR_DB = "src.server.database.runs.lifecycle.sr_db"
+REPAIR = "src.server.database.runs.lifecycle.subagent_repair"
 
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 RUN_ID = "22222222-2222-2222-2222-222222222222"
@@ -79,7 +80,7 @@ async def test_refusal_follows_the_guards_and_precedes_the_truncation(
         patch(f"{SR_DB}.find_open_run_from_turn", new=_task_guard),
         patch(f"{OA_DB}.refuse_attempts_on_fork", new=refuse),
         patch(f"{QR_DB}.truncate_thread_from_turn", new=_truncate),
-        patch(f"{SR_DB}.repair_task_chains", new=AsyncMock()),
+        patch(f"{REPAIR}.repair_task_chains", new=AsyncMock()),
         # Aborts the START past the truncation, inside the same transaction.
         patch(f"{QR_DB}.update_thread_checkpoint_id", new=AsyncMock(return_value=False)),
     ):

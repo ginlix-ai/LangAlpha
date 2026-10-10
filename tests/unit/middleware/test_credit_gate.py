@@ -37,7 +37,7 @@ from ptc_agent.agent.middleware.credit_gate import (
 )
 from langgraph.types import Interrupt
 
-from src.server.contracts.status import classify_interrupt_reason
+from src.server.contracts.status import classify_interrupts
 
 # Copy the platform would author; langalpha only ever relays it.
 _DENIAL_COPY = "Out of credits. Top up to keep this run going."
@@ -523,8 +523,10 @@ async def test_pause_payload_classifies_as_a_credit_pause():
     lease.denial = {"message": _DENIAL_COPY}
     payload = build_pause_payload(lease)
 
-    assert classify_interrupt_reason([Interrupt(value=payload)]) == "credit_pause"
-    assert payload["action_requests"][0]["message"] == _DENIAL_COPY
+    assert classify_interrupts([Interrupt(value=payload)]) == (
+        "credit_pause",
+        _DENIAL_COPY,
+    )
 
 
 @pytest.mark.asyncio
@@ -535,8 +537,9 @@ async def test_a_denial_without_copy_still_classifies_and_still_explains():
     lease.denial = {"message": None}
     payload = build_pause_payload(lease)
 
-    assert classify_interrupt_reason([Interrupt(value=payload)]) == "credit_pause"
-    assert payload["action_requests"][0]["message"]
+    reason, message = classify_interrupts([Interrupt(value=payload)])
+    assert reason == "credit_pause"
+    assert message
 
 
 # -- what the family reserves against -------------------------------------

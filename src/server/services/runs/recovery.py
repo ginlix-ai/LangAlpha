@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.config.settings import get_recovery_scan_interval
 from src.server.database.runs import credit_ledger
+from src.server.database.runs import subagent_repair
 from src.server.database.runs import subagent_runs as sr_db
 from src.server.database.runs import lifecycle as tl_db
 
@@ -396,11 +397,12 @@ class RecoveryScanner:
     async def _recover_run(
         self, run: Dict[str, Any], run_id: str, thread_id: str
     ) -> bool:
-        status, interrupt_reason, errors, checkpoint_id = await self._classify(
-            run, run_id, thread_id
+        status, interrupt_reason, errors, checkpoint_id, stamped = (
+            await self._classify(run, run_id, thread_id)
         )
         sse_events, quality = await self._salvage_stream(thread_id, run_id)
 
+        from src.server.database.runs.lifecycle import ProducerRecord
         from src.server.services.runs.coordinator import RunCoordinator, RunOutcome
 
         # The funnel owns the entire post-CAS tail — projection refresh,
@@ -414,9 +416,22 @@ class RecoveryScanner:
             RunOutcome(
                 status=status,
                 interrupt_reason=interrupt_reason,
-                metadata={"recovery": "scanner", "recovery_quality": quality},
+                metadata={
+                    "recovery": "scanner",
+                    "recovery_quality": quality,
+                    **stamped,
+                },
                 errors=errors,
                 sse_events=sse_events,
+                # The salvage is the only record of the dead stream. Nothing
+                # timed its thinking, so replay reads that from the events.
+                record=ProducerRecord(
+                    provenance=[
+                        e
+                        for e in sse_events or ()
+                        if isinstance(e, dict) and e.get("event") == "provenance"
+                    ]
+                ),
             ),
             checkpoint_id=checkpoint_id,
             error_frame={
@@ -438,8 +453,11 @@ class RecoveryScanner:
 
     async def _classify(
         self, run: Dict[str, Any], run_id: str, thread_id: str
-    ) -> Tuple[str, Optional[str], Optional[List[str]], Optional[str]]:
-        """(status, interrupt_reason, errors, checkpoint_id) for a dead run.
+    ) -> Tuple[
+        str, Optional[str], Optional[List[str]], Optional[str], Dict[str, Any]
+    ]:
+        """(status, interrupt_reason, errors, checkpoint_id, metadata) for a
+        dead run.
 
         `interrupted` demands a pending ``__interrupt__`` on a checkpoint
         CREATED BY this run (CheckpointMetadata.run_id, stamped from the
@@ -480,25 +498,30 @@ class RecoveryScanner:
         if run.get("cancel_requested_at"):
             # The CAS adopts cancelled from the durable intent regardless;
             # requesting it just keeps the log honest.
-            return "cancelled", None, None, tip_id
+            return "cancelled", None, None, tip_id, {}
 
         if pending_interrupts:
             from src.server.contracts.status import (
-                classify_interrupt_reason,
+                INTERRUPT_REASON_CREDIT_PAUSE,
+                classify_interrupts,
             )
 
-            return (
-                "interrupted",
-                classify_interrupt_reason(pending_interrupts),
-                None,
-                tip_id,
+            reason, pause_message = classify_interrupts(pending_interrupts)
+            # Stamped as the owner's finalize stamps it, so settling the
+            # run's automation never needs the salvaged archive for it.
+            stamped = (
+                {"credit_pause_message": pause_message}
+                if reason == INTERRUPT_REASON_CREDIT_PAUSE
+                else {}
             )
+            return "interrupted", reason, None, tip_id, stamped
 
         return (
             "error",
             None,
             ["worker_lost: no live executor holds this run's writer fence"],
             tip_id,
+            {},
         )
 
     # --------------------------------------------------------------- salvage
@@ -513,7 +536,7 @@ class RecoveryScanner:
         persistence so chunk merging matches owner-persisted turns.
         """
         try:
-            from src.server.services.runs.sse_producer import StreamEventAccumulator
+            from src.server.services.runs.event_archive import StreamEventAccumulator
             from src.server.services.runs.stream_writer import stream_key
             from src.utils.cache.redis_cache import get_cache_client
 
@@ -614,7 +637,7 @@ class RecoveryScanner:
         every cycle costs nothing on a healthy ledger.
         """
         try:
-            healed = await sr_db.repair_dangling_task_chains()
+            healed = await subagent_repair.repair_dangling_task_chains()
             if healed["rewound"] or healed["deleted"]:
                 logger.warning(
                     f"[RecoveryScanner] healed task chains: "

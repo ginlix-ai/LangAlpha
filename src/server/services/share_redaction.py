@@ -25,7 +25,14 @@ from src.utils.nested import without_keys
 # ``tool_call_chunks`` go whole: they are the arguments again, streamed in
 # pieces that often carry no call id to match, and no replay reads them. An
 # interrupt asks the owner, and no share renders or answers one.
-_DROPPED_EVENTS = frozenset({"provenance", "tool_call_chunks", "interrupt"})
+#
+# Exception text can name a provider's organization, an internal address or a
+# sandbox, and scrubbing credentials from it removes none of those. A turn's
+# closing ``error`` event is nothing but that text, so it goes whole; a run's
+# lifecycle frame and a model fallback keep their status and lose the text.
+# No share renders either.
+_DROPPED_EVENTS = frozenset({"provenance", "tool_call_chunks", "interrupt", "error"})
+_ERROR_TEXT_EVENTS = frozenset({"workflow_lifecycle", "model_fallback"})
 _PRIVATE_ARTIFACT_KEYS = (RECEIPT_KEY, "provenance")
 # The owner's own turn, and the resume that answers an approval names every
 # order it decided by the attempt's ledger id. A viewer cannot answer one and
@@ -204,6 +211,8 @@ class ShareRedaction:
         # depth. sandbox_state is server-side runtime state.
         data = without_keys(data, _OWNER_ID_KEYS)
         data.pop("sandbox_state", None)
+        if event_type in _ERROR_TEXT_EVENTS:
+            data.pop("error", None)
         if event_type == "tool_calls":
             self._tool_calls(data)
         elif event_type == "tool_call_result":
