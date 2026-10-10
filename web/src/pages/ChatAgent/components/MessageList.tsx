@@ -4,10 +4,10 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { NotificationDivider } from './messageList/NotificationDivider';
 import { MessageBubble } from './messageList/MessageBubble';
 import { TurnFold } from './messageList/TurnFold';
-import { projectMessageContent } from './messageList/contentProjection';
+import { projectMessageContent, visibleProjection } from './messageList/contentProjection';
 import { useMessageActions } from './messageList/MessageActionsContext';
 import { isSteeringUserMessage } from './messageList/messagePredicates';
-import { computeTurnTails, projectTurns, visibleProjection } from './messageList/turnProjection';
+import { computeTurnTails, projectTurns } from './messageList/turnProjection';
 import { useLiveMessages, type LiveMessages } from '../session/stream/liveMessages';
 import type { ChatMessage } from '@/types/chat';
 import { turnFilesByTurn } from '../utils/turnFiles';
@@ -334,4 +334,4 @@ export { MessageContentSegments } from './messageList/MessageContentSegments';
 // eslint-disable-next-line react-refresh/only-export-components
 export { normalizeSubagentText } from './messageList/normalizeSubagentText';
 // eslint-disable-next-line react-refresh/only-export-components
-export { isOrphanAssistantMessage } from './messageList/turnProjection';
+export { isOrphanAssistantMessage } from './messageList/contentProjection';

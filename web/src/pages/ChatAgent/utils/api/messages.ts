@@ -8,10 +8,35 @@ import type { CancelOutcome } from '../cancelOutcome';
 import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
 
-export async function replayThreadHistory(threadId: string, onEvent: (event: Record<string, unknown>) => void = () => {}) {
+/**
+ * Which part of the history a replay covers. With neither bound the server
+ * replays the whole thread; with either it opens on a `history_page` event
+ * saying where the page starts and whether older turns remain.
+ */
+export interface ReplayPageRequest {
+  /** The newest this many checkpointed turns (before `beforeTurn` if given). */
+  limit?: number;
+  /** Only turns older than this one: the previous page's first turn. */
+  beforeTurn?: number;
+  signal?: AbortSignal;
+}
+
+export async function replayThreadHistory(
+  threadId: string,
+  onEvent: (event: Record<string, unknown>) => void = () => {},
+  { limit, beforeTurn, signal }: ReplayPageRequest = {},
+) {
   if (!threadId) throw new Error('Thread ID is required');
+  const params = new URLSearchParams();
+  if (limit != null) params.set('limit', String(limit));
+  if (beforeTurn != null) params.set('before_turn', String(beforeTurn));
+  const query = params.toString();
   const authHeaders = await getAuthHeaders();
-  await streamFetch(`/api/v1/threads/${threadId}/messages/replay`, { method: 'GET', headers: { ...authHeaders } }, onEvent);
+  return await streamFetch(
+    `/api/v1/threads/${threadId}/messages/replay${query ? `?${query}` : ''}`,
+    { method: 'GET', headers: { ...authHeaders }, signal },
+    onEvent,
+  );
 }
 
 /**

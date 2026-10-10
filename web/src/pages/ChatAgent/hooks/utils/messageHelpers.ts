@@ -26,8 +26,14 @@ export interface AttachmentMeta {
   type: string;
 }
 
+/**
+ * `turnIndex` is the backend turn the bubble belongs to, or undefined for one
+ * whose turn the transcript's count names (see projectTurns). Required, so
+ * every bubble the view creates decides its turn where it is made.
+ */
 export function createUserMessage(
   message: string,
+  turnIndex: number | undefined,
   attachments: AttachmentMeta[] | null = null,
   widgetSnapshots: WidgetContextSnapshot[] | null = null,
   chartSelections: ChartSelectionSnapshot[] | null = null,
@@ -39,6 +45,7 @@ export function createUserMessage(
     contentType: 'text',
     timestamp: new Date(),
     isStreaming: false,
+    turnIndex,
   };
   if (attachments && attachments.length > 0) {
     // AttachmentMeta is the upload-time shape (file, dataUrl, type).
@@ -55,8 +62,8 @@ export function createUserMessage(
   return msg;
 }
 
-export function createAssistantMessage(messageId: string | null = null): AssistantMessage {
-  const id = messageId || `assistant-${Date.now()}`;
+/** `turnIndex` as for createUserMessage. */
+export function createAssistantMessage(id: string, turnIndex: number | undefined): AssistantMessage {
   return {
     id,
     role: 'assistant',
@@ -68,6 +75,7 @@ export function createAssistantMessage(messageId: string | null = null): Assista
     reasoningProcesses: {},
     toolCallProcesses: {},
     todoListProcesses: {},
+    turnIndex,
   };
 }
 

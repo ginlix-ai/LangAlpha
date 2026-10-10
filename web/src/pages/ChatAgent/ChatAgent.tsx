@@ -130,7 +130,8 @@ function ChatAgent(): React.ReactElement | null {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Resolve workspaceId: URL param (thread gallery) > location state (navigated from app) > API lookup
+  // The workspace last in view, which a new thread (`__default__`) opens in
+  // when the navigation names none.
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState<string | null>(
     urlWorkspaceId || stateWorkspaceId || null
   );
@@ -142,13 +143,6 @@ function ChatAgent(): React.ReactElement | null {
   });
 
   const accessDenied = (threadError as ThreadErrorResponse | null)?.response?.status === 403;
-
-  // Set resolvedWorkspaceId from thread lookup result
-  useEffect(() => {
-    if ((resolvedThread as Record<string, unknown> | undefined)?.workspace_id) {
-      setResolvedWorkspaceId((resolvedThread as Record<string, unknown>).workspace_id as string);
-    }
-  }, [resolvedThread]);
 
   useEffect(() => {
     if (shouldLeaveThreadRoute(needsThreadLookup, threadError, accessDenied, !!resolvedThread)) {
@@ -165,17 +159,25 @@ function ChatAgent(): React.ReactElement | null {
     }
   }, [threadId, resolvedWorkspaceId, navigate, location.search]);
 
-  // Sync resolvedWorkspaceId when URL params or location state change
-  // Use synchronous update to avoid stale workspace on first render after navigation
-  const incomingWsId = urlWorkspaceId || stateWorkspaceId || null;
-  if (incomingWsId && incomingWsId !== resolvedWorkspaceId) {
-    setResolvedWorkspaceId(incomingWsId);
-  }
-
-  const workspaceId = incomingWsId || resolvedWorkspaceId;
-
   // LRU cache for ChatView instances — keeps up to 5 alive simultaneously
   const cache = useChatViewCache();
+
+  // A thread belongs to one workspace, so the workspace in view before it is
+  // no stand-in when the navigation names none (back/forward to an entry
+  // without state, a link from outside the chat): a view made under it was a
+  // second view of the thread, which loaded it again and stayed cached. Its
+  // own comes from the navigation, a cached view of it, or the lookup, and
+  // until one of them has it no view is made.
+  const incomingWsId = urlWorkspaceId || stateWorkspaceId || null;
+  const lookedUpWsId = (resolvedThread as Record<string, unknown> | undefined)?.workspace_id as string | undefined;
+  const workspaceId = threadId && threadId !== '__default__'
+    ? incomingWsId || cache.entries.find(e => e.threadId === threadId)?.workspaceId || lookedUpWsId || null
+    : incomingWsId || resolvedWorkspaceId;
+
+  // Use synchronous update to avoid stale workspace on first render after navigation
+  if (workspaceId && workspaceId !== resolvedWorkspaceId) {
+    setResolvedWorkspaceId(workspaceId);
+  }
 
   const queryClient = useQueryClient();
 
@@ -353,7 +355,7 @@ function ChatAgent(): React.ReactElement | null {
   ) : null;
 
   // Cached ChatView instances — always rendered, visibility toggled via display
-  const chatViews = cache.entries.map(entry => {
+  const chatViews = cache.mounted.map(entry => {
     const pending = resolvingRef.current.get(entry.workspaceId);
     // Bridge window: cache.updateKey and navigate commit in separate renders.
     // In the intermediate render, either the cache is ahead (entry.threadId is new,

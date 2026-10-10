@@ -1,8 +1,12 @@
 /**
- * History replay: rebuild the full transcript (main turns, interrupts,
- * compaction notices, task artifacts) from the server-side replay stream,
- * then hand replayed task events to the subagent projection. Extracted from
+ * History replay: rebuild the transcript (main turns, interrupts, compaction
+ * notices, task artifacts) from the server-side replay stream, then hand
+ * replayed task events to the subagent projection. Extracted from
  * useChatMessages (carve B); consumes the HistoryRuntime lane port.
+ *
+ * A long thread is replayed a page at a time: the newest page when the thread
+ * opens (loadConversationHistory), then older pages prepended as the reader
+ * scrolls up (olderPages, which replays each through this loader).
  */
 
 import i18n from '@/i18n';
@@ -23,7 +27,6 @@ import {
   handleHistoryReasoningContent,
   handleHistoryTextContent,
   handleHistoryToolCalls,
-  handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
   handleHistoryHtmlWidget,
   handleHistorySteeringDelivered,
@@ -33,16 +36,11 @@ import {
 import type {
   TokenUsage, SSEEvent, HistoryInterruptInfo, SubagentHistoryData, PairState,
 } from '../types';
-import { resolvePendingHistoryInterrupt, setCardStatus, setCardFields, settleProposalFromResult } from '../interrupts/buckets';
 import { createApprovalEvidence, recordApprovalEvidence } from '../interrupts/claims';
 import { projectHistoryInterrupt } from '../interrupts/fromHistoryEvent';
-import {
-  batchToolApprovalFields,
-  readHitlDecisions,
-  readOrderDecisions,
-  resolveApprovalDecision,
-} from '../interrupts/toolApprovalCard';
 import type { HistoryRuntime } from '../runtime';
+import type { HistoryPageInfo, LoadedHistoryPage } from './olderPages';
+import { applyHistoryToolResult, markSteeredResumeCards, settleResumedInterrupts } from './resumeSettlement';
 
 export interface ReplayHistoryDeps {
   /** Fold a model-fallback replay event into the fallback banner state. */
@@ -55,6 +53,15 @@ export interface ReplayHistoryDeps {
    *  what the load will return. The caller settles here what only it can judge
    *  (a run that is over), so the transcript never appears unsettled first. */
   beforeReveal?: (ok: boolean) => void;
+  /** Page size for the newest page; omitted replays the whole thread. */
+  limit?: number;
+  /** Replay the page before this turn instead, into a transcript of its own:
+   *  an older page (loadOlderHistoryPage), with `signal` to abort its fetch. */
+  beforeTurn?: number;
+  signal?: AbortSignal;
+  /** Where the loaded transcript starts, reported in the commit that reveals
+   *  it, on success only; null when it holds no turn. */
+  onPage?: (page: LoadedHistoryPage | null) => void;
 }
 
 export async function loadConversationHistory(
@@ -67,6 +74,9 @@ export async function loadConversationHistory(
   if (!rt.workspaceId || !rt.threadId || rt.threadId === '__default__' || rt.historyLoadingRef.current) {
     return false;
   }
+  // An older page replays into a transcript of its own, which it adds to
+  // rather than rebuilds, and its caller owns what a failure shows.
+  const olderPage = deps.beforeTurn !== undefined;
 
   // The todo card shows only the last state, so it is written once, with the
   // transcript and the caller's settle step. Written per event, it showed the
@@ -94,12 +104,14 @@ export async function loadConversationHistory(
     // newly deterministic bubble ids (`history-{role}-{pairIndex}`), the
     // duplicate insert would also trip React's same-key warnings.
     // ``isHistory: true`` only marks bubbles produced by this loader, so
-    // any in-flight streaming bubble survives the filter.
+    // any in-flight streaming bubble survives the filter. Older pages are
+    // history too, which is why a reload asks for every turn they held.
     rt.newMessagesStartIndexRef.current = 0;
     // A re-replay rebuilds every history bubble from persisted events, so the
     // rendered-interrupt set must start empty and be repopulated by this pass;
     // otherwise stale ids would suppress cards this replay legitimately renders.
-    rt.renderedInterruptIdsRef.current.clear();
+    // An older page starts from the ids the newer pages rendered.
+    if (!olderPage) rt.renderedInterruptIdsRef.current.clear();
     rt.setMessages((prev) => prev.filter((m) => !m.isHistory));
 
     // Fresh attach (refresh or thread switch): clear the live-stream cursor so
@@ -126,6 +138,10 @@ export async function loadConversationHistory(
     // rt.lastRenderedTurnIndexRef after the replay, so a post-fork re-replay can
     // lower the watermark. -1 = replay delivered zero turns.
     let maxReplayedTurnIndex = -1;
+    // Lowest, which is where an unpaged replay's transcript starts.
+    let minReplayedTurnIndex: number | null = null;
+    // The page header, when the replay was paged (null when it named no turn).
+    let page: HistoryPageInfo | null | undefined;
 
     // Run ids of the turns this replay rendered (the server stamps run_id on
     // a user_message only once its run is terminal — a live run's stub
@@ -158,8 +174,12 @@ export async function loadConversationHistory(
     const subagentHistoryByTaskId = new Map<string, SubagentHistoryData>();
     // Track which agentIds had steering_accepted actions (for inline card "Updated" label)
     const steeredAgentIds = new Set<string>();
+    // Main-agent tool calls this replay rendered, so a result whose call it did
+    // not render can be left to the page that holds the call.
+    const seenToolCallIds = new Set<string>();
+    const carryEvents: SSEEvent[] = [];
     try {
-      await replayThreadHistory(threadIdToUse, (_rawEvent) => {
+      const onEvent = (_rawEvent: Record<string, unknown>): void => {
       // Cast to SSEEvent for type-safe field access within this callback
       const event = _rawEvent as SSEEvent;
       const eventType = event.event;
@@ -176,6 +196,15 @@ export async function loadConversationHistory(
       // delivers zero events (frozen response). `rt.lastEventIdRef` must only ever
       // track ids received on the LIVE stream (set in the streaming
       // `processEvent` handler); history dedup uses deterministic bubble ids.
+
+      // A paged replay opens with where its page starts. An unpaged one never
+      // sends this, which leaves `page` undefined: the whole thread, nothing older.
+      if (eventType === 'history_page') {
+        page = typeof event.first_turn_index === 'number'
+          ? { firstTurnIndex: event.first_turn_index, hasMore: event.has_more === true }
+          : null;
+        return;
+      }
 
       // compaction_chunk is the side channel for LLM output from the
       // compaction middleware (bracketed by context_window summarize
@@ -195,6 +224,7 @@ export async function loadConversationHistory(
         currentActivePairIndex = pairIndex;
         currentActivePairState = pairStateByPair.get(pairIndex);
         if (pairIndex > maxReplayedTurnIndex) maxReplayedTurnIndex = pairIndex;
+        if (minReplayedTurnIndex === null || pairIndex < minReplayedTurnIndex) minReplayedTurnIndex = pairIndex;
       }
 
       // Handle context_window events from history (token_usage, summarize, offload)
@@ -357,117 +387,10 @@ export async function loadConversationHistory(
         // the same evidence for the interrupts still ahead of us.
         recordApprovalEvidence(evidence, event);
 
-        // Resolve tool_approval interrupts from the resume's content (empty =
-        // approved, non-empty = rejected), with one more signal: a reject that
-        // carried no reason leaves the content empty, so it is told apart from
-        // an approve by its null `hitl_answers` entry (the only reject shape the
-        // server records there).
-        {
-          const hitlAnswers = event.metadata?.hitl_answers as Record<string, unknown> | undefined;
-          const hitlDecisions = readHitlDecisions(event.metadata);
-          const orderDecisions = readOrderDecisions(event.metadata);
-          const content = typeof event.content === 'string' ? event.content.trim() : '';
-          const resumedIds = event.metadata?.hitl_interrupt_ids as string[] | undefined;
-          // One call per resumed id, and one per card behind it: an interrupt
-          // that stopped several calls raised several cards, and a single
-          // resolve would leave the rest pending with live controls on a batch
-          // already answered. Every HITL resume stamps the ids, so an ordinary
-          // message settles nothing here.
-          for (const interruptId of Array.isArray(resumedIds) ? resumedIds : []) {
-            const answer = hitlAnswers ? hitlAnswers[interruptId] : undefined;
-            const rejected = answer === null || (answer === undefined && !!content);
-            // Content is attributable only when this resume answered one card;
-            // in a batch it is the joined text of every reject in it.
-            const batched = (resumedIds?.length || 0) > 1;
-            const batchFields = batchToolApprovalFields(
-              pendingHistoryInterrupts.filter(
-                (p) => p.type === 'tool_approval' && p.interruptId === interruptId,
-              ).length,
-            );
-            const lookup = {
-              positional: hitlDecisions?.[interruptId],
-              attempt: (attemptId: string) => orderDecisions?.[attemptId],
-            };
-            for (;;) {
-              const idx = pendingHistoryInterrupts.findIndex(
-                (p) => p.type === 'tool_approval' && p.interruptId === interruptId,
-              );
-              if (idx === -1) break;
-              const [matched] = pendingHistoryInterrupts.splice(idx, 1);
-              // By card id, not by bubble: a batch re-raised on a resume that
-              // never consumed it is re-queued against that resume's bubble, so
-              // a later attempt patching through updateMessage would flip an
-              // invisible copy and leave the visible cards pending, with the
-              // pending set already dropped so nothing could answer them. The
-              // credit pause settles by id for the same reason.
-              const decided = matched.target
-                ? resolveApprovalDecision(matched.target, lookup)
-                : null;
-              rt.setMessages((prev) =>
-                setCardFields(
-                  prev,
-                  'toolApprovals',
-                  matched.proposalId!,
-                  decided ??
-                    batchFields ?? {
-                      status: rejected ? 'rejected' : 'approved',
-                      reason: rejected && content && !batched ? content : null,
-                    },
-                ),
-              );
-            }
-          }
-        }
-
-        // Resolve ask_user_question interrupts from resume query metadata (hitl_answers).
-        // Persisted immediately by persist_query_start(), keyed by interrupt_id.
-        {
-          const hitlAnswers = event.metadata?.hitl_answers as Record<string, unknown> | undefined;
-          if (hitlAnswers && pendingHistoryInterrupts.length > 0) {
-            for (const [interruptId, answerValue] of Object.entries(hitlAnswers)) {
-              resolvePendingHistoryInterrupt(
-                pendingHistoryInterrupts,
-                (p) => p.type === 'ask_user_question' && p.interruptId === interruptId,
-                (m) => ({
-                  bucket: 'userQuestions',
-                  key: m.questionId!,
-                  fields: {
-                    status: answerValue !== null ? 'answered' : 'skipped',
-                    answer: answerValue as string | null,
-                  },
-                }),
-                rt.setMessages,
-              );
-            }
-          }
-        }
-
-        // Resolve credit_pause interrupts from the resume query's metadata.
-        // A credit resume carries no answer (approve with no message), so it
-        // never lands in `hitl_answers` the way a question does — but every
-        // HITL resume stamps `hitl_interrupt_ids` with the ids it answered,
-        // and that is the signal here. Without it the card replays pending
-        // forever and re-arms a live Resume button on a turn that already
-        // resumed and completed.
-        {
-          const resumedIds = event.metadata?.hitl_interrupt_ids as string[] | undefined;
-          if (Array.isArray(resumedIds) && pendingHistoryInterrupts.length > 0) {
-            for (const interruptId of resumedIds) {
-              const idx = pendingHistoryInterrupts.findIndex(
-                (p) => p.type === 'credit_pause' && p.interruptId === interruptId,
-              );
-              if (idx === -1) continue;
-              pendingHistoryInterrupts.splice(idx, 1);
-              // By card id, not by bubble: a pause re-raised on a refused
-              // resume is re-queued against that resume's bubble, so a later
-              // attempt resolving through updateMessage would flip an invisible
-              // copy and leave the visible card pending — a Resume button on a
-              // finished thread, and the pending set is gone, so it would not
-              // even answer. The live path settles by id for the same reason.
-              rt.setMessages((prev) => setCardStatus(prev, 'creditPauses', interruptId, 'resumed'));
-            }
-          }
-        }
+        // The resume settles the cards it answered; when they sit on the page
+        // before this one, that page settles them from the carry instead.
+        if (event.metadata?.hitl_interrupt_ids || event.metadata?.hitl_answers) carryEvents.push(event);
+        settleResumedInterrupts(rt, pendingHistoryInterrupts, event);
 
         const pairIndex = event.turn_index!;
         const refs = {
@@ -798,6 +721,9 @@ export async function loadConversationHistory(
           }
         }
 
+        for (const tc of event.tool_calls || []) {
+          if (tc.id) seenToolCallIds.add(tc.id);
+        }
         handleHistoryToolCalls({
           assistantMessageId: currentAssistantMessageId,
           toolCalls: (event.tool_calls || []) as unknown as Record<string, unknown>[],
@@ -849,45 +775,17 @@ export async function loadConversationHistory(
           }
         }
 
-        handleHistoryToolCallResult({
+        // A gated call is answered in the turn after it; when that turn opens
+        // this page, the call is on the page before, which applies the result.
+        if (event.tool_call_id && !seenToolCallIds.has(event.tool_call_id)) carryEvents.push(event);
+
+        applyHistoryToolResult({
+          event,
           assistantMessageId: currentAssistantMessageId,
-          toolCallId: event.tool_call_id as string,
-          result: {
-            content: event.content,
-            content_type: event.content_type,
-            tool_call_id: event.tool_call_id,
-            artifact: event.artifact,
-            status: event.status,
-          },
           pairState,
-          setMessages: setMessagesForHandlers,
+          pending: pendingHistoryInterrupts,
+          setMessages: rt.setMessages,
         });
-
-        // Resolve pending ask_user_question interrupt from tool_call_result
-        // (fallback for conversations where hitl_answers wasn't persisted)
-        if (typeof event.content === 'string' &&
-            (event.content.startsWith('User answered:') || event.content.startsWith('User skipped'))) {
-          const isAnswered = event.content.startsWith('User answered:');
-          const answerText = isAnswered ? event.content.replace('User answered: ', '') : null;
-          resolvePendingHistoryInterrupt(
-            pendingHistoryInterrupts,
-            (p) => p.type === 'ask_user_question',
-            (m) => ({
-              bucket: 'userQuestions',
-              key: m.questionId!,
-              fields: { status: isAnswered ? 'answered' : 'skipped', answer: answerText },
-            }),
-            rt.setMessages,
-          );
-        }
-
-        // Resolve pending create_workspace, start_question, ptc_agent, or secretary action interrupt from tool_call_result
-        if (typeof event.content === 'string') {
-          settleProposalFromResult(
-            pendingHistoryInterrupts, event.tool_call_id as string | undefined, event.content, rt.setMessages,
-          );
-        }
-
         return;
       }
 
@@ -916,7 +814,13 @@ export async function loadConversationHistory(
           }
         }
       }
-    });
+    };
+      const result = await replayThreadHistory(threadIdToUse, onEvent, {
+        limit: deps.limit, beforeTurn: deps.beforeTurn, signal: deps.signal,
+      });
+      // An older page that did not arrive whole is no page.
+      if (olderPage && result?.aborted) return false;
+      if (olderPage && result?.disconnected) throw new Error('History page interrupted');
 
       // If there's still a pending interrupt after replay (no subsequent user_message
       // resolved it), store it in a ref. loadAndMaybeReconnect will decide whether to
@@ -967,22 +871,19 @@ export async function loadConversationHistory(
 
     // Post-process: update inline cards for steering_accepted actions to show "Updated"
     if (steeredAgentIds.size > 0) {
-      rt.setMessages(prev => prev.map(msg => {
-        if (msg.role !== 'assistant') return msg;
-        const aMsg = msg as AssistantMessage;
-        if (!aMsg.subagentTasks) return msg;
-        let changed = false;
-        const newTasks = { ...aMsg.subagentTasks };
-        for (const [tcId, task] of Object.entries(newTasks)) {
-          if (task.resumeTargetId && steeredAgentIds.has(task.resumeTargetId) && task.action === 'resume') {
-            newTasks[tcId] = { ...task, action: 'update' };
-            changed = true;
-          }
-        }
-        return changed ? { ...aMsg, subagentTasks: newTasks } : msg;
-      }));
+      rt.setMessages(prev => markSteeredResumeCards(prev, steeredAgentIds));
     }
 
+    // The page header, or for an unpaged replay, the whole thread from its
+    // first replayed turn.
+    const start = page !== undefined ? page
+      : minReplayedTurnIndex !== null ? { firstTurnIndex: minReplayedTurnIndex, hasMore: false }
+      : null;
+    deps.onPage?.(start && {
+      ...start,
+      lastTurnIndex: maxReplayedTurnIndex,
+      carry: { events: carryEvents, subagents: subagentHistoryByTaskId, steeredAgentIds },
+    });
     reveal(true);
 
     // Fetch feedback state for the thread (best-effort)
@@ -991,6 +892,7 @@ export async function loadConversationHistory(
     }
     return true;
   } catch (error: unknown) {
+    if (olderPage) throw error;
     console.error('[History] Error loading conversation history:', error);
     // Only show error if it's not a 404 (404 is expected for new threads).
     // 404 still counts as a successful "no prior history" load — caller can

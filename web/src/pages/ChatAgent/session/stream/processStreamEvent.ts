@@ -12,6 +12,7 @@ import type { AssistantMessage, ChatMessage } from '@/types/chat';
 import { CREDIT_STOP_ERROR_TYPE } from '@/types/sse';
 import { setStoredThreadId } from '../../hooks/utils/threadStorage';
 import { createAssistantMessage, appendMessage, updateMessage } from '../../hooks/utils/messageHelpers';
+import { turnOf } from '../../components/messageList/turnProjection';
 import type { HtmlWidgetData } from '../../hooks/utils/types';
 import {
   ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage,
@@ -311,6 +312,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       steeringAtOrder = null;
       if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = null;
 
+      // The bubble being steered: every bubble this creates joins its turn,
+      // read from the projection because a report-back's bubble has no stamp.
+      const steeredId = assistantMessageId;
       // 2. Mark steering user messages as delivered, OR create them from event
       //    data if none exist (reconnect scenario — in-memory state was lost).
       rt.setMessages((prev) => {
@@ -324,6 +328,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
         // Reconnect path: create user bubbles from event payload
         const steeringMsgs = (event.messages || []).filter((qMsg) => qMsg.content);
         if (steeringMsgs.length === 0) return prev;
+        const turnIndex = turnOf(prev, steeredId);
         const newUserMessages: ChatMessage[] = steeringMsgs.map((qMsg) => ({
           id: `steering-user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           role: 'user' as const,
@@ -332,6 +337,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
           timestamp: qMsg.timestamp ? new Date((qMsg.timestamp as number) * 1000) : new Date(),
           isStreaming: false as const,
           steeringDelivered: true,
+          turnIndex,
         }));
         return [...prev, ...newUserMessages];
       });
@@ -340,8 +346,8 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       //    Random suffix: the turn's first bubble uses the same Date.now() scheme,
       //    and two ids minted in the same millisecond would collide.
       const newAssistantId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const newAssistant = { ...createAssistantMessage(newAssistantId), isSteering: true };
-      rt.setMessages((prev) => appendMessage(prev,newAssistant));
+      rt.setMessages((prev) =>
+        appendMessage(prev, { ...createAssistantMessage(newAssistantId, turnOf(prev, steeredId)), isSteering: true }));
 
       // 4. Switch closure & refs to new assistant message
       assistantMessageId = newAssistantId;

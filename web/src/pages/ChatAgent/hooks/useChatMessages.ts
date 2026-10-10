@@ -6,7 +6,8 @@
 
 import { finalizeAssistantMessage } from '../session/stream/finalizeMessage';
 import type React from 'react';
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
@@ -28,7 +29,8 @@ import { buildRateLimitError, type ErrorLinkSpec, type StructuredError } from '@
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 import { computeSteeringBoundary } from '../session/stream/steeringRollback';
-import { isSteeringContinuation, isSteeringUserMessage } from '../components/messageList/messagePredicates';
+import { isSteeringUserMessage } from '../components/messageList/messagePredicates';
+import { newestTurn, projectTurns } from '../components/messageList/turnProjection';
 import { bumpThreadNavOrder } from './useNavigationData';
 import { invalidateNewWorkspace } from './workspaceRowActions';
 import { ensureThreadId } from '../session/threadCreation';
@@ -59,10 +61,12 @@ import { useInterruptAnswers } from '../session/interrupts/useInterruptAnswers';
 export type { ModelStatus, FallbackSuggestion } from '../session/types';
 import type { ChatSessionRuntime } from '../session/runtime';
 import type { CardUpdater } from '../session/streamRefs';
-import { projectSubagentHistory } from '../session/subagents/projectHistory';
+import { prependSubagentRuns, projectSubagentHistory } from '../session/subagents/projectHistory';
 import { createSubagentMuxController, getTaskIdFromEvent } from '../session/subagents/muxSink';
 import { sendTaskInstruction } from '../session/subagents/sendTaskInstruction';
 import { loadConversationHistory as replayConversationHistory } from '../session/history/replayHistory';
+import { loadOlderHistoryPage, commitOlderHistoryPage } from '../session/history/olderPages';
+import { createHistoryWindow, HISTORY_PAGE_TURNS } from '../session/history/historyWindow';
 import { createStreamEventProcessor, type StreamRouterDeps } from '../session/stream/processStreamEvent';
 import { forkRequest, retryRequestFor, sendRequest, settleRetryNotice, type HeldRetry, type RetryNotice, type TurnRequest } from '../session/stream/autoRetry';
 import { createLiveTranscript, type LiveMessages } from '../session/stream/liveMessages';
@@ -259,6 +263,9 @@ export function useChatMessages(
   const threadLoadingRef = useRef<object | null>(null);
   const [isLoadingThread, setIsLoadingThread] = useState(false);
   const newMessagesStartIndexRef = useRef(0); // Index where new messages start
+  // Where the loaded transcript starts and the older page in flight.
+  const [historyWindow] = useState(createHistoryWindow);
+  const olderHistoryStatus = useSyncExternalStore(historyWindow.subscribe, historyWindow.snapshot);
   // Guards against the load-history effect doing a redundant replay when
   // (workspaceId, threadId, reloadTrigger) re-resolve to a tuple this hook
   // already loaded — most often during React 18 StrictMode's mount→unmount→
@@ -378,6 +385,15 @@ export function useChatMessages(
   // over-triggers one corrective reload, while over-counting would suppress a
   // genuinely-needed one.
   const lastRenderedTurnIndexRef = useRef<number | null>(null);
+  // The newest turn this view knows the thread has, -1 for none. Both
+  // sources, since each can lead: the watermark knows turns a paged transcript
+  // has not loaded, and the transcript knows turns the watermark (a lower
+  // bound) never counted.
+  const newestKnownTurn = (): number =>
+    Math.max(
+      lastRenderedTurnIndexRef.current ?? -1,
+      newestTurn(liveMessages.get()) ?? -1,
+    );
   // Terminal-run ids the latest history replay rendered; consumed by the
   // load flow's markRunsRendered call so the report-back catch-up can't
   // re-attach an already-on-screen turn as a duplicate bubble.
@@ -727,6 +743,8 @@ export function useChatMessages(
         historyLoadingRef.current = false;
         historyLoadedKeyRef.current = null;
         newMessagesStartIndexRef.current = 0;
+        // Paging belongs to the thread we're leaving, and so does its page in flight.
+        historyWindow.reset();
         recentlySentTrackerRef.current.clear();
         turnCheckpointsRef.current = null;
         // The rendered-turn watermark belongs to the thread we're leaving.
@@ -760,13 +778,70 @@ export function useChatMessages(
    */
   /** History replay lives in session/history/replayHistory; the hook binds
    * the runtime and the cross-lane callbacks. */
-  const loadConversationHistory = (beforeReveal?: (ok: boolean) => void): Promise<boolean> =>
-    replayConversationHistory(runtime, {
+  const loadConversationHistory = (
+    beforeReveal?: (ok: boolean) => void,
+    latestTurnIndex?: number | null,
+  ): Promise<boolean> => {
+    const tid = threadId;
+    // The newest turn the thread has: /status's count, or what this view has
+    // seen when the count is missing or behind.
+    const newest = Math.max(latestTurnIndex ?? -1, newestKnownTurn());
+    const limit = historyWindow.reloadLimit(tid, newest);
+    // A replay already running refuses this one, and owns the window.
+    const token = historyLoadingRef.current ? null : historyWindow.beginReload();
+    return replayConversationHistory(runtime, {
       applyFallbackSuggestion,
       loadFeedback,
       projectSubagentHistory: (byTaskId) => projectSubagentHistory(runtime, byTaskId),
       beforeReveal,
+      limit,
+      onPage: (page) => {
+        if (token !== null) historyWindow.land(token, tid, page);
+      },
     });
+  };
+
+  /**
+   * Replay the page of turns before the oldest one loaded and put it above the
+   * transcript, when the window lets one start. A page that a reload, a thread
+   * switch or a fork overtook is dropped, and the trigger asks again.
+   * `place` is handed the page's bubble count and the commit, which renders
+   * before it returns, so the view holds the reader's place across it in one
+   * task: no scroll can land between the place read and the page shown.
+   */
+  const loadOlderHistory = useStableHandler(async (place?: (prepended: number, commit: () => void) => void) => {
+    const tid = threadIdRef.current;
+    const request = historyWindow.request(tid);
+    if (!request) return;
+    const { beforeTurn, carry, signal, token } = request;
+
+    let older: Awaited<ReturnType<typeof loadOlderHistoryPage>> = null;
+    try {
+      older = await loadOlderHistoryPage(runtime, { threadId: tid, beforeTurn, limit: HISTORY_PAGE_TURNS, signal }, carry);
+    } catch (err) {
+      console.warn('[History] Older page failed to load:', err);
+    }
+    if (!historyWindow.isCurrent(token)) return;
+    if (!older) {
+      historyWindow.fail(token);
+      return;
+    }
+
+    const landed = older;
+    const commit = () => flushSync(() => commitOlderHistoryPage(
+      runtime,
+      {
+        projectSubagentHistory: (byTaskId) => projectSubagentHistory(runtime, byTaskId),
+        prependSubagentRuns: (agentId, runs) => prependSubagentRuns(runtime, agentId, runs),
+        isTaskLive: (agentId) => muxOpenTaskIds().has(agentId.replace(/^task:/, '')),
+        liveOutcome: (agentId) => terminalTaskOutcomesRef.current.get(agentId.replace(/^task:/, '')),
+      },
+      landed,
+    ));
+    if (place) place(landed.messages.length, commit);
+    else commit();
+    historyWindow.land(token, tid, landed.page);
+  });
 
   /** Recovery/ownership lifecycle lives in session/stream/lifecycle; the hook
    * binds the runtime and the composition-level recovery callbacks. */
@@ -912,7 +987,7 @@ export function useChatMessages(
         if (finalizePendingTodos) finalizePendingTodos();
         setMessages((prev) => finalizeTodoListProcessesInMessages(prev));
       };
-      const loadOk = await loadConversationHistory(settleEndedRun);
+      const loadOk = await loadConversationHistory(settleEndedRun, status.latest_turn_index);
 
       if (cancelled || turnTookOver()) return;
 
@@ -1126,7 +1201,8 @@ export function useChatMessages(
   // are still legitimately ours.
   useEffect(() => () => {
     sessionEpochRef.current += 1;
-  }, []);
+    historyWindow.reset();
+  }, [historyWindow]);
 
   /**
    * Subagent mux settlement (sink, positive per-task closure, drain dedup)
@@ -1423,8 +1499,11 @@ export function useChatMessages(
     // Show user message in chat with steering indicator. Preserve any inline
     // context cards (widget snapshots / chart selections) so a message queued
     // during compaction keeps them when the flush routes through steering.
-    const userMsg = createUserMessage(message, attachmentMeta as AttachmentMeta[] | null, widgetSnapshots ?? null, chartSelections ?? null);
-    const userMessage: ChatMessage = { ...userMsg, steering: true };
+    const steeredTurn = newestTurn(liveMessages.get()) ?? undefined;
+    const userMessage: ChatMessage = {
+      ...createUserMessage(message, steeredTurn, attachmentMeta as AttachmentMeta[] | null, widgetSnapshots ?? null, chartSelections ?? null),
+      steering: true,
+    };
     recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
     setMessages((prev) => appendMessage(prev,userMessage));
 
@@ -1452,10 +1531,12 @@ export function useChatMessages(
       // finally below honors wasStoppedRef and returns.
       if (wasStoppedRef.current) return;
       demotedToNewTurn = true;
+      // The bubble no longer steers the running turn: it opens the next one.
+      const demotedTurn = newestKnownTurn() + 1;
       setMessages((prev) =>
         updateMessage(prev, userMessage.id as string, (msg) => {
           if (msg.role !== 'user') return msg;
-          const next: UserMessage & { queuePosition?: unknown; queueError?: unknown } = { ...msg };
+          const next: UserMessage & { queuePosition?: unknown; queueError?: unknown } = { ...msg, turnIndex: demotedTurn };
           delete next.steering;
           delete next.queuePosition;
           delete next.queueError;
@@ -1465,7 +1546,7 @@ export function useChatMessages(
       const newAssistantId = `assistant-${Date.now()}`;
       demotedAssistantId = newAssistantId;
       beginRun(agentMode, pendingRunIdFromHeader);
-      const assistantMessage = createAssistantMessage(newAssistantId);
+      const assistantMessage = createAssistantMessage(newAssistantId, demotedTurn);
       setMessages((prev) => appendMessage(prev, assistantMessage));
       currentMessageRef.current = newAssistantId;
       acquireStreamOwnership(threadId);
@@ -1643,8 +1724,10 @@ export function useChatMessages(
       // message) so the user sees what will send. Only the latest queued
       // message is held, so replace any earlier optimistic bubble.
       const prevQueuedId = queuedSendRef.current?.messageId;
+      // A placeholder: the send it becomes adds a bubble of its own.
       const queuedMsg = createUserMessage(
         message,
+        undefined,
         attachmentMeta as AttachmentMeta[] | null,
         widgetSnapshots ?? null,
         chartSelections ?? null,
@@ -1677,8 +1760,10 @@ export function useChatMessages(
     lastModelOptionsRef.current = { model: model || null, reasoningEffort: reasoningEffort || null, fastMode: fastMode ?? null };
 
     // Create and add user message
+    const turnIndex = newestKnownTurn() + 1;
     const userMessage = createUserMessage(
       message,
+      turnIndex,
       attachmentMeta as AttachmentMeta[] | null,
       widgetSnapshots ?? null,
       chartSelections ?? null,
@@ -1724,9 +1809,9 @@ export function useChatMessages(
     sessionEpochRef.current += 1;
     backgroundReconnectRef.current = false;
     // This send opens a NEW backend turn rendered in-view; advance the
-    // watermark so the next reactivation's staleness check doesn't mistake
-    // this turn for one missed while hidden (spurious full reload).
-    lastRenderedTurnIndexRef.current = (lastRenderedTurnIndexRef.current ?? -1) + 1;
+    // watermark to it so the next reactivation's staleness check doesn't
+    // mistake this turn for one missed while hidden (spurious full reload).
+    lastRenderedTurnIndexRef.current = turnIndex;
     // Mark streaming as in progress (prevents history loading during streaming)
     // AND claim ownership for this thread, so navigating to another thread mid-send
     // supersedes this stream rather than leaving it orphaned (the load guard would
@@ -1740,7 +1825,7 @@ export function useChatMessages(
     const abortController = new AbortController();
     mainStreamAbortRef.current = abortController;
 
-    const assistantMessage = createAssistantMessage(assistantMessageId);
+    const assistantMessage = createAssistantMessage(assistantMessageId, turnIndex);
 
     // Add assistant message after history messages
     setMessages((prev) => {
@@ -1995,7 +2080,8 @@ export function useChatMessages(
     // ``conversation_response_id``).
     beginRun(resumeAgentMode);
 
-    const assistantMessage = createAssistantMessage(assistantMessageId);
+    // A resume is a turn of its own on the backend, with no user bubble.
+    const assistantMessage = createAssistantMessage(assistantMessageId, newestKnownTurn() + 1);
     setMessages((prev) => appendMessage(prev, assistantMessage));
     currentMessageRef.current = assistantMessageId;
 
@@ -2201,14 +2287,25 @@ export function useChatMessages(
    * forks from, so it takes the stream slot at the cut: a load or a report-back
    * attach landing in that read waits for the fork instead of writing over the
    * cut. A replay in flight is rebuilding the very transcript the fork would
-   * cut, so the fork is refused until it lands. A failed read hands the slot
-   * back, which runs any load that waited.
+   * cut, so the fork is refused until it lands; the cut is at an index, so no
+   * older page goes above it meanwhile. A failed read hands the slot back,
+   * which runs any load that waited.
    */
   const claimForkPreflight = (): boolean => {
     if (isStreamingRef.current || historyLoadingRef.current) return false;
     sessionEpochRef.current += 1;
+    historyWindow.hold();
     acquireStreamOwnership(threadId);
     return true;
+  };
+
+  /** A fork whose checkpoint read failed puts back the transcript it cut. */
+  const abandonForkPreflight = (snapshot: ChatMessage[], error: string) => {
+    setIsLoading(false);
+    setMessages(snapshot);
+    setMessageError(error);
+    historyWindow.release();
+    releaseStreamOwnership();
   };
 
   /**
@@ -2263,8 +2360,15 @@ export function useChatMessages(
     const abortController = new AbortController();
     mainStreamAbortRef.current = abortController;
 
-    const assistantMessage = createAssistantMessage(assistantMessageId);
-    const userMessage = message && !rerun ? createUserMessage(message) : null;
+    // A fork reruns the turn it names. Another attempt (retry, resend) reruns
+    // the turn of the bubble it replaces, or the newest one when it appends.
+    const projected = projectTurns(snapshot);
+    const turnIndex = forkFromTurn
+      ?? projected[truncateIndex]?.turnIndex
+      ?? newestTurn(snapshot)
+      ?? newestKnownTurn() + 1;
+    const assistantMessage = createAssistantMessage(assistantMessageId, turnIndex);
+    const userMessage = message && !rerun ? createUserMessage(message, turnIndex) : null;
 
     if (userMessage) {
       recentlySentTrackerRef.current.track(message!.trim(), userMessage.timestamp, userMessage.id);
@@ -2287,6 +2391,7 @@ export function useChatMessages(
       newMessagesStartIndexRef.current = newMsgs.length;
       return newMsgs;
     });
+    historyWindow.release();
     currentMessageRef.current = assistantMessageId;
 
     // Invalidate turn checkpoints cache (branch creates new checkpoints)
@@ -2464,9 +2569,9 @@ export function useChatMessages(
       return;
     }
 
-    // Count non-steering assistant messages before this user message to get turn_index.
-    // Excludes steering assistant messages (mid-turn continuations) which don't map to backend turns.
-    const turnIndex = transcript.slice(0, msgIndex).filter((m) => m.role === 'assistant' && !isSteeringContinuation(m)).length;
+    // The turn the bubble belongs to, never its position: a paged transcript
+    // starts mid-thread.
+    const turnIndex = projectTurns(transcript)[msgIndex].turnIndex;
 
     if (!claimForkPreflight()) return;
 
@@ -2476,33 +2581,25 @@ export function useChatMessages(
     setIsLoading(true);
     setMessageError(null);
     setFallbackSuggestion(null);
-    const editedUserMsg = createUserMessage(newContent);
     setMessages((prev) => [
       ...prev.slice(0, msgIndex),
-      editedUserMsg,
-      createAssistantMessage(`assistant-pending-${Date.now()}`),
+      createUserMessage(newContent, turnIndex),
+      createAssistantMessage(`assistant-pending-${Date.now()}`, turnIndex),
     ]);
 
-    // /turns names each entry by its turn_index, not its position: a turn whose
-    // run died before its first checkpoint has no entry. Its message forks
-    // where the next checkpointed turn's does, from the state before both, so
-    // an edit takes the first entry at or after its turn.
+    // A turn whose run died before its first checkpoint has no /turns entry.
+    // Its message forks where the next checkpointed turn's does, from the
+    // state before both, so an edit takes the first entry at or after its turn.
     const turnsData = await getTurnCheckpoints();
     const turn = turnsData?.turns?.find((entry) => entry.turn_index >= turnIndex);
     if (!turn) {
-      setIsLoading(false);
-      setMessages(snapshotMessages);
-      setMessageError('Unable to edit: checkpoint data unavailable');
-      releaseStreamOwnership();
+      abandonForkPreflight(snapshotMessages, 'Unable to edit: checkpoint data unavailable');
       return;
     }
 
     const checkpointId = turn.edit_checkpoint_id;
     if (!checkpointId) {
-      setIsLoading(false);
-      setMessages(snapshotMessages);
-      setMessageError('Unable to edit: this is the first message');
-      releaseStreamOwnership();
+      abandonForkPreflight(snapshotMessages, 'Unable to edit: this is the first message');
       return;
     }
 
@@ -2520,25 +2617,23 @@ export function useChatMessages(
     const msgIndex = transcript.findIndex((m) => m.id === messageId);
     if (msgIndex === -1) return;
 
-    // Count non-steering assistant messages up to and including this one to get turn_index.
-    // Excludes steering assistant messages (mid-turn continuations) which don't map to backend turns.
-    const turnIndex = transcript.slice(0, msgIndex + 1).filter((m) => m.role === 'assistant' && !isSteeringContinuation(m)).length - 1;
+    // The turn the bubble belongs to (a continuation folds back to the turn it
+    // continues), never its position: a paged transcript starts mid-thread.
+    const projected = projectTurns(transcript);
+    const turnIndex = projected[msgIndex].turnIndex;
 
-    // A steered turn renders as several bubbles (pre-steering half + isSteering
-    // continuations) but has only one regenerate: the whole turn re-runs from
-    // its input checkpoint, without the mid-run steering. Normalize truncation
-    // back to the turn's first bubble so the stale halves and the steering
-    // bubbles leave the transcript together with the re-run.
+    // A turn can render as several bubbles (a steered turn's pre-steering half
+    // and continuations, the halves of a stream a reconnect resumed) but has
+    // only one regenerate: the whole turn re-runs from its input checkpoint,
+    // without the mid-run steering. Normalize truncation back to the turn's
+    // first assistant bubble so the stale halves and the steering bubbles leave
+    // the transcript together with the re-run.
     let truncateIndex = msgIndex;
-    const regenTarget = transcript[msgIndex];
-    if (isSteeringContinuation(regenTarget)) {
-      for (let i = msgIndex - 1; i >= 0; i--) {
-        const m = transcript[i];
-        if (m.role === 'assistant' && !isSteeringContinuation(m)) {
-          truncateIndex = i;
-          break;
-        }
-      }
+    for (let i = msgIndex - 1; i >= 0; i--) {
+      const { message, turnIndex: turn } = projected[i];
+      if (message.role !== 'assistant') continue;
+      if (turn !== turnIndex) break;
+      truncateIndex = i;
     }
 
     if (!claimForkPreflight()) return;
@@ -2551,18 +2646,13 @@ export function useChatMessages(
     setFallbackSuggestion(null);
     setMessages((prev) => [
       ...prev.slice(0, truncateIndex),
-      createAssistantMessage(`assistant-pending-${Date.now()}`),
+      createAssistantMessage(`assistant-pending-${Date.now()}`, turnIndex),
     ]);
 
-    // A regenerate re-runs the turn's own input checkpoint, so only that
-    // turn's entry will do (see handleEditMessage on why not its position).
     const turnsData = await getTurnCheckpoints();
     const turn = turnsData?.turns?.find((entry) => entry.turn_index === turnIndex);
     if (!turn) {
-      setIsLoading(false);
-      setMessages(snapshotMessages);
-      setMessageError('Unable to regenerate: checkpoint data unavailable');
-      releaseStreamOwnership();
+      abandonForkPreflight(snapshotMessages, 'Unable to regenerate: checkpoint data unavailable');
       return;
     }
 
@@ -2652,6 +2742,8 @@ export function useChatMessages(
     isLoadingHistory,
     historyLoadFailed,
     isLoadingThread,
+    // Older history, paged in above the transcript as the reader scrolls up.
+    olderHistory: { status: olderHistoryStatus, load: loadOlderHistory },
     isReconnecting,
     modelStatus,
     fallbackSuggestion,

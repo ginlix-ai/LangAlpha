@@ -15,6 +15,7 @@ import { decodeReportBackSignal } from '../../utils/reportBackSignal';
 import { ZERO_USAGE } from '../../utils/tokenUsage';
 import { REPORT_BACK_IDLE_MAX_REARMS } from '../../hooks/useReportBackWatch';
 import { createAssistantMessage, appendMessage, updateMessage } from '../../hooks/utils/messageHelpers';
+import { turnOf } from '../../components/messageList/turnProjection';
 import { finalizeTodoListProcessesInMessages } from '../../hooks/utils/messageFinalizers';
 import { stripHistoryInterruptCards } from '../interrupts/buckets';
 import { checkForNewBuild } from '@/lib/staleBuild';
@@ -178,23 +179,33 @@ export const reconnectToStream = async (
   }
 
   {
-    const assistantMessage = createAssistantMessage(assistantMessageId);
+    // The bubble a dropped stream left: the same run continues on the new one.
+    const continuedId = runId === undefined ? rt.currentMessageRef.current : null;
     // Replace trailing empty history assistant message (created by history replay for the
     // in-progress pair) to avoid a duplicate bubble. If the last message is a non-empty
-    // history assistant or something else, just append normally.
+    // history assistant or something else, just append normally. A bubble carrying its
+    // run's end (the replay's settle time, or a finished stream's) closed a settled run,
+    // never the one attaching: it is a turn of its own, however empty it ended.
     rt.setMessages((prev) => {
       if (prev.length > 0) {
         const lastMsg = prev[prev.length - 1];
         if (
           lastMsg.role === 'assistant' &&
-          (lastMsg as AssistantMessage).isHistory &&
-          (!(lastMsg as AssistantMessage).contentSegments || (lastMsg as AssistantMessage).contentSegments.length === 0) &&
-          !lastMsg.content
+          lastMsg.isHistory &&
+          (!lastMsg.contentSegments || lastMsg.contentSegments.length === 0) &&
+          !lastMsg.content &&
+          lastMsg.completedAt === undefined &&
+          lastMsg.completionObservedAt === undefined
         ) {
-          return [...prev.slice(0, -1), assistantMessage];
+          return [...prev.slice(0, -1), createAssistantMessage(assistantMessageId, turnOf(prev, lastMsg.id))];
         }
       }
-      return appendMessage(prev,assistantMessage);
+      // A run attached fresh (a report-back) stays unstamped: it is a turn the
+      // transcript has not shown, which the count after the last stamp names.
+      // So a bubble continuing one has no stamp to copy and takes its turn
+      // from the projection.
+      const turnIndex = continuedId ? turnOf(prev, continuedId) : undefined;
+      return appendMessage(prev, createAssistantMessage(assistantMessageId, turnIndex));
     });
     rt.currentMessageRef.current = assistantMessageId;
   }

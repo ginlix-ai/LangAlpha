@@ -91,7 +91,7 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
 
       // Debounce: merge back-to-back offload events into a single notification
       if (batch.current.timer) clearTimeout(batch.current.timer);
-      batch.current.timer = setTimeout(() => {
+      batch.current.flush = () => {
         const { args, reads, msgId } = batch.current;
         let text;
         if (args > 0 && reads > 0) {
@@ -121,11 +121,20 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
 
         // Reset batch
         batch.current = { args: 0, reads: 0, timer: null, msgId: undefined };
-      }, 100);
+      };
+      batch.current.timer = setTimeout(batch.current.flush, 100);
     }
     return;
   }
 }
 
+/** Write a debounced offload notice now, if one is waiting. */
+function flushOffloadBatch(batch: ContextWindowCallbacks['offloadBatch']): void {
+  const { timer, flush } = batch.current;
+  if (timer === null || !flush) return;
+  clearTimeout(timer);
+  flush();
+}
 
-export { handleContextWindowEvent };
+
+export { handleContextWindowEvent, flushOffloadBatch };

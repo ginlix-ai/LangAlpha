@@ -84,7 +84,20 @@ export function handleHistoryUserMessage({
         });
       }
       // Map turn_index to the streaming assistant message ID
-      assistantMessagesByPair.set(pairIndex, currentMessageRef.current);
+      const liveId = currentMessageRef.current;
+      assistantMessagesByPair.set(pairIndex, liveId);
+      // The live turn was counted on the client; the replay names it. Every
+      // live bubble that count stamped moves with it: the reply, its user
+      // bubble (the turn's only one, as the replay's is dropped) and any
+      // steering stamped from the reply.
+      setMessages((prev: MessageRecord[]) => {
+        const counted = prev.find((m) => m.id === liveId)?.turnIndex;
+        return prev.map((m) =>
+          m.id === liveId || (!m.isHistory && counted !== undefined && m.turnIndex === counted)
+            ? { ...m, turnIndex: pairIndex }
+            : m,
+        );
+      });
       return true;
     }
     // If no active streaming, we'll create assistant message below
@@ -115,6 +128,7 @@ export function handleHistoryUserMessage({
         timestamp: event.timestamp ? new Date(event.timestamp as string | number) : new Date(),
         isStreaming: false,
         isHistory: true,
+        turnIndex: pairIndex,
       };
 
       // Restore attachment metadata from persisted query metadata
@@ -178,6 +192,7 @@ export function handleHistoryUserMessage({
       timestamp: event.timestamp ? new Date(event.timestamp as string | number) : new Date(),
       isStreaming: false,
       isHistory: true,
+      turnIndex: pairIndex,
       contentSegments: [],
       reasoningProcesses: {},
       toolCallProcesses: {},
@@ -538,6 +553,7 @@ export function handleHistorySteeringDelivered({
       timestamp: qMsg.timestamp ? new Date((qMsg.timestamp as number) * 1000) : new Date(),
       isStreaming: false,
       isHistory: true,
+      turnIndex: pairIndex,
       steeringDelivered: true,
     };
     setMessages((prev: MessageRecord[]) => {
@@ -569,6 +585,7 @@ export function handleHistorySteeringDelivered({
     isStreaming: false,
     isHistory: true,
     isSteering: true,
+    turnIndex: pairIndex,
     contentSegments: [],
     reasoningProcesses: {},
     toolCallProcesses: {},

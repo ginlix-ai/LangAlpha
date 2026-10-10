@@ -1,5 +1,3 @@
-import type { MessageRecord } from '../hooks/utils/types';
-
 /**
  * The message that made a tool call, which is not always the one being written
  * when the answer arrives.
@@ -13,7 +11,7 @@ import type { MessageRecord } from '../hooks/utils/types';
  * the one it replaced.
  */
 export function ownerOfToolCall(
-  messages: MessageRecord[],
+  messages: readonly { id?: unknown; toolCallProcesses?: unknown }[],
   toolCallId: string,
 ): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {

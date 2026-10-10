@@ -427,6 +427,10 @@ export type UserMessage = {
   timestamp: Date;
   isStreaming: false;
   isHistory?: boolean;
+  /** The backend turn this bubble belongs to, stamped when it is created (see
+   *  projectTurns). A paged transcript starts mid-thread, so position alone
+   *  cannot name the turn. */
+  turnIndex?: number;
   attachments?: Attachment[];
   /**
    * Widget context snapshots attached to this message. Rendered as inline
@@ -461,6 +465,8 @@ export type AssistantMessage = {
   timestamp: Date;
   isStreaming: boolean;
   isHistory?: boolean;
+  /** The backend turn this bubble belongs to (see UserMessage.turnIndex). */
+  turnIndex?: number;
   contentSegments: ContentSegment[];
   reasoningProcesses: Record<string, ReasoningProcess>;
   toolCallProcesses: Record<string, ToolCallProcess>;

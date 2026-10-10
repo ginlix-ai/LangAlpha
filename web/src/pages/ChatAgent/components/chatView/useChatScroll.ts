@@ -14,11 +14,13 @@ const TOGGLE_HOLD_MS = 1000;
 // Breathing room left under a deliverables deck brought into view.
 const REVEAL_GAP_PX = 12;
 
-/** The bubble at the viewport top and how far into it the view starts. */
-function readPlace(c: HTMLElement): { id: string; delta: number } | null {
+/** The bubble at the viewport top and how far into it the view starts. With
+ *  `orFirst`, a view that starts above every bubble (the top of the transcript)
+ *  is placed by the first one, `delta` negative by the gap over it. */
+function readPlace(c: HTMLElement, orFirst = false): { id: string; delta: number } | null {
   const bubbles = c.querySelectorAll<HTMLElement>('[data-message-id]');
   const top = c.getBoundingClientRect().top;
-  let hit: HTMLElement | null = null;
+  let hit: HTMLElement | null = orFirst ? (bubbles[0] ?? null) : null;
   for (let lo = 0, hi = bubbles.length - 1; lo <= hi; ) {
     const mid = (lo + hi) >> 1;
     if (bubbles[mid].getBoundingClientRect().top <= top) {
@@ -30,6 +32,12 @@ function readPlace(c: HTMLElement): { id: string; delta: number } | null {
   }
   if (!hit?.dataset.messageId) return null;
   return { id: hit.dataset.messageId, delta: top - hit.getBoundingClientRect().top };
+}
+
+/** Where the reader was, for a thread: on a bubble, or at the end. */
+interface ShownPlace {
+  tid: string;
+  place: 'bottom' | { id: string; delta: number };
 }
 
 // A replayed turn's bubbles, its steering replies included, are named by its
@@ -184,10 +192,20 @@ export function useChatScroll({
   // reload's.
   const readerPlaceRef = useRef<{ tid: string; id: string; delta: number } | null>(null);
   const reloadingRef = useRef(false);
+  // Where the reader last was in the main transcript, by bubble or at its end.
+  // An older page that lands while the transcript is not shown moves what sits
+  // at its offset and cannot be measured, so that place is owed to the next
+  // time the transcript is shown.
+  const shownPlaceRef = useRef<ShownPlace | null>(null);
+  const owedPlaceRef = useRef<ShownPlace | null>(null);
   // The entry-restore frame, tracked so a thread switch / unmount cancels a
   // pending scroll instead of yanking a now-stale view.
   const entryRestoreRafRef = useRef<number | null>(null);
   const visibilityRafRef = useRef<number | null>(null);
+  // The thread whose entry restore has been applied, as state for render: the
+  // older-history row waits on it. Until the restore lands the view sits at
+  // the top of the transcript, which is where the row asks for a page.
+  const [restoredTid, setRestoredTid] = useState<string | null>(null);
 
   /** The entry restore for this thread has landed, so an automatic scroll may move the view. */
   const entryRestoreSettled = useCallback(
@@ -400,6 +418,59 @@ export function useChatScroll({
   );
   const follow = useMemo<StreamFollowControls>(() => ({ rejoin, landOnReply }), [rejoin, landOnReply]);
 
+  // An older page lands above the reader: hold the bubble at the viewport top
+  // where it is, so the page grows the transcript upward out of sight instead
+  // of pushing what they are reading down by its own height. `commit` renders
+  // the page before it returns, so the place is read and applied around it in
+  // one task, and the settle window keeps it while the page's media lays out.
+  // A bottom pin or the follow already holds the end, and an anchor or a
+  // reveal names a bubble the page cannot move. `prepended` keeps the jump
+  // pill from counting the page as new messages.
+  const holdPlace = useCallback(
+    (prepended: number, commit: () => void) => {
+      pillBaselineLenRef.current += prepended;
+      const c = isActiveRef.current ? getScrollContainer(scrollAreaRef) : null;
+      if (!c) {
+        // Hidden, or behind a subagent tab: the reader's last place is put
+        // back when the transcript is next shown, in place of the tab's own
+        // offset, which the page has left a page short.
+        const shown = shownPlaceRef.current;
+        if (shown && shown.tid === memoryTidRef.current) {
+          owedPlaceRef.current = shown;
+          delete scrollPositionsRef.current.main;
+        }
+        return commit();
+      }
+      const mode = pinTargetRef.current?.mode;
+      if (mode === 'bottom' || isFollowing()) return commit();
+      if (mode !== 'anchor' && mode !== 'reveal') {
+        const place = readPlace(c, true);
+        if (!place) return commit();
+        pinTargetRef.current = { mode: 'anchor', id: place.id, delta: place.delta };
+      }
+      commit();
+      reapplyPin();
+    },
+    [isActiveRef, getScrollContainer, isFollowing, reapplyPin, memoryTidRef],
+  );
+
+  // A page that landed while the transcript was not shown, now that it can be
+  // measured again.
+  useLayoutEffect(() => {
+    const owed = owedPlaceRef.current;
+    if (!owed || !isActive || activeAgentId !== 'main') return;
+    const c = getScrollContainer(scrollAreaRef);
+    if (!c) return;
+    owedPlaceRef.current = null;
+    if (owed.tid !== memoryTidRef.current) return;
+    if (owed.place === 'bottom') {
+      pinToBottom('auto');
+    } else if (findMessageElement(c, owed.place.id)) {
+      pinTargetRef.current = { mode: 'anchor', ...owed.place };
+      reapplyPin();
+    }
+  }, [isActive, activeAgentId, getScrollContainer, memoryTidRef, pinToBottom, reapplyPin]);
+
   // Bring a turn's deliverables deck into view as it unfolds. The deck cannot
   // do this for itself: its height animates over 260ms, and the observer below
   // re-applies this controller's pin on every one of those growth frames, so a
@@ -471,8 +542,9 @@ export function useChatScroll({
       if (memoryTidRef.current && pinTargetRef.current?.mode !== 'offset' && !isLoadingHistoryRef.current) {
         const atBottom = isNearBottom({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight }, NEAR_BOTTOM_PX);
         scrollMemory.set(`thread:${memoryTidRef.current}`, atBottom ? 'bottom' : c.scrollTop);
-        const place = atBottom ? null : readPlace(c);
-        readerPlaceRef.current = place && { tid: memoryTidRef.current, ...place };
+        const place = atBottom ? null : readPlace(c, true);
+        readerPlaceRef.current = place && place.delta >= 0 ? { tid: memoryTidRef.current, ...place } : null;
+        shownPlaceRef.current = { tid: memoryTidRef.current, place: place ?? 'bottom' };
       }
       if (programmaticScrollRef.current || own) return; // ignore our own scrolls
       // A genuine user scroll takes control away from the pin controller.
@@ -682,14 +754,18 @@ export function useChatScroll({
     // One apply for both targets: run in this commit when the viewport is
     // already mounted, on the next frame when it is not.
     const apply = () => {
-      // The instance may have gone inactive (cached/hidden) before the frame.
+      // The instance may have gone inactive (cached/hidden) before the frame,
+      // or opened on a subagent tab, which leaves no main viewport mounted.
       const c = isActiveRef.current ? getScrollContainer(scrollAreaRef) : null;
       if (!c) {
         // Nothing was applied: release the claim so a stale pin can't block
-        // follows when the instance reactivates.
+        // follows when the instance reactivates, and owe the restore to the
+        // next time the transcript is shown.
         if (pinTargetRef.current?.mode === 'offset') pinTargetRef.current = null;
+        if (restoredForThreadRef.current === tid) restoredForThreadRef.current = null;
         return;
       }
+      setRestoredTid(tid);
       if (typeof saved !== 'number') {
         pinToBottom('auto');
       } else if (place && findMessageElement(c, place.id)) {
@@ -721,9 +797,11 @@ export function useChatScroll({
         entryRestoreRafRef.current = null;
         // A cancelled frame leaves an offset claim unapplied — release it.
         if (pinTargetRef.current?.mode === 'offset') pinTargetRef.current = null;
+        // The restore itself is still owed, and restoredTid waits on it.
+        if (restoredForThreadRef.current === tid) restoredForThreadRef.current = null;
       }
     };
-  }, [isActive, isLoadingHistory, historyLoadFailed, currentThreadId, threadId, pinToBottom, reapplyPin, isActiveRef, getScrollContainer, withProgrammaticScroll, armSettleTimers, setPillState, messagesLenRef]);
+  }, [isActive, activeAgentId, isLoadingHistory, historyLoadFailed, currentThreadId, threadId, pinToBottom, reapplyPin, isActiveRef, getScrollContainer, withProgrammaticScroll, armSettleTimers, setPillState, messagesLenRef]);
 
   // Cancel pending settle timers and the entry-restore frame on unmount.
   useEffect(() => {
@@ -743,6 +821,7 @@ export function useChatScroll({
     follow,
     pinToMessage,
     revealFiles,
+    holdPlace,
     pinTargetRef,
     saveScrollPosition,
     jumpPill,
@@ -752,5 +831,6 @@ export function useChatScroll({
     isNearBottomRef,
     isSubagentNearBottomRef,
     restoredForThreadRef,
+    entryRestored: restoredTid !== null && restoredTid === resolvedTid,
   };
 }
