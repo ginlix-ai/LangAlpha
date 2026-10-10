@@ -328,6 +328,13 @@ async def arun_subagent_streaming(
                         "aborting so the run finalizes instead of "
                         "completing with a torn stream"
                     )
+                if forwarder is not None:
+                    try:
+                        await forwarder.tick()
+                    except Exception as exc:
+                        logger.debug(
+                            "Subagent delta flush failed", error=str(exc)
+                        )
                 if mode == "values":
                     last_state = data
                 elif mode == "messages" and forwarder is not None:

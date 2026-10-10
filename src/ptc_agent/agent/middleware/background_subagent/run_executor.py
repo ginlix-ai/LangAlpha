@@ -252,8 +252,15 @@ async def _run_background_task(
     async def run_handler() -> ToolMessage | Command:
         current_background_token_tracker.set(tracker)
         set_tool_tracker(tool_tracker)
-        async with _child_credit_lane(task, tracker, tool_tracker, label):
-            return await handler(request)
+        try:
+            async with _child_credit_lane(task, tracker, tool_tracker, label):
+                return await handler(request)
+        finally:
+            # The forwarder sends its held delta when the astream loop exits;
+            # this catches one it missed, by identity, before the outcome is
+            # judged on the stream's health: a spill that fails after that
+            # would leave a "completed" run with no run_end.
+            await _flush_held_delta(task, registry)
 
     handler_task: asyncio.Task[ToolMessage | Command] = asyncio.create_task(
         run_handler()
@@ -365,6 +372,21 @@ async def _run_background_task(
                 registry=registry,
                 namespace_owner=namespace_owner,
             )
+
+
+async def _flush_held_delta(
+    task: BackgroundTask, registry: "BackgroundTaskRegistry | None"
+) -> None:
+    if registry is None:
+        return
+    try:
+        await registry.flush_held_delta_for_task(task)
+    except Exception:
+        logger.warning(
+            "subagent_held_delta_flush_failed",
+            task_id=task.task_id,
+            exc_info=True,
+        )
 
 
 async def _settle_terminal_run(

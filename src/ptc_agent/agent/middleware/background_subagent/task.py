@@ -152,6 +152,10 @@ class BackgroundTask:
     writes, and the run ends as ``error(transport_lost)`` rather than degrading
     to the in-memory tail — a gap in the replay archive is not recoverable."""
 
+    delta_coalescer: Any = field(default=None, repr=False)
+    """The registry's ``DeltaCoalescer`` holding this task's unsent delta,
+    created on the first append. Typed loosely so this module stays a leaf."""
+
     spawned_turn_index: int = 0
     """The turn_index of the parent turn that spawned this subagent."""
 

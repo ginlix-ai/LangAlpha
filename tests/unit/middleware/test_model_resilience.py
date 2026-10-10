@@ -103,6 +103,32 @@ class TestSuccessPath:
         assert events == []
 
 
+class TestStreamHeartbeat:
+    @pytest.mark.asyncio
+    async def test_a_model_call_beats_until_it_returns(self, events):
+        """A pausing model call keeps the stream's lanes waking; see
+        ``stream_heartbeat``."""
+        import asyncio
+
+        from src.utils.stream_coalescing import HEARTBEAT_EVENT_TYPE
+
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client)
+
+        async def handler(req):
+            while not events:
+                await asyncio.sleep(0.01)
+            return "ok"
+
+        assert await asyncio.wait_for(
+            mw.awrap_model_call(_FakeRequest(client), handler), timeout=5
+        ) == "ok"
+        seen = len(events)
+        await asyncio.sleep(0.25)
+        assert len(events) == seen
+        assert events[0] == {"type": HEARTBEAT_EVENT_TYPE}
+
+
 class TestRetryBehavior:
     @pytest.mark.asyncio
     async def test_transient_error_retries_then_succeeds(self, events):

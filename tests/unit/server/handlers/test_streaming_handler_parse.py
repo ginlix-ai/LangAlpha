@@ -113,7 +113,10 @@ class TestParseErrorEmission:
         chunk = AIMessageChunk(content="", id="msg-1")
         chunk.response_metadata = {"stop_reason": "tool_use"}
 
-        events = [e async for e in producer._process_message_chunk(chunk, "agent")]
+        events = [
+            producer._number_sse_event(e)
+            async for e in producer._process_message_chunk(chunk, "agent")
+        ]
 
         payloads = self._tool_calls_payloads(events)
         assert len(payloads) == 1
@@ -143,7 +146,10 @@ class TestParseErrorEmission:
         chunk = AIMessageChunk(content="", id="msg-2")
         chunk.response_metadata = {"stop_reason": "tool_use"}
 
-        events = [e async for e in producer._process_message_chunk(chunk, "agent")]
+        events = [
+            producer._number_sse_event(e)
+            async for e in producer._process_message_chunk(chunk, "agent")
+        ]
 
         payloads = self._tool_calls_payloads(events)
         assert len(payloads) == 1

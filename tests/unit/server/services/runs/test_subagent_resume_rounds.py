@@ -78,8 +78,9 @@ class _SpoolingRegistry(BackgroundTaskRegistry):
         super().__init__(thread_id=thread_id)
         self._stream = stream
 
-    async def _spill_record_to_redis(self, task, record) -> None:
-        self._stream.append(record["seq"], record)
+    async def _spill_records_to_redis(self, task, records) -> None:
+        for record in records:
+            self._stream.append(record["seq"], record)
 
 
 def _make_cache(stream: _FakeStream, *, stream_delete) -> MagicMock:

@@ -75,6 +75,8 @@ async def _spill_one(monkeypatch, cache: MagicMock):
     )
     task.task_run_id = TASK_RUN_ID
     await registry.append_captured_event(task.tool_call_id, _event())
+    # A text delta is held for the next piece; the task's end sends it.
+    await registry.flush_held_delta(task.tool_call_id)
     return task
 
 

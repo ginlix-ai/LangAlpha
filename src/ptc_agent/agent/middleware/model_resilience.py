@@ -35,6 +35,7 @@ from src.llms.error_classification import (
     is_retryable_error,
 )
 from src.llms.reasoning_payload import strip_all_reasoning
+from src.utils.stream_coalescing import stream_heartbeat
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -171,6 +172,16 @@ class ModelResilienceMiddleware(AgentMiddleware):
             delay += random.uniform(-jitter_amount, jitter_amount)
             delay = max(0, delay)
         return delay
+
+    @staticmethod
+    def _stream_writer() -> Callable[[Any], None] | None:
+        try:
+            from langgraph.config import get_stream_writer
+
+            return get_stream_writer()
+        except Exception:
+            # Outside a streaming graph run (tests, sync invocations).
+            return None
 
     @staticmethod
     def _emit(payload: dict[str, Any]) -> None:
@@ -359,6 +370,16 @@ class ModelResilienceMiddleware(AgentMiddleware):
         return self._raise_exhausted(records)
 
     async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelCallResult:
+        # Every model call of both stacks passes here once, retries and
+        # fallbacks included, so this is where the stream heartbeat runs.
+        async with stream_heartbeat(self._stream_writer()):
+            return await self._acall_with_recovery(request, handler)
+
+    async def _acall_with_recovery(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],

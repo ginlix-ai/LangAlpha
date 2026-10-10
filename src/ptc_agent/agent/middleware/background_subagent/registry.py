@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 
+from src.utils.stream_coalescing import DeltaCoalescer, StreamFrame
+
 from . import redis_stream
 from .task import BackgroundTask, TerminalStatus
 
@@ -176,6 +178,8 @@ class BackgroundTaskRegistry:
         self._tasks: dict[str, BackgroundTask] = {}
         self._task_id_to_tool_call_id: dict[str, str] = {}  # task_id -> tool_call_id
         self._lock = asyncio.Lock()
+        # The clock each task's delta coalescer reads; a seam for tests.
+        self._clock: Callable[[], float] = time.monotonic
         self._results: dict[str, Any] = {}
         # Entries kept until their cancelled writers settle; one reaper per
         # round however many kills find it unwinding.
@@ -596,41 +600,23 @@ class BackgroundTaskRegistry:
             # would be visible live yet absent from every durable store.
             # ``terminal`` exempts unwind bookkeeping (steering_returned):
             # those frames run inside the bounded unwind the drain awaits,
-            # and dropping them would erase acknowledged user input.
-            if task.cancelled and not terminal:
-                return
+            # and dropping them would erase acknowledged user input. A held
+            # delta is output, not bookkeeping, so the kill drops it too.
+            if task.cancelled:
+                self._locked_discard_held(task)
+                if not terminal:
+                    return
 
-            task.captured_event_seq += 1
-            seq = task.captured_event_seq
-            ts = event.get("ts")
-            record: dict[str, Any] = {
-                "seq": seq,
-                "event": event.get("event"),
-                "data": event.get("data") or {},
-                "agent_id": task.agent_id,
-            }
-            if ts is not None:
-                record["ts"] = ts
-            # Round stamp: collectors on OTHER workers can't see this
-            # process's claim state, so the record itself carries which run's
-            # writer produced it — the durable replay fence a resumed round's
-            # reused seq numbers would otherwise slip past.
-            if task.spawned_run_id:
-                record["run"] = task.spawned_run_id
-            # Ledger identity: the attribution join key for replay. Every
-            # captured record names the execution that produced it, so a
-            # resumed task's rounds partition without content matching.
-            if task.task_run_id:
-                record["task_run"] = task.task_run_id
-
-            # Counts this round's appends, NOT the seq: on a resume that could
-            # not clear the spool the seq carries over from the prior round,
-            # and the archive gates measure this round only.
-            task.captured_event_count += 1
-            task.captured_event_bytes += _estimate_record_bytes(record)
+            frames = self._locked_coalescer(task).offer(
+                StreamFrame(
+                    event.get("event"), event.get("data") or {}, event.get("ts")
+                )
+            )
+            records = [self._locked_record(task, frame) for frame in frames]
             # Bump last_updated_at only on user-visible text output.
             # reasoning_signal / reasoning / tool_calls / tool_call_result
-            # events are excluded — they're pacing noise.
+            # events are excluded — they're pacing noise. Counted when the
+            # text arrives, held or not, so a quiet window never reads as idle.
             if (
                 event.get("event") == "message_chunk"
                 and (event.get("data") or {}).get("content_type") == "text"
@@ -651,13 +637,97 @@ class BackgroundTaskRegistry:
                         owner.last_updated_at = now
 
         # Spill OUTSIDE the lock — Redis I/O must not block subsequent appends.
-        await self._spill_record_to_redis(task, record)
+        if records:
+            await self._spill_records_to_redis(task, records)
 
-    async def _spill_record_to_redis(
-        self, task: BackgroundTask, record: dict[str, Any]
+    async def flush_held_delta(
+        self, tool_call_id: str, *, due_only: bool = False
     ) -> None:
-        """Per-instance seam over ``redis_stream.spill_task_record``."""
-        await redis_stream.spill_task_record(self.thread_id, task, record)
+        """Send the task's held delta, or with ``due_only`` only once its
+        window has passed.
+
+        The forwarder calls this on every graph event, whether or not the
+        event appends anything, so a held piece waits no longer than the gap
+        between two events. Nothing else releases it on time: there is no
+        timer.
+        """
+        task = self._tasks.get(tool_call_id)
+        if task is not None:
+            await self.flush_held_delta_for_task(task, due_only=due_only)
+
+    async def flush_held_delta_for_task(
+        self, task: "BackgroundTask", *, due_only: bool = False
+    ) -> None:
+        """Identity-exact flush; see ``append_event_for_task`` for why the
+        settle pipeline must not re-resolve by reusable tool_call_id."""
+        # Most ticks find nothing held; skip the registry-wide lock for them.
+        if task.delta_coalescer is None or not task.delta_coalescer.holding:
+            return
+        async with self._lock:
+            coalescer = task.delta_coalescer
+            if coalescer is None or not coalescer.holding:
+                return
+            if task.cancelled:
+                coalescer.discard()
+                return
+            frames = coalescer.poll() if due_only else coalescer.drain()
+            records = [self._locked_record(task, frame) for frame in frames]
+        if records:
+            await self._spill_records_to_redis(task, records)
+
+    def _locked_coalescer(self, task: "BackgroundTask") -> DeltaCoalescer:
+        """The task's delta coalescer. Caller must hold ``self._lock``."""
+        if task.delta_coalescer is None:
+            task.delta_coalescer = DeltaCoalescer(clock=self._clock)
+        return task.delta_coalescer
+
+    @staticmethod
+    def _locked_discard_held(task: "BackgroundTask") -> None:
+        if task.delta_coalescer is not None:
+            task.delta_coalescer.discard()
+
+    def _locked_record(
+        self, task: "BackgroundTask", frame: StreamFrame
+    ) -> dict[str, Any]:
+        """Number one outgoing frame. Caller must hold ``self._lock``.
+
+        A held delta takes its seq when it goes out, not when its first piece
+        arrived: the completeness gates expect every seq up to the high-water
+        to exist, so a number is only spent on a record that is spilled.
+        """
+        task.captured_event_seq += 1
+        record: dict[str, Any] = {
+            "seq": task.captured_event_seq,
+            "event": frame.event,
+            "data": frame.data,
+            "agent_id": task.agent_id,
+        }
+        if frame.ts is not None:
+            record["ts"] = frame.ts
+        # Round stamp: collectors on OTHER workers can't see this
+        # process's claim state, so the record itself carries which run's
+        # writer produced it — the durable replay fence a resumed round's
+        # reused seq numbers would otherwise slip past.
+        if task.spawned_run_id:
+            record["run"] = task.spawned_run_id
+        # Ledger identity: the attribution join key for replay. Every
+        # captured record names the execution that produced it, so a
+        # resumed task's rounds partition without content matching.
+        if task.task_run_id:
+            record["task_run"] = task.task_run_id
+
+        # Counts this round's appends, NOT the seq: on a resume that could
+        # not clear the spool the seq carries over from the prior round,
+        # and the archive gates measure this round only.
+        task.captured_event_count += 1
+        task.captured_event_bytes += _estimate_record_bytes(record)
+        return record
+
+    async def _spill_records_to_redis(
+        self, task: BackgroundTask, records: list[dict[str, Any]]
+    ) -> None:
+        """Per-instance seam over ``redis_stream.spill_task_records``."""
+        await redis_stream.spill_task_records(self.thread_id, task, records)
 
     async def write_task_meta(self, task: BackgroundTask, status: str) -> None:
         """Mirror routing identity + writer liveness for other workers

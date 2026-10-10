@@ -496,10 +496,12 @@ class TestRunSSEProducerFormatting:
                 },
             }
         }
-        result = handler._format_credit_usage_event(
-            thread_id="credit-thread",
-            token_usage=token_usage,
-            total_credits=1.5,
+        result = handler._number_sse_event(
+            handler._build_credit_usage_event(
+                thread_id="credit-thread",
+                token_usage=token_usage,
+                total_credits=1.5,
+            )
         )
         assert "event: credit_usage\n" in result
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
@@ -511,7 +513,9 @@ class TestRunSSEProducerFormatting:
 
     def test_format_reasoning_signal(self):
         handler = self._make_handler()
-        result = handler._format_reasoning_signal("main", "msg-1", "start")
+        result = handler._number_sse_event(
+            handler._build_reasoning_signal("main", "msg-1", "start")
+        )
         assert "event: message_chunk\n" in result
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert parsed["content"] == "start"
@@ -607,8 +611,9 @@ class TestInterruptHandling:
         interrupt = MagicMock()
         interrupt.id = "int-1"
         interrupt.value = {"action_requests": [{"description": "Run analysis?"}]}
-        result = handler._handle_interrupt({"__interrupt__": [interrupt]})
-        assert result is not None
+        frame = handler._handle_interrupt({"__interrupt__": [interrupt]})
+        assert frame is not None
+        result = handler._number_sse_event(frame)
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert parsed["interrupt_id"] == "int-1"
         assert parsed["action_requests"] == [{"description": "Run analysis?"}]
@@ -619,7 +624,9 @@ class TestInterruptHandling:
         interrupt = MagicMock()
         interrupt.id = "int-2"
         interrupt.value = "Should I proceed with plan?"
-        result = handler._handle_interrupt({"__interrupt__": [interrupt]})
+        result = handler._number_sse_event(
+            handler._handle_interrupt({"__interrupt__": [interrupt]})
+        )
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert parsed["action_requests"] == [
             {"description": "Should I proceed with plan?"}
@@ -630,7 +637,9 @@ class TestInterruptHandling:
         interrupt = MagicMock()
         interrupt.id = "int-3"
         interrupt.value = [{"description": "step 1"}, {"description": "step 2"}]
-        result = handler._handle_interrupt({"__interrupt__": [interrupt]})
+        result = handler._number_sse_event(
+            handler._handle_interrupt({"__interrupt__": [interrupt]})
+        )
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert len(parsed["action_requests"]) == 2
 
@@ -814,7 +823,14 @@ class TestToolNodeInnerLLMSuppression:
         )
 
     async def _drain(self, agen):
-        return [ev async for ev in agen]
+        # Frames come out unnumbered; the stream numbers them after coalescing.
+        return [self._number(ev) async for ev in agen]
+
+    @staticmethod
+    def _number(frame):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id="t-n", run_id="r-n")._number_sse_event(frame)
 
     def test_tool_node_reasoning_suppressed(self):
         handler = self._handler()
@@ -1045,14 +1061,18 @@ class TestCompactionChunkRouting:
 
     def test_reasoning_signal_routes_to_compaction_when_flagged(self):
         handler = self._handler()
-        evt = handler._format_reasoning_signal(
-            "agent", "msg-1", "start", is_compaction=True
+        evt = handler._number_sse_event(
+            handler._build_reasoning_signal(
+                "agent", "msg-1", "start", is_compaction=True
+            )
         )
         assert "event: compaction_chunk\n" in evt
 
     def test_reasoning_signal_stays_on_message_chunk_by_default(self):
         handler = self._handler()
-        evt = handler._format_reasoning_signal("agent", "msg-1", "start")
+        evt = handler._number_sse_event(
+            handler._build_reasoning_signal("agent", "msg-1", "start")
+        )
         assert "event: message_chunk\n" in evt
 
     @pytest.mark.asyncio
@@ -1063,7 +1083,7 @@ class TestCompactionChunkRouting:
         chunk = AIMessageChunk(content="summary text", id="s-1")
 
         events = [
-            e
+            handler._number_sse_event(e)
             async for e in handler._process_message_chunk(
                 chunk, "agent", is_compaction=True
             )
@@ -1079,7 +1099,8 @@ class TestCompactionChunkRouting:
         chunk = AIMessageChunk(content="hello", id="m-1")
 
         events = [
-            e async for e in handler._process_message_chunk(chunk, "agent")
+            handler._number_sse_event(e)
+            async for e in handler._process_message_chunk(chunk, "agent")
         ]
         assert any("event: message_chunk\n" in e for e in events)
         assert not any("event: compaction_chunk\n" in e for e in events)
@@ -1128,11 +1149,11 @@ class TestTextPhasePassthrough:
 
     def _drain(self, handler, chunk):
         return asyncio.run(
-            self._collect(handler._process_message_chunk(chunk, "agent"))
+            self._collect(handler, handler._process_message_chunk(chunk, "agent"))
         )
 
-    async def _collect(self, agen):
-        return [e async for e in agen]
+    async def _collect(self, handler, agen):
+        return [handler._number_sse_event(e) async for e in agen]
 
     def test_streaming_deltas_inherit_the_announced_phase(self):
         # output_item.added announces the phase in an empty text block, then

@@ -108,8 +108,9 @@ _CATEGORIES = {
 }
 
 _EMIT_PATTERNS = (
-    # _format_sse_event("type", ...) — possibly line-wrapped
-    re.compile(r'_format_sse_event\(\s*"([a-z_]+)"'),
+    # _format_sse_event("type", ...) / _build_sse_event("type", ...), possibly
+    # line-wrapped
+    re.compile(r'_(?:format|build)_sse_event\(\s*"([a-z_]+)"'),
     # _sse("type", ...) — the per-module frame helpers
     re.compile(r'_sse\(\s*"([a-z_]+)"'),
     # _control("type", ...) — the mux's socket-level control frames

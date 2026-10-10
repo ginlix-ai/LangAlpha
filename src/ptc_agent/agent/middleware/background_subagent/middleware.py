@@ -449,6 +449,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         # of counting it as missing.
         task.captured_event_count = 0
         task.captured_event_bytes = 0
+        task.delta_coalescer = None
         if spool_cleared:
             task.captured_event_seq = 0
             task.captured_event_seq_base = 0

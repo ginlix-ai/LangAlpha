@@ -96,10 +96,10 @@ class RecordingRegistry(BackgroundTaskRegistry):
         super().__init__(thread_id="thread-1")
         self.events: list[dict[str, Any]] = []
 
-    async def _spill_record_to_redis(
-        self, task: Any, record: dict[str, Any]
+    async def _spill_records_to_redis(
+        self, task: Any, records: list[dict[str, Any]]
     ) -> None:
-        self.events.append(record["data"])
+        self.events.extend(record["data"] for record in records)
 
 
 class FakeDispatcher:

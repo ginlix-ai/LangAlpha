@@ -108,6 +108,12 @@ class _SubagentTokenForwarder:
             "ts": time.time(),
         }
 
+    async def tick(self) -> None:
+        """Send the held delta once its window has passed. Called on every
+        graph event, including those that forward nothing, because nothing
+        else releases a held piece on time."""
+        await self.registry.flush_held_delta(self.tool_call_id, due_only=True)
+
     async def forward(
         self,
         message_chunk: BaseMessage,
@@ -275,7 +281,8 @@ class _SubagentTokenForwarder:
             )
 
     async def finalize(self) -> None:
-        """Close any still-open reasoning lifecycle at astream-loop exit.
+        """Close any still-open reasoning lifecycle at astream-loop exit, and
+        send the delta the registry still holds.
 
         The stream-end sentinel is NOT written here: content spills XADD with
         explicit ``{seq}-0`` ids and Redis rejects ids behind the sentinel's
@@ -290,4 +297,5 @@ class _SubagentTokenForwarder:
                 self._signal_record(self._last_msg_id, "complete"),
             )
             self._reasoning_active = False
+        await self.registry.flush_held_delta(self.tool_call_id)
 

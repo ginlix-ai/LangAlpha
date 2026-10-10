@@ -518,13 +518,13 @@ async def test_captured_records_carry_task_run_identity():
         asyncio_task=None,
     )
     task.task_run_id = "run-uuid-3"
-    registry._spill_record_to_redis = AsyncMock()
+    registry._spill_records_to_redis = AsyncMock()
 
     await registry.append_captured_event(
         "tc-1", {"event": "message_chunk", "data": {"content": "hi"}}
     )
 
-    record = registry._spill_record_to_redis.await_args.args[1]
+    (record,) = registry._spill_records_to_redis.await_args.args[1]
     assert record["task_run"] == "run-uuid-3"
 
 

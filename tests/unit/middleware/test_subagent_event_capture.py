@@ -147,10 +147,10 @@ async def test_record_carries_run_stamp(monkeypatch) -> None:
     )
     spilled: list[dict] = []
 
-    async def _capture(t, record):
-        spilled.append(record)
+    async def _capture(t, records):
+        spilled.extend(records)
 
-    monkeypatch.setattr(registry, "_spill_record_to_redis", _capture)
+    monkeypatch.setattr(registry, "_spill_records_to_redis", _capture)
 
     await registry.append_captured_event(task.tool_call_id, _event(0))
     task.spawned_run_id = "run-2"
@@ -452,7 +452,7 @@ async def test_redis_spill_v2_timeout_not_landed_trips_circuit(monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_redis_spill_circuit_breaker_short_circuits(monkeypatch) -> None:
-    """Once ``redis_write_failed`` is set, ``_spill_record_to_redis`` returns
+    """Once ``redis_write_failed`` is set, ``_spill_records_to_redis`` returns
     immediately on every subsequent append for that task — no cache fetch,
     no pipeline call."""
     fake_cache = MagicMock()
