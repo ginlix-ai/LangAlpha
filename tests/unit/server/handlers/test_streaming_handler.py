@@ -1844,3 +1844,82 @@ class TestInterruptBuffering:
         await self._collect(handler, events)
         assert handler.saw_interrupt is True
         assert len(handler._pending_interrupts) == 1
+
+
+class TestReasoningWhitespaceDeltas:
+    """DeepSeek (Anthropic-compatible route) streams the space before a number
+    as its own thinking token: ``" "`` then ``"9"``. The SSE text must carry
+    those spaces so the stream matches the checkpoint, while whitespace alone
+    still never opens a reasoning section the client would render empty."""
+
+    def _handler(self):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+        return RunSSEProducer(thread_id="t-ws", run_id="r-test")
+
+    def _thinking(self, text, msg_id="msg-1"):
+        from langchain_core.messages import AIMessageChunk
+        return AIMessageChunk(
+            content=[{"type": "thinking", "thinking": text, "index": 0}],
+            id=msg_id,
+            response_metadata={},
+        )
+
+    def _text(self, text):
+        from langchain_core.messages import AIMessageChunk
+        return AIMessageChunk(
+            content=[{"type": "text", "text": text, "index": 1}],
+            id="msg-1",
+            response_metadata={},
+        )
+
+    def _timeline(self, handler, chunks):
+        async def run():
+            out = []
+            for chunk in chunks:
+                async for ev in handler._process_message_chunk(
+                    chunk, "model:main", {"langgraph_node": "model"}
+                ):
+                    data = json.loads(ev.split("data: ", 1)[1].rstrip("\n"))
+                    out.append((data.get("content_type"), data.get("content")))
+            return out
+
+        return asyncio.run(run())
+
+    def test_leading_space_digit_deltas_round_trip(self):
+        deltas = ["Today", " is", " October", " ", "9", ",", " ", "202", "6", "."]
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(d) for d in deltas] + [self._text("Done")]
+        )
+        reasoning = "".join(c for t, c in timeline if t == "reasoning")
+        assert reasoning == "Today is October 9, 2026."
+        assert timeline[0] == ("reasoning_signal", "start")
+
+    def test_whitespace_alone_does_not_open_reasoning(self):
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(" "), self._thinking("\n"), self._text("Hi")]
+        )
+        assert timeline == [("text", "Hi")]
+
+    def test_held_whitespace_prefixes_first_visible_reasoning(self):
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(" "), self._thinking("9 apples")]
+        )
+        assert timeline == [
+            ("reasoning_signal", "start"),
+            ("reasoning", " 9 apples"),
+        ]
+
+    def test_held_whitespace_stays_with_its_message(self):
+        # A stream that fails mid-way sends no finish frame, and its retry is a
+        # new message that must not inherit the held whitespace.
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(" "), self._thinking("Let me check", "msg-2")]
+        )
+        assert timeline == [
+            ("reasoning_signal", "start"),
+            ("reasoning", "Let me check"),
+        ]

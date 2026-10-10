@@ -834,3 +834,49 @@ async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
     assert data["agent"] == "task:custompipe"
     assert data["action"] == "token_usage"
     assert data["total_tokens"] == 60
+
+
+@pytest.mark.asyncio
+async def test_whitespace_reasoning_deltas_round_trip():
+    """DeepSeek streams the space before a number as its own thinking token
+    (``" "`` then ``"9"``). The forwarded reasoning must keep those spaces,
+    and whitespace alone must not open a reasoning section. Mirrors
+    RunSSEProducer's main-agent path."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    def thinking(text):
+        return _chunk([{"type": "thinking", "thinking": text, "index": 0}])
+
+    for delta in [" ", "Oct", " ", "9", ",", " ", "202", "6"]:
+        await fw.forward(thinking(delta))
+    await fw.forward(_chunk("done"))
+    await fw.finalize()
+
+    timeline = [
+        (e["data"].get("content_type"), e["data"].get("content"))
+        for e in task._test_records
+        if e["event"] == "message_chunk"
+    ]
+    assert timeline[0] == ("reasoning_signal", "start")
+    reasoning = "".join(c for t, c in timeline if t == "reasoning")
+    assert reasoning == " Oct 9, 2026"
+
+
+@pytest.mark.asyncio
+async def test_whitespace_alone_does_not_open_reasoning():
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    await fw.forward(_chunk([{"type": "thinking", "thinking": " ", "index": 0}]))
+    await fw.forward(_chunk("done"))
+    await fw.finalize()
+
+    timeline = [
+        (e["data"].get("content_type"), e["data"].get("content"))
+        for e in task._test_records
+        if e["event"] == "message_chunk"
+    ]
+    assert timeline == [("text", "done")]

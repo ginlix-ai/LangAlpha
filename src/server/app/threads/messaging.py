@@ -341,6 +341,26 @@ async def _handle_send_message(
         if owner_id is not None and owner_id != user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
+        # A fork deletes rows from the turn it replaces, and that turn is the
+        # one its checkpoint forks, not the number the client counted. Every
+        # later reader (the truncation, the regenerate's turn, the prior-turn
+        # read) takes it from the request, so it is settled here, once.
+        if request.fork_from_turn is not None and request.checkpoint_id:
+            from src.server.handlers.checkpoint_handler import resolve_fork_turn
+
+            fork_turn = await resolve_fork_turn(
+                thread_id,
+                request.checkpoint_id,
+                regenerate=not request.messages,
+                requested=request.fork_from_turn,
+            )
+            if fork_turn != request.fork_from_turn:
+                logger.warning(
+                    f"[CHAT] fork turn {request.fork_from_turn} from the client "
+                    f"is turn {fork_turn} on the branch thread_id={thread_id}"
+                )
+                request = request.model_copy(update={"fork_from_turn": fork_turn})
+
         # Resolve workspace_id from thread if not provided
         if not workspace_id and thread_meta:
             workspace_id = str(thread_meta["workspace_id"])

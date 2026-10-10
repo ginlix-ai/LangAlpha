@@ -130,6 +130,15 @@ class TestExtractContentWithType:
         assert text == "AB"
         assert ctype == "text"
 
+    def test_list_keeps_whitespace_only_thinking_delta(self):
+        # DeepSeek streams the space before a number as its own thinking
+        # token: " " then "9". Dropping it turns "Oct 9" into "Oct9".
+        text, ctype = extract_content_with_type(
+            [{"type": "thinking", "thinking": " ", "index": 0}]
+        )
+        assert text == " "
+        assert ctype == "reasoning"
+
     def test_unknown_dict(self):
         text, ctype = extract_content_with_type({"result": "data"})
         assert text is None

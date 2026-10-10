@@ -413,7 +413,13 @@ class TurnCheckpointInfo(BaseModel):
     Each turn boundary is identified by the `source=input` checkpoint that LangGraph
     creates when a user message is injected into the graph state.
     """
-    turn_index: int = Field(..., description="0-based turn index")
+    turn_index: int = Field(
+        ...,
+        description="The turn's persisted turn_index, the one its replayed "
+        "messages carry. Not its position in this list: a turn whose run "
+        "never checkpointed has no entry, and the turns after it keep "
+        "their own numbers.",
+    )
     edit_checkpoint_id: Optional[str] = Field(
         None,
         description="Checkpoint ID before the user message was added. "
