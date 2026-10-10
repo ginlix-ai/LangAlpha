@@ -108,6 +108,7 @@ EXPECTED_RELATIVE = {
     "MEMO_USER_DIR": ".agents/user/memo",
     "USER_PROFILE_DIR": ".agents/user/profile",
     "AUTOMATIONS_DIR": ".agents/user/automations",
+    "CHANNELS_DIR": ".agents/user/channels",
     "WORKFLOWS_DIR": ".agents/workflows",
     "TMP_DIR": ".agents/tmp",
     "SYSTEM_DIR": ".system",

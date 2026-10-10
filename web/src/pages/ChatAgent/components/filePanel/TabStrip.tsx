@@ -8,6 +8,8 @@ import { getCompletedRowTitle, getCompletedSummary, getToolIcon, isTaskTool } fr
 import { isOnLoan, type FileTab } from './useFileTabs';
 import { isToolCallFailed } from './toolCallFailure';
 import type { ToolCallProcessRecord } from '../ToolCallDetailView';
+import { appFaviconGlyph } from '../messaging/appGlyph';
+import { messagingAppName, platformOf, readMessageDelivery } from '../messaging/messageDelivery';
 import { countDedupedSources, type ProvenanceRecord } from '@/types/chat';
 import { useTranscriptReads, type TranscriptReader } from './useTranscript';
 import './TabStrip.css';
@@ -60,7 +62,7 @@ const TOOL_SUMMARY_MAX = 28;
  */
 interface TabReading {
   name: string;
-  Glyph: LucideIcon;
+  Glyph: LucideIcon | React.ComponentType<{ className?: string }>;
   detail: string | null;
   failed?: boolean;
 }
@@ -74,6 +76,21 @@ function readToolCall(proc: ToolCallProcessRecord, t: TFunction): TabReading {
   const call = proc.toolCall ? { ...proc.toolCall } : undefined;
   const artifact = proc.toolCallResult?.artifact;
   const title = isTaskTool(toolName) ? t('toolArtifact.subagentTask') : getCompletedRowTitle(toolName, call, t, artifact);
+  if (toolName === 'send_message') {
+    // The app's favicon names where it went; its name moves to the hint. A
+    // send that did not go is marked as a failed call is.
+    const delivery = readMessageDelivery(artifact as Record<string, unknown> | undefined, call?.args);
+    const platform = delivery?.platform ?? platformOf(call?.args?.target);
+    const glyph = appFaviconGlyph(platform);
+    if (glyph) {
+      return {
+        name: title,
+        Glyph: glyph,
+        detail: messagingAppName(platform),
+        failed: isToolCallFailed(proc) || delivery?.status === 'failed',
+      };
+    }
+  }
   const summary = getCompletedSummary(toolName, call, t);
   const short = summary && summary.length > TOOL_SUMMARY_MAX ? `${summary.slice(0, TOOL_SUMMARY_MAX - 1)}…` : summary;
   return {

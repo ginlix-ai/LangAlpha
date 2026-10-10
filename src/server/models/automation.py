@@ -141,15 +141,59 @@ class DeliveryConfig(BaseModel):
     )
 
 
+class DeliveryDefaultUpdate(BaseModel):
+    """A workspace's default chat on one app, where an entry naming only the
+    app delivers. A null address clears it."""
+
+    workspace_id: UUID
+    platform: str = Field(..., min_length=1, max_length=32)
+    address: Optional[str] = Field(None, max_length=500)
+
+
+#: How many delivery entries an automation holds, and how long one may be:
+#: the count the messaging service takes when a run hands it the entries, and
+#: the length it checks a chat at when a save names one.
+MAX_DELIVERY_ENTRIES = 20
+MAX_DELIVERY_ENTRY_CHARS = 256
+
+
+def delivery_overflow(methods: List[str]) -> List[tuple[str, str]]:
+    """Each delivery entry past the limits, with why: one longer than an
+    entry may be, and every one past the count an automation holds. A run
+    whose entries the messaging service refuses delivers none of them there,
+    so a save refuses them instead."""
+    too_long = [
+        (m, f"longer than {MAX_DELIVERY_ENTRY_CHARS} characters")
+        for m in methods
+        if len(m) > MAX_DELIVERY_ENTRY_CHARS
+    ]
+    too_many = [
+        (m, f"past the limit of {MAX_DELIVERY_ENTRIES} entries")
+        for m in methods[MAX_DELIVERY_ENTRIES:]
+    ]
+    return too_long + too_many
+
+
+def _entry_shown(entry: str) -> str:
+    return entry if len(entry) <= 40 else entry[:39] + "…"
+
+
 def parse_delivery(value: Any) -> Dict[str, List[str]]:
     """Delivery as the agent writes it, a list or a comma-separated string, as
     the stored ``delivery_config``."""
     if isinstance(value, str):
-        return {"methods": [m.strip() for m in value.split(",") if m.strip()]}
+        methods = [m.strip() for m in value.split(",") if m.strip()]
     # Blanks drop as in the string form: the old tool stored "slack," as ["slack", ""].
-    if isinstance(value, list) and all(isinstance(m, str) for m in value):
-        return {"methods": [m.strip() for m in value if m.strip()]}
-    raise ValueError('must be a list of delivery methods, e.g. ["slack"], or [] for none')
+    elif isinstance(value, list) and all(isinstance(m, str) for m in value):
+        methods = [m.strip() for m in value if m.strip()]
+    else:
+        raise ValueError('must be a list of delivery methods, e.g. ["slack"], or [] for none')
+    overflow = delivery_overflow(methods)
+    if overflow:
+        raise ValueError(
+            "; ".join(f"{_entry_shown(entry)!r}: {why}" for entry, why in overflow)
+        )
+    return {"methods": methods}
 
 
 # =============================================================================

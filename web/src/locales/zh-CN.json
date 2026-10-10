@@ -2307,7 +2307,24 @@
     "delivery": "推送",
     "deliverNone": "无",
     "deliverToSlack": "Slack",
+    "deliverToDm": "{{app}} 私信",
     "deliverToDiscord": "Discord",
+    "deliverAppLandsIn": "{{app}}（{{name}}）",
+    "deliveryDefaultOption": "默认",
+    "deliveryDefaultOptionLands": "默认 · {{name}}",
+    "deliveryViaWorkspace": "工作区默认",
+    "deliveryViaPreferred": "首选聊天",
+    "deliveryViaDm": "私信",
+    "deliveryAdd": "添加",
+    "deliveryRemove": "移除 {{name}}",
+    "deliveryUseAsDefault": "设为工作区默认",
+    "deliveryClearDefault": "清除工作区默认",
+    "deliveryOptionsUnavailable": "无法加载聊天",
+    "deliveryNoApps": "未连接应用",
+    "deliveryDefaultBusy": "正忙，请重试。",
+    "deliveryDefaultUnavailable": "暂不可用，请稍后重试。",
+    "deliveryDefaultFailed": "无法设为默认。",
+    "deliveryNamedProblem": "{{name}}：{{message}}",
     "marketIndex": "指数",
     "priceSymbol": "代码",
     "priceCondition": "条件",
@@ -2390,6 +2407,8 @@
     "startedAgo": "开始于 {{when}}",
     "deliveredVia": "已发送到 {{method}}",
     "deliveryFailedVia": "{{method}} 发送失败",
+    "deliveredFallbackVia": "已将最终回答发到 {{method}}",
+    "deliveredNoticeVia": "已向 {{method}} 发送通知",
     "upNext": "即将运行",
     "nothingScheduled": "目前没有会再次运行的自动化。",
     "manageAll_one": "管理 {{count}} 个自动化",
@@ -2733,7 +2752,9 @@
       "portfolio": "持仓",
       "watchlist": "自选股",
       "preference": "偏好",
-      "user": "账号"
+      "user": "账号",
+      "sendMessage": "发送消息",
+      "messageTargets": "发送目标"
     },
     "completed": {
       "activatedSkill": "已激活技能",
@@ -2823,6 +2844,9 @@
       "managingAutomation": "管理自动化...",
       "annotatingChart": "正在标注图表...",
       "updatingAnnotations": "正在更新标注...",
+      "sendingTo": "发送到 {{app}}...",
+      "sendingMessage": "发送消息...",
+      "listingMessageTargets": "获取发送目标...",
       "processing": "处理中..."
     },
     "preparing": {
@@ -2833,6 +2857,7 @@
       "craftingSearch": "构建搜索...",
       "preparingRequest": "准备请求...",
       "buildingSearchPattern": "构建搜索模式...",
+      "composingMessage": "撰写消息{{size}}...",
       "generating": "生成中{{size}}..."
     },
     "nChars": "~{{count}} 字符",
@@ -2971,6 +2996,25 @@
         "viewInOrders": "在订单页查看",
         "openAt": "在 {{vendor}} 中打开"
       }
+    },
+    "messageDelivery": {
+      "status": {
+        "sent": "已发送",
+        "partial": "部分发送",
+        "failed": "未发送",
+        "unknown": "未知"
+      },
+      "file": {
+        "sent": "已发送",
+        "linked": "链接",
+        "failed": "失败",
+        "notSent": "未发送"
+      },
+      "thisConversation": "同一聊天",
+      "fileCount_other": "{{count}} 个文件",
+      "message": "消息",
+      "files": "附件",
+      "sentEarlier": "此前已发送"
     }
   },
   "setup": {

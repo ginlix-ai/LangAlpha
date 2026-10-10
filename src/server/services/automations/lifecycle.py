@@ -9,12 +9,14 @@ module's helpers, which only the agent's surfaces call. A refusal carries the
 field it is about, so an automation's file can point at that field.
 """
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+import httpx
 from fastapi import HTTPException
 
 from src.config import settings
@@ -23,7 +25,13 @@ from src.llms.preferences import custom_model_names
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.database.workspace import get_workspace
-from src.server.models.automation import AutomationCreate, AutomationUpdate, on_clock
+from src.server.models.automation import (
+    AutomationCreate,
+    AutomationUpdate,
+    DeliveryConfig,
+    delivery_overflow,
+    on_clock,
+)
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import Outcome, settle
 from src.server.services.llm import user_models
@@ -32,6 +40,7 @@ from src.server.utils.api import (
     require_thread_owner,
     require_workspace_owner,
 )
+from src.tools.messaging import tools as messaging
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,20 @@ class AutomationRefusal(ValueError):
     def __init__(self, message: str, *, field: str | None = None) -> None:
         super().__init__(message)
         self.field = field
+
+
+class DeliveryRefused(AutomationRefusal):
+    """Delivery entries that can't be used, each with why.
+
+    ``refusals`` pairs each entry with its reason, which REST answers entry by
+    entry; ``problems`` are the same as one line each, which the message
+    joins.
+    """
+
+    def __init__(self, refusals: list[tuple[str, str]]) -> None:
+        self.refusals = refusals
+        self.problems = [f"{entry!r}: {why}" for entry, why in refusals]
+        super().__init__("; ".join(self.problems), field="delivery_config")
 
 
 class TargetRefused(HTTPException):
@@ -112,13 +135,96 @@ async def _check_model(user_id: str, name: str, pref: dict[str, Any] | None) -> 
 
 def delivery_warning(methods: Sequence[str] | None) -> str | None:
     """What to tell whoever gave an automation a channel the server can't
-    post to yet."""
-    if not methods or settings.AUTOMATION_WEBHOOK_URL:
+    post to yet. With a messaging service, a run's agent sends the results
+    itself."""
+    if not methods or settings.AUTOMATION_WEBHOOK_URL or messaging.messaging_enabled():
         return None
     return (
         "Delivery was saved, but AUTOMATION_WEBHOOK_URL is not configured, so runs "
         "post only in the app until it is set."
     )
+
+
+_CHECK_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+
+
+def names_chat(method: str) -> bool:
+    """Whether a delivery entry names one chat ("slack:T1/C0123") rather
+    than an app ("slack")."""
+    return ":" in method
+
+
+def checks_entry(method: str) -> bool:
+    """Whether saving ``method`` anew asks the messaging service about it: a
+    chat always, and with a service, an app too, which it refuses while the
+    user hasn't linked that app."""
+    return names_chat(method) or messaging.messaging_enabled()
+
+
+async def _check_chat(user_id: str, address: str) -> tuple[str | None, str | None]:
+    """The entry as the messaging service files it, or why it can't take an
+    automation's results."""
+    try:
+        answer = await messaging.gateway_request(
+            "POST",
+            "/agent/check-target",
+            user_id=user_id,
+            timeout=_CHECK_TIMEOUT,
+            body={"address": address, "purpose": "automation"},
+        )
+    except messaging.GatewayError as exc:
+        return None, f"couldn't be checked: {exc.message} Try again shortly."
+    data = answer.data or {}
+    if answer.status != 200 or not isinstance(data.get("ok"), bool):
+        logger.warning("[AUTOMATION] check-target answered %s", answer.status)
+        failed = f"the messaging service failed ({answer.status})"
+        return None, f"couldn't be checked: {failed}. Try again shortly."
+    if not data["ok"]:
+        return None, str(data.get("message") or "the messaging service refused it")
+    canonical = data.get("address")
+    return canonical if isinstance(canonical, str) and canonical else address, None
+
+
+async def check_delivery(
+    user_id: str, methods: Sequence[str], *, stored: Sequence[str] = ()
+) -> list[str]:
+    """``methods`` with each chat address as the messaging service files it.
+    An app name is kept as written, and so is an entry already in
+    ``stored``, which was checked when it was saved. With a messaging
+    service, a new app name is checked too, so one the user hasn't linked is
+    refused; it still follows the app's chain, so it is never replaced by the
+    chat the service answers. Entries past the limits (``delivery_overflow``)
+    are refused before anything is asked, stored ones included, since a run
+    hands the service the whole list.
+
+    Raises:
+        DeliveryRefused: naming every entry that can't be used, and why
+    """
+    overflow = delivery_overflow(list(methods))
+    if overflow:
+        raise DeliveryRefused(overflow)
+    fresh = [m for m in dict.fromkeys(methods) if checks_entry(m) and m not in stored]
+    if not fresh:
+        return list(methods)
+    if not messaging.messaging_enabled():
+        raise DeliveryRefused(
+            [
+                (
+                    m,
+                    "naming a chat needs a connected messaging service, and this "
+                    'server has none; name an app such as "slack" instead',
+                )
+                for m in fresh
+            ]
+        )
+    answers = await asyncio.gather(*(_check_chat(user_id, m) for m in fresh))
+    refusals = [(m, why) for m, (_, why) in zip(fresh, answers) if why]
+    if refusals:
+        raise DeliveryRefused(refusals)
+    canonical = {
+        m: address for m, (address, _) in zip(fresh, answers) if names_chat(m)
+    }
+    return list(dict.fromkeys(canonical.get(m, m) for m in methods))
 
 
 async def create_automation(
@@ -128,16 +234,20 @@ async def create_automation(
     conn=None,
     model_pref: dict[str, Any] | None = None,
     file_name: str | None = None,
+    delivery_checked: bool = False,
 ) -> Dict[str, Any]:
     """Create a new automation, filed as ``file_name`` or else as one derived
     from its name. ``conn`` joins the write to a caller's transaction, as a
     save of an automation's file does. Such a caller passes the user's
     ``model_pref``, read before it took its locks: read here, it would hold a
-    second pool connection while they wait.
+    second pool connection while they wait. For the same reason it checks the
+    delivery's chats itself (``check_delivery``) and says so with
+    ``delivery_checked``.
 
     Raises:
         AutomationRefusal: agent_mode='ptc' without a workspace, or a model
             the user can't run
+        DeliveryRefused: a delivery chat that can't be used
         TargetRefused: a workspace or thread that isn't the user's
     """
     # A price trigger has no next_run_at: the price monitor fires it.
@@ -156,6 +266,10 @@ async def create_automation(
     )
     if data.llm_model:
         await _check_model(user_id, data.llm_model, model_pref)
+    if data.delivery_config and not delivery_checked:
+        methods = await check_delivery(user_id, data.delivery_config.methods)
+        delivery = DeliveryConfig(methods=methods)
+        data = data.model_copy(update={"delivery_config": delivery})
 
     automation = await auto_db.create_automation(
         user_id=user_id,
@@ -207,6 +321,7 @@ async def update_automation(
     conn=None,
     model_pref: dict[str, Any] | None = None,
     current: Dict[str, Any] | None = None,
+    delivery_checked: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Update an automation with validation and next_run_at recalculation.
 
@@ -217,7 +332,7 @@ async def update_automation(
             the stored kind of trigger. REST drops None fields before they
             get here, so a None ``conversation_thread_id`` was named on
             purpose: the agent's thread "new" clearing the pin.
-        conn, model_pref: as ``create_automation`` takes them
+        conn, model_pref, delivery_checked: as ``create_automation`` takes them
         current: the row as a caller holding the user's automation locks
             already read it, which spares reading it again.
 
@@ -229,6 +344,7 @@ async def update_automation(
             field of another kind than the stored one
         AutomationRefusal: A merged state that leaves agent_mode='ptc' without
             a workspace, or a model the user can't run
+        DeliveryRefused: a delivery chat not already saved that can't be used
         TargetRefused: a workspace or thread that isn't the user's
     """
     current = await _current(automation_id, user_id, conn, current)
@@ -258,6 +374,12 @@ async def update_automation(
     # must not block an edit to anything else.
     if update.llm_model and update.llm_model != current.get("llm_model"):
         await _check_model(user_id, update.llm_model, model_pref)
+    # Likewise only a chat not already saved.
+    delivery = update_kwargs.get("delivery_config")
+    if isinstance(delivery, dict) and delivery.get("methods") and not delivery_checked:
+        stored = (current.get("delivery_config") or {}).get("methods") or []
+        methods = await check_delivery(user_id, delivery["methods"], stored=stored)
+        update_kwargs["delivery_config"] = {**delivery, "methods": methods}
 
     # Recalculate next_run_at if cron expression or timezone changed. Only an
     # active row gets one: a paused or disabled cron keeps the none that pause

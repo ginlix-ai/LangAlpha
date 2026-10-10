@@ -32,6 +32,7 @@ KNOWN_SURFACES: frozenset[str] = frozenset(
         "slack",
         "discord",
         "feishu",
+        "imessage",
     }
 )
 

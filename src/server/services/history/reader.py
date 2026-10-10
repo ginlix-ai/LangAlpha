@@ -430,6 +430,24 @@ class CheckpointHistoryReader:
             return [], tip_id
         return turn_anchors(boundaries, tip_id), tip_id
 
+    async def aget_run_turn(
+        self, thread_id: str, run_id: str
+    ) -> slices.TurnSlice | None:
+        """The turn ``run_id`` opened on the current branch, or None when no
+        turn there is that run's.
+
+        Found by its run rather than taken as the newest, since a later turn
+        may have started by the time it is asked for: only its own boundary
+        and its end are materialized. A resume anchor names no run, so only
+        the turn the run opened can match.
+        """
+        anchors, _ = await self.aget_turn_anchors(thread_id)
+        anchor = next((a for a in reversed(anchors) if a.run_id == run_id), None)
+        if anchor is None:
+            return None
+        (turn,) = await self.aget_turn_slices(thread_id, [anchor])
+        return turn
+
     async def aget_tip_interrupts(
         self, thread_id: str, tip_checkpoint_id: str
     ) -> list[dict[str, Any]]:

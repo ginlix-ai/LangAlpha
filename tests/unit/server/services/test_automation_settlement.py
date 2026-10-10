@@ -11,12 +11,16 @@ settles a firing whose process went away.
 """
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from src.server.services import automation_delivery
+from src.server.services import automation_settlement as settlement_mod
+from src.server.services.automation_delivery import Delivery, Finish, Target
+from src.server.services.automation_excerpt import RunAnswer
 from src.server.services.automation_settlement import (
     INTERRUPTED_ERROR,
     RUN_FAILURES,
@@ -76,6 +80,21 @@ def _automation(trigger="price_recurring"):
     return {"automation_id": _AID, "user_id": "user-1", **TRIGGERS[trigger]}
 
 
+# A run the messaging service holds: where its start resolved each entry, and
+# where the finish says the run landed.
+_TARGETS = [
+    Target(entry="slack:T/C", address="slack:T/C", name="#demo", ok=True),
+    Target(entry="telegram", address=None, name=None, ok=False, message="Not linked"),
+]
+_HELD = Delivery(_EID, _TARGETS)
+# The real finish, which ``_settlement`` stands in for.
+_FINISH_RUN = automation_delivery.finish_run
+_LANDED = [
+    {"method": "slack:T/C", "address": "slack:T/C", "name": "#demo", "success": True, "via": "agent", "error": None},
+    {"method": "telegram", "address": None, "name": None, "success": False, "via": None, "error": "Not linked"},
+]
+
+
 @contextmanager
 def _settlement(row):
     fx = SimpleNamespace(
@@ -84,6 +103,7 @@ def _settlement(row):
             record_delivery=AsyncMock(),
         ),
         fire=AsyncMock(return_value=[{"method": "slack", "success": True}]),
+        finish=AsyncMock(return_value=Finish(_LANDED)),
         announce=AsyncMock(),
         metric=MagicMock(),
     )
@@ -91,6 +111,7 @@ def _settlement(row):
         patch(f"{_MOD}.auto_db", new=fx.db),
         patch(f"{_MOD}.exec_db", new=fx.db),
         patch(f"{_MOD}.WebhookClient", return_value=MagicMock(fire_event=fx.fire)),
+        patch(f"{_MOD}.automation_delivery.finish_run", new=fx.finish),
         patch(f"{_MOD}.publish_automation_wait", new=fx.announce),
         patch(f"{_MOD}.safe_add", new=fx.metric),
     ):
@@ -147,8 +168,374 @@ async def test_outcome_effects(outcome, trigger):
     else:
         fx.fire.assert_not_awaited()
         fx.db.record_delivery.assert_not_awaited()
+    # A run the messaging service never took has no finish there.
+    fx.finish.assert_not_awaited()
     fx.announce.assert_not_awaited()
     assert fx.metric.call_args.args[2]["status"] == metric
+
+
+# Each outcome a held run ends with at the messaging service.
+FINISHES = {
+    Outcome.COMPLETED: "completed",
+    Outcome.FAILED: "failed",
+    Outcome.KEY_REJECTED: "failed",
+    Outcome.LIMITED: "failed",
+    Outcome.FAILED_OURS: "failed",
+    Outcome.INTERRUPTED: "failed",
+    Outcome.STOPPED: "stopped",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", list(FINISHES))
+async def test_a_held_run_ends_with_the_messaging_service(outcome):
+    with _settlement(_row()) as fx:
+        assert await settle(
+            _automation(), _EID, outcome, error="boom",
+            delivery=_HELD, final_text="The brief.",
+        )
+
+    # The run's thread, as its row records it, so the posts link back to it.
+    fx.finish.assert_awaited_once_with(
+        _automation(), _EID, FINISHES[outcome],
+        targets=_TARGETS, final_text="The brief.", thread_id=_THREAD,
+    )
+    # In place of the webhook, and recorded the same way.
+    fx.fire.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, _LANDED)
+
+
+@pytest.mark.asyncio
+async def test_a_run_started_again_after_a_wait_ends_under_its_own_id():
+    """A wait that outlasted a delivery change started the run again under
+    an id of its own: the finish names that one, the record stays the
+    execution's, and the start made before the wait is never finished."""
+    restarted = Delivery(f"{_EID}.2", _TARGETS)
+    run = _ended("completed", **automation_delivery.run_metadata(restarted))
+    with _finished(run, _automation("cron")) as fx:
+        await _settle_finished_run(_finalize_job())
+
+    fx.finish.assert_awaited_once()
+    assert fx.finish.await_args.args[1] == f"{_EID}.2"
+    fx.db.record_delivery.assert_awaited_once_with(_EID, _LANDED)
+
+
+@pytest.mark.asyncio
+async def test_a_held_run_skipped_in_its_wait_ends_nowhere():
+    with _settlement(_row(settled_from="waiting")) as fx:
+        assert await settle(_automation(), _EID, Outcome.SKIPPED, delivery=_HELD)
+
+    fx.finish.assert_not_awaited()
+    fx.fire.assert_not_awaited()
+    fx.db.record_delivery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_refusal_of_a_held_run_is_not_announced_again():
+    row = _row(run=None, previous_failure_reason="usage_limit")
+    with _settlement(row) as fx:
+        assert await settle(
+            _automation(), _EID, Outcome.LIMITED, error="Refused.", delivery=_HELD
+        )
+
+    fx.finish.assert_not_awaited()
+    fx.fire.assert_not_awaited()
+
+
+# A start the messaging service didn't take, left to the webhook: once with
+# no answer, once with the service's own refusal.
+_NO_ANSWER = Delivery(_EID, [
+    Target(entry="slack:T/C", address=None, name=None, ok=False,
+           message="The messaging service could not be reached."),
+])
+_REFUSED = Delivery(_EID, [
+    Target(entry="telegram", address=None, name=None, ok=False, message="Not linked"),
+])
+
+
+def _undelivered(entry, error):
+    return {"method": entry, "address": None, "name": None, "success": False, "via": None, "error": error}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "left, recorded",
+    [
+        (_NO_ANSWER, [_undelivered("slack:T/C", "The messaging service could not be reached.")]),
+        (_REFUSED, [_undelivered("telegram", "Not linked")]),
+    ],
+    ids=["no_answer", "refused"],
+)
+@pytest.mark.parametrize("outcome", [Outcome.COMPLETED, Outcome.FAILED])
+async def test_a_run_the_service_did_not_take_records_why_when_the_webhook_cannot_post(
+    outcome, left, recorded
+):
+    """No webhook URL: rather than record nothing, each entry went
+    undelivered, for the reason the start gave."""
+    with _settlement(_row()) as fx:
+        fx.fire.return_value = None
+        assert await settle(_automation(), _EID, outcome, error="boom", delivery=left)
+
+    fx.fire.assert_awaited_once()
+    fx.finish.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, recorded)
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_service_did_not_take_records_the_webhooks_own_delivery():
+    with _settlement(_row()) as fx:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_NO_ANSWER)
+
+    fx.finish.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, [{"method": "slack", "success": True}])
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_asked_nothing_records_nothing_without_a_webhook():
+    with _settlement(_row()) as fx:
+        fx.fire.return_value = None
+        assert await settle(_automation(), _EID, Outcome.COMPLETED)
+
+    fx.db.record_delivery.assert_not_awaited()
+
+
+_GatewayError = automation_delivery.messaging.GatewayError
+_UNREACHABLE = _GatewayError(
+    "The messaging service could not be reached.", delivered_unknown=False
+)
+_UNAVAILABLE = automation_delivery.messaging.GatewayAnswer(
+    503, {"code": "unavailable", "message": "Try later."}, ""
+)
+_FINISHED = automation_delivery.messaging.GatewayAnswer(
+    200,
+    {"targets": [{"entry": "slack:T/C", "address": "slack:T/C", "name": "#demo",
+                  "reached": True, "via": "agent", "error": None}]},
+    "",
+)
+
+
+# Another finish for the run is mid-post: #demo landed, the DM is still
+# being posted.
+_STILL_POSTING = automation_delivery.messaging.GatewayAnswer(
+    200,
+    {"targets": [
+        {"entry": "slack:T/C", "address": "slack:T/C/1800.000001", "name": "#demo",
+         "reached": True, "via": "agent", "error": None},
+        {"entry": "discord", "address": "discord:@me", "name": None,
+         "reached": False, "via": None, "error": None},
+    ]},
+    "",
+)
+_POSTING_RECORD = [
+    ("slack:T/C", True, None),
+    ("discord", False, "Delivery couldn't be confirmed."),
+]
+_NOT_FOUND = automation_delivery.messaging.GatewayAnswer(404, {"detail": "Not Found"}, "")
+
+
+@contextmanager
+def _asking(*answers, delays=(0.0, 0.0)):
+    """The real finish, against a messaging service that answers each ask
+    with the next of ``answers`` (an exception is raised), retrying after
+    ``delays``."""
+    ask = AsyncMock(side_effect=list(answers))
+    with (
+        patch(f"{_MOD}.automation_delivery.finish_run", new=_FINISH_RUN),
+        patch.object(automation_delivery.messaging, "gateway_request", new=ask),
+        patch.object(
+            automation_delivery,
+            "FINISH_RETRY_DELAYS",
+            automation_delivery.FINISH_RETRY_DELAYS if delays is None else delays,
+        ),
+    ):
+        yield ask
+
+
+def _errors(recorded):
+    return [(d["method"], d["success"], d["error"]) for d in recorded]
+
+
+@pytest.mark.asyncio
+async def test_a_finish_never_answered_records_every_target_failed():
+    """Asked three times, 2s and then 5s apart, none answered: the settle
+    went through, and the record the first ask made says delivery couldn't
+    be told."""
+    slept = AsyncMock()
+    with (
+        _settlement(_row()) as fx,
+        _asking(_UNREACHABLE, _UNAVAILABLE, _UNAVAILABLE, delays=None) as ask,
+        patch.object(settlement_mod.asyncio, "sleep", new=slept),
+    ):
+        assert await settle(
+            _automation(), _EID, Outcome.COMPLETED, delivery=_HELD, final_text="x"
+        )
+        await drain_tails()
+
+    assert ask.await_count == 3
+    assert slept.await_args_list == [call(2.0), call(5.0)]
+    fx.db.record_delivery.assert_awaited_once()
+    (execution_id, recorded), _ = fx.db.record_delivery.await_args
+    assert execution_id == _EID
+    assert _errors(recorded) == [
+        (
+            "slack:T/C",
+            False,
+            "Delivery couldn't be confirmed. The messaging service could not be reached.",
+        ),
+        ("telegram", False, "Not linked"),
+    ]
+    fx.fire.assert_not_awaited()
+    fx.metric.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_finish_asked_again_records_the_answer_that_lands():
+    with _settlement(_row()) as fx, _asking(_UNREACHABLE, _FINISHED, _FINISHED) as ask:
+        assert await settle(
+            _automation(), _EID, Outcome.COMPLETED, delivery=_HELD, final_text="x"
+        )
+        await drain_tails()
+
+    # The same finish each time, which the service answers once; nothing
+    # more is asked once it has.
+    assert ask.await_count == 2
+    assert ask.await_args_list[0] == ask.await_args_list[1]
+    assert ask.await_args_list[1].kwargs["body"]["thread_id"] == _THREAD
+    first, landed = [c.args for c in fx.db.record_delivery.await_args_list]
+    assert not any(d["success"] for d in first[1])
+    assert landed == (
+        _EID,
+        [{"method": "slack:T/C", "address": "slack:T/C", "name": "#demo",
+          "success": True, "via": "agent", "error": None}],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal, why",
+    [
+        (
+            _GatewayError(
+                "The messaging service refused this server's credentials.",
+                delivered_unknown=False, status=401,
+            ),
+            "The messaging service refused this server's credentials.",
+        ),
+        (
+            automation_delivery.messaging.GatewayAnswer(404, {"detail": "Not Found"}, ""),
+            "The messaging service has no record of this run.",
+        ),
+        (
+            automation_delivery.messaging.GatewayAnswer(400, {"detail": "bad"}, ""),
+            "The messaging service failed (400).",
+        ),
+    ],
+    ids=["401", "404", "400"],
+)
+async def test_a_refused_finish_is_not_asked_again(refusal, why):
+    with _settlement(_row()) as fx, _asking(refusal, _FINISHED) as ask:
+        assert await settle(
+            _automation(), _EID, Outcome.FAILED, delivery=_HELD, error="boom"
+        )
+        await drain_tails()
+
+    assert ask.await_count == 1
+    fx.db.record_delivery.assert_awaited_once()
+    assert _errors(fx.db.record_delivery.await_args.args[1])[0] == (
+        "slack:T/C", False, f"Delivery couldn't be confirmed. {why}",
+    )
+
+
+def _records(fx):
+    return [_errors(c.args[1]) for c in fx.db.record_delivery.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_a_record_still_being_posted_stands_until_the_final_one():
+    with _settlement(_row()) as fx, _asking(_STILL_POSTING, _FINISHED, _FINISHED) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
+        await drain_tails()
+
+    assert ask.await_count == 2
+    assert _records(fx) == [_POSTING_RECORD, [("slack:T/C", True, None)]]
+
+
+@pytest.mark.asyncio
+async def test_rows_still_being_posted_when_the_asks_run_out_are_unconfirmed():
+    with (
+        _settlement(_row()) as fx,
+        _asking(_STILL_POSTING, _STILL_POSTING, _STILL_POSTING) as ask,
+    ):
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
+        await drain_tails()
+
+    assert ask.await_count == 3
+    # Each answer is recorded as it stands, the DM never as landed.
+    assert _records(fx) == [_POSTING_RECORD] * 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "later",
+    [(_UNREACHABLE, _UNAVAILABLE), (_NOT_FOUND, _FINISHED), (_UNREACHABLE, _NOT_FOUND)],
+    ids=["unanswered", "refused", "unanswered-then-refused"],
+)
+async def test_an_answer_still_being_posted_outranks_a_later_failure(later):
+    with _settlement(_row()) as fx, _asking(_STILL_POSTING, *later) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
+        await drain_tails()
+
+    assert ask.await_count == (3 if later[0] is _UNREACHABLE else 2)
+    assert _records(fx) == [_POSTING_RECORD]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_answered_still_posting_outranks_a_later_refusal():
+    with _settlement(_row()) as fx, _asking(_UNREACHABLE, _STILL_POSTING, _NOT_FOUND) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
+        await drain_tails()
+
+    assert ask.await_count == 3
+    unanswered, posting = _records(fx)
+    assert posting == _POSTING_RECORD
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_outranks_a_record_no_answer_made():
+    with _settlement(_row()) as fx, _asking(_UNREACHABLE, _NOT_FOUND, _FINISHED) as ask:
+        assert await settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD)
+        await drain_tails()
+
+    assert ask.await_count == 2
+    first, refused = _records(fx)
+    assert refused[0] == (
+        "slack:T/C", False,
+        "Delivery couldn't be confirmed. The messaging service has no record of this run.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_settle_does_not_wait_for_a_finish_to_be_asked_again():
+    """A run's finalize job and the executor wait on the settle, so the
+    retries run beside it, held for shutdown to drain."""
+    with (
+        _settlement(_row()) as fx,
+        _asking(_UNREACHABLE, _FINISHED, delays=(3600.0,)) as ask,
+    ):
+        assert await asyncio.wait_for(
+            settle(_automation(), _EID, Outcome.COMPLETED, delivery=_HELD), timeout=5
+        )
+        fx.db.record_delivery.assert_awaited_once()
+        fx.metric.assert_called_once()
+        (retry,) = [
+            t for t in settlement_mod._tails if t.get_name() == f"settle_finish_{_EID}"
+        ]
+        assert not retry.done()
+        retry.cancel()
+        with suppress(asyncio.CancelledError):
+            await retry
+
+    assert ask.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -451,8 +838,8 @@ def _finished(run, automation=None):
     with _settlement(_row()) as fx:
         fx.db.get_automation = AsyncMock(return_value=automation)
         fx.db.get_settling_run = AsyncMock(return_value=run)
-        fx.excerpt = AsyncMock(return_value="Markets rose")
-        with patch(f"{_MOD}.read_run_excerpt", new=fx.excerpt):
+        fx.excerpt = AsyncMock(return_value=RunAnswer("Markets rose"))
+        with patch(f"{_MOD}.read_run_answer", new=fx.excerpt):
             yield fx
 
 
@@ -501,6 +888,77 @@ async def test_a_finished_run_settles_the_firing_it_ran_for(run, to, strike, fai
 
 
 @pytest.mark.asyncio
+async def test_a_finished_held_run_hands_its_answer_to_the_messaging_service():
+    run = _ended("completed", **automation_delivery.run_metadata(_HELD))
+    with _finished(run, _automation("cron")) as fx:
+        fx.excerpt.return_value = RunAnswer("**Markets** rose.\n\nDetails follow.")
+        await _settle_finished_run(_finalize_job())
+
+    # The whole answer for the chats, its head for the list.
+    fx.finish.assert_awaited_once_with(
+        _automation("cron"), _EID, "completed",
+        targets=_TARGETS, final_text="**Markets** rose.\n\nDetails follow.",
+        thread_id=_THREAD,
+    )
+    assert fx.db.settle_execution.await_args.kwargs["result_excerpt"] == (
+        "Markets rose. Details follow."
+    )
+    fx.fire.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, _LANDED)
+
+
+@pytest.mark.asyncio
+async def test_a_held_run_that_sent_its_result_hands_over_what_it_sent():
+    """Its last words are a sign-off saying where it sent the result; a chat
+    it didn't reach gets the result."""
+    run = _ended("completed", **automation_delivery.run_metadata(_HELD))
+    with _finished(run, _automation("cron")) as fx:
+        fx.excerpt.return_value = RunAnswer(
+            "Sent the brief to #demo.", sent="**Markets** rose."
+        )
+        await _settle_finished_run(_finalize_job())
+
+    assert fx.finish.await_args.kwargs["final_text"] == "**Markets** rose."
+    assert fx.db.settle_execution.await_args.kwargs["result_excerpt"] == (
+        "Sent the brief to #demo."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "run, status",
+    [
+        (_ended("error", ["ValueError: no rows"]), "failed"),
+        (_ended("cancelled", cancelled_by_user=True), "stopped"),
+    ],
+    ids=["failed", "user_stop"],
+)
+async def test_a_held_run_that_did_not_complete_hands_over_no_answer(run, status):
+    run["metadata"].update(automation_delivery.run_metadata(_HELD))
+    with _finished(run, _automation("cron")) as fx:
+        await _settle_finished_run(_finalize_job())
+
+    fx.excerpt.assert_not_awaited()
+    fx.finish.assert_awaited_once_with(
+        _automation("cron"), _EID, status, targets=_TARGETS, final_text=None,
+        thread_id=_THREAD,
+    )
+    fx.fire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_the_service_did_not_take_records_why_without_a_webhook():
+    """The start's reasons ride on the run row, for the worker that settles."""
+    run = _ended("completed", **automation_delivery.run_metadata(_REFUSED))
+    with _finished(run, _automation("cron")) as fx:
+        fx.fire.return_value = None
+        await _settle_finished_run(_finalize_job())
+
+    fx.finish.assert_not_awaited()
+    fx.db.record_delivery.assert_awaited_once_with(_EID, [_undelivered("telegram", "Not linked")])
+
+
+@pytest.mark.asyncio
 async def test_a_finished_run_settles_its_firing_once():
     """A retried job, a reclaimed lease or the sweep getting there first
     finds the firing settled and sends nothing again."""
@@ -544,12 +1002,12 @@ def _sweep(run_row):
     fx = SimpleNamespace(
         settle=AsyncMock(return_value=True),
         get_run=AsyncMock(return_value=run_row),
-        excerpt=AsyncMock(return_value="The answer"),
+        excerpt=AsyncMock(return_value=RunAnswer("The answer")),
     )
     with (
         patch(f"{_MOD}.settle", new=fx.settle),
         patch(f"{_MOD}.exec_db.get_settling_run", new=fx.get_run),
-        patch(f"{_MOD}.read_run_excerpt", new=fx.excerpt),
+        patch(f"{_MOD}.read_run_answer", new=fx.excerpt),
     ):
         yield fx
 
@@ -588,6 +1046,25 @@ async def test_sweep_completes_by_the_ledger():
     assert args[2] is Outcome.COMPLETED
     assert kwargs["run_id"] == _RUN
     assert kwargs["excerpt"] == "The answer"
+
+
+@pytest.mark.asyncio
+async def test_sweep_ends_a_held_run_as_its_start_chose():
+    run = {"status": "completed", "metadata": automation_delivery.run_metadata(_HELD)}
+    with _sweep(run) as fx:
+        assert await settle_abandoned(_automation(), _abandoned(), 300) is Outcome.COMPLETED
+    kwargs = fx.settle.await_args.kwargs
+    assert kwargs["delivery"] == _HELD
+    assert kwargs["final_text"] == "The answer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run", [None, {"status": "completed"}], ids=["no_run", "unstamped"])
+async def test_sweep_leaves_any_other_run_to_the_webhook(run):
+    abandoned = _abandoned(run=None) if run is None else _abandoned()
+    with _sweep(run) as fx:
+        assert await settle_abandoned(_automation(), abandoned, 300)
+    assert fx.settle.await_args.kwargs["delivery"] is None
 
 
 @pytest.mark.asyncio

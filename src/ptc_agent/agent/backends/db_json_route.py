@@ -6,10 +6,12 @@ Every save, from the Write and Edit tools or through the file mount, runs the
 same flow: check the content for everything the rows don't decide, then under
 the user's lock check the version the writer last saw, plan the write from the
 rows that check read, refuse a plan that deletes what the writer never saw,
-and commit, all in one transaction. A subclass names its directory, its README
-and the ``DbJsonFile`` behind each name, which supplies those steps for its
-rows. Here that is a fixed set every user has; ``DbJsonFolderRoute`` serves
-one file per row instead, under a name the writer picks.
+and commit, all in one transaction. A route whose rows sit behind a remote
+call holds no transaction; its store checks the version again as it commits.
+A subclass names its directory, its README and the ``DbJsonFile`` behind each
+name, which supplies those steps for its rows. Here that is a fixed set every
+user has; ``DbJsonFolderRoute`` serves one file per row instead, under a name
+the writer picks.
 
 The version (a hash of the agent-visible content) never reaches the agent. A
 Read caches it beside the content it served, so a Write is refused unless the
@@ -86,8 +88,18 @@ class UserDataValidationError(Exception):
     # The README beside the file, which the route that refused the write
     # names, since only it knows where the file is mounted.
     readme: str | None = None
+    # Every problem the check found, as (field path, message), so one retry
+    # can fix all; ``field_path`` and ``hint`` repeat the first.
+    problems: list[tuple[str, str]] = field(default_factory=list)
 
     def _text(self) -> str:
+        if self.problems:
+            count = len(self.problems)
+            plural = "s" if count > 1 else ""
+            head = f"{self.error_type}:{self.file}: {count} problem{plural}"
+            lines = [f"{head}, nothing was saved."]
+            lines += [f"- {p}: {msg}" if p else f"- {msg}" for p, msg in self.problems]
+            return "\n".join(lines)
         where = f"{self.file}:{self.field_path}" if self.field_path else self.file
         return f"{self.error_type}:{where}: {self.hint}"
 
@@ -108,6 +120,22 @@ class UserDataValidationError(Exception):
 
 class UnreadableJsonError(Exception):
     """JSON a writer sent that fails past the decoder's own errors."""
+
+
+class StaleVersion(Exception):
+    """Raised by a commit whose store checks the version itself and holds
+    another, which the save answers as any version conflict."""
+
+
+class SavedInPart(Exception):
+    """Raised by a commit whose store saved some of the changes and not the
+    rest. Its text reaches the writer, and the Read is dropped, since the file
+    moved."""
+
+
+class ReadUnavailable(Exception):
+    """A read the store can't answer right now. Its text reaches the reader,
+    where any other failure reads as no file at all."""
 
 
 def load_json(content: str, **kwargs: Any) -> Any:
@@ -238,7 +266,8 @@ class DbJsonFile[R, P, C]:
 
     async def commit(self, user_id: str, changes: C, conn: Any) -> str | None:
         """Write ``changes``; the report the writer reads, or None for a
-        plain acknowledgement. Raising rolls the whole save back."""
+        plain acknowledgement. Raising rolls the whole save back;
+        ``StaleVersion`` says the store found the rows changed."""
         raise NotImplementedError
 
     async def committed(self, user_id: str, changes: C) -> None:
@@ -266,7 +295,12 @@ class DbJsonRoute:
     # The files every user has, by name.
     files: ClassVar[Mapping[str, DbJsonFile[Any, Any, Any]]] = {}
     data_files: ClassVar[frozenset[str]] = frozenset()
+    # Files the server keeps that no save changes, served as the README is.
+    read_only_files: ClassVar[frozenset[str]] = frozenset()
     readme_content: ClassVar[str] = ""
+    # Whether the file mount serves this route. False keeps it to the file
+    # tools, which also refuse Bash and code a command naming it.
+    mountable: ClassVar[bool] = True
 
     # How the file panel serves these files: read-only, since a write there
     # would skip the checks this route makes.
@@ -384,8 +418,11 @@ class DbJsonRoute:
             readme=self._absolute(README_FILE),
         )
 
+    def _writable_files(self) -> str:
+        return " / ".join(sorted(self.data_files - self.read_only_files))
+
     def _readme_instead(self) -> str:
-        return f"Update {' / '.join(sorted(self.data_files))} instead."
+        return f"Update {self._writable_files()} instead."
 
     def _readme_refusal(self, file_path: str) -> UserDataValidationError:
         return self._refusal(
@@ -467,6 +504,9 @@ class DbJsonRoute:
                 self._invalidate(filename)
             exc.readme = exc.readme or self._absolute(README_FILE)
             raise
+        except ReadUnavailable as exc:
+            hint = f"{exc} Nothing was saved."
+            raise self._refusal("server_error", filename, hint) from exc
         except psycopg.DataError as exc:
             # A value the column cannot hold: the content's fault, not an
             # outage to retry.
@@ -553,7 +593,14 @@ class DbJsonRoute:
                     held = await file.hold(user_id, plan.changes, rows, conn)
                     if held is not None and held != version:
                         raise self._stale(filename, gone=not held)
-                    report = await file.commit(user_id, plan.changes, conn)
+                    try:
+                        report = await file.commit(user_id, plan.changes, conn)
+                    except StaleVersion:
+                        raise self._stale(filename, gone=False) from None
+                    except SavedInPart as exc:
+                        self._invalidate(filename)
+                        hint = str(exc)
+                        raise self._refusal("server_error", filename, hint) from None
                     if settle:
                         # A save that changed nothing leaves the rows it read,
                         # and one that deleted the file leaves none.
@@ -597,6 +644,8 @@ class DbJsonRoute:
         else:
             try:
                 live = await self._live(filename)
+            except ReadUnavailable:
+                raise
             except Exception:
                 logger.exception("db json route read failed", path=logged_path(file_path))
                 return None
@@ -615,12 +664,26 @@ class DbJsonRoute:
 
     # --- write / edit ---
 
+    def _read_only(self, filename: str | None) -> bool:
+        """Whether no save writes ``filename``: none here, the README, or a
+        file the server keeps."""
+        return filename in (None, README_FILE) or filename in self.read_only_files
+
+    def _read_only_refusal(self, file_path: str) -> UserDataValidationError:
+        return self._refusal(
+            "schema_error",
+            file_path.rsplit("/", 1)[-1],
+            f"{file_path} is kept by the server; it can't be edited. {self._readme_instead()}",
+        )
+
     def _unwritable(self, file_path: str, filename: str | None) -> UserDataValidationError:
         if filename == README_FILE:
             return self._readme_refusal(file_path)
+        if filename in self.read_only_files:
+            return self._read_only_refusal(file_path)
         # The composite routed this path here, so the folder is ours and the
         # file can't exist; say which ones can rather than just fail.
-        names = " / ".join(sorted(self.data_files))
+        names = self._writable_files()
         return self._refusal(
             "schema_error",
             file_path.rsplit("/", 1)[-1],
@@ -636,7 +699,7 @@ class DbJsonRoute:
         """Validate + apply a JSON write over the agent's last Read in this
         run. Raises UserDataValidationError on bad input."""
         filename = self._filename(file_path)
-        if filename is None or filename == README_FILE:
+        if self._read_only(filename):
             raise self._unwritable(file_path, filename)
         base = self._require_read(filename)
         return self._written(
@@ -656,6 +719,8 @@ class DbJsonRoute:
             return {"success": False, "error": f"File not found: {file_path}"}
         if filename == README_FILE:
             return {"success": False, "error": self._readme_refusal(file_path).hint}
+        if filename in self.read_only_files:
+            return {"success": False, "error": self._read_only_refusal(file_path).hint}
         if old_string == new_string:
             return {"success": False, "error": "old_string and new_string are identical"}
 
@@ -715,7 +780,7 @@ class DbJsonRoute:
         itself, whether new files may be made in it."""
         if file_path.rstrip("/") == self._root_prefix.rstrip("/"):
             return False
-        return self._filename(file_path) not in (None, README_FILE)
+        return not self._read_only(self._filename(file_path))
 
     async def aread_versioned(self, file_path: str) -> tuple[str, str] | None:
         """(content, version), or None for a path this route has no file at.
@@ -743,7 +808,7 @@ class DbJsonRoute:
                 "type": "file",
                 "size": len(content.encode()),
                 "version": version,
-                "writable": name != README_FILE,
+                "writable": not self._read_only(name),
                 "content": content,
             }
             for name, (content, version) in sorted(files.items())
@@ -760,7 +825,7 @@ class DbJsonRoute:
         ``UserDataValidationError`` as ``awrite_text`` does.
         """
         filename = self._filename(file_path)
-        if filename is None or filename == README_FILE:
+        if self._read_only(filename):
             raise self._unwritable(file_path, filename)
         return await self._save(filename, content, version, served=None, may_delete=True, settle=True)
 

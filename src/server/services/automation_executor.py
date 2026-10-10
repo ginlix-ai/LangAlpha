@@ -25,6 +25,7 @@ from src.server.database.oauth_tokens import has_any_oauth_token
 from src.server.database.runs import lifecycle as tl_db
 from src.server.dependencies.usage_limits import enforce_credit_limit
 from src.server.models.chat import ChatMessage, ChatRequest, ThreadOrigin
+from src.server.services import automation_delivery
 from src.server.services.automation_settlement import (
     Outcome,
     clean_error_text,
@@ -66,9 +67,10 @@ class _Firing:
     """How far a firing got, so it settles against the thread and run it
     reached whichever way it ends.
 
-    ``automation`` is re-read after every wait. ``agent_mode`` stays the one
-    the thread and workspace were resolved for, and ``route`` is where that
-    resolution sent the turn.
+    ``automation`` is re-read after every wait, and ``delivery`` follows its
+    entries as they then stand. ``agent_mode`` stays the one the thread and
+    workspace were resolved for, and ``route`` is where that resolution sent
+    the turn.
     """
 
     automation: Dict[str, Any]
@@ -79,10 +81,31 @@ class _Firing:
     # The run ledger holds ``run_id`` and the firing records it: the turn went
     # ahead, and the firing now ends however that run ends.
     admitted: bool = False
+    # How the firing's start left its delivery: a run the messaging service
+    # holds, whose agent sends to its targets and whose settle ends it
+    # there, or one left to the webhook; None while nothing was asked.
+    delivery: Optional[automation_delivery.Delivery] = None
+    # The starts made, and the entries the last one was made for.
+    delivery_starts: int = 0
+    delivery_entries: Optional[list[str]] = None
+
+    @property
+    def held(self) -> bool:
+        """The messaging service holds the run's delivery."""
+        return self.delivery is not None and self.delivery.held
 
     @property
     def workspace_id(self) -> Optional[str]:
         return self.route.workspace_id if self.route else None
+
+    @property
+    def delivery_workspace_id(self) -> Optional[str]:
+        """The workspace whose chats an app-only delivery entry falls to: an
+        Analyst's. Home is none of the user's workspaces, so a run there names
+        none and the entry takes the app's preferred chat."""
+        if self.route is None or self.route.role != "analyst":
+            return None
+        return self.route.workspace_id
 
 
 async def _thread_busy(thread_id: str) -> bool:
@@ -204,7 +227,9 @@ async def _credentials(user_id: str) -> tuple[bool, bool]:
     return has_byok, has_byok or has_oauth
 
 
-async def _resolve_route(automation: Dict[str, Any]) -> TurnRoute:
+async def _resolve_route(
+    automation: Dict[str, Any], *, bind_home: bool = True
+) -> TurnRoute:
     """Where the automation's turn runs, asked where every other turn asks.
 
     Flash runs in the user's shared flash workspace, created on demand, or in
@@ -212,16 +237,22 @@ async def _resolve_route(automation: Dict[str, Any]) -> TurnRoute:
     whose ownership was verified when the automation was written, unless that
     is the flash workspace: the Chief of Staff stores its automations there,
     and with the flag off they run on Flash like any other turn there.
+    ``bind_home`` False asks where without binding Home, for a firing that
+    will not run.
     """
     if automation["agent_mode"] == "flash":
-        return await resolve_turn_route(automation["user_id"], "flash", None)
+        return await resolve_turn_route(
+            automation["user_id"], "flash", None, bind_home=bind_home
+        )
     ws_id = automation.get("workspace_id")
     if not ws_id:
         raise ValueError(
             "PTC mode requires a workspace_id, but automation has none "
             "(workspace may have been deleted)"
         )
-    return await resolve_turn_route(automation["user_id"], "ptc", str(ws_id))
+    return await resolve_turn_route(
+        automation["user_id"], "ptc", str(ws_id), bind_home=bind_home
+    )
 
 
 class AutomationExecutor:
@@ -433,6 +464,71 @@ class AutomationExecutor:
             return None
         return _STILL_WAITING
 
+    async def _start_delivery(self, execution_id: str, firing: _Firing) -> None:
+        """Hand the firing's delivery to the messaging service for its
+        automation as it now stands, once per set of entries.
+
+        Called before the turn and again after each wait, since the user can
+        change where the automation delivers while it waits. The service
+        answers an id it already holds with the targets it resolved then, so
+        a firing whose entries changed starts again under an id of its own,
+        ``<execution_id>.<n>``, which its sends and its settle name from then
+        on. The start made for the old entries is never finished: the
+        service lets it lapse and posts nothing for it, where a finish would
+        post to chats the user took off.
+        """
+        entries = automation_delivery.entries_of(firing.automation)
+        if firing.delivery_starts and entries == firing.delivery_entries:
+            return
+        firing.delivery_starts += 1
+        firing.delivery_entries = entries
+        delivery_id = (
+            execution_id
+            if firing.delivery_starts == 1
+            else f"{execution_id}.{firing.delivery_starts}"
+        )
+        if firing.delivery_starts > 1:
+            logger.info(
+                f"[AUTOMATION_EXEC] Delivery changed during the wait, starting it "
+                f"again: execution_id={execution_id} delivery_id={delivery_id}"
+            )
+        firing.delivery = await automation_delivery.start_run(
+            firing.automation, delivery_id, firing.delivery_workspace_id,
+            thread_id=firing.thread_id,
+        )
+
+    async def _start_delivery_unstarted(
+        self, execution_id: str, firing: _Firing
+    ) -> None:
+        """Start the delivery of a firing that ends before its start was made
+        (a credit refusal, a workspace or thread that couldn't be had), so a
+        run the messaging service takes ends there, its targets told it
+        didn't finish, rather than by webhook.
+
+        An Analyst's route is resolved for the workspace an app-only entry
+        falls to; a Flash or Home run names none, so its route is left alone,
+        and nothing is bound for a firing that won't run. Never raises: the
+        firing settles either way, by webhook when nothing was started.
+        """
+        if firing.delivery_starts:
+            return
+        try:
+            if firing.route is None and firing.agent_mode != "flash":
+                firing.route = await _resolve_route(firing.automation, bind_home=False)
+        except Exception as e:
+            logger.warning(
+                f"[AUTOMATION_EXEC] No route for the delivery of a firing that "
+                f"won't run, naming no workspace: execution_id={execution_id} "
+                f"error={e}"
+            )
+        try:
+            await self._start_delivery(execution_id, firing)
+        except Exception as e:
+            logger.error(
+                f"[AUTOMATION_EXEC] Starting the delivery of a firing that won't "
+                f"run failed: execution_id={execution_id} error={e}"
+            )
+
     async def _note_admission(self, execution_id: str, firing: _Firing) -> bool:
         """Once the ledger holds the turn's run, link it and announce the
         start; False while there is no run row to go by yet, or when
@@ -446,6 +542,8 @@ class AutomationExecutor:
         notice leaves from the run's settle job, possibly on another worker,
         and a start landing after it would leave a channel showing a run
         that already ended. This narrows that window; it does not close it.
+        A run the messaging service holds announces nothing: its agent sends
+        the result itself.
         """
         try:
             run = await tl_db.get_run(firing.run_id)
@@ -456,6 +554,7 @@ class AutomationExecutor:
             if (
                 await _link_run(execution_id, firing.run_id)
                 and run["status"] == "in_progress"
+                and not firing.held
             ):
                 await WebhookClient().fire_event(
                     "automation.started", firing.automation, execution_id,
@@ -524,8 +623,8 @@ class AutomationExecutor:
         Losing the thread to another turn before admission means the reader
         started one between the idle check and this one: the firing gets
         back in line behind it, then reads its automation and credentials
-        again and reruns the credit gate, whose verdict a long wait would
-        outlive.
+        again, starts its delivery again if its entries changed, and reruns
+        the credit gate, whose verdict a long wait would outlive.
         """
         # TODO(layering): sanctioned services→handlers residual: automation
         # is an alternate run driver; fixing this means moving the run
@@ -539,12 +638,29 @@ class AutomationExecutor:
             automation = firing.automation
             user_id = automation["user_id"]
             instruction = automation["instruction"]
+            additional_context = automation.get("additional_context")
+            run_metadata = {
+                "automation_execution_id": execution_id,
+                "automation_id": str(automation["automation_id"]),
+            }
+            extra_configurable = None
+            if firing.held:
+                additional_context = [
+                    *(additional_context or []),
+                    {
+                        "type": "directive",
+                        "content": automation_delivery.reminder(firing.delivery.targets),
+                    },
+                ]
+                extra_configurable = automation_delivery.turn_configurable(firing.delivery)
+            if firing.delivery is not None:
+                run_metadata.update(automation_delivery.run_metadata(firing.delivery))
             request = ChatRequest(
                 agent_mode=firing.route.agent,
                 workspace_id=firing.workspace_id,
                 messages=[ChatMessage(role="user", content=instruction)],
                 llm_model=automation.get("llm_model"),
-                additional_context=automation.get("additional_context"),
+                additional_context=additional_context,
                 origin=ThreadOrigin(
                     type="automation", id=str(automation["automation_id"])
                 ),
@@ -563,11 +679,9 @@ class AutomationExecutor:
                 is_byok=has_byok,
                 steerable=False,
                 # Stamped on the run at START, so its finalize settles this
-                # firing whichever worker is left to drain the job.
-                run_metadata={
-                    "automation_execution_id": execution_id,
-                    "automation_id": str(automation["automation_id"]),
-                },
+                # firing whichever worker is left to drain the job, and
+                # delivers the way its start chose.
+                run_metadata=run_metadata,
             )
             if firing.route.agent == "flash":
                 turn = astream_flash_workflow(
@@ -578,6 +692,11 @@ class AutomationExecutor:
                     **turn_args,
                     workspace_id=firing.workspace_id,
                     role=firing.route.role,
+                    # Tools read the turn from the graph's config:
+                    # ``send_message`` names the run the service holds, so
+                    # its sends reach its targets, and a hand-off records
+                    # them for the turn that reports its result back.
+                    extra_configurable=extra_configurable,
                 )
 
             # Drain the async generator: no HTTP client to consume SSE
@@ -605,6 +724,9 @@ class AutomationExecutor:
             if fresh is None:
                 return False
             firing.automation = fresh
+            # Before the credit gate, so a refusal there ends the run with
+            # the delivery the automation now has.
+            await self._start_delivery(execution_id, firing)
             has_byok, has_cred = await _credentials(user_id)
             await enforce_credit_limit(user_id, byok=has_cred)
 
@@ -705,6 +827,12 @@ class AutomationExecutor:
                 _exec_span.set_attribute("status", "settled_elsewhere")
                 return
 
+            # ─── Hand delivery to the messaging service ───────────
+            # Before the turn, so its agent is told where to send. Without
+            # the service, or when it won't take the run, the webhook
+            # delivers as before.
+            await self._start_delivery(execution_id, firing)
+
             # ─── Run the turn ─────────────────────────────────────
             if not await self._run_turn(
                 execution_id, firing, has_byok=has_byok, deadline=wait_deadline
@@ -746,10 +874,11 @@ class AutomationExecutor:
                         f"[AUTOMATION_EXEC] Not counting a strike against "
                         f"automation_id={automation_id}: the failure was ours"
                     )
+            await self._start_delivery_unstarted(execution_id, firing)
             settled = await settle(
                 firing.automation, execution_id, outcome,
                 thread_id=firing.thread_id, workspace_id=firing.workspace_id,
-                error=error_msg,
+                error=error_msg, delivery=firing.delivery,
             )
             _exec_span.set_attribute(
                 "status",
@@ -767,6 +896,7 @@ class AutomationExecutor:
                         firing.automation, execution_id, Outcome.INTERRUPTED,
                         thread_id=firing.thread_id,
                         workspace_id=firing.workspace_id,
+                        delivery=firing.delivery,
                     )
             except Exception as e:
                 # The sweep settles it once the heartbeat stops.

@@ -318,6 +318,85 @@ class TestListWorkspaces:
         assert workspaces[0]["name"] == "Normal"
 
 
+class TestWorkspaceNames:
+    """Names by id of the user's live workspaces, for the channel settings."""
+
+    async def test_only_the_users_live_workspaces(
+        self, seed_user, patched_get_db_connection
+    ):
+        from src.server.database.user import create_user
+        from src.server.database.workspace import (
+            create_workspace,
+            delete_workspace,
+            get_workspace_names,
+        )
+
+        owner = seed_user["user_id"]
+        await create_user(user_id="someone-else", email="else@example.com")
+        beta = await create_workspace(user_id=owner, name="Beta", status="running")
+        alpha = await create_workspace(user_id=owner, name="Alpha", status="stopped")
+        await create_workspace(user_id=owner, name="Flash", status="flash")
+        gone = await create_workspace(user_id=owner, name="Gone", status="running")
+        await delete_workspace(str(gone["workspace_id"]))
+        await create_workspace(user_id="someone-else", name="Theirs", status="running")
+
+        names = await get_workspace_names(owner)
+
+        assert list(names.items()) == [
+            (str(alpha["workspace_id"]), "Alpha"),
+            (str(beta["workspace_id"]), "Beta"),
+        ]
+
+    async def test_home_bound_to_a_computer_stays_out(
+        self, seed_user, patched_get_db_connection, test_db_pool
+    ):
+        """Bound as Home, the flash row takes its computer's status, so only its
+        id still marks it."""
+        from src.server.database.workspace import (
+            create_workspace,
+            get_or_create_flash_workspace,
+            get_workspace_names,
+        )
+
+        owner = seed_user["user_id"]
+        home = str((await get_or_create_flash_workspace(owner))["workspace_id"])
+        async with test_db_pool.connection() as conn:
+            await conn.execute(
+                "UPDATE workspaces SET status = 'running' WHERE workspace_id = %s",
+                (home,),
+            )
+        beta = await create_workspace(user_id=owner, name="Beta", status="running")
+
+        assert await get_workspace_names(owner) == {str(beta["workspace_id"]): "Beta"}
+        assert await get_workspace_names(owner, [home]) == {}
+
+    async def test_by_id_whatever_the_spelling(
+        self, seed_user, patched_get_db_connection
+    ):
+        from src.server.database.user import create_user
+        from src.server.database.workspace import (
+            create_workspace,
+            get_workspace_names,
+        )
+
+        owner = seed_user["user_id"]
+        await create_user(user_id="someone-else", email="else@example.com")
+        mine = await create_workspace(user_id=owner, name="Mine", status="running")
+        await create_workspace(user_id=owner, name="Other", status="running")
+        theirs = await create_workspace(
+            user_id="someone-else", name="Theirs", status="running"
+        )
+        mine_id = str(mine["workspace_id"])
+        theirs_id = str(theirs["workspace_id"])
+        asked = [mine_id.upper(), theirs_id, "not-a-uuid", str(uuid.uuid4())]
+
+        names = await get_workspace_names(owner, asked)
+
+        assert names == {mine_id: "Mine"}
+        assert await get_workspace_names(owner, ["not-a-uuid"]) == {}
+        assert await get_workspace_names(owner, []) == {}
+
+
 class TestBatchSortOrder:
     """Test batch sort order updates."""
 

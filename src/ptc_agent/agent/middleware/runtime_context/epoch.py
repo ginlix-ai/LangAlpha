@@ -221,6 +221,10 @@ class BaselineEpoch:
     # and the tools work either way. None for a build that states nothing
     # about the mount (Flash) or an epoch stored before the value was.
     files_mounted: bool | None = None
+    # Whether the block states the chat-app settings folder, held the same
+    # way, since the block is cached per thread. None for a build that says
+    # nothing of it or an epoch stored before the value was.
+    channels_enabled: bool | None = None
     # False for the empty epoch of a thread's first turn, which is what tells
     # the first turn apart from an epoch that happens to carry no sources.
     stored: bool = False
@@ -245,6 +249,7 @@ class BaselineEpoch:
         }
         seen = data.get("compaction_seen")
         mounted = data.get("files_mounted")
+        channels = data.get("channels_enabled")
         return cls(
             epoch=int(data.get("epoch") or 0),
             built_at=str(data.get("built_at") or ""),
@@ -264,6 +269,7 @@ class BaselineEpoch:
                 profile=ProfileSnapshot.from_state(data.get("profile_seen")),
             ),
             files_mounted=mounted if isinstance(mounted, bool) else None,
+            channels_enabled=channels if isinstance(channels, bool) else None,
             stored=bool(data),
         )
 
@@ -288,6 +294,8 @@ class BaselineEpoch:
             state["agent_md"] = self.agent_md.to_state()
         if self.files_mounted is not None:
             state["files_mounted"] = self.files_mounted
+        if self.channels_enabled is not None:
+            state["channels_enabled"] = self.channels_enabled
         if self.cursor.profile is not None and self.cursor.profile != self.profile:
             # Left out when it is the frozen copy, which the hash then names.
             state["profile_seen"] = self.cursor.profile.to_state()
@@ -353,6 +361,9 @@ class Observations:
     # Whether the file mount serves as this turn's agent was built. None for
     # a build whose prompt says nothing about it.
     files_mounted: bool | None = None
+    # Whether this turn's agent has the chat-app settings folder. None for a
+    # build whose block says nothing about it.
+    channels_enabled: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -415,10 +426,15 @@ def advance_epoch(
         and _seen_profile(epoch) is None
         and cursor.profile is not None
     )
-    if epoch.files_mounted is None and observations.files_mounted is not None:
-        # An epoch stored before it froze the value takes this turn's, as its
+    adopted = {}
+    for name in ("files_mounted", "channels_enabled"):
+        value = getattr(observations, name)
+        if getattr(epoch, name) is None and value is not None:
+            adopted[name] = value
+    if adopted:
+        # An epoch stored before it froze a value takes this turn's, as its
         # rebuild would have: no row, since no prompt stated another.
-        epoch = replace(epoch, files_mounted=observations.files_mounted)
+        epoch = replace(epoch, **adopted)
         backfilled = True
     if not rows and not backfilled:
         return None, []
@@ -629,6 +645,7 @@ def _freeze(
         incomplete=incomplete,
         cursor=ObservationCursor(observed=observed, drift_updates=0, profile=seen),
         files_mounted=obs.files_mounted,
+        channels_enabled=obs.channels_enabled,
         stored=True,
     )
 

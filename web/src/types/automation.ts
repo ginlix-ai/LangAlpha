@@ -44,9 +44,52 @@ export type DisableReason = 'provider_auth' | 'max_failures';
 
 export type TriggerType = 'cron' | 'once' | 'price';
 
+/** How a run's result reached a chat: the agent sent it, its final answer
+ *  was posted for it, or a notice said the run didn't finish. */
+export type DeliveryVia = 'agent' | 'fallback' | 'notice';
+
+/** One delivery entry's outcome for a run. A run delivered through the
+ *  messaging service names the chat it landed in, how, and why it failed;
+ *  an older run carries only `method` and `success`. */
 export interface DeliveryAttempt {
+  /** The entry as the automation stores it. */
   method: string;
   success: boolean;
+  address?: string | null;
+  name?: string | null;
+  via?: DeliveryVia | null;
+  error?: string | null;
+}
+
+/** A chat an app offers as a delivery target. `kind` is e.g. `dm` or `channel`. */
+export interface DeliveryChat {
+  address: string;
+  name: string;
+  kind: string;
+}
+
+/** Where an app's bare entry lands now: this workspace's default output,
+ *  the app's preferred chat, or the DM. */
+export interface DeliveryDefault {
+  address: string;
+  name: string;
+  via: 'workspace' | 'preferred' | 'dm';
+}
+
+export interface DeliveryApp {
+  chats: DeliveryChat[];
+  default: DeliveryDefault | null;
+  error: string | null;
+}
+
+/** `GET /api/v1/automations/delivery-options`. `enabled` is false where no
+ *  messaging service is connected, and then `apps` says nothing. */
+export interface DeliveryOptions {
+  enabled: boolean;
+  apps: Record<string, DeliveryApp>;
+  /** The workspace whose default chat an app-only entry follows. Null when
+   *  the run has none: no workspace, or Home. */
+  workspace_id: string | null;
 }
 
 /** One run as the server sends it: a list row's newest execution, an

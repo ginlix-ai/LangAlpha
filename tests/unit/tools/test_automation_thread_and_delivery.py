@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from src.config import env
 from src.tools.automation import tools
 
 AUTOMATION_ID = "00000000-0000-4000-8000-0000000000a1"
@@ -28,6 +29,14 @@ def _row(**overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+@pytest.fixture(autouse=True)
+def _no_gateway(monkeypatch):
+    """No messaging service, whatever the environment says: with one, a
+    run's agent sends the results and nothing is warned about."""
+    monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "")
+    monkeypatch.delenv("INTERNAL_SERVICE_TOKEN", raising=False)
 
 
 @pytest.fixture
@@ -215,3 +224,36 @@ async def test_no_warning_without_delivery(created, updated, monkeypatch):
     assert "warning" not in await _create()
     assert "warning" not in await _update(remove_delivery=True)
     assert updated == [{"delivery_config": {}}]
+
+
+@pytest.mark.asyncio
+async def test_twenty_delivery_entries_save(created, updated):
+    methods = [f"app{i}" for i in range(20)]
+
+    assert (await _create(delivery=", ".join(methods)))["success"] is True
+    assert created[0].delivery_config.methods == methods
+    await _update(delivery=", ".join(methods))
+    assert updated == [{"delivery_config": {"methods": methods}}]
+
+
+@pytest.mark.asyncio
+async def test_delivery_past_twenty_entries_is_refused(created, updated):
+    delivery = ", ".join(f"app{i}" for i in range(21))
+
+    assert await _create(delivery=delivery) == {
+        "error": "'app20': past the limit of 20 entries"
+    }
+    assert await _update(delivery=delivery) == {
+        "error": "'app20': past the limit of 20 entries"
+    }
+    assert created == [] and updated == []
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_entry_past_256_characters_is_refused(created, updated):
+    entry = "slack:" + "C" * 251
+
+    error = (await _create(delivery=f"slack, {entry}"))["error"]
+
+    assert error == f"{entry[:39] + '…'!r}: longer than 256 characters"
+    assert created == []

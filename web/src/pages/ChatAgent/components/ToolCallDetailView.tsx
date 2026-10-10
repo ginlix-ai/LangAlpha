@@ -22,6 +22,8 @@ import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import { parseDisplayableResults, buildRichResultMap, resolveSnippet } from './webSearchUtils';
 import { isDirectToolName } from '../utils/directTools';
 import { DirectToolDetail } from './mcp/DirectToolDetail';
+import { MessageDeliveryDetail } from './messaging/MessageDeliveryDetail';
+import { readMessageDelivery } from './messaging/messageDelivery';
 
 // --- Public types ---
 
@@ -365,6 +367,12 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
         return <SecFilingViewer data={artifact} />;
       case 'automations':
         return <AutomationDetailPanel data={artifact} />;
+      case 'message_delivery': {
+        // The outcome rides the artifact; the message itself is the call's text.
+        const delivery = readMessageDelivery(artifact, toolCallProcess.toolCall?.args);
+        if (delivery) return <MessageDeliveryDetail delivery={delivery} onOpenFile={onOpenFile} />;
+        break;
+      }
     }
   }
 

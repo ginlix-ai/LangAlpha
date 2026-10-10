@@ -240,11 +240,12 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         description=(
             "How the platform under you works: the computer and its "
             "workspaces, files and what survives a restart, conversation "
-            "transcripts, saved tool results, memory, and adding skills, "
-            "MCP servers, brokerages or plugins. Read it when the user "
-            "points back at an earlier conversation, when something is "
-            "missing or behaves unexpectedly, and before adding any of "
-            "those."
+            "transcripts, saved tool results, memory, chat apps, and adding "
+            "skills, MCP servers, brokerages or plugins. Read it when the "
+            "user points back at an earlier conversation, when something is "
+            "missing or behaves unexpectedly, before adding any of those, "
+            "and when the user asks how the platform works and you don't "
+            "know."
         ),
         tools=[],
         # No `command`: the prompt points into its reference files, and a

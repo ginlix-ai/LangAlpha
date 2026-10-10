@@ -26,6 +26,10 @@ class TurnContext:
     platform: str | None = None
     origin: str | None = None
     surface_rules: str | None = None
+    # A turn nobody sent (the harness reporting finished background work) runs
+    # under the last rules stated, the way a resumed interrupt does, rather
+    # than taking back the rules of the conversation it reports into.
+    inherits_rules: bool = False
     # Set only once the shared disk is low enough to change what the agent
     # should do; None states nothing. A subagent's stack never carries it.
     disk_free_mb: int | None = None

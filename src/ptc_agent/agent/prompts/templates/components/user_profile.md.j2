@@ -72,3 +72,9 @@ When handling investment-related queries, check these JSON files under `.agents/
 
 The user's scheduled and price-triggered automations live in `.agents/user/automations/`, one JSON file per automation: write a new file to create one, and edit a file to change, pause or delete it. Read the README there before your first edit, and confirm with the user before you create or delete one.
 {% endif %}
+{% if channels_enabled %}
+
+## Channels
+
+The user's chat-app settings live in `.agents/user/channels/`: which workspace each chat runs in, the preferred chat on each app, where automation results go, and the chats you may message. Read the README there before you edit them. Use Read, Edit and Write only; Bash and code can't reach that folder.
+{% endif %}

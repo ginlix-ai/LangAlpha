@@ -779,6 +779,72 @@ async def test_a_save_landing_on_a_file_mid_move_is_kept_and_the_move_refused(
         assert (await racing.read(target))[0] == before
 
 
+# -- the channels folder -------------------------------------------------------
+#
+# The user's chat-app settings are for the file tools only: never a point of
+# the mount, whatever the deployment has configured.
+
+CHANNELS = (
+    "user/channels",
+    "user/channels/channels.json",
+    "user/channels/available.json",
+)
+
+
+@pytest.fixture
+def messaging_configured(monkeypatch):
+    """A deployment with the channel gateway, whose settings no mount call
+    may ask for."""
+    from src.config import env
+    from src.server.services import channel_settings
+
+    monkeypatch.setattr(env, "CHANNEL_GATEWAY_URL", "http://gateway.test")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "svc-token")
+    monkeypatch.setattr(
+        channel_settings.messaging,
+        "gateway_request",
+        AsyncMock(side_effect=AssertionError("the mount reached the channel settings")),
+    )
+
+
+async def _unreachable(tree: LivefsTree) -> None:
+    assert "channels" not in [e["name"] for e in (await tree.list("user")).entries]
+    for path in CHANNELS:
+        assert (await _refusal(lambda: tree.list(path))).code == "not_found"
+        assert (await _refusal(lambda: tree.read(path))).code == "not_found"
+        refused = await _refusal(
+            lambda: tree.write(path, b"{}", if_match=None, if_none_match="*")
+        )
+        assert refused.code == "not_found"
+        assert (await _refusal(lambda: tree.delete(path))).code == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_the_channels_folder_is_not_on_the_mount(tree, messaging_configured):
+    await _unreachable(tree)
+
+
+@pytest.mark.asyncio
+async def test_the_channels_route_stays_off_the_mount_even_when_built(
+    tree, messaging_configured, monkeypatch
+):
+    """Were the mount's composite ever built with the channels route, the
+    tree still never serves it."""
+    from ptc_agent.agent import filesystem_routes
+    from ptc_agent.agent.backends.channels import ChannelsBackend
+    from src.server.services.livefs import tree as tree_module
+
+    def with_channels(**kwargs):
+        return filesystem_routes.resolve_identity_gates(**kwargs, channels=True)
+
+    monkeypatch.setattr(tree_module, "resolve_identity_gates", with_channels)
+    built = tree._build(tree._computer())
+    route = built.route_for(f"{ROOT}/.agents/user/channels/channels.json")
+    assert isinstance(route, ChannelsBackend)
+
+    await _unreachable(tree)
+
+
 # -- the automations folder ----------------------------------------------------
 
 

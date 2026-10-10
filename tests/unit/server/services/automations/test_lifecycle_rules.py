@@ -276,6 +276,15 @@ def test_delivery_without_a_webhook_is_warned_about(monkeypatch):
     )
 
 
+def test_no_warning_with_a_messaging_service(monkeypatch):
+    """A run's agent sends the results itself, with no webhook."""
+    monkeypatch.setattr(lifecycle.settings, "AUTOMATION_WEBHOOK_URL", "")
+    monkeypatch.setattr(lifecycle.messaging.env, "CHANNEL_GATEWAY_URL", "http://gw.test")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "svc-token")
+
+    assert lifecycle.delivery_warning(["slack"]) is None
+
+
 @pytest.mark.parametrize(
     ("webhook", "methods"),
     [("https://example.com/hook", ["slack"]), ("", []), ("", None)],

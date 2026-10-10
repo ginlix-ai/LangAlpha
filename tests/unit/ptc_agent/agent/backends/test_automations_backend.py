@@ -549,6 +549,15 @@ class TestReadme:
         file.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_the_readme_takes_delivery_addresses_from_available_json(self, backend, file):
+        content = " ".join((await backend.aread_text(README_PATH)).split())
+
+        assert (
+            "from `.agents/user/channels/available.json`, which lists every chat on each connected app;"
+        ) in content
+        assert "from `list_message_targets`" not in content
+
+    @pytest.mark.asyncio
     async def test_the_readme_cannot_be_written_or_edited(self, backend, file):
         with pytest.raises(UserDataValidationError) as exc:
             await backend.awrite_text(README_PATH, "anything")

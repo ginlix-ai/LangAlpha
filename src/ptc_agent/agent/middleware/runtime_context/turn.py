@@ -112,6 +112,9 @@ class TurnContextMiddleware(AgentMiddleware):
         surface_rules: Delivery rules the posting client wrote for its own
             surface. They stand in for langalpha's built-in line, because the
             client that renders the reply is the authority on what it accepts.
+        inherits_rules: Whether the turn runs under the last rules stated
+            instead of its own, because nobody sent it: the harness reporting
+            finished background work into the thread.
         disk_free_mb: Free space on the computer's shared disk, passed only
             when it is low enough that the agent should work around it.
         disk_known: Whether a current reading stands behind ``disk_free_mb``
@@ -129,6 +132,7 @@ class TurnContextMiddleware(AgentMiddleware):
         platform: str | None = None,
         origin: str | None = None,
         surface_rules: str | None = None,
+        inherits_rules: bool = False,
         disk_free_mb: int | None = None,
         disk_known: bool = False,
         is_subagent: bool = False,
@@ -141,6 +145,7 @@ class TurnContextMiddleware(AgentMiddleware):
         self._platform = platform
         self._origin = origin
         self._surface_rules = surface_rules
+        self._inherits_rules = inherits_rules
         self._disk_free_mb = disk_free_mb
         self._disk_known = disk_known
         self._is_subagent = is_subagent
@@ -167,11 +172,15 @@ class TurnContextMiddleware(AgentMiddleware):
                 symbol=surface.symbol,
             )
             last = _last_rules_key(state)
-            if resumed:
+            if resumed or self._inherits_rules:
                 # An attempt-only continuation (a resumed interrupt, a retry)
                 # arrives without the surface of the turn it completes, so
                 # the rules it runs under are the last ones stated, whatever
-                # this request did or did not say.
+                # this request did or did not say. A notification is the same
+                # case: it reports into the conversation the work was started
+                # from, so a channel's rules stay in force rather than being
+                # taken back, and since nobody sent it, it is not the attended
+                # turn an automation's handoff waits for either.
                 key = last
             # An automation's thread can take a manual follow-up. The last
             # rules the model can read then say nobody is waiting, and a turn

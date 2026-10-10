@@ -120,16 +120,6 @@ def is_file_name(name: str) -> bool:
 class AutomationFileError(UserDataValidationError):
     """A refused write. Nothing was saved; ``message`` goes to the agent verbatim."""
 
-    problems: list[tuple[str, str]] = field(default_factory=list)
-
-    def _text(self) -> str:
-        if not self.problems:
-            return super()._text()
-        count = len(self.problems)
-        lines = [f"{self.error_type}:{self.file}: {count} problem{'s' if count > 1 else ''}, nothing was saved."]
-        lines += [f"- {path}: {msg}" if path else f"- {msg}" for path, msg in self.problems]
-        return "\n".join(lines)
-
 
 def _refuse(file_name: str, hint: str, error_type: ErrorType = "schema_error") -> AutomationFileError:
     return AutomationFileError(error_type=error_type, file=file_name, field_path="", hint=hint)
@@ -483,6 +473,11 @@ class Document:
     # What the lifecycle checks a named model against; None when the file
     # names no model it would check.
     model_pref: dict[str, Any] | None
+    # The delivery with each chat it newly names as the messaging service
+    # files it; None when it names none to check. ``delivery_problems`` are
+    # the chats it refused.
+    delivery: list[str] | None = None
+    delivery_problems: list[str] = field(default_factory=list)
 
 
 def _names_model(fields: dict[str, Any], shown: dict[str, Any] | None) -> bool:
@@ -729,12 +724,42 @@ class AutomationFile(DbJsonFile[dict[str, Any] | None, Document, FilePlan]):
         zone = call.timezone or "UTC"
         if not call.timezone and served is None and written.get("timezone") is None:
             zone = await auto_db.get_user_timezone(user_id) or "UTC"
+        delivery, refused = await self._check_delivery(user_id, written, shown)
         return Document(
             fields=written,
             shown=shown,
             timezone=zone,
             model_pref=await user_models.get_model_preference(user_id) if _names_model(written, shown) else None,
+            delivery=delivery,
+            delivery_problems=refused,
         )
+
+    async def _check_delivery(
+        self, user_id: str, written: dict[str, Any], shown: dict[str, Any] | None
+    ) -> tuple[list[str] | None, list[str]]:
+        """The written delivery with each entry it newly names checked
+        (``lifecycle.check_delivery``), here rather than in the lifecycle,
+        since a check is a call to the messaging service the save's locks
+        would wait on. An entry the writer was shown is the stored one and
+        isn't checked again."""
+        try:
+            methods = parse_delivery(written.get("delivery") or [])["methods"]
+        except ValueError:
+            return None, []  # the plan refuses the shape
+        if not any(lifecycle.checks_entry(m) for m in methods):
+            return None, []
+        if shown is not None:
+            stored = shown.get("delivery")
+        else:
+            row = await auto_db.get_automation_file(user_id, self.file_name)
+            stored = _definition(row)["delivery"] if row else []
+        if not isinstance(stored, list):
+            stored = []
+        stored = [m for m in stored if isinstance(m, str)]
+        try:
+            return await lifecycle.check_delivery(user_id, methods, stored=stored), []
+        except lifecycle.DeliveryRefused as exc:
+            return None, exc.problems
 
     def plan(self, call: CallContext, document: Document, row: dict[str, Any] | None) -> Plan[FilePlan]:
         """The change a save of ``document`` over ``row`` makes. Raises
@@ -742,6 +767,8 @@ class AutomationFile(DbJsonFile[dict[str, Any] | None, Document, FilePlan]):
         problems = _Problems(self.file_name)
         raw = document.fields
         result = FilePlan(model_pref=document.model_pref)
+        for refused in document.delivery_problems:
+            problems.add("delivery", refused)
         try:
             entry = _Entry.model_validate(
                 raw, context={"thread_id": call.thread_id, "zone": row.get("timezone") if row else None}
@@ -749,6 +776,9 @@ class AutomationFile(DbJsonFile[dict[str, Any] | None, Document, FilePlan]):
         except ValidationError as exc:
             problems.add_validation(exc)
             problems.raise_if_any()
+        if document.delivery is not None:
+            checked = {"methods": document.delivery}
+            entry = entry.model_copy(update={"delivery": checked})
         shown_state = (
             document.shown.get("state") if document.shown is not None else _state(row) if row else None
         )
@@ -846,6 +876,7 @@ class AutomationFile(DbJsonFile[dict[str, Any] | None, Document, FilePlan]):
                     update.fields,
                     model_pref=plan.model_pref,
                     current=row,
+                    delivery_checked=True,
                 )
             if update.action and row is not _REFUSED:
                 control = lifecycle.pause_automation if update.action == "pause" else lifecycle.resume_automation
@@ -864,6 +895,7 @@ class AutomationFile(DbJsonFile[dict[str, Any] | None, Document, FilePlan]):
                 create.data,
                 model_pref=plan.model_pref,
                 file_name=self.file_name,
+                delivery_checked=True,
             )
             if row is not _REFUSED and create.pause:
                 row = await step(lifecycle.pause_automation, str(row["automation_id"]), user_id, current=row)

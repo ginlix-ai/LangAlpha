@@ -34,7 +34,7 @@ create or delete one, summarize it and get a yes. Pin down:
 - the instruction: it runs with no one to ask. Make it self-contained: which
   tickers, which metrics, what format.
 - the thread: a fresh one each run, one ongoing thread, or this conversation.
-- delivery: in-app only, or also a channel such as Slack.
+- delivery: in-app only, or also a chat app such as Slack, or one chat there.
 
 Change only what the user asked for; suggest any other edit instead of making
 it. These files are the record of the user's automations: Read them when you
@@ -128,7 +128,7 @@ A new one needs only what has no default, e.g. `aapl-below-200.json`:
 | workspace_id   | ptc | Defaults to this workspace. |
 | thread         | no  | `new` (default): a fresh thread each run. `persistent`: one thread that every run continues, created by the first run (`state.last_run.thread_id` names it). `current`: continue in this conversation. A thread id: continue in that thread. |
 | llm_model      | no  | A model the user can run; `null` uses their default. An unknown name is refused with the list. |
-| delivery       | no  | Channels to post results to besides the app, e.g. `["slack"]`; `[]` for none. |
+| delivery       | no  | Where results also go besides the app: a chat app, e.g. `["slack"]`, or one chat there by address, e.g. `["slack:T1/C0123"]` from `.agents/user/channels/available.json`, which lists every chat on each connected app; `[]` for none. A chat is checked when you save, and so is an app, which is refused while the user hasn't linked it. An app alone posts to the chat set for this workspace's automations on that app, else the app's preferred chat, else the user's direct messages; to always post to the direct messages, name them, e.g. `["discord:@me"]` (`slack:<team>` on Slack). Leave sending out of `instruction`: each run sends its result there itself, a chat it missed gets the final answer, and a failed or stopped run posts a short notice. |
 | max_failures   | no  | 1–100, default 3. Consecutive failed runs before it is disabled. |
 
 ## Price alerts

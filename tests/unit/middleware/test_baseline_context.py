@@ -1698,3 +1698,73 @@ class TestTheMountTheStaticPromptStates:
         await built_unmounted.awrap_model_call(_request({}), handler)
         assert [m.content for m in sent[2:]] == ["Static system prompt."] * 2
         assert renders == [False]
+
+
+class TestTheChannelsParagraph:
+    """The `<user_profile>` component names the chat-app settings folder when
+    the build has it. The block is cached per thread, so the epoch freezes
+    the value as it freezes ``files_mounted``."""
+
+    PROFILE = {"name": "Ada", "timezone": "Europe/Paris"}
+    HEADING = "## Channels"
+
+    def _turn(self, channels: bool | None) -> BaselineContextMiddleware:
+        return _middleware(
+            _session("# Notes"),
+            user_profile=self.PROFILE,
+            user_data_counts={"portfolio_count": 2},
+            sandbox_enabled=True,
+            channels_enabled=channels,
+        )
+
+    async def _block(self, mw, state: dict) -> tuple[dict, str]:
+        update = await mw.abefore_agent(state, None) or {}
+        merged = {**state, **update}
+        return merged, _text(await _render(mw, merged))
+
+    @pytest.mark.asyncio
+    async def test_it_renders_with_the_folder(self):
+        _, text = await self._block(self._turn(True), {})
+
+        assert self.HEADING in text
+        assert "`.agents/user/channels/`" in text
+        assert "Read the README there before you edit them." in text
+        assert "Use Read, Edit and Write only; Bash and code can't reach" in text
+
+    @pytest.mark.parametrize("channels", [False, None])
+    @pytest.mark.asyncio
+    async def test_it_is_absent_without(self, channels):
+        _, text = await self._block(self._turn(channels), {})
+
+        assert self.HEADING not in text
+        assert ".agents/user/channels" not in text
+
+    @pytest.mark.asyncio
+    async def test_the_epoch_keeps_the_value_it_froze_until_a_compaction(self):
+        state, first = await self._block(self._turn(False), {})
+        assert state[STATE_BASELINE]["channels_enabled"] is False
+
+        state, second = await self._block(self._turn(True), state)
+        assert second == first
+
+        compacted = {**state, "_summarization_event": _compaction_event("msg-1")}
+        state, rebuilt = await self._block(self._turn(True), compacted)
+        assert state[STATE_BASELINE]["channels_enabled"] is True
+        assert self.HEADING in rebuilt
+
+    @pytest.mark.asyncio
+    async def test_an_epoch_stored_before_the_value_takes_this_turns(self):
+        first = await self._turn(None).abefore_agent({}, None)
+        assert "channels_enabled" not in first[STATE_BASELINE]
+
+        adopted = await self._turn(True).abefore_agent(first, None)
+
+        assert adopted[STATE_BASELINE]["channels_enabled"] is True
+        assert adopted[STATE_BASELINE]["epoch"] == first[STATE_BASELINE]["epoch"]
+        assert "messages" not in adopted
+
+    def test_the_value_round_trips_through_the_checkpoint(self):
+        epoch = BaselineEpoch(channels_enabled=True, stored=True)
+
+        assert BaselineEpoch.from_state(epoch.to_state()).channels_enabled is True
+        assert "channels_enabled" not in BaselineEpoch().to_state()

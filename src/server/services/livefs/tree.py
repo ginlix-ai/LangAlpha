@@ -255,7 +255,9 @@ class LivefsTree:
         if scope not in self._built:
             self._built[scope] = self._build(scope)
         files = self._built[scope]
-        return files.route_for(path) if files is not None else None
+        found = files.route_for(path) if files is not None else None
+        # A route kept to the file tools is no point here, whatever the gates.
+        return found if getattr(found, "mountable", True) else None
 
     def _build(self, scope: _Scope) -> CompositeFilesystemBackend | None:
         user_id = self._identity.user_id

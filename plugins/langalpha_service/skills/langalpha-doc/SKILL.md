@@ -1,6 +1,6 @@
 ---
 name: langalpha-doc
-description: "How the platform under you works: the computer and its workspaces, files and what survives a restart, conversation transcripts, saved tool results, memory, and adding skills, MCP servers, brokerages or plugins. Read it when the user points back at an earlier conversation, when something is missing or behaves unexpectedly, and before adding any of those."
+description: "How the platform under you works: the computer and its workspaces, files and what survives a restart, conversation transcripts, saved tool results, memory, chat apps, and adding skills, MCP servers, brokerages or plugins. Read it when the user points back at an earlier conversation, when something is missing or behaves unexpectedly, before adding any of those, and when the user asks how the platform works and you don't know."
 ---
 
 # How LangAlpha Works
@@ -14,6 +14,7 @@ You run on a **computer**: one sandbox machine that belongs to the user. Each of
 - Processes, output and timeouts, CPUs and disk, installed packages, what survives a stop or a rebuild, data-server tools from code, secrets: `.agents/skills/langalpha-doc/references/computer.md`.
 - Installing, writing or changing a skill, here or for every workspace: `.agents/skills/langalpha-doc/references/skills.md`.
 - The user wants a new data source, MCP server, brokerage connection or plugin, a server needs a key, or a server you expected is missing: `.agents/skills/langalpha-doc/references/plugins.md`.
+- Talking with the user in a chat app, or sending a message or file to Slack, Discord, Telegram or iMessage: `.agents/skills/langalpha-doc/references/chat.md`.
 
 ## Traps
 
@@ -23,6 +24,12 @@ You run on a **computer**: one sandbox machine that belongs to the user. Each of
 - Grep skips hidden and git-ignored files and folders, `.agents/` included, unless `path` points inside one.
 - Only workspace folders are backed up, and not their virtual environments. Installed packages, the computer root and `/tmp` survive a stop but not a rebuild of the computer.
 - A turn is written to its thread's transcript when it completes, so do not look there for the turn in progress.
-- Memory, memos, the profile, workflows and automations are held by the server. Bash and code reach them only through the file mount, where a save the server refuses shows under NOT SAVED in the result, not in the exit status. Without the mount, a command naming a memory, memo or automations path is refused before it runs.
+- Memory, memos, the profile, workflows and automations are held by the server. Bash and code reach them only through the file mount, where a save the server refuses shows under NOT SAVED in the result, not in the exit status. Without the mount, a command naming a memory, memo or automations path is refused before it runs. The chat-app settings in `.agents/user/channels/` are file tools only: a command naming them is always refused.
 - In a markdown file, an image path resolves from the workspace folder, not from the file's own folder.
 - `plt.show()` output goes nowhere. Save charts with `savefig` into `<task>/charts/` and link the file.
+
+## Facts
+
+How the platform behaves, for answering the user. Your work doesn't need these pages, so don't read them ahead of time. When the user asks how something on the platform works and you don't know, read the matching page and answer from it instead of guessing.
+
+- Channels (Slack, Discord, Telegram, iMessage, Feishu): which conversation or workspace a message the user sends there reaches, why an answer came from another conversation, and how `/new`, `/workspace` and replies pick one: `.agents/skills/langalpha-doc/facts/channel-routing.md`.

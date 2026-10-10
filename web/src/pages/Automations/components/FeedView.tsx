@@ -10,7 +10,7 @@ import { useAutomationMutations, type AutomationMutations } from '../hooks/useAu
 import { useOpenThread } from '../hooks/useOpenThread';
 import { useRecentRuns } from '../hooks/useRecentRuns';
 import type { TemplateId } from '../utils/templates';
-import { deliveryMethodName } from '../utils/delivery';
+import { deliveryAttemptLabel } from '../utils/delivery';
 import { groupRunsByDay, nearDayKeys, runTime } from '../utils/feed';
 import { automationActions, describeRun } from '../utils/status';
 import { formatClock, formatDayHeading, formatDuration } from '../utils/time';
@@ -130,13 +130,8 @@ function RunEntry({
   } else if (view.showDuration) {
     meta.push(formatDuration(run.started_at, run.completed_at, t));
   }
-  for (const attempt of run.delivery_result ?? []) {
-    meta.push(
-      t(attempt.success ? 'automation.deliveredVia' : 'automation.deliveryFailedVia', {
-        method: deliveryMethodName(attempt.method, t),
-      }),
-    );
-  }
+  // Where each delivery landed and how, by the name the run recorded.
+  for (const attempt of run.delivery_result ?? []) meta.push(deliveryAttemptLabel(attempt, t));
 
   // Retry is a fresh run, offered as the inspector's Run now is; a disabled
   // automation has to be resumed first.

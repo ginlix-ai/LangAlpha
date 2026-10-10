@@ -16,7 +16,7 @@ import structlog
 from langchain.agents import create_agent
 
 from ptc_agent.agent.backends import SandboxBackend
-from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
 from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.agent.middleware import SubAgentMiddleware
 from ptc_agent.agent.main_state import MainAgentState
@@ -129,6 +129,7 @@ from src.tools.market_data.tool import (
 )
 from src.tools.market_watch import watch_market
 from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
+from src.tools.messaging import build_messaging_tools, messaging_enabled
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import PTCSandbox
@@ -177,6 +178,7 @@ class PTCAgent:
         files_mounted: bool = False,
         chart_annotation_enabled: bool = True,
         role: AgentRole = "analyst",
+        channels_enabled: bool = False,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
@@ -184,6 +186,9 @@ class PTCAgent:
         guidance) rather than (model), which only splits when a user pins the
         level themselves. The workspace folder varies it too, but a thread
         lives in one workspace, so a thread still reuses its own prefix.
+        ``channels_enabled`` adds the chat-app section; it follows the
+        deployment's messaging service and the turn having a user, neither of
+        which moves between a thread's turns.
         """
         loader = get_loader()
         return loader.get_system_prompt(
@@ -209,6 +214,7 @@ class PTCAgent:
             files_mounted=files_mounted,
             chart_annotation_enabled=chart_annotation_enabled,
             role=role,
+            channels_enabled=channels_enabled,
         )
 
     def _get_tool_summary(self, mcp_registry: MCPRegistry) -> str:
@@ -329,6 +335,7 @@ class PTCAgent:
             user_id=user_id,
             workspace_id=workspace_id_for_memory,
             disable_subagents=disable_subagents,
+            channels=messaging_enabled(),
         )
         if store is not None and not gates.memory:
             logger.warning(
@@ -354,6 +361,9 @@ class PTCAgent:
             call=call_context,
         )
 
+        # The folders only the file tools reach, which Bash and code refuse.
+        file_tools_only = (SandboxLayout.CHANNELS_DIR,) if gates.channels else ()
+
         # Create the execute_code tool for MCP invocation
         execute_code_tool = create_execute_code_tool(
             backend,
@@ -361,11 +371,15 @@ class PTCAgent:
             thread_id=short_thread_id,
             session=session,
             call_context=call_context,
+            file_tools_only=file_tools_only,
         )
 
         # Create the Bash tool for shell command execution
         bash_tool = create_execute_bash_tool(
-            backend, thread_id=short_thread_id, call_context=call_context
+            backend,
+            thread_id=short_thread_id,
+            call_context=call_context,
+            file_tools_only=file_tools_only,
         )
         bash_output_tool = create_bash_output_tool(backend, call_context=call_context)
 
@@ -679,6 +693,7 @@ class PTCAgent:
             legacy_layout=bool(project is not None and project.layout_origin == 3),
             chart_annotation_enabled=chart_annotation,
             role=role,
+            channels_enabled=gates.channels,
         )
         # Read once: the baseline freezes this value per epoch, and the
         # prompt is sent with the frozen one (FrozenPromptMiddleware).
@@ -801,6 +816,7 @@ class PTCAgent:
             workspace_description=workspace_description,
             sources=baseline_store_sources,
             files_mounted=files_mounted,
+            channels_enabled=gates.channels,
             blocks={
                 "mcp_servers": lambda _state: tool_summary,
                 "skills": lambda state: skill_loader_middleware.build_manifest(state)
@@ -875,6 +891,11 @@ class PTCAgent:
         # answers the main agent, not the user.
         if chart_annotation:
             tools.extend(CHART_ANNOTATION_TOOLS)
+
+        # Messaging the user (send_message, list_message_targets), present only
+        # when a channel gateway is configured. Main agent only, added after the
+        # subagent snapshot: a subagent reports to its parent, never to a person.
+        tools.extend(build_messaging_tools(role))
 
         # Main agent middleware (includes SubAgentMiddleware + main_only)
         # Ordering matters for prompt caching:

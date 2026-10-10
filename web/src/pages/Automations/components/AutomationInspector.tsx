@@ -1,19 +1,27 @@
-import React, { Fragment, useEffect, useRef, useState } from 'react';
+import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowUpRight, EyeOff, Pause, Pencil, Play, Trash2, Zap } from 'lucide-react';
 import { HeaderButton, ListSkeleton } from '@/components/mcp/McpPrimitives';
 import { useLocale } from '@/hooks/useLocale';
 import { useNow } from '@/hooks/useNow';
 import { cn } from '@/lib/utils';
-import type { Automation, AutomationExecution } from '@/types/automation';
+import type { Automation, AutomationExecution, DeliveryAttempt } from '@/types/automation';
 import type { ErrorLinkSpec } from '@/utils/rateLimitError';
 import { useAutomationMutations } from '../hooks/useAutomationMutations';
 import { useAgentModeLabels, useRunsAs } from '../hooks/useAgentModeLabels';
+import { useDeliveryOptions } from '../hooks/useDeliveryOptions';
 import { useExecutions } from '../hooks/useExecutions';
 import { useOpenThread } from '../hooks/useOpenThread';
 import type { WatchedReading } from '../hooks/useWatchedReadings';
 import { useWorkspaceOptions, workspaceNameOf } from '../hooks/useWorkspaceOptions';
-import { deliveryMethodName } from '../utils/delivery';
+import {
+  type DeliveryNames,
+  deliveryAttemptLabel,
+  deliveryAttemptName,
+  deliveryEntryName,
+  deliveryMethodName,
+  deliveryNames,
+} from '../utils/delivery';
 import { distanceLabel } from '../utils/price';
 import { scheduleSentence } from '../utils/schedule';
 import { attentionLinks, automationActions, automationStatusUi, describeRun } from '../utils/status';
@@ -61,6 +69,20 @@ export default function AutomationInspector({
   const agentModes = useAgentModeLabels();
   const runsAs = useRunsAs();
   const deliveryMethods = a.delivery_config?.methods ?? [];
+  const delivery = useDeliveryOptions({
+    agentMode: a.agent_mode,
+    workspaceId: a.workspace_id,
+    enabled: deliveryMethods.length > 0,
+  });
+  // The runs' own names, newest first, name a chat the apps no longer list.
+  const names = useMemo(
+    () =>
+      deliveryNames(delivery.options, [
+        ...(a.last_execution?.delivery_result ?? []),
+        ...executions.flatMap((e) => e.delivery_result ?? []),
+      ]),
+    [delivery.options, a.last_execution, executions],
+  );
 
   const ui = automationStatusUi(a);
   const { canPause, canResume, canRun, runBusy, canDismiss } = automationActions(a);
@@ -181,6 +203,7 @@ export default function AutomationInspector({
         ) : (
           <RunHistory
             executions={executions}
+            names={names}
             shownId={placing ? null : shownRun?.automation_execution_id ?? null}
             onOpenRun={onOpenRun}
             onOpen={(threadId) => openThread(threadId)}
@@ -204,7 +227,7 @@ export default function AutomationInspector({
           {deliveryMethods.length > 0 && (
             <>
               <dt>{t('automation.delivery')}</dt>
-              <dd>{deliveryMethods.map((m) => deliveryMethodName(m, t)).join(', ')}</dd>
+              <dd>{deliveryMethods.map((m) => deliveryEntryName(m, t, delivery.options, names)).join(', ')}</dd>
             </>
           )}
           <dt>{t('automation.detailFailures')}</dt>
@@ -268,13 +291,20 @@ function RunCard({
   );
 }
 
+/** A delivery recorded before runs said where and how it landed. */
+function isLegacyAttempt(d: DeliveryAttempt): boolean {
+  return d.via === undefined && d.address === undefined && d.name === undefined && d.error === undefined;
+}
+
 function RunHistory({
   executions,
+  names,
   shownId,
   onOpenRun,
   onOpen,
 }: {
   executions: AutomationExecution[];
+  names: DeliveryNames;
   /** The run the report above shows. */
   shownId: string | null;
   onOpenRun: (runId: string) => void;
@@ -299,11 +329,19 @@ function RunHistory({
             const { ui, showDuration } = describeRun(e);
             // Only a failure's label takes the glyph's color: amber marks
             // liveness on the glyph and never tints words.
-            const error = ui.danger ? e.error_message : null;
+            const attempts = e.delivery_result ?? [];
+            const errors = [
+              ...(ui.danger && e.error_message ? [e.error_message] : []),
+              ...attempts.flatMap((d) =>
+                !d.success && d.error
+                  ? [t('automation.deliveryNamedProblem', { name: deliveryAttemptName(d, t, names), message: d.error })]
+                  : [],
+              ),
+            ];
             const shown = e.automation_execution_id === shownId;
             return (
               <Fragment key={e.automation_execution_id}>
-                <tr className={error ? 'has-error' : undefined}>
+                <tr className={errors.length ? 'has-error' : undefined}>
                   <td>
                     <span className="inline-flex items-center gap-1.5">
                       <StatusGlyph ui={ui} size={12} />
@@ -322,13 +360,14 @@ function RunHistory({
                     </button>
                   </td>
                   <td className="automation-mono">{showDuration ? formatDuration(e.started_at, e.completed_at, t) : ''}</td>
-                  <td>
-                    {(e.delivery_result ?? []).map((d) => (
-                      <span key={d.method} className="mr-2 inline-flex items-center gap-1">
+                  <td className="automation-history-delivery">
+                    {attempts.map((d, i) => (
+                      <span key={`${d.method}|${d.address ?? ''}|${i}`} className="automation-history-attempt">
                         {!d.success && (
-                          <AlertCircle className="h-3 w-3" style={{ color: 'var(--color-icon-danger)' }} aria-label={t('automation.runFailed')} />
+                          <AlertCircle className="h-3 w-3 shrink-0" style={{ color: 'var(--color-icon-danger)' }} aria-label={t('automation.runFailed')} />
                         )}
-                        {deliveryMethodName(d.method, t)}
+                        {/* Where it landed and how; an older run says only which app. */}
+                        {isLegacyAttempt(d) ? deliveryMethodName(d.method, t) : deliveryAttemptLabel(d, t, names)}
                       </span>
                     ))}
                   </td>
@@ -341,12 +380,14 @@ function RunHistory({
                     )}
                   </td>
                 </tr>
-                {error && (
+                {errors.length > 0 && (
                   <tr className="automation-history-error">
                     <td colSpan={5}>
-                      <p className="automation-mono automation-run-error" title={error}>
-                        {error}
-                      </p>
+                      {errors.map((error, i) => (
+                        <p key={i} className="automation-mono automation-run-error" title={error}>
+                          {error}
+                        </p>
+                      ))}
                     </td>
                   </tr>
                 )}

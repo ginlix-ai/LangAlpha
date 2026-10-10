@@ -20,6 +20,10 @@ export function mutationErrorMessage(err: unknown, fallback: string): string {
     if (parts.length) return parts.join('; ');
   }
   if (typeof detail === 'string' && detail) return detail;
-  const message = apiErrorDetailMessage(err) ?? (err as { message?: unknown })?.message;
+  // A refusal that names each entry it refused (`problems`) says the whole
+  // of it in `message`, or in a `detail` of its own.
+  const nested = (detail as { detail?: unknown } | null)?.detail;
+  const message =
+    apiErrorDetailMessage(err) ?? (typeof nested === 'string' && nested ? nested : (err as { message?: unknown })?.message);
   return typeof message === 'string' && message ? message : fallback;
 }

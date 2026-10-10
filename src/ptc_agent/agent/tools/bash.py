@@ -41,11 +41,19 @@ _FILES_ROUTE_ERROR = (
 )
 
 
+# A directory only the file tools reach, mounted or not.
+_FILE_TOOLS_ONLY_ERROR = (
+    "ERROR: {dir}/ is reachable only through the file tools. Use Read, Edit and "
+    "Write on the files in {dir}/. Bash can't see or change them."
+)
+
+
 def create_execute_bash_tool(
     backend: SandboxBackend,
     thread_id: str = "",
     *,
     call_context: livefs_mount.CallContext | None = None,
+    file_tools_only: tuple[str, ...] = (),
 ) -> BaseTool:
     """Factory function to create Bash tool with injected dependencies.
 
@@ -54,6 +62,8 @@ def create_execute_bash_tool(
         thread_id: Short thread ID (first 8 chars) for thread-scoped script storage
         call_context: Who the command runs for, which a save through the file
             mount reads its defaults from
+        file_tools_only: Directories under the sandbox root only the file
+            tools reach; a command naming one is refused before it runs
 
     Returns:
         Configured Bash tool function
@@ -96,6 +106,8 @@ def create_execute_bash_tool(
             lambda call_id: _run(command, working_dir, timeout, run_in_background, call_id),
             memory_error=_MEMORY_ROUTE_ERROR,
             files_error=_FILES_ROUTE_ERROR,
+            file_tools_only=file_tools_only,
+            file_tools_error=_FILE_TOOLS_ONLY_ERROR,
             blocked_event="Blocked bash command touching a store-backed path",
             command_length=len(command),
         )
