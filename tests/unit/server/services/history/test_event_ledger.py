@@ -53,6 +53,10 @@ TABLE_SOURCED = {
     "provenance",  # provenance_records
     "credit_usage",  # conversation_usages
     "error",  # conversation_responses.errors + metadata (terminal event)
+    "steering_returned",  # subagent_runs.replay_facts: undelivered steering
+    # has no checkpoint twin by design (nothing was injected into the graph);
+    # a run settled before the facts keeps its stored copy, which the legacy
+    # facts backfill carries into the response row
 }
 
 LIVE_ONLY = {
@@ -68,6 +72,7 @@ LIVE_ONLY = {
     "stream_gap",  # reconnect trim notice (Last-Event-ID < stream head)
     "run_end",  # post-CAS terminal frame closing the run stream (I6)
     "replay_done",  # replay sentinel
+    "history_page",  # paged replay header: oldest turn sent, older remain
     "snapshot",  # read-time cursors for the runs replay could not project;
     # recomputed from ledger+Redis on every load, never replayed from a store
     "market_watch_update",  # transient stamp notice, accumulate=False; the
@@ -94,11 +99,7 @@ LIVE_ONLY = {
 # KNOWN GAP: survives replay only through persisted sse_events. Before
 # sse_events writes stop (cutover step 5) each entry here must move to a
 # category above or be explicitly accepted as not replayed.
-STORED_EVENTS_ONLY: set[str] = {
-    "steering_returned",  # undelivered-steering drain at run end; no
-    # checkpoint twin by design (nothing was injected into the graph), so
-    # the collected stored copy is its only durable home
-}
+STORED_EVENTS_ONLY: set[str] = set()
 
 _CATEGORIES = {
     "checkpoint": CHECKPOINT_PROJECTED,
@@ -176,12 +177,12 @@ def test_replay_transition_rules_cover_the_replayable_set():
     """The replay module's passthrough/stored-preferred tuples must stay
     inside the replayable ledger (a stored-preferred type outside the ledger
     would silently vanish post-cutover)."""
-    from src.server.services.history.replay.stored_merge import (
-        _PASSTHROUGH_EVENTS,
-        _STORED_PREFERRED_EVENTS,
+    from src.server.services.history.replay.legacy import (
+        PASSTHROUGH_EVENTS,
+        STORED_PREFERRED_EVENTS,
     )
 
     replayable = CHECKPOINT_PROJECTED | TABLE_SOURCED
-    assert set(_STORED_PREFERRED_EVENTS) <= replayable
+    assert set(STORED_PREFERRED_EVENTS) <= replayable
     # Passthrough may additionally carry the stored-events-only legacy set.
-    assert set(_PASSTHROUGH_EVENTS) <= replayable | STORED_EVENTS_ONLY
+    assert set(PASSTHROUGH_EVENTS) <= replayable | STORED_EVENTS_ONLY

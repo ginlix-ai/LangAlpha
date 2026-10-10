@@ -8,13 +8,12 @@ Provides endpoints for:
 """
 
 import logging
-from bisect import bisect_right
-from typing import Any
 
 from fastapi import HTTPException
 
 from src.server.database.conversation import queries as queries_db
 from src.server.database.conversation import threads_read
+from src.server.services.history.reader import pair_turns, turn_anchors
 from src.server.utils.checkpoint_helpers import (
     build_checkpoint_config,
     get_checkpointer,
@@ -28,29 +27,6 @@ from src.server.models.workflow import (
 logger = logging.getLogger(__name__)
 
 
-def _turn_numbers(boundaries: list[Any], persisted: list[int]) -> list[int | None]:
-    """Each boundary's persisted turn_index.
-
-    A turn's input checkpoint carries the turn_index its run was admitted
-    under. A resume's checkpoint belongs to the run it answers, and threads
-    from before the stamp carry none, so those take the next persisted turn
-    after the one before: wherever replay's pairing holds, this is the turn it
-    names. None when no persisted turn is left to name.
-    """
-    numbers: list[int | None] = []
-    previous: int | None = None
-    for cp_tuple in boundaries:
-        metadata = cp_tuple.metadata or {}
-        number = metadata.get("turn_index") if metadata.get("source") == "input" else None
-        if number is None:
-            at = 0 if previous is None else bisect_right(persisted, previous)
-            number = persisted[at] if at < len(persisted) else None
-        numbers.append(number)
-        if number is not None:
-            previous = number
-    return numbers
-
-
 async def get_thread_turns(
     thread_id: str, branch_tip_checkpoint_id: str | None = None
 ) -> ThreadTurnsResponse:
@@ -58,11 +34,9 @@ async def get_thread_turns(
 
     Edit/regenerate fork the checkpoint graph, so only ancestors of the branch
     tip count (tip: ``branch_tip_checkpoint_id`` when on the graph, else the
-    newest checkpoint). Each turn is named by its persisted ``turn_index``,
-    the number its rows and replayed bubbles carry, never by its position
-    among the boundaries: a turn whose run died before its first checkpoint
-    has rows and no boundary, so every later turn sits a place lower than its
-    number. A boundary with no persisted turn to name is left out.
+    newest checkpoint). Each turn is named by its persisted ``turn_index``
+    (``pair_turns``), the number its rows and replayed bubbles carry; a turn
+    with no persisted turn to name is left out.
     """
     try:
         boundaries, tip_id = await walk_current_branch_boundaries(
@@ -75,23 +49,16 @@ async def get_thread_turns(
         logger.error(f"[CHECKPOINT] Failed to list checkpoints for thread {thread_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve checkpoint history")
 
-    turns = []
-    for cp_tuple, turn_index in zip(boundaries, _turn_numbers(boundaries, persisted)):
-        if turn_index is None:
-            continue
-        cp_id = cp_tuple.config["configurable"]["checkpoint_id"]
-        # The parent checkpoint is the state BEFORE this turn — only meaningful
-        # for a source=input turn (a resume shares its interrupted turn's state).
-        is_source_input = (cp_tuple.metadata or {}).get("source") == "input"
-        edit_checkpoint_id = None
-        if is_source_input and cp_tuple.parent_config:
-            edit_checkpoint_id = cp_tuple.parent_config["configurable"].get("checkpoint_id")
-
-        turns.append(TurnCheckpointInfo(
+    anchors = turn_anchors(boundaries, tip_id) if tip_id else []
+    turns = [
+        TurnCheckpointInfo(
             turn_index=turn_index,
-            edit_checkpoint_id=edit_checkpoint_id,
-            regenerate_checkpoint_id=cp_id,
-        ))
+            edit_checkpoint_id=None if anchor.is_resume else anchor.parent_checkpoint_id,
+            regenerate_checkpoint_id=anchor.input_checkpoint_id,
+        )
+        for anchor, turn_index in zip(anchors, pair_turns(anchors, persisted))
+        if turn_index is not None
+    ]
 
     return ThreadTurnsResponse(
         thread_id=thread_id,

@@ -19,7 +19,7 @@ from ptc_agent.agent.backends import SandboxBackend
 from ptc_agent.core.paths import WorkspaceLayout
 from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.agent.middleware import SubAgentMiddleware
-from ptc_agent.agent.state import DeltaAgentState
+from ptc_agent.agent.main_state import MainAgentState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
@@ -947,7 +947,7 @@ class PTCAgent:
             middleware=deepagent_middleware,
             checkpointer=checkpointer,
             store=store,
-            state_schema=DeltaAgentState,
+            state_schema=MainAgentState,
         ).with_config({"recursion_limit": 2000})
 
         return BackgroundSubagentOrchestrator(

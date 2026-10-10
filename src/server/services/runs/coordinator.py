@@ -654,12 +654,12 @@ class RunCoordinator:
         self, thread_id: str, run: Optional[Dict[str, Any]]
     ) -> None:
         """The uniform after-a-won-CAS tail: every site that applies a
-        terminal transition schedules the projection refresh and the
+        terminal transition schedules the replay refresh and the
         transcript export and nudges the drainer, so they never drift apart
         per call site. The export runs at every terminal status, since each
         stamps the checkpoint and another thread may read this one's
         transcript."""
-        self._schedule_projection_refresh(thread_id)
+        self._schedule_replay_refresh(thread_id)
         self._schedule_transcript_export(thread_id, run)
         self._schedule_archive_prune(thread_id, run)
         self._nudge_hook_drainer()
@@ -674,16 +674,16 @@ class RunCoordinator:
         except Exception:
             logger.warning("[RunCoordinator] hook drainer nudge failed", exc_info=True)
 
-    def _schedule_projection_refresh(self, thread_id: str) -> None:
+    def _schedule_replay_refresh(self, thread_id: str) -> None:
         try:
-            from src.server.services.history.projection_cache import (
-                schedule_projection_refresh,
+            from src.server.services.history.replay.refresh import (
+                schedule_replay_refresh,
             )
 
-            schedule_projection_refresh(thread_id)
+            schedule_replay_refresh(thread_id)
         except Exception:
             logger.warning(
-                f"[RunCoordinator] projection refresh scheduling failed for "
+                f"[RunCoordinator] replay refresh scheduling failed for "
                 f"{thread_id}",
                 exc_info=True,
             )

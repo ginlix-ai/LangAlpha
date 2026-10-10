@@ -6,7 +6,8 @@ close. The two sides count differently: interleaved thinking streams one close
 per block, while the projector joins those blocks into one reasoning row.
 """
 
-from src.server.services.history.replay.stored_merge import _merge_stored_payloads
+from src.server.services.history.replay import legacy
+from src.server.services.history.replay.stored_merge import derive_merge
 
 
 def _chunk(message_id: str, content: str, content_type: str, **extra):
@@ -28,7 +29,7 @@ def _signal(message_id: str, content: str, **extra):
 
 def _carry(turn_items, stored):
     # The merge writes onto the projected items in place.
-    _merge_stored_payloads(turn_items, stored)
+    legacy.apply(turn_items, derive_merge(turn_items, stored))
     return turn_items
 
 

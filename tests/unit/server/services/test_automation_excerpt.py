@@ -28,3 +28,47 @@ def test_a_long_answer_is_cut_at_a_word():
     assert excerpt.endswith("…")
     assert len(excerpt) <= 321
     assert not excerpt[:-1].endswith(" ")
+
+
+async def _two_runs(monkeypatch):
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.graph import START, StateGraph
+
+    from ptc_agent.agent.state import DeltaAgentState
+    from src.server.services.history.reader import CheckpointHistoryReader
+
+    saver = InMemorySaver()
+    graph = (
+        StateGraph(DeltaAgentState)
+        .add_node(
+            "agent",
+            lambda s: {"messages": [AIMessage(f"**Answer** {len(s['messages'])}")]},
+        )
+        .add_edge(START, "agent")
+        .compile(checkpointer=saver)
+    )
+    for n in range(2):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(f"q{n}")]},
+            {"configurable": {"thread_id": "t"}, "metadata": {"run_id": f"run-{n}"}},
+        )
+    monkeypatch.setattr(
+        CheckpointHistoryReader, "get_instance", lambda: CheckpointHistoryReader(saver)
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_newest_run_reads_its_answer(monkeypatch):
+    from src.server.services.automation_excerpt import read_run_excerpt
+
+    await _two_runs(monkeypatch)
+    assert await read_run_excerpt("t", "run-1") == "Answer 3"
+
+
+@pytest.mark.asyncio
+async def test_a_run_a_newer_turn_followed_leaves_none(monkeypatch):
+    from src.server.services.automation_excerpt import read_run_excerpt
+
+    await _two_runs(monkeypatch)
+    assert await read_run_excerpt("t", "run-0") is None

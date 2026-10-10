@@ -56,13 +56,21 @@ def stored_subagents_allowed(value_sql: str, workspace_id_sql: str) -> str:
 # ``usage_settled_at`` rides along because it is the settle instant itself, and
 # replay pairs it with the query timestamp to say how long a turn took. Readers
 # that go through ``_SETTLED_ATTEMPTS`` directly get it from the ``*``; one that
-# projects this list would otherwise be left with the start-plus-duration
+# projects these lists would otherwise be left with the start-plus-duration
 # estimate, which measures from before the row existed.
-_RESPONSE_COLUMNS = (
+#
+# Replay reads every settled row of a thread on each open, but needs a row's
+# ``sse_events`` and ``replay_facts`` only for a turn it projects afresh. Those
+# re-read their rows whole by id (``get_replay_responses``), so a cached open
+# never moves the stored events, or the legacy facts backfilled from them, of
+# its whole history over the wire. A row read without ``sse_events`` has them
+# still to read.
+_LIGHT_RESPONSE_COLUMNS = (
     "conversation_response_id, conversation_thread_id, turn_index, status, "
     "interrupt_reason, metadata, warnings, errors, execution_time, created_at, "
-    "usage_settled_at, sse_events, attempt_no, retry_of_run_id"
+    "usage_settled_at, attempt_no, retry_of_run_id"
 )
+_RESPONSE_COLUMNS = f"{_LIGHT_RESPONSE_COLUMNS}, sse_events, replay_facts"
 
 # 1.6: retries append attempt rows at the SAME turn_index, and the live run is
 # an in_progress row. History readers must see ONE row per turn — the newest
@@ -77,9 +85,17 @@ _RESPONSE_COLUMNS = (
 # append) writes a new tuple version. It is a tuple-header read, so it costs
 # nothing — and a subquery cannot expose it, which is why it belongs here
 # rather than at the replay call site.
-_SETTLED_ATTEMPTS = """
-    SELECT DISTINCT ON (turn_index) *, xmin
+def settled_attempts(columns: str, thread: str = "%s") -> str:
+    """The query for the row each turn of a thread reads. ``thread`` is what
+    the thread id is matched against: a bound parameter, or an outer column
+    such as ``t.conversation_thread_id`` when this is a lateral join, so a
+    job counting turns across threads selects the rows replay reads."""
+    return f"""
+    SELECT DISTINCT ON (turn_index) {columns}, xmin
     FROM conversation_responses
-    WHERE conversation_thread_id = %s AND status <> 'in_progress'
+    WHERE conversation_thread_id = {thread} AND status <> 'in_progress'
     ORDER BY turn_index ASC, attempt_no DESC
 """
+
+
+_SETTLED_ATTEMPTS = settled_attempts("*")

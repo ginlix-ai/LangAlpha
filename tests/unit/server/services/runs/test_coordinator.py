@@ -35,7 +35,7 @@ def _row(status: str, msg_type: str = "ptc") -> dict:
 
 def _coordinator() -> RunCoordinator:
     coordinator = RunCoordinator()
-    coordinator._schedule_projection_refresh = MagicMock()
+    coordinator._schedule_replay_refresh = MagicMock()
     coordinator._nudge_hook_drainer = MagicMock()
     coordinator._latest_checkpoint_id = AsyncMock(return_value="cp-1")
     return coordinator
@@ -129,5 +129,5 @@ async def test_an_export_that_fails_to_schedule_only_logs():
     with patch(EXPORT, side_effect=RuntimeError("no loop")):
         coordinator.post_finalize_tail("thread-1", _row("completed"))
 
-    coordinator._schedule_projection_refresh.assert_called_once_with("thread-1")
+    coordinator._schedule_replay_refresh.assert_called_once_with("thread-1")
     coordinator._nudge_hook_drainer.assert_called_once()
