@@ -30,7 +30,7 @@ import {
 } from '../utils/api';
 // From the dependency-free signal module (not `../utils/api`) so decoding still
 // works where the hook tests mock `../utils/api`.
-import { decodeReportBackSignal, shouldArmForStatus } from '../utils/reportBackSignal';
+import { decodeReportBackSignal, shouldArmForStatus, shouldArmReportBack } from '../utils/reportBackSignal';
 import { isLastingRefusal } from '../utils/api/errors';
 
 /**
@@ -56,7 +56,8 @@ const STATUS_READ_TIMEOUT_MS = 10_000;
  * re-read this far out; only a confirm that STILL finds idle-with-no-producers
  * tears down. Bounded: one extra read per idle observation, no periodic loop.
  * Sized past dispatch-admission latency (the longest of those gaps); the cost
- * of oversizing is only a lingering "awaiting" tip on a drained thread.
+ * of oversizing is only a subscription held open a little longer, since the
+ * chat-input tip follows each read and never waits on the confirm.
  */
 const REPORT_BACK_IDLE_CONFIRM_MS = 15_000;
 
@@ -69,12 +70,11 @@ const REPORT_BACK_IDLE_CONFIRM_MS = 15_000;
 const REPORT_BACK_MAX_ATTACH_ATTEMPTS = 2;
 
 /**
- * Idle cap for a report-back catch-up reconnect. The per-run stream has no
- * terminal sentinel (it stays open ~8s after the summary, forever if the run is
- * wedged), and a reader that never resolves strands the spinner + isStreamingRef
- * — unrecoverably, since every reconcile bails on isStreamingRef. Chosen well
- * above flash inter-token + first-event gaps so a healthy summary is never
- * truncated.
+ * Idle cap for a report-back catch-up reconnect. The per-run stream closes on
+ * its run_end, but a wedged run never writes one, and a reader that never
+ * resolves strands the spinner + isStreamingRef — unrecoverably, since every
+ * reconcile bails on isStreamingRef. Chosen well above flash inter-token +
+ * first-event gaps so a healthy summary is never truncated.
  */
 const REPORT_BACK_IDLE_ABORT_MS = 4_000;
 
@@ -143,8 +143,14 @@ export interface UseReportBackWatchParams {
 }
 
 export interface ReportBackWatch {
-  /** React-state mirror of the watch-armed flag, for render (chat-input tip). */
+  /** React-state mirror of the watch-armed flag: a report-back run here is the watch's to attach. */
   awaitingReportBack: boolean;
+  /**
+   * The chat-input tip: the armed watch's latest read says a report-back is
+   * still owed. Apart from the armed flag because the watch outlives it on
+   * purpose, confirming an idle read before it stops listening.
+   */
+  reportBackOwed: boolean;
   /**
    * High-level arm: mark awaiting, open/keep the keyed watch, seed the
    * backend-named run, and optionally poke a catch-up reconcile. Seeds AFTER
@@ -208,12 +214,14 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
 
   const queryClient = useQueryClient();
   const awaitingReportBackRef = useRef(false);
-  // React-state mirror of awaitingReportBackRef for the chat-input tip; the ref
-  // stays the synchronous source of truth.
+  // React-state mirror of awaitingReportBackRef; the ref stays the synchronous
+  // source of truth.
   const [awaitingReportBack, setAwaitingReportBackState] = useState(false);
+  const [reportBackOwed, setReportBackOwed] = useState(false);
   const setAwaiting = useCallback((v: boolean) => {
     awaitingReportBackRef.current = v;
     setAwaitingReportBackState(v);
+    if (!v) setReportBackOwed(false);
   }, []);
   const reportBackWatchAbortRef = useRef<AbortController | null>(null);
   // The active watch's reconcile fn, exposed so gap events outside the watch
@@ -336,12 +344,15 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     const attach = async (runId: string | null, activeTasks: string[]) => {
       if (!runId || runId === currentRunIdRef.current) return false;
       clearIdleConfirm(); // attaching IS evidence of life
+      // This run is the report arriving. Whether another is still owed is the
+      // next read's to say, so the tip stays down when the stream ends.
+      setReportBackOwed(false);
       // Record BEFORE streaming so a racing reconcile / recents read can't
       // re-enqueue this run; un-recorded below if the stream delivered nothing.
       attachedRunIdsRef.current.add(runId);
-      // idleAbortMs self-limits the catch-up: the per-run stream has no terminal
-      // sentinel, so the idle watchdog ends the reader once the summary streamed
-      // (or never started). See REPORT_BACK_IDLE_ABORT_MS.
+      // idleAbortMs bounds the catch-up: the per-run stream closes on run_end,
+      // but a run that never started or wedged never writes one. See
+      // REPORT_BACK_IDLE_ABORT_MS.
       // resetSubagentProjection:false — a report-back attach replays only the
       // synthetic notification turn, never subagent events, so the reader's
       // subagent-card wipe would only destroy a still-running sibling's live
@@ -420,7 +431,9 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
           inFlight = false;
           // A transient /status error is NOT a drained queue (the backend
           // returns a null sentinel, never `false`, when its own read fails).
-          // Stay armed — the next event retries.
+          // Stay armed, and owed, since an attach may have dropped the tip:
+          // the next event retries.
+          setReportBackOwed(true);
           return;
         }
         inFlight = false;
@@ -446,6 +459,7 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       if (await attachQueueHead([])) return;
 
       const signal = decodeReportBackSignal(status.pending_report_back);
+      if (shouldArmReportBack(signal)) setReportBackOwed(true);
 
       // `idle` (the backend's explicit false) → every dispatched report-back has
       // drained. Tear down — safe with respect to unrendered runs because a
@@ -458,9 +472,14 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
         // mid-run idleness proves nothing. Stay armed; a settle surfaces as a
         // wake, a snapshot, or the task-stream-end poke.
         if (hasOpenProducers?.() || (status.active_tasks?.length ?? 0) > 0) {
+          setReportBackOwed(true);
           clearIdleConfirm();
           return;
         }
+        // The backend counts a report as owed until its run ends, so idle with
+        // no producer means every report has arrived: the tip drops on this
+        // read, and only the subscription waits on the confirm below.
+        setReportBackOwed(false);
         // No source disarms on its own read — EVERY fetch can race a server
         // registration gap (approve-path pendingness, task settle → outbox
         // enqueue, a lost `cleared` wake's silent window). One idle
@@ -603,13 +622,17 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     reportBackReconcileRef.current = reconcile;
   };
 
-  // See {@link ReportBackWatch.arm}.
+  // See {@link ReportBackWatch.arm}. `owed` is false only for a catch-up arm
+  // over runs that already finished, which has nothing left to wait for, so it
+  // also drops a tip a live watch kept from before the view was hidden.
   const arm = (
     flashThreadId: string | null | undefined,
     reportBackRunId: string | null | undefined,
     pokeSource: string | null,
+    owed = true,
   ) => {
     setAwaiting(true);
+    setReportBackOwed(owed);
     startReportBackWatch(flashThreadId);
     // Seed AFTER arming: a fresh arm tears down + rebuilds and would drop it.
     enqueueReportBackRun(reportBackRunId);
@@ -730,7 +753,7 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
         (rid) => !attachedRunIdsRef.current.has(rid) && rid !== currentRunIdRef.current,
       )
     ) {
-      arm(threadId, status.report_back_run_id, 'activate');
+      arm(threadId, status.report_back_run_id, 'activate', false);
     }
     return settled;
   };
@@ -774,11 +797,12 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
   return useMemo(
     () => ({
       awaitingReportBack,
+      reportBackOwed,
       arm: armStable,
       markRunsRendered: markRunsRenderedStable,
       onStreamEnd: onStreamEndStable,
       reconnectIfStaleRun: reconnectIfStaleRunStable,
     }),
-    [awaitingReportBack, armStable, markRunsRenderedStable, onStreamEndStable, reconnectIfStaleRunStable],
+    [awaitingReportBack, reportBackOwed, armStable, markRunsRenderedStable, onStreamEndStable, reconnectIfStaleRunStable],
   );
 }

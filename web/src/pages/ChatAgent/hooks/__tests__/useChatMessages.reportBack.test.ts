@@ -1038,6 +1038,47 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
   });
 
+  it('activation: catching up on runs that already finished arms the watch without the waiting tip', async () => {
+    mockStatus.mockResolvedValue(threadStatus());
+    captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(mockReplay).toHaveBeenCalled());
+    await settleMountEffect();
+
+    // Drained while hidden: nothing owed, one run never rendered. Hold the
+    // watch's own read so the arm is observed before any attach.
+    mockStatus.mockResolvedValue(threadStatus({ recent_report_back_run_ids: ['rb-done'] }));
+    mockReportBackStatus.mockImplementation(() => new Promise(() => {}));
+    await act(async () => {
+      await result.current.reconnectIfStaleRun();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.awaitingReportBack).toBe(true);
+    expect(result.current.reportBackOwed).toBe(false);
+  });
+
+  it('activation: the catch-up arm drops a tip left up from before the view was hidden', async () => {
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(result.current.reportBackOwed).toBe(true));
+    await settleMountEffect();
+
+    // The report drained while hidden; its run never rendered here.
+    mockStatus.mockResolvedValue(threadStatus({ recent_report_back_run_ids: ['rb-done'] }));
+    mockReportBackStatus.mockImplementation(() => new Promise(() => {}));
+    await act(async () => {
+      await result.current.reconnectIfStaleRun();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.awaitingReportBack).toBe(true);
+    expect(result.current.reportBackOwed).toBe(false);
+  });
+
   it('activation: a LIVE report-back run is left to the armed watch, not reloaded over', async () => {
     // A check held through the last report-back's stream lands at its end,
     // just as the next one starts. The reload's reconnect and the watch's
@@ -1583,6 +1624,7 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
 
     const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+    expect(result.current.reportBackOwed).toBe(true);
 
     // A cleared wake forces a reconcile: idle, but a subagent still writes.
     mockStatus.mockResolvedValue(threadStatus({ active_tasks: ['t1'] }));
@@ -1591,10 +1633,13 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(result.current.awaitingReportBack).toBe(true);
+    expect(result.current.reportBackOwed).toBe(true);
     expect(watchCalls[0].controller.signal.aborted).toBe(false);
 
     // Every subagent settled with nothing due: idle + no writers. One idle
-    // read only SCHEDULES the confirm — the watch must still be armed…
+    // read only SCHEDULES the confirm — the watch must still be armed, but
+    // the tip drops on this read: the backend counts a report owed until its
+    // run ends, so nothing is left to wait for.
     mockStatus.mockResolvedValue(threadStatus({}));
     vi.useFakeTimers();
     try {
@@ -1603,6 +1648,7 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
         await vi.advanceTimersByTimeAsync(0);
       });
       expect(result.current.awaitingReportBack).toBe(true);
+      expect(result.current.reportBackOwed).toBe(false);
       expect(watchCalls[0].controller.signal.aborted).toBe(false);
       // …and the still-idle confirm is what drains it.
       await act(async () => {
@@ -1613,6 +1659,63 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     }
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(false));
     expect(watchCalls[0].controller.signal.aborted).toBe(true);
+  });
+
+  it('a summary that ends on a question re-reads, so the tip follows a report still owed', async () => {
+    // The attach drops the tip; only the next read may raise it again. A
+    // stream that ends on an interrupt skips the stream-end cleanup, so the
+    // read has to come from the interrupt itself.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+
+    mockReconnect.mockImplementation((...args: unknown[]) => {
+      const onEvent = args[3] as (e: Record<string, unknown>) => void;
+      onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'text', content: 'summary…' });
+      onEvent({
+        event: 'interrupt',
+        interrupt_id: 'q-1',
+        action_requests: [{ type: 'ask_user_question', question: 'Proceed?', options: [], allow_multiple: false }],
+      });
+      return Promise.resolve({ disconnected: false, aborted: false });
+    });
+    const reads = mockReportBackStatus.mock.calls.length;
+    await act(async () => {
+      await watchCalls[0].cb({ run_id: 'rb-1' });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(mockReconnect.mock.calls.some((c) => c[1] === 'rb-1')).toBe(true);
+    await waitFor(() => expect(mockReportBackStatus.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(result.current.reportBackOwed).toBe(true));
+  });
+
+  it('a read that cannot tell after the attach keeps the tip, as the watch keeps watching', async () => {
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+
+    mockReconnect.mockImplementation((...args: unknown[]) => {
+      const onEvent = args[3] as (e: Record<string, unknown>) => void;
+      onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'text', content: 'summary…' });
+      // The stream-end read finds the registry unreadable.
+      mockStatus.mockResolvedValue(threadStatus({ pending_report_back: null }));
+      return Promise.resolve({ disconnected: false, aborted: false });
+    });
+    const reads = mockReportBackStatus.mock.calls.length;
+    await act(async () => {
+      await watchCalls[0].cb({ run_id: 'rb-1' });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(mockReconnect.mock.calls.some((c) => c[1] === 'rb-1')).toBe(true);
+    await waitFor(() => expect(mockReportBackStatus.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(result.current.reportBackOwed).toBe(true));
+    expect(result.current.awaitingReportBack).toBe(true);
   });
 
   it('tail load: live subagents alone arm the watch, and a task-run close never disarms it', async () => {
@@ -1676,12 +1779,15 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
         await watchCalls[0].cb({ cleared: true });
       });
       expect(result.current.awaitingReportBack).toBe(true);
+      expect(result.current.reportBackOwed).toBe(false);
 
-      // The gap closes: pendingness registers before the confirm fires.
+      // The gap closes: pendingness registers before the confirm fires, and
+      // the tip follows the read back up.
       mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
       await act(async () => {
         await watchCalls[0].cb({ cleared: true });
       });
+      expect(result.current.reportBackOwed).toBe(true);
 
       // The confirm window passes: still armed, and the cancelled timer
       // issued no read of its own.

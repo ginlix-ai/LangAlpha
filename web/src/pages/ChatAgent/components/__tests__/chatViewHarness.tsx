@@ -77,6 +77,7 @@ const baseChatState = () => ({
   isLoading: false,
   hasActiveSubagents: false,
   awaitingReportBack: false,
+  reportBackOwed: false,
   workspaceStarting: false as const,
   isCompacting: false as const,
   setIsCompacting: vi.fn(),

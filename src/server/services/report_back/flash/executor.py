@@ -184,6 +184,10 @@ async def execute_report_back(job: dict) -> None:
                             cache, flash_thread_id,
                             error="background_workflow_failed",
                         )
+                    elif cleared:
+                        # Watchers still read this member as owed; without a
+                        # wake they hold that until their watch recycles.
+                        await wake.publish_wake(cache, flash_thread_id, cleared=True)
             return
 
         # outcome == "dispatched"
@@ -288,11 +292,14 @@ async def _await_run_terminal(
     )
     cache = get_cache_client()
     async with outbox_db.fenced_job_guard(job_id, attempts) as owned:
-        if owned:
-            await pointer.clear_flash_report_back(
-                cache, ptc_thread_id, flash_thread_id, user_id=user_id,
-                expected_gen=dispatch_gen,
-            )
+        if not owned:
+            return
+        cleared = await pointer.clear_flash_report_back(
+            cache, ptc_thread_id, flash_thread_id, user_id=user_id,
+            expected_gen=dispatch_gen,
+        )
+        if cleared:
+            await wake.publish_wake(cache, flash_thread_id, cleared=True)
 
 
 async def _workspace_label(workspace_id: str | None) -> str:

@@ -441,7 +441,7 @@ export function useChatMessages(
   // `arm` is identity-stable (facade over a latest-impl ref), so callbacks that
   // dispatch through it can dep on it without churning per render — the whole
   // reportBackWatch object would change identity on awaitingReportBack flips.
-  const { awaitingReportBack, arm: armReportBackWatch } = reportBackWatch;
+  const { awaitingReportBack, reportBackOwed, arm: armReportBackWatch } = reportBackWatch;
 
   // Batch back-to-back offload events into a single notification
   const offloadBatchRef = useRef<OffloadBatch>({ args: 0, reads: 0, timer: null });
@@ -2635,6 +2635,7 @@ export function useChatMessages(
     marketWatch,
     hasActiveSubagents,
     awaitingReportBack,
+    reportBackOwed,
     workspaceStarting,
     isCompacting,
     setIsCompacting,

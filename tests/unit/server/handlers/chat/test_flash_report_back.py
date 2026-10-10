@@ -575,12 +575,17 @@ async def test_execute_drop_clears_member_so_chain_advances():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("final_status", "woken"),
-    [("cancelled", True), ("error", True), ("completed", False)],
+    ("final_status", "wake"),
+    [
+        ("cancelled", {"error": "background_workflow_failed"}),
+        ("error", {"error": "background_workflow_failed"}),
+        ("completed", {"cleared": True}),
+    ],
 )
-async def test_a_dropped_stop_or_failure_summary_still_wakes_the_card(final_status, woken):
-    """With no summary to tell the user, the failure wake is what reconciles
-    the card, as it did before stops and failures got a summary."""
+async def test_a_dropped_summary_still_wakes_the_watcher(final_status, wake):
+    """With no summary to tell the user, the wake is what reconciles the card
+    and drops the chat tip; a silent drop left the tip up until the watch
+    recycled."""
     cache = _FakeCache()
     flash, ptc = "flash-1", "ptc-1"
     _seed_dispatched(cache, flash, [ptc])
@@ -590,10 +595,7 @@ async def test_a_dropped_stop_or_failure_summary_still_wakes_the_card(final_stat
         await h.run(_job(ptc, final_status=final_status))
 
     assert not cache.client.sets.get(keys.flash_watch_key(flash))
-    if woken:
-        publish.assert_awaited_once_with(cache, flash, error="background_workflow_failed")
-    else:
-        publish.assert_not_called()
+    publish.assert_awaited_once_with(cache, flash, **wake)
 
 
 @pytest.mark.asyncio

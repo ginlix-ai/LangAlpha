@@ -17,9 +17,8 @@ to fetch the result from the durable archive — nothing volatile rides the
 payload.
 
 Unlike the flash pipeline there is no Redis reserve state: the open outbox
-row IS the pending-registry (its open lifetime — enqueue through the
-executor's terminal wait — is exactly the pending window, and /status
-reads it via ``get_open_notification_job``).
+row IS the pending-registry, owed from enqueue until the notification run
+it dispatched ends (/status reads it via ``read_task_report_back_status``).
 
 Delivery semantics are AT-LEAST-ONCE, never exactly-once: completed and
 error runs enqueue (cancelled/interrupted never notify — cancellation is
@@ -68,10 +67,10 @@ async def publish_cleared_wake_if_no_open_job(thread_id: str) -> None:
         from src.server.services.report_back.flash import wake
         from src.utils.cache.redis_cache import get_cache_client
 
-        job = await outbox_db.get_open_notification_job(
-            thread_id, "task_report_back"
+        open_jobs = await outbox_db.list_open_notification_jobs(
+            thread_id, "task_report_back", limit=1
         )
-        if job is None:
+        if not open_jobs:
             await wake.publish_wake(get_cache_client(), thread_id, cleared=True)
     except Exception:
         logger.warning(
@@ -84,27 +83,32 @@ async def publish_cleared_wake_if_no_open_job(thread_id: str) -> None:
 async def read_task_report_back_status(thread_id: str) -> dict:
     """Report-back status slice for a PTC thread (same contract as flash).
 
-    Pendingness IS the oldest open non-deferred outbox row; its
+    A non-deferred outbox job is owed until the notification run it
+    dispatched ends (see ``ended_run_ids``). The first owed job's
     ``dispatched_run_id`` (present once the notification turn is POSTed) is
     the run to attach to. On a read failure ``pending_report_back`` is
     ``None`` (unknown — the frontend keeps watching). Drained notification
     runs are derived from recently DONE outbox rows — the only recovery for
     a wake published while the client held no subscription, and durable by
     construction (the ack that closes the job IS the ledger write) — plus
-    the open job's run when it is already terminal (post-finalize/pre-ack
-    window: the turn is persisted and replayable before the ack lands).
+    the runs of open jobs that already ended, which are persisted and
+    replayable before the ack lands.
     """
     from src.server.database.runs import outbox as outbox_db
+    from src.server.services.report_back.flash.status import ended_run_ids
 
     pending: bool | None = False
     run_id = None
+    ended: list[str] = []
     try:
-        job = await outbox_db.get_open_notification_job(
+        jobs = await outbox_db.list_open_notification_jobs(
             thread_id, "task_report_back"
         )
-        if job is not None:
-            pending = True
-            run_id = (job.get("payload") or {}).get("dispatched_run_id")
+        runs = [(job.get("payload") or {}).get("dispatched_run_id") for job in jobs]
+        ended = await ended_run_ids(runs)
+        owed = [r for r in runs if r not in ended]
+        pending = bool(owed)
+        run_id = owed[0] if owed else None
     except Exception:
         logger.warning(
             f"Task report-back status read failed for {thread_id}; "
@@ -140,14 +144,9 @@ async def read_task_report_back_status(thread_id: str) -> dict:
         # unrendered. Degrade to unknown so the client stays armed.
         if pending is False:
             pending = None
-    # Post-finalize/pre-ack window: the dispatched run can already be terminal
-    # (turn persisted, replayable) while the job is still open — recents would
-    # otherwise be blind to it and a reloading client re-attaches the run.
-    from src.server.services.report_back.flash.status import (
-        recents_with_terminal_pointer,
-    )
-
-    recent_run_ids = await recents_with_terminal_pointer(run_id, recent_run_ids)
+    # Ended-but-unacked runs are newer than every acked one, since the jobs
+    # drain in order on the thread's chain.
+    recent_run_ids = list(dict.fromkeys([*ended, *recent_run_ids]))
     return {
         "thread_id": thread_id,
         "pending_report_back": pending,
@@ -471,14 +470,14 @@ async def _exec_subagent_report_back(job: dict) -> None:
     await execute_task_report_back(job)
 
 
-async def _on_subagent_report_back_acked(job: dict) -> None:
+async def _on_subagent_report_back_closed(job: dict) -> None:
     # Task report-back pendingness IS the open outbox row, and the frontend
-    # watch is push-driven — a /status read that raced ahead of the ack
-    # leaves the client armed with no later signal until the ~30-min watch
-    # recycle. `cleared` only means "reconcile now": the client re-reads
-    # /status, so a wake with another job still queued is harmless.
-    # Best-effort (drainer swallows); a dropped wake degrades to the recycle
-    # snapshot.
+    # watch is push-driven — a /status read that raced ahead of the ack, or
+    # of a job parked dead, leaves the client armed with no later signal
+    # until the ~30-min watch recycle. `cleared` only means "reconcile now":
+    # the client re-reads /status, so a wake with another job still queued
+    # is harmless. Best-effort (drainer swallows); a dropped wake degrades to
+    # the recycle snapshot.
     from src.server.services.report_back.flash import wake
     from src.utils.cache.redis_cache import get_cache_client
 
@@ -495,5 +494,5 @@ def register_outbox_executors() -> None:
     register_hook_executor(
         "task_report_back",
         _exec_subagent_report_back,
-        on_acked=_on_subagent_report_back_acked,
+        on_closed=_on_subagent_report_back_closed,
     )

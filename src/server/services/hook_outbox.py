@@ -73,10 +73,11 @@ async def _exec_burst_release(job: Dict[str, Any]) -> None:
 _EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {
     "burst_release": _exec_burst_release,
 }
-# Optional per-type post-ack followups: run best-effort AFTER a successful
-# fenced ack (e.g. a "reconcile now" wake whose whole point is that the row
-# is no longer open). A failure never un-acks the job.
-_ACK_FOLLOWUPS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {}
+# Optional per-type followups once a row stops being open: run best-effort
+# AFTER a successful fenced ack, or once the row is parked dead (e.g. a
+# "reconcile now" wake whose whole point is that the row is no longer open).
+# A failure never un-acks the job.
+_CLOSE_FOLLOWUPS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {}
 # One-shot startup sweeps (e.g. legacy-state migration). The drainer runs
 # every registered sweep as a BARRIER before its first claim.
 _STARTUP_SWEEPS: list[Callable[[], Awaitable[None]]] = []
@@ -86,7 +87,7 @@ def register_hook_executor(
     hook_type: str,
     executor: Callable[[Dict[str, Any]], Awaitable[None]],
     *,
-    on_acked: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    on_closed: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
 ) -> None:
     """Bind a hook_type to its executor. Idempotent for the same function;
     a different executor for a registered type is a wiring bug — raise."""
@@ -97,8 +98,8 @@ def register_hook_executor(
             f"{existing.__qualname__}; refusing {executor.__qualname__}"
         )
     _EXECUTORS[hook_type] = executor
-    if on_acked is not None:
-        _ACK_FOLLOWUPS[hook_type] = on_acked
+    if on_closed is not None:
+        _CLOSE_FOLLOWUPS[hook_type] = on_closed
 
 
 def register_startup_sweep(sweep: Callable[[], Awaitable[None]]) -> None:
@@ -230,6 +231,7 @@ class HookOutboxDrainer:
                         f"{parked.get('hook_outbox_id')} "
                         f"type={parked.get('hook_type')} as dead"
                     )
+                    await self._close_followup(parked)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -356,15 +358,17 @@ class HookOutboxDrainer:
                 new_status = await outbox_db.nack_outbox_job(
                     job_id, attempts=attempts, max_attempts=MAX_ATTEMPTS
                 )
-                if new_status == "dead":
-                    # A dead report_back's watch_clear compensation was
-                    # inserted atomically by the nack statement itself.
-                    logger.error(
-                        f"[HookOutbox] job={job_id} type={hook_type} dead "
-                        f"after {attempts} attempts"
-                    )
             except Exception:
                 logger.error(f"[HookOutbox] nack failed for {job_id}", exc_info=True)
+                return
+            if new_status == "dead":
+                # A dead report_back's watch_clear compensation was
+                # inserted atomically by the nack statement itself.
+                logger.error(
+                    f"[HookOutbox] job={job_id} type={hook_type} dead "
+                    f"after {attempts} attempts"
+                )
+                await self._close_followup(job)
             return
         try:
             await outbox_db.ack_outbox_job(job_id, attempts=attempts)
@@ -374,15 +378,19 @@ class HookOutboxDrainer:
             # the row is still open, so the thread legitimately reads pending.
             logger.warning(f"[HookOutbox] ack failed for {job_id}", exc_info=True)
             return
-        followup = _ACK_FOLLOWUPS.get(hook_type)
-        if followup is not None:
-            # Best-effort: the effect is acked; a dropped followup degrades
-            # to the type's own backstop (e.g. a status-poll recycle).
-            try:
-                await followup(job)
-            except Exception:
-                logger.debug(
-                    f"[HookOutbox] post-ack followup failed for {job_id} "
-                    f"type={hook_type}",
-                    exc_info=True,
-                )
+        await self._close_followup(job)
+
+    async def _close_followup(self, job: Dict[str, Any]) -> None:
+        followup = _CLOSE_FOLLOWUPS.get(job.get("hook_type") or "")
+        if followup is None:
+            return
+        # Best-effort: the row is already closed; a dropped followup degrades
+        # to the type's own backstop (e.g. a watch recycle).
+        try:
+            await followup(job)
+        except Exception:
+            logger.debug(
+                f"[HookOutbox] close followup failed for "
+                f"{job.get('hook_outbox_id')} type={job.get('hook_type')}",
+                exc_info=True,
+            )

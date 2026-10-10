@@ -942,12 +942,33 @@ class TestExecutorRegistry:
         ) as ack, patch.object(
             outbox_db, "nack_outbox_job", AsyncMock()
         ) as nack, patch.dict(
-            hook_outbox._ACK_FOLLOWUPS,
+            hook_outbox._CLOSE_FOLLOWUPS,
             {"task_report_back": AsyncMock(side_effect=RuntimeError("boom"))},
         ):
             await drainer._execute(job)
         ack.assert_awaited_once()
         nack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("nacked_to", "followed_up"), [("dead", True), ("pending", False)])
+    async def test_close_followup_runs_when_a_job_dies(self, nacked_to, followed_up):
+        """A dead row closes as surely as an acked one: the watch reading it
+        as pending has no other signal until it recycles."""
+        from src.server.database.runs import outbox as outbox_db
+
+        drainer = HookOutboxDrainer()
+        job = _job(hook_type="task_report_back", payload={"thread_id": "t-1"})
+        followup = AsyncMock()
+        with patch.dict(
+            hook_outbox._EXECUTORS,
+            {"task_report_back": AsyncMock(side_effect=RuntimeError("boom"))},
+        ), patch.object(
+            outbox_db, "nack_outbox_job", AsyncMock(return_value=nacked_to)
+        ), patch.dict(
+            hook_outbox._CLOSE_FOLLOWUPS, {"task_report_back": followup}
+        ):
+            await drainer._execute(job)
+        assert followup.await_count == (1 if followed_up else 0)
 
 
 # ---------------------------------------------------------------------------

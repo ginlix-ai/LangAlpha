@@ -504,6 +504,11 @@ export const reconnectToStream = async (
       (!abortController.signal.aborted || idleClosed)
     ) {
       cleanupAfterStreamEnd(rt, deps, assistantMessageId);
+    } else if (stillActive && wasInterruptedRef.current) {
+      // A stream that ends on a question or an approval card skips the
+      // cleanup, and the server sends no wake for an interrupted summary. The
+      // attach dropped the tip, so re-read whether another report is owed.
+      deps.reportBackWatch.onStreamEnd();
     }
     // Clear the spinner only if THIS reconnect still owns it. A newer reconnect
     // (cross-thread nav) took ownership and manages its own spinner — clobbering
