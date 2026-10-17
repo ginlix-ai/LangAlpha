@@ -965,7 +965,14 @@
         "title": "Watchlist",
         "description": "Compact ticker list with live prices.",
         "header": "Watchlist",
-        "addSymbol": "Add Symbol"
+        "addSymbol": "Add Symbol",
+        "sort": {
+          "label": "Sort",
+          "added": "Added",
+          "symbol": "A–Z",
+          "price": "Price",
+          "change": "% Chg"
+        }
       },
       "portfolio": {
         "title": "Portfolio",
@@ -2338,6 +2345,7 @@
     "deliverNone": "None",
     "deliverToSlack": "Slack",
     "deliverToDm": "{{app}} DM",
+    "deliverToEmail": "Email",
     "deliverToDiscord": "Discord",
     "deliverAppLandsIn": "{{app}} ({{name}})",
     "deliveryDefaultOption": "Default",

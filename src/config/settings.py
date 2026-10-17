@@ -21,6 +21,7 @@ from src.config.models import (
 # Re-export env-var constants for backward compatibility
 from src.config.env import (  # noqa: F401
     AUTH_SERVICE_URL,
+    AUTOMATION_EMAIL_TO,
     AUTOMATION_WEBHOOK_SECRET,
     AUTOMATION_WEBHOOK_URL,
     GINLIX_DATA_ENABLED,
@@ -29,6 +30,11 @@ from src.config.env import (  # noqa: F401
     HOST_MODE,
     LOCAL_DEV_USER_ID,
     SEARCH_PROVIDER_MIN_TIER,
+    SMTP_FROM,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+    SMTP_USER,
     SUPABASE_URL,
 )
 

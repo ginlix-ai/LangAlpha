@@ -5,6 +5,7 @@ import type { DeliveryAttempt, DeliveryDefault, DeliveryOptions } from '@/types/
 import { mutationErrorMessage } from './errors';
 
 const METHOD_KEY: Record<string, string> = {
+  smtp: 'automation.deliverToEmail',
   slack: 'automation.deliverToSlack',
   discord: 'automation.deliverToDiscord',
 };

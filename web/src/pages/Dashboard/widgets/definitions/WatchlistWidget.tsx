@@ -1,6 +1,7 @@
+import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from '@/lib/framer';
 import { useTranslation } from 'react-i18next';
-import { Eye } from 'lucide-react';
+import { ArrowDown, ArrowUp, Eye } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { WatchlistConfigSchema } from '../framework/configSchemas';
@@ -21,10 +22,58 @@ import {
 
 type WatchlistConfig = Record<string, never>;
 
+type SortKey = 'added' | 'symbol' | 'price' | 'change';
+type SortDir = 'asc' | 'desc';
+interface SortState { key: SortKey; dir: SortDir }
+
+const SORT_KEYS: SortKey[] = ['added', 'symbol', 'price', 'change'];
+// Not dotted: the locale-key test treats dotted string literals as i18n keys.
+const SORT_STORAGE_KEY = 'langalpha:watchlist-sort';
+const DEFAULT_SORT: SortState = { key: 'added', dir: 'asc' };
+// Numeric sorts default to biggest-first; names default to A–Z.
+const FIRST_DIR: Record<SortKey, SortDir> = { added: 'asc', symbol: 'asc', price: 'desc', change: 'desc' };
+
+function loadSort(): SortState {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) ?? 'null');
+    if (parsed && SORT_KEYS.includes(parsed.key) && (parsed.dir === 'asc' || parsed.dir === 'desc')) return parsed;
+  } catch { /* storage unavailable or corrupt: fall back to default */ }
+  return DEFAULT_SORT;
+}
+
+function sortRows<T extends { symbol: string; price: number; changePercent: number; quoteAvailable?: boolean }>(
+  rows: T[],
+  { key, dir }: SortState,
+): T[] {
+  if (key === 'added') return rows;
+  const sign = dir === 'asc' ? 1 : -1;
+  const value = (r: T) => (key === 'price' ? r.price : r.changePercent);
+  return [...rows].sort((a, b) => {
+    if (key === 'symbol') return sign * a.symbol.localeCompare(b.symbol);
+    // Rows without a quote always sink to the bottom, whichever direction.
+    const aOk = a.quoteAvailable !== false && Number.isFinite(value(a));
+    const bOk = b.quoteAvailable !== false && Number.isFinite(value(b));
+    if (aOk !== bOk) return aOk ? -1 : 1;
+    return sign * (value(a) - value(b));
+  });
+}
+
 function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
   const { t } = useTranslation();
   const { watchlist, watchlistHandlers, dashboard } = useDashboardContext();
   const showSkeleton = watchlist.loading && watchlist.rows.length === 0;
+  const [sort, setSort] = useState<SortState>(loadSort);
+  const SortArrow = sort.dir === 'asc' ? ArrowUp : ArrowDown;
+  const sortedRows = useMemo(() => sortRows(watchlist.rows, sort), [watchlist.rows, sort]);
+
+  const selectSort = (key: SortKey) => {
+    const next: SortState =
+      key === sort.key && key !== 'added'
+        ? { key, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: FIRST_DIR[key] };
+    setSort(next);
+    try { localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(next)); } catch { /* per-viewer convenience only */ }
+  };
 
   // Register snapshot exporters: full table + per-row.
   useWidgetContextExport(instance.id, {
@@ -95,6 +144,27 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
           </span>
         </div>
       </div>
+      <div className="flex items-center gap-1 mb-2" role="group" aria-label={t('dashboard.widgets.watchlist.sort.label')}>
+        {SORT_KEYS.map((key) => {
+          const active = sort.key === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={active}
+              onClick={() => selectSort(key)}
+              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[0.625rem] font-medium uppercase tracking-wide transition-colors hover:bg-accent/50"
+              style={{
+                color: active ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+                background: active ? 'var(--color-border-muted)' : undefined,
+              }}
+            >
+              {t(`dashboard.widgets.watchlist.sort.${key}`)}
+              {active && key !== 'added' && <SortArrow className="h-2.5 w-2.5" />}
+            </button>
+          );
+        })}
+      </div>
       <div className="flex-1 min-h-0 overflow-y-auto pr-1">
         <AnimatePresence mode="wait">
           <motion.div
@@ -107,7 +177,7 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
             {showSkeleton ? (
               <HoldingsSkeleton count={5} />
             ) : (
-              watchlist.rows.map((row, i) => (
+              sortedRows.map((row, i) => (
                 <div
                   key={row.watchlist_item_id ?? row.symbol}
                   className="row-attach-host relative"

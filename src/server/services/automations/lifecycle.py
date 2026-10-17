@@ -227,6 +227,10 @@ def checks_entry(method: str) -> bool:
     """Whether saving ``method`` anew asks the messaging service about it: a
     chat always, and with a service, an app too, which it refuses while the
     user hasn't linked that app."""
+    # "smtp" is sent by this server, not through the messaging service. Its id is
+    # not "email": that name stays free for an app the gateway may offer.
+    if method == "smtp":
+        return False
     return names_chat(method) or messaging.messaging_enabled()
 
 
