@@ -227,6 +227,10 @@ def checks_entry(method: str) -> bool:
     """Whether saving ``method`` anew asks the messaging service about it: a
     chat always, and with a service, an app too, which it refuses while the
     user hasn't linked that app."""
+    # "smtp" is sent by this server, not through the messaging service. Its id is
+    # not "email": that name stays free for an app the gateway may offer.
+    if method == "smtp":
+        return False
     return names_chat(method) or messaging.messaging_enabled()
 
 
@@ -272,6 +276,12 @@ async def check_delivery(
     overflow = delivery_overflow(list(methods))
     if overflow:
         raise DeliveryRefused(overflow)
+    # One operator-configured recipient list, so only a single-user deployment can
+    # offer it; refused here rather than as a failed delivery after the run.
+    if "smtp" in methods and "smtp" not in stored and settings.HOST_MODE != "oss":
+        raise DeliveryRefused(
+            [("smtp", "email delivery is only available on a single-user (HOST_MODE=oss) deployment")]
+        )
     fresh = [m for m in dict.fromkeys(methods) if checks_entry(m) and m not in stored]
     if not fresh:
         return list(dict.fromkeys(methods))
