@@ -163,9 +163,12 @@ export function PageIntroModal({
                   type="button"
                   onClick={() => (isLast ? onClose() : goTo(stepIdx + 1))}
                   className="rounded-lg px-5 py-2 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  // The neutral primary pair, as every button takes: amber
+                  // annotates and never fills a button (DESIGN.md). The panel
+                  // beside it is the illustration, which may carry it.
                   style={{
-                    background: 'var(--color-accent-primary)',
-                    color: 'var(--color-text-on-accent)',
+                    background: 'var(--color-btn-primary-bg)',
+                    color: 'var(--color-btn-primary-text)',
                   }}
                 >
                   {isLast
