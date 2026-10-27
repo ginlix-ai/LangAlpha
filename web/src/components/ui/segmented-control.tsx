@@ -72,14 +72,16 @@ export function SegmentedControl<T extends string>({
             className={`flex items-center gap-1.5 font-medium transition-colors disabled:cursor-default ${
               compact ? 'px-2 py-0.5 text-[0.6875rem]' : 'px-2.5 py-1 text-[0.8125rem]'
             }`}
+            // The picked segment fills neutral with ink, as a picked option
+            // card does: amber annotates and never selects (DESIGN.md).
             style={{
-              backgroundColor: selected ? 'var(--color-accent-soft)' : 'transparent',
+              backgroundColor: selected ? 'var(--color-bg-tag)' : 'transparent',
               // Secondary, not tertiary: the tertiary grey reads under 2.5:1
               // on the light surface, below AA for 13 px text.
               color: option.disabled
                 ? 'var(--color-text-quaternary)'
                 : selected
-                  ? 'var(--color-accent-primary)'
+                  ? 'var(--color-text-primary)'
                   : 'var(--color-text-secondary)',
             }}
           >
