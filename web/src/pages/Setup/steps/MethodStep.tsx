@@ -78,7 +78,7 @@ function ConnectedSummary({
 
   return (
     <div
-      className="rounded-lg overflow-hidden"
+      className="pf-box rounded-lg overflow-hidden"
       style={{
         background: 'var(--color-bg-card)',
         border: '1px solid var(--color-border-muted)',
@@ -255,7 +255,7 @@ export default function MethodStep() {
           way on from it is the footer's skip */}
       {!userLoading && hasPlatformAccess && !hasConfigured && (
         <div
-          className="flex items-center gap-2 rounded-lg p-4"
+          className="pf-box flex items-center gap-2 rounded-lg p-4"
           style={{
             background: 'var(--color-bg-card)',
             border: '1px solid var(--color-border-muted)',
@@ -275,7 +275,7 @@ export default function MethodStep() {
             <button
               type="button"
               onClick={() => choose(method.id)}
-              className="flex w-full items-center gap-3 rounded-lg px-4 py-3.5 text-left transition-colors hover:bg-(--color-bg-hover)"
+              className="pf-box flex w-full items-center gap-3 rounded-lg px-4 py-3.5 text-left transition-colors hover:bg-(--color-bg-hover)"
               style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
             >
               <span className="flex w-12 shrink-0 justify-center"><MethodMark method={method.id} /></span>
@@ -303,7 +303,7 @@ export default function MethodStep() {
             </button>
           ) : (
             <div
-              className="flex flex-col gap-3 rounded-lg p-4"
+              className="pf-box flex flex-col gap-3 rounded-lg p-4"
               style={{
                 background: 'var(--color-bg-card)',
                 border: '1px solid var(--color-border-muted)',

@@ -297,6 +297,8 @@ export function McpServers() {
   const pluginSection = (group: (typeof groups.plugins)[number]) => (
     <SurfaceSection
       key={group.plugin}
+      // Titled by the plugin's name, which keeps its case in every style.
+      className="pf-named"
       title={group.plugin}
       count={group.servers.length}
       note={group.pluginOff ? t('plugins.connectorsPage.pluginOff') : undefined}

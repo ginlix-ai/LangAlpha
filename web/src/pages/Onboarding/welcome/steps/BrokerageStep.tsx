@@ -166,6 +166,7 @@ function ElsewhereRow({ onClick }: { onClick: () => void }) {
         type="button"
         onClick={onClick}
         data-testid="welcome-elsewhere"
+        data-slot="door"
         className="group inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md border border-(--color-border-default) px-4 text-sm font-medium text-(--color-text-primary) press hover:bg-(--color-bg-hover)"
       >
         <span>{t('onboarding.welcome.brokerage.elsewhereAction')}</span>

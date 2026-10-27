@@ -17,6 +17,10 @@ export function ConsoleLink({ path, children }: { path: string; children: ReactN
   const Icon = newTab ? ArrowUpRight : ChevronRight;
   return (
     <a
+      // A link drawn as a button takes the button's hooks, so the card styles
+      // draw it as the buttons beside it.
+      data-slot="button"
+      data-variant="outline"
       href={href}
       {...(newTab && { target: '_blank', rel: 'noopener noreferrer' })}
       className={buttonClass({ variant: 'outline', size: 'sm', className: 'h-8 shrink-0 gap-1.5' })}

@@ -96,6 +96,7 @@ export function PageIntroModal({
           {/* Copy + step navigation */}
           <div className={cn('flex flex-col gap-4 p-6 sm:p-9', visualFirst && 'sm:order-2')}>
             <span
+              data-slot="badge"
               className="w-fit rounded-full px-2.5 py-0.5 text-xs font-medium"
               style={{
                 backgroundColor: 'color-mix(in srgb, var(--color-accent-primary) 12%, transparent)',
@@ -152,6 +153,8 @@ export function PageIntroModal({
                   <button
                     type="button"
                     onClick={() => goTo(stepIdx - 1)}
+                    data-slot="button"
+                    data-variant="ghost"
                     className="rounded-lg px-3.5 py-2 text-sm font-medium transition-colors hover:bg-(--color-bg-subtle) focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     style={{ color: 'var(--color-text-secondary)' }}
                   >
@@ -161,6 +164,8 @@ export function PageIntroModal({
                 <button
                   ref={primaryRef}
                   type="button"
+                  data-slot="button"
+                  data-variant="default"
                   onClick={() => (isLast ? onClose() : goTo(stepIdx + 1))}
                   className="rounded-lg px-5 py-2 text-sm font-semibold transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   // The neutral primary pair, as every button takes: amber

@@ -86,6 +86,7 @@ function DialogContent({
         <DialogOverlay />
         <DialogPrimitive.Content
           data-slot="dialog"
+          data-sheet=""
           aria-describedby={undefined}
           ref={containerRefCb}
           className={cn(DIALOG_MOBILE_SHEET_CLASSES, className)}
@@ -95,6 +96,7 @@ function DialogContent({
           {/* Drag handle */}
           <div
             ref={setHandleNode}
+            data-slot="sheet-handle"
             className="flex justify-center pt-3 pb-1 shrink-0 cursor-grab active:cursor-grabbing"
             style={{ touchAction: 'none' }}
           >

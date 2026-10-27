@@ -268,6 +268,8 @@ export function SkillUploadModal({
     <div className="flex justify-end gap-2">
       <button
         type="button"
+        data-slot="button"
+        data-variant="ghost"
         onClick={close}
         disabled={uploading}
         className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50 disabled:pointer-events-none"
@@ -277,6 +279,8 @@ export function SkillUploadModal({
       </button>
       <button
         type="button"
+        data-slot="button"
+        data-variant="default"
         onClick={upload}
         disabled={!canUpload}
         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"

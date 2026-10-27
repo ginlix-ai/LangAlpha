@@ -252,6 +252,8 @@ export function PluginSourceStep({
       <div className="flex justify-end">
         <button
           type="button"
+          data-slot="button"
+          data-variant="default"
           onClick={submit}
           disabled={!canSubmit}
           className="px-3 py-1.5 text-xs rounded-md disabled:opacity-50"

@@ -22,24 +22,24 @@
    Terminal: the whole shell in mono
    ════════════════════════════════════════════════════════════════════ */
 
-:root:not([data-card-style]) :is(.app-layout, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
+:root:not([data-card-style]) :is(.app-layout, .pf-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
-:root:not([data-card-style]) .app-layout .title-font {
+:root:not([data-card-style]) :is(.app-layout, .pf-shell) .title-font {
   font-family: var(--font-mono);
   letter-spacing: 0;
 }
 /* Long-form reading stays in the reply's face in every style. */
-:root:not([data-card-style]) .app-layout .font-content:not(.pf-bubble .font-content) {
+:root:not([data-card-style]) :is(.app-layout, .pf-shell) .font-content:not(.pf-bubble .font-content) {
   font-family: var(--font-content);
 }
 
 /* Balanced: words in the text face throughout, as the cards set theirs. */
-:root[data-card-style='balanced'] :is(.app-layout, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
+:root[data-card-style='balanced'] :is(.app-layout, .pf-shell, [data-slot='menu'], [data-slot='popover'], [data-slot='listbox'], [data-slot='dialog'], [data-slot='tooltip'], [data-slot='toast'], .cwm-modal) {
   font-family: var(--font-content);
 }
-:root[data-card-style='balanced'] .app-layout .title-font {
+:root[data-card-style='balanced'] :is(.app-layout, .pf-shell) .title-font {
   font-family: var(--font-content);
 }
 
@@ -121,9 +121,21 @@
   font-weight: 400;
   opacity: 0.55;
 }
+/* `.tap-target` (base.css) widens a touch target with the same ::after the
+   closing bracket is drawn in, which would lift the bracket out of the line
+   as an empty 44px box. Terminal keeps the bracket; the button keeps its own
+   size as its target. */
+@media (pointer: coarse) {
+  :root:not([data-card-style]) [data-slot='button'].tap-target::after {
+    position: static;
+    width: auto;
+    height: auto;
+    transform: none;
+  }
+}
 /* A door with its own trailing glyph keeps the bracket outside it. */
 :root:not([data-card-style]) [data-slot='door'] > svg { display: none; }
-:root:not([data-card-style]) :is([data-slot='button']:is([data-variant='outline'], [data-variant='danger'], [data-variant='ghost']), .cwm-btn-cancel) {
+:root:not([data-card-style]) :is([data-slot='button']:is([data-variant='outline'], [data-variant='ghost']), .cwm-btn-cancel) {
   background: transparent !important;
   border-color: transparent !important;
   padding-inline: 0.25rem !important;
@@ -573,16 +585,13 @@
 :root:not([data-card-style]) .pf-page-title--bar { text-transform: none; }
 
 /* Composer: Terminal squares it (and its send button, which must stay
-   concentric with it), and types in mono. */
+   concentric with it). What is typed in it keeps the text face: mono set
+   CJK and long input badly, and on a phone wrapped the placeholder. */
 :root:not([data-card-style]) .chat-input-container {
   border-radius: 6px !important;
   border-color: var(--color-term-edge) !important;
 }
 :root:not([data-card-style]) .chat-input-container .send-button { border-radius: 3px !important; }
-:root:not([data-card-style]) .chat-input-container :is(textarea, [contenteditable]) {
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-}
 :root[data-card-style='balanced'] .chat-input-container {
   border-color: var(--color-term-edge) !important;
 }

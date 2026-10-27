@@ -1,0 +1,471 @@
+/* EXPERIMENT: the three card styles on pages. See platformStyles.css for the
+   selector shorthands and voice tokens this file speaks in.
+
+   Covered here: the Plugins sections past the main list (Connectors, Skills,
+   Subagents, Brokerages, Secrets, the detail pages, the add flows), the
+   Automations detail and form, the Settings sections past Account,
+   Appearance and Chat, the setup wizard, and the news page.
+
+   The same restraint as the rest of the experiment, and more of it on forms:
+   section labels move in all three styles, but a form's own field labels stay
+   in sentence case in Terminal too, since twenty capitalised labels on one
+   page read as shouting. Reading text (a skill's document, an automation's
+   instruction, a news story) keeps the reply's face in every style. */
+
+/* ════════════════════════════════════════════════════════════════════
+   Section labels: the page's kickers, in all three styles
+   ════════════════════════════════════════════════════════════════════ */
+
+:root :is(.surface-section-head h2, .detail-aside-block h3, .pf-access-title, .pf-news-section-title, .wizard-section-title) {
+  font-family: var(--term-words, var(--font-mono));
+  text-transform: var(--term-case, uppercase);
+  letter-spacing: calc(0.08em * var(--term-track, 1));
+}
+:root:not([data-card-style]) :is(.surface-section-head h2, .detail-aside-block h3, .pf-access-title, .pf-news-section-title, .wizard-section-title) {
+  font-size: 0.6875rem !important;
+  font-weight: 600;
+  color: var(--color-term-text-secondary) !important;
+}
+
+/* On a subagent's page the side column's titles are the form's field
+   labels, which stay in sentence case beside the main column's. */
+:root:not([data-card-style]) .detail-page:has(.sa-input) .detail-aside-block h3 {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  font-size: 0.8125rem !important;
+  color: var(--color-text-primary) !important;
+}
+
+/* A group titled by a plugin's name keeps the name as written. */
+:root .surface-section-head h2:is(.pf-named *, :has(.pp-group-title)) {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* A section's head rule is a card's divider: dashed in Terminal, a hairline
+   in Balanced. */
+:root:not([data-card-style='quiet']) :is(.surface-section-head, .detail-page-head) { border-bottom-color: var(--color-term-rule); }
+:root:not([data-card-style='quiet']) .detail-page-verbs { border-top-color: var(--color-term-rule); }
+:root:not([data-card-style]) :is(.surface-section-head, .detail-page-head) {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) .detail-page-verbs {
+  border-top-style: dashed;
+  border-top-color: var(--color-term-edge);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Doors: the page's own buttons, drawn as the shared Button is
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back, .pf-news-read, .wizard-btn) {
+  font-family: var(--font-mono);
+  font-size: 0.71875rem !important;
+  font-weight: 600;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+  border-radius: 3px !important;
+}
+:root:not([data-card-style]) :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back, .pf-news-read, .wizard-btn):not(.is-danger)::before {
+  content: var(--term-open);
+  margin-right: 0.5ch;
+  font-weight: 400;
+  opacity: 0.55;
+}
+:root:not([data-card-style]) :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back, .pf-news-read, .wizard-btn):not(.is-danger)::after {
+  content: var(--term-close);
+  margin-left: 0.5ch;
+  font-weight: 400;
+  opacity: 0.55;
+}
+/* The outlined ones shed their box: the brackets are the door. */
+:root:not([data-card-style]) :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back, .wizard-btn.is-ghost):not(.is-primary, .is-danger) {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+:root:not([data-card-style]) :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back, .wizard-btn.is-ghost):not(.is-primary, .is-danger):hover {
+  border-color: var(--color-term-edge) !important;
+}
+/* A destructive door keeps a box, in the loss color, and no brackets: the
+   brackets alone made Logout read as one more neutral door. */
+:root:not([data-card-style]) :is(.pp-btn, .connector-btn).is-danger {
+  border-color: color-mix(in srgb, var(--color-loss) 45%, transparent) !important;
+  background: transparent !important;
+}
+
+/* Balanced: the pill, outlined where the platform outlines. */
+:root[data-card-style='balanced'] :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back, .pf-news-read, .wizard-btn.is-primary) {
+  border-radius: 999px !important;
+}
+:root[data-card-style='balanced'] :is(.pp-btn, .connector-btn, .surface-cell-action, .broker-card-action > button, .pf-news-back):not(.is-primary) {
+  background: transparent !important;
+  border: 1px solid var(--color-term-edge) !important;
+}
+:root[data-card-style='balanced'] :is(.pp-btn, .connector-btn).is-danger {
+  border-color: color-mix(in srgb, var(--color-loss) 40%, transparent) !important;
+}
+
+/* The On switch's frame */
+:root:not([data-card-style='quiet']) :is(.pp-onoff, .connector-onoff) {
+  background: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) :is(.pp-onoff, .connector-onoff) {
+  border-radius: 3px;
+  font-size: 0.6875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+:root[data-card-style='balanced'] :is(.pp-onoff, .connector-onoff) { border-radius: 999px; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Tags and chips: brackets (Terminal), outlined pills (Balanced)
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) :is(.surface-tag, .broker-cap, .pf-news-tag, .vault-bp-origin > span) {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding-inline: 0 !important;
+  border-radius: 0 !important;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem !important;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+:root:not([data-card-style]) :is(.surface-tag, .broker-cap, .pf-news-tag, .vault-bp-origin > span)::before { content: var(--term-open); margin-right: 0.5ch; color: var(--color-term-text-tertiary); }
+:root:not([data-card-style]) :is(.surface-tag, .broker-cap, .pf-news-tag, .vault-bp-origin > span)::after { content: var(--term-close); margin-left: 0.5ch; color: var(--color-term-text-tertiary); }
+/* A capability is a phrase, not a status word: it keeps its case, and its
+   glyph, which marks the order steps. */
+:root:not([data-card-style]) .broker-caps .broker-cap {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.71875rem !important;
+}
+:root[data-card-style='balanced'] :is(.surface-tag, .broker-cap, .pf-news-tag, .vault-bp-origin > span) {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 1px solid var(--term-mark);
+  border-radius: 999px !important;
+}
+/* A declined capability stays the faint one. */
+:root:not([data-card-style='quiet']) .broker-cap.is-declined { opacity: 0.6; }
+
+/* The list filters: a row of bracketed words (Terminal), pills (Balanced),
+   as the segmented controls are drawn. */
+:root:not([data-card-style]) :is(.surface-chip, .plugins-view button, .pp-seg button) {
+  padding-inline: 0.25rem !important;
+  background: transparent !important;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem !important;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+  color: var(--color-term-text-tertiary);
+}
+:root:not([data-card-style]) :is(.surface-chip, .plugins-view button, .pp-seg button)::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
+:root:not([data-card-style]) :is(.surface-chip, .plugins-view button, .pp-seg button)::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
+:root:not([data-card-style]) :is(.surface-chip.is-on, .plugins-view button[aria-pressed='true'], .pp-seg button[aria-pressed='true']) {
+  color: var(--color-term-text);
+  font-weight: 700;
+}
+:root:not([data-card-style='quiet']) :is(.plugins-view, .pp-seg) {
+  background: transparent;
+  border: 0;
+  gap: 0.25rem;
+}
+:root[data-card-style='balanced'] :is(.surface-chip, .plugins-view button, .pp-seg button) {
+  border: 1px solid var(--term-mark);
+  border-radius: 999px;
+  background: transparent !important;
+}
+:root[data-card-style='balanced'] :is(.surface-chip.is-on, .plugins-view button[aria-pressed='true'], .pp-seg button[aria-pressed='true']) {
+  border-color: var(--color-term-text);
+  color: var(--color-term-text);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Plugins: boxes open onto the page
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style='quiet']) :is(.broker-card, .detail-callout, .pp-doc, .pp-key, .tool-params, .connector-empty-box, .sa-banner, .sa-conflict, .sa-start-card) {
+  background: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) :is(.broker-card, .detail-callout, .pp-doc, .pp-key, .tool-params, .connector-empty-box, .sa-banner, .sa-conflict, .sa-start-card) { border-radius: 4px; }
+:root:not([data-card-style='quiet']) :is(.pp-doc-bar, .tool-param + .tool-param, .tool-row + .tool-row) { border-color: var(--color-term-rule); }
+:root:not([data-card-style]) :is(.pp-doc-bar, .tool-param + .tool-param, .tool-row + .tool-row) {
+  border-style: dashed;
+  border-color: var(--color-term-edge);
+}
+/* The chosen starting point outlined in full ink, as a chosen option is. */
+:root:not([data-card-style='quiet']) .pp-file.is-selected {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  font-weight: 700;
+}
+:root:not([data-card-style]) .pp-file.is-selected { border-radius: 3px; }
+:root:not([data-card-style='quiet']) .sa-start-card[aria-checked='true'] {
+  border-color: var(--color-term-text);
+  background: transparent;
+}
+
+/* Fields drawn by the page itself: unfilled, as the shared Input is. */
+:root:not([data-card-style='quiet']) :is(.sa-input, .pp-cmdbox, .vault-search input) {
+  background: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) :is(.sa-input, .pp-cmdbox, .vault-search input) { border-radius: 3px; }
+:root[data-card-style='balanced'] .vault-search input { border-radius: 999px; }
+
+/* The brand tile beside a row: an outlined square, not a filled one. */
+:root:not([data-card-style='quiet']) .broker-card-mark { background: transparent; }
+:root:not([data-card-style]) .broker-card-mark { border-radius: 4px; }
+
+/* Facts: a card's key column, on the value's baseline. */
+:root:not([data-card-style]) :is(.detail-facts, .broker-caps-row, .automation-details, .pf-facts) :is(dt, dd) { align-self: baseline; }
+:root:not([data-card-style]) :is(.detail-facts dt, .broker-caps-row dt, .automation-details dt, .pf-facts dt) {
+  font-size: 0.6875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+  color: var(--color-term-text-tertiary);
+}
+
+/* Titles of a detail page and a brokerage */
+:root:not([data-card-style]) .detail-head h1 {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  letter-spacing: 0;
+}
+:root[data-card-style='balanced'] .detail-head h1 {
+  font-family: var(--font-content);
+  letter-spacing: -0.015em;
+}
+:root:not([data-card-style]) .broker-card-name,
+:root:not([data-card-style]) .broker-card-open { font-size: 0.875rem; font-weight: 700; }
+
+/* The section's state words read as a card's status */
+:root:not([data-card-style]) :is(.surface-state-off, .broker-card-state) {
+  font-size: 0.6875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Automations: the detail and the form
+   ════════════════════════════════════════════════════════════════════ */
+
+/* A section's kicker runs out into the card's divider, as .pf-kicker does. */
+:root:not([data-card-style='quiet']) .automation-inspector-section > .automations-kicker {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+:root:not([data-card-style='quiet']) .automation-inspector-section > .automations-kicker::after {
+  content: '';
+  flex: 1;
+  border-top: 1px dashed var(--color-term-edge);
+}
+:root[data-card-style='balanced'] .automation-inspector-section > .automations-kicker::after {
+  border-top-style: solid;
+  border-top-color: var(--color-term-rule);
+}
+
+:root:not([data-card-style='quiet']) :is(.automation-report, .automation-instruction) {
+  background-color: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) :is(.automation-report, .automation-instruction) { border-radius: 4px; }
+/* The instruction is prose the user wrote: the reply's face in every style. */
+:root:not([data-card-style]) .automation-instruction {
+  font-family: var(--font-content);
+}
+
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .automation-history th {
+  font-family: var(--term-words);
+  text-transform: var(--term-case);
+  letter-spacing: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+:root:not([data-card-style='quiet']) .automation-history th { border-bottom-color: var(--color-term-edge); }
+:root:not([data-card-style='quiet']) .automation-history td { border-bottom-color: var(--color-term-rule); }
+:root:not([data-card-style]) .automation-history td {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--color-term-edge);
+}
+
+/* The manage view's columns sit on a rule, as the rails do. */
+:root:not([data-card-style='quiet']) :is(.automations-manage, .automations-manage-list) { border-color: var(--color-term-edge); }
+:root:not([data-card-style]) .automations-manage { border-top-style: dashed; }
+:root:not([data-card-style]) .automations-manage-list { border-right-style: dashed; }
+/* The open automation: full ink and an edge, no wash, as the rails mark it. */
+:root:not([data-card-style='quiet']) .automations-list-row[aria-current='true'] {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+}
+:root:not([data-card-style]) .automations-list-row[aria-current='true'] { border-radius: 3px; }
+
+/* The run on show, outlined rather than washed. */
+:root:not([data-card-style='quiet']) .automation-history-run[aria-current='true'] {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+}
+
+/* The form: its rows parted by the card's divider. */
+:root:not([data-card-style='quiet']) :is(.automation-form-rows, .automation-form-rows > * + *) { border-color: var(--color-term-rule); }
+:root:not([data-card-style]) :is(.automation-form-rows, .automation-form-rows > * + *) {
+  border-style: dashed;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style='quiet']) .automation-form :is(input, textarea, select, .automation-moment-field) {
+  background-color: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) .automation-form :is(input, textarea, select, .automation-moment-field) { border-radius: 3px; }
+/* What the automation is told to do is typed prose: it keeps the text face. */
+:root:not([data-card-style]) .automation-form textarea { font-family: var(--font-content); }
+:root:not([data-card-style='quiet']) :is(.automation-trigger-option, .automation-day, .automation-delivery-chip) {
+  background-color: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style='quiet']) :is(.automation-trigger-option, .automation-day)[aria-pressed='true'] {
+  border-color: var(--color-term-text);
+  background-color: transparent;
+  color: var(--color-term-text);
+  font-weight: 700;
+}
+:root:not([data-card-style]) :is(.automation-trigger-option, .automation-day, .automation-delivery-chip) { border-radius: 3px; }
+:root[data-card-style='balanced'] .automation-day { border-radius: 999px; }
+:root[data-card-style='balanced'] .automation-trigger-option { border-radius: 12px; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Settings: the remaining sections
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Trading: each level an open box, the chosen one in full ink. */
+:root:not([data-card-style='quiet']) .pf-level {
+  background-color: transparent !important;
+  border-color: var(--color-term-edge) !important;
+}
+:root:not([data-card-style='quiet']) .pf-level:has(input:checked) { border-color: var(--color-term-text) !important; }
+:root:not([data-card-style]) .pf-level { border-radius: 4px; }
+:root[data-card-style='balanced'] .pf-level { border-radius: 12px; }
+
+/* Models: the access lists are cards of rows. */
+:root:not([data-card-style='quiet']) .pf-access-list {
+  background: transparent !important;
+  border-color: var(--color-term-edge) !important;
+}
+:root:not([data-card-style='quiet']) .pf-access-list > * + * { border-color: var(--color-term-rule); }
+:root:not([data-card-style]) .pf-access-list { border-radius: 4px; }
+:root:not([data-card-style]) .pf-access-list > * + * {
+  border-top-style: dashed;
+  border-color: var(--color-term-edge);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Setup wizard: outside the app shell, so it takes the face itself
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) .wizard-shell {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+:root[data-card-style='balanced'] .wizard-shell { font-family: var(--font-content); }
+:root:not([data-card-style]) .wizard-title {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  letter-spacing: 0;
+}
+:root[data-card-style='balanced'] .wizard-title {
+  font-family: var(--font-content);
+  letter-spacing: -0.015em;
+}
+/* The wordmark keeps its own face in every style. */
+.wizard-shell .wizard-wordmark { font-family: var(--font-ui); }
+
+/* Progress: step names as a card's labels; the step you are on in full ink. */
+:root .wizard-progress-step {
+  font-family: var(--term-words, var(--font-mono));
+}
+:root:not([data-card-style]) .wizard-progress-step {
+  font-size: 0.6875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+}
+:root:not([data-card-style='quiet']) .wizard-progress-rule { background: var(--color-term-edge); }
+:root:not([data-card-style]) .wizard-progress-rule {
+  height: 0;
+  background: none;
+  border-top: 1px dashed var(--color-term-edge);
+}
+:root:not([data-card-style='quiet']) .wizard-footer { border-top-color: var(--color-term-edge); }
+:root:not([data-card-style]) .wizard-footer { border-top-style: dashed; }
+:root:not([data-card-style]) .wizard-exit {
+  font-size: 0.71875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   News: the story stays in the reply's face; the frame around it is a card
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) .pf-news-title {
+  font-family: var(--font-mono);
+  font-size: 1.375rem !important;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+:root[data-card-style='balanced'] .pf-news-title {
+  font-family: var(--font-content);
+  letter-spacing: -0.015em;
+}
+:root:not([data-card-style]) .pf-news-body p,
+:root:not([data-card-style]) .pf-news-reason {
+  font-family: var(--font-content);
+}
+:root:not([data-card-style='quiet']) .pf-news-body {
+  background-color: transparent !important;
+  border-color: var(--color-term-edge) !important;
+}
+:root:not([data-card-style]) .pf-news-body { border-radius: 4px !important; }
+
+/* Sentiment: one open box with its title cut into the edge, the rows parted
+   by the divider, as a data card's table is. */
+:root:not([data-card-style='quiet']) .pf-news-section {
+  position: relative;
+  margin-top: 0.75rem;
+  padding: 1.125rem 0.875rem 0.5rem !important;
+  border: 1px solid var(--color-term-edge) !important;
+  border-radius: 8px;
+}
+:root:not([data-card-style]) .pf-news-section { border-radius: 4px; }
+:root:not([data-card-style='quiet']) .pf-news-section-title {
+  position: absolute;
+  top: -0.75em;
+  left: 0.625rem;
+  padding: 0 0.375rem;
+  background: var(--color-bg-page);
+  line-height: 1.45;
+}
+:root:not([data-card-style='quiet']) .pf-news-rows { gap: 0 !important; }
+:root:not([data-card-style='quiet']) .pf-news-row {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding-inline: 0 !important;
+}
+:root:not([data-card-style='quiet']) .pf-news-row + .pf-news-row { border-top: 1px solid var(--color-term-rule) !important; }
+:root:not([data-card-style]) .pf-news-row + .pf-news-row { border-top: 1px dashed var(--color-term-edge) !important; }
+:root:not([data-card-style='quiet']) .pf-news-foot { border-top-color: var(--color-term-rule) !important; }
+:root:not([data-card-style]) .pf-news-foot { border-top: 1px dashed var(--color-term-edge) !important; }
+:root:not([data-card-style]) .pf-news-back > svg { display: none; }
+
+/* Panels drawn inline (the setup steps', a model sheet's saved key): open
+   boxes in the open styles. */
+:root:not([data-card-style='quiet']) .pf-box {
+  background: transparent !important;
+  border-color: var(--color-term-edge) !important;
+}
+:root:not([data-card-style]) .pf-box { border-radius: 4px; }

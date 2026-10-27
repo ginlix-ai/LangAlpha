@@ -144,12 +144,14 @@ export function SandboxSettingsContent({ workspaceId }: { workspaceId: string })
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Tabs */}
-      <div className="flex flex-wrap gap-1 mb-4 border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
+      <div className="pf-sbx-tabs flex flex-wrap gap-1 mb-4 border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
         {tabs.map(t => (
           <button
             key={t.key}
             type="button"
             onClick={() => setActiveTab(t.key)}
+            data-slot="tab"
+            data-active={activeTab === t.key || undefined}
             className="px-3 py-2 text-sm font-medium"
             style={{
               color: activeTab === t.key ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',

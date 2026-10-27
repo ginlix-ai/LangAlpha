@@ -108,11 +108,11 @@ function NewsArticleView() {
   const { rows, scored } = tickerImpactRows(article.sentiments, article.tickers);
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
+    <div className="pf-news flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
       {/* Back button */}
       <button
         onClick={handleBack}
-        className="flex items-center gap-2 self-start px-3 py-1.5 rounded-md cursor-pointer transition-colors"
+        className="pf-news-back flex items-center gap-2 self-start px-3 py-1.5 rounded-md cursor-pointer transition-colors"
         style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', color: 'var(--color-text-primary)' }}
       >
         <ArrowLeft className="w-4 h-4" />
@@ -121,7 +121,7 @@ function NewsArticleView() {
 
       {/* Title & metadata */}
       <div className="flex flex-col gap-3">
-        <h1 className="text-2xl font-bold" style={{ lineHeight: '1.3' }}>
+        <h1 className="pf-news-title text-2xl font-bold" style={{ lineHeight: '1.3' }}>
           {article.title}
         </h1>
         <div className="flex items-center gap-3 flex-wrap">
@@ -137,7 +137,7 @@ function NewsArticleView() {
           )}
           {article.source?.name && (
             <span
-              className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-md font-medium"
+              className="pf-news-tag inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-md font-medium"
               style={{ backgroundColor: 'var(--color-bg-tag)', color: 'var(--color-text-primary)' }}
             >
               {article.source.favicon_url && (
@@ -159,7 +159,7 @@ function NewsArticleView() {
             {article.tickers.map((ticker) => (
               <span
                 key={ticker}
-                className="text-xs px-2 py-0.5 rounded-full font-mono font-medium"
+                className="pf-news-tag pf-news-ticker text-xs px-2 py-0.5 rounded-full font-mono font-medium"
                 style={{ backgroundColor: 'var(--color-bg-tag)', color: 'var(--color-accent-primary)' }}
               >
                 {ticker}
@@ -184,7 +184,7 @@ function NewsArticleView() {
 
       {/* Description */}
       {article.description && (
-        <div className="rounded-md p-4" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)' }}>
+        <div className="pf-news-body rounded-md p-4" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)' }}>
           <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)', lineHeight: '1.7' }}>
             {article.description}
           </p>
@@ -193,22 +193,22 @@ function NewsArticleView() {
 
       {/* Sentiments */}
       {article.sentiments && article.sentiments.length > 0 && (
-        <div className="flex flex-col gap-3" style={{ borderTop: '1px solid var(--color-border-default)', paddingTop: '20px' }}>
-          <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+        <div className="pf-news-section flex flex-col gap-3" style={{ borderTop: '1px solid var(--color-border-default)', paddingTop: '20px' }}>
+          <h3 className="pf-news-section-title text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
             {scored ? 'AI Sentiment (news vendor estimate)' : 'Sentiment Analysis'}
           </h3>
-          <div className="flex flex-col gap-2">
+          <div className="pf-news-rows flex flex-col gap-2">
             {rows.map((s, i) => (
-              <div key={i} className="flex items-start gap-3 text-xs rounded-md p-2.5" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
+              <div key={i} className="pf-news-row flex items-start gap-3 text-xs rounded-md p-2.5" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
                 <span
-                  className="shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
+                  className="pf-news-tag pf-news-ticker shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
                   style={{ color: 'var(--color-accent-primary)', backgroundColor: 'var(--color-bg-tag)' }}
                 >
                   {s.ticker}
                 </span>
                 {s.sentiment ? (
                   <span
-                    className="shrink-0 font-medium px-1.5 py-0.5 rounded"
+                    className="pf-news-tag shrink-0 font-medium px-1.5 py-0.5 rounded"
                     style={{
                       color: s.sentiment === 'positive' ? 'var(--color-profit)' : s.sentiment === 'negative' ? 'var(--color-loss)' : 'var(--color-text-secondary)',
                       backgroundColor: 'var(--color-bg-tag)',
@@ -220,7 +220,7 @@ function NewsArticleView() {
                   <span className="shrink-0 px-1.5 py-0.5" style={{ color: 'var(--color-text-secondary)' }}>Unscored</span>
                 )}
                 {s.note && (
-                  <span style={{ color: 'var(--color-text-secondary)' }}>{s.note}</span>
+                  <span className="pf-news-reason" style={{ color: 'var(--color-text-secondary)' }}>{s.note}</span>
                 )}
               </div>
             ))}
@@ -230,12 +230,12 @@ function NewsArticleView() {
 
       {/* Read Full Article */}
       {article.article_url && (
-        <div style={{ borderTop: '1px solid var(--color-border-default)', paddingTop: '16px', marginTop: '8px' }}>
+        <div className="pf-news-foot" style={{ borderTop: '1px solid var(--color-border-default)', paddingTop: '16px', marginTop: '8px' }}>
           <a
             href={article.article_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
+            className="pf-news-read inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
             style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           >
             Read Full Article

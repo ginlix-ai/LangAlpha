@@ -78,7 +78,7 @@ export function ModelTierConfig({
       {/* "Two ways to research" explainer */}
       {showExplainer && (
         <div
-          className="rounded-lg overflow-hidden"
+          className="pf-box rounded-lg overflow-hidden"
           style={{
             background: "var(--color-bg-surface)",
             border: "1px solid var(--color-border-default)",

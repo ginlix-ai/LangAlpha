@@ -44,6 +44,7 @@ function SheetPanel({
       {/* Sheet */}
       <motion.div
         data-sheet
+        data-slot="sheet"
         initial={{ y: '100%' }}
         animate={{ y: 0 }}
         // Arrives on the drag spring, the one a released swipe settles on;
@@ -61,6 +62,7 @@ function SheetPanel({
         {/* Drag handle */}
         <div
           ref={handleRef}
+          data-slot="sheet-handle"
           className="flex justify-center pt-3 pb-2 cursor-grab active:cursor-grabbing"
           style={{ touchAction: 'none' }}
         >

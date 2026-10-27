@@ -65,6 +65,8 @@ export function LeaveForSignIn({
           the lifecycle stops the start rather than the page leaving. */}
       <button
         type="button"
+        data-slot="button"
+        data-variant="ghost"
         onClick={onCancel}
         className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
         style={{ color: 'var(--color-text-tertiary)' }}
@@ -73,6 +75,8 @@ export function LeaveForSignIn({
       </button>
       <button
         type="button"
+        data-slot="button"
+        data-variant="default"
         onClick={onConfirm}
         disabled={pending}
         className="px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"

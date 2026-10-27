@@ -118,7 +118,7 @@ function LevelCard({
       aria-describedby={descId}
       markClassName="mt-0.5"
       className={cn(
-        'items-start gap-3 rounded-lg px-3 py-2.5 transition-colors',
+        'pf-level items-start gap-3 rounded-lg px-3 py-2.5 transition-colors',
         checked ? 'bg-(--color-bg-tag)' : 'bg-(--color-bg-card) hover:bg-(--color-bg-hover)',
       )}
       style={{ border: `1px solid ${checked ? 'var(--color-text-primary)' : 'var(--color-border-muted)'}` }}

@@ -171,7 +171,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }
               )}
             </form>
             {showDropdown && searchValue.trim() && (
-              <div className="dashboard-search-dropdown">
+              <div data-slot="menu" className="dashboard-search-dropdown">
                 {searchLoading && searchResults.length === 0 ? (
                   <div className="dashboard-search-dropdown-item dashboard-search-dropdown-loading">
                     {t('dashboard.searching')}
@@ -190,6 +190,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }
                       <button
                         key={`${stock.symbol}-${index}`}
                         type="button"
+                        data-slot="menu-item"
                         className="dashboard-search-dropdown-item"
                         onClick={() => handleSelectStock(stock)}
                       >

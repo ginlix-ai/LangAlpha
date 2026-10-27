@@ -148,6 +148,8 @@ function FormActions({
     <div className="flex justify-end gap-2 mt-1">
       <button
         type="button"
+        data-slot="button"
+        data-variant="ghost"
         onClick={onCancel}
         className="px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
         style={{ color: 'var(--color-text-tertiary)' }}
@@ -156,6 +158,8 @@ function FormActions({
       </button>
       <button
         type="button"
+        data-slot="button"
+        data-variant="default"
         onClick={onSubmit}
         disabled={saving || disabled}
         className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors disabled:opacity-50"

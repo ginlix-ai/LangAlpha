@@ -109,7 +109,7 @@ export function WizardTopBar({ progress, exit }: { progress?: ReactNode; exit?: 
     >
       <div className="flex min-w-0 items-center gap-2 justify-self-start">
         <img src={logo} alt="" className="h-6 w-6 shrink-0 object-contain" />
-        <span className="title-font truncate text-[0.9375rem] font-semibold text-(--color-text-primary)">
+        <span className="wizard-wordmark title-font truncate text-[0.9375rem] font-semibold text-(--color-text-primary)">
           LangAlpha
         </span>
       </div>
@@ -282,15 +282,15 @@ export function WizardProgress({ steps, current, label }: WizardProgressProps) {
   const dot = useId();
   return (
     <>
-      <ol aria-label={label} className="hidden items-center gap-2 sm:flex">
+      <ol aria-label={label} className="wizard-progress hidden items-center gap-2 sm:flex">
         {steps.map((name, i) => {
           const state = i === current ? 'current' : i > current ? 'upcoming' : 'done';
           return (
             <li key={name} aria-current={state === 'current' ? 'step' : undefined} className="flex items-center gap-2">
-              {i > 0 && <span aria-hidden="true" className="h-px w-4 bg-(--color-border-default)" />}
+              {i > 0 && <span aria-hidden="true" className="wizard-progress-rule h-px w-4 bg-(--color-border-default)" />}
               <span
                 className={cn(
-                  'flex items-center gap-1.5 whitespace-nowrap text-xs transition-colors',
+                  'wizard-progress-step flex items-center gap-1.5 whitespace-nowrap text-xs transition-colors',
                   state === 'current' && 'font-medium text-(--color-text-primary)',
                   state === 'done' && 'text-(--color-text-secondary)',
                   state === 'upcoming' && 'text-(--color-text-tertiary)',
@@ -344,7 +344,7 @@ export function WizardExit({ label, onClick, testId }: { label: string; onClick:
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className="inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+      className="wizard-exit inline-flex h-8 items-center rounded-md px-2.5 text-sm text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
     >
       {label}
     </button>
@@ -376,11 +376,11 @@ export function WizardStepHeader({ title, titleId, helper }: WizardStepHeaderPro
         ref={heading}
         id={titleId}
         tabIndex={-1}
-        className="title-font text-balance text-2xl font-semibold leading-tight text-(--color-text-primary) outline-none sm:text-[1.875rem]"
+        className="wizard-title title-font text-balance text-2xl font-semibold leading-tight text-(--color-text-primary) outline-none sm:text-[1.875rem]"
       >
         {title}
       </h1>
-      {helper && <p className="mt-2 text-sm text-(--color-text-secondary)">{helper}</p>}
+      {helper && <p className="wizard-helper mt-2 text-sm text-(--color-text-secondary)">{helper}</p>}
     </div>
   );
 }
@@ -402,7 +402,7 @@ export function WizardSection({
 }) {
   return (
     <section className={cn('mt-8', className)}>
-      <h2 id={titleId} className="mb-3 text-sm font-medium text-(--color-text-primary)">
+      <h2 id={titleId} className="wizard-section-title mb-3 text-sm font-medium text-(--color-text-primary)">
         {title}
         {hint && <span className="ml-2 font-normal text-(--color-text-tertiary)">{hint}</span>}
       </h2>
@@ -428,7 +428,7 @@ export interface WizardFooterProps {
 // felt before the next screen arrives; never when it is disabled, since that
 // press does nothing.
 const ghost =
-  'inline-flex h-10 items-center justify-center rounded-md px-3 text-sm font-medium text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)';
+  'wizard-btn is-ghost inline-flex h-10 items-center justify-center rounded-md px-3 text-sm font-medium text-(--color-text-secondary) press hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)';
 
 /**
  * Back on the left, the way forward on the right, in the same place on every
@@ -463,7 +463,7 @@ export function WizardFooter({ back, skip, primary }: WizardFooterProps) {
           onClick={primary.onClick}
           disabled={disabled}
           aria-busy={primary.busy || undefined}
-          className="inline-flex h-11 w-full items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-5 text-sm font-medium text-(--color-btn-primary-text) press hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:h-10 sm:w-auto sm:min-w-[7.5rem]"
+          className="wizard-btn is-primary inline-flex h-11 w-full items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-5 text-sm font-medium text-(--color-btn-primary-text) press hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 sm:h-10 sm:w-auto sm:min-w-[7.5rem]"
         >
           {/* Live work: the shared glyph beside the label, never in its place. */}
           {primary.busy && (

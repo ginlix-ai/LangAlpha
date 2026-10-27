@@ -155,6 +155,7 @@ export function AccountPanel() {
             variant="outline"
             size="sm"
             className="h-8 gap-1.5"
+            data-tone="danger"
             style={{ color: 'var(--color-loss)' }}
             onClick={() => setShowLogoutConfirm(true)}
           >

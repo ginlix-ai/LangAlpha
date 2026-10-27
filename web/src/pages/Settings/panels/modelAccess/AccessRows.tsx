@@ -81,7 +81,7 @@ export function AccessRow({
   return (
     // Too narrow for the name and its detail beside the status and actions,
     // the status and actions take a line of their own under them.
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+    <li className="pf-access-row flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
       <BrandMark name={name} art={llmProviderArt(provider)} size="sm" className="rounded-md" />
       <div className="flex min-w-0 flex-[1_1_12rem] flex-col gap-0.5">
         {nameLine}
@@ -128,9 +128,9 @@ export function Group({ title, children, empty, subgrid = false }: {
 }) {
   return (
     <div className={subgrid ? 'col-span-full grid grid-cols-subgrid gap-y-1.5' : 'flex flex-col gap-1.5'}>
-      <h3 className={cn('text-xs font-medium', subgrid && 'col-span-full')} style={{ color: 'var(--color-text-tertiary)' }}>{title}</h3>
+      <h3 className={cn('pf-access-title text-xs font-medium', subgrid && 'col-span-full')} style={{ color: 'var(--color-text-tertiary)' }}>{title}</h3>
       {children.length > 0 ? (
-        <ul className={cn('divide-y rounded-lg', subgrid && 'col-span-full grid grid-cols-subgrid')} style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderColor: 'var(--color-border-muted)' }}>
+        <ul className={cn('pf-access-list divide-y rounded-lg', subgrid && 'col-span-full grid grid-cols-subgrid')} style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)', borderColor: 'var(--color-border-muted)' }}>
           {children}
         </ul>
       ) : (

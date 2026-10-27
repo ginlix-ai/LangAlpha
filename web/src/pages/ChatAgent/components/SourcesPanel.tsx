@@ -67,7 +67,7 @@ const GEOMETRY: DeckGeometry = {
  *  card is filled with `--color-bg-card` so a leaf card and the front of a
  *  stack read alike. */
 const CARD_CHROME =
-  'flex items-center gap-2.5 rounded-lg border px-2.5 text-left outline-hidden cursor-pointer ' +
+  'pf-sources-card flex items-center gap-2.5 rounded-lg border px-2.5 text-left outline-hidden cursor-pointer ' +
   'border-(--color-border-muted) bg-(--color-bg-card) ' +
   'hover:border-(--color-border-default) hover:bg-(--color-bg-elevated) ' +
   'focus-visible:ring-2 focus-visible:ring-ring';
@@ -109,7 +109,7 @@ function SourceThumb({
   const inner = size <= 28 ? 14 : Math.round(size * 0.5);
   return (
     <span
-      className="flex shrink-0 items-center justify-center rounded-md"
+      className="pf-sources-thumb flex shrink-0 items-center justify-center rounded-md"
       style={{ width: size, height: size, background: 'var(--color-bg-subtle)' }}
     >
       {isUrl ? (
@@ -438,7 +438,7 @@ export default function SourcesPanel({
                 onClick={() => toggleGroup(group.type)}
                 aria-expanded={!collapsed}
                 aria-label={`${groupLabel} — ${t(collapsed ? 'chat.sources.expand' : 'chat.sources.collapse')}`}
-                className="mb-1.5 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left outline-hidden transition-colors hover:bg-(--color-bg-subtle) focus-visible:ring-2 focus-visible:ring-ring"
+                className="pf-sources-group-head mb-1.5 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left outline-hidden transition-colors hover:bg-(--color-bg-subtle) focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {collapsed ? (
                   <ChevronRight className="h-3.5 w-3.5 shrink-0" style={TERTIARY} />
@@ -446,14 +446,14 @@ export default function SourcesPanel({
                   <ChevronDown className="h-3.5 w-3.5 shrink-0" style={TERTIARY} />
                 )}
                 <span
-                  className="text-xs font-semibold uppercase tracking-wide"
+                  className="pf-sources-group-label text-xs font-semibold uppercase tracking-wide"
                   style={TERTIARY}
                 >
                   {groupLabel}
                 </span>
                 <span
                   data-testid={`group-count-${group.type}`}
-                  className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
+                  className="pf-sources-count inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
                   style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
                 >
                   {group.rows.length}

@@ -268,7 +268,7 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
             live in tokens.css. */}
         <div className="file-panel-tree-filter">
           <div
-            className="rings-within owns-its-edge flex items-center gap-1.5 h-8 px-2 rounded-md border"
+            className="file-panel-tree-search rings-within owns-its-edge flex items-center gap-1.5 h-8 px-2 rounded-md border"
             style={{ backgroundColor: 'var(--color-bg-input)', borderColor: 'var(--color-border-muted)' }}
           >
             <Search className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
@@ -434,11 +434,11 @@ export function TreeColumn(props: TreeColumnProps): React.ReactElement {
               </div>
             ))
           ) : props.filesError ? (
-            <p className="px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{props.filesError}</p>
+            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{props.filesError}</p>
           ) : filter.listedFiles.length === 0 && !trimmed ? (
-            <p className="px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.noFilesYet')}</p>
+            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('filePanel.noFilesYet')}</p>
           ) : showList && filter.filteredSortedFiles.length === 0 ? (
-            <p className="px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            <p className="file-panel-empty-note px-3 py-6 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
               {trimmed ? t('filePanel.noSearchMatches') : t('filePanel.noTypeMatches', { type: filter.filterType.toLowerCase() })}
             </p>
           ) : (

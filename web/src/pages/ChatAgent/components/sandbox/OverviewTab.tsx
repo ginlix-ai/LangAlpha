@@ -101,12 +101,12 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         {resourceCards.map(({ icon: Icon, label, value }) => (
           <div
             key={label}
-            className="flex items-center gap-3 p-3 rounded-lg"
+            className="pf-sbx-box flex items-center gap-3 p-3 rounded-lg"
             style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
           >
             <Icon className="h-5 w-5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
             <div>
-              <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{label}</div>
+              <div className="pf-sbx-label text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{label}</div>
               <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{value}</div>
             </div>
           </div>
@@ -117,7 +117,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
           this workspace lives and what a stop reaches sit in the same card as
           the button, read before it is pressed rather than found beneath it. */}
       <div
-        className="flex flex-col gap-3 p-3 rounded-lg"
+        className="pf-sbx-box flex flex-col gap-3 p-3 rounded-lg"
         style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
       >
       {(computerName || dirName) && (
@@ -169,7 +169,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
         </div>
         <div className="flex items-center gap-2">
           {stats.auto_stop_interval != null && (
-            <span className="text-xs px-2 py-1 rounded" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-card)' }}>
+            <span className="pf-sbx-chip text-xs px-2 py-1 rounded" style={{ color: 'var(--color-text-tertiary)', backgroundColor: 'var(--color-bg-card)' }}>
               {/* 0 disables auto-stop entirely, so rendering "0m" states the opposite */}
               {stats.auto_stop_interval === 0
                 ? t('computer.alwaysOn')
@@ -182,7 +182,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
             onClick={onRefresh}
             aria-label={t('computer.overview.refreshAria')}
             title={t('computer.overview.refresh')}
-            className="flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
+            className="pf-sbx-action flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10"
             style={{ color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border-muted)' }}
           >
             {refreshing
@@ -198,7 +198,7 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('archive')}
               disabled={isTransitioning}
               data-computer-power
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
+              className="pf-sbx-action flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
               style={{ color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border-muted)' }}
             >
               <Archive className="h-3 w-3" />
@@ -210,7 +210,8 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('stop')}
               disabled={isTransitioning}
               data-computer-power
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
+              className="pf-sbx-action flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
+              data-tone="danger"
               style={{ color: 'var(--color-loss)', border: '1px solid var(--color-border-loss)' }}
             >
               <Square className="h-3 w-3" />
@@ -221,7 +222,8 @@ export function OverviewTab({ stats, isRunning, actionLoading, refreshing, onSta
               onClick={() => onStartStop('start')}
               disabled={isTransitioning}
               data-computer-power
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
+              className="pf-sbx-action flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors hover:bg-foreground/10 disabled:opacity-50"
+              data-tone="go"
               style={{ color: 'var(--color-profit)', border: '1px solid var(--color-profit-border)' }}
             >
               <Play className="h-3 w-3" />

@@ -592,7 +592,7 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
 
   return (
     <div
-      className="relative flex h-screen w-full overflow-hidden"
+      className="pf-shell relative flex h-screen w-full overflow-hidden"
       style={{ backgroundColor: 'var(--color-bg-page)' }}
     >
       {/* Left Side: Topbar + Chat Window — identical structure to ChatView,
@@ -611,7 +611,7 @@ export default function SharedChatView({ shareToken, metadata }: SharedChatViewP
             >
               <ArrowLeft className="h-5 w-5" />
             </Link>
-            <h1 className="text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="pf-page-title pf-page-title--bar text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
               {metadata.workspace_name || metadata.title || 'Shared Conversation'}
             </h1>
             {loading && (

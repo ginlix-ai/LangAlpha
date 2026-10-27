@@ -161,7 +161,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
       <div className="flex flex-col gap-4 sm:gap-6">
       {/* Model access reminder */}
       <div
-        className="flex items-start gap-2.5 rounded-lg px-3.5 py-3"
+        className="pf-box flex items-start gap-2.5 rounded-lg px-3.5 py-3"
         // A neutral panel with the accent on its icon alone: amber annotates,
         // it does not wash or ring (DESIGN.md, accent discipline).
         style={{
