@@ -20,6 +20,7 @@ const PopoverTrigger = AriaDialogTrigger
 // what is under it instead of a row of a list that is already closed.
 const Popover = ({ className, style, offset = 4, ...props }: ComponentProps<typeof AriaPopover>) => (
   <AriaPopover
+    data-slot="popover"
     offset={offset}
     style={composeRenderProps(style, (style) => ({ zIndex: 1030, ...style }))}
     className={composeRenderProps(className, (className) =>

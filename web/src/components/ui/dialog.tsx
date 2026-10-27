@@ -85,6 +85,7 @@ function DialogContent({
       <DialogPortal>
         <DialogOverlay />
         <DialogPrimitive.Content
+          data-slot="dialog"
           aria-describedby={undefined}
           ref={containerRefCb}
           className={cn(DIALOG_MOBILE_SHEET_CLASSES, className)}
@@ -131,6 +132,7 @@ function DialogContent({
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
+        data-slot="dialog"
         aria-describedby={undefined}
         ref={ref}
         className={cn(
@@ -176,6 +178,7 @@ function DialogTitle({
 }: React.ComponentProps<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
+      data-slot="dialog-title"
       className={cn("text-lg font-semibold leading-none tracking-tight", className)}
       {...props} />
   )
@@ -187,6 +190,7 @@ function DialogDescription({
 }: React.ComponentProps<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
+      data-slot="dialog-desc"
       className={cn("text-sm text-muted-foreground", className)}
       {...props} />
   )

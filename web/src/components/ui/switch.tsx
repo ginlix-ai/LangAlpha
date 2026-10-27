@@ -26,6 +26,7 @@ export function ToggleSwitch({ checked, onChange, disabled, className, ariaLabel
       id={id}
       type="button"
       role="switch"
+      data-slot="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
       aria-describedby={ariaDescribedBy}
@@ -41,6 +42,7 @@ export function ToggleSwitch({ checked, onChange, disabled, className, ariaLabel
       }}
     >
       <span
+        data-slot="switch-thumb"
         className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition"
         style={{
           transform: checked ? 'translateX(16px)' : 'translateX(0)',

@@ -215,6 +215,7 @@ export function ModalShell({
       <motion.div
         ref={setPanelRef}
         role="dialog"
+        data-slot="dialog"
         aria-modal="true"
         aria-labelledby={labelId}
         tabIndex={-1}
@@ -269,18 +270,18 @@ export function ModalShell({
             </button>
           )}
           {header ? (
-            <div className={cn('shrink-0 pt-5 pb-4', space.x)} style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
+            <div data-slot="dialog-header" className={cn('shrink-0 pt-5 pb-4', space.x)} style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
               {header}
             </div>
           ) : (
             // The close button's room is set after the density's padding,
             // which would otherwise win over it and run a long title under it.
-            <div className={cn('shrink-0 pt-5 pb-3', space.x, 'pr-12')}>
-              <h3 id={labelId} className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+            <div data-slot="dialog-header" className={cn('shrink-0 pt-5 pb-3', space.x, 'pr-12')}>
+              <h3 id={labelId} data-slot="dialog-title" className="text-lg font-semibold" style={{ color: 'var(--color-text-primary)' }}>
                 {title}
               </h3>
               {subtitle && (
-                <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                <p data-slot="dialog-desc" className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
                   {subtitle}
                 </p>
               )}
@@ -295,6 +296,7 @@ export function ModalShell({
           </div>
           {footer && (
             <div
+              data-slot="dialog-footer"
               className={cn('shrink-0', space.x, space.footer)}
               style={{ borderTop: '1px solid var(--color-border-muted)' }}
             >

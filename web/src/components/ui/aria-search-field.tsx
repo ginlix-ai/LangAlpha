@@ -28,6 +28,7 @@ interface SearchFieldProps extends AriaSearchFieldProps {
 function SearchField({ className, placeholder, inputRef, ...props }: SearchFieldProps) {
   return (
     <AriaSearchField
+      data-slot="search"
       className={composeRenderProps(className, (className) =>
         cn(
           "flex shrink-0 items-center gap-2 border-b border-(--color-border-muted) px-3",

@@ -89,6 +89,7 @@ export function RadioChoice<V extends string>({
       />
       <span
         aria-hidden="true"
+        data-slot="radio"
         className={cn('flex shrink-0 items-center justify-center rounded-full border', dims.ring, markClassName)}
         style={{ borderColor: checked ? 'var(--color-btn-primary-bg)' : 'var(--color-text-quaternary)' }}
       >
@@ -137,6 +138,7 @@ export function CheckboxChoice({
       />
       <span
         aria-hidden="true"
+        data-slot="checkbox"
         className={cn('flex shrink-0 items-center justify-center rounded-[3px] border', dims.box, markClassName)}
         style={checked
           ? { backgroundColor: 'var(--color-btn-primary-bg)', borderColor: 'var(--color-btn-primary-bg)' }

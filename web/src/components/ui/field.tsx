@@ -24,7 +24,7 @@ const labelVariants = cva([
 ])
 
 const Label = ({ className, ...props }: AriaLabelProps) => (
-  <AriaLabel className={cn(labelVariants(), className)} {...props} />
+  <AriaLabel data-slot="label" className={cn(labelVariants(), className)} {...props} />
 )
 
 function FormDescription({ className, ...props }: AriaTextProps) {

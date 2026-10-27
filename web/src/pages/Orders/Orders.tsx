@@ -121,7 +121,7 @@ function Orders() {
           <div className="flex items-start justify-between gap-3 mb-6">
             <div className="min-w-0">
               <h1
-                className="text-xl font-semibold mb-1"
+                className="pf-page-title text-xl font-semibold mb-1"
                 style={{ color: 'var(--color-text-primary)' }}
               >
                 {t('orders.title')}

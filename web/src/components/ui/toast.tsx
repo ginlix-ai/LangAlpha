@@ -47,6 +47,7 @@ function Toast({
 }: React.ComponentProps<typeof ToastPrimitives.Root>) {
   return (
     <ToastPrimitives.Root
+      data-slot="toast"
       className={cn(toastClassName, className)}
       {...props}
     />
@@ -61,6 +62,8 @@ function ToastAction({
 }: React.ComponentProps<typeof ToastPrimitives.Action>) {
   return (
     <ToastPrimitives.Action
+      data-slot="button"
+      data-variant="default"
       className={cn(
         "press inline-flex h-7 shrink-0 items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-2.5 text-[13px] font-medium text-(--color-btn-primary-text) hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-(--color-bg-elevated) disabled:pointer-events-none disabled:opacity-50",
         className
@@ -97,6 +100,7 @@ function ToastTitle({
 }: React.ComponentProps<typeof ToastPrimitives.Title>) {
   return (
     <ToastPrimitives.Title
+      data-slot="toast-title"
       className={cn("text-sm font-medium leading-5", className)}
       {...props}
     />

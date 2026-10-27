@@ -19,6 +19,7 @@ function TooltipContent({
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
+        data-slot="tooltip"
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         className={cn(

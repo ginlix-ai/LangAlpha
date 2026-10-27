@@ -317,7 +317,7 @@ export function MentionAutocompleteList({
   const { t } = useTranslation();
   const present = useIsPresent();
   return (
-    <motion.div className="mention-autocomplete" ref={listRef} inert={!present} {...MENU_PRESENCE}>
+    <motion.div data-slot="menu" className="mention-autocomplete" ref={listRef} inert={!present} {...MENU_PRESENCE}>
       {files.length === 0 ? (
         <div className="mention-autocomplete-empty">
           {hasWorkspaceFiles ? t('chat.mention.noMatching') : t('chat.mention.noFiles')}
@@ -329,6 +329,7 @@ export function MentionAutocompleteList({
           return (
             <div
               key={filePath}
+              data-slot="menu-item"
               className={cn('mention-autocomplete-item', idx === activeIndex && 'bg-accent/15')}
               onMouseDown={(e) => { e.preventDefault(); onSelect(filePath); }}
               onMouseEnter={() => onHover(idx)}
@@ -360,13 +361,14 @@ export function SlashCommandList({
   const { t } = useTranslation();
   const present = useIsPresent();
   return (
-    <motion.div className="mention-autocomplete" ref={listRef} inert={!present} {...MENU_PRESENCE}>
+    <motion.div data-slot="menu" className="mention-autocomplete" ref={listRef} inert={!present} {...MENU_PRESENCE}>
       {commands.length === 0 ? (
         <div className="mention-autocomplete-empty">{t('chat.slashCommand.noMatching')}</div>
       ) : (
         commands.map((cmd, idx) => (
           <div
             key={cmd.name}
+            data-slot="menu-item"
             className={cn('mention-autocomplete-item', idx === activeIndex && 'bg-accent/15')}
             onMouseDown={(e) => { e.preventDefault(); onSelect(cmd); }}
             onMouseEnter={() => onHover(idx)}

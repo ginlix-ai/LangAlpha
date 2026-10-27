@@ -96,6 +96,7 @@ export function OptionCard<V extends string>({
   return (
     <label
       data-testid={testId}
+      data-slot="option-card"
       data-state={checked ? 'checked' : 'unchecked'}
       className={cn(
         'rings-within relative flex items-start gap-3 rounded-lg border px-4 py-3.5',
@@ -150,6 +151,7 @@ export function OptionCard<V extends string>({
       )}
       <span className="min-w-0 flex-1">
         <span
+          data-slot="option-title"
           className="block text-sm font-medium leading-5"
           style={{ color: 'var(--color-text-primary)' }}
         >
@@ -177,6 +179,7 @@ function CheckMark({ checked }: { checked: boolean }) {
   return (
     <span
       aria-hidden="true"
+      data-slot="radio"
       className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors"
       style={
         checked
