@@ -49,6 +49,7 @@ export function SegmentedControl<T extends string>({
   return (
     <div
       role="group"
+      data-slot="segmented"
       aria-labelledby={labelledBy}
       aria-label={label}
       className={

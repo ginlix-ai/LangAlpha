@@ -1,0 +1,552 @@
+/* EXPERIMENT: the three card styles (lib/cardStyle) carried from the data
+   cards to the whole shell, to see what the platform would look like if
+   every surface followed them. Not a shippable stylesheet: it overrides
+   inline styles with !important where the components hard-code them.
+
+   It speaks in the cards' own voice tokens (termCard.css: --term-case,
+   --term-track, --term-words, --term-open/close; termCardStyles.css flips
+   them for Balanced and Quiet) and draws its edges and rules from the
+   --color-term-* tokens, which Quiet maps back onto the platform's grays.
+
+   Selector shorthands:
+     Terminal          :root:not([data-card-style])
+     Balanced          :root[data-card-style='balanced']
+     Quiet             :root[data-card-style='quiet']
+     open boxes (T+B)  :root:not([data-card-style='quiet'])
+     text face (B+Q)   :root:is([data-card-style='balanced'], [data-card-style='quiet'])
+
+   Quiet changes the least: it only aligns the labels (sentence case, the
+   text face) with the other two and leaves the platform's filled surfaces. */
+
+/* ════════════════════════════════════════════════════════════════════
+   Terminal: the whole shell in mono
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) :is(.app-layout, [data-slot='menu'], [data-slot='popover'], .cwm-modal) {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+:root:not([data-card-style]) .app-layout .title-font {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+/* Long-form reading stays in the reply's face in every style. */
+:root:not([data-card-style]) .app-layout .font-content:not(.pf-bubble .font-content) {
+  font-family: var(--font-content);
+}
+
+/* Balanced: words in the text face throughout, as the cards set theirs. */
+:root[data-card-style='balanced'] :is(.app-layout, [data-slot='menu'], [data-slot='popover'], .cwm-modal) {
+  font-family: var(--font-content);
+}
+:root[data-card-style='balanced'] .app-layout .title-font {
+  font-family: var(--font-content);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Labels and kickers: the one place all three styles move
+   ════════════════════════════════════════════════════════════════════ */
+
+:root :is(.pf-kicker, .automations-kicker, .sidebar-section-title) {
+  font-family: var(--term-words, var(--font-mono)) !important;
+  text-transform: var(--term-case, uppercase);
+  letter-spacing: calc(0.08em * var(--term-track, 1));
+}
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) :is(.pf-kicker, .automations-kicker, .sidebar-section-title) {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* A section's kicker runs out into a rule, as a card's divider does:
+   dashed in Terminal, a hairline in Balanced. */
+:root:not([data-card-style='quiet']) .pf-kicker {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  /* Room for the cut titles of the boxes under it. */
+  margin-bottom: 1.125rem !important;
+}
+:root:not([data-card-style='quiet']) .pf-kicker::after {
+  content: '';
+  flex: 1;
+  border-top: 1px dashed var(--color-term-edge);
+}
+:root[data-card-style='balanced'] .pf-kicker::after {
+  border-top-style: solid;
+  border-top-color: var(--color-term-rule);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Page titles
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) :is(.pf-page-title, .automations-title, .settings-head-title) {
+  font-family: var(--font-mono) !important;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+:root:not([data-card-style]) .pf-page-title--bar {
+  font-size: 0.875rem;
+}
+:root[data-card-style='balanced'] :is(.pf-page-title, .automations-title, .settings-head-title) {
+  font-family: var(--font-content) !important;
+  letter-spacing: -0.015em;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Buttons: doors in brackets (Terminal), pills (Balanced)
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) :is([data-slot='button'], .cwm-btn-create, .cwm-btn-cancel, [data-slot='door']) {
+  font-family: var(--font-mono);
+  font-size: 0.71875rem !important;
+  font-weight: 600;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+  border-radius: 3px !important;
+}
+:root:not([data-card-style]) :is([data-slot='button'], .cwm-btn-create, .cwm-btn-cancel, [data-slot='door']) > span {
+  font-size: inherit !important;
+}
+:root:not([data-card-style]) :is([data-slot='button'], .cwm-btn-create, .cwm-btn-cancel, [data-slot='door'])::before {
+  content: var(--term-open);
+  margin-right: 0.5ch;
+  font-weight: 400;
+  opacity: 0.55;
+}
+:root:not([data-card-style]) :is([data-slot='button'], .cwm-btn-create, .cwm-btn-cancel, [data-slot='door'])::after {
+  content: var(--term-close);
+  margin-left: 0.5ch;
+  font-weight: 400;
+  opacity: 0.55;
+}
+/* A door with its own trailing glyph keeps the bracket outside it. */
+:root:not([data-card-style]) [data-slot='door'] > svg { display: none; }
+:root:not([data-card-style]) :is([data-slot='button']:is([data-variant='outline'], [data-variant='danger'], [data-variant='ghost']), .cwm-btn-cancel) {
+  background: transparent !important;
+  border-color: transparent !important;
+  padding-inline: 0.25rem !important;
+}
+:root:not([data-card-style]) [data-slot='button'][data-variant='ghost'] {
+  border-color: transparent !important;
+}
+
+/* Balanced: the pill a card's tag is drawn as, a size up. */
+:root[data-card-style='balanced'] :is([data-slot='button'], .cwm-btn-create, .cwm-btn-cancel) {
+  border-radius: 999px !important;
+}
+:root[data-card-style='balanced'] :is([data-slot='button'][data-variant='outline'], .cwm-btn-cancel) {
+  background: transparent !important;
+  border: 1px solid var(--color-term-edge) !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Inputs: unfilled in the open styles
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style='quiet']) :is([data-slot='input'], .cwm-textarea) {
+  background: transparent !important;
+  border: 1px solid var(--color-term-edge) !important;
+  box-shadow: none;
+}
+:root:not([data-card-style]) :is([data-slot='input'], .cwm-textarea) {
+  border-radius: 3px !important;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem !important;
+}
+:root:not([data-card-style]) :is([data-slot='input'], .cwm-textarea) :is(input, span) {
+  font-size: 0.8125rem !important;
+}
+:root:not([data-card-style]) :is([data-slot='input'], .cwm-textarea)::placeholder,
+:root:not([data-card-style]) [data-slot='input'] input::placeholder {
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.04em * var(--term-track));
+  font-size: 0.75rem;
+}
+:root[data-card-style='balanced'] :is([data-slot='input'], .cwm-textarea) {
+  border-radius: 8px !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Segmented controls and tabs
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Terminal: a row of bracketed words, the picked one in full ink, as the
+   dashboard's widget tabs are drawn. */
+:root:not([data-card-style]) [data-slot='segmented'] {
+  border: 0 !important;
+  border-radius: 0 !important;
+  gap: 0.25rem;
+}
+:root:not([data-card-style]) [data-slot='segmented'] > button {
+  padding: 0.125rem 0.25rem !important;
+  background: transparent !important;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem !important;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+  color: var(--color-term-text-tertiary) !important;
+}
+:root:not([data-card-style]) [data-slot='segmented'] > button > svg { display: none; }
+:root:not([data-card-style]) [data-slot='segmented'] > button::before { content: var(--term-open); margin-right: 0.4ch; opacity: 0.6; }
+:root:not([data-card-style]) [data-slot='segmented'] > button::after { content: var(--term-close); margin-left: 0.4ch; opacity: 0.6; }
+:root:not([data-card-style]) [data-slot='segmented'] > button[aria-pressed='true'] {
+  color: var(--color-term-text) !important;
+  font-weight: 700;
+}
+
+/* Balanced: every choice a pill, the picked one outlined in full ink. */
+:root[data-card-style='balanced'] [data-slot='segmented'] {
+  border: 0 !important;
+  border-radius: 0 !important;
+  gap: 0.25rem;
+  overflow: visible;
+}
+:root[data-card-style='balanced'] [data-slot='segmented'] > button {
+  border: 1px solid var(--term-mark);
+  border-radius: 999px;
+  background: transparent !important;
+  color: var(--color-text-secondary) !important;
+}
+:root[data-card-style='balanced'] [data-slot='segmented'] > button[aria-pressed='true'] {
+  border-color: var(--color-term-text);
+  color: var(--color-term-text) !important;
+}
+
+/* Animated tabs */
+:root:not([data-card-style]) [data-slot='tab'] {
+  font-family: var(--font-mono);
+  font-size: 0.71875rem !important;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+  padding-inline: 0.5rem !important;
+}
+:root:not([data-card-style]) [data-slot='tab']::before { content: var(--term-open); margin-right: 0.5ch; opacity: 0; }
+:root:not([data-card-style]) [data-slot='tab']::after { content: var(--term-close); margin-left: 0.5ch; opacity: 0; }
+:root:not([data-card-style]) [data-slot='tab'][data-active]::before,
+:root:not([data-card-style]) [data-slot='tab'][data-active]::after { opacity: 0.6; }
+:root:not([data-card-style]) [data-slot='tab'][data-active] { font-weight: 700; }
+:root:not([data-card-style]) [data-slot='tab-indicator'] { display: none; }
+
+:root[data-card-style='balanced'] [data-slot='tab-indicator'] {
+  border-radius: 999px !important;
+  background: transparent !important;
+  box-shadow: inset 0 0 0 1px var(--color-term-text) !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Badges and chips: brackets (Terminal), pills (the other two, as today)
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) [data-slot='badge'] {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+:root:not([data-card-style]) [data-slot='badge']::before { content: var(--term-open); margin-right: 0.5ch; opacity: 0.6; }
+:root:not([data-card-style]) [data-slot='badge']::after { content: var(--term-close); margin-left: 0.5ch; opacity: 0.6; }
+:root:not([data-card-style]) [data-slot='chip-group'] > label {
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Cards: an open box with its title cut into the top edge (T+B);
+   Quiet keeps the platform's filled card, flattened to match its cards.
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style='quiet']) .pf-card {
+  --term-ground: var(--color-bg-page);
+  position: relative;
+  overflow: visible !important;
+  background: transparent !important;
+  border: 1px solid var(--lift-edge, var(--color-term-edge)) !important;
+  border-radius: 8px !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding-top: 1.125rem !important;
+}
+:root:not([data-card-style='quiet']) .hover-lift:hover {
+  --lift-edge: var(--color-term-edge-hover);
+  box-shadow: none;
+}
+:root:not([data-card-style='quiet']) .pf-card .pf-card-head {
+  position: absolute;
+  z-index: 1;
+  top: -0.75em;
+  left: 0.625rem;
+  right: 0.625rem;
+  align-items: baseline;
+  padding-right: 0 !important;
+  line-height: 1.45;
+}
+:root:not([data-card-style='quiet']) .pf-card .pf-card-head > * {
+  flex: 0 1 auto;
+  background: var(--term-ground);
+  padding: 0 0.375rem;
+}
+:root:not([data-card-style='quiet']) .pf-card .pf-card-meta {
+  margin-left: auto;
+  padding-top: 0 !important;
+}
+:root:not([data-card-style='quiet']) .pf-card .pf-card-icon { display: none; }
+:root:not([data-card-style='quiet']) .pf-card--feature { padding-top: 1.5rem !important; }
+/* The cut titles stand above their boxes: the scroller gives the first row room. */
+:root:not([data-card-style='quiet']) [data-testid='workspace-grid'] { padding-top: 0.875rem; }
+
+:root:not([data-card-style]) .pf-card .pf-card-title {
+  font-size: 0.8125rem !important;
+  font-weight: 700;
+  letter-spacing: calc(0.02em * var(--term-track));
+}
+:root:not([data-card-style]) .pf-card .pf-card-title::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; color: var(--color-term-text-tertiary); }
+:root:not([data-card-style]) .pf-card .pf-card-title::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; color: var(--color-term-text-tertiary); }
+/* line-clamp sets the title as a box; the brackets need it inline. */
+:root:not([data-card-style]) .pf-card .pf-card-title { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:root:not([data-card-style]) .pf-card :is(.pf-card-meta) {
+  font-size: 0.6875rem !important;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.06em * var(--term-track));
+}
+:root:not([data-card-style]) .pf-card :is(.pf-card-body, p) {
+  font-size: 0.78125rem !important;
+  line-height: 1.55;
+}
+:root[data-card-style='balanced'] .pf-card .pf-card-title {
+  font-size: 0.9375rem !important;
+  font-weight: 600;
+}
+
+/* Quiet: the card's own fill and edge, as a Quiet data card has them. */
+:root[data-card-style='quiet'] .pf-card {
+  background: var(--color-bg-card) !important;
+  border: 1px solid var(--lift-edge, var(--color-term-edge)) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Dialogs
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style='quiet']) .cwm-modal {
+  background: var(--color-bg-page);
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) .cwm-modal {
+  border-radius: 6px;
+  box-shadow: none;
+}
+:root:not([data-card-style='quiet']) .cwm-header {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px dashed var(--color-term-edge);
+}
+:root[data-card-style='balanced'] .cwm-header {
+  border-bottom: 1px solid var(--color-term-rule);
+}
+:root:not([data-card-style]) .cwm-title {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: calc(0.02em * var(--term-track));
+}
+:root:not([data-card-style]) .cwm-title::before { content: var(--term-open); margin-right: 0.5ch; font-weight: 400; color: var(--color-term-text-tertiary); }
+:root:not([data-card-style]) .cwm-title::after { content: var(--term-close); margin-left: 0.5ch; font-weight: 400; color: var(--color-term-text-tertiary); }
+:root:not([data-card-style]) :is(.cwm-label, .cwm-dropzone-label) {
+  font-size: 0.6875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+  color: var(--color-term-text-secondary);
+}
+:root:not([data-card-style]) :is(.cwm-label-optional, .cwm-dropzone-sublabel, .cwm-dropzone-text) {
+  font-size: 0.6875rem;
+}
+:root:not([data-card-style]) .cwm-dropzone { border-radius: 3px; border-width: 1px; border-color: var(--color-term-edge); }
+:root[data-card-style='balanced'] .cwm-dropzone { border-style: solid; border-width: 1px; border-color: var(--color-term-edge); }
+:root[data-card-style='balanced'] .cwm-title { font-family: var(--font-content); }
+
+/* ════════════════════════════════════════════════════════════════════
+   Menus and popovers
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) :is([data-slot='menu'], [data-slot='popover']) {
+  border-radius: 4px;
+  box-shadow: none;
+  border-color: var(--color-term-edge);
+  background: var(--color-bg-page);
+}
+:root:not([data-card-style]) [data-slot='menu-item'] {
+  border-radius: 2px;
+  font-size: 0.75rem;
+}
+:root:not([data-card-style]) [data-slot='menu-label'] {
+  font-size: 0.6875rem;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+}
+:root:not([data-card-style]) [data-slot='menu-separator'] {
+  height: 0;
+  background: none;
+  border-top: 1px dashed var(--color-term-edge);
+}
+:root[data-card-style='balanced'] :is([data-slot='menu'], [data-slot='popover']) {
+  border-radius: 10px;
+  border-color: var(--color-term-edge);
+  background: var(--color-bg-page);
+}
+:root[data-card-style='balanced'] [data-slot='menu-separator'] { background: var(--color-term-rule); }
+
+/* ════════════════════════════════════════════════════════════════════
+   Sidebar: unfilled in the open styles, beside the page on a rule
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style='quiet']) .sidebar {
+  background: var(--color-bg-page);
+  border-right-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) .sidebar { border-right-style: dashed; }
+:root:not([data-card-style]) :is(.sidebar-panel-item, .sidebar-account-row-name) {
+  font-size: 0.78125rem;
+}
+:root:not([data-card-style]) .sidebar .nav-panel-row .text-sm {
+  font-size: 0.78125rem;
+}
+/* The selected row keeps its rail and loses its wash: full ink says it. */
+:root:not([data-card-style='quiet']) :is(.sidebar-panel-item.active, .nav-panel-row-active) {
+  background: transparent;
+  font-weight: 700;
+}
+:root:not([data-card-style='quiet']) .nav-panel-row-active {
+  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+}
+:root:not([data-card-style]) .nav-panel-row-active { border-radius: 3px; }
+:root:not([data-card-style]) .nav-panel-row-active > span::before { content: '> '; color: var(--color-term-text-tertiary); }
+:root:not([data-card-style='quiet']) .sidebar-panel-bottom { border-top-color: var(--color-term-rule); }
+:root:not([data-card-style]) .sidebar-panel-bottom { border-top-style: dashed; }
+
+/* ════════════════════════════════════════════════════════════════════
+   Chat shell
+   ════════════════════════════════════════════════════════════════════ */
+
+/* The reader's message: an open box, a prompt line in Terminal. */
+:root:not([data-card-style='quiet']) .pf-bubble {
+  background: transparent !important;
+  border: 1px solid var(--color-term-edge);
+}
+:root:not([data-card-style]) .pf-bubble {
+  border-radius: 4px;
+}
+:root:not([data-card-style]) .pf-bubble .font-content {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem !important;
+}
+:root:not([data-card-style]) .pf-bubble .font-content > p:first-child::before {
+  content: '> ';
+  color: var(--color-term-text-tertiary);
+}
+
+/* The turn's fold row reads as a card's divider. */
+:root:not([data-card-style]) [data-turn-fold] {
+  border-bottom-style: dashed !important;
+  border-bottom-color: var(--color-term-edge) !important;
+  font-size: 0.6875rem !important;
+  text-transform: var(--term-case);
+  letter-spacing: calc(0.08em * var(--term-track));
+}
+:root:not([data-card-style]) [data-turn-fold] button { text-transform: inherit; }
+:root[data-card-style='balanced'] [data-turn-fold] {
+  border-bottom-color: var(--color-term-rule) !important;
+}
+
+/* The bar over the thread */
+:root:not([data-card-style]) .pf-page-title--bar { text-transform: none; }
+
+/* Composer: Terminal squares it (and its send button, which must stay
+   concentric with it), and types in mono. */
+:root:not([data-card-style]) .chat-input-container {
+  border-radius: 6px !important;
+  border-color: var(--color-term-edge) !important;
+}
+:root:not([data-card-style]) .chat-input-container .send-button { border-radius: 3px !important; }
+:root:not([data-card-style]) .chat-input-container :is(textarea, [contenteditable]) {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+:root[data-card-style='balanced'] .chat-input-container {
+  border-color: var(--color-term-edge) !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Settings: a rail of sections beside cards of rows
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Group titles and the rail's labels are the page's kickers. */
+:root :is(.settings-group-title, .settings-rail-label) {
+  font-family: var(--term-words, var(--font-mono));
+  text-transform: var(--term-case, uppercase);
+  letter-spacing: calc(0.08em * var(--term-track, 1));
+}
+:root:not([data-card-style]) :is(.settings-group-title, .settings-rail-label) {
+  font-size: 0.6875rem;
+  color: var(--color-term-text-secondary);
+}
+
+/* The rail reads as the sidebar does: on the page's ground, beside it on a
+   rule, the open section in full ink rather than a wash. */
+:root:not([data-card-style='quiet']) .settings-rail { border-right-color: var(--color-term-edge); }
+:root:not([data-card-style]) .settings-rail { border-right-style: dashed; }
+:root:not([data-card-style]) .settings-rail-link { font-size: 0.78125rem; }
+:root:not([data-card-style='quiet']) .settings-rail-link.is-active {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-term-edge);
+  font-weight: 700;
+}
+:root:not([data-card-style]) .settings-rail-link.is-active { border-radius: 3px; }
+:root:not([data-card-style]) .settings-rail-link.is-active .settings-rail-name::before {
+  content: '> ';
+  color: var(--color-term-text-tertiary);
+}
+:root:not([data-card-style='quiet']) .settings-search input {
+  background: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) .settings-search input { border-radius: 3px; font-family: var(--font-mono); }
+
+/* Cards: open boxes in the open styles, their rows parted by the card's
+   divider. Quiet keeps the filled card it already draws. */
+:root:not([data-card-style='quiet']) .settings-card {
+  background: transparent;
+  border-color: var(--color-term-edge);
+}
+:root:not([data-card-style='quiet']) .settings-card > * + * { border-top-color: var(--color-term-rule); }
+:root:not([data-card-style]) .settings-card { border-radius: 4px; }
+:root:not([data-card-style]) .settings-card > * + * {
+  border-top-style: dashed;
+  border-top-color: var(--color-term-edge);
+}
+:root:not([data-card-style]) .settings-row-label { font-size: 0.78125rem; }
+:root:not([data-card-style]) :is(.settings-row-desc, .settings-group-desc, .settings-head-def) {
+  font-size: 0.6875rem;
+  line-height: 1.5;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Automations
+   ════════════════════════════════════════════════════════════════════ */
+
+:root:not([data-card-style]) :is(.automation-run, .automations-day-heading) {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--color-term-edge);
+}
+:root[data-card-style='balanced'] :is(.automation-run, .automations-day-heading) {
+  border-bottom-color: var(--color-term-rule);
+}
+:root:not([data-card-style]) .automation-run-name { font-size: 0.8125rem; font-weight: 700; }
+:root:not([data-card-style]) .automation-run-excerpt { font-size: 0.78125rem; }

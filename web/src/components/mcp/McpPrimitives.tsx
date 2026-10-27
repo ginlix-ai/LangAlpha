@@ -342,6 +342,8 @@ export function HeaderButton({
   return (
     <button
       type="button"
+      data-slot="button"
+      data-variant={variant === 'primary' ? 'default' : variant === 'secondary' ? 'outline' : 'ghost'}
       className={cn(
         // Every variant takes the secondary's 1px edge, unpainted where it
         // draws none, so mixed variants in one row stand the same height.

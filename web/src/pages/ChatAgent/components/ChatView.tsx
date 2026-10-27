@@ -1480,7 +1480,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <Menu className="h-5 w-5" />
               </button>
             )}
-            <h1 className="text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="pf-page-title pf-page-title--bar text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
               {/* The bar's tap is a pointer's shortcut, and a bar holding buttons
                   cannot be one. The title is the same action as a real control,
                   named by the words on it, with what it does as its description. */}

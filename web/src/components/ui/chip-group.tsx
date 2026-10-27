@@ -43,7 +43,7 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
 
 export function ChipGroup<V extends string>({ values, onChange, options, labelledBy }: ChipGroupProps<V>) {
   return (
-    <div role="group" aria-labelledby={labelledBy} onKeyDown={moveFocus} className="flex flex-wrap gap-2">
+    <div role="group" data-slot="chip-group" aria-labelledby={labelledBy} onKeyDown={moveFocus} className="flex flex-wrap gap-2">
       {options.map((option) => {
         const checked = values.includes(option.value);
         return (

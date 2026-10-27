@@ -20,6 +20,7 @@ function ContextMenuContent({
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
+        data-slot="menu"
         collisionPadding={collisionPadding}
         onCloseAutoFocus={closeAutoFocus(onCloseAutoFocus)}
         className={cn(
@@ -49,6 +50,7 @@ function ContextMenuItem({
 }) {
   return (
     <ContextMenuPrimitive.Item
+      data-slot="menu-item"
       className={cn(ITEM_BOX, itemVariants[variant], className)}
       {...props}
     />
@@ -61,6 +63,7 @@ function ContextMenuSeparator({
 }: React.ComponentProps<typeof ContextMenuPrimitive.Separator>) {
   return (
     <ContextMenuPrimitive.Separator
+      data-slot="menu-separator"
       className={cn("-mx-1 my-1 h-px bg-border", className)}
       {...props}
     />

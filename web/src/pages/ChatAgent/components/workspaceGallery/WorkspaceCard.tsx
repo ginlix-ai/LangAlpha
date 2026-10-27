@@ -81,7 +81,7 @@ interface WorkspaceCardProps {
 const RESTING: CardDrag = { state: 'resting', dragging: false, held: false };
 
 // The card's box, shared with its skeleton so a placeholder is the card's size.
-const CARD_BODY = 'relative flex h-full w-full flex-col gap-1.5 overflow-hidden rounded-xl py-3.5 pl-[18px] pr-4 md:px-5 md:py-4';
+const CARD_BODY = 'pf-card relative flex h-full w-full flex-col gap-1.5 overflow-hidden rounded-xl py-3.5 pl-[18px] pr-4 md:px-5 md:py-4';
 const CARD_SURFACE = {
   background: 'var(--color-bg-card-gradient, linear-gradient(to bottom, var(--color-border-muted), var(--color-border-muted)))',
   border: '1px solid var(--lift-edge, var(--color-bg-card-border, var(--color-border-muted)))',
@@ -190,19 +190,19 @@ export function WorkspaceCard({
         >
           {/* Where the menu always shows (a touch screen), the row leaves it its
               corner and the time sits clear of it. */}
-          <div className="flex items-start gap-2 min-w-0 pointer-coarse:pr-9">
+          <div className="pf-card-head flex items-start gap-2 min-w-0 pointer-coarse:pr-9">
             {workspace.is_pinned && (
               <Pin className="mt-1 h-3.5 w-3.5 shrink-0 rotate-45" style={{ color: 'var(--color-text-tertiary)' }} />
             )}
             {/* One line at every width, so every card is the same height. */}
-            <div className="font-medium flex-1 min-w-0 line-clamp-1 break-words" style={{ color: 'var(--color-text-primary)' }} title={text.name}>
+            <div className="pf-card-title font-medium flex-1 min-w-0 line-clamp-1 break-words" style={{ color: 'var(--color-text-primary)' }} title={text.name}>
               {text.name}
             </div>
             {when && (
               // Under a mouse the menu takes this corner on hover, so the time
               // steps aside rather than sitting under it.
               <span
-                className={`shrink-0 pt-0.5 text-xs whitespace-nowrap transition-opacity duration-quick${state === 'resting' ? ' pointer-fine:group-hover:opacity-0 pointer-fine:group-focus-within:opacity-0' : ''}`}
+                className={`pf-card-meta shrink-0 pt-0.5 text-xs whitespace-nowrap transition-opacity duration-quick${state === 'resting' ? ' pointer-fine:group-hover:opacity-0 pointer-fine:group-focus-within:opacity-0' : ''}`}
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
                 {when}
@@ -211,7 +211,7 @@ export function WorkspaceCard({
           </div>
           {/* The description always holds two lines, filled or not, so every
               card is the same height and the machine line sits level. */}
-          <div className="text-sm line-clamp-2 min-h-[2lh]" style={{ color: 'var(--color-text-tertiary)' }}>
+          <div className="pf-card-body text-sm line-clamp-2 min-h-[2lh]" style={{ color: 'var(--color-text-tertiary)' }}>
             {text.description}
           </div>
           {computer && (

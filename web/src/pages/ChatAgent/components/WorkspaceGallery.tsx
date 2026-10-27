@@ -361,7 +361,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
             style={{ paddingTop: 'calc(var(--page-top) - 4px)' }}
           >
             <div className="flex w-full items-center justify-between gap-4" style={{ minHeight: 36 }}>
-              <h1 className="text-2xl font-semibold title-font" style={{ color: 'var(--color-text-primary)' }}>
+              <h1 className="pf-page-title text-2xl font-semibold title-font" style={{ color: 'var(--color-text-primary)' }}>
                 {t('workspace.workspaces')}
               </h1>
               <GalleryActions onNewWorkspace={() => setIsModalOpen(true)} />
@@ -372,7 +372,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
             {/* Below a laptop's width the labeled action does not fit beside
                 the title, so it takes the row beneath it. */}
             <div className="flex flex-col gap-3 mb-4 md:hidden">
-              <h1 className="text-xl font-semibold title-font" style={{ color: 'var(--color-text-primary)' }}>
+              <h1 className="pf-page-title text-xl font-semibold title-font" style={{ color: 'var(--color-text-primary)' }}>
                 {t('workspace.workspaces')}
               </h1>
               <GalleryActions stacked onNewWorkspace={() => setIsModalOpen(true)} />

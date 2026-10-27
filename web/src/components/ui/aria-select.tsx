@@ -56,6 +56,7 @@ const SelectValue = <T extends object>({
 
 const SelectTrigger = ({ className, children, ...props }: AriaButtonProps) => (
   <AriaButton
+    data-slot="input"
     className={composeRenderProps(className, (className) =>
       cn(
         /* The field fill and hairline every text input carries */

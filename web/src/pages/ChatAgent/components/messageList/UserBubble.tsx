@@ -49,7 +49,7 @@ export function UserBubble({ provenance, steered, readOnly, isMobile, className,
         </Disclosure>
       )}
       <div
-        className={cn('max-w-full overflow-hidden rounded-xl wrap-break-word', isMobile ? 'px-3 py-2' : 'px-4 py-3')}
+        className={cn('pf-bubble max-w-full overflow-hidden rounded-xl wrap-break-word', isMobile ? 'px-3 py-2' : 'px-4 py-3')}
         style={{ backgroundColor: 'var(--color-bg-elevated)', color: 'var(--color-text-primary)' }}
       >
         {children}

@@ -18,6 +18,8 @@ export function GalleryActions({ onNewWorkspace, stacked = false }: GalleryActio
   const { t } = useTranslation();
   return (
     <button
+      data-slot="button"
+      data-variant="default"
       onClick={onNewWorkspace}
       className={cn(
         'flex items-center gap-1.5 py-2 h-9 rounded-lg press hover:opacity-90',

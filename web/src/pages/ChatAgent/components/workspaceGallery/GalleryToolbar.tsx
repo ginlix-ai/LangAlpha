@@ -84,6 +84,7 @@ export function GalleryToolbar({ search, onSearchChange, computerControl, sortBy
           alone would cut this border and leave the icon outside the
           indicator. `rings-within` in tokens.css owns the rule. */}
       <div
+        data-slot="input"
         className="rings-within owns-its-edge flex h-9 min-w-0 basis-full items-center gap-2 rounded-lg border px-3 transition-colors md:max-w-md md:flex-1 md:basis-auto"
         style={{ backgroundColor: 'var(--color-bg-input)', borderColor: 'var(--color-border-muted)' }}
       >
@@ -109,6 +110,8 @@ export function GalleryToolbar({ search, onSearchChange, computerControl, sortBy
         <DropdownMenuTrigger asChild>
           <button
             type="button"
+            data-slot="button"
+            data-variant="outline"
             className={cn(CONTROL, 'shrink-0')}
             style={CONTROL_STYLE}
             aria-label={`${t('workspace.sortBy')}: ${sortLabels[sortBy]}`}

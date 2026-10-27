@@ -29,13 +29,15 @@ export function AnimatedTabs({
   useEffect(() => { prevValue.current = value; });
 
   return (
-    <div className="flex space-x-1">
+    <div data-slot="tabs" className="flex space-x-1">
       {tabs.map((tab) => {
         const isActive = value === tab.id;
         return (
           <button
             key={tab.id}
             type="button"
+            data-slot="tab"
+            data-active={isActive || undefined}
             onClick={() => onChange(tab.id)}
             className={`
               relative rounded-md px-3 py-1.5 text-sm font-medium
@@ -53,6 +55,7 @@ export function AnimatedTabs({
             {isActive && (
               <motion.span
                 layoutId={layoutId}
+                data-slot="tab-indicator"
                 className="absolute inset-0"
                 style={{
                   borderRadius: '6px',

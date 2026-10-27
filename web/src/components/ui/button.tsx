@@ -7,7 +7,14 @@ export interface ButtonProps extends React.ComponentProps<"button"> {
 }
 
 function Button({ className, variant, size, ...props }: ButtonProps) {
-  return <button className={buttonClass({ variant, size, className })} {...props} />
+  return (
+    <button
+      data-slot="button"
+      data-variant={variant ?? "default"}
+      className={buttonClass({ variant, size, className })}
+      {...props}
+    />
+  )
 }
 
 export { Button }
