@@ -690,6 +690,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 // the account-level skills, hiding the workspace's own and
                 // still offering ones it has disabled.
                 selectedWorkspaceId={workspaceId}
+                inHome={isHome}
                 minRows={2}
               />
             </div>

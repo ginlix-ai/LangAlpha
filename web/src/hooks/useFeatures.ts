@@ -34,14 +34,16 @@ export function useFeatureEnabled(key: string): boolean {
   return isFeatureEnabled(useFeatures().data, key);
 }
 
-/** Mutation for a user override; setQueryData propagates the returned list instantly. */
+/** Mutation for a user override; setQueryData propagates the returned list
+ *  instantly, and whatever is read under the flag's own key is read again. */
 export function useSetFeatureOverride() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ key, enabled }: { key: string; enabled: boolean | null }) =>
       setFeatureOverride(key, enabled),
-    onSuccess: (features: FeatureState[]) => {
+    onSuccess: (features: FeatureState[], { key }) => {
       queryClient.setQueryData(queryKeys.features.list(), features);
+      queryClient.invalidateQueries({ queryKey: queryKeys.features.of(key) });
     },
     onError: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.features.list() });

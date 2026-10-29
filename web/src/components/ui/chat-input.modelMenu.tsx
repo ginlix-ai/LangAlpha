@@ -8,7 +8,7 @@ import {
   ComposerPopover, MENU_ROW, MENU_SECTION, useFocusCheckedRow,
 } from './chat-input.composerPopover';
 import { getModelDisplayName } from './chat-input.helpers';
-import { ModelPicker } from './chat-input.modelPicker';
+import { ModelPicker, type ModelRowStatus } from './chat-input.modelPicker';
 import { EFFORT_LABELS, hasTuningMenu, tuningMenuLevels } from '@/lib/modelTuning';
 import type { ModelMetadataEntry, TaskCost } from '@/hooks/useFilteredModels';
 import type { ModelGroup } from '@/lib/modelGroups';
@@ -117,7 +117,7 @@ function Pill({ pill, buttonRef, open, popup, onPress, title, disabled, children
  */
 export function ChatInputModelMenu({
   selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, onSelectModel,
-  needsSignIn, dropdownDirection, container, draftRef, disabled = false,
+  rowStatus, dropdownDirection, container, draftRef, disabled = false,
 }: {
   selectedModel: string | null;
   /** Supplies authored display names; a model without one gets a derived name. */
@@ -130,7 +130,8 @@ export function ChatInputModelMenu({
   recent: string[];
   onToggleFavorite: (model: string, favorite: boolean) => void;
   onSelectModel: (model: string) => void;
-  needsSignIn: (model: string) => boolean;
+  /** What each row says beside its model, and whether it is a pick. */
+  rowStatus: (model: string) => ModelRowStatus;
   dropdownDirection: 'up' | 'down';
   /** Mobile portals into the composer so the picker can't escape the sheet. */
   container: HTMLElement | null;
@@ -183,7 +184,7 @@ export function ChatInputModelMenu({
         recent={recent}
         onToggleFavorite={onToggleFavorite}
         onPick={onSelectModel}
-        needsSignIn={needsSignIn}
+        rowStatus={rowStatus}
         onManage={toSettings}
       />
     </>

@@ -89,6 +89,9 @@ export interface StreamRouterDeps {
   armReportBack: (owed?: boolean | null) => void;
   /** Re-read the user's workspaces after an agent changed one. */
   refreshWorkspaces: () => void;
+  /** Re-read the user's Claude Code status, after Anthropic refused their
+   *  setup token mid-turn. */
+  refreshClaudeCodeStatus: () => void;
   /** Hears the turn the server admitted the run to, before the run's bubbles
    *  take it, while they still carry the turn the view counted. */
   onAdmittedTurn?: (bubbleId: string, turnIndex: number) => void;
@@ -839,6 +842,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // as a notice: the server's name the CLI's commands, and the reply's
       // Retry sends the message again.
       const busyCode = event.error_type === 'admission_conflict' && isBusyCode(event.code) ? event.code : null;
+      // Anthropic refused the user's setup token mid-turn, which the server's
+      // next read of it says: Settings and the picker take that now.
+      if (event.type === 'claude_code_off' && event.reason === 'signed_out') deps.refreshClaudeCodeStatus();
       // Only the frame that ends the server's own retries carries `max_retries`.
       const errorMessage = busyCode !== null
         ? rt.t(BUSY_REPLY_KEYS[busyCode])

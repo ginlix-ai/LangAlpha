@@ -122,4 +122,17 @@ describe('useSetFeatureOverride', () => {
     await waitFor(() => expect(result.current.features.data).toEqual(updated));
     expect(mockGetFeatures).toHaveBeenCalledTimes(1);
   });
+
+  it('marks what is read under the toggled flag stale, and only that', async () => {
+    const queryClient = freshQueryClient();
+    queryClient.setQueryData(['features', 'market_watch', 'status'], { ok: true });
+    queryClient.setQueryData(['features', 'beta_thing', 'status'], { ok: true });
+    mockSetFeatureOverride.mockResolvedValue(FEATURES);
+
+    const { result } = renderHookWithProviders(() => useSetFeatureOverride(), { queryClient });
+    await result.current.mutateAsync({ key: 'market_watch', enabled: false });
+
+    expect(queryClient.getQueryState(['features', 'market_watch', 'status'])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(['features', 'beta_thing', 'status'])?.isInvalidated).toBe(false);
+  });
 });

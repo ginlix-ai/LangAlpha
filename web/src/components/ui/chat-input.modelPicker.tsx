@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 import { llmProviderArt } from '@/lib/brandArt';
 import { isImeComposing } from '@/lib/ime';
 import type { ModelConnection, ModelGroup } from '@/lib/modelGroups';
-import { isSubscription, type Payer } from '@/lib/modelPayer';
+import { isSubscription, subscriptionPayer, type Payer } from '@/lib/modelPayer';
 import { usePayerLabel } from '@/hooks/usePayerLabel';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import { ModelMark, MarkedModelName } from '@/components/model/ModelMark';
@@ -23,6 +23,12 @@ import { PayerBadge } from '@/components/model/PayerBadge';
 export const FAVORITES_TAB = '__favorites__';
 
 type Metadata = Record<string, ModelMetadataEntry>;
+
+/** What a row says about its model: a tag beside the name for one that is a
+ *  pick, or, for one that is not, why, under its name where a sentence fits.
+ *  A row held back by something the user can fix takes them there instead of
+ *  picking, through `fix`. */
+export type ModelRowStatus = { tag?: string } | { unavailable: string; fix?: () => void };
 
 interface ListProps {
   selectedModel: string | null;
@@ -35,8 +41,7 @@ interface ListProps {
    *  under the favorites so the current model is always on the first tab. */
   recent: string[];
   onToggleFavorite: (model: string, favorite: boolean) => void;
-  /** Whether a model runs on a subscription whose sign-in has to be renewed. */
-  needsSignIn: (model: string) => boolean;
+  rowStatus: (model: string) => ModelRowStatus;
 }
 
 /**
@@ -77,6 +82,12 @@ export function ModelPicker({
       <ModelList
         {...list}
         onPick={(model) => {
+          const status = list.rowStatus(model);
+          if ('unavailable' in status) {
+            onOpenChange(false);
+            status.fix?.();
+            return;
+          }
           onPick(model);
           pickToDraft();
           onOpenChange(false);
@@ -127,7 +138,7 @@ function viewOf({ query, tab, connectionTab, groups, favorites, recent, selected
 /** The picker's content, mounted while it is open, so the search, the tab and
  *  the brand's payer start over on each opening. */
 function ModelList({
-  selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, needsSignIn, onPick, onManage,
+  selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, rowStatus, onPick, onManage,
 }: ListProps & { onPick: (model: string) => void; onManage: () => void }) {
   const { t } = useTranslation();
   const payerLabel = usePayerLabel();
@@ -152,8 +163,10 @@ function ModelList({
     : null;
   // A connection's tag sits once above its models rather than on each row.
   const headerPayer = view.kind === 'brand' ? view.connection.payer : undefined;
+  // The tab's own subscription (Claude Code's) is named by its header already.
+  const headerNamesPayer = view.kind === 'brand' && headerPayer === subscriptionPayer(view.group.id);
   const inThread = view.kind === 'favorites' ? view.recent : [];
-  const first = view.rows[0] ?? inThread[0];
+  const first = [...view.rows, ...inThread].find((m) => !('unavailable' in rowStatus(m)));
   const favoriteSet = new Set(favorites);
 
   // The current model's check is what the user looks for on opening, and a
@@ -185,7 +198,7 @@ function ModelList({
       payer={headerPayer ? undefined : payers[m]}
       selected={m === selectedModel}
       favorite={favoriteSet.has(m)}
-      hint={needsSignIn(m) ? t('modelAccess.status.needsReauth') : undefined}
+      status={rowStatus(m)}
       onToggleFavorite={onToggleFavorite}
     />
   );
@@ -256,7 +269,7 @@ function ModelList({
                   key={g.id}
                   id={g.id}
                   label={g.label}
-                  dot={g.connections.some((c) => isSubscription(c.payer))}
+                  dot={g.connections.some((c) => isSubscription(c.payer) && c.models.some((m) => !('unavailable' in rowStatus(m))))}
                 >
                   <RailIcon provider={g.id} label={g.label} />
                 </RailTab>
@@ -295,7 +308,7 @@ function ModelList({
                   ))}
                 </ToggleButtonGroup>
               ) : (
-                <PayerBadge payer={headerPayer} />
+                <PayerBadge payer={headerNamesPayer ? undefined : headerPayer} />
               )}
             </div>
           )}
@@ -362,7 +375,8 @@ const FADE = 'linear-gradient(to bottom, #000 calc(100% - 1.5rem), rgb(0 0 0 / 0
 function RailTab({ id, label, dot = false, children }: {
   id: string;
   label: string;
-  /** Marks a brand the user reaches through a subscription. */
+  /** Marks a brand the user reaches through a subscription that can run one
+   *  of its models now. */
   dot?: boolean;
   children: ReactNode;
 }) {
@@ -398,44 +412,66 @@ function RailIcon({ provider, label }: { provider: string; label: string }) {
   );
 }
 
-function ModelRow({ model, rowRef, metadata, payer, selected, favorite, hint, onToggleFavorite }: {
+function ModelRow({ model, rowRef, metadata, payer, selected, favorite, status, onToggleFavorite }: {
   model: string;
   rowRef?: Ref<HTMLDivElement>;
   metadata?: Metadata;
   payer?: Payer;
   selected: boolean;
   favorite: boolean;
-  /** Why a send on it would be refused, said beside its name. */
-  hint?: string;
+  status: ModelRowStatus;
   onToggleFavorite: (model: string, favorite: boolean) => void;
 }) {
   const { t } = useTranslation();
   const provider = metadata?.[model]?.provider;
   const name = getModelDisplayName(model, metadata);
+  const reason = 'unavailable' in status ? status.unavailable : undefined;
+  const fixable = 'unavailable' in status && !!status.fix;
+  const tag = 'tag' in status ? status.tag : undefined;
   return (
-    <GridListItem ref={rowRef} id={model} textValue={name} className={cn('group', MENU_ROW)}>
-      <span className="flex min-w-0 flex-1 items-center gap-2">
-        <MarkedModelName provider={provider} name={name} nameClassName="min-w-0 truncate" />
-      </span>
-      <PayerBadge payer={payer} />
-      {hint && <span className="flex-none text-xs text-(--color-text-tertiary)">{hint}</span>}
-      <Check aria-hidden className={cn('h-4 w-4 flex-none text-(--color-accent-primary)', !selected && 'invisible')} />
-      {selected && <span className="sr-only">{t('chat.modelSelector.current')}</span>}
-      <Button
-        aria-label={t(favorite ? 'chat.modelSelector.unfavorite' : 'chat.modelSelector.favorite', { model: name })}
-        onPress={() => onToggleFavorite(model, !favorite)}
-        className={cn(
-          'flex h-5 w-5 flex-none items-center justify-center rounded outline-hidden data-focus-visible:outline-current',
-          favorite
-            ? 'text-(--color-text-secondary)'
-            // Shown on the row's hover or focus where there is a pointer to
-            // hover with. A touch screen has none, so it stays shown rather
-            // than sit there invisible and still take a tap.
-            : 'text-(--color-text-tertiary) opacity-0 group-data-focused:opacity-100 group-data-hovered:opacity-100 data-focus-visible:opacity-100 [@media(hover:none)]:opacity-100',
+    <GridListItem
+      ref={rowRef}
+      id={model}
+      // A row a reason holds back says it as part of its name, which is all a
+      // screen reader reads of a row.
+      textValue={reason ? `${name}, ${reason}` : name}
+      isDisabled={reason !== undefined && !fixable}
+      className={cn('group', MENU_ROW, 'data-disabled:text-(--color-text-tertiary)', fixable && 'text-(--color-text-tertiary)')}
+    >
+      {/* One line holds the name and everything after it, so the check and
+          the star sit level with the name whether or not a reason goes under. */}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <MarkedModelName provider={provider} name={name} nameClassName="min-w-0 truncate" />
+          </span>
+          <PayerBadge payer={payer} />
+          {tag && <span className="flex-none text-xs text-(--color-text-tertiary)">{tag}</span>}
+          <Check aria-hidden className={cn('h-4 w-4 flex-none text-(--color-accent-primary)', !selected && 'invisible')} />
+          {selected && <span className="sr-only">{t('chat.modelSelector.current')}</span>}
+          <Button
+            aria-label={t(favorite ? 'chat.modelSelector.unfavorite' : 'chat.modelSelector.favorite', { model: name })}
+            onPress={() => onToggleFavorite(model, !favorite)}
+            className={cn(
+              'flex h-5 w-5 flex-none items-center justify-center rounded outline-hidden data-focus-visible:outline-current',
+              favorite
+                ? 'text-(--color-text-secondary)'
+                // Shown on the row's hover or focus where there is a pointer to
+                // hover with. A touch screen has none, so it stays shown rather
+                // than sit there invisible and still take a tap.
+                : 'text-(--color-text-tertiary) opacity-0 group-data-focused:opacity-100 group-data-hovered:opacity-100 data-focus-visible:opacity-100 [@media(hover:none)]:opacity-100',
+            )}
+          >
+            <Star aria-hidden className="h-3.5 w-3.5" fill={favorite ? 'currentColor' : 'none'} />
+          </Button>
+        </span>
+        {/* Under the name itself, past the mark and its gap, and clear of the star's column. */}
+        {reason && (
+          <span className={cn('pe-7 text-xs text-(--color-text-tertiary)', provider && llmProviderArt(provider) && 'ps-[1.375rem]')}>
+            {reason}
+          </span>
         )}
-      >
-        <Star aria-hidden className="h-3.5 w-3.5" fill={favorite ? 'currentColor' : 'none'} />
-      </Button>
+      </span>
     </GridListItem>
   );
 }

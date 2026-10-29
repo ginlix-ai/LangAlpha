@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback, useImperativeHandle, useMemo } from 'react';
 import { Plus, ChartCandlestick } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
 import { usePreferences } from '@/hooks/usePreferences';
-import { useDefaultModel } from '@/hooks/useSlotDefaultModels';
+import { useTurnModels } from '@/hooks/useTurnModels';
 import { useEffectiveTuning, useModelProfileWriter } from '@/hooks/useModelProfile';
 import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { homeWorkspaceQuery } from '@/hooks/useHomeWorkspace';
@@ -28,6 +29,8 @@ import {
   ComposerAttachments, ComposerPills, DropOverlay, SendStopButton, ToolbarOverflowMenu, VoiceButton, VoiceOverlay,
 } from './chat-input.composerParts';
 import { ChatInputEffortMenu, ChatInputModelMenu, ModelTriggerMeasure } from './chat-input.modelMenu';
+import type { ModelRowStatus } from './chat-input.modelPicker';
+import { CLAUDE_CODE_TOKEN_URL, isClaudeCodeModel } from '@/lib/claudeCode';
 import { deriveRecentModels } from './chat-input.models';
 import { modelGroups } from '@/lib/modelGroups';
 import { useToolbarItems } from './chat-input.toolbar';
@@ -90,6 +93,10 @@ export interface ChatInputProps {
   onScopeChange?: ((scope: ComposerScope) => void) | null;
   /** Shown in the scope picker while there is no workspace to pick. */
   emptyWorkspacesHint?: string | null;
+  /** The send goes to Home with no scope picker to say so: a Home thread's,
+   *  or the welcome's, whose first message opens one there. Its turns are the
+   *  Chief of Staff's, as a send scoped to all workspaces is. */
+  inHome?: boolean;
   /**
    * The Subagents switch, owned by a thread host (`useThreadSubagents`),
    * which also receives each flip through `onToggleSubagents`. Null while the
@@ -162,6 +169,7 @@ function ChatInput({
   scope,
   onScopeChange = null,
   emptyWorkspacesHint = null,
+  inHome = false,
   // Subagents switch
   subagentsAllowed: hostSubagents,
   onToggleSubagents = null,
@@ -199,10 +207,11 @@ function ChatInput({
   ref,
 }: ChatInputProps & { ref?: React.Ref<ChatInputHandle> }) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { preferences, isLoaded: preferencesRead } = usePreferences();
   const marketWatchEnabled = useFeatureEnabled('market_watch');
-  const { models: visibleModels, validModelNames, metadata: modelMetadata, payers, isLoading: modelsLoading } = useAllModels();
+  const { models: visibleModels, validModelNames, metadata: modelMetadata, payers, claudeCodeState, isLoading: modelsLoading } = useAllModels();
   const lapsedSignIn = useLapsedSignIn();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const [message, setMessage] = useState('');
@@ -215,10 +224,11 @@ function ChatInput({
   // The model a send names. A thread host owns it. Without one the composer
   // holds it, starting on the account default, which with nothing saved is
   // the deployment's (see useSlotDefaultModels for why it waits on the
-  // preference), and following the default when it changes.
-  const defaultModel = useDefaultModel();
-  const [ownModel, setOwnModel] = useSeededModel(defaultModel);
-  const pillModel = hostModel === undefined ? ownModel : hostModel;
+  // preference), and following the default when it changes. A turn in Home
+  // swaps a model it never runs for the default (see useTurnModels).
+  const turn = useTurnModels(inHome || scope === 'all');
+  const [ownModel, setOwnModel] = useSeededModel(turn.defaultModel);
+  const pillModel = turn.resolve(hostModel === undefined ? ownModel : hostModel);
 
   // Per-model tuning is an account preference, not a device one: the server
   // resolves ``profiles[<model>]`` for turns this input never starts (schedules,
@@ -678,7 +688,7 @@ function ChatInput({
   const favorites = useFavoriteModels();
   const { entryFor } = useProviderCatalog();
   const modelGroupList = useMemo(() => modelGroups({
-    models: visibleModels,
+    models: turn.models,
     payers,
     brandOf: (group) => {
       const entry = entryFor(group);
@@ -688,9 +698,22 @@ function ChatInput({
         label: visibleModels[entry.group]?.display_name ?? entry.group_display_name ?? entry.display_name,
       };
     },
-  }), [visibleModels, payers, entryFor]);
+  }), [turn.models, visibleModels, payers, entryFor]);
   const recentModels = deriveRecentModels({ selectedModel: pillModel, threadModels: threadModelsProp, validModelNames })
-    .filter((m) => !favorites.models.includes(m));
+    .filter((m) => !favorites.models.includes(m) && turn.offers(m));
+  // A Claude Code model runs a turn while its token works or could not be
+  // checked, as admission lets it; otherwise its row says why, and where the
+  // user can fix it.
+  const modelRowStatus = (m: string): ModelRowStatus => {
+    if (isClaudeCodeModel(modelMetadata[m])) {
+      switch (claudeCodeState) {
+        case 'checking': return { unavailable: t('modelAccess.status.working') };
+        case 'no_token': return { unavailable: t('chat.modelSelector.claudeCodeSignedOut'), fix: () => navigate(CLAUDE_CODE_TOKEN_URL) };
+        case 'rejected': return { unavailable: t('chat.modelSelector.claudeCodeRejected'), fix: () => navigate(CLAUDE_CODE_TOKEN_URL) };
+      }
+    }
+    return { tag: lapsedSignIn(m) ? t('modelAccess.status.needsReauth') : undefined };
+  };
   const showEffort = hasTuningMenu(reasoningEfforts, isCodexModel);
 
   return (
@@ -872,11 +895,11 @@ function ChatInput({
                 metadata={modelMetadata}
                 payers={payers}
                 groups={modelGroupList}
-                favorites={favorites.models}
+                favorites={favorites.models.filter(turn.offers)}
                 recent={recentModels}
                 onToggleFavorite={(m, on) => (on ? favorites.add(m) : favorites.remove(m))}
                 onSelectModel={handlePickModel}
-                needsSignIn={(m) => lapsedSignIn(m) !== null}
+                rowStatus={modelRowStatus}
                 dropdownDirection={dropdownDirection}
                 container={chatContainer}
                 draftRef={textareaRef}

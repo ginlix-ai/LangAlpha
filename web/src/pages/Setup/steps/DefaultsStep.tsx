@@ -39,7 +39,7 @@ export default function DefaultsStep() {
 
 function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; prefsFailed: boolean }) {
   const navigate = useNavigate();
-  const { models, metadata, payers, systemDefaults, isLoading } = useAllModels();
+  const { models, slotModels, metadata, payers, systemDefaults, isLoading } = useAllModels();
   const { preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
   const { t } = useTranslation();
@@ -74,11 +74,13 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
   // A first run starts with a default model rather than an empty required
   // slot: the deployment's own when this user can run it, else the first model
   // they just picked. Set during render like the Background fill below.
-  const available = Object.values(models).flatMap((p) => p.models ?? []);
+  // From the slot models, so the fill never lands on a conversation-only
+  // model (Claude Code); the user may still pick one.
+  const fillable = Object.values(slotModels).flatMap((p) => p.models ?? []);
   const primaryFill = !primaryModel && !isLoading && prefsLoaded
     ? [systemDefaults?.default_model, ...starredModels(preferences)].find(
-        (m): m is string => typeof m === 'string' && available.includes(m),
-      ) ?? available[0]
+        (m): m is string => typeof m === 'string' && fillable.includes(m),
+      ) ?? fillable[0]
     : undefined;
   if (primaryFill) setPrimaryModel(primaryFill);
 
@@ -86,7 +88,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
   // go with the primary, set during render so the slot never paints empty.
   // The fill is a pick like any other: it stays when the primary changes, and
   // nothing is saved before Continue.
-  const backgroundFill = !backgroundModel && primaryModel && prefsLoaded ? suggestBackgroundModel(models, primaryModel) : undefined;
+  const backgroundFill = !backgroundModel && primaryModel && prefsLoaded ? suggestBackgroundModel(slotModels, primaryModel) : undefined;
   if (backgroundFill) setBackgroundModel(backgroundFill);
 
   const canContinue = prefsLoaded && Boolean(primaryModel && backgroundModel);
@@ -182,6 +184,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
       {/* Model tier config */}
       <ModelTierConfig
         models={models}
+        backgroundModels={slotModels}
         primaryModel={primaryModel}
         onPrimaryModelChange={setPrimaryModel}
         backgroundModel={backgroundModel}
@@ -224,7 +227,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
                   description={t('settings.modelTuning.fetchModelDesc')}
                   value={advancedModels.fetchModel}
                   onChange={(v) => handleAdvancedChange({ fetchModel: v })}
-                  models={models}
+                  models={slotModels}
                   placeholder={copy.defaultsToBackground}
                   payers={payers}
                   metadata={metadata}
@@ -234,7 +237,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
                   description={t('settings.modelTuning.compactionModelDesc')}
                   value={advancedModels.compactionModel}
                   onChange={(v) => handleAdvancedChange({ compactionModel: v })}
-                  models={models}
+                  models={slotModels}
                   placeholder={copy.defaultsToConversation}
                   payers={payers}
                   metadata={metadata}
@@ -242,7 +245,7 @@ function DefaultsForm({ prefsLoaded, prefsFailed }: { prefsLoaded: boolean; pref
                 <FallbackModelsPicker
                   selected={advancedModels.fallbackModels}
                   onChange={(list) => handleAdvancedChange({ fallbackModels: list })}
-                  models={models}
+                  models={slotModels}
                   metadata={metadata}
                   payers={payers}
                 />

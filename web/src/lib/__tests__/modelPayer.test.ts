@@ -121,6 +121,12 @@ describe('payerLabel', () => {
     expect(payerLabel(t, 'subscription:')).toBe('payer.subscription');
   });
 
+  // It runs on the setup token kept for it on the server, not on a plan of the user's.
+  it('names Claude Code by itself', () => {
+    const payer = resolver({ configured: [signIn('claude-code')] })({ provider: 'claude-code', access_type: 'oauth' }, 'claude-code');
+    expect(payerLabel(t, payer!)).toBe('payer.claudeCode');
+  });
+
   it("names a model the user added under a sign-in by that sign-in's plan", () => {
     const payer = resolver({ configured: [signIn('claude-oauth')] })({ provider: 'claude-oauth' }, 'claude-oauth', 'claude-model');
     expect(payerLabel(t, payer!)).toBe('payer.plan:{"plan":"Claude"}');
