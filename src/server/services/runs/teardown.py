@@ -13,6 +13,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from langgraph.channels import DeltaChannel
+
 from src.config.settings import (
     get_checkpoint_flush_timeout,
     get_stop_drain_timeout,
@@ -61,13 +63,14 @@ async def flush_checkpoint(graph: Any, thread_id: str) -> None:
         if not values:
             return
 
-        # Exclude `messages` from the re-write. The committed messages are
-        # already in this snapshot and carry forward on the DeltaChannel, so
-        # re-writing the full list only re-applies every message as a delta —
-        # and any still-id-less tail message appends as a duplicate (the
+        # Exclude every DeltaChannel key (`messages` among them) from the
+        # re-write. What they hold is already in this snapshot and carries
+        # forward on the channel, so re-writing it only re-applies it as a
+        # delta — and any still-id-less tail entry appends as a duplicate (the
         # reducer keys dedup on id). The remaining keys (private compaction /
         # offload state) are last-write-wins, so re-writing them is idempotent.
-        flush_values = {k: v for k, v in values.items() if k != "messages"}
+        deltas = {k for k, ch in graph_any.channels.items() if isinstance(ch, DeltaChannel)}
+        flush_values = {k: v for k, v in values.items() if k not in deltas}
         if not flush_values:
             return
 

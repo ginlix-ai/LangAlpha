@@ -1785,6 +1785,7 @@ class RunSSEProducer:
                 error_message,
                 exc=exc,
                 credential_source=getattr(self.agent_config, "credential_source", None),
+                model=getattr(getattr(self.agent_config, "llm", None), "name", None),
             ),
         )
         self._error_frame = kept_error_frame(frame.data)

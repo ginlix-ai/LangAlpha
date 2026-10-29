@@ -147,6 +147,11 @@ def _order_of(stamp: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return order if isinstance(order, dict) else None
 
 
+def places_order(tool: BaseTool) -> bool:
+    """Whether the binder stamped ``tool`` as one that places an order."""
+    return _order_of(direct_tool_meta(tool)) is not None
+
+
 def _describe(tool_call: Mapping[str, Any], stamp: Mapping[str, Any]) -> str:
     """The fallback prompt: the vendor's own tool name and the arguments."""
     return json.dumps(

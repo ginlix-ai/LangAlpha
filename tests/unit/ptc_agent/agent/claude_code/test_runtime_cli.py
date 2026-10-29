@@ -16,6 +16,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, ClaudeTurnFailed
+from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
+from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 from .conftest import TEST_KEY
@@ -27,9 +29,10 @@ pytestmark = [pytest.mark.enable_socket, pytest.mark.asyncio]
 SPEC = spec("claude-haiku-5-5")
 
 
-async def turn(api: FakeMessagesAPI, graph, thread: str, messages: list, callbacks: list | None = None) -> dict:
+async def turn(api: FakeMessagesAPI, graph, thread: str, messages: list, callbacks: list | None = None,
+               baseline=None) -> dict:
     launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
-    return await run_turn(SPEC, launcher, graph, thread, messages, callbacks)
+    return await run_turn(SPEC, launcher, graph, thread, messages, callbacks, baseline)
 
 
 async def test_a_tool_call_runs_through_the_tool_node_under_its_own_name():
@@ -121,6 +124,27 @@ async def test_messages_added_since_claude_spoke_go_as_one_message_of_blocks():
     user = [m for m in api.model_requests[0]["messages"] if m["role"] == "user" and isinstance(m["content"], list)]
     texts = [[b.get("text") for b in m["content"]] for m in user]
     assert ["<row>a runtime row</row>", "ECHO me"] in texts
+
+
+async def test_a_turn_hands_claude_its_rows_and_only_a_baseline_it_does_not_hold():
+    row = DurableUpdate(kind="turn", schema_version=1, text="It is noon.")
+
+    async def opens(state):
+        return {"messages": [build_update_message(row)]}
+
+    graph = new_graph(entry=[("opens", opens)])
+    epochs = [("e1", "BASELINE one"), ("e1", "BASELINE one"), ("e2", "BASELINE two")]
+    sent = []
+    async with FakeMessagesAPI() as api:
+        for n, epoch in enumerate(epochs):
+            values = await turn(api, graph, "t-context", [HumanMessage(f"ECHO {n}")], baseline=lambda _s, e=epoch: e)
+            opening = [m for m in api.model_requests[-1]["messages"] if m["role"] == "user"][-1]
+            sent.append([b["text"] for b in opening["content"]])
+    rows = [frame_reminder(render_update_row(row))]
+    assert sent[0] == [frame_reminder("BASELINE one"), "ECHO 0", *rows]
+    assert sent[1] == ["ECHO 1", *rows]
+    assert sent[2] == [frame_reminder("BASELINE two"), "ECHO 2", *rows]
+    assert values["claude_baseline"] == "e2"
 
 
 async def test_a_refused_request_fails_the_turn_and_commits_no_reply():

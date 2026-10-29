@@ -1343,3 +1343,93 @@ async def test_the_session_is_acquired_with_the_workspace_id_as_a_str(base_confi
 
     assert received == [str(workspace_id)]
     assert isinstance(received[0], str)
+
+@pytest.mark.asyncio
+async def test_a_claude_code_thread_is_not_compacted(base_config):
+    """Claude Code compacts its own session, so a thread on one of its models
+    is refused before any agent is built or asked, even when resolving the
+    thread's model fails and the compaction would fall back to the default."""
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    ask = _asked()
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=_stub_thread_agent()),
+        patch(ASK, new=ask),
+        patch(
+            THREAD_META,
+            new_callable=AsyncMock,
+            return_value={"llm_model": "claude-sonnet-5-5-code", "msg_type": "ptc", "workspace_id": "ws-1"},
+        ),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new_callable=AsyncMock, side_effect=RuntimeError("db blip")),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await trigger_compaction("thread-1", user_id="user-1")
+    assert refused.value.status_code == 400
+    assert refused.value.detail["type"] == "claude_code_compacts_itself"
+    ask.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_thread_following_a_claude_code_default_is_not_compacted(base_config):
+    """A thread holding no model runs the account default, which may be a
+    Claude Code row: the resolved turn is refused too."""
+    from src.llms.llm import create_llm
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    async def _claude_code(*args, **kwargs):
+        config = base_config.model_copy(deep=True)
+        config.llm_client = create_llm("claude-sonnet-5-5-code")
+        return config
+
+    ask = _asked()
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=_stub_thread_agent()),
+        patch(ASK, new=ask),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": None, "msg_type": "ptc", "workspace_id": "ws-1"}),
+        patch(f"{HANDLER}._resolver", new_callable=AsyncMock),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new=_claude_code),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await trigger_compaction("thread-1", user_id="user-1")
+    assert refused.value.detail["type"] == "claude_code_compacts_itself"
+    ask.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_thread_is_not_offloaded(base_config):
+    from src.server.handlers.thread_maintenance import trigger_offload
+
+    stub = _stub_thread_agent()
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": "claude-haiku-5-5-code"}),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await trigger_offload("thread-1")
+    assert refused.value.detail["type"] == "claude_code_compacts_itself"
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_thread_claude_code_last_replied_on_is_not_offloaded(base_config):
+    """A thread following a Claude Code default holds no model of its own, so
+    Claude's last reply is what marks it."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.server.handlers.thread_maintenance import trigger_offload
+
+    stub = _stub_thread_agent()
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"})]
+    stub.state.values = {}
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": None}),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await trigger_offload("thread-1")
+    assert refused.value.detail["type"] == "claude_code_compacts_itself"
+    stub.graph.aupdate_state.assert_not_awaited()

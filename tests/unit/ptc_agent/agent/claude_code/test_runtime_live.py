@@ -1,8 +1,9 @@
-"""The runtime on a real Claude login: this machine's own (``claude auth login``).
+"""The runtime on a real Claude plan, with a setup token made for LangAlpha read from ``TOKEN_FILE``.
 
 Integration tests, deselected by default. No sandbox and no command runs: the
-one tool is a stub. Each turn spawns the bundled CLI on the machine's login, so
-they need the ``claude-code`` extra and a logged-in machine, and skip without one:
+one tool is a stub. Each turn spawns the bundled CLI with that token, never the
+machine's own Claude Code login, so they need the ``claude-code`` extra and a
+working token, and skip without one:
 
     uv run --extra claude-code pytest -m integration -s tests/unit/ptc_agent/agent/claude_code/test_runtime_live.py
 
@@ -13,8 +14,11 @@ they need the ``claude-code`` extra and a logged-in machine, and skip without on
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -22,6 +26,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
+from ptc_agent.agent.claude_code.runtime import token_works
+from src.llms.claude_code import token_check_model
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 from .harness import new_graph, run_turn, spec
@@ -29,13 +35,14 @@ from .harness import new_graph, run_turn, spec
 pytestmark = [pytest.mark.integration, pytest.mark.enable_socket, pytest.mark.asyncio]
 
 SPEC = spec(os.environ.get("CLAUDE_CODE_LIVE_MODEL", "claude-haiku-5-5"))
+#: Where these tests look for the token; LangAlpha itself keeps each user's in Settings.
+TOKEN_FILE = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "langalpha" / "claude-code-token"
 
 
 async def turn(graph, thread: str, messages: list, callbacks: list | None = None, runtime_spec=SPEC) -> dict:
-    launcher = LocalLauncher(machine_login=True)
-    status = await launcher.auth_status()
-    if not status.get("loggedIn"):
-        pytest.skip(f"the CLI a turn spawns is not logged in ({status.get('authMethod')})")
+    launcher = LocalLauncher(token=TOKEN_FILE.read_text().strip() if TOKEN_FILE.is_file() else None)
+    if not await token_works(launcher, token_check_model()):
+        pytest.skip("no working setup token for langalpha on this machine")
     return await run_turn(runtime_spec, launcher, graph, thread, messages, callbacks)
 
 
@@ -99,3 +106,21 @@ async def test_usage_is_recorded_under_the_stamp_the_spec_carries():
     records = tracker.get_per_call_records()
     print(json.dumps([{k: r.get(k) for k in ("billing_type", "model_name", "usage")} for r in records], default=str))
     assert records and all(r["billing_type"] == "oauth" and r["model_name"] == SPEC.billing["manifest_model"] for r in records)
+
+
+def _machine_login() -> dict:
+    """What the machine's own Claude Code login looks like from outside: its file's hash, its Keychain item's dates."""
+    creds = Path.home() / ".claude" / ".credentials.json"
+    state = {"file": hashlib.sha256(creds.read_bytes()).hexdigest() if creds.exists() else None}
+    if sys.platform == "darwin":
+        found = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials"],
+                               capture_output=True, text=True, check=False)
+        state["keychain"] = [line.strip() for line in found.stdout.splitlines() if '"cdat"' in line or '"mdat"' in line]
+    return state
+
+
+async def test_a_turn_leaves_the_machines_own_claude_login_as_it_was():
+    before = _machine_login()
+    values = await turn(new_graph(), "live-login", [HumanMessage("Reply with OK and nothing else.")])
+    print(json.dumps({"machine_login": before, "reply": values["messages"][-1].text[:50]}))
+    assert _machine_login() == before

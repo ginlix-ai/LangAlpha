@@ -17,6 +17,7 @@ from ptc_agent.agent.claude_code.runtime import (
 )
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionDrift
 from ptc_agent.agent.main_state import MainAgentState
+from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 
 
 def result(**kw) -> ResultMessage:
@@ -37,6 +38,8 @@ def result(**kw) -> ResultMessage:
         (result(terminal_reason="api_error", result="Not logged in \u00b7 Please run /login"), [], "auth_failed"),
         (result(terminal_reason="api_error", result="unauthorized", api_error_status=401), [], "auth_failed"),
         (result(terminal_reason="api_error", result="MCP server needs authentication for its upstream"), [], "api_error"),
+        (result(is_error=True, terminal_reason="prompt_too_long", result="FMP said: Invalid API key"), [], "api_error"),
+        (result(subtype="error_during_execution", is_error=True, terminal_reason=None, errors=["tool: 401 Invalid API key"]), [], "api_error"),
         (result(terminal_reason="aborted_tools"), [], "interrupted"),
         (result(terminal_reason="api_error", result="rejected", api_error_status=429), [], "plan_exhausted"),
         (result(terminal_reason="api_error", result="boom"), [], "api_error"),
@@ -55,11 +58,15 @@ def test_a_rejected_rate_limit_is_a_spent_plan_only_when_the_query_failed():
 
 def test_a_claude_code_thread_keeps_every_main_agent_channel():
     assert set(MainAgentState.__annotations__) < set(ClaudeCodeState.__annotations__)
-    assert set(ClaudeCodeState.__annotations__) - set(MainAgentState.__annotations__) == {"claude_session"}
+    assert set(ClaudeCodeState.__annotations__) - set(MainAgentState.__annotations__) == {"claude_session", "claude_baseline"}
+
+
+def _claude(content: str, **kwargs) -> AIMessage:
+    return AIMessage(content, response_metadata={"claude_message_id": "msg_1"}, **kwargs)
 
 
 def test_the_prompt_is_what_the_turn_added_since_claude_spoke():
-    earlier = [HumanMessage("old"), AIMessage("reply")]
+    earlier = [HumanMessage("old"), _claude("reply")]
     assert turn_prompt({"messages": [*earlier, HumanMessage("new")]}) == "new"
     assert turn_prompt({"messages": [*earlier, HumanMessage("row"), HumanMessage([{"type": "text", "text": "ask"}])]}) == [
         {"type": "text", "text": "row"},
@@ -74,6 +81,48 @@ def test_the_prompt_is_what_the_turn_added_since_claude_spoke():
         turn_prompt({"messages": earlier})
 
 
+def test_a_thread_another_model_last_replied_on_is_not_carried_on():
+    switched_in = [HumanMessage("old"), AIMessage("another model's reply"), HumanMessage("new")]
+    with pytest.raises(ClaudeTurnFailed, match="other_model_history"):
+        turn_prompt({"messages": switched_in})
+    back_again = [HumanMessage("a"), _claude("b"), HumanMessage("c"), AIMessage("d"), HumanMessage("e")]
+    with pytest.raises(ClaudeTurnFailed, match="other_model_history"):
+        turn_prompt({"messages": back_again, "claude_session": {"session_id": "s", "entries": []}})
+
+
+def test_a_baseline_goes_ahead_of_the_turn_until_claude_holds_its_epoch():
+    def turn(baseline):
+        return ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[], billing={}), LocalLauncher(),
+                          identity="u", thread_key="t", baseline=baseline)
+
+    assert turn(lambda _s: ("e1", "BASE"))._baseline_due({}) == ("e1", "BASE")
+    assert turn(lambda _s: ("e1", "BASE"))._baseline_due({"claude_baseline": "e1"}) == ("e1", None)
+    assert turn(lambda _s: ("e2", "BASE"))._baseline_due({"claude_baseline": "e1"}) == ("e2", "BASE")
+
+    def broken(_s):
+        raise ValueError("render failed")
+
+    assert turn(broken)._baseline_due({}) == ("", None)
+    assert turn_prompt({"messages": [HumanMessage("new")]}, baseline="BASE") == [
+        {"type": "text", "text": frame_reminder("BASE")},
+        {"type": "text", "text": "new"},
+    ]
+
+
+def test_a_session_the_cli_compacted_forgets_the_baseline_it_was_handed():
+    from ptc_agent.agent.claude_code.runtime import _committed
+
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t")
+    turn.baseline_sent = "e1"
+    plain = [{"session_id": "s", "entries": [{"uuid": "a", "type": "assistant"}]}]
+    assert _committed(turn, plain) == {"claude_session": plain, "claude_baseline": "e1"}
+    compacted = [{"session_id": "s", "entries": [{"uuid": "b", "type": "system", "subtype": "compact_boundary"}]}]
+    assert _committed(turn, compacted)["claude_baseline"] == ""
+    assert turn.baseline_sent is None
+    assert _committed(turn, plain) == {"claude_session": plain}
+
+
 def test_a_tools_step_resumed_without_its_cli_fails_the_turn():
     turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[], billing={}), LocalLauncher(), identity="u", thread_key="t")
     with pytest.raises(ClaudeTurnFailed, match="nothing_to_resume"):
@@ -81,7 +130,7 @@ def test_a_tools_step_resumed_without_its_cli_fails_the_turn():
 
 
 def test_a_checkpoint_after_tool_results_resumes_with_no_new_prompt():
-    call = AIMessage("", tool_calls=[{"name": "Bash", "args": {}, "id": "t1"}])
+    call = _claude("", tool_calls=[{"name": "Bash", "args": {}, "id": "t1"}])
     after_tools = [HumanMessage("go"), call, ToolMessage("done", tool_call_id="t1")]
     assert turn_prompt({"messages": after_tools, "claude_session": {"session_id": "s", "entries": []}}) is None
     with pytest.raises(ClaudeTurnFailed, match="nothing_to_resume"):
@@ -162,3 +211,22 @@ async def test_a_message_is_whole_only_when_its_stream_reaches_message_stop(tail
     assert [e["type"] async for e in message.events()][0] == "message_start"
     assert (message.stopped, message.restarted) == (stopped, restarted)
     assert (run.held is not None) is restarted
+
+
+@pytest.mark.asyncio
+async def test_a_stop_flush_keeps_claudes_session_as_it_was():
+    """The stop flush re-writes state it already holds; a session record
+    without an id would otherwise be appended a second time."""
+    from src.server.services.runs.teardown import flush_checkpoint
+
+    from .harness import new_graph
+
+    graph = new_graph()
+    config = {"configurable": {"thread_id": "t-flush"}}
+    await graph.aupdate_state(
+        config,
+        {"messages": [HumanMessage("go")], "claude_session": [{"session_id": "s", "entries": [{"type": "custom-title"}]}]},
+        as_node="model",
+    )
+    await flush_checkpoint(graph, "t-flush")
+    assert (await graph.aget_state(config)).values["claude_session"]["entries"] == [{"type": "custom-title"}]

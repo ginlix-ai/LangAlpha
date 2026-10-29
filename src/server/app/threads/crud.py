@@ -18,6 +18,7 @@ from src.server.services.commands.control import (
     delete_thread_ending_commands,
     request_running_stops,
 )
+from src.server.services.llm.claude_code import require_claude_code_continues
 from src.server.services.llm.thread_model import require_selectable_model
 from src.server.services.thread_lifecycle import project_lifecycle
 from src.server.services.thread_lifecycle_feed import (
@@ -448,6 +449,7 @@ async def update_thread_endpoint(
             # is the turn's question, since a lapsed one comes back.
             if request.llm_model is not None:
                 await require_selectable_model(x_user_id, request.llm_model)
+                await require_claude_code_continues(thread_id, request.llm_model)
             updates["llm_model"] = request.llm_model
             switched_from = (await get_thread_auth_meta(thread_id) or {}).get("llm_model")
         if "subagents_allowed" in provided:

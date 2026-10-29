@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from src.llms.preferences import MOVED_MODEL_KEYS, TuningError
+from src.server.database.oauth_tokens import CLAUDE_CODE_PROVIDER
 from src.server.database.pool import get_db_connection
 from src.server.database.user_lock import lock_user_profile
 from src.server.models.profile_vocabulary import structured_preferences
@@ -21,16 +22,23 @@ from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
 
+def _has_oauth(alias: str = "users") -> str:
+    return (
+        f"EXISTS (SELECT 1 FROM user_oauth_tokens WHERE user_oauth_tokens.user_id = {alias}.user_id"
+        f" AND user_oauth_tokens.provider <> '{CLAUDE_CODE_PROVIDER}') AS has_oauth_token"
+    )
+
+
 # Computed columns appended to user SELECT queries for gate logic.
 def _gate_cols(alias: str = "users") -> str:
     """Return the has_api_key + has_oauth_token EXISTS subqueries for a given table alias."""
     return (
         f"EXISTS (SELECT 1 FROM user_api_keys WHERE user_api_keys.user_id = {alias}.user_id) AS has_api_key,\n"
-        f"                    EXISTS (SELECT 1 FROM user_oauth_tokens WHERE user_oauth_tokens.user_id = {alias}.user_id) AS has_oauth_token"
+        f"                    {_has_oauth(alias)}"
     )
 
 _HAS_API_KEY = "EXISTS (SELECT 1 FROM user_api_keys WHERE user_api_keys.user_id = users.user_id) AS has_api_key"
-_HAS_OAUTH = "EXISTS (SELECT 1 FROM user_oauth_tokens WHERE user_oauth_tokens.user_id = users.user_id) AS has_oauth_token"
+_HAS_OAUTH = _has_oauth()
 
 
 # ==================== User Operations ====================

@@ -69,7 +69,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
     direct_tool_middleware,
     direct_tool_summary,
 )
-from ptc_agent.agent.middleware.order_governance import OrderLedger
+from ptc_agent.agent.middleware.order_governance import OrderLedger, places_order
 from ptc_agent.agent.middleware.subagent_switch import (
     SubagentSwitchMiddleware,
     SubagentSwitchReader,
@@ -137,6 +137,7 @@ from ptc_agent.agent.tools.computer_reach import (
     ComputerTarget,
     ComputerTools,
 )
+from src.llms.claude_code import ClaudeCodeTarget
 from src.tools.web.search import get_web_search_tool
 from src.tools.web.fetch import web_fetch_tool
 from src.tools.web.crawl import create_crawl_tools
@@ -205,6 +206,7 @@ class PTCAgent:
         chart_annotation_enabled: bool = True,
         role: AgentRole = "analyst",
         channels_enabled: bool = False,
+        ask_user_enabled: bool = True,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability).
 
@@ -228,7 +230,7 @@ class PTCAgent:
             ),
             subagent_summary=subagent_summary,
             max_concurrent_task_units=DEFAULT_MAX_CONCURRENT_TASK_UNITS,
-            ask_user_enabled=True,
+            ask_user_enabled=ask_user_enabled,
             include_examples=True,
             include_anti_patterns=True,
             thread_id=thread_id or "",
@@ -335,6 +337,11 @@ class PTCAgent:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
         """
         turn = turn_model(self.config, llm, self.llm, background=False)
+        claude_code = isinstance(turn.client, ClaudeCodeTarget)
+        # A subagent does not run on the Claude Code runtime yet, and a Claude
+        # Code turn cannot resume from a question to the user yet.
+        disable_subagents = disable_subagents or claude_code
+        ask_user = not claude_code
 
         # Freeze current time for this request (refreshes on each new query)
         request_time = datetime.now(tz=UTC)
@@ -676,6 +683,9 @@ class PTCAgent:
         # Consent is re-read per call and an order is put to the user against
         # a durable attempt, which is what execution then reads.
         direct_tools = list(direct_mcp.tools) if direct_mcp is not None else []
+        if claude_code:
+            # A Claude Code turn cannot put an order to the user for approval yet.
+            direct_tools = [t for t in direct_tools if not places_order(t)]
         main_only_middleware.extend(direct_tool_middleware(direct_mcp, order_ledger))
 
         # Recursion gate: no subagents compiled, none advertised in the
@@ -725,9 +735,10 @@ class PTCAgent:
         if not disable_subagents:
             shared_tools.extend(background_middleware.tools)
 
-        ask_user_middleware = AskUserMiddleware()
-        main_only_middleware.append(ask_user_middleware)
-        shared_tools.extend(ask_user_middleware.tools)
+        if ask_user:
+            ask_user_middleware = AskUserMiddleware()
+            main_only_middleware.append(ask_user_middleware)
+            shared_tools.extend(ask_user_middleware.tools)
 
         tools: list[Any] = [execute_code_tool, bash_tool, *shared_tools]
 
@@ -808,6 +819,7 @@ class PTCAgent:
             chart_annotation_enabled=chart_annotation,
             role=role,
             channels_enabled=gates.channels,
+            ask_user_enabled=ask_user,
         )
         # Read once: the baseline freezes this value per epoch, and the
         # prompt is sent with the frozen one (FrozenPromptMiddleware).
@@ -1163,6 +1175,16 @@ class PTCAgent:
             store=store,
             state_schema=MainAgentState,
         ).with_config({"recursion_limit": UNBOUNDED_RECURSION_LIMIT})
+
+        if claude_code:
+            from ptc_agent.agent.claude_code.agent import claude_code_graph
+
+            return claude_code_graph(
+                agent, system_prompt=system_prompt, target=turn.client,
+                user_id=user_id, thread_id=thread_id, checkpointer=checkpointer,
+                entry=(skill_loader_middleware, context.turn, context.baseline),
+                baseline=context.baseline.frozen_block,
+            )
 
         return BackgroundSubagentOrchestrator(
             agent=agent,

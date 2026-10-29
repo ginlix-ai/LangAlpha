@@ -60,9 +60,11 @@ class SubagentContext:
         return frozenset(c.name for c in self.connectors)
 
     def model_known(self, name: str) -> bool:
-        from src.server.services.llm.availability import model_resolves
+        """Whether a subagent can be pinned to ``name``. Never a Claude Code
+        row, which runs only as a thread's own model."""
+        from src.server.services.llm.claude_code import role_resolves
 
-        return model_resolves(self.model_pref, name)
+        return role_resolves(self.model_pref, name)
 
     async def model_on_plan(self, name: str) -> bool:
         """The turn's own plan check for a model the user chose.
@@ -343,13 +345,12 @@ async def _oauth_accounts(user_id: str) -> dict[str, str]:
     """The OAuth providers with a working account connected, as the model
     list reads them, and each one's plan. One that needs signing in again
     cannot serve a turn, so its models read as unavailable."""
-    from src.llms import claude_code
     from src.llms.llm import LLM
     from src.server.database.oauth_tokens import get_oauth_connection
 
     providers = [
         name for name, info in LLM.get_model_config().flat_providers.items()
-        if info.get("access_type") == "oauth" and info.get("sdk") != claude_code.SDK
+        if info.get("access_type") == "oauth"
     ]
     rows = await asyncio.gather(*(get_oauth_connection(user_id, p) for p in providers))
     return {

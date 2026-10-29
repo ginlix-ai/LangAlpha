@@ -19,6 +19,10 @@ from src.server.database.sql_fences import advisory_key
 
 logger = logging.getLogger(__name__)
 
+#: Claude Code's setup token, kept here with no refresh token. It pays only for
+#: Claude Code turns, so it never counts as a credential that runs any turn.
+CLAUDE_CODE_PROVIDER = "claude-code"
+
 
 # A flag counts only while it is newer than the row's last write. Code from
 # before the flag existed (an older worker mid-deploy, or a rollback) saves
@@ -337,9 +341,9 @@ async def has_any_oauth_token(user_id: str) -> bool:
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT 1 FROM user_oauth_tokens WHERE user_id = %s "
+                "SELECT 1 FROM user_oauth_tokens WHERE user_id = %s AND provider <> %s "
                 "AND NOT COALESCE(needs_reauth_at >= updated_at, FALSE) LIMIT 1",
-                (user_id,),
+                (user_id, CLAUDE_CODE_PROVIDER),
             )
             result = (await cur.fetchone()) is not None
 

@@ -166,14 +166,17 @@ FEATURES: dict[str, FeatureSpec] = {
         ),
     ),
     # Off in every deployment until an operator turns it on; then each user
-    # opts in. Nothing reads it yet: the graph build consults it once
-    # Claude Code models are routable (design phase 2).
+    # opts in. The system switch lists the Claude Code models
+    # (``src.llms.claude_code.runtime_available``) and a user's opt-in lets
+    # their turns run on one (``resolve_llm_config``).
     "claude_code_runtime": FeatureSpec(
         key="claude_code_runtime",
         label="Claude Code runtime (preview)",
         description=(
             "Runs your Claude threads through Claude Code on your own Claude "
-            "plan instead of an API key."
+            "plan instead of an API key. It needs a setup token, a separate "
+            "credential you make for LangAlpha that never touches your own "
+            "Claude Code sign-in. Add it in Settings under Model access."
         ),
         enabled=False,
         gate=FeatureGate.OPT_IN,

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ptc_agent.config.agent import CredentialSource
+from src.llms.claude_code import is_claude_code_model
 from src.llms.model_spec import (
     canonical_reasoning_efforts,
     reasoning_block,
@@ -467,8 +468,18 @@ async def resolve_model_client(
 
     ``service_tier`` is offered to all three routes; each drops it unless
     ``supports_service_tier`` says its provider takes one.
+
+    A Claude Code row resolves to its runtime target, on the user's own
+    credential: the runtime signs in with the setup token kept for it, never a key.
     """
     source, entry = await user_models.classify_model(user_id, model_name, _pref_cache=_pref_cache)
+
+    if source == ModelSource.SYSTEM and is_claude_code_model(model_name):
+        from src.llms.llm import create_llm
+
+        return ResolvedClient(
+            create_llm(model_name, reasoning_effort=reasoning_effort), source, CredentialSource.OAUTH
+        )
 
     client = await resolve_oauth_llm_client(
         user_id, model_name, reasoning_effort,
@@ -564,6 +575,9 @@ def role_registry(config, model_pref, turn_model: str | None = None) -> list[LLM
     carries the tuning its own model resolves to, compaction's effort aside
     (see ``LLMRole``). The turn-level override is deliberately not applied: it
     names the model the composer picked, not whichever model a role pins.
+    None on a Claude Code row, which a role cannot call: a summary that
+    falls back to the turn's model is langalpha's compaction, which a Claude
+    Code turn does not run.
     """
     compaction = config.llm.compaction_name
     # A summary written by a model picked for it falls back to the turn's
@@ -587,7 +601,7 @@ def role_registry(config, model_pref, turn_model: str | None = None) -> list[LLM
             reasoning_effort=resolve_tuning(model_pref, config.llm.fetch_name).reasoning_effort,
         ),
     ]
-    return [r for r in roles if r.model]
+    return [r for r in roles if r.model and not is_claude_code_model(r.model)]
 
 
 async def _prefetch_byok_cache(
@@ -778,7 +792,7 @@ async def _resolve_role_clients(
     # main-client copy is safe. PLATFORM/NONE users store nothing → cheap name
     # path stays (a non-BYOK reasoning user's PLATFORM client is NOT copied).
     # The explicit None check makes the invariant a guard, not an assumption.
-    if is_own_key_turn(config) and config.llm_client is not None:
+    if is_own_key_turn(config) and main_model and config.llm_client is not None:
         for role in roles:
             if role.fallback_to_main and role.key not in config.subsidiary_llm_clients:
                 summary_client = (
@@ -967,11 +981,13 @@ async def resolve_clients(
     # Subsidiary role clients (compaction / fetch / subagent:*) + BYOK-pure
     # materialization, and fallback models. Both resolve through the primitive
     # and write disjoint config fields (subsidiary_llm_clients vs
-    # fallback_llm_clients), so they run concurrently.
+    # fallback_llm_clients), so they run concurrently. A Claude Code turn's
+    # own model is no client to lend a role: each role keeps the model it names.
     await asyncio.gather(
         _resolve_role_clients(
             config, user_id, roles, model_pref, byok_cache,
-            is_byok=is_byok, cache_key=thread_id, main_model=effective_model,
+            is_byok=is_byok, cache_key=thread_id,
+            main_model=None if is_claude_code_model(effective_model) else effective_model,
         ),
         _resolve_fallback_clients(
             config, user_id, model_pref, byok_cache,

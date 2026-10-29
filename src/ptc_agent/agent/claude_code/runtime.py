@@ -25,9 +25,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Annotated, Any, TypeVar
+import logging
+import shutil
+import tempfile
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from functools import partial
+from itertools import pairwise
+from typing import Annotated, Any, Protocol, TypeVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -55,32 +60,22 @@ from ptc_agent.agent.claude_code.session import (
     CheckpointSessionStore,
     SessionDrift,
     SessionRecords,
+    SessionWrite,
     session_channel,
 )
 from ptc_agent.agent.claude_code.tools_bridge import SERVER, ToolResults, allow_rule, build_tool_server
 from ptc_agent.agent.main_state import MainAgentState
+from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
+from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
+from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
+from src.llms.claude_code import ClaudeTurnFailed
 
 TURN_KEY = "claude_turn"
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 #: How long a step waits for the CLI's records behind the messages it commits.
 SETTLE_TIMEOUT_S = 10.0
-
-
-class ClaudeTurnFailed(RuntimeError):
-    """The CLI ended the turn without doing it.
-
-    The CLI reports a refused or failed request as an ordinary result
-    (``subtype="success"``, ``terminal_reason="api_error"``) with its error
-    text as the assistant's reply, so a logged-out machine or a spent plan
-    would otherwise commit an empty turn. ``kind`` is what the user is told:
-    ``auth_failed``, ``plan_exhausted``, ``interrupted``, ``api_error``,
-    ``no_result`` or ``nothing_to_resume``.
-    """
-
-    def __init__(self, kind: str, detail: str) -> None:
-        super().__init__(f"{kind}: {detail}")
-        self.kind = kind
-        self.detail = detail
+TOKEN_CHECK_TIMEOUT_S = 60
 
 
 #: Ends of a query that did what was asked. Anything else is a failed turn.
@@ -113,17 +108,76 @@ def turn_failure(
     detail = f"{result.subtype}/{result.terminal_reason}: {text or 'no detail'}"
     if str(result.terminal_reason or "").startswith("aborted"):
         return ClaudeTurnFailed("interrupted", detail)
-    if result.api_error_status in (401, 403) or any(s in text.lower() for s in _AUTH_TEXT):
+    # The login text is read only where the CLI's request failed: any other
+    # end's text is the model's or a tool's, which can quote a vendor's.
+    cli_said = result.terminal_reason == "api_error" and any(s in text.lower() for s in _AUTH_TEXT)
+    if result.api_error_status in (401, 403) or cli_said:
         return ClaudeTurnFailed("auth_failed", detail)
     if result.api_error_status == 429:
         return ClaudeTurnFailed("plan_exhausted", detail)
     return ClaudeTurnFailed("api_error", detail)
 
 
+async def token_works(launcher: LocalLauncher, model: str) -> bool:
+    """Whether Anthropic serves the launcher's token: one minimal turn on ``model``, through a turn's own transport.
+
+    ``claude auth status`` reads only local state and reports any string as a
+    login, so the check asks Anthropic. A served request or a used-up plan
+    means the token is good, a refused login that it is not; anything else
+    raises, so a network failure is never read as a bad token.
+    """
+    if not launcher.token:
+        return False
+    config_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="claude-cfg-")
+    result: ResultMessage | None = None
+    errors: list[tuple[str, str]] = []
+    limits: list[RateLimitEvent] = []
+    try:
+        options = ClaudeAgentOptions(
+            tools=[],
+            system_prompt="Reply with OK.",
+            setting_sources=[],
+            strict_mcp_config=True,
+            extra_args={"disable-slash-commands": None},
+            model=model,
+            max_turns=1,
+            cwd=config_dir,
+            env={"CLAUDE_CONFIG_DIR": config_dir, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+        )
+        client = ClaudeSDKClient(options, transport=launcher.transport(options))
+        try:
+            async with asyncio.timeout(TOKEN_CHECK_TIMEOUT_S):
+                await client.connect()
+                await client.query("Reply with OK.")
+                async for m in client.receive_response():
+                    if isinstance(m, AssistantMessage) and m.error:
+                        errors.append((m.error, " ".join(getattr(b, "text", "") for b in m.content).strip()))
+                    elif isinstance(m, RateLimitEvent):
+                        limits.append(m)
+                    elif isinstance(m, ResultMessage):
+                        result = m
+        finally:
+            # Outside the timeout, and before the dir goes: the close waits
+            # for the CLI to exit, which would otherwise write its session
+            # into a dir it then recreates.
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+    finally:
+        await asyncio.to_thread(shutil.rmtree, config_dir, ignore_errors=True)
+    failure = turn_failure(result, errors, limits)
+    if failure is None or failure.kind == "plan_exhausted":
+        return True
+    if failure.kind == "auth_failed":
+        return False
+    raise failure
+
+
 class ClaudeCodeState(MainAgentState):
     """A Claude Code thread's checkpoint: a main-agent thread's, plus Claude's session."""
 
     claude_session: NotRequired[Annotated[SessionRecords, session_channel()]]
+    #: The baseline epoch Claude was last handed, so one it holds is not sent again.
+    claude_baseline: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -228,12 +282,25 @@ class _Message:
                 return
 
 
+class TokenSource(Protocol):
+    """The setup token a user's turns run on (``SavedToken``)."""
+
+    async def read(self) -> str | None: ...
+
+    async def refused(self, token: str) -> None: ...
+
+
 class _Run:
-    """A started run: the CLI, the SDK client driving it, and what the CLI has said so far."""
+    """A started run: the CLI, the SDK client driving it, and what the CLI has said so far.
+
+    ``refused`` records that Anthropic refused the token the run signed in with.
+    """
 
     def __init__(self, launcher: LocalLauncher, prepared: Prepared, store: CheckpointSessionStore,
-                 client: ClaudeSDKClient, results: ToolResults) -> None:
+                 client: ClaudeSDKClient, results: ToolResults,
+                 refused: Callable[[], Awaitable[None]] | None = None) -> None:
         self.launcher = launcher
+        self.refused = refused
         self.prepared = prepared
         self.store = store
         self.client = client
@@ -252,7 +319,8 @@ class _Run:
 
     @classmethod
     async def start(cls, spec: RuntimeSpec, launcher: LocalLauncher, thread_key: str, identity: str,
-                    records: SessionRecords | None, prompt: Prompt | None) -> _Run:
+                    records: SessionRecords | None, prompt: Prompt | None,
+                    refused: Callable[[], Awaitable[None]] | None = None) -> _Run:
         """Lay out the session, start the CLI and send the turn; nothing is left behind if any step fails.
 
         With no prompt the CLI is resumed as an interrupted turn: it carries on
@@ -282,7 +350,7 @@ class _Run:
                     await client.disconnect()
             await launcher.release(prepared)
             raise
-        return cls(launcher, prepared, store, client, results)
+        return cls(launcher, prepared, store, client, results, refused)
 
     async def _read(self) -> None:
         try:
@@ -391,6 +459,8 @@ class _Run:
             raise self.drift
         failed = turn_failure(self.result, self.assistant_errors, self.rate_limits)
         if failed is not None:
+            if failed.kind == "auth_failed" and self.refused is not None:
+                await self.refused()
             raise failed
 
     async def close(self) -> None:
@@ -410,13 +480,20 @@ class ClaudeTurn:
     ``identity`` is who the turn runs for (their user id): Claude Code is told one
     device per identity. ``thread_key`` names the thread's working directory,
     which is part of the prompt Claude caches, so it is the same on every turn.
+    ``token`` is the setup token the run signs in with, read as it starts;
+    without one the launcher's own token stands.
     """
 
-    def __init__(self, spec: RuntimeSpec, launcher: LocalLauncher, *, identity: str, thread_key: str) -> None:
+    def __init__(self, spec: RuntimeSpec, launcher: LocalLauncher, *, identity: str, thread_key: str,
+                 baseline: Baseline | None = None, token: TokenSource | None = None) -> None:
         self.spec = spec
         self.launcher = launcher
+        self.token = token
         self.identity = identity
         self.thread_key = thread_key
+        self._baseline = baseline
+        #: The epoch this run handed Claude, for the steps to record.
+        self.baseline_sent: str | None = None
         self._run: _Run | None = None
 
     @property
@@ -437,10 +514,30 @@ class ClaudeTurn:
 
     async def run(self, state: ClaudeCodeState) -> _Run:
         if self._run is None:
+            key, block = self._baseline_due(state)
+            prompt = turn_prompt(state, baseline=block)
+            launcher, refused = self.launcher, None
+            if self.token is not None and (token := await self.token.read()):
+                launcher, refused = replace(launcher, token=token), partial(self.token.refused, token)
             self._run = await _Run.start(
-                self.spec, self.launcher, self.thread_key, self.identity, state.get("claude_session"), turn_prompt(state)
+                self.spec, launcher, self.thread_key, self.identity, state.get("claude_session"), prompt, refused
             )
+            if prompt is not None and block:
+                self.baseline_sent = key
         return self._run
+
+    def _baseline_due(self, state: ClaudeCodeState) -> tuple[str, str | None]:
+        """The thread's baseline, unless Claude already holds its epoch."""
+        if self._baseline is None:
+            return "", None
+        try:
+            key, block = self._baseline(state)
+        except Exception:  # noqa: BLE001 - context is never worth failing a turn for
+            logger.warning("[ClaudeCode] baseline render failed; the turn opens without it", exc_info=True)
+            return "", None
+        if not block or state.get("claude_baseline") == key:
+            return key, None
+        return key, block
 
     async def close(self) -> None:
         if self._run is not None:
@@ -451,27 +548,51 @@ def _turn(config: RunnableConfig) -> ClaudeTurn:
     return config["configurable"][TURN_KEY]
 
 
-#: What a turn sends Claude: the user's text, or Anthropic content blocks (turn rows ahead of it).
+def _committed(turn: ClaudeTurn, session: list[SessionWrite]) -> dict[str, Any]:
+    """A step's session records, with the baseline epoch Claude holds after them.
+
+    A session the CLI compacted no longer holds the baseline it was handed,
+    so the epoch is forgotten and the next turn hands it over again.
+    """
+    update: dict[str, Any] = {"claude_session": session}
+    if any(e.get("subtype") == "compact_boundary" or e.get("isCompactSummary") for w in session for e in w["entries"]):
+        turn.baseline_sent = None
+        update["claude_baseline"] = ""
+    elif turn.baseline_sent:
+        update["claude_baseline"] = turn.baseline_sent
+    return update
+
+
+#: What a turn sends Claude: the user's text, or Anthropic content blocks.
 Prompt = str | list[dict[str, Any]]
+#: The thread's baseline as one block, with a key naming its epoch.
+Baseline = Callable[[Any], tuple[str, str]]
 
 
-def turn_prompt(state: ClaudeCodeState) -> Prompt | None:
+def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Prompt | None:
     """The messages the turn added since Claude last spoke, as one user message.
 
-    A single plain message goes as the string it is. Several, or any with
-    content blocks, go as one list of blocks in order, so runtime rows that
-    open the turn ride ahead of the user's text as their own blocks, stored
-    verbatim in the session. Blocks are in the form a ``ChatAnthropic`` call
-    sends them (an attached image as an image block).
+    A single plain message goes as the string it is. Otherwise the message is
+    a list of blocks in the form a ``ChatAnthropic`` call sends (an attached
+    image as an image block), with the runtime rows the turn opened with
+    carried as an API thread's reminder-shaped rows are, and ``baseline``,
+    when given, ahead of everything as a reminder of its own. All of it is
+    stored verbatim in the session, so a row or a baseline reaches Claude once.
 
     None when there is no user message because a run is resumed from a
     checkpoint taken after its tool results, which the CLI carries on from.
     Any other checkpoint without one (after an assistant message) is not
     something the CLI resumes, so it fails the turn.
+
+    A thread whose last reply another model wrote fails too: Claude's session
+    holds only what Claude said, so it would carry on without that reply and
+    everything before it that another model saw.
     """
     added: list[HumanMessage] = []
     for msg in reversed(state["messages"]):
         if isinstance(msg, AIMessage):
+            if CLAUDE_MESSAGE_ID not in msg.response_metadata:
+                raise ClaudeTurnFailed("other_model_history", "the thread's last reply is another model's, which Claude's session does not hold")
             break
         if isinstance(msg, HumanMessage):
             added.append(msg)
@@ -484,10 +605,11 @@ def turn_prompt(state: ClaudeCodeState) -> Prompt | None:
             f"a Claude Code run resumes from a user message or after its tool results, not after a {type(last).__name__}",
         )
     added.reverse()
-    if len(added) == 1 and isinstance(added[0].content, str):
-        return added[0].content
-    blocks: list[dict[str, Any]] = []
-    for msg in added:
+    carried = compose_request(added, Carrier("reminder")).messages
+    if baseline is None and len(carried) == 1 and isinstance(carried[0].content, str):
+        return carried[0].content
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": frame_reminder(baseline)}] if baseline else []
+    for msg in carried:
         content = anthropic_content(msg)
         blocks.extend([{"type": "text", "text": content}] if isinstance(content, str) else content)
     return blocks
@@ -497,8 +619,14 @@ async def _user_message(blocks: list[dict[str, Any]]) -> AsyncIterator[dict[str,
     yield {"type": "user", "message": {"role": "user", "content": blocks}, "parent_tool_use_id": None}
 
 
-def build_claude_code_graph(tool_node: ToolNode, *, checkpointer: Any = None) -> Any:
+def build_claude_code_graph(
+    tool_node: ToolNode, *, entry: Sequence[tuple[str, Any]] = (), checkpointer: Any = None
+) -> Any:
     """The turn graph. ``tool_node`` is the one a langalpha turn runs tools with.
+
+    ``entry`` are the nodes a langalpha turn opens with, by name, run in
+    order before the first ``model`` step: the hooks that write the turn's
+    rows and freeze the baseline ``turn_prompt`` hands Claude.
 
     A ``model`` step commits one assistant message and goes to ``tools`` when it
     made calls, else back to ``model``: the CLI can go on without a tool call
@@ -512,7 +640,7 @@ def build_claude_code_graph(tool_node: ToolNode, *, checkpointer: Any = None) ->
         message = await run.next_message()
         if message is None:
             await run.finish()
-            return Command(update={"claude_session": run.store.drain()}, goto=END)
+            return Command(update=_committed(turn, run.store.drain()), goto=END)
         relay = ClaudeStreamRelay(model_name=turn.spec.model, metadata=dict(turn.spec.billing), cache=False).feed(message.events())
         ai: AIMessage = await relay.ainvoke([], config)
         await run.complete(message)
@@ -521,30 +649,35 @@ def build_claude_code_graph(tool_node: ToolNode, *, checkpointer: Any = None) ->
         if ai.invalid_tool_calls:
             raise ClaudeTurnFailed("api_error", f"tool calls that did not parse: {[c.get('name') for c in ai.invalid_tool_calls]}")
         ai.response_metadata.setdefault("model_name", turn.spec.model)
-        ai.response_metadata["claude_message_id"] = message.id
+        ai.response_metadata[CLAUDE_MESSAGE_ID] = message.id
         uuids = run.assistant_records(message.id)
         await run.settle(uuids)
         return Command(
-            update={"messages": [ai], "claude_session": run.store.drain(through=uuids)},
+            update={"messages": [ai], **_committed(turn, run.store.drain(through=uuids))},
             goto="tools" if ai.tool_calls else "model",
         )
 
     async def tools(state: ClaudeCodeState, config: RunnableConfig) -> Any:
-        run = _turn(config).current
+        turn = _turn(config)
+        run = turn.current
         out = await tool_node.ainvoke(state, config)
         for m in _tool_messages(out):
             run.results.resolve(m)
         uuids = await run.tool_result_records([tc["id"] for tc in state["messages"][-1].tool_calls])
         await run.settle(uuids)
-        session = {"claude_session": run.store.drain(through=uuids)}
+        session = _committed(turn, run.store.drain(through=uuids))
         if isinstance(out, list):
             return [*out, Command(update=session)]
         return {**out, **session}
 
     g = StateGraph(ClaudeCodeState)
+    for name, node in entry:
+        g.add_node(name, node)
     g.add_node("model", model, destinations=("tools", "model", END))
     g.add_node("tools", tools)
-    g.add_edge(START, "model")
+    path = [START, *(name for name, _ in entry), "model"]
+    for a, b in pairwise(path):
+        g.add_edge(a, b)
     g.add_edge("tools", "model")
     return g.compile(checkpointer=checkpointer)
 
