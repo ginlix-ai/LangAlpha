@@ -22,6 +22,8 @@ import copy
 from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict
 
+from typing_extensions import NotRequired
+
 from langgraph.channels import DeltaChannel
 
 SESSION_SNAPSHOT_FREQUENCY = 250
@@ -36,18 +38,52 @@ class SessionDrift(RuntimeError):
     """
 
 
+class ToolDefinition(TypedDict):
+    """A tool as a session offers it to Claude, kept for the session's life."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    read_only: bool
+
+
+class SessionPin(TypedDict):
+    """The system prompt and tool definitions a session runs on, byte for byte.
+
+    Claude's thinking is bound to the prefix in front of it, so every turn of
+    a session is launched from these rather than from what the current build
+    would send: a deploy that changes the prompt or a tool reaches a session
+    only where its prefix is rewritten anyway.
+    """
+
+    system_prompt: str
+    tools: list[ToolDefinition]
+
+
 class SessionRecords(TypedDict, total=False):
-    """The channel's value: Claude's session id and its transcript, in write order."""
+    """The channel's value: Claude's session id, its transcript in write order,
+    the prompt and tools it runs on, and the baseline epoch it was handed."""
 
     session_id: str
     entries: list[dict[str, Any]]
+    pinned: SessionPin
+    baseline: str
 
 
 class SessionWrite(TypedDict):
-    """One write to the channel: records the CLI appended, in its order."""
+    """One write to the channel: records the CLI appended, in its order, and
+    the pin or baseline epoch the session holds from this write on."""
 
     session_id: str
     entries: list[dict[str, Any]]
+    pinned: NotRequired[SessionPin | None]
+    baseline: NotRequired[str]
+
+
+def compacted(entry: Mapping[str, Any]) -> bool:
+    """Whether a record is the CLI compacting the session, which rewrites
+    the prefix its pin and baseline were part of."""
+    return entry.get("subtype") == "compact_boundary" or bool(entry.get("isCompactSummary"))
 
 
 def session_records_reducer(
@@ -59,27 +95,38 @@ def session_records_reducer(
     retried mirror batch harmless; one without (titles, mode markers) is
     appended as written. Folding two batches separately or together gives
     the same value, which ``DeltaChannel`` requires to replay its writes.
-    A write naming another session id starts that session over: the CLI
-    mints a new id only when it starts a new session, and nothing of the old
-    one is resumed after that.
+    A write naming another session id starts that session over, pin and
+    baseline included: the CLI mints a new id only when it starts a new
+    session, and nothing of the old one is resumed after that. A write's pin
+    and baseline apply ahead of its records, and a compaction among them
+    voids both.
     """
-    session_id = (state or {}).get("session_id")
-    entries = list((state or {}).get("entries") or [])
+    state = state or {}
+    session_id = state.get("session_id")
+    entries = list(state.get("entries") or [])
+    pinned, baseline = state.get("pinned"), state.get("baseline")
     seen = {e["uuid"] for e in entries if e.get("uuid")}
     for w in (w for item in writes for w in ([item] if isinstance(item, dict) else item)):
         if session_id and w["session_id"] != session_id:
-            entries, seen = [], set()
+            entries, seen, pinned, baseline = [], set(), None, None
         session_id = w["session_id"]
+        pinned, baseline = w.get("pinned", pinned), w.get("baseline", baseline)
         for entry in w["entries"]:
             uid = entry.get("uuid")
             if uid in seen:
                 continue
             if uid:
                 seen.add(uid)
+            if compacted(entry):
+                pinned = baseline = None
             entries.append(entry)
     out: SessionRecords = {"entries": entries}
     if session_id:
         out["session_id"] = session_id
+    if pinned:
+        out["pinned"] = pinned
+    if baseline:
+        out["baseline"] = baseline
     return out
 
 

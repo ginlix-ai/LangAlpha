@@ -19,8 +19,7 @@ def read(file_path: str, limit: int = 100) -> str:
 def test_specs_carry_the_schema_and_description_a_langalpha_turn_sends():
     (spec,) = tool_specs([read], read_only=frozenset({"Read"}))
     wire = convert_to_anthropic_tool(read)
-    assert (spec.name, spec.description, spec.input_schema) == (wire["name"], wire["description"], wire["input_schema"])
-    assert spec.annotations.read_only_hint is True
+    assert spec == {"name": wire["name"], "description": wire["description"], "input_schema": wire["input_schema"], "read_only": True}
 
 
 def test_allow_rules_use_the_prefixed_form_the_cli_matches():

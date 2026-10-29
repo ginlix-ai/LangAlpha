@@ -1,7 +1,7 @@
 """The runtime end to end: the bundled claude CLI against a loopback Messages API.
 
 No credential and no network: the launcher points the real CLI at
-``fake_api.FakeMessagesAPI`` with a dummy key.
+``fake_api.FakeMessagesAPI`` with a dummy key or setup token.
 """
 
 from __future__ import annotations
@@ -10,18 +10,19 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
-from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, ClaudeTurnFailed
+from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, ClaudeTurnFailed, token_works
 from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 from .conftest import TEST_KEY
-from .fake_api import FakeMessagesAPI
+from .fake_api import TOKEN, FakeMessagesAPI
 from .harness import new_graph, run_turn, spec
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.asyncio]
@@ -31,7 +32,7 @@ SPEC = spec("claude-haiku-5-5")
 
 async def turn(api: FakeMessagesAPI, graph, thread: str, messages: list, callbacks: list | None = None,
                baseline=None) -> dict:
-    launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+    launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN if api.first_party else None)
     return await run_turn(SPEC, launcher, graph, thread, messages, callbacks, baseline)
 
 
@@ -144,7 +145,40 @@ async def test_a_turn_hands_claude_its_rows_and_only_a_baseline_it_does_not_hold
     assert sent[0] == [frame_reminder("BASELINE one"), "ECHO 0", *rows]
     assert sent[1] == ["ECHO 1", *rows]
     assert sent[2] == [frame_reminder("BASELINE two"), "ECHO 2", *rows]
-    assert values["claude_baseline"] == "e2"
+    assert values["claude_session"]["baseline"] == "e2"
+
+
+async def test_a_session_keeps_the_prompt_and_tools_it_started_on_across_a_deploy():
+    """Turn 2 runs on a build whose prompt and tools changed (a deploy between
+    turns): it still sends turn 1's system bytes and tool list, which Claude's
+    thinking is bound to. A new thread takes the new build's."""
+    import dataclasses
+
+    from langchain_core.tools import tool
+
+    @tool("Grep")
+    async def grep(pattern: str) -> str:
+        """Search files."""
+        return ""
+
+    deployed = dataclasses.replace(SPEC, system_prompt="You are the redeployed test agent. Reply tersely.", tools=[*SPEC.tools, grep])
+    graph = new_graph()
+
+    def sent(request):
+        return json.dumps(request["system"]), [t["name"] for t in request["tools"]]
+
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        await run_turn(SPEC, launcher, graph, "t-pin", [HumanMessage("FACT: the code word is heron")])
+        first = sent(api.model_requests[-1])
+        n = len(api.model_requests)
+        values = await run_turn(deployed, launcher, graph, "t-pin", [HumanMessage("RECALL it")])
+        second = sent(api.model_requests[n])
+        await run_turn(deployed, launcher, new_graph(), "t-pin-new", [HumanMessage("ECHO hi")])
+        fresh = sent(api.model_requests[-1])
+    assert SPEC.system_prompt in first[0] and second == first
+    assert values["claude_session"]["pinned"]["system_prompt"] == SPEC.system_prompt
+    assert deployed.system_prompt in fresh[0] and fresh[1] == ["Bash", "Grep"]
 
 
 async def test_a_refused_request_fails_the_turn_and_commits_no_reply():
@@ -186,3 +220,83 @@ async def test_an_at_path_in_user_text_reaches_claude_as_written(tmp_path):
         await turn(api, new_graph(), "t-atpath", [HumanMessage(f"ECHO @{secret}")])
     assert "do-not-read-7731" not in json.dumps(api.model_requests)
 
+
+def _machine_login(home) -> tuple[str, str]:
+    """A Claude Code login of the machine's own, where the CLI keeps one on Linux; its token and the file's hash."""
+    machine = "sk-ant-oat01-" + "9" * 80
+    creds = home / ".claude" / ".credentials.json"
+    creds.parent.mkdir(parents=True)
+    creds.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": machine, "refreshToken": "sk-ant-ort01-machine", "expiresAt": 4102444800000, "scopes": ["user:inference"]}}))
+    return machine, hashlib.sha256(creds.read_bytes()).hexdigest()
+
+
+async def test_a_turn_never_signs_in_with_the_machines_own_login(monkeypatch, tmp_path):
+    machine, before = _machine_login(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    graph = new_graph()
+    async with FakeMessagesAPI(first_party=True) as api:
+        signed_out = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        with pytest.raises(ClaudeTurnFailed) as failed:
+            await run_turn(SPEC, signed_out, graph, "t-machine", [HumanMessage("ECHO hi")])
+        await turn(api, graph, "t-machine", [HumanMessage("ECHO hi")])
+        assert await token_works(LocalLauncher(env=api.cli_env(), token=TOKEN), "claude-haiku-5-5")
+    assert failed.value.kind == "auth_failed"
+    assert api.credentials and set(api.credentials) == {TOKEN} and machine not in api.credentials
+    creds = tmp_path / ".claude" / ".credentials.json"
+    assert hashlib.sha256(creds.read_bytes()).hexdigest() == before
+    assert [p.name for p in (tmp_path / ".claude").iterdir()] == [".credentials.json"]
+
+
+class _SavedToken:
+    """A user's saved token as a turn reads it, and the refusals it is told of."""
+
+    def __init__(self, token: str) -> None:
+        self.token, self.refusals = token, []
+
+    async def read(self) -> str:
+        return self.token
+
+    async def refused(self, token: str) -> None:
+        self.refusals.append(token)
+
+
+async def test_a_turn_runs_on_the_saved_token_and_reports_one_anthropic_refuses():
+    revoked = "sk-ant-oat01-revoked"
+    good, bad = _SavedToken(TOKEN), _SavedToken(revoked)
+    async with FakeMessagesAPI(first_party=True, refused=frozenset({revoked})) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        await run_turn(SPEC, launcher, new_graph(), "t-saved", [HumanMessage("ECHO hi")], token=good)
+        with pytest.raises(ClaudeTurnFailed) as failed:
+            await run_turn(SPEC, launcher, new_graph(), "t-revoked", [HumanMessage("ECHO hi")], token=bad)
+    assert failed.value.kind == "auth_failed"
+    assert (good.refusals, bad.refusals) == ([], [revoked])
+    assert api.credentials[0] == TOKEN and set(api.credentials[1:]) == {revoked}
+
+
+async def test_the_token_check_asks_anthropic_and_tells_a_refused_token_from_a_good_one():
+    async with FakeMessagesAPI(first_party=True, refused=frozenset({"sk-ant-oat01-revoked"})) as api:
+        good = await token_works(LocalLauncher(env=api.cli_env(), token=TOKEN), "claude-haiku-5-5")
+        revoked = await token_works(LocalLauncher(env=api.cli_env(), token="sk-ant-oat01-revoked"), "claude-haiku-5-5")
+    assert (good, revoked) == (True, False)
+    assert api.credentials[0] == TOKEN and set(api.credentials[1:]) == {"sk-ant-oat01-revoked"}
+
+
+def _children() -> list[str]:
+    me, found = str(os.getpid()), []
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{pid}/stat") as stat:
+                if stat.read().rsplit(")", 1)[1].split()[1] == me:
+                    found.append(pid)
+        except (OSError, IndexError):
+            pass
+    return found
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="reads child processes from /proc")
+async def test_the_token_check_has_stopped_its_cli_when_it_answers():
+    before = _children()
+    async with FakeMessagesAPI(first_party=True) as api:
+        assert await token_works(LocalLauncher(env=api.cli_env(), token=TOKEN), "claude-haiku-5-5")
+        assert _children() == before

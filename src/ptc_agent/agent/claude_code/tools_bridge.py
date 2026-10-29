@@ -38,6 +38,7 @@ from mcp.types import (
 )
 
 from ptc_agent.agent.claude_code.relay import anthropic_content
+from ptc_agent.agent.claude_code.session import ToolDefinition
 
 SERVER = "langalpha"
 TOOL_USE_ID_META = "claudecode/toolUseId"
@@ -111,24 +112,33 @@ def to_call_result(message: ToolMessage) -> CallToolResult:
     return CallToolResult(content=blocks, isError=message.status == "error")
 
 
-def tool_specs(tools: Sequence[BaseTool], read_only: frozenset[str] = frozenset()) -> list[Tool]:
-    """MCP definitions with the schema and description a langalpha turn sends Claude."""
-    specs = []
+def tool_specs(tools: Sequence[BaseTool], read_only: frozenset[str] = frozenset()) -> list[ToolDefinition]:
+    """The definitions with the schema and description a langalpha turn sends
+    Claude, as plain data a session can keep (``session.SessionPin``)."""
+    specs: list[ToolDefinition] = []
     for t in tools:
         wire = convert_to_anthropic_tool(t)
-        specs.append(
-            Tool(
-                name=wire["name"],
-                description=wire.get("description") or "",
-                inputSchema=wire["input_schema"],
-                annotations=ToolAnnotations(readOnlyHint=t.name in read_only),
-            )
-        )
+        specs.append({
+            "name": wire["name"],
+            "description": wire.get("description") or "",
+            "input_schema": wire["input_schema"],
+            "read_only": t.name in read_only,
+        })
     return specs
 
 
-def build_tool_server(tools: Sequence[BaseTool], results: ToolResults, read_only: frozenset[str] = frozenset()) -> McpSdkServerConfig:
-    specs = tool_specs(tools, read_only)
+def build_tool_server(definitions: Sequence[ToolDefinition], results: ToolResults) -> McpSdkServerConfig:
+    """The server offering ``definitions``. A call to one the current build no
+    longer has still reaches the ``tools`` step, whose tool node refuses it."""
+    specs = [
+        Tool(
+            name=d["name"],
+            description=d["description"],
+            inputSchema=d["input_schema"],
+            annotations=ToolAnnotations(readOnlyHint=d["read_only"]),
+        )
+        for d in definitions
+    ]
     names = {s.name for s in specs}
 
     async def on_list_tools(ctx: Any, params: Any) -> ListToolsResult:

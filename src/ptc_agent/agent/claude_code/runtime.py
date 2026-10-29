@@ -59,16 +59,17 @@ from ptc_agent.agent.claude_code.session import (
     Arrivals,
     CheckpointSessionStore,
     SessionDrift,
+    SessionPin,
     SessionRecords,
     SessionWrite,
     session_channel,
 )
-from ptc_agent.agent.claude_code.tools_bridge import SERVER, ToolResults, allow_rule, build_tool_server
+from ptc_agent.agent.claude_code.tools_bridge import SERVER, ToolResults, allow_rule, build_tool_server, tool_specs
 from ptc_agent.agent.main_state import MainAgentState
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
-from src.llms.claude_code import ClaudeTurnFailed
+from src.llms.claude_code import ClaudeTurnFailed, another_model_replied_last
 
 TURN_KEY = "claude_turn"
 T = TypeVar("T")
@@ -176,17 +177,16 @@ class ClaudeCodeState(MainAgentState):
     """A Claude Code thread's checkpoint: a main-agent thread's, plus Claude's session."""
 
     claude_session: NotRequired[Annotated[SessionRecords, session_channel()]]
-    #: The baseline epoch Claude was last handed, so one it holds is not sent again.
-    claude_baseline: NotRequired[str]
 
 
 @dataclass(frozen=True)
 class RuntimeSpec:
-    """What a Claude Code turn runs with, fixed for the session's life.
+    """What this build runs a Claude Code turn with.
 
     The system prompt and the tool list are part of the prefix every earlier
-    thinking block is bound to, so they are set when the session starts and
-    never change under it; what changes reaches Claude as appended messages.
+    thinking block is bound to, so they only start a session: its later turns
+    run on the copy it keeps (``session.SessionPin``), and what changes
+    reaches Claude as appended messages.
     """
 
     system_prompt: str
@@ -202,6 +202,7 @@ class RuntimeSpec:
 def options_for(
     spec: RuntimeSpec,
     *,
+    pin: SessionPin,
     server: Any,
     store: CheckpointSessionStore,
     session_id: str | None,
@@ -220,7 +221,7 @@ def options_for(
         strict_mcp_config=True,
         extra_args={"disable-slash-commands": None},
         mcp_servers={SERVER: server},
-        allowed_tools=[allow_rule(t.name) for t in spec.tools],
+        allowed_tools=[allow_rule(t["name"]) for t in pin["tools"]],
         permission_mode="dontAsk",
         model=spec.model,
         effort=spec.effort,
@@ -318,8 +319,8 @@ class _Run:
         self._pump = asyncio.create_task(self._read())
 
     @classmethod
-    async def start(cls, spec: RuntimeSpec, launcher: LocalLauncher, thread_key: str, identity: str,
-                    records: SessionRecords | None, prompt: Prompt | None,
+    async def start(cls, spec: RuntimeSpec, pin: SessionPin, launcher: LocalLauncher, thread_key: str,
+                    identity: str, records: SessionRecords | None, prompt: Prompt | None,
                     refused: Callable[[], Awaitable[None]] | None = None) -> _Run:
         """Lay out the session, start the CLI and send the turn; nothing is left behind if any step fails.
 
@@ -329,13 +330,13 @@ class _Run:
         session_id = (records or {}).get("session_id")
         prepared = await launcher.prepare(
             thread_key, session_id, (records or {}).get("entries") or [],
-            identity=identity, system_prompt=spec.system_prompt,
+            identity=identity, system_prompt=pin["system_prompt"],
         )
         client: ClaudeSDKClient | None = None
         try:
             store, results = CheckpointSessionStore(), ToolResults()
             options = options_for(
-                spec, server=build_tool_server(spec.tools, results, spec.read_only), store=store,
+                spec, pin=pin, server=build_tool_server(pin["tools"], results), store=store,
                 session_id=session_id, prepared=prepared,
             )
             if prompt is None:
@@ -492,8 +493,14 @@ class ClaudeTurn:
         self.identity = identity
         self.thread_key = thread_key
         self._baseline = baseline
-        #: The epoch this run handed Claude, for the steps to record.
-        self.baseline_sent: str | None = None
+        #: The session this run writes records to, and what its next write
+        #: owes it: the pin and baseline this run launched with that it does
+        #: not hold yet.
+        self._session: str | None = None
+        self._owed: dict[str, Any] = {}
+        #: What a session this run starts holds, since the CLI may start one
+        #: over instead of resuming.
+        self._fresh: dict[str, Any] = {}
         self._run: _Run | None = None
 
     @property
@@ -514,20 +521,48 @@ class ClaudeTurn:
 
     async def run(self, state: ClaudeCodeState) -> _Run:
         if self._run is None:
-            key, block = self._baseline_due(state)
-            prompt = turn_prompt(state, baseline=block)
+            pin, prompt = self.opening(state)
             launcher, refused = self.launcher, None
             if self.token is not None and (token := await self.token.read()):
                 launcher, refused = replace(launcher, token=token), partial(self.token.refused, token)
             self._run = await _Run.start(
-                self.spec, launcher, self.thread_key, self.identity, state.get("claude_session"), prompt, refused
+                self.spec, pin, launcher, self.thread_key, self.identity, state.get("claude_session"), prompt, refused
             )
-            if prompt is not None and block:
-                self.baseline_sent = key
         return self._run
 
+    def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:
+        """What the run starts Claude on: the session's own pin, else this
+        build's, which the session holds from the run's first records on (a
+        new session, one from before sessions kept theirs, or one Claude Code
+        compacted), and the turn's prompt."""
+        records = state.get("claude_session") or {}
+        key, block = self._baseline_due(state)
+        prompt = turn_prompt(state, baseline=block)
+        self._session = records.get("session_id")
+        kept = records.get("pinned") if self._session else None
+        pin = kept or self.current_pin()
+        sent = {"baseline": key} if prompt is not None and block else {}
+        self._fresh = {"pinned": pin, **sent}
+        self._owed = sent if kept else self._fresh
+        return pin, prompt
+
+    def current_pin(self) -> SessionPin:
+        """The prompt and tools this build would start a session on."""
+        return {"system_prompt": self.spec.system_prompt, "tools": tool_specs(self.spec.tools, self.spec.read_only)}
+
+    def commit(self, session: list[SessionWrite]) -> dict[str, Any]:
+        """A step's session records, the first of them carrying what the
+        session holds from then on that it did not before."""
+        for write in session:
+            if write["session_id"] != self._session:
+                self._session, self._owed = write["session_id"], self._fresh
+            if self._owed:
+                write.update(self._owed)
+                self._owed = {}
+        return {"claude_session": session}
+
     def _baseline_due(self, state: ClaudeCodeState) -> tuple[str, str | None]:
-        """The thread's baseline, unless Claude already holds its epoch."""
+        """The thread's baseline, unless Claude's session already holds its epoch."""
         if self._baseline is None:
             return "", None
         try:
@@ -535,7 +570,7 @@ class ClaudeTurn:
         except Exception:  # noqa: BLE001 - context is never worth failing a turn for
             logger.warning("[ClaudeCode] baseline render failed; the turn opens without it", exc_info=True)
             return "", None
-        if not block or state.get("claude_baseline") == key:
+        if not block or (state.get("claude_session") or {}).get("baseline") == key:
             return key, None
         return key, block
 
@@ -546,21 +581,6 @@ class ClaudeTurn:
 
 def _turn(config: RunnableConfig) -> ClaudeTurn:
     return config["configurable"][TURN_KEY]
-
-
-def _committed(turn: ClaudeTurn, session: list[SessionWrite]) -> dict[str, Any]:
-    """A step's session records, with the baseline epoch Claude holds after them.
-
-    A session the CLI compacted no longer holds the baseline it was handed,
-    so the epoch is forgotten and the next turn hands it over again.
-    """
-    update: dict[str, Any] = {"claude_session": session}
-    if any(e.get("subtype") == "compact_boundary" or e.get("isCompactSummary") for w in session for e in w["entries"]):
-        turn.baseline_sent = None
-        update["claude_baseline"] = ""
-    elif turn.baseline_sent:
-        update["claude_baseline"] = turn.baseline_sent
-    return update
 
 
 #: What a turn sends Claude: the user's text, or Anthropic content blocks.
@@ -588,11 +608,11 @@ def turn_prompt(state: ClaudeCodeState, *, baseline: str | None = None) -> Promp
     holds only what Claude said, so it would carry on without that reply and
     everything before it that another model saw.
     """
+    if another_model_replied_last(state["messages"]):
+        raise ClaudeTurnFailed("other_model_history", "the thread's last reply is another model's, which Claude's session does not hold")
     added: list[HumanMessage] = []
     for msg in reversed(state["messages"]):
         if isinstance(msg, AIMessage):
-            if CLAUDE_MESSAGE_ID not in msg.response_metadata:
-                raise ClaudeTurnFailed("other_model_history", "the thread's last reply is another model's, which Claude's session does not hold")
             break
         if isinstance(msg, HumanMessage):
             added.append(msg)
@@ -640,7 +660,7 @@ def build_claude_code_graph(
         message = await run.next_message()
         if message is None:
             await run.finish()
-            return Command(update=_committed(turn, run.store.drain()), goto=END)
+            return Command(update=turn.commit(run.store.drain()), goto=END)
         relay = ClaudeStreamRelay(model_name=turn.spec.model, metadata=dict(turn.spec.billing), cache=False).feed(message.events())
         ai: AIMessage = await relay.ainvoke([], config)
         await run.complete(message)
@@ -653,7 +673,7 @@ def build_claude_code_graph(
         uuids = run.assistant_records(message.id)
         await run.settle(uuids)
         return Command(
-            update={"messages": [ai], **_committed(turn, run.store.drain(through=uuids))},
+            update={"messages": [ai], **turn.commit(run.store.drain(through=uuids))},
             goto="tools" if ai.tool_calls else "model",
         )
 
@@ -665,7 +685,7 @@ def build_claude_code_graph(
             run.results.resolve(m)
         uuids = await run.tool_result_records([tc["id"] for tc in state["messages"][-1].tool_calls])
         await run.settle(uuids)
-        session = _committed(turn, run.store.drain(through=uuids))
+        session = turn.commit(run.store.drain(through=uuids))
         if isinstance(out, list):
             return [*out, Command(update=session)]
         return {**out, **session}
