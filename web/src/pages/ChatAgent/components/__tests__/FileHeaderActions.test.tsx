@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
+import { toast } from '@/components/ui/use-toast';
 import FileHeaderActions, {
   getFileExtension,
   isMarkdownFile,
@@ -22,6 +23,25 @@ vi.mock('@/components/ui/use-toast', () => ({
 const exportServedPdfMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../viewers/html/useHtmlActions', () => ({
   exportServedPdf: (...args: unknown[]) => exportServedPdfMock(...args),
+}));
+
+vi.mock('@/hooks/useWorkspaceFileGrant', () => ({
+  useWorkspaceFileGrant: (workspaceId: string | null) => ({
+    data: workspaceId ? { prefix: '/api/v1/wsfiles/g/grant-1/', expires_in: 12 * 60 * 60 } : undefined,
+    error: null,
+    refetch: vi.fn(),
+  }),
+}));
+vi.mock('@/hooks/useShareLink', () => ({
+  useShareLink: (workspaceId: string | null) => ({
+    data: workspaceId ? { code: 'abc123abc123' } : undefined,
+  }),
+}));
+
+// The dialog owns its own queries; here it only has to say which file it was opened for.
+vi.mock('../ShareLinkDialog', () => ({
+  default: ({ open, filePath }: { open: boolean; filePath: string }) =>
+    open ? <div role="dialog">share {filePath}</div> : null,
 }));
 
 vi.mock('@/components/ui/dropdown-menu', () => ({
@@ -191,6 +211,29 @@ describe('FileHeaderActions', () => {
     expect(triggerDownloadFn).toHaveBeenCalledWith('ws-123', 'report.md');
   });
 
+  // A save that fails shows nothing by itself: no file arrives, nothing opens
+  // and nothing navigates, so silence here reads as a dead menu item.
+  it('reports a failed download instead of only logging it', async () => {
+    const triggerDownloadFn = vi.fn().mockRejectedValue(new Error('sandbox stopped'));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(toast).mockClear();
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        triggerDownloadFn={triggerDownloadFn}
+      />,
+    );
+    fireEvent.click(screen.getByText('filePanel.downloadAsMarkdown'));
+
+    await waitFor(() => {
+      expect(toast).toHaveBeenCalledWith({
+        description: 'filePanel.downloadFailed',
+        variant: 'destructive',
+      });
+    });
+    logged.mockRestore();
+  });
+
   it('renders edit button when canEdit is true', () => {
     render(<FileHeaderActions {...defaultProps} canEdit={true} />);
     expect(
@@ -245,28 +288,48 @@ describe('FileHeaderActions', () => {
     expect(screen.queryByText('filePanel.downloadAsPdf')).not.toBeInTheDocument();
   });
 
-  it('exports the server PDF (with the served URL override) on Save as PDF', async () => {
+  it('exports the server PDF (under a share\'s serve prefix) on Save as PDF', async () => {
     exportServedPdfMock.mockClear();
     render(
       <FileHeaderActions
         {...defaultProps}
         selectedFile="results/report.html"
         fileMime="text/html"
-        htmlServedUrl="/api/v1/public/shared/tok-1/files/serve/results/report.html"
+        servePrefix="/api/v1/public/shared/tok-1/files/serve/"
       />,
     );
     fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
     await waitFor(() => {
       expect(exportServedPdfMock).toHaveBeenCalledWith({
-        workspaceId: 'ws-123',
         filePath: 'results/report.html',
         servedUrl: '/api/v1/public/shared/tok-1/files/serve/results/report.html',
+        openUrl: '/api/v1/public/shared/tok-1/files/serve/results/report.html',
         printHint: 'filePanel.pdfPrintHint',
         generatingHint: 'filePanel.pdfGenerating',
         scale: 1,
         pageNumbers: false,
         branding: true,
       });
+    });
+  });
+
+  // The owner's served URL carries the workspace grant, so the print fallback
+  // opens the file's own /a/ page rather than handing the grant to a new tab.
+  it('exports the owner\'s PDF from the grant and opens the /a/ link as the fallback', async () => {
+    exportServedPdfMock.mockClear();
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile="results/report.html"
+        fileMime="text/html"
+      />,
+    );
+    fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
+    await waitFor(() => {
+      expect(exportServedPdfMock).toHaveBeenCalledWith(expect.objectContaining({
+        servedUrl: '/api/v1/wsfiles/g/grant-1/results/report.html',
+        openUrl: `${window.location.origin}/a/abc123abc123`,
+      }));
     });
   });
 
@@ -291,6 +354,67 @@ describe('FileHeaderActions', () => {
     });
   });
 
+  it('offers no share button unless the panel can share', () => {
+    render(<FileHeaderActions {...defaultProps} />);
+    expect(screen.queryByTitle('filePanel.copyShareLink')).not.toBeInTheDocument();
+  });
+
+  it('opens the share dialog for the selected file', () => {
+    render(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" canShare />);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('filePanel.copyShareLink'));
+    expect(screen.getByRole('dialog')).toHaveTextContent('share results/report.html');
+  });
+
+  it('switches an HTML file between its page and its source', () => {
+    const onToggleHtmlSource = vi.fn();
+    const html = { selectedFile: 'results/report.html', fileMime: 'text/html', onToggleHtmlSource };
+    const { rerender } = render(<FileHeaderActions {...defaultProps} {...html} />);
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel.viewSource' }));
+    expect(onToggleHtmlSource).toHaveBeenCalledTimes(1);
+
+    rerender(<FileHeaderActions {...defaultProps} {...html} htmlSource />);
+    expect(screen.getByRole('button', { name: 'filePanel.viewPreview' })).toBeInTheDocument();
+  });
+
+  it('offers no source switch for a file that is not HTML', () => {
+    render(<FileHeaderActions {...defaultProps} onToggleHtmlSource={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'filePanel.viewSource' })).not.toBeInTheDocument();
+  });
+
+  // The grant URL is the panel's to load and expires; a tab opened on it
+  // would break hours later, so the owner gets the file's own /a/ page.
+  it("opens the owner's HTML file at its share page in a new tab", () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(<FileHeaderActions {...defaultProps} selectedFile="results/report.html" fileMime="text/html" />);
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
+    expect(open).toHaveBeenCalledWith(
+      `${window.location.origin}/a/abc123abc123`,
+      '_blank',
+      'noopener,noreferrer',
+    );
+    open.mockRestore();
+  });
+
+  it("opens a shared HTML file under the share's own prefix", () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile="results/report.html"
+        fileMime="text/html"
+        servePrefix="/api/v1/public/shared/tok-1/files/serve/"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'filePanel.openInNewTab' }));
+    expect(open).toHaveBeenCalledWith(
+      '/api/v1/public/shared/tok-1/files/serve/results/report.html',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    open.mockRestore();
+  });
+
   it('renders only Download for binary file', () => {
     render(
       <FileHeaderActions
@@ -306,6 +430,38 @@ describe('FileHeaderActions', () => {
     expect(
       screen.queryByText('filePanel.copyToClipboard'),
     ).not.toBeInTheDocument();
+  });
+
+  // A copy-link share grants allow_files without allow_download, and the
+  // download endpoint refuses what allow_files alone opened. Every item behind
+  // this trigger saves a file, so the trigger goes with them rather than
+  // standing over an empty menu.
+  it.each([
+    ['markdown', 'report.md', 'text/markdown'],
+    ['html', 'report.html', 'text/html'],
+    ['text', 'data.txt', 'text/plain'],
+    ['binary', 'chart.png', 'image/png'],
+  ])('hides the whole download menu for a %s file when the share forbids saving', (_kind, file, mime) => {
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile={file}
+        fileMime={mime}
+        canDownload={false}
+      />,
+    );
+    expect(screen.queryByTestId('dropdown-menu')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('filePanel.downloadOptions')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel.download')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel.downloadAsPdf')).not.toBeInTheDocument();
+    expect(screen.queryByText('filePanel.saveAsPdf')).not.toBeInTheDocument();
+    // The edit affordance is a separate permission and is not swept up.
+    expect(screen.getByTitle('filePanel.editFile')).toBeInTheDocument();
+  });
+
+  it('keeps the download menu when the prop is omitted', () => {
+    render(<FileHeaderActions {...defaultProps} />);
+    expect(screen.getByTestId('dropdown-menu')).toBeInTheDocument();
   });
 
   it('does not render download dropdown when isEditing is true', () => {

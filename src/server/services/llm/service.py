@@ -3,8 +3,7 @@
 ``LLMService.complete`` is the single entry point every server-layer utility
 should use when it needs a single-shot LLM invocation (structured output or
 free-form text). It delegates credential resolution to
-``resolve_llm_config`` — the same function the main PTC and Flash chat
-workflows use — so BYOK, Anthropic/Codex OAuth, custom providers, and
+``resolve_llm_config`` — the same function the chat workflow uses — so BYOK, Anthropic/Codex OAuth, custom providers, and
 user-preferred models are all respected automatically. Contrast with direct
 ``create_llm(model_name)`` calls, which always bill through the platform key
 regardless of what the user has configured.
@@ -12,7 +11,7 @@ regardless of what the user has configured.
 Two code paths:
 
 - ``user_id=None`` — system/scheduled task, no per-user resolution. Uses
-  ``agent_config.llm.flash`` (or ``request_model``) with platform
+  the deployment's model for ``slot`` (or ``request_model``) with platform
   credentials. No DB hit.
 - ``user_id="..."`` — full user-aware resolution through
   ``resolve_llm_config``. A ``platform_key_fallback`` log is emitted
@@ -40,7 +39,7 @@ from pydantic import BaseModel
 from ptc_agent.config.agent import CredentialSource
 from src.llms.api_call import make_api_call
 from src.llms.llm import create_llm
-from .config import _MODE_MODEL_MAP, resolve_llm_config
+from .config import resolve_llm_config, slot_model
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -59,7 +58,7 @@ class LLMService:
         user_prompt: str,
         system_prompt: str | None = None,
         response_schema: Type[T] | None = None,
-        mode: Literal["flash", "ptc"] = "flash",
+        slot: Literal["background", "primary"] = "background",
         request_model: str | None = None,
         is_byok: bool = True,
         reasoning_effort: str | None = None,
@@ -78,7 +77,7 @@ class LLMService:
             # platform default. ``resolve_llm_config`` is typed ``user_id: str``
             # and makes a DB lookup via ``get_model_preference``; skipping it
             # keeps system callers DB-free.
-            model_name = request_model or self._agent_config.llm.flash
+            model_name = request_model or slot_model(self._agent_config.llm, slot)
             llm = create_llm(model_name, reasoning_effort=reasoning_effort)
         else:
             resolved_config = await resolve_llm_config(
@@ -86,16 +85,13 @@ class LLMService:
                 user_id=user_id,
                 request_model=request_model,
                 is_byok=is_byok,
-                mode=mode,
+                slot=slot,
                 reasoning_effort=reasoning_effort,
                 fast_mode=None,
+                user_facing=False,
             )
             llm = resolved_config.llm_client
-            model_field, _ = _MODE_MODEL_MAP[mode]
-            effective_model = (
-                getattr(resolved_config.llm, model_field, None)
-                or resolved_config.llm.name
-            )
+            effective_model = slot_model(resolved_config.llm, slot)
             if llm is None:
                 # No BYOK / OAuth configured and no reasoning override — fall
                 # back to a platform-keyed client on the resolved model name.
@@ -109,7 +105,7 @@ class LLMService:
                     extra={
                         "user_id": user_id,
                         "model": effective_model,
-                        "mode": mode,
+                        "slot": slot,
                         "credential_source": str(resolved_config.credential_source),
                     },
                 )

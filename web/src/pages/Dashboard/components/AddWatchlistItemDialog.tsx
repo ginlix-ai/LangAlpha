@@ -1,19 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import i18n from '@/i18n';
-import { ArrowLeft, Search } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { Input } from '../../../components/ui/input';
-import { ScrollArea } from '../../../components/ui/scroll-area';
+import { TermKV } from '@/pages/ChatAgent/components/charts/TermCard';
 import { getStockPrices } from '../utils/api';
-import { searchStocks } from '@/lib/marketUtils';
-
-interface StockResult {
-  symbol: string;
-  name?: string;
-  exchangeShortName?: string;
-  stockExchange?: string;
-}
+import { FormCard } from './FormCard';
+import { SymbolSearchCard } from './SymbolSearchCard';
+import type { StockSearchHit } from '@/lib/marketUtils';
+import { useSymbolSearch } from '@/hooks/useSymbolSearch';
+import { useLocale } from '@/hooks/useLocale';
+import { formatMoney, quoteCurrency } from '@/lib/bars';
 
 interface WatchlistItemData {
   symbol: string;
@@ -30,7 +27,7 @@ interface WatchlistItemData {
 interface AddWatchlistItemDialogProps {
   open?: boolean;
   onClose?: () => void;
-  onAdd: (itemData: WatchlistItemData, watchlistId?: string) => void;
+  onAdd: (itemData: WatchlistItemData, watchlistId?: string) => void | Promise<void>;
   watchlistId?: string;
 }
 
@@ -46,47 +43,20 @@ function AddWatchlistItemDialog({
   watchlistId,
 }: AddWatchlistItemDialogProps) {
   const { t } = useTranslation();
+  const locale = useLocale();
   const [page, setPage] = useState<1 | 2>(1); // 1 = search, 2 = details
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<StockResult[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [selectedStock, setSelectedStock] = useState<StockResult | null>(null);
+  const { hits: searchResults, loading: searchLoading } = useSymbolSearch(searchQuery, 50, { enabled: open && page === 1 });
+  const [selectedStock, setSelectedStock] = useState<StockSearchHit | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [priceCurrency, setPriceCurrency] = useState<string | null>(null);
   const [priceLoading, setPriceLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Form fields for page 2
   const [notes, setNotes] = useState('');
   const [priceAbove, setPriceAbove] = useState('');
   const [priceBelow, setPriceBelow] = useState('');
-
-  // Debounced search
-  useEffect(() => {
-    if (!open || page !== 1) {
-      setSearchResults([]);
-      return;
-    }
-
-    const query = searchQuery.trim();
-    if (!query || query.length < 1) {
-      setSearchResults([]);
-      return;
-    }
-
-    const timeoutId = setTimeout(async () => {
-      setSearchLoading(true);
-      try {
-        const result = await searchStocks(query, 50);
-        setSearchResults((result.results || []) as StockResult[]);
-      } catch (error) {
-        console.error('Search failed:', error);
-        setSearchResults([]);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300); // 300ms debounce
-
-    return () => clearTimeout(timeoutId);
-  }, [searchQuery, open, page]);
 
   // Fetch current price when stock is selected
   useEffect(() => {
@@ -97,8 +67,10 @@ function AddWatchlistItemDialog({
           const priceData = prices?.[0];
           if (priceData && priceData.quoteAvailable !== false) {
             setCurrentPrice(priceData.price);
+            setPriceCurrency(priceData.currency ?? null);
           } else {
             setCurrentPrice(null);
+            setPriceCurrency(null);
           }
         })
         .catch((error) => {
@@ -116,7 +88,6 @@ function AddWatchlistItemDialog({
     if (!open) {
       setPage(1);
       setSearchQuery('');
-      setSearchResults([]);
       setSelectedStock(null);
       setCurrentPrice(null);
       setNotes('');
@@ -125,7 +96,7 @@ function AddWatchlistItemDialog({
     }
   }, [open]);
 
-  const handleStockSelect = (stock: StockResult) => {
+  const handleStockSelect = (stock: StockSearchHit) => {
     setSelectedStock(stock);
     setPage(2);
   };
@@ -140,7 +111,7 @@ function AddWatchlistItemDialog({
   };
 
   const handleAdd = () => {
-    if (!selectedStock) return;
+    if (!selectedStock || submitting) return;
 
     const priceAboveNum = priceAbove.trim() ? parseFloat(priceAbove) : null;
     const priceBelowNum = priceBelow.trim() ? parseFloat(priceBelow) : null;
@@ -164,14 +135,29 @@ function AddWatchlistItemDialog({
         : undefined,
     };
 
-    onAdd(itemData, watchlistId);
+    // The parent's handler is async and closes the dialog on success; hold
+    // the button while it runs so a double-click cannot post the row twice.
+    setSubmitting(true);
+    Promise.resolve(onAdd(itemData, watchlistId)).finally(() => setSubmitting(false));
   };
 
+  // Prefer the currency the quote was served in; the search result's listing
+  // currency, then the ticker suffix, cover the wait and older payloads. An
+  // index level prints bare.
+  const cur = quoteCurrency(priceCurrency || selectedStock?.currency, selectedStock?.symbol);
+
   const exchange = selectedStock?.exchangeShortName || selectedStock?.stockExchange || '';
+  const priceCell = priceLoading ? (
+    <span className="term-t3">...</span>
+  ) : currentPrice !== null ? (
+    <span className="term-code term-strong">{formatMoney(currentPrice, cur, locale)}</span>
+  ) : (
+    <span className="term-t3">{t('dashboard.addWatchlistDialog.priceNA')}</span>
+  );
 
   return (
     <Dialog open={open} onOpenChange={(open) => !open && onClose?.()}>
-      <DialogContent className="sm:max-w-md border max-sm:min-h-[60dvh]" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>
+      <DialogContent className="dash-form sm:max-w-md max-sm:min-h-[60dvh]">
         {page === 1 ? (
           <>
             <DialogHeader className="text-left">
@@ -179,58 +165,19 @@ function AddWatchlistItemDialog({
                 {t('dashboard.addWatchlistDialog.titleSearch')}
               </DialogTitle>
             </DialogHeader>
-            <div className="pt-1">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4" style={{ color: 'var(--color-text-secondary)' }} />
-                <Input
-                  placeholder={t('dashboard.addWatchlistDialog.searchPlaceholder')}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 border"
-                  style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)', color: 'var(--color-text-primary)' }}
-                  autoFocus
-                />
-              </div>
-              <ScrollArea className="mt-3 max-h-[50dvh] sm:max-h-[400px]">
-                {searchLoading ? (
-                  <div className="py-8 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                    {t('dashboard.addWatchlistDialog.searching')}
-                  </div>
-                ) : searchResults.length === 0 && searchQuery.trim().length >= 1 ? (
-                  <div className="py-8 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                    {t('dashboard.addWatchlistDialog.noResults')}
-                  </div>
-                ) : searchResults.length === 0 ? (
-                  <div className="py-8 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                    {t('dashboard.addWatchlistDialog.searchHint')}
-                  </div>
-                ) : (
-                  <div className="divide-y" style={{ borderColor: 'var(--color-border-muted)' }}>
-                    {searchResults.map((stock, index) => (
-                      <button
-                        key={`${stock.symbol}-${index}`}
-                        type="button"
-                        onClick={() => handleStockSelect(stock)}
-                        className="w-full text-left px-2 py-2.5 transition-colors flex items-center gap-3"
-                        style={{ color: 'var(--color-text-primary)' }}
-                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-                      >
-                        <span
-                          className="shrink-0 w-12 text-center text-xs font-bold py-1 rounded"
-                          style={{ backgroundColor: 'var(--color-bg-surface, var(--color-bg-hover))', color: 'var(--color-text-primary)' }}
-                        >
-                          {stock.symbol}
-                        </span>
-                        <span className="text-sm truncate" style={{ color: 'var(--color-text-secondary)' }}>
-                          {stock.name}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </div>
+            <SymbolSearchCard
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              hits={searchResults}
+              loading={searchLoading}
+              onSelect={handleStockSelect}
+              copy={{
+                searching: t('dashboard.addWatchlistDialog.searching'),
+                noResults: t('dashboard.addWatchlistDialog.noResults'),
+                searchHint: t('dashboard.addWatchlistDialog.searchHint'),
+                searchPlaceholder: t('dashboard.addWatchlistDialog.searchPlaceholder'),
+              }}
+            />
           </>
         ) : (
           <>
@@ -254,101 +201,54 @@ function AddWatchlistItemDialog({
             </DialogHeader>
             {selectedStock && (
               <div className="space-y-5">
-                {/* Stock info card */}
-                <div
-                  className="rounded-xl p-4 border"
-                  style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-muted)' }}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold" style={{ color: 'var(--color-text-primary)' }}>
-                          {selectedStock.symbol}
-                        </span>
-                        {exchange && (
-                          <span
-                            className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded"
-                            style={{ backgroundColor: 'var(--color-bg-surface, var(--color-bg-hover))', color: 'var(--color-text-secondary)' }}
-                          >
-                            {exchange}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs mt-1 truncate" style={{ color: 'var(--color-text-secondary)' }}>
-                        {selectedStock.name}
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      {priceLoading ? (
-                        <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>...</div>
-                      ) : currentPrice !== null ? (
-                        <div className="text-lg font-bold tabular-nums" style={{ color: 'var(--color-text-primary)' }}>
-                          ${currentPrice.toLocaleString(i18n.language, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </div>
-                      ) : (
-                        <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.addWatchlistDialog.priceNA')}</div>
-                      )}
-                      <div className="text-[0.625rem] mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>{t('dashboard.addWatchlistDialog.currentPrice')}</div>
-                    </div>
+                <FormCard title={<span className="term-code">{selectedStock.symbol}</span>} sub={exchange}>
+                  <div>
+                    {selectedStock.name && <div className="term-word dash-form-name">{selectedStock.name}</div>}
+                    <TermKV cols={1} pairs={[[t('dashboard.addWatchlistDialog.currentPrice'), priceCell]]} />
                   </div>
-                </div>
-
-                {/* Notes Input */}
-                <div>
-                  <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                    {t('dashboard.addWatchlistDialog.notesLabel')}
+                  <label className="block">
+                    <span className="term-label dash-form-label">{t('dashboard.addWatchlistDialog.notesLabel')}</span>
+                    <Input
+                      placeholder={t('dashboard.addWatchlistDialog.notesPlaceholder')}
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      className="dash-form-input border"
+                    />
                   </label>
-                  <Input
-                    placeholder={t('dashboard.addWatchlistDialog.notesPlaceholder')}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    className="border"
-                    style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)', color: 'var(--color-text-primary)' }}
-                  />
-                </div>
+                </FormCard>
 
-                {/* Alert Settings */}
-                <div>
-                  <div className="text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                    {t('dashboard.addWatchlistDialog.priceAlertsLabel')}
-                  </div>
+                <FormCard title={t('dashboard.addWatchlistDialog.priceAlertsLabel')}>
                   <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[0.6875rem] mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
-                        {t('dashboard.addWatchlistDialog.priceAboveLabel')}
-                      </label>
+                    <label className="block">
+                      <span className="term-label dash-form-label">{t('dashboard.addWatchlistDialog.priceAboveLabel')}</span>
                       <Input
                         type="number"
                         step="0.01"
                         placeholder="200.00"
                         value={priceAbove}
                         onChange={(e) => setPriceAbove(e.target.value)}
-                        className="border"
-                        style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)', color: 'var(--color-text-primary)' }}
+                        className="dash-form-input dash-form-figure border"
                       />
-                    </div>
-                    <div>
-                      <label className="block text-[0.6875rem] mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
-                        {t('dashboard.addWatchlistDialog.priceBelowLabel')}
-                      </label>
+                    </label>
+                    <label className="block">
+                      <span className="term-label dash-form-label">{t('dashboard.addWatchlistDialog.priceBelowLabel')}</span>
                       <Input
                         type="number"
                         step="0.01"
                         placeholder="150.00"
                         value={priceBelow}
                         onChange={(e) => setPriceBelow(e.target.value)}
-                        className="border"
-                        style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)', color: 'var(--color-text-primary)' }}
+                        className="dash-form-input dash-form-figure border"
                       />
-                    </div>
+                    </label>
                   </div>
-                </div>
+                </FormCard>
 
-                {/* Add Button */}
                 <button
                   type="button"
                   onClick={handleAdd}
-                  className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+                  disabled={submitting}
+                  className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
                   style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
                 >
                   {t('dashboard.addWatchlistDialog.addButton')}

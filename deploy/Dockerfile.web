@@ -1,9 +1,15 @@
-FROM node:20-alpine AS build
-RUN corepack enable && corepack prepare pnpm@latest --activate
+FROM node:24-alpine AS build
 WORKDIR /app
-COPY web/package.json web/pnpm-lock.yaml ./
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
 COPY web/patches/ patches/
-RUN pnpm install --frozen-lockfile
+# Installed from `packageManager` so this build runs the pnpm the lockfile was
+# written by. Not corepack: Node 25+ no longer bundles it, and a corepack older
+# than 0.34.5 cannot start pnpm 12.
+RUN npm install -g "$(node -p 'require("./package.json").packageManager')"
+# The store outlives the layer, so a lockfile change refetches only the
+# packages that changed rather than all of them.
+RUN --mount=type=cache,id=langalpha-web-pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --store-dir /pnpm-store
 COPY web/ .
 ARG VITE_HOST_MODE="oss"
 ARG VITE_API_BASE_URL=""
@@ -17,6 +23,9 @@ ENV VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
 ENV VITE_SUPABASE_PUBLISHABLE_KEY=${VITE_SUPABASE_PUBLISHABLE_KEY}
 ENV VITE_PLATFORM_URL=${VITE_PLATFORM_URL}
 ENV VITE_CDN_BASE=${VITE_CDN_BASE}
+# Declared without a default or an ENV, so a build that passes nothing still
+# reads the value from web/.env, which an empty variable here would override.
+ARG VITE_PRIVACY_URL
 RUN pnpm run build
 
 FROM alpine:3.20

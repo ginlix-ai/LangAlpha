@@ -33,28 +33,37 @@ export { fetchStockData } from './legacyBars';
 export type { StockDataResult } from './legacyBars';
 
 export {
+  chartPriceFormat,
   currencyForSymbol,
   currencySymbol,
+  formatMoney,
   formatPrice,
+  resolveCurrency,
   resolveDisplayCurrency,
 } from './currencyDisplay';
 
 export {
   FOREIGN_EXCHANGES,
   US_MARKET_TZ,
+  displaySpelling,
+  isIndexFamilySpelling,
+  isIndexListing,
   isUSEquity,
+  quoteCurrency,
   timezoneForSymbol,
+  venueLabelForSymbol,
 } from './exchanges';
 export type { ExchangeInfo } from './exchanges';
+export type { FormatMoneyOptions } from './currencyDisplay';
 
 export { RANGE_PRESETS, rangeStartChartSec } from './rangePresets';
 export type { RangePreset } from './rangePresets';
 
 export {
   advanceWatermark,
-  centerLatestBarView,
   computeInitialLoadRange,
   dedupeMergeByTime,
+  defaultBarsView,
   etDateStr,
   fetchBarsDelta,
   rangeBeforeOldest,
@@ -63,13 +72,15 @@ export {
 export type { BarsDeltaResult, TimedBar } from './chartDataLoaders';
 
 export {
-  AUTO_FIT_BARS,
   BARS_PER_DAY,
   DELTA_POLL_CADENCE_MS,
   INITIAL_LOAD_DAYS,
   INTERVAL_LABEL,
   INTERVAL_SECONDS,
   INTERVALS,
+  RANGE_CHANGE_DEBOUNCE_MS,
+  SCROLL_CHUNK_DAYS,
+  SCROLL_LOAD_THRESHOLD,
   STAGE1_LOAD_DAYS,
   WS_FOLD_INTERVALS,
   WS_RECONCILE_POLL_MS,

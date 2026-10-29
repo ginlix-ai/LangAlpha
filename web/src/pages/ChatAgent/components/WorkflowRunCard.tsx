@@ -1,6 +1,7 @@
 import React, { useContext } from 'react';
 import { useTranslation } from 'react-i18next';
 import { compactNumber } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
 import {
   WORKFLOW_TASK_TYPE,
   workflowRunCardKind,
@@ -32,6 +33,8 @@ interface WorkflowRunCardProps {
    *  having a run — a refused launch starts none, so nothing else accounts for
    *  the failure. */
   launchReply?: string;
+  /** The launch reply was itself a failure (`SubagentTaskRecord.launchFailed`). */
+  launchFailed?: boolean;
   onOpen?: (info: WorkflowSubagentInfo) => void;
   /** Direct state override for tests; the context resolver is the live path. */
   workflowRun?: WorkflowRunState;
@@ -49,10 +52,12 @@ function WorkflowRunCard({
   description,
   status = 'running',
   launchReply,
+  launchFailed = false,
   onOpen,
   workflowRun: workflowRunProp,
 }: WorkflowRunCardProps): React.ReactElement | null {
   const { t } = useTranslation();
+  const locale = useLocale();
   // Raw context, not useWorkflowRun: the hook collapses "no provider mounted"
   // and "run not (yet) hydrated" into one undefined, but the card must tell
   // them apart — provider absence is a *surface* property (shared links mount
@@ -80,9 +85,11 @@ function WorkflowRunCard({
   // itself — `run` being absent is a surface property (shared links mount no
   // provider) or a view that has yet to hydrate, never evidence the launch
   // failed, and the reply of a launch that *did* start reads "Workflow run
-  // started", which would render as the reason a finished run failed.
+  // started", which would render as the reason a finished run failed. The
+  // record marks a reply that came back under an error status, the only mark
+  // a "Refused: ..." reply has; the prefix read covers a reply without one.
   const refusalReply =
-    launchReply && isToolResultFailure({ content: launchReply })
+    launchReply && (launchFailed || isToolResultFailure({ content: launchReply }))
       ? launchReply
       : undefined;
   const failureDetail = run ? run.error : refusalReply;
@@ -98,7 +105,7 @@ function WorkflowRunCard({
   }
   if (!isRunning && totalDuration) metaParts.push(totalDuration);
   if (run?.tokensSpent != null) {
-    metaParts.push(t('chat.workflowRun.tokens', { value: compactNumber(run.tokensSpent) }));
+    metaParts.push(t('chat.workflowRun.tokens', { value: compactNumber(run.tokensSpent, locale) }));
   }
 
   const handleOpen = (): void => {

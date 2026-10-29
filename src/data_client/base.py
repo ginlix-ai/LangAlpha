@@ -9,7 +9,7 @@ News sources implement :class:`NewsDataSource` for the news feed layer.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 
 @dataclass
@@ -146,6 +146,17 @@ class FinancialDataSource(Protocol):
     async def close(self) -> None: ...
 
 
+class MoverRow(TypedDict):
+    """One market mover, as every :class:`MarketIntelSource` hands it over."""
+
+    symbol: str
+    #: The price its change was measured at.
+    price: float | None
+    change: float | None
+    change_percent: float | None
+    volume: float | None
+
+
 class MarketIntelSource(Protocol):
     """Market intelligence: options, short interest, float, movers."""
 
@@ -171,7 +182,7 @@ class MarketIntelSource(Protocol):
     ) -> dict[str, Any]: ...
     async def get_movers(
         self, direction: str = "gainers", user_id: str | None = None
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[MoverRow]: ...
     async def close(self) -> None: ...
 
 

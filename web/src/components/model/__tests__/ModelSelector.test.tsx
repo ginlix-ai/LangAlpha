@@ -3,6 +3,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { ModelSelector } from '../ModelSelector';
 import type { ProviderModelsData } from '../types';
 
+vi.mock('@/hooks/usePayerLabel', async () => {
+  const { payerLabel } = await import('@/lib/modelPayer');
+  const { useTranslation } = await import('react-i18next');
+  return { usePayerLabel: () => { const { t } = useTranslation(); return (payer: import('@/lib/modelPayer').Payer) => payerLabel(t, payer); } };
+});
+
 const sampleModels: Record<string, ProviderModelsData> = {
   openai: {
     display_name: 'OpenAI',
@@ -49,6 +55,26 @@ describe('ModelSelector', () => {
     expect(screen.getByText('The primary model for analysis')).toBeInTheDocument();
   });
 
+  it('offers a choice beside the placeholder that is not a model', () => {
+    const onChange = vi.fn();
+    render(
+      <ModelSelector
+        {...defaultProps}
+        onChange={onChange}
+        placeholder="Same as Default model"
+        autoOption={{ value: '__auto__', label: 'Auto (gpt-4o-mini)' }}
+      />,
+    );
+
+    const select = document.querySelector('select')!;
+    expect([...select.options].slice(0, 2).map((o) => o.textContent)).toEqual([
+      'Same as Default model',
+      'Auto (gpt-4o-mini)',
+    ]);
+    fireEvent.change(select, { target: { value: '__auto__' } });
+    expect(onChange).toHaveBeenCalledWith('__auto__');
+  });
+
   it('fires onChange with selected model', () => {
     const onChange = vi.fn();
     render(<ModelSelector {...defaultProps} onChange={onChange} />);
@@ -57,6 +83,15 @@ describe('ModelSelector', () => {
     fireEvent.change(select, { target: { value: 'gpt-4o-mini' } });
 
     expect(onChange).toHaveBeenCalledWith('gpt-4o-mini');
+  });
+
+  it('prints the authored display name while the key stays the value', () => {
+    render(
+      <ModelSelector {...defaultProps} metadata={{ 'gpt-4o': { display_name: 'GPT-4o' } }} />,
+    );
+
+    expect(screen.getByRole('option', { name: 'GPT-4o' })).toHaveValue('gpt-4o');
+    expect(screen.getByRole('option', { name: 'gpt-4o-mini' })).toBeInTheDocument();
   });
 
   it('shows "No models available" when no models', () => {

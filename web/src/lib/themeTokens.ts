@@ -13,8 +13,16 @@ import type { ResolvedTheme } from '@/contexts/ThemeContext';
  * "paint the other theme's colors".
  */
 
-/** Resolved values per theme — tokens never change within a theme at runtime. */
-const tokenCache = new Map<ResolvedTheme, Map<string, string>>();
+/** Resolved values per theme and card style, the two stamps on `<html>` the
+ *  tokens are declared under: the card style restyles the `--color-term-*`
+ *  tokens (lib/cardStyle.ts), which the chart canvases paint with. A chart
+ *  reads the card style when it mounts, which is enough: only Settings changes
+ *  it, and Settings is its own route, so no chart is mounted across a change. */
+const tokenCache = new Map<string, Map<string, string>>();
+
+function stampKey(theme: ResolvedTheme): string {
+  return `${theme}:${document.documentElement.getAttribute('data-card-style') ?? ''}`;
+}
 const resolverResets = new Set<() => void>();
 
 let probe: HTMLElement | null = null;
@@ -62,10 +70,11 @@ export function readTokens(
   const root = document.documentElement;
   if (root.getAttribute('data-theme') !== theme) return {};
 
-  let resolved = tokenCache.get(theme);
+  const key = stampKey(theme);
+  let resolved = tokenCache.get(key);
   if (!resolved) {
     resolved = new Map();
-    tokenCache.set(theme, resolved);
+    tokenCache.set(key, resolved);
   }
 
   const out: Record<string, string> = {};
@@ -105,7 +114,8 @@ export function resolveTokenMap<K extends string>(
 }
 
 /**
- * Build a per-theme resolver with a STABLE object identity per theme — chart
+ * Build a per-theme resolver with a STABLE object identity per theme (and card
+ * style) — chart
  * effects key off that identity, so a fresh object every call would tear down
  * and rebuild the chart on every render. Until a live read succeeds the
  * fallback object itself is handed back (same identity, correct colors).
@@ -114,15 +124,16 @@ export function createThemeResolver<K extends string>(
   sources: Record<ResolvedTheme, Record<K, string>>,
   fallbacks: Record<ResolvedTheme, Record<K, string>>,
 ): (theme: ResolvedTheme) => Record<K, string> {
-  const resolvedByTheme = new Map<ResolvedTheme, Record<K, string>>();
-  resolverResets.add(() => resolvedByTheme.clear());
+  const resolvedByStamp = new Map<string, Record<K, string>>();
+  resolverResets.add(() => resolvedByStamp.clear());
   return (theme) => {
-    const cached = resolvedByTheme.get(theme);
+    const key = typeof document === 'undefined' ? theme : stampKey(theme);
+    const cached = resolvedByStamp.get(key);
     if (cached) return cached;
     const names = Object.values<string>(sources[theme]).filter((s) => s.startsWith('--'));
     if (!Object.keys(readTokens(names, theme)).length) return fallbacks[theme];
     const resolved = resolveTokenMap(sources[theme], fallbacks[theme], theme);
-    resolvedByTheme.set(theme, resolved);
+    resolvedByStamp.set(key, resolved);
     return resolved;
   };
 }
@@ -132,15 +143,24 @@ export function createThemeResolver<K extends string>(
  * the stamp is still the outgoing theme), re-read in a passive effect where
  * the stamp is guaranteed current. Only a genuinely different resolver result
  * schedules the second render, so a steady-state mount costs nothing extra.
+ *
+ * The re-read lands in state rather than being repeated in render: a render
+ * that calls `resolve` again with the same arguments is served from the
+ * compiler's cache, so a bare re-render would hand back the literals.
  */
 export function useThemeTokens<K extends string>(
   resolve: (theme: ResolvedTheme) => Record<K, string>,
   theme: ResolvedTheme,
 ): Record<K, string> {
-  const [, bump] = useState(0);
-  const tokens = resolve(theme);
+  const [settled, setSettled] = useState<{
+    resolve: typeof resolve;
+    theme: ResolvedTheme;
+    tokens: Record<K, string>;
+  } | null>(null);
+  const tokens = settled?.resolve === resolve && settled.theme === theme ? settled.tokens : resolve(theme);
   useEffect(() => {
-    if (resolve(theme) !== tokens) bump((n) => n + 1);
+    const current = resolve(theme);
+    if (current !== tokens) setSettled({ resolve, theme, tokens: current });
   }, [resolve, theme, tokens]);
   return tokens;
 }

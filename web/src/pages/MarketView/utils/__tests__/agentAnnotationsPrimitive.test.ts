@@ -25,6 +25,7 @@ describe('withAlpha', () => {
   });
 
   afterEach(() => {
+    vi.resetAllMocks();
     vi.restoreAllMocks();
   });
 

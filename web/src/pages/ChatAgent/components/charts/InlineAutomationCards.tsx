@@ -1,277 +1,153 @@
 import React from 'react';
-import { relativeTime } from '@/lib/format';
-import { Clock, Timer, TrendingUp, CheckCircle2 } from 'lucide-react';
-import { cronToHuman } from '../../../Automations/utils/cron';
-import { formatPriceTrigger } from '../../../Automations/utils/price';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { CARD_BG, CARD_BORDER } from './inlineCardsShared';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
+import { relativeTime } from '@/lib/format';
+import { readAutomations, type Automation, type InlineCardProps } from './cardReaders';
+import { scheduleLabel, triggerKind } from './cardWords';
+import { TermCard, TermKV, TermStatus, type TermTone } from './TermCard';
+import { useCardNarrow } from './termContext';
+import { TermTable } from './TermTable';
 
-// ─── Constants (matching InlineArtifactCards) ─────────────────────────
-
-const GREEN = 'var(--color-profit)';
-const YELLOW = 'var(--color-warning)';
-const RED = 'var(--color-loss)';
-const BLUE = 'var(--color-info)';
-const TEXT_COLOR = 'var(--color-text-tertiary)';
-
-const cardStyle: React.CSSProperties = {
-  background: CARD_BG,
-  border: `1px solid ${CARD_BORDER}`,
-  borderRadius: 8,
-  padding: '12px 14px',
-  cursor: 'pointer',
-  transition: 'border-color 0.15s',
+const STATUS_TONE: Record<string, TermTone> = {
+  active: 'profit',
+  paused: 'warning',
+  failed: 'loss',
+  completed: 'info',
+  disabled: 'loss',
 };
 
-// ─── Helpers ─────────────────────────────────────────────────────────
-
-const STATUS_COLORS: Record<string, string> = {
-  active: GREEN,
-  paused: YELLOW,
-  failed: RED,
-  completed: BLUE,
-  disabled: RED,
+const STATUS_LABEL_KEYS: Record<string, string> = {
+  active: 'toolArtifact.automationStatus.active',
+  paused: 'toolArtifact.automationStatus.paused',
+  failed: 'toolArtifact.automationStatus.failed',
+  completed: 'toolArtifact.automationStatus.completed',
+  disabled: 'toolArtifact.automationStatus.disabled',
+  executing: 'toolArtifact.automationStatus.executing',
 };
 
-function statusColor(status: string): string {
-  return STATUS_COLORS[status] || TEXT_COLOR;
+const statusTone = (status: string): TermTone => STATUS_TONE[status] ?? 'faint';
+
+function statusLabel(status: string, t: TFunction): string {
+  const key = STATUS_LABEL_KEYS[status];
+  return key ? t(key) : status;
 }
 
-function scheduleLabel(automation: Record<string, unknown> | null | undefined): string {
-  if (!automation) return '';
-  if (automation.trigger_type === 'price') {
-    return formatPriceTrigger(automation.trigger_config as any) || '';
-  }
-  if (automation.trigger_type === 'cron' && automation.schedule) {
-    return cronToHuman(automation.schedule as string);
-  }
-  if (automation.next_run_at) {
-    return relativeTime(automation.next_run_at as string);
-  }
-  return (automation.schedule as string) || '';
+/** An automation's state as the cards say it, shared with the detail panel,
+ *  which says a run's state in the same tones under its own word. */
+export function AutomationStatus({ status, children }: { status: string; children?: React.ReactNode }): React.ReactElement {
+  const { t } = useTranslation();
+  return <TermStatus tone={statusTone(status)}>{children ?? statusLabel(status, t)}</TermStatus>;
 }
 
-interface StatusDotProps {
-  status: string;
-}
-
-function StatusDot({ status }: StatusDotProps): React.ReactElement {
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        width: 7,
-        height: 7,
-        borderRadius: '50%',
-        backgroundColor: statusColor(status),
-        flexShrink: 0,
-      }}
-    />
-  );
-}
-
-interface QuoteRowProps {
-  label: string;
-  value: string;
-}
-
-function QuoteRow({ label, value }: QuoteRowProps): React.ReactElement {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
-      <span style={{ opacity: 0.7 }}>{label}</span>
-      <span style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>{value}</span>
-    </div>
-  );
-}
-
-// ─── Router ──────────────────────────────────────────────────────────
-
-interface InlineAutomationCardProps {
-  artifact: Record<string, unknown> | null | undefined;
-  onClick?: () => void;
-}
-
-export function InlineAutomationCard({ artifact, onClick }: InlineAutomationCardProps): React.ReactElement | null {
-  if (!artifact || artifact.type !== 'automations') return null;
-
-  switch (artifact.mode) {
+export function InlineAutomationCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
+  const read = readAutomations(artifact);
+  switch (read?.mode) {
     case 'list':
-      return <InlineAutomationListCard artifact={artifact} onClick={onClick} />;
+      return read.automations.length ? <ListCard automations={read.automations} total={read.total} onClick={onClick} /> : null;
     case 'detail':
-      return <InlineAutomationDetailCard artifact={artifact} onClick={onClick} />;
+      return read.automation && <OneCard automation={read.automation} executions={read.totalExecutions} onClick={onClick} />;
     case 'created':
-      return <InlineAutomationCreatedCard artifact={artifact} onClick={onClick} />;
+      return <OneCard automation={read.automation} created onClick={onClick} />;
     default:
       return null;
   }
 }
 
-// ─── List Card ───────────────────────────────────────────────────────
-
 const MAX_INLINE = 4;
 
-interface InlineAutomationListCardProps {
-  artifact: Record<string, unknown>;
+function ListCard({
+  automations,
+  total,
+  onClick,
+}: {
+  automations: Automation[];
+  total: number;
   onClick?: () => void;
-}
-
-function InlineAutomationListCard({ artifact, onClick }: InlineAutomationListCardProps): React.ReactElement | null {
+}): React.ReactElement {
   const { t } = useTranslation();
-  const { automations = [], total = 0 } = artifact as { automations?: Record<string, unknown>[]; total?: number };
-  if ((automations as Record<string, unknown>[]).length === 0) return null;
-
-  const shown = (automations as Record<string, unknown>[]).slice(0, MAX_INLINE);
-  const remaining = (total as number) - shown.length;
-
+  const locale = useLocale();
+  const now = useNow();
   return (
-    <div
-      style={cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-default)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: '0.8125rem' }}>{t('toolArtifact.automations')}</span>
-        <span
-          style={{
-            fontSize: '0.6875rem',
-            color: TEXT_COLOR,
-            backgroundColor: 'var(--color-bg-surface)',
-            padding: '1px 6px',
-            borderRadius: 10,
-          }}
-        >
-          {total as number}
-        </span>
-      </div>
-
-      {/* Rows */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {shown.map((a, i) => (
-          <div
-            key={(a.automation_id as string) || i}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '3px 0',
-              fontSize: '0.75rem',
-            }}
-          >
-            <StatusDot status={a.status as string} />
-            <span style={{ color: 'var(--color-text-primary)', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {a.name as string}
-            </span>
-            <span style={{ color: TEXT_COLOR, flexShrink: 0, fontSize: '0.6875rem' }}>
-              {scheduleLabel(a)}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* +N more */}
-      {remaining > 0 && (
-        <div style={{ marginTop: 4, fontSize: '0.6875rem', color: TEXT_COLOR }}>
-          {t('toolArtifact.nMoreAutomations', { count: remaining })}
-        </div>
-      )}
-    </div>
+    <TermCard title={t('toolArtifact.automations')} meta={t('toolArtifact.nTotalItems', { count: total })} onClick={onClick}>
+      <TermTable
+        rows={automations}
+        limit={MAX_INLINE}
+        total={total}
+        more={(n) => t('toolArtifact.nMoreAutomations', { count: n })}
+        rowKey={(a, i) => a.id || i}
+        columns={[
+          { key: 'state', cell: (a) => <span className="term-dot" data-size="row" data-tone={statusTone(a.status)} aria-hidden="true" /> },
+          { key: 'name', fill: 'clip', cell: (a) => a.name },
+          {
+            key: 'when',
+            num: true,
+            className: 'term-t3',
+            cell: (a) => {
+              const schedule = scheduleLabel(a, t, locale, now);
+              // A state other than active is said after the schedule, and a
+              // long schedule is cut before the state is.
+              return (
+                <span className="term-sched">
+                  <span>{schedule}</span>
+                  {a.status !== 'active' && (
+                    <span className="term-word term-caps">
+                      {schedule ? ' · ' : ''}
+                      {statusLabel(a.status, t)}
+                    </span>
+                  )}
+                </span>
+              );
+            },
+          },
+        ]}
+      />
+    </TermCard>
   );
 }
 
-// ─── Detail Card ─────────────────────────────────────────────────────
-
-interface InlineAutomationDetailCardProps {
-  artifact: Record<string, unknown>;
+/**
+ * One automation: what a detail lookup found, or what was just created. A
+ * phone's edge keeps its room for the name and the state, so the kind of
+ * trigger is said only on a wider one.
+ */
+function OneCard({
+  automation,
+  executions = 0,
+  created = false,
+  onClick,
+}: {
+  automation: Automation;
+  executions?: number;
+  created?: boolean;
   onClick?: () => void;
-}
-
-function InlineAutomationDetailCard({ artifact, onClick }: InlineAutomationDetailCardProps): React.ReactElement | null {
+}): React.ReactElement {
   const { t } = useTranslation();
-  const { automation, executions: _executions = [], total_executions = 0 } = artifact as {
-    automation?: Record<string, unknown>;
-    executions?: Record<string, unknown>[];
-    total_executions?: number;
-  };
-  if (!automation) return null;
-
-  const isCron = automation.trigger_type === 'cron';
-  const isPrice = automation.trigger_type === 'price';
-  const Icon = isPrice ? TrendingUp : isCron ? Clock : Timer;
-
+  const locale = useLocale();
+  const now = useNow();
+  const narrow = useCardNarrow();
+  const { nextRunAt, lastRunAt } = automation;
   return (
-    <div
-      style={cardStyle}
+    <TermCard
+      title={automation.name}
+      sub={narrow ? undefined : triggerKind(automation, t)}
+      meta={
+        created
+          ? <TermStatus tone="profit">{t('toolArtifact.automationStatus.created')}</TermStatus>
+          : <AutomationStatus status={automation.status} />
+      }
       onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-default)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
     >
-      {/* Header: icon + name + status */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-        <Icon size={14} style={{ color: TEXT_COLOR, flexShrink: 0 }} />
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: '0.875rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {automation.name as string}
-        </span>
-        <span style={{ fontSize: '0.75rem', fontWeight: 500, color: statusColor(automation.status as string), flexShrink: 0 }}>
-          {automation.status as string}
-        </span>
-      </div>
-
-      {/* Key-value rows */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 20px', fontSize: '0.75rem', color: TEXT_COLOR }}>
-        <QuoteRow label={t('toolArtifact.schedule')} value={scheduleLabel(automation)} />
-        <QuoteRow label={t('toolArtifact.nextRun')} value={automation.next_run_at ? relativeTime(automation.next_run_at as string) : '\u2014'} />
-        {!!automation.last_run_at && (
-          <QuoteRow label={t('toolArtifact.lastRun')} value={relativeTime(automation.last_run_at as string)} />
-        )}
-        {(total_executions as number) > 0 && (
-          <QuoteRow label={t('toolArtifact.executions')} value={t('toolArtifact.nTotal', { count: total_executions as number })} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Created Card ────────────────────────────────────────────────────
-
-interface InlineAutomationCreatedCardProps {
-  artifact: Record<string, unknown>;
-  onClick?: () => void;
-}
-
-function InlineAutomationCreatedCard({ artifact, onClick }: InlineAutomationCreatedCardProps): React.ReactElement | null {
-  const { t } = useTranslation();
-  if (!artifact) return null;
-
-  return (
-    <div
-      style={{
-        ...cardStyle,
-        borderColor: 'var(--color-profit-border)',
-      }}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-profit-border-hover)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--color-profit-border)')}
-    >
-      {/* Header: checkmark + "Automation Created" */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-        <CheckCircle2 size={14} style={{ color: GREEN }} />
-        <span style={{ fontWeight: 600, color: GREEN, fontSize: '0.8125rem' }}>{t('toolArtifact.automationCreated')}</span>
-      </div>
-
-      {/* Name */}
-      <div style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: '0.875rem', marginBottom: 8 }}>
-        {artifact.name as string}
-      </div>
-
-      {/* Details */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 20px', fontSize: '0.75rem', color: TEXT_COLOR }}>
-        <QuoteRow label={t('toolArtifact.schedule')} value={scheduleLabel(artifact)} />
-        {!!artifact.next_run_at && (
-          <QuoteRow label={t('toolArtifact.nextRun')} value={relativeTime(artifact.next_run_at as string)} />
-        )}
-      </div>
-    </div>
+      <TermKV
+        cols={narrow ? 1 : 2}
+        pairs={[
+          [t('toolArtifact.schedule'), scheduleLabel(automation, t, locale, now)],
+          !!nextRunAt && [t('toolArtifact.nextRun'), relativeTime(nextRunAt, locale, now)],
+          !created && !!lastRunAt && [t('toolArtifact.lastRun'), relativeTime(lastRunAt, locale, now)],
+          executions > 0 && [t('toolArtifact.executions'), t('toolArtifact.nTotal', { count: executions })],
+        ]}
+      />
+    </TermCard>
   );
 }

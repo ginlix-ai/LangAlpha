@@ -1,280 +1,137 @@
 /**
- * Tests the invitation code redemption logic in MethodStep.
- *
- * Rather than mounting the full MethodStep (which has ~15 transitive
- * dependencies including useConfiguredProviders, usePreferences, etc.),
- * we extract the core redemption logic into a minimal test component.
- * This verifies:
- * - POST goes to /api/auth/invitations/redeem (platform service, not /api/v1/)
- * - Structured error responses from the platform service are parsed correctly
- * - Status-specific messages are shown for 404, 410, 409
- * - Successful redemption navigates to /setup/defaults
+ * Invitation redemption in MethodStep. The code goes to the platform service
+ * (`/api/auth/`, not `/api/v1/`), each refusal has its own copy, and a 409
+ * means this account already redeemed the code, so it proceeds like a success.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import React, { useState, useCallback } from 'react';
+import { Routes, Route } from 'react-router';
+import { renderWithProviders } from '@/test/utils';
+import { queryKeys } from '@/lib/queryKeys';
 
-// ---------------------------------------------------------------------------
-// Mock api client
-// ---------------------------------------------------------------------------
-
-const mockPost = vi.fn();
-vi.mock('@/api/client', () => ({
-  api: { post: (...args: unknown[]) => mockPost(...args) },
+const { post, getCurrentUser, configured } = vi.hoisted(() => ({
+  post: vi.fn(),
+  getCurrentUser: vi.fn(),
+  configured: { providers: [] as Array<Record<string, unknown>> },
 }));
 
-// ---------------------------------------------------------------------------
-// Mock react-router-dom navigate
-// ---------------------------------------------------------------------------
-
-const mockNavigate = vi.fn();
-vi.mock('react-router-dom', () => ({
-  useNavigate: () => mockNavigate,
+vi.mock('@/api/client', () => ({ api: { post, defaults: { baseURL: '' } } }));
+vi.mock('@/pages/Dashboard/utils/api', () => ({
+  getCurrentUser,
+  deleteUserApiKey: vi.fn(),
+  disconnectCodexOAuth: vi.fn(),
+  disconnectClaudeOAuth: vi.fn(),
 }));
-
-// ---------------------------------------------------------------------------
-// Mock react-query
-// ---------------------------------------------------------------------------
-
-const mockInvalidateQueries = vi.fn().mockResolvedValue(undefined);
-vi.mock('@tanstack/react-query', () => ({
-  useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
+// A signed-in user with no platform access and no provider yet: the one state
+// that offers the invitation code.
+vi.mock('@/hooks/useUser', () => ({
+  useUser: () => ({ user: { access_tier: -1 }, isLoading: false }),
 }));
-
-vi.mock('@/lib/queryKeys', () => ({
-  queryKeys: { user: { me: () => ['user', 'me'] } },
+vi.mock('@/hooks/useConfiguredProviders', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks/useConfiguredProviders')>()),
+  useConfiguredProviders: () => ({ providers: configured.providers, hasAny: configured.providers.length > 0 }),
 }));
+vi.mock('@/hooks/usePreferences', () => ({ usePreferences: () => ({ preferences: null }) }));
+vi.mock('@/hooks/useUpdatePreferences', () => ({
+  useUpdatePreferences: () => ({ mutateAsync: vi.fn() }),
+}));
+vi.mock('@/hooks/useAllModels', () => ({ useAllModels: () => ({ metadata: {} }) }));
 
-// ---------------------------------------------------------------------------
-// Minimal reproduction of MethodStep invitation redemption logic
-// Mirrors handleRedeemInvitation from MethodStep.tsx
-// ---------------------------------------------------------------------------
+import MethodStep from '../MethodStep';
 
-function InvitationRedeemer() {
-  const [code, setCode] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [redeeming, setRedeeming] = useState(false);
-
-  const handleRedeem = useCallback(async () => {
-    if (!code.trim()) {
-      setError('Please enter an invitation code.');
-      return;
-    }
-
-    setRedeeming(true);
-    setError(null);
-
-    try {
-      await mockPost('/api/auth/invitations/redeem', { code: code.trim() });
-      await mockInvalidateQueries({ queryKey: ['user', 'me'] });
-      mockNavigate('/setup/defaults');
-    } catch (e: unknown) {
-      const err = e as {
-        response?: { status?: number; data?: { detail?: string | { message?: string; type?: string } } };
-        message?: string;
-      };
-      const status = err?.response?.status;
-      const detail = err?.response?.data?.detail;
-
-      if (status === 404) {
-        setError('Invalid invitation code.');
-      } else if (status === 410) {
-        setError('This code has expired or been fully used.');
-      } else if (status === 409) {
-        setError("You've already redeemed this code.");
-      } else if (typeof detail === 'string') {
-        setError(detail);
-      } else if (detail && typeof detail === 'object' && 'message' in detail) {
-        setError(detail.message || 'Something went wrong. Please try again.');
-      } else {
-        setError('Something went wrong. Please try again.');
-      }
-    } finally {
-      setRedeeming(false);
-    }
-  }, [code]);
-
-  return (
-    <div>
-      <input
-        data-testid="code-input"
-        value={code}
-        onChange={(e) => { setCode(e.target.value); setError(null); }}
-      />
-      <button data-testid="redeem-btn" onClick={handleRedeem} disabled={redeeming}>
-        {redeeming ? 'Redeeming...' : 'Redeem'}
-      </button>
-      {error && <p data-testid="error-message">{error}</p>}
-    </div>
+function renderStep() {
+  const utils = renderWithProviders(
+    <Routes>
+      <Route path="/setup/method" element={<MethodStep />} />
+      <Route path="/setup/defaults" element={<p>defaults step</p>} />
+    </Routes>,
+    { route: '/setup/method' },
   );
+  const invalidate = vi.spyOn(utils.queryClient, 'invalidateQueries');
+  return { invalidate };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+async function redeem(code: string) {
+  const user = userEvent.setup();
+  const rendered = renderStep();
+  await user.click(screen.getByRole('button', { name: 'Have an invitation code?' }));
+  await user.type(screen.getByPlaceholderText('Enter your invitation code'), code);
+  await user.click(screen.getByRole('button', { name: 'Redeem' }));
+  return rendered;
+}
+
+function rejectWith(status: number, detail?: unknown) {
+  post.mockRejectedValueOnce({ response: { status, data: detail === undefined ? {} : { detail } } });
+}
 
 describe('MethodStep invitation redemption', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getCurrentUser.mockResolvedValue({});
   });
 
-  it('calls /api/auth/invitations/redeem (not /api/v1/)', async () => {
-    mockPost.mockResolvedValueOnce({ data: { ok: true } });
-    const user = userEvent.setup();
+  it('redeems the trimmed code on the platform service, refreshes access, and moves on', async () => {
+    post.mockResolvedValueOnce({ data: { ok: true } });
+    const { invalidate } = await redeem('  INVITE-123 ');
 
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), 'INVITE-123');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(mockPost).toHaveBeenCalledWith('/api/auth/invitations/redeem', { code: 'INVITE-123' });
-    });
+    expect(await screen.findByText('defaults step')).toBeInTheDocument();
+    expect(post).toHaveBeenCalledWith('/api/auth/invitations/redeem', { code: 'INVITE-123' });
+    expect(getCurrentUser).toHaveBeenCalledWith({ refresh_tier: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.user.me() });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.platform.models() });
   });
 
-  it('navigates to /setup/defaults on successful redemption', async () => {
-    mockPost.mockResolvedValueOnce({ data: { ok: true } });
-    const user = userEvent.setup();
+  it('moves on when the code was already redeemed by this account (409)', async () => {
+    rejectWith(409, { message: 'Already redeemed', type: 'conflict' });
+    const { invalidate } = await redeem('USED-CODE');
 
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), 'VALID-CODE');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/setup/defaults');
-    });
+    expect(await screen.findByText('defaults step')).toBeInTheDocument();
+    expect(getCurrentUser).toHaveBeenCalledWith({ refresh_tier: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.user.me() });
   });
 
-  it('shows "Invalid invitation code" for 404 errors', async () => {
-    mockPost.mockRejectedValueOnce({
-      response: {
-        status: 404,
-        data: { detail: { message: 'Invitation not found', type: 'not_found' } },
-      },
-    });
-    const user = userEvent.setup();
+  it.each([
+    [404, { message: 'Invitation not found', type: 'not_found' }, 'Invalid invitation code.'],
+    [410, { message: 'Code exhausted', type: 'gone' }, 'This code has expired or been fully used.'],
+    [422, { message: 'Code format invalid', type: 'validation_error' }, 'Code format invalid'],
+    [500, 'Internal server error', 'Internal server error'],
+    [500, undefined, 'Something went wrong. Please try again.'],
+  ])('stays on the step and explains a %i refusal', async (status, detail, copy) => {
+    rejectWith(status, detail);
+    await redeem('SOME-CODE');
 
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), 'BAD-CODE');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('error-message')).toHaveTextContent('Invalid invitation code.');
-    });
+    expect(await screen.findByText(copy)).toBeInTheDocument();
+    expect(screen.queryByText('defaults step')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Redeem' })).toBeEnabled();
   });
 
-  it('shows expired/exhausted message for 410 errors', async () => {
-    mockPost.mockRejectedValueOnce({
-      response: {
-        status: 410,
-        data: { detail: { message: 'Code exhausted', type: 'gone' } },
-      },
-    });
+  it('offers Redeem only once a code is typed', async () => {
     const user = userEvent.setup();
+    renderStep();
+    await user.click(screen.getByRole('button', { name: 'Have an invitation code?' }));
+    const button = screen.getByRole('button', { name: 'Redeem' });
 
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), 'OLD-CODE');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('error-message')).toHaveTextContent(
-        'This code has expired or been fully used.',
-      );
-    });
+    expect(button).toBeDisabled();
+    await user.type(screen.getByPlaceholderText('Enter your invitation code'), '   ');
+    expect(button).toBeDisabled();
+    await user.type(screen.getByPlaceholderText('Enter your invitation code'), 'X');
+    expect(button).toBeEnabled();
+    expect(post).not.toHaveBeenCalled();
   });
+});
 
-  it('shows "Already redeemed" message for 409 errors', async () => {
-    mockPost.mockRejectedValueOnce({
-      response: {
-        status: 409,
-        data: { detail: { message: 'Already redeemed', type: 'conflict' } },
-      },
-    });
+describe('MethodStep connected summary', () => {
+  it("offers no removal for the deployment's own key", async () => {
+    configured.providers = [
+      { provider: 'openai', display_name: 'OpenAI', access_type: 'api_key', masked_key: '(server)' },
+      { provider: 'anthropic', display_name: 'Anthropic', access_type: 'api_key', masked_key: 'sk-...abcd' },
+    ];
     const user = userEvent.setup();
+    renderStep();
+    await user.click(screen.getByRole('button', { name: /2 providers connected/i }));
 
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), 'USED-CODE');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('error-message')).toHaveTextContent(
-        "You've already redeemed this code.",
-      );
-    });
-  });
-
-  it('shows detail.message for other structured error responses', async () => {
-    mockPost.mockRejectedValueOnce({
-      response: {
-        status: 422,
-        data: { detail: { message: 'Code format invalid', type: 'validation_error' } },
-      },
-    });
-    const user = userEvent.setup();
-
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), '???');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('error-message')).toHaveTextContent('Code format invalid');
-    });
-  });
-
-  it('shows string detail for plain string error responses', async () => {
-    mockPost.mockRejectedValueOnce({
-      response: {
-        status: 500,
-        data: { detail: 'Internal server error' },
-      },
-    });
-    const user = userEvent.setup();
-
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), 'TEST');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('error-message')).toHaveTextContent('Internal server error');
-    });
-  });
-
-  it('shows generic fallback for errors without detail', async () => {
-    mockPost.mockRejectedValueOnce({
-      response: { status: 500, data: {} },
-    });
-    const user = userEvent.setup();
-
-    render(<InvitationRedeemer />);
-
-    await user.type(screen.getByTestId('code-input'), 'TEST');
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('error-message')).toHaveTextContent(
-        'Something went wrong. Please try again.',
-      );
-    });
-  });
-
-  it('shows validation error for empty code', async () => {
-    const user = userEvent.setup();
-
-    render(<InvitationRedeemer />);
-
-    // Click redeem without typing anything
-    await user.click(screen.getByTestId('redeem-btn'));
-
-    expect(screen.getByTestId('error-message')).toHaveTextContent(
-      'Please enter an invitation code.',
-    );
-    expect(mockPost).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('button', { name: 'Remove' })).toHaveLength(1);
+    configured.providers = [];
   });
 });

@@ -46,6 +46,13 @@
   padding: 6px 0 4px;
 }
 
+/* The lean live zone: its rows carry the list padding (LiveRow gaps), so the
+ * list itself has none and an empty zone takes no room. */
+.timeline.live-zone {
+  padding: 0;
+  margin-top: 0;
+}
+
 .titem {
   position: relative;
   display: grid;
@@ -55,7 +62,7 @@
   /* No left padding — icon column starts at 0 so center sits on the rule (11px). */
   padding: 7px 8px 7px 0;
   border-radius: 4px;
-  transition: background-color 80ms;
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
 /* The vertical rule is segmented per row so it has visible padding around each
@@ -90,14 +97,34 @@
 }
 
 /* First row has no segment going up (nothing above to connect to).
- * Targets the parent <li> because each .titem is wrapped in its own <li>,
- * which means .titem itself is always :first-child of that <li>. */
-.timeline > li:first-child .titem::before {
+ * Targets the list's child because each .titem is wrapped in its own item
+ * (an <li>, or the live zone's animated box), so .titem itself is always
+ * the first thing inside it. */
+.timeline > :first-child .titem::before {
   display: none;
 }
 
 /* Last row has no segment going down (nothing below to connect to). */
-.timeline > li:last-child .titem::after {
+.timeline > :last-child .titem::after {
+  display: none;
+}
+
+/* A step run in the summary's place sits above the list, with nothing on
+ * either side to connect to. It is the summary's height, one of its lines
+ * plus 5px above and below, so turning into the count moves nothing under
+ * it: the padding is whatever that leaves beside the 20px icon, split evenly.
+ * The font size is the summary's, so 1lh is the summary's line. The status
+ * line's step is drawn the same, so the step a block opened on and the ones
+ * after it read as one line. */
+.activity-lead .titem,
+.live-zone [data-status-line] .titem {
+  font-size: 0.8125rem;
+  padding-top: calc((1lh - 10px) / 2);
+  padding-bottom: calc((1lh - 10px) / 2);
+}
+
+.activity-lead .titem::before,
+.activity-lead .titem::after {
   display: none;
 }
 
@@ -157,7 +184,7 @@
   margin: 0;
   cursor: pointer;
   text-align: left;
-  transition: color 80ms;
+  transition: color var(--motion-quick) var(--ease-out);
 }
 
 .titem-title-button:hover {
@@ -168,7 +195,7 @@
 }
 
 .titem-title-button:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -177,18 +204,6 @@
   display: inline-flex;
   min-width: 0;
   flex: 0 1 auto;
-}
-
-/* Pushed-right slot for trailing controls (chevron toggles, etc.).
- * `align-self: center` overrides the line's baseline alignment for icon-only
- * controls, which have no text baseline. */
-.titem-trail {
-  margin-left: auto;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  align-self: center;
-  color: var(--Labels-Tertiary);
 }
 
 /* "Done" terminus row anchors the timeline. */
@@ -219,7 +234,7 @@
   color: var(--Labels-Secondary);
   border: 0;
   border-radius: 0;
-  transition: color 80ms;
+  transition: color var(--motion-quick) var(--ease-out);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -235,7 +250,7 @@
 }
 
 .obj:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
   border-radius: 2px;
 }
@@ -273,7 +288,9 @@
 
 .titem-reasoning-card {
   margin-top: 4px;
-  padding: 0;
+  /* The disclosure must collapse its spacing too, rather than drop a flex
+     gap only after the exit animation unmounts the body. */
+  padding: 6px 0 0;
   background: transparent;
   font-size: 0.7813rem;
   line-height: 1.55;

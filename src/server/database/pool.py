@@ -1,7 +1,7 @@
 """Shared psycopg connection pool for the app-data database.
 
-One module-level pool per connection string, configured to match the
-LangGraph checkpointer pool (prepare_threshold=0, autocommit at creation).
+One module-level pool per connection string, with autocommit and without
+prepared statements, both set at connection creation.
 Every app-data module reaches Postgres through ``get_db_connection``.
 """
 
@@ -9,6 +9,8 @@ import logging
 from contextlib import asynccontextmanager
 
 import anyio
+import psycopg
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from src.config.env import DB_SSLMODE
@@ -16,9 +18,23 @@ from src.config.settings import get_conversation_pool_max
 
 logger = logging.getLogger(__name__)
 
+# A database that is busy or unreachable, from either pool: ``PoolTimeout`` is
+# an ``OperationalError``, as are a refused connection and a cancelled query.
+# Every read behind it fails alike, so the request is retried whole rather
+# than answered in part.
+DATABASE_UNAVAILABLE = (psycopg.OperationalError, psycopg.InterfaceError)
+
 # Module-level connection pool cache for conversation database operations
 # This ensures we reuse connections across operations, reducing connection overhead
 _conversation_db_pool_cache = {}
+
+_CONNECTION_KWARGS = {
+    "connect_timeout": 10,
+    "keepalives": 1,
+    "keepalives_idle": 60,
+    "keepalives_interval": 10,
+    "keepalives_count": 5,
+}
 
 # Warn once per process, not once per connection — plaintext is the norm for a
 # local Postgres and a per-connection warning would drown the log.
@@ -75,16 +91,22 @@ def _on_reconnect_failed(pool):
 
 async def _configure_postgres_connection(conn):
     """
-    Configure PostgreSQL connection for Supabase compatibility.
+    Configure a connection once, at creation, before the pool hands it out.
 
-    Sets properties AT CONNECTION CREATION (before pool manages it).
     Critical: Do not modify connections after pool acquisition.
     """
-    conn.prepare_threshold = 0  # Disable prepared statements
+    # Never prepared. Much of this SQL reads ``SELECT *`` / ``RETURNING *``,
+    # and once a migration changes those columns a prepared copy fails with
+    # "cached plan must not change result type" on every call until the
+    # connection is recycled. A blue/green or rolling deploy migrates while
+    # the old version still serves, which is exactly when that happens.
+    # Against a nearby database, preparing saves well under a millisecond a
+    # request.
+    conn.prepare_threshold = None
     await conn.set_autocommit(True)  # Set autocommit at creation
     _warn_if_plaintext(conn)
     logger.debug(
-        "Configured conversation DB connection with prepare_threshold=0, autocommit=True"
+        "Configured conversation DB connection with prepare_threshold=None, autocommit=True"
     )
 
 
@@ -114,16 +136,18 @@ def get_or_create_pool() -> AsyncConnectionPool:
             check=AsyncConnectionPool.check_connection,
             open=False,
             reconnect_failed=_on_reconnect_failed,
-            kwargs={
-                "connect_timeout": 10,
-                "keepalives": 1,
-                "keepalives_idle": 60,
-                "keepalives_interval": 10,
-                "keepalives_count": 5,
-            },
+            kwargs=dict(_CONNECTION_KWARGS),
         )
 
     return _conversation_db_pool_cache[db_uri]
+
+
+async def open_session_connection() -> AsyncConnection:
+    """A connection outside the pool, set up as the pool's are, for a session
+    kept open far longer than any checkout."""
+    conn = await AsyncConnection.connect(get_db_connection_string(), **_CONNECTION_KWARGS)
+    await _configure_postgres_connection(conn)
+    return conn
 
 
 @asynccontextmanager
@@ -133,7 +157,7 @@ async def get_db_connection(conn=None):
 
     Provides async connection with consistent configuration:
     - Uses connection pool for efficient connection reuse
-    - Prepared statements disabled (prepare_threshold=0)
+    - Prepared statements disabled (prepare_threshold=None)
     - Autocommit mode enabled (configured at pool creation)
 
     Pass an already-acquired ``conn`` to yield it unchanged instead of checking

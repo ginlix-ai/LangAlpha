@@ -251,10 +251,12 @@ async def test_upload_rejects_oversized_source_path(store):
 
 @pytest.mark.asyncio
 async def test_upload_aborts_chunked_read_at_limit(store):
-    """Chunked read must reject a too-large file mid-stream, not after full buffer.
+    """Chunked read must stop at the cap instead of loading the whole file.
 
-    Build a file 2x the cap, much larger than ``_UPLOAD_READ_CHUNK``, so the
-    cap fires before the full body is consumed.
+    Build a file 2x the cap, much larger than ``_UPLOAD_READ_CHUNK``, so the 413
+    fires part way through the read rather than after the last chunk. The body is
+    already spooled by the form parser at this point; what the cap protects is
+    memory, not disk.
     """
     from ptc_agent.agent.memo.schema import MEMO_MAX_UPLOAD_BYTES
 

@@ -16,7 +16,6 @@ interface MoversConfig {
 function MoversWidget({ instance }: WidgetRenderProps<MoversConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="hotlists"
       config={{
         exchange: instance.config.exchange,

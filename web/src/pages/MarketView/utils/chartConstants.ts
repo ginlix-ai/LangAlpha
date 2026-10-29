@@ -9,13 +9,15 @@
  * and MA/RSI/overlay config.
  */
 export {
-  AUTO_FIT_BARS,
   BARS_PER_DAY,
   DELTA_POLL_CADENCE_MS,
   INITIAL_LOAD_DAYS,
   INTERVAL_LABEL,
   INTERVAL_SECONDS,
   INTERVALS,
+  RANGE_CHANGE_DEBOUNCE_MS,
+  SCROLL_CHUNK_DAYS,
+  SCROLL_LOAD_THRESHOLD,
   STAGE1_LOAD_DAYS,
   WS_FOLD_INTERVALS,
   WS_RECONCILE_POLL_MS,
@@ -163,17 +165,6 @@ export function getChartTheme(theme: 'dark' | 'light'): ChartThemeColors {
 
 // Intervals shown as direct buttons in the toolbar
 export const PRIMARY_INTERVAL_KEYS = new Set(['1min', '1day']);
-
-// Days to prepend on scroll-left per interval
-export const SCROLL_CHUNK_DAYS: Record<string, number> = {
-  '1min': 5, '5min': 20, '15min': 30, '30min': 60,
-  '1hour': 120, '4hour': 180, '1day': 365,
-};
-
-// Scroll-load: how close to left edge (in bars) before fetching more data
-export const SCROLL_LOAD_THRESHOLD = 20;
-// Debounce delay for visible range changes (ms)
-export const RANGE_CHANGE_DEBOUNCE_MS = 300;
 
 // Stage 2 (background backfill) — additional days to fetch silently after stage 1.
 export const STAGE2_BACKFILL_DAYS: Record<string, number> = {

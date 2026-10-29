@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import type { MessageRecord, SetMessages } from '../types';
 import { handleHtmlWidget } from '../streamEventHandlers';
@@ -62,6 +63,7 @@ function makePairState(counterStart = 0) {
     contentOrderCounter: counterStart,
     reasoningId: null,
     toolCallId: null,
+    steeringBatches: 0,
   };
 }
 

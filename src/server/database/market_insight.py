@@ -1,6 +1,7 @@
 """Database operations for market insights."""
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
@@ -23,28 +24,70 @@ ALL_COLUMNS = (
 )
 
 
-async def create_market_insight(
+@dataclass(frozen=True)
+class SystemInsightClaim:
+    """A claim's outcome: the generating row this worker now owns, or the id
+    of the row that holds the type and whether it is still being generated."""
+
+    row: Optional[dict] = None
+    holder_id: Optional[str] = None
+    holder_in_flight: bool = False
+
+
+async def claim_system_insight(
+    type: str,
+    *,
+    fresh_within: timedelta,
+    in_flight_within: timedelta,
     model: str,
-    type: str = "daily_brief",
-    user_id: Optional[str] = None,
     metadata: Optional[dict] = None,
-) -> dict:
-    """Insert a new insight row with status='generating'."""
+) -> SystemInsightClaim:
+    """Insert a generating system insight of ``type``, unless one completed
+    within ``fresh_within`` or one is still being generated.
+
+    Every backend worker runs the schedule and wakes on the same instant, so
+    the check and the insert share one transaction under a per-type advisory
+    lock: the first claims the slot, and the rest are told who holds it. A
+    generating row holds the type only for ``in_flight_within``, so a worker
+    that died mid-generation does not block the next claim for long; a
+    failed row never holds it.
+    """
     insight_id = str(uuid4())
     now = datetime.now(timezone.utc)
     async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                """
-                INSERT INTO market_insights
-                    (market_insight_id, user_id, type, status, model, metadata, created_at)
-                VALUES (%s, %s, %s, 'generating', %s, %s, %s)
-                RETURNING market_insight_id::text, user_id, type, status, model, metadata, created_at
-                """,
-                (insight_id, user_id, type, model, Json(metadata), now),
-            )
-            row = await cur.fetchone()
-            return dict(row)
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"market_insight:{type}",),
+                )
+                await cur.execute(
+                    """
+                    SELECT market_insight_id::text, status FROM market_insights
+                    WHERE user_id IS NULL AND type = %s
+                      AND ((status = 'completed' AND completed_at > %s)
+                           OR (status = 'generating' AND created_at > %s))
+                    ORDER BY status = 'completed' DESC
+                    LIMIT 1
+                    """,
+                    (type, now - fresh_within, now - in_flight_within),
+                )
+                holder = await cur.fetchone()
+                if holder:
+                    return SystemInsightClaim(
+                        holder_id=holder["market_insight_id"],
+                        holder_in_flight=holder["status"] == "generating",
+                    )
+                await cur.execute(
+                    """
+                    INSERT INTO market_insights
+                        (market_insight_id, user_id, type, status, model, metadata, created_at)
+                    VALUES (%s, NULL, %s, 'generating', %s, %s, %s)
+                    RETURNING market_insight_id::text, user_id, type, status, model, metadata, created_at
+                    """,
+                    (insight_id, type, model, Json(metadata), now),
+                )
+                return SystemInsightClaim(row=dict(await cur.fetchone()))
 
 
 async def create_market_insight_if_not_generating(
@@ -270,40 +313,3 @@ async def get_user_recent_completed_insight(
             )
             row = await cur.fetchone()
             return dict(row) if row else None
-
-
-async def get_latest_completed_at(
-    type: Optional[str] = None, user_id: Optional[str] = None
-) -> Optional[datetime]:
-    """Get the completed_at timestamp of the most recent completed insight.
-
-    If type is None, returns the most recent completed insight of any type.
-    """
-    async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            conditions = ["status = 'completed'"]
-            params: list = []
-
-            if type is not None:
-                conditions.append("type = %s")
-                params.append(type)
-
-            if user_id is None:
-                conditions.append("user_id IS NULL")
-            else:
-                conditions.append("user_id = %s")
-                params.append(user_id)
-
-            where = " AND ".join(conditions)
-            await cur.execute(
-                f"""
-                SELECT completed_at
-                FROM market_insights
-                WHERE {where}
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                params,
-            )
-            row = await cur.fetchone()
-            return row["completed_at"] if row else None

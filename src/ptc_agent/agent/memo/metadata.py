@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 _STORE_OP_TIMEOUT_S = 2.0
 
-# Background metadata generation calls a flash-tier LLM. The chat hot path
+# Background metadata generation calls the Background model. The chat hot path
 # is unaffected, but a hung provider connection should not pin a background
 # task forever — at 60s we'll cancel and stamp metadata_status=failed so the
 # user can hit "Regenerate" instead of waiting indefinitely.
@@ -301,7 +301,7 @@ async def generate_memo_metadata(
                     filename=filename, mime_type=mime_type, content=content,
                 ),
                 response_schema=MemoMetadata,
-                mode="flash",
+                slot="background",
             ),
             timeout=_LLM_CALL_TIMEOUT_S,
         )

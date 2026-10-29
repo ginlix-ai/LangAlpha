@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useEffectEvent, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Previewer } from 'pagedjs';
 import { useReactToPrint } from 'react-to-print';
@@ -10,7 +10,9 @@ import { Select } from '@/components/ui/select';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import Markdown from './Markdown';
 import { stripLineNumbers } from './toolDisplayConfig';
+import { LARGE_TOOL_RESULTS_PREFIX } from './filePanel/fileMeta';
 import { PRINT_PAGE_STYLE } from './printPageStyle';
+import { renderToPdf } from '@/lib/shellPdf';
 import './ExportPreviewModal.css';
 
 // ---------------------------------------------------------------------------
@@ -109,9 +111,10 @@ export default function ExportPreviewModal({
   const [error, setError] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [rendering, setRendering] = useState(false);
+  /** A save in flight, which is a different wait from `rendering` (the preview). */
+  const [saving, setSaving] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(0.5);
-  const previewZoomRef = useRef(previewZoom);
-  previewZoomRef.current = previewZoom;
+  const readPreviewZoom = useEffectEvent(() => previewZoom);
 
   // ---- Derived ----
   const activePreset = useMemo(
@@ -137,7 +140,7 @@ export default function ExportPreviewModal({
     readFileFullFn(workspaceId, fileName)
       .then((res) => {
         if (signal.aborted) return;
-        const raw = fileName.startsWith('/large_tool_results/')
+        const raw = fileName.startsWith(LARGE_TOOL_RESULTS_PREFIX)
           ? stripLineNumbers(res.content) ?? res.content
           : res.content;
         setFullContent(raw);
@@ -259,7 +262,7 @@ export default function ExportPreviewModal({
         // so we set the wrapper height explicitly to fix scroll extent.
         const pagesEl = container.querySelector('.pagedjs_pages') as HTMLElement | null;
         if (pagesEl) {
-          const zoom = previewZoomRef.current;
+          const zoom = readPreviewZoom();
           const naturalHeight = pagesEl.scrollHeight;
           pagesEl.style.transform = `scale(${zoom})`;
           pagesEl.style.transformOrigin = 'top center';
@@ -313,10 +316,62 @@ export default function ExportPreviewModal({
   // <link> that the iframe re-fetches — and react-to-print prints anyway if
   // that fetch fails, which would leave index.html's unscoped dark scheme in
   // force. Scoping it here also keeps it off the app's own Ctrl+P output.
+
+  // What the saved file is called, on both paths. `fileName` is the workspace
+  // path the panel selected, not a name: left whole, the shell would suggest
+  // `results-q3.md.pdf` for `results/q3.md`, since it flattens the separator
+  // rather than reading a path out of a name it was handed.
+  const pdfStem = useMemo(
+    () => (fileName.split('/').pop() || 'export').replace(/\.[^.]+$/, ''),
+    [fileName],
+  );
+
   const handlePrint = useReactToPrint({
     contentRef: printRef,
     pageStyle: PRINT_PAGE_STYLE,
+    // The browser print dialog names the file after `document.title`, which is
+    // the app's, so every report saved from a browser landed in the user's
+    // downloads as `LangAlpha.pdf`. react-to-print swaps the title in for the
+    // duration of the print and puts it back after.
+    documentTitle: pdfStem,
   });
+
+  // A desktop shell renders the PDF itself, which skips the print dialog and
+  // produces a tagged, outlined file that browser print cannot emit at all.
+  // Feature-detected per the bridge contract, because the shell updates on its
+  // own cadence and this app deploys continuously: an older shell simply has no
+  // savePdf and keeps the browser path below.
+  const handleSave = useCallback(async () => {
+    const source = printRef.current;
+    if (!source) {
+      handlePrint();
+      return;
+    }
+    // Cloning the whole rendered report and then reflowing the document to
+    // paper width is seconds of frozen tab on a long one. Without this the
+    // button stays live throughout, and a second click is swallowed by the
+    // re-entry guard in renderToPdf, which answers `canceled` and deliberately
+    // shows nothing: the control reads as dead rather than as busy.
+    setSaving(true);
+    try {
+      // printToPDF reflows the live document to the paper width before it takes
+      // its snapshot. The app re-renders at that width and the dialog unmounts,
+      // taking the portal below with it, so anything React owns is already gone
+      // when the snapshot happens — the file comes out correctly paginated and
+      // completely blank. A detached copy is not React's to remove and survives
+      // the reflow, which is why the export is cloned rather than printed in
+      // place. renderToPdf owns that node, the page geometry and the teardown.
+      const result = await renderToPdf((root) => {
+        root.appendChild(source.cloneNode(true));
+      }, pdfStem);
+
+      // No shell, or the shell failed inside the channel. A `canceled` result is
+      // the user's own answer and must not reopen a dialog they just dismissed.
+      if (!result || 'error' in result) handlePrint();
+    } finally {
+      setSaving(false);
+    }
+  }, [handlePrint, pdfStem]);
 
   // ---- CSS vars for source (used by react-to-print) ----
   const cssVars = useMemo(
@@ -449,11 +504,11 @@ export default function ExportPreviewModal({
   const saveBtn = (
     <button
       className="export-preview-save-btn"
-      onClick={() => handlePrint()}
-      disabled={rendering || typoPending}
-      style={rendering || typoPending ? { opacity: 0.6, cursor: 'wait' } : undefined}
+      onClick={() => void handleSave()}
+      disabled={rendering || typoPending || saving}
+      style={rendering || typoPending || saving ? { opacity: 0.6, cursor: 'wait' } : undefined}
     >
-      {t('filePanel.saveAsPdf')}
+      {saving ? t('filePanel.pdfGenerating') : t('filePanel.saveAsPdf')}
     </button>
   );
 
@@ -539,14 +594,27 @@ export default function ExportPreviewModal({
               ))}
             </div>
           )}
-          {/* Hidden source — used by react-to-print for PDF export */}
-          <div
-            ref={printRef}
-            className="markdown-print-content print-preview-active export-preview-source"
-            style={cssVars}
-          >
-            <Markdown variant="panel" content={displayContent} codeTheme="light" />
-          </div>
+          {/* Hidden source, portaled to <body> rather than left inside the
+              modal, and parked off-screen. This is what Paged.js clones for the
+              preview and what react-to-print copies into its iframe; the
+              desktop path clones it again into a detached `#export-pdf-root`
+              for the duration of the render (see handleSave). It carries no id
+              of its own: the print stylesheet keeps `#export-pdf-root` and
+              drops every other body child out of the flow, and an invisible app
+              still lays out — the first attempt at this produced a 57-page PDF
+              with the report buried in blank pages of chat. */}
+          {createPortal(
+            <div className="export-pdf-host">
+              <div
+                ref={printRef}
+                className="markdown-print-content print-preview-active export-preview-source"
+                style={cssVars}
+              >
+                <Markdown variant="panel" content={displayContent} codeTheme="light" />
+              </div>
+            </div>,
+            document.body,
+          )}
           {/* Paged.js renders paginated page sheets here */}
           <div ref={pagedContainerRef} className="export-preview-paged" />
         </>
@@ -581,7 +649,7 @@ export default function ExportPreviewModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="export-preview-modal !w-[90vw] !max-w-7xl !p-0 !overflow-hidden"
+        className="export-preview-modal w-[90vw]! max-w-7xl! p-0! overflow-hidden!"
         variant="centered"
         aria-describedby={undefined}
       >

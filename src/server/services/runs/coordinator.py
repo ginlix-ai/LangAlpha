@@ -12,9 +12,9 @@ else may write a run's terminal state.
 import asyncio
 import logging
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Dict, Optional
 from uuid import uuid4
 
 from src.server.database.runs import lifecycle as tl_db
@@ -23,8 +23,15 @@ from src.server.database.runs.lifecycle import (  # re-exported for callers
     DuplicateRequestError,
     FinalizeResult,
     ForkSpec,
+    NewestCheckpoint,
     QuerySpec,
+    RunOutcome,
     RunSlotBusyError,
+    StaleForkError,
+)
+from src.server.services.runs.pending_input import (
+    untaken_input_metadata,
+    untaken_input_stamp,
 )
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -38,6 +45,7 @@ __all__ = [
     "RunSlotBusyError",
     "DuplicateRequestError",
     "AttemptConflictError",
+    "StaleForkError",
     "protected_finalize",
 ]
 
@@ -60,6 +68,27 @@ def _reap_protected(task: asyncio.Task) -> None:
         )
 
 
+def _drop_protected(task: asyncio.Task) -> None:
+    _protected_tasks.discard(task)
+    if not task.cancelled():
+        task.exception()  # its awaiter reports it
+
+
+def spawn_protected(
+    coro: Coroutine, name: str, *, log_failure: bool = True
+) -> asyncio.Task:
+    """Run ``coro`` detached, strongly referenced until it finishes.
+
+    ``log_failure=False`` for a task that is always awaited, by its caller or
+    by a task that takes over when the caller is cancelled, so what it raises
+    is the awaiter's to handle, a routine refusal included.
+    """
+    task = asyncio.create_task(coro, name=name)
+    _protected_tasks.add(task)
+    task.add_done_callback(_reap_protected if log_failure else _drop_protected)
+    return task
+
+
 async def protected_finalize(coro: Coroutine, label: str):
     """Run a finalize coroutine immune to the awaiting task's cancellation.
 
@@ -70,25 +99,7 @@ async def protected_finalize(coro: Coroutine, label: str):
     CancelledError still propagates to it, but the finalize completes
     detached.
     """
-    task = asyncio.create_task(coro, name=f"turn-finalize-{label}")
-    _protected_tasks.add(task)
-    task.add_done_callback(_reap_protected)
-    return await asyncio.shield(task)
-
-
-@dataclass
-class RunOutcome:
-    """Everything finalize needs, resolved in-band by the run's own executor."""
-
-    status: str  # completed | interrupted | error | cancelled
-    interrupt_reason: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    warnings: Optional[List[str]] = None
-    errors: Optional[List[str]] = None
-    execution_time: Optional[float] = None
-    sse_events: Optional[List[Dict[str, Any]]] = None
-    per_call_records: Optional[list] = None
-    tool_usage: Optional[Dict[str, int]] = None
+    return await asyncio.shield(spawn_protected(coro, f"turn-finalize-{label}"))
 
 
 @dataclass
@@ -99,7 +110,6 @@ class RunHandle:
     thread_id: str
     turn_index: int
     attempt_no: int
-    msg_type: str  # 'ptc' | 'flash'
     workspace_id: Optional[str] = None
     user_id: Optional[str] = None
     is_byok: bool = False
@@ -109,6 +119,9 @@ class RunHandle:
     # lifecycle SQL, and per-run saver on one connection. None = Phase-1
     # fallback (memory saver, split app/checkpoint DBs, or pool not open).
     guard: Optional[Any] = None
+    # The ``pending_input`` stamp a failure or a stop before the graph took
+    # this attempt's input records on its row; empty when /retry should replay.
+    pending_input: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def checkpointer(self) -> Optional[Any]:
@@ -119,6 +132,36 @@ class RunHandle:
         from src.server.app import setup
 
         return setup.checkpointer
+
+
+def _stamp_untaken_input(
+    handle: RunHandle, outcome: RunOutcome, newest: Optional[NewestCheckpoint]
+) -> RunOutcome:
+    """Record a failed or stopped attempt's input as pending when no step of
+    the thread is its run's (``untaken_input_stamp``). A stopped one has no
+    input on the branch either, so its regenerate sends the message again."""
+    if outcome.status not in ("error", "cancelled"):
+        return outcome
+    stamp = untaken_input_stamp(handle.pending_input, handle.run_id, newest)
+    if stamp:
+        outcome.metadata = {**stamp, **(outcome.metadata or {})}
+    return outcome
+
+
+def _with_detached_failure_kind(outcome: RunOutcome) -> RunOutcome:
+    """Stamp the kind a reload words a failed run with no owner by.
+
+    Its worker or its consumer died, a fault of this service's own, so the
+    row reads as ``internal`` and a reload shows no diagnostic, as the frame
+    sent live does. When the run framed its own failure before it died, a
+    reload replays that frame, so the row carries that frame's kind (none
+    for a time limit's) and the reload reads as the live stream did.
+    """
+    sent = outcome.record.error_frame if outcome.record else None
+    kind = sent.get("error_kind") if sent else "internal"
+    if kind:
+        outcome.metadata = {**(outcome.metadata or {}), "error_kind": kind}
+    return outcome
 
 
 class RunCoordinator:
@@ -139,30 +182,51 @@ class RunCoordinator:
         *,
         thread_id: str,
         run_id: str,
-        msg_type: str,
         request_key: Optional[str] = None,
         workspace_id: Optional[str] = None,
         user_id: Optional[str] = None,
         is_byok: bool = False,
         query: Optional[QuerySpec] = None,
         fork: Optional[ForkSpec] = None,
+        run_horizon: Optional[int] = None,
         turn_index: Optional[int] = None,
         attempt_no: int = 1,
         retry_of_run_id: Optional[str] = None,
         run_metadata: Optional[Dict[str, Any]] = None,
+        pending_input: Optional[Dict[str, Any]] = None,
+        on_started: Optional[Callable[[RunHandle], None]] = None,
+        before_commit: Optional[Callable[[Any], Awaitable[None]]] = None,
     ) -> RunHandle:
         """Create the durable attempt: query row + in_progress run + projection.
 
         Raises RunSlotBusyError (409 admission), DuplicateRequestError
         (idempotent retransmit — reconnect to the existing run, guard
-        released first), AttemptConflictError, or WriterGuardUnavailable
+        released first), AttemptConflictError, StaleForkError (409, the
+        fork's branch moved after validation, or a run started after the
+        ``run_horizon`` a HITL answer was read at), or WriterGuardUnavailable
         (503 — pinned-session budget/lock bounded refusal). A server-minted
         request_key is the legacy fallback only; callers should supply one
         for dedup to mean anything.
+
+        ``on_started`` receives the run as soon as its row commits, before
+        the announcements: a failure or a cancel there still raises, and the
+        caller holds the run to settle, since no executor ever takes it.
+        ``before_commit`` runs inside the START transaction, on its connection,
+        once the row holds the thread's slot; raising there rolls the START back.
         """
         from src.server.services import writer_guard as wg
 
-        metadata = {"msg_type": msg_type, **(run_metadata or {})}
+        # START stamps the producer on the run and on its query row, so no
+        # caller names it: the full agent is the only one left.
+        metadata = {
+            "msg_type": "ptc",
+            **(run_metadata or {}),
+            **untaken_input_metadata(pending_input or {}),
+        }
+        if query is not None:
+            query = replace(
+                query, metadata={"msg_type": "ptc", **(query.metadata or {})}
+            )
         # START-stamp identity onto the durable row: finalize/recovery paths
         # build the user-feed event from row metadata alone, with no in-process
         # context surviving a crash (user_id names the channel, workspace_id
@@ -175,6 +239,7 @@ class RunCoordinator:
             metadata["workspace_id"] = workspace_id
 
         guard = None
+        handle = None
         if wg.guard_enabled():
             guard = await wg.WriterGuard.acquire_root(
                 thread_id=thread_id, run_id=run_id
@@ -190,7 +255,10 @@ class RunCoordinator:
                     retry_of_run_id=retry_of_run_id,
                     query=query,
                     fork=fork,
+                    run_horizon=run_horizon,
                     metadata=metadata,
+                    user_id=user_id,
+                    before_commit=before_commit,
                     conn=guard.conn if guard is not None else None,
                 )
             handle = RunHandle(
@@ -198,13 +266,17 @@ class RunCoordinator:
                 thread_id=thread_id,
                 turn_index=row["turn_index"],
                 attempt_no=row["attempt_no"],
-                msg_type=msg_type,
                 workspace_id=workspace_id,
                 user_id=user_id,
                 is_byok=is_byok,
                 started_at=row["created_at"],
                 guard=guard,
+                pending_input=pending_input or {},
             )
+            if guard is not None:
+                guard.bind_owner(handle)
+            if on_started is not None:
+                on_started(handle)
             # Two independent post-commit announcements, in parallel:
             # - control lane: an attached mux admits the main-lane channel
             #   push-style. Unbounded — the mux has no root-run recovery scan
@@ -249,6 +321,10 @@ class RunCoordinator:
             # announce await): releasing the guard here is what lets the
             # recovery scanner reclaim the committed in_progress row instead
             # of it wedging the thread behind a leaked advisory lock.
+            if handle is not None:
+                # Before the await, which a cancel can cut short: whoever
+                # settles this run does it on the pool.
+                handle.guard = None
             if guard is not None:
                 await guard.release()
             raise
@@ -278,8 +354,31 @@ class RunCoordinator:
         background-subagent writers outlive the turn (their saver IS this
         session).
         """
+        # Finalize owns the guard from its first line, since every exit tears
+        # it down. Not later: the cycle collector clears the handle's weakref
+        # before an abandoned stream generator's death path gets here, and a
+        # settle can outlast the monitor's one tick of grace.
+        if handle.guard is not None:
+            handle.guard.bind_owner(None)
         try:
-            checkpoint_id = await self._latest_checkpoint_id(handle)
+            newest_read = True
+            try:
+                newest = await self._newest_checkpoint(handle)
+            except Exception:
+                logger.warning(
+                    f"[RunCoordinator] checkpoint_id read failed for "
+                    f"{handle.thread_id}",
+                    exc_info=True,
+                )
+                newest, newest_read = None, False
+
+            # Outside the mutex: a checkpoint read and an outbox write, which
+            # need nothing of the guard's session.
+            from src.server.services.report_back.steer import (
+                confirm_checkpointed_holds,
+            )
+
+            await confirm_checkpointed_holds(handle.thread_id, handle.run_id)
 
             usage_writer = None
             if outcome.per_call_records or outcome.tool_usage:
@@ -305,17 +404,13 @@ class RunCoordinator:
                 if guard is not None and not guard.usable:
                     guard = None
                 outcome = self._downgrade_if_guard_lost(handle, outcome, guard)
+                if newest_read:
+                    outcome = _stamp_untaken_input(handle, outcome, newest)
                 result = await tl_db.finalize_run(
                     run_id=handle.run_id,
                     thread_id=handle.thread_id,
-                    status=outcome.status,
-                    interrupt_reason=outcome.interrupt_reason,
-                    metadata=outcome.metadata,
-                    warnings=outcome.warnings,
-                    errors=outcome.errors,
-                    execution_time=outcome.execution_time,
-                    sse_events=outcome.sse_events,
-                    checkpoint_id=checkpoint_id,
+                    outcome=outcome,
+                    newest=newest,
                     usage_writer=usage_writer,
                     conn=guard.conn if guard is not None else None,
                 )
@@ -339,7 +434,7 @@ class RunCoordinator:
                         f"run={handle.run_id}",
                         exc_info=True,
                     )
-            self.post_finalize_tail(handle.thread_id)
+            self.post_finalize_tail(handle.thread_id, result.run)
         return result
 
     async def fail_open_run(
@@ -390,7 +485,7 @@ class RunCoordinator:
         run_id: str,
         outcome: RunOutcome,
         *,
-        checkpoint_id: Optional[str] = None,
+        newest: Optional[NewestCheckpoint] = None,
         error_frame: Optional[Dict[str, Any]] = None,
     ) -> FinalizeResult:
         """The guard-less finalize funnel for runs with no live owner
@@ -399,24 +494,25 @@ class RunCoordinator:
         on a won CAS, and terminal-frame emission through the run_end gate
         even on a lost one (the survivor may have died between its commit and
         its emission; the gate keeps the close exactly-once against a live
-        emitter). ``error_frame`` is the caller's client-facing failure
+        emitter). ``newest`` is the thread's newest checkpoint as the caller
+        read it, which the pointer moves to only when the run wrote it.
+        ``error_frame`` is the caller's client-facing failure
         payload, emitted only when the verified terminal status is ``error``.
         Raises like the CAS it wraps; callers that must never raise wrap it.
         """
+        if outcome.status == "error":
+            outcome = _with_detached_failure_kind(outcome)
+        from src.server.services.report_back.steer import confirm_checkpointed_holds
+
+        await confirm_checkpointed_holds(thread_id, run_id)
         result = await tl_db.finalize_run(
             run_id=run_id,
             thread_id=thread_id,
-            status=outcome.status,
-            interrupt_reason=outcome.interrupt_reason,
-            metadata=outcome.metadata,
-            warnings=outcome.warnings,
-            errors=outcome.errors,
-            execution_time=outcome.execution_time,
-            sse_events=outcome.sse_events,
-            checkpoint_id=checkpoint_id,
+            outcome=outcome,
+            newest=newest,
         )
         if result.applied:
-            self.post_finalize_tail(thread_id)
+            self.post_finalize_tail(thread_id, result.run)
         final_status = (result.run or {}).get("status")
         if final_status:
             from src.server.services.runs.executor import (
@@ -451,19 +547,22 @@ class RunCoordinator:
         """
         error_frame = {
             "thread_id": thread_id,
-            "content": "background workflow failed",
+            "content": "background turn failed",
             "error_type": "background_failure",
-            "error": error_text or "background workflow failed",
+            "error": error_text or "background turn failed",
+            "error_kind": "internal",
         }
+        newest, stamp = await self._detached_input_stamp(thread_id, run_id, label)
         try:
             result = await self.finalize_detached_run(
                 thread_id,
                 run_id,
                 RunOutcome(
                     status="error",
-                    errors=[error_text or "background workflow failed"],
-                    metadata={"recovery": "dispatch_consumer_crash"},
+                    errors=[error_text or "background turn failed"],
+                    metadata={"recovery": "dispatch_consumer_crash", **stamp},
                 ),
+                newest=newest,
                 error_frame=error_frame,
             )
             return (result.run or {}).get("status")
@@ -488,6 +587,31 @@ class RunCoordinator:
                     exc_info=True,
                 )
             return None
+
+    async def _detached_input_stamp(
+        self, thread_id: str, run_id: str, label: str
+    ) -> tuple[Optional[NewestCheckpoint], Dict[str, Any]]:
+        """The thread's newest checkpoint and the input stamp for a run settled
+        with no handle, from the row START wrote, as the recovery scanner
+        settles one. Without them a retry replays the turn before this one,
+        or finds no checkpoint at all on a new thread. A failed read stamps
+        nothing and moves no pointer, as on the owner's path."""
+        from src.server.app import setup
+        from src.server.services.runs.pending_input import read_untaken_input
+        from src.server.utils.checkpoint_helpers import newest_checkpoint
+
+        try:
+            run = await tl_db.get_run(run_id)
+            saver = setup.checkpointer
+            newest = await newest_checkpoint(saver, thread_id) if saver else None
+        except Exception:
+            logger.warning(
+                f"[{label}] run or checkpoint read failed for run={run_id}; "
+                f"settling it unstamped",
+                exc_info=True,
+            )
+            return None, {}
+        return newest, untaken_input_stamp(read_untaken_input(run), run_id, newest)
 
     # ------------------------------------------------------------ guard utils
 
@@ -560,11 +684,7 @@ class RunCoordinator:
             finally:
                 await guard.release(discard=must_discard)
 
-        task = asyncio.create_task(
-            _run(), name=f"writer-guard-teardown-{handle.run_id[:8]}"
-        )
-        _protected_tasks.add(task)
-        task.add_done_callback(_reap_protected)
+        spawn_protected(_run(), f"writer-guard-teardown-{handle.run_id[:8]}")
 
     # ------------------------------------------------------------------ utils
 
@@ -581,13 +701,10 @@ class RunCoordinator:
                 await usage.track_llm_usage(outcome.per_call_records)
             if outcome.tool_usage:
                 usage.record_tool_usage_batch(outcome.tool_usage)
-            # msg_type is the producer mode, never a status — interrupted
-            # turns bill as their real mode ('interrupted' rows were the old
-            # vocabulary pollution). final_status comes from the CAS row, not
-            # outcome.status: durable cancel intent may have overridden it.
+            # final_status comes from the CAS row, not outcome.status: durable
+            # cancel intent may have overridden it.
             ok = await usage.persist_usage(
                 response_id=handle.run_id,
-                msg_type=outcome.metadata.get("msg_type") or handle.msg_type,
                 deepthinking=outcome.metadata.get("deepthinking", False),
                 status=final_status,
                 conn=conn,
@@ -603,36 +720,34 @@ class RunCoordinator:
 
         return _write
 
-    async def _latest_checkpoint_id(self, handle: RunHandle) -> Optional[str]:
+    async def _newest_checkpoint(self, handle: RunHandle) -> Optional[NewestCheckpoint]:
         """Checkpoint tip via the run's own session when fenced (reads its
         own writes; a lock-lost session can't answer), else the pool saver."""
-        try:
-            guard = handle.guard
-            if guard is not None and guard.usable:
-                saver = guard.saver
-            else:
-                from src.server.app import setup
+        from src.server.utils.checkpoint_helpers import newest_checkpoint
 
-                saver = setup.checkpointer
-            if not saver:
-                return None
-            cp = await saver.aget_tuple(
-                {"configurable": {"thread_id": handle.thread_id}}
-            )
-            return cp.config["configurable"]["checkpoint_id"] if cp else None
-        except Exception:
-            logger.warning(
-                f"[RunCoordinator] checkpoint_id read failed for "
-                f"{handle.thread_id}",
-                exc_info=True,
-            )
+        guard = handle.guard
+        if guard is not None and guard.usable:
+            saver = guard.saver
+        else:
+            from src.server.app import setup
+
+            saver = setup.checkpointer
+        if not saver:
             return None
+        return await newest_checkpoint(saver, handle.thread_id)
 
-    def post_finalize_tail(self, thread_id: str) -> None:
+    def post_finalize_tail(
+        self, thread_id: str, run: Optional[Dict[str, Any]]
+    ) -> None:
         """The uniform after-a-won-CAS tail: every site that applies a
-        terminal transition schedules the projection refresh and nudges the
-        drainer, so the two never drift apart per call site."""
-        self._schedule_projection_refresh(thread_id)
+        terminal transition schedules the replay refresh and the
+        transcript export and nudges the drainer, so they never drift apart
+        per call site. The export runs at every terminal status, since each
+        stamps the checkpoint and another thread may read this one's
+        transcript."""
+        self._schedule_replay_refresh(thread_id)
+        self._schedule_transcript_export(thread_id, run)
+        self._schedule_archive_prune(thread_id)
         self._nudge_hook_drainer()
 
     def _nudge_hook_drainer(self) -> None:
@@ -645,16 +760,46 @@ class RunCoordinator:
         except Exception:
             logger.warning("[RunCoordinator] hook drainer nudge failed", exc_info=True)
 
-    def _schedule_projection_refresh(self, thread_id: str) -> None:
+    def _schedule_replay_refresh(self, thread_id: str) -> None:
         try:
-            from src.server.services.history.projection_cache import (
-                schedule_projection_refresh,
+            from src.server.services.history.replay.refresh import (
+                schedule_replay_refresh,
             )
 
-            schedule_projection_refresh(thread_id)
+            schedule_replay_refresh(thread_id)
         except Exception:
             logger.warning(
-                f"[RunCoordinator] projection refresh scheduling failed for "
+                f"[RunCoordinator] replay refresh scheduling failed for "
+                f"{thread_id}",
+                exc_info=True,
+            )
+
+    def _schedule_archive_prune(self, thread_id: str) -> None:
+        # An archived thread keeps its scratchpad while a run writes to it,
+        # and nothing else asks for the prune once that run ends.
+        try:
+            from src.server.services.workspace_manager import prune_if_archived_soon
+
+            prune_if_archived_soon(thread_id)
+        except Exception:
+            logger.warning(
+                f"[RunCoordinator] archive prune scheduling failed for {thread_id}",
+                exc_info=True,
+            )
+
+    def _schedule_transcript_export(
+        self, thread_id: str, run: Optional[Dict[str, Any]]
+    ) -> None:
+        # The workspace comes from the row's START stamp, which a detached
+        # finalize has without the run's process.
+        try:
+            meta = (run or {}).get("metadata") or {}
+            from src.server.services.transcripts import schedule_thread_export
+
+            schedule_thread_export(thread_id, meta.get("workspace_id"))
+        except Exception:
+            logger.warning(
+                f"[RunCoordinator] transcript export scheduling failed for "
                 f"{thread_id}",
                 exc_info=True,
             )

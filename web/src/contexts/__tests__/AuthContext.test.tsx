@@ -39,9 +39,25 @@ vi.mock('../../lib/supabase', () => ({
   },
 }));
 
-vi.mock('../../api/client', () => ({
-  setTokenGetter: vi.fn(),
-  setTokenRefresher: vi.fn(),
+// The shared token cache. AuthContext owns the only onAuthStateChange
+// subscription, so it is the only thing that can keep this current.
+const mockPublishSession = vi.fn();
+const mockAdopt = vi.fn();
+const mockClearAuthToken = vi.fn();
+
+vi.mock('../../lib/authToken', () => ({
+  publishSession: (...args: unknown[]) => mockPublishSession(...args),
+  // The fenced adopter the two *async* reads go through. The real one captures
+  // the signed-in user before the read and drops a reply that lands after it
+  // changed; here it only has to record what was adopted.
+  sessionAdopter: () => (session: unknown) => mockAdopt(session),
+  clearAuthToken: () => mockClearAuthToken(),
+}));
+
+// The platform call a password change makes to sign connected apps out.
+const mockApiPost = vi.fn();
+vi.mock('@/api/client', () => ({
+  api: { post: (...args: unknown[]) => mockApiPost(...args) },
 }));
 
 // Spy on the module-level nav stores so we can assert sign-out resets them.
@@ -91,6 +107,7 @@ describe('AuthContext', () => {
     mockOnAuthStateChange.mockReturnValue({
       data: { subscription: { unsubscribe: vi.fn() } },
     });
+    mockApiPost.mockResolvedValue({ data: { revoked: 0 }, status: 200 });
   });
 
   describe('when no session exists', () => {
@@ -224,6 +241,31 @@ describe('AuthContext', () => {
       await auth.updatePassword('newpass123');
       expect(mockUpdateUser).toHaveBeenCalledWith({ password: 'newpass123' });
     });
+
+    it('updatePassword signs connected apps out once the password is changed', async () => {
+      await auth.updatePassword('newpass123');
+      expect(mockApiPost).toHaveBeenCalledWith('/api/auth/connected-apps/revoke-all');
+    });
+
+    it('a refused password change leaves connected apps alone', async () => {
+      const refused = { data: { user: null }, error: { message: 'Password is too weak' } };
+      mockUpdateUser.mockResolvedValueOnce(refused);
+      await expect(auth.updatePassword('weak')).resolves.toBe(refused);
+      expect(mockApiPost).not.toHaveBeenCalled();
+    });
+
+    it('the password change neither waits on nor fails with the sign-out', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const changed = { data: { user: null }, error: null };
+
+      mockApiPost.mockReturnValueOnce(new Promise(() => {}));
+      await expect(auth.updatePassword('newpass123')).resolves.toEqual(changed);
+
+      mockApiPost.mockRejectedValueOnce(new Error('Network Error'));
+      await expect(auth.updatePassword('newpass123')).resolves.toEqual(changed);
+      await waitFor(() => expect(warn).toHaveBeenCalled());
+      warn.mockRestore();
+    });
   });
 
   describe('onAuthStateChange subscription', () => {
@@ -265,6 +307,67 @@ describe('AuthContext', () => {
       expect(mockResetNavPanelExpansion).toHaveBeenCalledTimes(1);
       expect(mockResetStableNavOrder).toHaveBeenCalledTimes(1);
       expect(mockResetSharedWorkspaceThreads).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Regression #379: reading the session per outbound request turned one page
+  // load into ~20 network refreshes, which exhausts Supabase's per-IP token
+  // budget and ends in a forced sign-out. The cache is only correct if this
+  // context keeps feeding it.
+  describe('shared token cache', () => {
+    const session = { user: { id: 'user-abc' }, access_token: 'tok-123', expires_at: 4102444800 };
+
+    async function renderAndGetHandler() {
+      renderWithQueryClient(
+        <AuthProvider>
+          <TestConsumer />
+        </AuthProvider>
+      );
+      await waitFor(() => expect(mockOnAuthStateChange).toHaveBeenCalled());
+      return mockOnAuthStateChange.mock.calls[0][0] as (
+        event: string,
+        session: unknown,
+      ) => void;
+    }
+
+    it('adopts the session synchronously, before the callback yields', async () => {
+      // The callback runs under an exclusive lock, so it must stay non-async.
+      // Asserting without awaiting is what pins that.
+      const handler = await renderAndGetHandler();
+      mockPublishSession.mockClear();
+
+      act(() => {
+        handler('TOKEN_REFRESHED', session);
+      });
+
+      expect(mockPublishSession).toHaveBeenCalledWith(session);
+    });
+
+    it('adopts the bootstrap session through the fence, not around it', async () => {
+      // The bootstrap read is async, so a cross-tab sign-out can land between
+      // the request and the handler. Publishing straight into the cache there
+      // would put the departed user's token back and send every request after
+      // it out as them, which is what `sessionAdopter` is for.
+      mockGetSession.mockResolvedValue({ data: { session } });
+
+      renderWithQueryClient(
+        <AuthProvider>
+          <TestConsumer />
+        </AuthProvider>
+      );
+
+      await waitFor(() => expect(mockAdopt).toHaveBeenCalledWith(session));
+      expect(mockPublishSession).not.toHaveBeenCalledWith(session);
+    });
+
+    it('wipes the cache on sign-out', async () => {
+      const handler = await renderAndGetHandler();
+
+      await act(async () => {
+        handler('SIGNED_OUT', null);
+      });
+
+      expect(mockClearAuthToken).toHaveBeenCalledTimes(1);
     });
   });
 });

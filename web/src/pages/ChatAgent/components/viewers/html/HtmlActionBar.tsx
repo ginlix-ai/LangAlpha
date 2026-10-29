@@ -1,19 +1,20 @@
 import { useTranslation } from 'react-i18next';
-import { Maximize2, Minimize2, ExternalLink, Download, FileDown, Link2, MoreHorizontal } from 'lucide-react';
+import { Maximize2, Minimize2, ExternalLink, Download, FileDown, MoreHorizontal } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import './HtmlActionBar.css';
 
 interface HtmlActionBarProps {
-  onOpenInNewTab: () => void;
+  /** Omit where a second surface cannot be opened — see HtmlActions.openInNewTab. */
+  onOpenInNewTab?: () => void;
   /** Download/PDF live in a secondary "more" menu. Omit both on surfaces where
    *  they're owned elsewhere (the file toolbar defers to the panel header menu). */
   onDownload?: () => void;
   onExportPdf?: () => void | Promise<void>;
-  /** Copy a shareable link to this report. Omit to hide the link button. */
-  onCopyLink?: () => void;
   /** Toggle fullscreen. Omit to hide the expand/exit button. */
   onFullscreen?: () => void;
+  /** Shown but inert, e.g. until the served URL the fullscreen frame loads exists. */
+  fullscreenDisabled?: boolean;
   isFullscreen?: boolean;
   /** Visual context — 'overlay' for the inline-widget hover bar. */
   variant?: 'toolbar' | 'overlay';
@@ -25,8 +26,8 @@ export default function HtmlActionBar({
   onOpenInNewTab,
   onDownload,
   onExportPdf,
-  onCopyLink,
   onFullscreen,
+  fullscreenDisabled = false,
   isFullscreen = false,
   variant = 'toolbar',
   className,
@@ -35,37 +36,29 @@ export default function HtmlActionBar({
 
   return (
     <div className={cn('html-action-bar', variant === 'overlay' && 'html-action-bar-overlay', className)}>
-      {onCopyLink && (
-        <button
-          type="button"
-          className="html-action-btn"
-          onClick={onCopyLink}
-          title={t('filePanel.copyShareLink')}
-          aria-label={t('filePanel.copyShareLink')}
-        >
-          <Link2 className="h-4 w-4" />
-        </button>
-      )}
       {onFullscreen && (
         <button
           type="button"
           className="html-action-btn"
           onClick={onFullscreen}
+          disabled={fullscreenDisabled}
           title={isFullscreen ? t('filePanel.exitFullscreen') : t('filePanel.fullscreen')}
           aria-label={isFullscreen ? t('filePanel.exitFullscreen') : t('filePanel.fullscreen')}
         >
           {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </button>
       )}
-      <button
-        type="button"
-        className="html-action-btn"
-        onClick={onOpenInNewTab}
-        title={t('filePanel.openInNewTab')}
-        aria-label={t('filePanel.openInNewTab')}
-      >
-        <ExternalLink className="h-4 w-4" />
-      </button>
+      {onOpenInNewTab && (
+        <button
+          type="button"
+          className="html-action-btn"
+          onClick={onOpenInNewTab}
+          title={t('filePanel.openInNewTab')}
+          aria-label={t('filePanel.openInNewTab')}
+        >
+          <ExternalLink className="h-4 w-4" />
+        </button>
+      )}
       {(onDownload || onExportPdf) && (
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>

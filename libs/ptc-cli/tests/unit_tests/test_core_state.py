@@ -11,7 +11,6 @@ class TestSessionStateInit:
         assert session_state.auto_approve is False
         assert session_state.no_splash is False
         assert session_state.persist_session is True
-        assert session_state.plan_mode is False
         assert session_state.reusing_sandbox is False
         assert session_state.exit_hint_until is None
         assert session_state.exit_hint_handle is None
@@ -27,12 +26,10 @@ class TestSessionStateInit:
             auto_approve=True,
             no_splash=True,
             persist_session=False,
-            plan_mode=True,
         )
         assert state.auto_approve is True
         assert state.no_splash is True
         assert state.persist_session is False
-        assert state.plan_mode is True
 
 
 class TestToggleAutoApprove:
@@ -58,31 +55,6 @@ class TestToggleAutoApprove:
         session_state.toggle_auto_approve()
         session_state.toggle_auto_approve()
         assert session_state.auto_approve == original_state
-
-
-class TestTogglePlanMode:
-    """Test toggle_plan_mode method."""
-
-    def test_toggle_from_false(self, session_state):
-        """Test toggling plan mode from False to True."""
-        assert session_state.plan_mode is False
-        result = session_state.toggle_plan_mode()
-        assert result is True
-        assert session_state.plan_mode is True
-
-    def test_toggle_from_true(self, session_state_with_plan_mode):
-        """Test toggling plan mode from True to False."""
-        assert session_state_with_plan_mode.plan_mode is True
-        result = session_state_with_plan_mode.toggle_plan_mode()
-        assert result is False
-        assert session_state_with_plan_mode.plan_mode is False
-
-    def test_toggle_twice(self, session_state):
-        """Test toggling plan mode twice returns to original state."""
-        original_state = session_state.plan_mode
-        session_state.toggle_plan_mode()
-        session_state.toggle_plan_mode()
-        assert session_state.plan_mode == original_state
 
 
 class TestResetThread:

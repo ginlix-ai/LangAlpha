@@ -9,6 +9,8 @@ middleware should:
    HumanMessage so the model gets a chance to see why it failed.
 3. Not inject the hint repeatedly.
 4. Stop retrying as soon as the model returns valid tool_calls.
+5. Return the two injected messages ahead of an answer carrying Claude's
+   thinking, so history holds what that thinking was produced behind.
 """
 
 from __future__ import annotations
@@ -17,30 +19,35 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage
 
 from ptc_agent.agent.middleware.tool.empty_call_retry import (
     EmptyToolCallRetryMiddleware,
     _REMEDIATION_HINT,
 )
+from ptc_agent.agent.transcript.classify import human_kind
 
 
 def _make_request(messages):
     return SimpleNamespace(messages=list(messages))
 
 
-def _empty_call_ai_msg():
+_THINKING = [{"type": "thinking", "thinking": "I'll write it.", "signature": "sig"}]
+
+
+def _empty_call_ai_msg(model: str = "claude-sonnet-5-5"):
     return AIMessage(
-        content="",
-        response_metadata={"stop_reason": "tool_use"},
+        content=list(_THINKING),
+        response_metadata={"stop_reason": "tool_use", "model_name": model},
         tool_calls=[],
     )
 
 
-def _good_ai_msg():
+def _good_ai_msg(model: str = "claude-sonnet-5-5"):
     return AIMessage(
-        content="",
-        response_metadata={"stop_reason": "tool_use"},
+        content=list(_THINKING),
+        response_metadata={"stop_reason": "tool_use", "model_name": model},
         tool_calls=[
             {"name": "write_file", "args": {"file_path": "x.md", "content": "hi"}, "id": "1", "type": "tool_call"}
         ],
@@ -48,7 +55,7 @@ def _good_ai_msg():
 
 
 def _resp(ai_msg):
-    return SimpleNamespace(result=[ai_msg])
+    return ModelResponse(result=[ai_msg])
 
 
 class TestEmptyToolCallRetry:
@@ -74,13 +81,30 @@ class TestEmptyToolCallRetry:
         result = mw.wrap_model_call(request, handler)
 
         assert handler.call_count == 2
-        assert result.result[0].tool_calls
+        assert result.result[-1] is good
         # Hint is now in the request messages: original + broken AIMessage + HumanMessage hint.
         assert len(request.messages) == 3
         assert isinstance(request.messages[-1], HumanMessage)
         assert request.messages[-1].content == _REMEDIATION_HINT
+        assert human_kind(request.messages[-1]) == "empty-call-retry"
         # The broken AIMessage was included so the model can see what it said.
         assert request.messages[-2] is broken
+        # And both go into history ahead of the answer produced behind them.
+        assert result.result == [*request.messages[-2:], good]
+
+    def test_an_answer_without_claude_thinking_goes_into_history_alone(self):
+        """Nothing binds another model's answer to what it was produced
+        behind, so its history stays as it was."""
+        mw = EmptyToolCallRetryMiddleware(max_retries=2)
+        request = _make_request([HumanMessage(content="hello")])
+        good = _good_ai_msg("deepseek-v4-flash")
+        handler = MagicMock(side_effect=[_resp(_empty_call_ai_msg("deepseek-v4-flash")), _resp(good)])
+
+        result = mw.wrap_model_call(request, handler)
+
+        assert handler.call_count == 2
+        assert request.messages[-1].content == _REMEDIATION_HINT
+        assert result.result == [good]
 
     def test_hint_injected_only_once_across_retries(self):
         mw = EmptyToolCallRetryMiddleware(max_retries=3)
@@ -112,8 +136,9 @@ class TestEmptyToolCallRetry:
 
         # 1 initial + 2 retries = 3 calls.
         assert handler.call_count == 3
-        # Last response is still the broken one.
-        assert not result.result[0].tool_calls
+        # Last response is still the broken one, behind the first and the hint.
+        assert len(result.result) == 3
+        assert not result.result[-1].tool_calls
 
     def test_does_not_retry_when_not_tool_use_stop_reason(self):
         mw = EmptyToolCallRetryMiddleware(max_retries=2)
@@ -141,6 +166,6 @@ class TestEmptyToolCallRetry:
         result = await mw.awrap_model_call(request, handler)
 
         assert handler.await_count == 2
-        assert result.result[0].tool_calls
+        assert result.result == [*request.messages[-2:], good]
         assert isinstance(request.messages[-1], HumanMessage)
         assert request.messages[-1].content == _REMEDIATION_HINT

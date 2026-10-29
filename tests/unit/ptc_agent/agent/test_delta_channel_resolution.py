@@ -6,8 +6,8 @@ the schema merge against the ``add_messages`` (``BinaryOperatorAggregate``)
 annotation declared by the base ``AgentState`` and by middleware state schemas.
 
 These tests build a real agent through the same factory the production
-agent/flash/subagent factories use, with a representative subset of the real
-middleware stack (the full PTC/Flash stack needs sandbox/MCP/network infra that
+agent/subagent factories use, with a representative subset of the real
+middleware stack (the full PTC stack needs sandbox/MCP/network infra that
 a unit test can't construct). One middleware in the subset *explicitly*
 re-declares ``messages: add_messages`` so the override genuinely wins a conflict,
 not just a no-op.

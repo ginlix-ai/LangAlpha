@@ -1,45 +1,36 @@
 /* ============================================
-   Entry Point - Tailwind Directives + Global Styles
+   Entry Point - Tailwind + Global Styles
    ============================================ */
 
-/* Tokens + global base/utilities - must be before @tailwind */
+/* Tokens + global styles first, then Tailwind's pieces in v3's order: theme
+   (with the v3 defaults v4 changed laid over it), preflight, the app's base
+   rules on top of preflight, utilities last.
+
+   Tailwind is imported piece by piece rather than as `@import 'tailwindcss'`
+   because that form puts preflight and every utility in a cascade layer, and
+   an unlayered rule beats a layered one whatever its specificity. The
+   component stylesheets are unlayered, so layered utilities would lose every
+   tie they win today, and the focus-defaults layer in tokens.css is built on
+   Tailwind's rules sitting outside any layer (see the note there). Only the
+   theme variables go in a layer; tokens.css declares the values that matter. */
 @import './styles/tokens.css';
 @import './styles/animations.css';
+@import './styles/chrome.css';
+@import './styles/dotGrid.css';
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import './styles/tailwind-theme.css';
+@import 'tailwindcss/preflight.css';
+@import './styles/base.css';
+@import 'tailwindcss/utilities.css' source(none);
 
-/* Morph loading animation keyframes (compact — 3-5px travel for inline use) */
-@keyframes morph-0 {
-  0%, 100% { transform: translate(0, 0) scale(1); border-radius: 0%; }
-  25% { transform: translate(3px, -3px) scale(1.2); border-radius: 50%; }
-  50% { transform: translate(5px, 0) scale(0.8); border-radius: 25%; }
-  75% { transform: translate(3px, 3px) scale(1.1); border-radius: 75%; }
-}
-@keyframes morph-1 {
-  0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); border-radius: 0%; }
-  25% { transform: translate(-3px, -3px) scale(1.3) rotate(90deg); border-radius: 50%; }
-  50% { transform: translate(-5px, 0) scale(0.7) rotate(180deg); border-radius: 25%; }
-  75% { transform: translate(-3px, 3px) scale(1.2) rotate(270deg); border-radius: 75%; }
-}
-@keyframes morph-2 {
-  0%, 100% { transform: translate(0, 0) scale(1); border-radius: 0%; }
-  25% { transform: translate(-3px, 3px) scale(0.9); border-radius: 100%; }
-  50% { transform: translate(0, 5px) scale(1.4); border-radius: 0%; }
-  75% { transform: translate(3px, 3px) scale(0.8); border-radius: 50%; }
-}
-@keyframes morph-3 {
-  0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); border-radius: 0%; }
-  25% { transform: translate(3px, 3px) scale(1.1) rotate(-90deg); border-radius: 25%; }
-  50% { transform: translate(0, -5px) scale(1.3) rotate(-180deg); border-radius: 100%; }
-  75% { transform: translate(-3px, -3px) scale(0.9) rotate(-270deg); border-radius: 75%; }
-}
-
-/* Suppress focus outlines on chart containers (Recharts, lightweight-charts) */
-.recharts-responsive-container,
-.recharts-responsive-container *,
-.tv-lightweight-charts,
-.tv-lightweight-charts * {
-  outline: none !important;
-}
+/* The app's own files, as v3's `content` listed them. Automatic detection would
+   also read e2e/, scripts/ and the docs, and v4 reads more words as classes
+   than v3 did (a test's `row-1` test id became a grid-row rule), so the unit
+   tests are left out too: nothing they render ships. */
+@source '../index.html';
+@source './**/*.{js,ts,jsx,tsx}';
+@source not './**/__tests__/**';
+@source not './**/*.test.{js,ts,jsx,tsx}';
+/* The onboarding scenes generate their own, which load with them
+   (introScenes/scenes.css). */
+@source not './pages/Onboarding/engine/introScenes/**';

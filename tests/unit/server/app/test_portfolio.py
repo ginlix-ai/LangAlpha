@@ -210,6 +210,57 @@ async def test_add_portfolio_holding_merge(client):
 
 
 @pytest.mark.asyncio
+async def test_add_portfolio_holding_without_currency_leaves_it_to_the_db_layer(client):
+    """The listing decides the default, so the request model must not invent one."""
+    upsert = AsyncMock(return_value=(_holding(symbol="600519.SH", currency="CNY"), None))
+    with (
+        patch(f"{DB}.db_upsert_portfolio_holding", upsert),
+        patch(f"{DB}.maybe_complete_onboarding", new_callable=AsyncMock),
+    ):
+        resp = await client.post(
+            "/api/v1/users/me/portfolio",
+            json={"symbol": "600519.SS", "instrument_type": "stock", "quantity": 100},
+        )
+
+    assert resp.status_code == 201
+    assert upsert.call_args.kwargs["currency"] is None
+    assert resp.json()["currency"] == "CNY"
+
+
+@pytest.mark.asyncio
+async def test_add_portfolio_holding_currency_mismatch_is_a_conflict(client):
+    from src.server.database.portfolio import HoldingCurrencyMismatch
+
+    message = (
+        "600519.SH is held in CNY, so a cost in USD cannot be averaged into it. "
+        "Give the cost in CNY, or change the holding's currency first."
+    )
+    onboarding = AsyncMock()
+    with (
+        patch(
+            f"{DB}.db_upsert_portfolio_holding",
+            new_callable=AsyncMock,
+            side_effect=HoldingCurrencyMismatch(message),
+        ),
+        patch(f"{DB}.maybe_complete_onboarding", onboarding),
+    ):
+        resp = await client.post(
+            "/api/v1/users/me/portfolio",
+            json={
+                "symbol": "600519.SH",
+                "instrument_type": "stock",
+                "quantity": 10,
+                "average_cost": 210,
+                "currency": "USD",
+            },
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == message
+    onboarding.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_add_portfolio_holding_validation(client):
     """Missing required fields should return 422."""
     resp = await client.post(

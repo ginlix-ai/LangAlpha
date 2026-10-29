@@ -1,11 +1,15 @@
 """Tests for src/tools/web/types.py and fetch service plumbing."""
 
 import pytest
+from langsmith.run_helpers import tracing_context
+from langsmith.run_trees import RunTree
 
 from src.tools.web.fetch import FetchService, get_fetch_chain
 from src.tools.web.router import _needs_inhouse
 from src.tools.web.types import (
+    FetchAttempt,
     FetchRequest,
+    FetchResponse,
     FetchResult,
     SearchResult,
     WebError,
@@ -165,3 +169,75 @@ class TestFetchService:
         assert resp.results[0].source == "cache"
         assert resp.results[0].markdown == "cached markdown"
         assert fake.writes == []  # cache-sourced result not re-written
+
+
+class _NullClient:
+    def create_run(self, **kwargs):
+        return None
+
+    def update_run(self, **kwargs):
+        return None
+
+
+def _fell_through(etype):
+    """The primary refused our key, then in-house failed the URL its own way."""
+    return FetchResponse(
+        results=[FetchResult(url="https://a.example/x", error=WebError(type=etype, message="x"))],
+        attempts=[FetchAttempt("primary", "forbidden"), FetchAttempt("inhouse", etype.value)],
+    )
+
+
+@pytest.mark.asyncio
+class TestWebFetchOutcome:
+    """What WebFetch records on its tool run when it hands back a failure."""
+
+    @pytest.mark.parametrize(
+        ("response", "outcome", "error_class", "provider"),
+        [
+            pytest.param(
+                _fell_through(WebErrorType.NOT_FOUND), "unavailable", "not_found", "inhouse",
+                id="target-declined-names-the-last-provider",
+            ),
+            pytest.param(
+                _fell_through(WebErrorType.PROVIDER_ERROR), "error", "provider_error", "inhouse",
+                id="provider-fault",
+            ),
+            pytest.param(
+                FetchResponse(
+                    results=[FetchResult(url="https://a.example/x", markdown="  ")],
+                    provider="inhouse",
+                    attempts=[FetchAttempt("inhouse", "ok")],
+                ),
+                "unavailable", "empty", "inhouse",
+                id="empty-page",
+            ),
+            pytest.param(None, "error", "RuntimeError", None, id="our-pipeline-raised"),
+        ],
+    )
+    async def test_outcome_on_the_tool_run(
+        self, monkeypatch, response, outcome, error_class, provider
+    ):
+        import src.tools.web.fetch as fetch_module
+
+        class FakeService:
+            provider_names = ["primary", "inhouse"]
+
+            async def fetch(self, req):
+                if response is None:
+                    raise RuntimeError("cache client broke")
+                return response
+
+        async def no_sitemap(url):
+            return ""
+
+        monkeypatch.setattr(fetch_module, "get_fetch_service", lambda: FakeService())
+        monkeypatch.setattr(fetch_module, "get_sitemap_summary", no_sitemap)
+        monkeypatch.setattr(fetch_module, "_get_extraction_model", lambda: "unused")
+        run = RunTree(name="WebFetch", run_type="tool", client=_NullClient())
+
+        with tracing_context(parent=run):
+            await fetch_module._web_fetch_tool_impl("https://a.example/x", "summarize")
+
+        assert run.metadata["tool_outcome"] == outcome
+        assert run.metadata["error_class"] == error_class
+        assert run.metadata.get("tool_provider") == provider

@@ -58,15 +58,22 @@ function sanitizeConfig(w: WidgetInstance): WidgetInstance {
   return { ...w, config: { ...(def.defaultConfig as object) } };
 }
 
+/** The v1 shape: a widget layout that only showed while `mode` was 'custom'. */
+type StoredPrefs = Partial<Omit<DashboardPrefs, 'version'>> & { version?: number; mode?: string };
+
 /**
  * Bring any stored dashboard prefs up to the current schema shape.
  * Absent / malformed input → null so callers can fall back to defaults.
+ *
+ * A v1 record left on the retired Classic page has no layout the user saw:
+ * its widgets, if any, were a Custom layout they had switched away from. It
+ * reads as no saved layout, so the user gets the default, the page Classic was.
  */
 export function migrateDashboardPrefs(raw: unknown): DashboardPrefs | null {
   if (!raw || typeof raw !== 'object') return null;
-  const src = raw as Partial<DashboardPrefs>;
+  const src = raw as StoredPrefs;
+  if (src.version !== DASHBOARD_PREFS_VERSION && src.mode !== 'custom') return null;
 
-  const mode = src.mode === 'custom' ? 'custom' : 'classic';
   const rawWidgets = Array.isArray(src.widgets) ? src.widgets : [];
   // Filter shape-invalid widgets BEFORE rename + sanitize. A stored blob
   // with `widgets: [null, "garbage", { id: 'x' }]` previously passed
@@ -88,7 +95,6 @@ export function migrateDashboardPrefs(raw: unknown): DashboardPrefs | null {
 
   return {
     version: DASHBOARD_PREFS_VERSION,
-    mode,
     widgets,
     layouts,
     lastBreakpoint: src.lastBreakpoint,

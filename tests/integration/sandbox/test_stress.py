@@ -29,11 +29,11 @@ class TestRapidExecution:
                 result = await sandbox_runtime.exec(f"echo {i}")
                 assert result.exit_code == 0
 
-    async def test_rapid_code_run_20(self, sandbox_runtime, timed):
-        """20 sequential code_run calls."""
-        async with timed("stress", "rapid_code_run_20"):
+    async def test_rapid_python_exec_20(self, sandbox_runtime, timed):
+        """20 sequential python3 invocations through exec."""
+        async with timed("stress", "rapid_python_exec_20"):
             for i in range(20):
-                result = await sandbox_runtime.code_run(f"print({i})")
+                result = await sandbox_runtime.exec(f"python3 -c 'print({i})'")
                 assert result.exit_code == 0
 
 

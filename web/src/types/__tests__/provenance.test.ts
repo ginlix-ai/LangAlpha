@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Shared provenance dedup helpers: provenanceDisplayKey and
  * countDedupedSources are the single source of truth used by both the Sources

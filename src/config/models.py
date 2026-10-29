@@ -31,6 +31,15 @@ class BackgroundExecutionConfig(BaseModel):
     max_stored_messages_per_agent: int = Field(
         default=150000, description="Maximum events to buffer per workflow"
     )
+    max_stream_bytes_per_run: int = Field(
+        default=96 * 1024 * 1024,
+        description=(
+            "Maximum bytes one run's event stream may hold in Redis, counting "
+            "every copy a frame is kept as (a subagent's task stream keeps up "
+            "to three); a run past it finalizes error(transport_lost), as at "
+            "the event cap"
+        ),
+    )
     event_storage_backend: Literal["redis", "memory"] = Field(
         default="redis", description='Backend for event buffering: "redis" or "memory"'
     )
@@ -73,7 +82,7 @@ class BackgroundExecutionConfig(BaseModel):
         default=10.0, description="Timeout (seconds) for checkpoint state reads/writes"
     )
     admission_compaction_wait_timeout: float = Field(
-        default=180.0,
+        default=260.0,
         gt=0,
         description=(
             "Max seconds a new turn blocks at admission for an in-progress "
@@ -91,7 +100,7 @@ class BackgroundExecutionConfig(BaseModel):
         ),
     )
     compaction_timeout: float = Field(
-        default=180.0,
+        default=240.0,
         gt=0,
         description=(
             "Wall-clock budget (seconds) for a single compaction LLM call "
@@ -112,9 +121,6 @@ class BackgroundExecutionConfig(BaseModel):
     )
     max_workflow_retries: int = Field(
         default=3, description="Max transient-error retry count for workflow execution"
-    )
-    merged_chunk_max_bytes: int = Field(
-        default=16384, description="Max bytes for merged SSE event chunks before split"
     )
 
 
@@ -138,9 +144,6 @@ class RedisTTLConfig(BaseModel):
     )
     cancel_flag: int = Field(
         default=300, description="TTL for workflow cancel flag (5 minutes)"
-    )
-    steering: int = Field(
-        default=3600, description="TTL for steering message Redis keys (1 hour)"
     )
     market_watch: int = Field(default=21600, description="Market watch list TTL in seconds")
     memo_metadata_inflight: int = Field(
@@ -259,6 +262,55 @@ class NewsPollConfig(BaseModel):
     feeds: List[NewsPollFeedConfig] = Field(default_factory=list)
 
 
+class OrderReconcileConfig(BaseModel):
+    """Order reconciliation sweep -- asks each brokerage what became of an order.
+
+    The two grace windows are the values with teeth. ``submitting_grace_seconds``
+    decides when a call that left the relay and never came back is old enough
+    to be settled on the vendor's word rather than waited on, so it must
+    comfortably exceed the slowest order call a brokerage answers; its floor
+    sits above the relay's 55 s wall clock, so no setting can judge a call the
+    relay is still carrying. ``approved_grace_seconds`` decides when an approval
+    no call spent is refused, so it must exceed the gap between an answer and
+    its tool call. A proposal whose run ended without asking waits the same.
+
+    The other two bound the vendor half. ``max_concurrent_groups`` counts
+    accounts rather than calls, because two accounts are two sets of brokerage
+    credentials and share no rate limit while two reads of one account do, and
+    it bounds one process rather than the fleet, so a deployment running W
+    workers can have W times this many accounts in flight. Its ceiling is set
+    against the app's connection pool, since an account in flight holds an
+    advisory-lock session on top of whatever its writes take.
+    ``group_timeout_seconds`` is the only thing that bounds a pass at all: a
+    listing walks up to twenty calls and the relay gives each one its own wall
+    clock, so the floor is that wall clock, and the value should still clear a
+    full paginated history or a user with a long one is cut off every pass.
+    """
+
+    enabled: bool = Field(default=True)
+    interval_seconds: int = Field(default=60, ge=5)
+    submitting_grace_seconds: int = Field(default=120, ge=90)
+    approved_grace_seconds: int = Field(default=600, ge=60)
+    open_after_seconds: int = Field(default=60, ge=5)
+    batch_limit: int = Field(default=50, ge=1, le=500)
+    match_window_seconds: int = Field(default=900, ge=60)
+    max_concurrent_groups: int = Field(default=8, ge=1, le=16)
+    group_timeout_seconds: int = Field(default=120, ge=60)
+
+
+class McpDescriptionsConfig(BaseModel):
+    """The background service that has a model describe MCP servers.
+
+    ``user_servers`` covers the servers users add themselves, which run on
+    each user's own model; off, only shipped brokerages are described. With
+    ``enabled`` off nothing is queued and every row keeps its own text.
+    """
+
+    enabled: bool = Field(default=True)
+    user_servers: bool = Field(default=True)
+    interval_seconds: int = Field(default=20, ge=5)
+
+
 class FeatureFlagOverride(BaseModel):
     """Deployment override for a code-declared feature (src/config/features.py).
 
@@ -288,12 +340,11 @@ class MarketWatchConfig(BaseModel):
         default=25, ge=5, description="Throttle between injections per thread"
     )
     max_symbols: int = Field(default=10, ge=1, le=50, description="Watch list cap")
-    cache_breakpoint_pin: bool = Field(
-        default=True,
-        description=(
-            "Pin a provider cache breakpoint on the last durable message so the "
-            "ephemeral stamp doesn't break incremental caching"
-        ),
+    target_warning_minutes: int = Field(
+        default=60,
+        ge=1,
+        le=720,
+        description="Minutes before a target lapses that the thread is told",
     )
 
 
@@ -410,15 +461,29 @@ class WorkflowOrchestrationConfig(BaseModel):
         return self
 
 
+class PromptConfig(BaseModel):
+    """Deployment-wide prompt settings."""
+
+    guidance: Literal["auto", "lean", "detailed"] = Field(
+        default="auto",
+        description=(
+            "Prompt scaffolding level for this deployment. 'auto' defers to the "
+            "model's prompt_guidance in models.json; 'lean'/'detailed' pin it. A "
+            "per-user model_preference.prompt_guidance still wins over this — a "
+            "profile for the running model first, then the account-wide value."
+        ),
+    )
+
+
 class InfrastructureConfig(BaseModel):
     """Root model for infrastructure configuration (config.yaml)."""
 
     model_config = ConfigDict(extra="allow")
 
+    prompt: PromptConfig = Field(default_factory=PromptConfig)
+
     # Application Settings
     debug: bool = Field(default=False, description="Debug mode flag")
-    ptc_recursion_limit: int = Field(default=2000, ge=1, le=10000, description="PTC agent recursion limit")
-    flash_recursion_limit: int = Field(default=500, ge=1, le=10000, description="Flash agent recursion limit")
     workflow_timeout: int = Field(default=21600, description="Workflow timeout in seconds")
     sse_keepalive_interval: float = Field(
         default=15.0, description="SSE keepalive interval in seconds"
@@ -430,6 +495,9 @@ class InfrastructureConfig(BaseModel):
     )
     redis_warm_on_startup: bool = Field(
         default=True, description="Enable Redis cache warming on startup"
+    )
+    brokerage_marks_warm_on_startup: bool = Field(
+        default=False, description="Fetch the built-in brokerages' logos on startup"
     )
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing")
     market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
@@ -474,4 +542,10 @@ class InfrastructureConfig(BaseModel):
     # RunWorkflow orchestration caps
     workflow: WorkflowOrchestrationConfig = Field(
         default_factory=WorkflowOrchestrationConfig
+    )
+
+    mcp_descriptions: McpDescriptionsConfig = Field(default_factory=McpDescriptionsConfig)
+    # Order reconciliation sweep
+    order_reconcile: OrderReconcileConfig = Field(
+        default_factory=OrderReconcileConfig
     )

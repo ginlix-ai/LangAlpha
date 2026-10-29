@@ -188,7 +188,7 @@ export function DashboardDataProvider({ children }: { children: ReactNode }) {
     ]
   );
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return <Ctx value={value}>{children}</Ctx>;
 }
 
 export function useDashboardContext(): DashboardDataContextValue {

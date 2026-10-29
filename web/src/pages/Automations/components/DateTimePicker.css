@@ -1,0 +1,139 @@
+.automation-moment-field {
+  color: var(--color-text-primary);
+  text-align: left;
+}
+
+.automation-moment-field[data-empty] {
+  color: var(--color-text-tertiary);
+}
+
+.automation-moment-field svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.automation-moment-popover {
+  overflow: hidden;
+  border-color: var(--color-border-muted);
+}
+
+.automation-moment-picks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 6px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.automation-moment-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  text-align: left;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+.automation-moment-pick:hover,
+.automation-moment-pick[aria-pressed='true'] {
+  background-color: var(--color-bg-hover);
+}
+
+.automation-moment-pick-name {
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+}
+
+.automation-moment-pick-when {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.automation-moment-body {
+  display: grid;
+  grid-template-columns: auto 116px;
+}
+
+.automation-calendar {
+  padding: 10px 12px 12px;
+}
+
+.automation-moment-times {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--color-border-muted);
+}
+
+/* Portaled out of the form, so the form's field rule does not reach it. */
+.automation-moment-times .automation-time-input {
+  flex-shrink: 0;
+  width: auto;
+  height: 30px;
+  margin: 10px 8px 6px;
+  padding: 0 8px;
+  background-color: var(--color-bg-input);
+  border-color: var(--color-border-muted);
+}
+
+.automation-moment-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px 6px 12px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
+/* Done answers the pointer: it fills and brightens under it and gives a
+   little on the press, so it reads as the way out of the panel. */
+.automation-moment-done {
+  padding: 5px 12px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  transition:
+    background-color var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out),
+    color var(--motion-quick) var(--ease-out),
+    scale var(--motion-press) var(--ease-out);
+}
+
+.automation-moment-done:hover {
+  background-color: var(--color-bg-hover);
+  border-color: var(--color-border-elevated);
+  color: var(--color-text-primary);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .automation-moment-done:active {
+    scale: var(--press-scale);
+  }
+}
+
+.automation-moment-zone {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+@media (max-width: 480px) {
+  .automation-moment-body {
+    grid-template-columns: 1fr;
+  }
+
+  .automation-moment-times {
+    border-left: 0;
+    border-top: 1px solid var(--color-border-muted);
+  }
+
+  .automation-moment-times .automation-time-list {
+    height: 160px;
+    flex: none;
+  }
+}

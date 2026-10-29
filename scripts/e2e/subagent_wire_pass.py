@@ -166,7 +166,6 @@ def post_turn(
     blip half of the frontend mock (ids must continue past the drop point,
     strictly increasing)."""
     body: dict = {
-        "agent_mode": "ptc",
         "workspace_id": workspace_id,
         "messages": [{"role": "user", "content": prompt}],
     }

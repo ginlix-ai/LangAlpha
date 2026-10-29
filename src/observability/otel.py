@@ -40,6 +40,8 @@ import logging
 import os
 from typing import Any, Optional
 
+from .private_query import drop_span_query
+
 logger = logging.getLogger(__name__)
 
 # Two independent flags: classes can be patched in the parent even when the
@@ -70,7 +72,7 @@ def _install_classpatches() -> None:
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        FastAPIInstrumentor().instrument()
+        FastAPIInstrumentor().instrument(server_request_hook=drop_span_query)
     except Exception as exc:  # noqa: BLE001
         logger.warning("OTel FastAPI instrumentor failed: %s", exc)
 
@@ -127,7 +129,11 @@ def _install_runtime() -> None:
     })
 
     _tracer_provider = TracerProvider(resource=resource)
-    _tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    from .private_spans import DatabaseErrorScrubber
+
+    _tracer_provider.add_span_processor(
+        BatchSpanProcessor(DatabaseErrorScrubber(OTLPSpanExporter()))
+    )
     trace.set_tracer_provider(_tracer_provider)
 
     # Wider buckets for turn + cold-start latencies (default top bucket is 10s).

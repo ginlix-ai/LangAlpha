@@ -1,0 +1,1795 @@
+{
+  "fundamentals": {
+    "name": "FundamentalsMCP",
+    "tools": [
+      {
+        "name": "get_financial_statements",
+        "description": "Fetch raw historical financial statements for trend analysis or model\nbuilding. statement_type=\"all\" returns income, balance sheet, and cash flow.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    statement_type: \"income\" | \"balance\" | \"cash\" | \"all\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, statement_type, period}.\n    One statement_type → a list of period records; \"all\" → {income_statement,\n    balance_sheet, cash_flow} lists with count the total. Common camelCase\n    fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.\n    date is \"YYYY-MM-DD\"; records are newest-first as returned by FMP. On\n    error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "statement_type": {
+              "default": "all",
+              "enum": [
+                "income",
+                "balance",
+                "cash",
+                "all"
+              ],
+              "title": "Statement Type",
+              "type": "string"
+            },
+            "period": {
+              "default": "annual",
+              "enum": [
+                "annual",
+                "quarter"
+              ],
+              "title": "Period",
+              "type": "string"
+            },
+            "limit": {
+              "default": 10,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_financial_statementsArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {},
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "statement_type": {
+              "type": "string"
+            },
+            "period": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetFinancialStatementsOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_financial_ratios",
+        "description": "Fetch raw historical key metrics and financial ratios — track P/E, ROE,\nand margins over time, or compare valuation across companies.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {key_metrics, ratios}, each a list of period records; count is the total.\n    key_metrics fields: date, marketCap, enterpriseValue, evToEBITDA,\n    freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,\n    currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are\n    FMP-native camelCase; date is \"YYYY-MM-DD\"; records are newest-first as\n    returned by FMP. On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "period": {
+              "default": "annual",
+              "enum": [
+                "annual",
+                "quarter"
+              ],
+              "title": "Period",
+              "type": "string"
+            },
+            "limit": {
+              "default": 10,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_financial_ratiosArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "period": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetFinancialRatiosOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_growth_metrics",
+        "description": "Fetch raw historical growth rates for trend analysis — chart revenue/EPS\ntrajectory or compare growth across competitors.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {financial_growth, income_statement_growth}, each a list; count is the\n    total. financial_growth fields: date, revenueGrowth, netIncomeGrowth,\n    epsgrowth; income_statement_growth fields: date, growthRevenue,\n    growthNetIncome, growthEPS. Growth values are decimal fractions\n    (0.1 = 10%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";\n    records are newest-first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "period": {
+              "default": "annual",
+              "enum": [
+                "annual",
+                "quarter"
+              ],
+              "title": "Period",
+              "type": "string"
+            },
+            "limit": {
+              "default": 10,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_growth_metricsArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "period": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetGrowthMetricsOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_historical_valuation",
+        "description": "Fetch DCF fair value and enterprise value history — track fair value vs\nprice or build valuation trend charts.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    period: \"annual\" | \"quarter\".\n    limit: Number of periods (default 10).\n\nReturns:\n    dict: {symbol, count, data, source, data_type, period}. data is\n    {current_dcf, historical_dcf, enterprise_value}, each a list; count is\n    the total. current_dcf fields: symbol, date, dcf, stockPrice.\n    historical_dcf is always [] — the stable FMP API no longer exposes it.\n    enterprise_value fields: date, stockPrice, marketCapitalization,\n    enterpriseValue. Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\"; enterprise_value is newest-first as returned by FMP. On\n    error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "period": {
+              "default": "annual",
+              "enum": [
+                "annual",
+                "quarter"
+              ],
+              "title": "Period",
+              "type": "string"
+            },
+            "limit": {
+              "default": 10,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_historical_valuationArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "period": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetHistoricalValuationOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_insider_trades",
+        "description": "Fetch insider trading transactions and aggregate buy/sell statistics —\ndetect insider buying clusters, screen unusual activity, or gauge C-suite\nconfidence.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n    limit: Number of recent transactions to fetch (default 50).\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is {trades, stats},\n    each a list; count is the total across both. trades fields: symbol,\n    filingDate, transactionDate, reportingName, transactionType,\n    securitiesTransacted, price. stats fields: year, quarter, totalBought,\n    totalSold, buySellRatio. Field names are FMP-native camelCase; dates are\n    \"YYYY-MM-DD\"; trades are newest-first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "limit": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_insider_tradesArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetInsiderTradesOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_dividends_and_splits",
+        "description": "Fetch historical dividend payments and stock splits — analyze dividend\ngrowth, adjust prices for splits, or compare dividend history across peers.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is\n    {dividends, splits}, each a list; count is the total across both.\n    dividends fields: date, recordDate, paymentDate, declarationDate,\n    adjDividend, dividend, yield, frequency. splits fields: date, numerator,\n    denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";\n    records are newest-first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_dividends_and_splitsArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetDividendsAndSplitsOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_shares_float",
+        "description": "Fetch shares float, outstanding shares, and float percentage — flag\nlow-float names, gauge ownership concentration, or screen squeeze candidates.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is a list of\n    records; count is the record total. Fields: symbol, date, freeFloat,\n    floatShares, outstandingShares. Field names are FMP-native camelCase;\n    date is \"YYYY-MM-DD\"; latest snapshot first as returned by FMP. On error:\n    {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_shares_floatArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetSharesFloatOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_key_executives",
+        "description": "Fetch key executives with title and compensation — identify the\nmanagement team or compare executive pay across peers.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\".\n\nReturns:\n    dict: {symbol, count, data, source, data_type}. data is a list of\n    executive records; count is the record total. Fields: name, title, pay,\n    currencyPay, gender, yearBorn, titleSince. Field names are FMP-native\n    camelCase; pay is an integer in currencyPay units; order is as returned\n    by FMP (not time-ordered). On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_key_executivesArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetKeyExecutivesOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_technical_indicator",
+        "description": "Fetch a technical indicator time series over OHLCV bars — plot RSI,\noverlay EMA/MACD, or screen by technical signals.\n\nArgs:\n    symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SH\".\n    indicator: FMP name — \"rsi\", \"ema\", \"sma\", \"wma\", \"adx\", \"williams\".\n    period: Indicator lookback length (default 14).\n    timeframe: FMP-native bar — \"1min\"…\"4hour\", \"1day\" (default \"1day\").\n\nReturns:\n    dict: {symbol, count, data, source, data_type, indicator, period,\n    timeframe}. data is a list of bars; count is the bar total. Fields: date,\n    open, high, low, close, volume, and the indicator value keyed by its\n    name. date is \"YYYY-MM-DD\" (1day) or \"YYYY-MM-DD HH:MM:SS\"\n    (intraday); field names are FMP-native camelCase; bars newest-first.\n    On error: {error: <code>, detail, symbol}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "indicator": {
+              "title": "Indicator",
+              "type": "string"
+            },
+            "period": {
+              "default": 14,
+              "title": "Period",
+              "type": "integer"
+            },
+            "timeframe": {
+              "default": "1day",
+              "title": "Timeframe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "indicator"
+          ],
+          "title": "get_technical_indicatorArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "indicator": {
+              "type": "string"
+            },
+            "period": {
+              "description": "Indicator lookback length.",
+              "type": "integer"
+            },
+            "timeframe": {
+              "description": "FMP-native bar size.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetTechnicalIndicatorOut",
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "macro": {
+    "name": "MacroMCP",
+    "tools": [
+      {
+        "name": "get_economic_indicator",
+        "description": "Fetch an economic indicator time series — GDP growth for the macro\noutlook, CPI/inflation for discount-rate assumptions, or unemployment and\nthe Fed funds rate for economic context.\n\nArgs:\n    name: Indicator — \"GDP\", \"CPI\", \"unemploymentRate\", \"federalFundsRate\",\n        \"inflationRate\", \"retailSales\", \"consumerSentiment\", \"nonFarmPayrolls\".\n    limit: Number of observations to fetch (default 50).\n\nReturns:\n    dict: {count, data, source, data_type, indicator}. data is a list of\n    observations; count is the observation total. Fields: date, value (and\n    for some series, name). Field names are FMP-native camelCase; date is\n    \"YYYY-MM-DD\"; observations are newest-first as returned by FMP. On error:\n    {error: <code>, detail, indicator}.\n",
+        "inputSchema": {
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "limit": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "get_economic_indicatorArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "indicator": {
+              "description": "Echoed indicator name.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetEconomicIndicatorOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_economic_calendar",
+        "description": "Fetch economic events with prior, estimate, and actual values — build a\ncatalyst calendar, generate a morning note, or track Fed meetings, jobs\nreports, and CPI releases.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\" (default: today).\n    to_date: End date \"YYYY-MM-DD\" (default: 7 days from today).\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of events; count is the event total. Fields: date, country, event,\n    currency, previous, estimate, actual, change, changePercentage, impact,\n    unit. actual/estimate/previous are null for events not yet released.\n    Field names are FMP-native camelCase; date is \"YYYY-MM-DD HH:MM:SS\";\n    order is as returned by FMP. On error: {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "from_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "From Date"
+            },
+            "to_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "To Date"
+            }
+          },
+          "title": "get_economic_calendarArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "from_date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "to_date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetEconomicCalendarOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_treasury_rates",
+        "description": "Fetch US Treasury rates across the full yield curve (1M to 30Y) — get the\nrisk-free rate for DCF/WACC (typically 10Y), read the curve shape, or track\nrate trends.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\" (default: recent data).\n    to_date: End date \"YYYY-MM-DD\" (default: today).\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of daily records; count is the record total. Each record has a date\n    plus per-tenor rate columns: month1, month2, month3, month6, year1,\n    year2, year3, year5, year7, year10, year20, year30. Rates are percent\n    (4.5 = 4.5%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";\n    records are newest-first as returned by FMP. On error:\n    {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "from_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "From Date"
+            },
+            "to_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "To Date"
+            }
+          },
+          "title": "get_treasury_ratesArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "from_date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "to_date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetTreasuryRatesOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_market_risk_premium",
+        "description": "Fetch market risk premium by country for CAPM/WACC — get the equity risk\npremium for a DCF cost of equity, or compare premiums across markets.\n\nReturns:\n    dict: {count, data, source, data_type}. data is a list of country\n    records; count is the record total. Fields: country, continent,\n    countryRiskPremium, totalEquityRiskPremium. Premiums are percent\n    (5.5 = 5.5%). Field names are FMP-native camelCase; order is by country\n    as returned by FMP (not time-ordered). On error: {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {},
+          "title": "get_market_risk_premiumArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetMarketRiskPremiumOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_earnings_calendar",
+        "description": "Fetch the earnings calendar for all companies reporting in a date range —\nbuild a catalyst calendar, generate a morning note, or track earnings-season\nvolume.\n\nArgs:\n    from_date: Start date \"YYYY-MM-DD\".\n    to_date: End date \"YYYY-MM-DD\".\n\nReturns:\n    dict: {count, data, source, data_type, from_date, to_date}. data is a\n    list of reporter records; count is the record total. Fields: symbol,\n    date, epsActual, epsEstimated, revenueActual, revenueEstimated,\n    lastUpdated. actual fields are null before a company reports. Field names\n    are FMP-native camelCase; date is \"YYYY-MM-DD\"; order is as returned by\n    FMP. On error: {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "from_date": {
+              "title": "From Date",
+              "type": "string"
+            },
+            "to_date": {
+              "title": "To Date",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from_date",
+            "to_date"
+          ],
+          "title": "get_earnings_calendarArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "from_date": {
+              "type": "string"
+            },
+            "to_date": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetEarningsCalendarOut",
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "options": {
+    "name": "OptionsMCP",
+    "tools": [
+      {
+        "name": "get_options_chain",
+        "description": "List options contracts for an underlying; use to discover/filter contracts.\n\nFilter by call/put, expiration range, and strike range. ginlix-data only.\n\nArgs:\n    underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".\n    contract_type: \"call\" or \"put\" (default: both).\n    expiration_date_gte: Min expiration \"YYYY-MM-DD\".\n    expiration_date_lte: Max expiration \"YYYY-MM-DD\".\n    strike_price_gte: Min strike price.\n    strike_price_lte: Max strike price.\n    limit: Max contracts (default 50, max 1000).\n\nReturns:\n    dict: {symbol, underlying_ticker, currency, timezone, count, data,\n    source}. data: list of contract dicts with ticker, contract_type,\n    expiration_date, strike_price, shares_per_contract, primary_exchange;\n    strike_price in `currency` major units. On error: {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "underlying_ticker": {
+              "title": "Underlying Ticker",
+              "type": "string"
+            },
+            "contract_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Contract Type"
+            },
+            "expiration_date_gte": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expiration Date Gte"
+            },
+            "expiration_date_lte": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expiration Date Lte"
+            },
+            "strike_price_gte": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Strike Price Gte"
+            },
+            "strike_price_lte": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Strike Price Lte"
+            },
+            "limit": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "underlying_ticker"
+          ],
+          "title": "get_options_chainArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "currency": {
+              "description": "ISO 4217 currency of price fields.",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "underlying_ticker": {
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetOptionsChainOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_options_prices",
+        "description": "Fetch OHLCV bars for one options contract; use for option price history.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day|1week|1month (aliases like\n\"1d\"/\"daily\" accepted). ginlix-data only.\n\nArgs:\n    options_ticker: OCC contract ticker, e.g. \"O:AAPL260618C00220000\".\n    from_date: Start date \"YYYY-MM-DD\" (required).\n    to_date: End date \"YYYY-MM-DD\" (required).\n    interval: Bar size; one of the intervals above.\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source}. symbol\n    echoes the contract ticker; currency/timezone are the underlying's. data:\n    list of {date, open, high, low, close, volume} ascending (oldest first);\n    date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major\n    units. On error: {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "options_ticker": {
+              "title": "Options Ticker",
+              "type": "string"
+            },
+            "from_date": {
+              "title": "From Date",
+              "type": "string"
+            },
+            "to_date": {
+              "title": "To Date",
+              "type": "string"
+            },
+            "interval": {
+              "default": "1day",
+              "title": "Interval",
+              "type": "string"
+            }
+          },
+          "required": [
+            "options_ticker",
+            "from_date",
+            "to_date"
+          ],
+          "title": "get_options_pricesArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "interval": {
+              "description": "Canonical interval echoed back.",
+              "type": "string"
+            },
+            "currency": {
+              "description": "ISO 4217 currency of price fields.",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetOptionsPricesOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_options_snapshot",
+        "description": "Fetch real-time snapshots for options contracts; use for live quotes.\n\nSession OHLCV is always present; bid/ask and last trade populate during\nmarket hours. ginlix-data only.\n\nArgs:\n    options_tickers: One or more OCC tickers, comma-separated\n        (e.g. \"O:AAPL260618C00220000,O:AAPL260618C00230000\").\n\nReturns:\n    dict: {currency, timezone, count, data, source}. currency/timezone are\n    the underlying's, set only when all contracts share one (else omitted).\n    data: list of snapshot dicts, each with ticker, name, market_status,\n    session (OHLCV + change), last_quote (bid/ask/midpoint), last_trade\n    (price/size); prices in `currency` major units. On error:\n    {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "options_tickers": {
+              "title": "Options Tickers",
+              "type": "string"
+            }
+          },
+          "required": [
+            "options_tickers"
+          ],
+          "title": "get_options_snapshotArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "currency": {
+              "description": "ISO 4217 currency of price fields.",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetOptionsSnapshotOut",
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "price_data": {
+    "name": "PriceDataMCP",
+    "tools": [
+      {
+        "name": "get_stock_data",
+        "description": "Fetch OHLCV price bars for a stock; use for historical charts/analysis.\n\nIntervals: 1min|5min|15min|30min|1hour|4hour|1day (aliases like \"1d\"/\"daily\"\naccepted). start_date and end_date are required for intraday.\n\nArgs:\n    symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SH\", LSE \"VOD.L\".\n    interval: Bar size; one of the intervals above.\n    start_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n    end_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n\nReturns:\n    dict: {symbol, interval, currency, timezone, count, data, source,\n    name?}. data: list of {date, open, high, low, close, volume} ascending\n    (oldest first); date exchange-local \"YYYY-MM-DD\" (daily) or\n    \"YYYY-MM-DD HH:MM:SS\" (intraday); prices in `currency` major units.\n    name: local-language company name, CN and HK listings only. On error:\n    {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "interval": {
+              "default": "1day",
+              "title": "Interval",
+              "type": "string"
+            },
+            "start_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Start Date"
+            },
+            "end_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "End Date"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_stock_dataArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "interval": {
+              "description": "Canonical interval echoed back.",
+              "type": "string"
+            },
+            "currency": {
+              "description": "ISO 4217 currency of price fields.",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Local-language company name; CN and HK listings only, omitted elsewhere.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetStockDataOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_asset_data",
+        "description": "Fetch OHLCV bars for a stock, commodity, crypto, or forex pair.\n\nIntervals: 1min|5min|1hour|1day (stock adds 15min|30min|4hour); dates\nrequired for intraday.\n\nArgs:\n    symbol: Stock \"AAPL\", commodity \"GCUSD\", crypto \"BTCUSD\", forex \"EURUSD\".\n    asset_type: One of stock|commodity|crypto|forex.\n    interval: Bar size; see intervals above.\n    from_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n    to_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).\n\nReturns:\n    dict: {symbol, asset_type, interval, currency, timezone, count, data,\n    source, name?}. data: list of {date, open, high, low, close, volume}\n    ascending (oldest first); date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\";\n    prices in `currency` major units. name: local-language company name,\n    CN and HK stock listings only. On error: {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "asset_type": {
+              "title": "Asset Type",
+              "type": "string"
+            },
+            "interval": {
+              "default": "1day",
+              "title": "Interval",
+              "type": "string"
+            },
+            "from_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "From Date"
+            },
+            "to_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "To Date"
+            }
+          },
+          "required": [
+            "symbol",
+            "asset_type"
+          ],
+          "title": "get_asset_dataArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "interval": {
+              "description": "Canonical interval echoed back.",
+              "type": "string"
+            },
+            "currency": {
+              "description": "ISO 4217 currency of price fields.",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "asset_type": {
+              "type": "string"
+            },
+            "name": {
+              "description": "Local-language company name; CN and HK listings only, omitted elsewhere.",
+              "type": "string"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetAssetDataOut",
+          "type": "object"
+        }
+      },
+      {
+        "name": "get_short_data",
+        "description": "Fetch short interest and/or short volume for a US stock (short-squeeze work).\n\nShort interest is FINRA bi-monthly (settlement_date); short volume is daily\noff-exchange (date). ginlix-data only.\n\nArgs:\n    symbol: Stock ticker, e.g. \"AAPL\".\n    data_type: \"short_interest\", \"short_volume\", or \"both\" (default).\n    from_date: \"YYYY-MM-DD\" start filter (optional).\n    to_date: \"YYYY-MM-DD\" end filter (optional).\n    limit: Max records per section (default 20, max 50000).\n\nReturns:\n    dict: {symbol, timezone, count, data, source, data_type}. data is a dict\n    of {short_interest, short_volume} lists (requested sections only), newest\n    first. Record fields are vendor-native (e.g. settlement_date,\n    short_volume_ratio). Partial failures appear in an `errors` map. On\n    error: {error: <code>, detail}.\n",
+        "inputSchema": {
+          "properties": {
+            "symbol": {
+              "title": "Symbol",
+              "type": "string"
+            },
+            "data_type": {
+              "default": "both",
+              "enum": [
+                "short_interest",
+                "short_volume",
+                "both"
+              ],
+              "title": "Data Type",
+              "type": "string"
+            },
+            "from_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "From Date"
+            },
+            "to_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "To Date"
+            },
+            "limit": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "title": "get_short_dataArguments",
+          "type": "object"
+        },
+        "outputSchema": {
+          "additionalProperties": true,
+          "anyOf": [
+            {
+              "required": [
+                "count",
+                "data",
+                "source"
+              ]
+            },
+            {
+              "required": [
+                "error",
+                "detail"
+              ]
+            }
+          ],
+          "properties": {
+            "symbol": {
+              "description": "Echoed ticker or identifier.",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA timezone of timestamps.",
+              "type": "string"
+            },
+            "count": {
+              "description": "Number of records in data.",
+              "type": "integer"
+            },
+            "data": {
+              "additionalProperties": {
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            "source": {
+              "description": "Upstream data source.",
+              "type": "string"
+            },
+            "data_type": {
+              "type": "string"
+            },
+            "errors": {
+              "description": "Per-section upstream errors on partial success.",
+              "type": "object"
+            },
+            "error": {
+              "description": "Machine-readable error code (error responses only).",
+              "type": "string"
+            },
+            "detail": {
+              "description": "Human-readable error detail (error responses only).",
+              "type": "string"
+            }
+          },
+          "title": "GetShortDataOut",
+          "type": "object"
+        }
+      }
+    ]
+  }
+}

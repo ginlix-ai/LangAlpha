@@ -1,11 +1,10 @@
 import { useState, type KeyboardEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
+import { isImeComposing } from '@/lib/ime';
 
 interface UseThreadGalleryInputResult {
   message: string;
   setMessage: React.Dispatch<React.SetStateAction<string>>;
-  planMode: boolean;
-  setPlanMode: React.Dispatch<React.SetStateAction<boolean>>;
   isLoading: boolean;
   handleSend: () => Promise<void>;
   handleKeyPress: (e: KeyboardEvent) => void;
@@ -13,7 +12,6 @@ interface UseThreadGalleryInputResult {
 
 export function useThreadGalleryInput(workspaceId: string): UseThreadGalleryInputResult {
   const [message, setMessage] = useState('');
-  const [planMode, setPlanMode] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
@@ -28,7 +26,6 @@ export function useThreadGalleryInput(workspaceId: string): UseThreadGalleryInpu
         state: {
           workspaceId,
           initialMessage: message.trim(),
-          planMode: planMode,
         },
       });
 
@@ -41,7 +38,7 @@ export function useThreadGalleryInput(workspaceId: string): UseThreadGalleryInpu
   };
 
   const handleKeyPress = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
       e.preventDefault();
       handleSend();
     }
@@ -50,8 +47,6 @@ export function useThreadGalleryInput(workspaceId: string): UseThreadGalleryInpu
   return {
     message,
     setMessage,
-    planMode,
-    setPlanMode,
     isLoading,
     handleSend,
     handleKeyPress,

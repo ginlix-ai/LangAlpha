@@ -1,0 +1,6 @@
+{#- The folder is per task, so its literal path rides the baseline's
+    <scratchpad> element; naming it here would split a prefix shared across
+    tasks. A subagent keeps no checkpoint notes: its brief is the request. -#}
+# Scratchpad
+
+This task has a scratchpad folder of its own, which the `<scratchpad>` element of the runtime-context block that follows this prompt gives in full. Write it by that absolute path. Temporary files go there rather than in `/tmp`: a script written only to get a result, an exploratory check, a draft, a log. What the parent agent or the user will need goes where your brief says. The folder is deleted when the user archives the thread.

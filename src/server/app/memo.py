@@ -37,7 +37,7 @@ from fastapi import (
 )
 from pydantic import BaseModel
 
-from ptc_agent.agent.backends import lock_for_namespace
+from ptc_agent.agent.backends import lock_for_namespace, memo_namespace
 from ptc_agent.agent.memo import (
     ACCEPTED_MIME_TYPES,
     MAX_COLLISION_SUFFIX,
@@ -65,6 +65,7 @@ from src.config.settings import (
 )
 from src.server.app import setup
 from src.server.utils.http_headers import content_disposition
+from src.server.utils.uploads import read_capped
 from src.server.app._store_helpers import (
     MAX_LIST_LIMIT,
     adelete,
@@ -174,41 +175,9 @@ async def _kickoff_metadata_handover(user_id: str, key: str) -> None:
     )
 
 
-def _namespace(user_id: str) -> tuple[str, ...]:
-    return (user_id, "memos")
-
-
 # Cap the sandbox-source path field before it lands in a memo row so a
 # malicious 1 MB form value can't bloat every list/read response.
 _SOURCE_PATH_MAX_CHARS: int = 1024
-_UPLOAD_READ_CHUNK: int = 64 * 1024
-
-
-async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
-    """Read an uploaded file in chunks, raising 413 once the cap is exceeded.
-
-    ``await file.read()`` would buffer the entire body to a SpooledTemporaryFile
-    (1 MB threshold then disk) before any size check fires, turning a 100 MB
-    adversarial upload into a disk-full DoS amplifier. Reading in chunks lets
-    us reject early.
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_UPLOAD_READ_CHUNK)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"File too large (>{max_bytes} bytes). Aborting before "
-                    f"the full body is buffered."
-                ),
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 def _reject_reserved_key(key: str) -> None:
@@ -547,9 +516,9 @@ async def upload_user_memo(
         workspace = await db_get_workspace(source_workspace_id)
         require_workspace_owner(workspace, user_id=user_id)
 
-    # Reject oversized uploads as soon as we cross the limit so a 100MB
-    # adversarial body never gets fully buffered to disk.
-    raw = await _read_capped(file, MEMO_MAX_UPLOAD_BYTES)
+    # Stop reading once we cross the limit so a 100MB adversarial body never
+    # lands in memory (the form parser has already spooled it by now).
+    raw = await read_capped(file, MEMO_MAX_UPLOAD_BYTES)
 
     # Text extraction -----------------------------------------------------
     if is_pdf(mime_type):
@@ -585,7 +554,7 @@ async def upload_user_memo(
             ),
         )
 
-    namespace = _namespace(user_id)
+    namespace = memo_namespace(user_id)
     original_filename = file.filename or "memo"
 
     # Phase A — outside the lock. Object-storage PUT is the slow part of
@@ -759,7 +728,7 @@ async def write_user_memo(
     validate_key(body.key)
     _reject_reserved_key(body.key)
 
-    namespace = _namespace(user_id)
+    namespace = memo_namespace(user_id)
     # See upload_user_memo: strip NULs at the ingestion boundary because
     # Postgres JSONB rejects \x00 in text fields.
     content = body.content.replace("\x00", "")
@@ -832,7 +801,7 @@ async def write_user_memo(
 async def list_user_memos(user_id: CurrentUserId) -> MemoListResponse:
     """List all memos for the caller. Excludes memo.md itself."""
     store = require_store(setup.store)
-    namespace = _namespace(user_id)
+    namespace = memo_namespace(user_id)
     raw_entries, truncated = await paginate_namespace(
         store, namespace, _value_to_entry
     )
@@ -848,7 +817,7 @@ async def read_user_memo(
     """Read one memo's text content and metadata. Never returns binary blob."""
     validate_key(key)
     store = require_store(setup.store)
-    item = await aget(store, _namespace(user_id), key)
+    item = await aget(store, memo_namespace(user_id), key)
     if item is None:
         raise HTTPException(status_code=404, detail="Memo not found")
     return _value_to_read(key, item.value)
@@ -862,7 +831,7 @@ async def download_user_memo(
     """Stream the original file bytes (PDF) — or the text content if non-binary."""
     validate_key(key)
     store = require_store(setup.store)
-    item = await aget(store, _namespace(user_id), key)
+    item = await aget(store, memo_namespace(user_id), key)
     if item is None:
         raise HTTPException(status_code=404, detail="Memo not found")
     value = item.value if isinstance(item.value, dict) else {}
@@ -921,7 +890,7 @@ async def delete_user_memo(
     validate_key(key)
     _reject_reserved_key(key)
     store = require_store(setup.store)
-    namespace = _namespace(user_id)
+    namespace = memo_namespace(user_id)
 
     # Pair the lock with upload's _find_by_source → aput window. Without it,
     # a sandbox-source upload that already saw key=foo can aput a fresh value
@@ -968,7 +937,7 @@ async def regenerate_user_memo_metadata(
     validate_key(key)
     _reject_reserved_key(key)
     store = require_store(setup.store)
-    namespace = _namespace(user_id)
+    namespace = memo_namespace(user_id)
 
     # Same lock as upload/write so the regenerate's RMW can't interleave with
     # a concurrent edit that rotates the row's modified_at.

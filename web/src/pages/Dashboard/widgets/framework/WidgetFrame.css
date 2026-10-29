@@ -1,285 +1,591 @@
-/* WidgetFrame — chrome around every widget */
+/* The chrome around every widget: the chat's data card (termCard.css), so
+   the dashboard reads in the card style the reader picked in Settings. The
+   card's own stylesheets draw the edge, the title in it and the three styles;
+   this file adds what only a widget needs (the actions, edit mode, a body
+   that scrolls inside a fixed cell). */
 
 .widget-frame {
   position: relative;
   height: 100%;
+  /* The drag pickup scales the frame (see .react-draggable-dragging below). */
+  transition: transform var(--motion-quick) var(--ease-out);
+}
+
+.widget-card {
+  /* The title cuts the edge in the page's ground. */
+  --term-ground: var(--color-bg-page);
+  /* The size the redrawn bodies set their type in, the card's own. */
+  --widget-term-size: 0.71875rem;
   display: flex;
   flex-direction: column;
-  background-color: transparent;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  overflow: hidden;
-  /* Transitions cover both the edit-mode toggle (border/bg/shadow fade in)
-   * and the drag pickup/drop (scale + shadow lift on the inner frame,
-   * applied via .react-draggable-dragging below). */
-  transition:
-    border-color 180ms ease,
-    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    background-color 180ms ease,
-    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  height: 100%;
+}
+.widget-card[data-size='sm'] {
+  --widget-term-size: 0.6875rem;
 }
 
-.widget-frame--edit {
-  border: 1px dashed var(--color-accent-primary);
-  box-shadow: 0 0 0 2px var(--color-accent-soft);
-  background-color: var(--color-bg-card);
-  /* Whole frame is the drag handle in edit mode. Grab cursor signals it,
-   * `user-select: none` prevents the text-selection highlight that would
-   * otherwise flicker as the user initiates a drag. Action buttons (with
-   * .widget-drag-cancel) get their own cursor via .widget-frame__icon-btn
-   * so the hover affordance on those stays intact. */
-  cursor: grab;
-  user-select: none;
+/* An empty sub or meta draws no cut in the edge. */
+.widget-card > .term-card-head > :empty {
+  display: none;
 }
 
-.widget-frame--edit:active {
-  cursor: grabbing;
-}
-
-/* Elements that cancel drag should not inherit the grab cursor. */
-.widget-frame--edit .widget-drag-cancel {
-  cursor: auto;
-}
-
-.widget-frame__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid transparent;
-  min-height: 40px;
-  flex-shrink: 0;
-}
-
-.widget-frame--edit .widget-frame__header {
-  border-bottom-color: var(--color-border-muted);
-  background-color: var(--color-bg-subtle);
-}
-
-.widget-frame__drag {
-  cursor: grab;
-  color: var(--color-text-tertiary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  transition: background-color 0.12s ease;
-}
-
-.widget-frame__drag:hover {
-  background-color: var(--color-bg-hover);
+.widget-card__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* A body not drawn the card way keeps the platform's type, not the card's
+     mono; one that is opts back in with .widget-term. */
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  line-height: 1.5;
+  font-variant-numeric: normal;
   color: var(--color-text-primary);
 }
 
-.widget-frame__drag:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 1px;
-}
-
-.widget-frame__drag:active {
-  cursor: grabbing;
-}
-
-.widget-frame__title {
-  flex: 1;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
-  min-width: 0;
+/* A fit widget sizes its cell to the content, so its body never scrolls; a
+   scrollbar would only flash while the content animates its own height and
+   the cell catches up (the growth path commits on every frame). */
+.widget-frame--fit .widget-card__body {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+/* Past its ceiling a fit widget's body scrolls, its column heads held at the
+   top in the card's own fill. */
+.widget-frame--fit .widget-card {
+  max-height: var(--widget-fit-max, none);
+}
+.widget-frame--fit[data-fit-capped] .widget-card__body {
+  overflow-y: auto;
+}
+/* Its list never scrolls on its own: a list that may scroll is the box sticky
+   heads hold to, even at its full height. */
+.widget-frame--fit .dash-scroll {
+  overflow: visible;
+}
+.widget-frame--fit[data-fit-capped] .dash-table > thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--term-ground);
 }
 
-.widget-frame__actions {
-  display: flex;
+/* A body drawn the card way: the card's type, the card's ink. */
+.widget-term {
+  font-family: var(--font-mono);
+  font-size: var(--widget-term-size);
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-term-text);
+}
+
+/* ── The actions, in the edge after the title ── */
+
+/* The grip and the actions share the title's cut, as the sub does, so the
+   edge does not show through in short pieces between them. */
+.widget-card > .term-card-head > .widget-card__grip {
+  display: inline-flex;
+  align-self: center;
+  margin-right: -0.625rem;
+  padding-right: 0.125rem;
+  color: var(--color-term-text-tertiary);
+  cursor: grab;
+}
+
+.widget-card__actions {
+  display: inline-flex;
   align-items: center;
+  align-self: center;
   gap: 2px;
   flex-shrink: 0;
 }
+/* Hidden, the paperclip cuts nothing: the edge runs on under it. */
+.widget-card > .term-card-head > .widget-card__actions {
+  background: none;
+  padding: 0;
+}
+.widget-card > .term-card-head > .widget-card__actions {
+  margin-left: -0.625rem;
+}
+.widget-frame--edit .widget-card > .term-card-head > .widget-card__actions,
+.widget-frame:hover .widget-card > .term-card-head > .widget-card__actions,
+.widget-card > .term-card-head > .widget-card__actions:focus-within {
+  background: var(--term-ground);
+  padding: 0 0.25rem 0 0.125rem;
+}
+@media (hover: none) {
+  .widget-card > .term-card-head > .widget-card__actions {
+    background: var(--term-ground);
+    padding: 0 0.25rem 0 0.125rem;
+  }
+}
+/* Quiet sets the title inside the card: nothing to cut, and the head's
+   own gap spaces the pieces. */
+:root[data-card-style='quiet'] .widget-card > .term-card-head > .widget-card__actions {
+  background: none;
+}
+:root[data-card-style='quiet'] .widget-card > .term-card-head > :is(.widget-card__grip, .widget-card__actions) {
+  margin: 0;
+}
 
-.widget-frame__icon-btn {
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  display: flex;
+.widget-card__icon-btn {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-tertiary);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
   background: transparent;
-  border: none;
+  color: var(--color-term-text-tertiary);
   cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition:
+    background-color var(--motion-quick) var(--ease-out),
+    color var(--motion-quick) var(--ease-out),
+    opacity var(--motion-quick) var(--ease-out);
 }
-
-.widget-frame__icon-btn:hover {
+.widget-card__icon-btn:hover {
   background-color: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  color: var(--color-term-text);
 }
-
-.widget-frame__icon-btn:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+.widget-card__icon-btn:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
 }
 
-.widget-frame__menu-wrap {
-  position: relative;
+/* In view mode the paperclip shows on hover over the widget, and always on
+   touch, where there is no hover to show it. */
+.widget-card__attach--view {
+  opacity: 0;
+}
+.widget-frame:hover .widget-card__attach--view,
+.widget-card__attach--view:focus-visible {
+  opacity: 1;
+}
+/* Unavailable (a TradingView embed, or no exporter yet): shown faint, so its
+   tooltip can still say why. */
+.widget-card__attach:disabled {
+  cursor: not-allowed;
+}
+.widget-frame:hover .widget-card__attach--view:disabled,
+.widget-card__attach--view:disabled:focus-visible,
+.widget-frame--edit .widget-card__attach:disabled {
+  opacity: 0.4;
+}
+@media (hover: none) {
+  .widget-card__attach--view {
+    opacity: 1;
+  }
+  .widget-card__attach--view:disabled {
+    opacity: 0.4;
+  }
 }
 
-.widget-frame__menu {
+.widget-card__menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+/* Opens rightward: the wrap sits beside the title, near the card's left. */
+.widget-card__menu {
   position: absolute;
   top: calc(100% + 4px);
-  right: 0;
+  left: 0;
   z-index: 20;
   min-width: 140px;
-  background-color: var(--color-bg-elevated);
+  padding: 4px;
   border: 1px solid var(--color-border-elevated);
   border-radius: 8px;
-  padding: 4px;
+  background-color: var(--color-bg-elevated);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  font-family: var(--font-ui);
+  letter-spacing: normal;
+  text-transform: none;
 }
-
-.widget-frame__menu-item {
+.widget-card__menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   padding: 6px 10px;
-  font-size: 0.75rem;
+  border: none;
   border-radius: 4px;
   background: transparent;
-  border: none;
+  font-size: 0.75rem;
+  font-weight: 400;
   color: var(--color-text-primary);
-  cursor: pointer;
   text-align: left;
+  cursor: pointer;
 }
-
-.widget-frame__menu-item:hover {
+.widget-card__menu-item:hover {
   background-color: var(--color-bg-hover);
 }
-
-.widget-frame__menu-item:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+.widget-card__menu-item:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: -2px;
   background-color: var(--color-bg-hover);
 }
-
-.widget-frame__menu-item--danger {
+.widget-card__menu-item--danger {
   color: var(--color-icon-danger);
 }
 
-.widget-frame__body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
+/* ── Edit mode ── */
+
+/* The whole card is the drag handle. Its edge goes dashed in the accent, the
+   one mark that says the layout is open; the card keeps one edge, not a
+   second box around it. */
+.widget-frame--edit {
+  cursor: grab;
+  user-select: none;
+}
+.widget-frame--edit:active {
+  cursor: grabbing;
+}
+.widget-frame--edit .widget-drag-cancel {
+  cursor: auto;
+}
+.widget-frame--edit > .widget-card::before {
+  border-style: dashed;
+  border-color: var(--color-accent-primary);
+}
+
+/* ── A bare widget: the body draws its own cards ── */
+
+/* Outside edit mode a bare widget (the index tiles) has no edge, no padding
+   and no title; only its paperclip remains, over the top right corner. An
+   untitled one (an embed with its own heading) keeps the edge and padding
+   and loses the title the same way. */
+.widget-frame > .term-card.widget-card[data-bare] {
   padding: 0;
-  /* Smooth padding fade when toggling edit mode (fit widgets go 0 → 12px). */
-  transition: padding 180ms ease;
 }
-
-.widget-frame--edit .widget-frame__body {
-  padding: 12px;
-}
-
-/* View mode: the inner card is self-contained chrome (own border/background
- * or its own branding treatment). The header collapses to an overlay that
- * pins the action buttons (just the "+ to context" button in view mode) to
- * the top-right corner of the widget, hover-revealed on hover-capable
- * devices and always visible on touch.
- *
- * Edit mode: the header returns inline for drag handle + title + settings +
- * "+" + overflow menu — uniform chrome across all widgets inside the dashed
- * edit border. */
-.widget-frame:not(.widget-frame--edit) .widget-frame__header {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  z-index: 5;
-  padding: 0;
-  border: 0;
-  min-height: 0;
-  background: transparent;
-  pointer-events: none;
-}
-
-.widget-frame:not(.widget-frame--edit) .widget-frame__header > .widget-frame__title,
-.widget-frame:not(.widget-frame--edit) .widget-frame__header > .widget-frame__drag {
+.widget-frame > .term-card.widget-card[data-bare]::before {
   display: none;
 }
-
-.widget-frame:not(.widget-frame--edit) .widget-frame__actions {
-  pointer-events: auto;
-}
-
-/* The "Attach to chat" paperclip uses a circular hover background so it
- * matches the widget's rounded chrome instead of the squared 4px corners
- * shared by the edit-mode icon buttons. */
-.widget-frame__add-btn {
-  border-radius: 50%;
-}
-
-/* In view mode the paperclip is hover-revealed on hover-capable pointers
- * and always visible on touch. Plain icon-button styling (no card/border/
- * shadow) so it reads as a quiet header glyph rather than a boxed CTA. */
-.widget-frame__add-btn--view {
-  opacity: 0;
-  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
-}
-
-.widget-frame:hover .widget-frame__add-btn--view,
-.widget-frame__add-btn--view:focus-visible {
-  opacity: 1;
-}
-
-@media (hover: none) {
-  .widget-frame__add-btn--view {
-    opacity: 1;
-  }
-}
-
-/* Disabled state (TV widgets, or widgets that haven't registered an exporter
- * yet): stay hidden by default just like the enabled state — we don't want a
- * permanent disabled glyph cluttering the header. Reveal at reduced opacity
- * on hover so the user can still see the affordance + tooltip explaining why
- * it's unavailable. Touch devices show it always (no hover signal). */
-.widget-frame__add-btn--view:disabled {
-  cursor: not-allowed;
-  color: var(--color-text-tertiary);
-  opacity: 0;
-}
-
-.widget-frame:hover .widget-frame__add-btn--view:disabled,
-.widget-frame__add-btn--view:disabled:focus-visible {
-  opacity: 0.4;
-}
-
-@media (hover: none) {
-  .widget-frame__add-btn--view:disabled {
-    opacity: 0.4;
-  }
-}
-
-/* fit-to-content widgets in view mode: drop body padding so the inner card
- * sits flush against the grid cell. In edit mode they use the default
- * chrome + 12px body padding so they visually match every other widget.
- * The fitHeight callback in WidgetFrame.tsx measures chrome + body padding
- * + inner content so the RGL cell size matches. */
-.widget-frame--fit:not(.widget-frame--edit) .widget-frame__body {
+:root .widget-frame > .term-card.widget-card:is([data-bare], [data-untitled]) > .term-card-head {
+  position: absolute;
+  top: 0;
+  left: auto;
+  right: 0;
   padding: 0;
+  margin: 0;
+}
+.widget-frame > .term-card.widget-card:is([data-bare], [data-untitled]) > .term-card-head > :not(.widget-card__actions) {
+  display: none;
+}
+/* Quiet sets its title inside the card, so without one the body needs the
+   room the title's line gave it. */
+:root[data-card-style='quiet'] .widget-frame > .term-card.widget-card[data-untitled] {
+  padding-top: 0.75rem;
 }
 
-/* fit-to-content widgets size the cell to the content, so the body should
- * never be scrollable — a scrollbar would only appear transiently while the
- * content animates its own height (e.g. AIDailyBriefCard's AnimatePresence
- * drawer) and the cell catches up. Hide the scrollbar outright; the growth
- * path in WidgetFrame.tsx commits on every frame so the cell tracks the
- * animating content in lockstep. */
-.widget-frame--fit .widget-frame__body {
+/* ── Bodies drawn the card way ── */
+
+/* A card inside a widget (an index tile) cuts its edge in the same ground. */
+.widget-card .term-card {
+  --term-ground: var(--color-bg-page);
+}
+
+/* A list that fills the cell scrolls under its toolbar. */
+.dash-fill {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.dash-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Tabs and filters as the cards' chips: [Market] [Watchlist], or pills. */
+.dash-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.dash-chips .term-chip,
+.dash-range {
+  cursor: pointer;
+  color: var(--color-term-text-tertiary);
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+.dash-chips .term-chip:hover,
+.dash-range:hover {
+  color: var(--color-term-text-secondary);
+}
+.dash-chips .term-chip[aria-pressed='true'],
+.dash-range[aria-pressed='true'] {
+  color: var(--color-term-text);
+}
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .dash-chips .term-chip[aria-pressed='true'] {
+  border-color: var(--color-term-text-tertiary);
+}
+.dash-chips .term-chip:focus-visible,
+.dash-range:focus-visible,
+.dash-link:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* The news filters, after the tabs. */
+.dash-filters {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.625rem;
+  margin-left: auto;
+}
+.dash-ranges {
+  display: inline-flex;
+  gap: 0.5rem;
+}
+.dash-range {
+  font-family: var(--term-words);
+  font-size: 0.625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+}
+.dash-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  /* A minimum, not a height: a phone sets fields in 16px so focusing one
+     does not zoom the page (tokens.css). */
+  min-height: 1.375rem;
+  padding: 0 0.375rem;
+  border: 1px solid var(--color-term-edge);
+  border-radius: 4px;
+  color: var(--color-term-text-tertiary);
+  font-size: 0.65625rem;
+}
+.dash-field > input {
+  width: 7ch;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--color-term-text);
+  transition: width var(--motion-quick) var(--ease-out);
+}
+.dash-field > input:focus,
+.dash-field > input:not(:placeholder-shown) {
+  width: 10ch;
+}
+.dash-field > input::placeholder {
+  color: var(--color-term-text-tertiary);
+}
+select.dash-field {
+  max-width: 11rem;
+  background: transparent;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+select.dash-field[data-set] {
+  color: var(--color-term-text);
+}
+
+/* Rows that open something: the whole row is the target. The first and last
+   cells step in a little so the hover fill does not end at a letter. */
+.dash-table td:first-child,
+.dash-table th:first-child {
+  padding-left: 0.25rem;
+}
+.dash-table td:last-child,
+.dash-table th:last-child {
+  padding-right: 0.25rem;
+}
+.dash-table tr[data-clickable] {
+  cursor: pointer;
+}
+.dash-table tr[data-clickable]:hover > td {
+  background-color: var(--color-bg-hover);
+}
+.dash-table tr[data-clickable] > td:first-child {
+  border-radius: 4px 0 0 4px;
+}
+.dash-table tr[data-clickable] > td:last-child {
+  border-radius: 0 4px 4px 0;
+}
+/* A row's own button, for the keyboard: it reads as the row's text. */
+.dash-row-link {
+  display: block;
+  max-width: 100%;
   overflow: hidden;
+  text-overflow: ellipsis;
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: inherit;
+}
+/* Closer than the default ring, which the cell's clip would cut. */
+.dash-row-link:focus-visible {
+  outline-offset: 1px;
+}
+/* A row's paperclip sits at the end of its widest cell, in that cell's slack,
+   so it neither covers a figure nor holds a column of its own. */
+.dash-table td.dash-attach-cell {
+  position: relative;
+  padding-right: 1.5rem;
+}
+.dash-attach-cell > .row-attach {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+}
+/* Words that wrap rather than cut: a held row's second line. */
+.dash-sub {
+  display: block;
+  font-size: 0.625rem;
+  color: var(--color-term-text-tertiary);
+}
+.dash-ext {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.625rem;
+  color: var(--color-term-text-tertiary);
+}
+
+/* `+ Add symbol`, `Read full brief ›`: a word that acts, in the card's voice. */
+button.term-more,
+.dash-link {
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+button.term-more:hover,
+.dash-link:hover {
+  color: var(--color-term-text);
+}
+.dash-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-secondary);
+  white-space: nowrap;
+}
+.dash-link:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* A widget with nothing to show, said in the middle of the card. */
+.dash-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  height: 100%;
+  min-height: 6rem;
+  padding: 1rem 0;
+  text-align: center;
+  color: var(--color-term-text-tertiary);
+}
+.dash-empty > :first-child {
+  color: var(--color-term-text-secondary);
+}
+
+/* The news: a story a line, a little roomier than a chat card's table, with
+   a rule between stories to carry the eye from a headline to its source when
+   the card runs wide. A narrow card gives up the source's name, keeping its
+   icon, before the headline gives up its words. */
+.dash-news {
+  container-type: inline-size;
+}
+.dash-news .dash-table td {
+  padding-top: 0.4375rem;
+  padding-bottom: 0.4375rem;
+}
+.dash-news .dash-table tbody tr + tr td {
+  border-top: 1px dashed var(--color-term-rule);
+}
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .dash-news .dash-table tbody tr + tr td {
+  border-top-style: solid;
+}
+.dash-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 14ch;
+  vertical-align: bottom;
+}
+.dash-source-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@container (max-width: 26rem) {
+  .dash-source-name {
+    display: none;
+  }
+}
+
+/* The index tiles' line under the move. */
+.dash-spark {
+  margin-top: 6px;
+  line-height: 32px;
+  text-align: center;
+}
+.dash-spark-tip {
+  padding: 4px 8px;
+  border: 1px solid var(--color-term-edge);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--color-term-text);
+}
+
+/* The brief: the headline and summary in the text face, the marks in mono. */
+.dash-brief-lede {
+  margin: 0 0 6px;
+  font-family: var(--font-content);
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--color-term-text);
+}
+.dash-brief-summary {
+  margin: 0 0 8px;
+  font-family: var(--font-content);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--color-term-text-secondary);
+}
+.widget-card[data-size='sm'] .dash-brief-lede {
+  font-size: 0.9375rem;
+}
+.widget-card[data-size='sm'] .dash-brief-summary {
+  font-size: 0.8125rem;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+.dash-topic {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+.dash-brief-foot {
+  margin-top: 10px;
+}
+.dash-error {
+  margin-top: 4px;
+  color: var(--color-loss);
 }
 
 /* react-grid-layout overrides */
@@ -288,13 +594,13 @@
 }
 
 .react-grid-item {
-  /* ease-out-quart: starts fast, decelerates gracefully into the slot after
-   * a drop/resize. Feels more natural than plain `ease`, especially when
-   * neighbors reflow around a repositioned cell. */
+  /* The house ease-out: starts fast, decelerates gracefully into the slot
+   * after a drop/resize, which reads more naturally than a symmetric curve
+   * when neighbors reflow around a repositioned cell. */
   transition:
-    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    width 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    transform var(--motion-fold) var(--ease-out),
+    width var(--motion-fold) var(--ease-out),
+    height var(--motion-fold) var(--ease-out);
 }
 
 /* fit-to-content cells: drop the height transition. The cell is driven by
@@ -304,13 +610,13 @@
  * and the content's own animation. */
 .react-grid-item:has(.widget-frame--fit) {
   transition:
-    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    width 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    transform var(--motion-fold) var(--ease-out),
+    width var(--motion-fold) var(--ease-out);
 }
 
 .react-grid-item.react-grid-placeholder {
   background-color: var(--color-accent-soft) !important;
-  border-radius: 12px;
+  border-radius: 8px;
   opacity: 1;
 }
 
@@ -326,16 +632,12 @@
   transition: none;
 }
 
-/* "Picked up" affordance — subtle scale + elevated shadow on the inner
- * widget-frame while the cell is being dragged. We target the inner frame
- * (not .react-grid-item) so RGL's own transform for positioning isn't
- * overridden. The widget-frame's transition rule handles the ease-in on
- * pickup and ease-out on release. */
+/* "Picked up": the frame scales a touch while its cell is dragged. Scaled
+ * rather than shadowed, since a card the style leaves unfilled would show a
+ * shadow as a box around nothing. The frame, not the cell, so RGL's own
+ * positioning transform isn't overridden. */
 .react-grid-item.react-draggable-dragging .widget-frame {
   transform: scale(1.015);
-  box-shadow:
-    0 20px 40px -14px rgba(0, 0, 0, 0.28),
-    0 0 0 1px var(--color-accent-primary);
 }
 
 .react-grid-item > .react-resizable-handle::after {
@@ -349,7 +651,7 @@
 
 .react-resizable-handle {
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--motion-quick) var(--ease-out);
 }
 
 .widget-grid--edit .react-resizable-handle {
@@ -363,7 +665,7 @@
  * pointer events on so users can interact with the embed normally. Covers
  * both TradingViewEmbed (script-injected iframe) and TradingViewWebComponent
  * (Light DOM custom element with internal iframe). */
-.widget-grid--edit .widget-frame__body iframe {
+.widget-grid--edit .widget-card__body iframe {
   pointer-events: none;
 }
 

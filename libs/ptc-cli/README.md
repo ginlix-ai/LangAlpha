@@ -21,10 +21,10 @@ Interactive command-line interface for PTC Agent.
 
 ## Installation
 
-From the repository root:
+From the repository root. The TUI is an optional extra, so ask for it by name:
 
 ```bash
-uv sync
+uv sync --extra cli
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
@@ -58,7 +58,8 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 | File | Purpose |
 |------|---------|
-| `agent_config.yaml` | MCP servers, Daytona settings, filesystem config |
+| `agent_config.yaml` | Your own MCP servers, Daytona settings, filesystem config |
+| `plugins/` | The MCP servers and skills that ship with the app, one Agent Plugins package each |
 | `llms.json` | LLM provider definitions |
 | `.env` | API keys and credentials |
 
@@ -107,7 +108,6 @@ ptc-agent [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--agent NAME` | Use named agent with separate memory (default: "agent") |
-| `--plan-mode` | Enable plan mode: agent submits plan for approval before execution |
 | `--sandbox-id ID` | Reuse existing Daytona sandbox (skips creation) |
 | `--no-splash` | Disable the startup ASCII art banner |
 | `--new-sandbox` | Create new sandbox (don't reuse existing session) |
@@ -161,7 +161,6 @@ During a session, use these slash commands:
 | `Enter` | Submit input |
 | `Esc+Enter` / `Alt+Enter` | Insert newline (multiline input) |
 | `Ctrl+E` | Open input in external editor |
-| `Shift+Tab` | Toggle plan mode |
 | `Ctrl+C` | Clear input / Interrupt streaming / Exit (triple press) |
 
 ## Session Persistence
@@ -172,13 +171,3 @@ Sessions are cached in `~/.ptc-agent/{agent}/session.json` for faster startup:
 - Auto-invalidates when configuration changes
 - Sessions expire after 24 hours of inactivity
 - Disable with `--new-sandbox` flag
-
-## Plan Mode
-
-When plan mode is enabled, the agent submits a plan for approval before executing:
-
-- Enable via `--plan-mode` flag or toggle with `Shift+Tab` during a session
-- Plans are displayed in a panel for review
-- Accept or reject with arrow key navigation
-- Rejecting allows optional feedback
-- Status shown in bottom toolbar

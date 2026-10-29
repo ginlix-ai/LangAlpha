@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { categorizeFileError } from '../FilePanel';
 
-function makeAxiosError(status: number, detail: string) {
+function makeApiError(status: number, detail: string) {
   return { response: { status, data: { detail } } };
 }
 
 describe('categorizeFileError', () => {
   it('returns not_found for 404 with running workspace', () => {
-    const err = makeAxiosError(404, 'File not found');
+    const err = makeApiError(404, 'File not found');
     expect(categorizeFileError(err, 'running')).toEqual({
       category: 'not_found',
       detail: 'File not found',
@@ -15,7 +15,7 @@ describe('categorizeFileError', () => {
   });
 
   it('returns not_backed_up for 404 with stopped workspace', () => {
-    const err = makeAxiosError(404, 'File not found');
+    const err = makeApiError(404, 'File not found');
     expect(categorizeFileError(err, 'stopped')).toEqual({
       category: 'not_backed_up',
       detail: 'File not found',
@@ -23,7 +23,7 @@ describe('categorizeFileError', () => {
   });
 
   it('returns not_backed_up for 404 with stopping workspace', () => {
-    const err = makeAxiosError(404, 'File not found');
+    const err = makeApiError(404, 'File not found');
     expect(categorizeFileError(err, 'stopping')).toEqual({
       category: 'not_backed_up',
       detail: 'File not found',
@@ -31,7 +31,7 @@ describe('categorizeFileError', () => {
   });
 
   it('returns binary_file for 415', () => {
-    const err = makeAxiosError(415, 'Cannot read binary file as text.');
+    const err = makeApiError(415, 'Cannot read binary file as text.');
     expect(categorizeFileError(err)).toEqual({
       category: 'binary_file',
       detail: 'Cannot read binary file as text.',
@@ -39,7 +39,7 @@ describe('categorizeFileError', () => {
   });
 
   it('returns sandbox_starting for 503 with "starting" in detail', () => {
-    const err = makeAxiosError(503, 'Sandbox is still starting');
+    const err = makeApiError(503, 'Sandbox is still starting');
     expect(categorizeFileError(err)).toEqual({
       category: 'sandbox_starting',
       detail: 'Sandbox is still starting',
@@ -47,31 +47,44 @@ describe('categorizeFileError', () => {
   });
 
   it('returns sandbox_unavailable for 503 without "starting"', () => {
-    const err = makeAxiosError(503, 'Sandbox not available');
+    const err = makeApiError(503, 'Sandbox not available');
     expect(categorizeFileError(err)).toEqual({
       category: 'sandbox_unavailable',
       detail: 'Sandbox not available',
     });
   });
 
-  it('returns no_sandbox for 400 with "flash" in detail', () => {
-    const err = makeAxiosError(400, 'Flash workspaces do not have a sandbox');
+  it('returns sandbox_starting for the 400 Home sends before its computer', () => {
+    const err = makeApiError(400, 'Home is not on a computer yet');
     expect(categorizeFileError(err)).toEqual({
-      category: 'no_sandbox',
-      detail: 'Flash workspaces do not have a sandbox',
+      category: 'sandbox_starting',
+      detail: 'Home is not on a computer yet',
     });
   });
 
-  it('returns unknown for 400 without "flash"', () => {
-    const err = makeAxiosError(400, 'File path is required');
+  it('returns unknown for any other 400', () => {
+    const err = makeApiError(400, 'File path is required');
     expect(categorizeFileError(err)).toEqual({
       category: 'unknown',
       detail: 'File path is required',
     });
   });
 
+  it('carries the server\'s sentence on a 422 that has one', () => {
+    const err = makeApiError(422, 'The machine did not accept our key for dev.');
+    expect(categorizeFileError(err)).toEqual({
+      category: 'unknown',
+      detail: 'The machine did not accept our key for dev.',
+      message: 'The machine did not accept our key for dev.',
+    });
+    expect(categorizeFileError({ response: { status: 422, data: { detail: [{ msg: 'x' }] } } })).toEqual({
+      category: 'unknown',
+      detail: '',
+    });
+  });
+
   it('returns access_denied for 403', () => {
-    const err = makeAxiosError(403, 'Access denied: /etc is not in allowed directories');
+    const err = makeApiError(403, 'Access denied: /etc is not in allowed directories');
     expect(categorizeFileError(err)).toEqual({
       category: 'access_denied',
       detail: 'Access denied: /etc is not in allowed directories',
@@ -101,7 +114,7 @@ describe('categorizeFileError', () => {
   });
 
   it('returns not_found for 404 when wsStatus is undefined', () => {
-    const err = makeAxiosError(404, 'File not found');
+    const err = makeApiError(404, 'File not found');
     expect(categorizeFileError(err, undefined)).toEqual({
       category: 'not_found',
       detail: 'File not found',
@@ -109,7 +122,7 @@ describe('categorizeFileError', () => {
   });
 
   it('returns not_found for 404 with unexpected wsStatus', () => {
-    const err = makeAxiosError(404, 'File not found');
+    const err = makeApiError(404, 'File not found');
     expect(categorizeFileError(err, 'error')).toEqual({
       category: 'not_found',
       detail: 'File not found',
@@ -117,7 +130,7 @@ describe('categorizeFileError', () => {
   });
 
   it('returns unknown for unhandled status codes like 500', () => {
-    const err = makeAxiosError(500, 'Internal server error');
+    const err = makeApiError(500, 'Internal server error');
     expect(categorizeFileError(err)).toEqual({
       category: 'unknown',
       detail: 'Internal server error',

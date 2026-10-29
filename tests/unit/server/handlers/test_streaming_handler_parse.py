@@ -108,12 +108,16 @@ class TestParseErrorEmission:
         producer.anthropic_tool_call_state[("agent", 0)] = {
             "name": "execute_code",
             "id": "call-broken",
+            "message_id": "msg-1",
             "args_accumulated": '"just a string"',  # valid JSON, non-dict: unrepairable
         }
         chunk = AIMessageChunk(content="", id="msg-1")
         chunk.response_metadata = {"stop_reason": "tool_use"}
 
-        events = [e async for e in producer._process_message_chunk(chunk, "agent")]
+        events = [
+            producer._number_sse_event(e)
+            async for e in producer._process_message_chunk(chunk, "agent")
+        ]
 
         payloads = self._tool_calls_payloads(events)
         assert len(payloads) == 1
@@ -138,12 +142,16 @@ class TestParseErrorEmission:
         producer.anthropic_tool_call_state[("agent", 0)] = {
             "name": "execute_code",
             "id": "call-ok",
+            "message_id": "msg-2",
             "args_accumulated": '{"code": "print(1)"}',
         }
         chunk = AIMessageChunk(content="", id="msg-2")
         chunk.response_metadata = {"stop_reason": "tool_use"}
 
-        events = [e async for e in producer._process_message_chunk(chunk, "agent")]
+        events = [
+            producer._number_sse_event(e)
+            async for e in producer._process_message_chunk(chunk, "agent")
+        ]
 
         payloads = self._tool_calls_payloads(events)
         assert len(payloads) == 1

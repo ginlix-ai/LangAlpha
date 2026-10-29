@@ -45,8 +45,8 @@ def _content(cmd) -> dict:
 def _patches(runner, delete_thread):
     disabled_cache = MagicMock(enabled=False, client=None)
     return (
-        patch.object(sec_tools, "_verify_thread_owner", AsyncMock(return_value=None)),
-        patch.object(sec_tools, "_hitl_confirm", MagicMock(return_value=(True, None))),
+        patch.object(sec_tools, "verify_thread_owner", AsyncMock(return_value=None)),
+        patch.object(sec_tools, "hitl_confirm", MagicMock(return_value=(True, None))),
         patch(
             "src.server.services.thread_mutation.ThreadMutationRunner.get_instance",
             return_value=runner,
@@ -64,7 +64,7 @@ async def test_delete_runs_on_the_fenced_session():
     delete_thread = AsyncMock()
     p1, p2, p3, p4, p5 = _patches(_runner(), delete_thread)
     with p1, p2, p3, p4, p5:
-        cmd = await sec_tools._threads_delete("u-1", "t-1", "tc-1")
+        cmd = await sec_tools.threads_delete("u-1", "t-1", "tc-1")
 
     delete_thread.assert_awaited_once_with("t-1", conn=_FENCED_CONN)
     assert _content(cmd)["success"] is True
@@ -80,7 +80,7 @@ async def test_delete_refused_while_thread_is_busy():
     )
     p1, p2, p3, p4, p5 = _patches(_runner(enter_exc=conflict), delete_thread)
     with p1, p2, p3, p4, p5:
-        cmd = await sec_tools._threads_delete("u-1", "t-1", "tc-1")
+        cmd = await sec_tools.threads_delete("u-1", "t-1", "tc-1")
 
     delete_thread.assert_not_awaited()
     body = _content(cmd)
@@ -95,7 +95,7 @@ async def test_delete_unavailable_surfaces_retriable_error():
         _runner(enter_exc=MutationUnavailable("no session")), delete_thread
     )
     with p1, p2, p3, p4, p5:
-        cmd = await sec_tools._threads_delete("u-1", "t-1", "tc-1")
+        cmd = await sec_tools.threads_delete("u-1", "t-1", "tc-1")
 
     delete_thread.assert_not_awaited()
     body = _content(cmd)

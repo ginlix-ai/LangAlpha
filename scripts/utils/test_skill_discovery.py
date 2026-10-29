@@ -147,7 +147,7 @@ async def test_discover_all_known(sandbox, skill_dirs):
     backend.adownload_files = counting_download  # type: ignore[assignment]
 
     t0 = time.monotonic()
-    results = await adiscover_skills(backend, "/home/workspace/skills/", known_skills)
+    results = await adiscover_skills(backend, f"{sandbox.layout.skills}/", known_skills)
     elapsed = time.monotonic() - t0
 
     info(f"Discovered {len(results)} skills in {elapsed:.3f}s")
@@ -192,7 +192,7 @@ async def test_discover_empty_known(sandbox, skill_dirs):
     backend.adownload_files = counting_download  # type: ignore[assignment]
 
     t0 = time.monotonic()
-    results = await adiscover_skills(backend, "/home/workspace/skills/", {})
+    results = await adiscover_skills(backend, f"{sandbox.layout.skills}/", {})
     elapsed = time.monotonic() - t0
 
     info(f"Discovered {len(results)} skills in {elapsed:.3f}s")
@@ -254,7 +254,7 @@ async def test_discover_partial_known(sandbox, skill_dirs):
 
     backend.adownload_files = counting_download  # type: ignore[assignment]
 
-    results = await adiscover_skills(backend, "/home/workspace/skills/", partial_known)
+    results = await adiscover_skills(backend, f"{sandbox.layout.skills}/", partial_known)
 
     info(f"Discovered {len(results)} skills total")
     info(f"Downloaded {len(downloaded_paths)} SKILL.md files")
@@ -266,7 +266,7 @@ async def test_discover_partial_known(sandbox, skill_dirs):
     ok(f"Downloaded exactly {unknown_count} unknown skill(s)")
 
     # Known skill should not appear in downloads
-    known_path = f"/home/workspace/skills/{first_name}/SKILL.md"
+    known_path = f"{sandbox.layout.skills}/{first_name}/SKILL.md"
     assert known_path not in downloaded_paths, (
         f"Known skill {first_name} should not be downloaded"
     )
@@ -291,9 +291,8 @@ async def test_middleware_integration(sandbox, skill_dirs):
     backend = DaytonaBackend(sandbox=sandbox)
 
     middleware = SkillsMiddleware(
-        mode="ptc",
         backend=backend,
-        sources=["/home/workspace/skills/"],
+        sources=[f"{sandbox.layout.skills}/"],
         known_skills=known_skills,
     )
 
@@ -337,7 +336,7 @@ async def main():
 
     sandbox = PTCSandbox(config=core_config)
 
-    skill_dirs = config.skills.local_skill_dirs_with_sandbox()
+    skill_dirs = config.skills.local_skill_dirs()
     info(f"Skill dirs: {skill_dirs}")
 
     try:

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
-from ptc_agent.agent.backends import lock_for_namespace
+from ptc_agent.agent.backends import namespace_write_lock
 from ptc_agent.agent.backends.workflows import (
     WORKFLOW_NAME_RE,
     MalformedWorkflowError,
@@ -84,6 +86,20 @@ async def _describe(content: str, *, expected_name: str) -> tuple[str | None, bo
     if meta.name != expected_name:
         return meta.description, False
     return meta.description, True
+
+
+@asynccontextmanager
+async def _write_lock(store: Any, namespace: tuple[str, ...]) -> AsyncIterator[None]:
+    """The lock the mount's saves take too, so the two doors serialize across
+    workers; a wait past its limit answers as the store's own timeouts do."""
+    try:
+        async with namespace_write_lock(store, namespace):
+            yield
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="Long-term store timed out. Retry shortly.",
+        ) from exc
 
 
 def _validate_name(name: str) -> None:
@@ -202,7 +218,7 @@ async def put_workflow(
     store = require_store(setup.store)
     namespace = workflow_namespace(user_id)
     key = workflow_key(name)
-    async with lock_for_namespace(namespace):
+    async with _write_lock(store, namespace):
         existing_item = await aget(store, namespace, key)
         existing = existing_item.value if existing_item else None
         await aput(store, namespace, key, build_workflow_value(body.content, existing))
@@ -220,7 +236,7 @@ async def delete_workflow(name: str, user_id: CurrentUserId) -> Response:
     store = require_store(setup.store)
     namespace = workflow_namespace(user_id)
     key = workflow_key(name)
-    async with lock_for_namespace(namespace):
+    async with _write_lock(store, namespace):
         item = await aget(store, namespace, key)
         if item is None:
             if get_prebuilt_workflows().get(name) is not None:

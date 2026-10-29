@@ -1,18 +1,22 @@
-import React, { useEffect, useRef, useState } from 'react';
-import {
-  X, Calendar, Hash, ExternalLink, TrendingUp, TrendingDown, Minus, Tag,
-  Paperclip,
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import i18n from '@/i18n';
+import { useEffect, useEffectEvent, useState } from 'react';
+import { X } from 'lucide-react';
+import { motion, AnimatePresence } from '@/lib/framer';
 import { useTranslation } from 'react-i18next';
+import { useLocale } from '@/hooks/useLocale';
 import { getNewsArticle } from '../utils/api';
+import { useBackdropDismiss } from '@/hooks/useDialogA11y';
+import { DashWindowDialog } from './DashWindowDialog';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
 import { Loader } from '@/components/ui/loader';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
+import { createDateFormatter } from '@/lib/format';
+import { TermCard, TermStatus, TermTag, type TermTone } from '@/pages/ChatAgent/components/charts/TermCard';
+import { TermPanelContext } from '@/pages/ChatAgent/components/charts/termContext';
+import '@/pages/ChatAgent/components/charts/termPanel.css';
 import { buildNewsWidgetSnapshot, normalizeArticle } from '../utils/newsArticleFetch';
+import './dashWindow.css';
 
 interface ArticleSource {
   name: string;
@@ -59,9 +63,7 @@ interface NewsFallback {
 interface NewsDetailModalProps {
   newsId: string | null;
   onClose: () => void;
-  /** Legacy (Classic dashboard): URL-only fallback for the empty state. */
-  fallbackUrl?: string | null;
-  /** Rich fallback from the clicked row — preferred. */
+  /** The clicked row, drawn while (or instead of) the article loads. */
   fallback?: NewsFallback | null;
 }
 
@@ -90,51 +92,26 @@ function attachArticleToContext(article: Article, articleId: string): void {
   }));
 }
 
-function sentimentIcon(sentiment: string): React.ReactElement {
-  switch (sentiment) {
-    case 'positive':
-      return <TrendingUp size={16} style={{ color: 'var(--color-profit)' }} />;
-    case 'negative':
-      return <TrendingDown size={16} style={{ color: 'var(--color-loss)' }} />;
-    default:
-      return <Minus size={16} style={{ color: 'var(--color-warning, #facc15)' }} />;
-  }
+/** The ink a sentiment is said in: a market's profit and loss, else muted. */
+function sentimentTone(sentiment: string): TermTone {
+  if (sentiment === 'positive') return 'profit';
+  if (sentiment === 'negative') return 'loss';
+  return 'muted';
 }
 
-function sentimentStyle(sentiment: string): React.CSSProperties {
-  switch (sentiment) {
-    case 'positive':
-      return {
-        color: 'var(--color-profit)',
-        backgroundColor: 'var(--color-profit-soft)',
-        borderColor: 'var(--color-profit-soft)',
-      };
-    case 'negative':
-      return {
-        color: 'var(--color-loss)',
-        backgroundColor: 'var(--color-loss-soft)',
-        borderColor: 'var(--color-loss-soft)',
-      };
-    default:
-      return {
-        color: 'var(--color-warning, #facc15)',
-        backgroundColor: 'rgba(250, 204, 21, 0.1)',
-        borderColor: 'rgba(250, 204, 21, 0.2)',
-      };
-  }
-}
+const dateTime = createDateFormatter({
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
 
-function formatDate(dateString: string | undefined): string {
+function formatDate(dateString: string | undefined, locale: string): string {
   if (!dateString) return '';
   try {
     const d = new Date(dateString);
-    return d.toLocaleDateString(i18n.language, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    return dateTime(d, locale);
   } catch {
     return dateString;
   }
@@ -153,405 +130,174 @@ function safeHttpUrl(url: string | null | undefined): string | undefined {
   }
 }
 
-/** Shared inner content for both mobile bottom sheet and desktop dialog */
+/** The article's picture, beside the reading column. A feed's image link is
+ *  often dead, and a broken picture says less than none, so one that fails
+ *  takes its frame with it. */
+function NewsThumb({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <div className="dash-window-thumb">
+      <img src={src} alt="" onError={() => setFailed(true)} />
+    </div>
+  );
+}
+
+/** Shared inner content for both mobile bottom sheet and desktop dialog: the
+ *  article in the detail panel's language, its parts as cards. */
 function NewsBody({
   article,
   loading,
   fetchFailed,
-  fallbackUrl,
-  expandedSentiment,
-  setExpandedSentiment,
-  isMobile,
   onAttach,
+  onClose,
 }: {
   article: Article | null;
   loading: boolean;
   fetchFailed?: boolean;
-  fallbackUrl?: string | null;
-  expandedSentiment: number | null;
-  setExpandedSentiment: React.Dispatch<React.SetStateAction<number | null>>;
-  isMobile: boolean;
-  /** Optional handler. If provided, an Attach-to-chat button is rendered in the meta row. */
+  /** Optional handler. If provided, an Add-to-chat chip is rendered in the meta line. */
   onAttach?: () => void;
+  /** The window's close, at the meta line's end; the sheet closes by its own handle. */
+  onClose?: () => void;
 }) {
-  const { t: trans } = useTranslation();
-  const safeFallbackUrl = safeHttpUrl(fallbackUrl);
+  const { t } = useTranslation();
+  const locale = useLocale();
   const safeArticleUrl = safeHttpUrl(article?.article_url);
+  const closeButton = onClose ? (
+    <button type="button" className="dash-window-x" onClick={onClose} aria-label={t('dashboard.newsDetail.close')}>
+      <X size={16} />
+    </button>
+  ) : null;
+
   if (loading && !article) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
+      <div className="dash-window-state">
+        {closeButton}
+        <Loader size={24} className="text-(--color-accent-primary)" />
       </div>
     );
   }
 
   if (!article) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 py-24">
-        <p style={{ color: 'var(--color-text-secondary)' }}>
-          {fetchFailed ? 'Article details not available' : 'Article not found'}
-        </p>
-        {fetchFailed && safeFallbackUrl && (
-          <a
-            href={safeFallbackUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            style={{
-              backgroundColor: 'var(--color-btn-primary-bg)',
-              color: 'var(--color-btn-primary-text)',
-            }}
-          >
-            Open article
-            <ExternalLink size={14} />
-          </a>
-        )}
+      <div className="dash-window-state">
+        {closeButton}
+        <p>{fetchFailed ? t('dashboard.newsDetail.notAvailable') : t('dashboard.newsDetail.notFound')}</p>
       </div>
     );
   }
 
+  const sentiments = article.sentiments ?? [];
+  // A story whose feed scored nothing still names what it is about.
+  const impact = sentiments.length > 0
+    ? sentiments.map((s) => ({ ticker: s.ticker, sentiment: s.sentiment || 'neutral', note: s.reasoning }))
+    : (article.tickers ?? []).map((ticker) => ({ ticker, sentiment: null, note: undefined }));
+  const keywords = article.keywords ?? [];
+  const image = safeHttpUrl(article.image_url);
+  const hasSide = !!image || keywords.length > 0;
+
   return (
-    <>
-      {/* Hero image */}
-      {article.image_url && (
-        <div className={`relative ${isMobile ? 'h-48' : 'h-64 md:h-80'} w-full ${isMobile ? '-mx-4 w-[calc(100%+32px)]' : ''}`}>
-          <img
-            src={article.image_url}
-            alt={article.title}
-            className="w-full h-full object-cover"
-          />
-          <div
-            className="absolute inset-0"
-            style={{
-              background: isMobile
-                ? 'linear-gradient(to top, var(--color-bg-card) 0%, var(--color-bg-card) 15%, rgba(0,0,0,0.6) 70%, rgba(0,0,0,0.3) 100%)'
-                : 'linear-gradient(to top, var(--color-bg-elevated) 0%, transparent 60%)',
-            }}
-          />
-          <div className={`absolute bottom-0 left-0 right-0 ${isMobile ? 'p-4' : 'p-6 md:p-8'}`}>
-            {article.source?.name && (
-              <span
-                className="inline-flex items-center gap-1.5 text-[0.625rem] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
-                style={{
-                  backgroundColor: 'var(--color-accent-primary)',
-                  color: '#fff',
-                }}
-              >
-                {article.source.favicon_url && (
-                  <img
-                    src={article.source.favicon_url}
-                    alt=""
-                    className="w-3.5 h-3.5 rounded-sm"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                  />
-                )}
-                {article.source.name}
-              </span>
-            )}
-            <h1
-              className={`${isMobile ? 'text-lg' : 'text-2xl md:text-3xl'} font-bold leading-tight`}
-              style={{ color: '#fff', textShadow: '0 1px 4px rgba(0,0,0,0.5)' }}
-            >
-              {article.title}
-            </h1>
-          </div>
-        </div>
-      )}
-
-      {/* Body */}
-      <div className={isMobile ? 'pt-4' : 'p-6 md:p-8'}>
-        {/* Title fallback — sources without a hero image (e.g. TickerTick) still
-            need the headline + source rendered, since the hero block above is
-            skipped when there's no image_url. */}
-        {!article.image_url && (
-          <div className="mb-5 sm:mb-6">
-            {article.source?.name && (
-              <span
-                className="inline-flex items-center gap-1.5 text-[0.625rem] font-bold px-2 py-0.5 rounded uppercase tracking-wider mb-2 sm:mb-3"
-                style={{
-                  backgroundColor: 'var(--color-accent-soft)',
-                  color: 'var(--color-accent-primary)',
-                }}
-              >
-                {article.source.favicon_url && (
-                  <img
-                    src={article.source.favicon_url}
-                    alt=""
-                    className="w-3.5 h-3.5 rounded-sm"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                  />
-                )}
-                {article.source.name}
-              </span>
-            )}
-            <h1
-              className={`${isMobile ? 'text-lg' : 'text-2xl md:text-3xl'} font-bold leading-tight`}
-              style={{ color: 'var(--color-text-primary)' }}
-            >
-              {article.title}
-            </h1>
-          </div>
-        )}
-
-        {/* Meta */}
-        <div
-          className={`flex items-center ${isMobile ? 'gap-3 text-xs' : 'gap-6 text-sm'} mb-6 sm:mb-8 pb-3 sm:pb-4 border-b flex-wrap`}
-          style={{
-            color: 'var(--color-text-secondary)',
-            borderColor: 'var(--color-border-muted)',
-          }}
-        >
-          {article.author && (
-            <span className="font-semibold" style={{ color: 'var(--color-accent-light)' }}>
-              By {article.author}
-            </span>
-          )}
-          {article.published_at && (
-            <span className="flex items-center gap-1.5 sm:gap-2">
-              <Calendar size={isMobile ? 12 : 14} /> {formatDate(article.published_at)}
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-3">
+    <TermPanelContext value={true}>
+      <div className="dash-window-top">
+        <div className="term-line dash-window-meta">
+          {article.source?.name && <TermTag tone="neutral">{article.source.name}</TermTag>}
+          {article.author && <span className="term-t3">{article.author}</span>}
+          {article.published_at && <span className="term-t3">{formatDate(article.published_at, locale)}</span>}
+          <span className="term-push dash-window-acts">
             {onAttach && (
               <button
                 type="button"
+                className="term-chip dash-window-chip"
                 onClick={onAttach}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[0.6875rem] sm:text-xs font-medium transition-colors"
-                style={{
-                  backgroundColor: 'var(--color-accent-soft)',
-                  borderColor: 'var(--color-accent-overlay)',
-                  color: 'var(--color-accent-primary)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.opacity = '0.9';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.opacity = '1';
-                }}
-                title={trans('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
+                aria-label={t('dashboard.newsDetail.addToChat')}
+                title={t('dashboard.widgets.frame.addToContextTitle')}
               >
-                <Paperclip size={isMobile ? 12 : 13} />
-                {trans('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
+                {t('dashboard.newsDetail.addToChat')}
               </button>
             )}
             {safeArticleUrl && (
               <a
+                className="term-chip dash-window-chip"
                 href={safeArticleUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 transition-opacity hover:opacity-80"
-                style={{ color: 'var(--color-text-secondary)' }}
+                aria-label={t('dashboard.newsDetail.source')}
               >
-                Source <ExternalLink size={isMobile ? 12 : 14} />
+                <span>{t('dashboard.newsDetail.source')}</span>
+                <span aria-hidden="true">↗</span>
               </a>
             )}
-          </div>
+            {closeButton}
+          </span>
         </div>
-
-        <div className="space-y-6 sm:space-y-8">
-          {/* Related Topics */}
-          {(article.keywords?.length ?? 0) > 0 && (
-            <div>
-              <h3
-                className={`${isMobile ? 'text-base' : 'text-lg'} font-bold mb-2 sm:mb-3 flex items-center gap-2`}
-                style={{ color: 'var(--color-text-primary)' }}
-              >
-                <Tag size={isMobile ? 16 : 18} style={{ color: 'var(--color-accent-light)' }} />
-                Related Topics
-              </h3>
-              <div className="flex flex-wrap gap-1.5 sm:gap-2">
-                {article.keywords!.map((kw, i) => (
-                  <span
-                    key={i}
-                    className="px-2 py-0.5 sm:px-3 sm:py-1 rounded-full border text-[0.6875rem] sm:text-xs"
-                    style={{
-                      backgroundColor: 'var(--color-bg-hover)',
-                      borderColor: 'var(--color-border-muted)',
-                      color: 'var(--color-text-secondary)',
-                    }}
-                  >
-                    #{kw}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Executive Summary */}
-          {article.description && (
-            <div>
-              <h3
-                className={`${isMobile ? 'text-base' : 'text-lg'} font-bold mb-2 sm:mb-3 flex items-center gap-2`}
-                style={{ color: 'var(--color-text-primary)' }}
-              >
-                <Hash size={isMobile ? 16 : 18} style={{ color: 'var(--color-accent-primary)' }} />
-                Executive Summary
-              </h3>
-              <p
-                className="text-[0.8125rem] sm:text-sm leading-relaxed"
-                style={{ color: 'var(--color-text-secondary)' }}
-              >
-                {article.description}
-              </p>
-            </div>
-          )}
-
-          {/* Ticker Impact */}
-          {((article.sentiments?.length ?? 0) > 0 || (article.tickers?.length ?? 0) > 0) && (
-            <div>
-              <h3
-                className={`${isMobile ? 'text-base' : 'text-lg'} font-bold mb-2 sm:mb-3 flex items-center gap-2`}
-                style={{ color: 'var(--color-text-primary)' }}
-              >
-                Ticker Impact
-              </h3>
-              <div className={`flex flex-wrap ${isMobile ? 'gap-2' : 'gap-3'}`}>
-                {(article.sentiments?.length ?? 0) > 0
-                  ? article.sentiments!.slice(0, 5).map((insight, i) => (
-                      <div
-                        key={i}
-                        className={`${isMobile ? 'p-2.5' : 'p-3'} rounded-xl border cursor-pointer transition-colors flex-1 ${isMobile ? 'min-w-[140px]' : 'min-w-[200px]'} max-w-[300px]`}
-                        style={{
-                          backgroundColor: 'var(--color-bg-card)',
-                          borderColor: 'var(--color-border-muted)',
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--color-border-elevated)'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--color-border-muted)'; }}
-                        onClick={() => setExpandedSentiment(i)}
-                      >
-                        <div className="flex justify-between items-center mb-1.5 sm:mb-2">
-                          <span
-                            className="font-bold text-sm"
-                            style={{ color: 'var(--color-text-primary)' }}
-                          >
-                            {insight.ticker}
-                          </span>
-                          <div
-                            className="flex items-center gap-1 text-[0.625rem] font-bold px-1.5 py-0.5 rounded uppercase border"
-                            style={sentimentStyle(insight.sentiment)}
-                          >
-                            {sentimentIcon(insight.sentiment)} {insight.sentiment || 'neutral'}
-                          </div>
-                        </div>
-                        {insight.reasoning && (
-                          <p
-                            className="text-[0.6875rem] sm:text-xs leading-relaxed line-clamp-2"
-                            style={{ color: 'var(--color-text-secondary)' }}
-                          >
-                            {insight.reasoning}
-                          </p>
-                        )}
-                      </div>
-                    ))
-                  : (article.tickers?.length ?? 0) > 0 && (
-                      article.tickers!.map((ticker, i) => (
-                        <span
-                          key={i}
-                          className="px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg border text-xs font-bold"
-                          style={{
-                            backgroundColor: 'var(--color-bg-card)',
-                            borderColor: 'var(--color-border-muted)',
-                            color: 'var(--color-text-primary)',
-                          }}
-                        >
-                          {ticker}
-                        </span>
-                      ))
-                    )}
-              </div>
-
-              {/* Sentiment detail modal */}
-              <AnimatePresence>
-                {expandedSentiment !== null && article.sentiments?.[expandedSentiment] && (() => {
-                  const insight = article.sentiments[expandedSentiment];
-                  return (
-                    <motion.div
-                      key="sentiment-overlay"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      onClick={() => setExpandedSentiment(null)}
-                      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
-                      style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}
-                    >
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full max-w-lg rounded-2xl border p-6 shadow-2xl"
-                        style={{
-                          backgroundColor: 'var(--color-bg-elevated)',
-                          borderColor: 'var(--color-border-muted)',
-                        }}
-                      >
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="flex items-center gap-3">
-                            <span
-                              className="text-xl font-bold"
-                              style={{ color: 'var(--color-text-primary)' }}
-                            >
-                              {insight.ticker}
-                            </span>
-                            <div
-                              className="flex items-center gap-1 text-xs font-bold px-2 py-1 rounded uppercase border"
-                              style={sentimentStyle(insight.sentiment)}
-                            >
-                              {sentimentIcon(insight.sentiment)} {insight.sentiment || 'neutral'}
-                            </div>
-                          </div>
-                          <button
-                            onClick={() => setExpandedSentiment(null)}
-                            className="p-2 rounded-full transition-colors"
-                            style={{ color: 'var(--color-text-secondary)' }}
-                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-                          >
-                            <X size={18} />
-                          </button>
-                        </div>
-                        {insight.reasoning && (
-                          <p
-                            className="text-sm leading-relaxed"
-                            style={{ color: 'var(--color-text-secondary)' }}
-                          >
-                            {insight.reasoning}
-                          </p>
-                        )}
-                      </motion.div>
-                    </motion.div>
-                  );
-                })()}
-              </AnimatePresence>
-            </div>
-          )}
-
-        </div>
+        <h2 className="dash-window-title">{article.title}</h2>
       </div>
-    </>
+
+      <div className={hasSide ? 'dash-window-grid' : 'dash-window-grid dash-window-grid--one'}>
+        <div className="dash-window-col">
+          {article.description && (
+            <TermCard title={t('dashboard.newsDetail.summary')} meta={t('dashboard.newsDetail.summaryMeta')}>
+              <p className="dash-window-prose">{article.description}</p>
+            </TermCard>
+          )}
+          {impact.length > 0 && (
+            <TermCard title={t('dashboard.newsDetail.tickerImpact')} meta={impact.length}>
+              <table className="term-table dash-window-impact">
+                <tbody>
+                  {impact.map((row, i) => (
+                    <tr key={`${row.ticker}-${i}`}>
+                      <td className="term-code term-strong">{row.ticker}</td>
+                      <td>
+                        {row.sentiment && (
+                          <TermStatus tone={sentimentTone(row.sentiment)}>
+                            {t(`dashboard.newsDetail.sentiment.${sentimentTone(row.sentiment)}`)}
+                          </TermStatus>
+                        )}
+                      </td>
+                      <td className="term-fill term-prose">{row.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TermCard>
+          )}
+        </div>
+        {hasSide && (
+          <aside className="dash-window-col">
+            {image && <NewsThumb key={image} src={image} />}
+            {keywords.length > 0 && (
+              <TermCard title={t('dashboard.newsDetail.topics')}>
+                <div className="dash-window-tags">
+                  {keywords.map((kw, i) => <TermTag key={i}>{kw}</TermTag>)}
+                </div>
+              </TermCard>
+            )}
+          </aside>
+        )}
+      </div>
+    </TermPanelContext>
   );
 }
 
-function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailModalProps) {
+function NewsDetailModal({ newsId, onClose, fallback }: NewsDetailModalProps) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const [article, setArticle] = useState<Article | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchFailed, setFetchFailed] = useState(false);
-  const [expandedSentiment, setExpandedSentiment] = useState<number | null>(null);
   const isMobile = useIsMobile();
+  const backdrop = useBackdropDismiss<HTMLDivElement>(onClose);
 
   // Read the latest fallback at fetch time without re-running the effect when
   // the parent hands us a fresh object for the same newsId.
-  const fallbackRef = useRef(fallback);
-  fallbackRef.current = fallback;
+  const readFallback = useEffectEvent(() => fallback);
 
   const handleAttach = () => {
     if (!article || !newsId) return;
     attachArticleToContext(article, newsId);
     toast({
       title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
-      description: 'News: ' + (article.title || ''),
+      description: t('dashboard.newsDetail.attachedNews', { title: article.title || '' }),
     });
   };
   const canAttach = !!article && !!newsId;
@@ -560,15 +306,13 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailM
     if (!newsId) {
       setArticle(null);
       setFetchFailed(false);
-      setExpandedSentiment(null);
       return;
     }
     // Seed with the clicked row's known fields so the modal renders instantly.
-    const seed = fallbackToArticle(fallbackRef.current);
+    const seed = fallbackToArticle(readFallback());
     let cancelled = false;
     setArticle(seed);
     setFetchFailed(false);
-    setExpandedSentiment(null);
 
     // The list now inlines the full article body, so when the row already
     // carries a description we render straight from it — no by-id round-trip.
@@ -577,8 +321,8 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailM
       return;
     }
 
-    // Optional enrichment: rows without an inlined body (or the Classic
-    // dashboard's URL-only path) still fetch the full article by id.
+    // Optional enrichment: rows without an inlined body still fetch the full
+    // article by id.
     setLoading(true);
     getNewsArticle(newsId)
       .then((data) => {
@@ -603,7 +347,11 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailM
   useEffect(() => {
     if (!newsId) return;
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // The same guard the dialog hook uses. An Escape that abandons an IME
+      // candidate, or one a layer inside has already handled, is not a
+      // dismissal, and this listener is on the window so it hears both.
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      onClose();
     };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
@@ -614,11 +362,8 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailM
       article={article}
       loading={loading}
       fetchFailed={fetchFailed}
-      fallbackUrl={fallbackUrl}
-      expandedSentiment={expandedSentiment}
-      setExpandedSentiment={setExpandedSentiment}
-      isMobile={isMobile}
       onAttach={canAttach ? handleAttach : undefined}
+      onClose={isMobile ? undefined : onClose}
     />
   );
 
@@ -630,6 +375,7 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailM
         onClose={onClose}
         sizing="fixed"
         height="92vh"
+        className="dash-window dash-window--sheet"
         style={{ paddingBottom: 'calc(var(--bottom-tab-height, 0px) + 16px)' }}
       >
         {body}
@@ -645,38 +391,13 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl, fallback }: NewsDetailM
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 z-50 flex items-center justify-center p-8"
+          {...backdrop}
+          className="fixed inset-0 z-1010 flex items-center justify-center p-8"
           style={{ backgroundColor: 'var(--color-bg-overlay, rgba(0,0,0,0.6))', backdropFilter: 'blur(4px)' }}
         >
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-5xl max-h-[90vh] rounded-3xl overflow-hidden shadow-2xl flex flex-col relative border"
-            style={{
-              backgroundColor: 'var(--color-bg-elevated)',
-              borderColor: 'var(--color-border-muted)',
-            }}
-          >
-            {/* Close */}
-            <button
-              onClick={onClose}
-              className="absolute top-4 right-4 z-20 p-2 rounded-full transition-colors"
-              style={{
-                backgroundColor: 'rgba(0,0,0,0.5)',
-                color: '#fff',
-                backdropFilter: 'blur(8px)',
-              }}
-            >
-              <X size={20} />
-            </button>
-
-            <div className="overflow-y-auto flex-1">
-              {body}
-            </div>
-          </motion.div>
+          <DashWindowDialog label={article?.title || t('dashboard.newsDetail.title')} onClose={onClose}>
+            {body}
+          </DashWindowDialog>
         </motion.div>
       )}
     </AnimatePresence>

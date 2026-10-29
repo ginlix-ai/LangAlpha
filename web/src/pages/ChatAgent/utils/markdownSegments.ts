@@ -15,11 +15,11 @@ interface Span {
 }
 
 /** Opening fence: up to 3 spaces of indent, then 3+ backticks or tildes. */
-const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+export const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
 /** Closing fence: same character as the opener, at least as long, nothing else. */
 const FENCE_CLOSE_RE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
-function closesFence(line: string, opener: string): boolean {
+export function closesFence(line: string, opener: string): boolean {
   // The terminator has to come off first: JavaScript's `$` does not match ahead
   // of a trailing newline, so testing the raw line never matches.
   const match = FENCE_CLOSE_RE.exec(line.replace(/\r?\n$/, ''));
@@ -28,6 +28,23 @@ function closesFence(line: string, opener: string): boolean {
     match[1][0] === opener[0] &&
     match[1].length >= opener.length
   );
+}
+
+/**
+ * The lines of `text`, each keeping its terminator, so joining them reproduces
+ * the input byte for byte; `''` has none. What `split(/(?<=\n)/)` returns, at a
+ * fraction of the cost: a streaming reply splits the whole document into lines
+ * several times per tick, and that lookbehind was the costliest regex there.
+ */
+export function splitLines(text: string): string[] {
+  const lines: string[] = [];
+  let start = 0;
+  for (let end = text.indexOf('\n'); end !== -1; end = text.indexOf('\n', start)) {
+    lines.push(text.slice(start, end + 1));
+    start = end + 1;
+  }
+  if (start < text.length) lines.push(text.slice(start));
+  return lines;
 }
 
 /** Appends `text`, merging into the previous span when the kind matches. */
@@ -44,9 +61,7 @@ function push(spans: Span[], text: string, code: boolean): void {
  * parser downstream will read it.
  */
 function splitFences(content: string): Span[] {
-  // Lookbehind keeps the terminator on each line, so joining the spans
-  // reproduces the input byte for byte.
-  const lines = content.split(/(?<=\n)/);
+  const lines = splitLines(content);
   const spans: Span[] = [];
   let opener: string | null = null;
 

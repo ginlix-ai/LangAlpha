@@ -1,15 +1,18 @@
 """Provenance records: a derived index of external data the agent accessed.
 
-Rows are extracted from the accumulated `conversation_responses.sse_events`
-(top-level `event == "provenance"` entries) and written delete-then-insert
-keyed by conversation_response_id, so the same turn can be re-persisted
-(background subagent drains overwrite sse_events repeatedly) without
-duplicating rows. All binds pass through the shared NUL sanitizers.
+Rows are extracted from the ``provenance`` events an agent lane emitted and
+written delete-then-insert per lane of a response: the main lane when the run
+settles, a subagent's lane each time its archive lands. A lane is rewritten
+whole by the one writer that holds all of it, so re-persisting it (subagent
+drains repeat) never duplicates rows, and never touches another lane's.
+All binds pass through the shared NUL sanitizers.
 """
 
+import json
 import logging
 import math
-from datetime import datetime
+from collections.abc import Collection
+from datetime import datetime, timezone
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -32,6 +35,10 @@ _TEXT_FIELDS = (
     "agent",
     "provider",
 )
+
+# The main agent's records, pinned to this name at emit time whatever graph
+# node produced them; a subagent's are ``task:{id}``.
+MAIN_PROVENANCE_LANE = "main"
 
 # Signed 64-bit range of the result_size BIGINT column.
 _BIGINT_MIN = -(2**63)
@@ -63,6 +70,7 @@ _INSERT_COLUMNS = (
     "agent",
     "provider",
     "source_timestamp",
+    "emitted_at",
 )
 
 
@@ -121,16 +129,43 @@ def _coerce_timestamp(value: Any) -> datetime | None:
         return None
 
 
-def extract_provenance_from_sse_events(
-    sse_events: list[dict[str, Any]] | None,
+def _coerce_emitted(value: Any) -> datetime | None:
+    """The ``ts`` the server stamped when it sent a record out, as a UTC
+    datetime, or None for an event carrying none (or a bad one)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _fingerprint_key(fingerprint: Any) -> str | None:
+    """A hashable stand-in for the JSON ``args_fingerprint`` in a dedup key.
+
+    Never raises: the fingerprint can come from an LLM-authored sandbox trace,
+    and a failure here would drop every row of the response.
+    """
+    if fingerprint is None:
+        return None
+    try:
+        return json.dumps(fingerprint, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return repr(fingerprint)
+
+
+def extract_provenance(
+    events: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    """Return normalized provenance rows from accumulated SSE events.
+    """Return normalized provenance rows from SSE events.
 
     Filters entries with top-level ``event == "provenance"`` and dedups within
-    the turn on ``(source_type, identifier, result_sha256)`` — the same source
-    fetched with the same content collapses to one row. ``turn_index`` /
-    ``response_id`` are intentionally ignored here (they may be absent at
-    persist time and are supplied by the caller).
+    one tool call: the same source with the same content and args collapses to
+    one row, while the same result under another call keeps its own.
+    ``turn_index`` / ``response_id`` are intentionally ignored here (they may
+    be absent at persist time and are supplied by the caller).
 
     Defensive by design: ``source_type`` is NOT NULL in the schema and rows
     flow partly from untrusted in-sandbox traces, so entries with a missing /
@@ -138,12 +173,12 @@ def extract_provenance_from_sse_events(
     int-or-None — a malformed entry is dropped, never allowed to fail the insert
     (which runs inside the turn-persist transaction).
     """
-    if not sse_events:
+    if not events:
         return []
 
     records: list[dict[str, Any]] = []
     seen: set[tuple] = set()
-    for entry in sse_events:
+    for entry in events:
         if not isinstance(entry, dict) or entry.get("event") != "provenance":
             continue
         data = entry.get("data")
@@ -165,15 +200,21 @@ def extract_provenance_from_sse_events(
         record["args"] = source.get("args")
         record["result_size"] = _coerce_int(source.get("result_size"))
         record["source_timestamp"] = _coerce_timestamp(source.get("timestamp"))
+        record["emitted_at"] = _coerce_emitted(entry.get("ts"))
 
-        # Include agent in the dedup key: the main agent and a subagent fetching
-        # the same URL/content are distinct accesses and must each keep a row
-        # with its own attribution (collapsing them would attribute arbitrarily).
+        # A row is one access as the Sources list shows it, and the client
+        # keys that by tool call (and, for an MCP call, by its args). Two
+        # calls that return the same content are two accesses, each listed
+        # under its own call, so only a repeat within one call collapses.
+        # The agent is in the key for the same reason: the main agent and a
+        # subagent fetching one URL each keep a row with their attribution.
         dedup_key = (
+            record["tool_call_id"],
             record["source_type"],
             record["identifier"],
             record["result_sha256"],
             record["agent"],
+            _fingerprint_key(record["args_fingerprint"]),
         )
         if dedup_key in seen:
             continue
@@ -218,7 +259,14 @@ def _row_binds(
         strip_pg_nul_str(record.get("agent")),
         strip_pg_nul_str(record.get("provider")),
         record.get("source_timestamp"),
+        record.get("emitted_at"),
     )
+
+
+def record_lane(record: dict[str, Any]) -> str:
+    """The lane a record belongs to: its agent, ``""`` when it has none."""
+    agent = record.get("agent")
+    return agent if isinstance(agent, str) else ""
 
 
 def provenance_row_to_event(row: dict[str, Any]) -> dict[str, Any]:
@@ -255,6 +303,7 @@ async def insert_provenance_records(
     conversation_thread_id: str,
     turn_index: int,
     records: list[dict[str, Any]],
+    lanes: Collection[str],
 ) -> int:
     """Delete-then-insert provenance rows for one response (idempotent, atomic).
 
@@ -268,9 +317,13 @@ async def insert_provenance_records(
     OUTER turn-persist commit (not released when the savepoint releases), so a
     concurrent same-response drain waits for that commit, not just this write.
     Rows are written as one multi-row INSERT (single parse + round-trip) rather
-    than executemany, which re-parses per row on this prepare_threshold=0 pool.
+    than executemany, which re-parses per row because finalize SQL is never prepared.
     Every TEXT bind is NUL-stripped and the JSONB ``args_fingerprint`` / ``args``
     binds are wrapped in ``SafeJson``. Returns the number of rows inserted.
+
+    ``lanes`` limits the delete to those agents' rows (an agentless row counts
+    as lane ``""``), and every record's own agent joins it, so a write always
+    replaces what it inserts.
     """
     async with conn.cursor() as cur, conn.transaction():
         # Serialize concurrent writers for this response (xact-scoped lock).
@@ -278,11 +331,15 @@ async def insert_provenance_records(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
             (conversation_response_id,),
         )
-        # Delete-then-insert keyed by response_id: re-runs (background drains)
-        # replace the prior set rather than accumulating duplicates.
+        # Delete-then-insert keyed by response_id and lane: re-runs
+        # (background drains) replace the prior set rather than accumulating
+        # duplicates.
+        scope = set(lanes) | {record_lane(r) for r in records}
         await cur.execute(
-            "DELETE FROM provenance_records WHERE conversation_response_id = %s",
-            (conversation_response_id,),
+            "DELETE FROM provenance_records "
+            "WHERE conversation_response_id = %s "
+            "AND COALESCE(agent, '') = ANY(%s)",
+            (conversation_response_id, sorted(scope)),
         )
 
         if not records:
@@ -315,25 +372,29 @@ async def sync_provenance_for_response(
     conversation_response_id: str,
     conversation_thread_id: str,
     turn_index: int,
-    sse_events: list[dict[str, Any]] | None,
+    provenance: list[dict[str, Any]] | None,
     strict: bool = False,
+    lanes: Collection[str],
 ) -> int:
-    """Extract provenance from sse_events and (re)write rows for one response.
+    """Extract provenance from ``provenance`` events and (re)write rows for
+    one response.
 
     Single entry point for both persistence hook sites. Best-effort by
     default so a provenance failure can't break a standalone persist;
     ``strict=True`` re-raises for transaction-bound callers, where a
     swallowed SQL error would poison the enclosing transaction and turn its
-    commit into a silent rollback.
+    commit into a silent rollback. ``lanes`` as in
+    ``insert_provenance_records``.
     """
     try:
-        records = extract_provenance_from_sse_events(sse_events)
+        records = extract_provenance(provenance)
         return await insert_provenance_records(
             conn,
             conversation_response_id=conversation_response_id,
             conversation_thread_id=conversation_thread_id,
             turn_index=turn_index,
             records=records,
+            lanes=lanes,
         )
     except Exception as e:
         if strict:

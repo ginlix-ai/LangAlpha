@@ -1,7 +1,8 @@
-"""Direct tests for market_hours trading-date helpers.
+"""US trading-date and phase-boundary answers.
 
 ``expected_latest_daily_date`` differs from ``current_trading_date`` only
 during pre-market (04:00–09:30 ET), when today's daily bar doesn't exist yet.
+The US clock serves both; ``market_hours`` keeps only the trading date.
 """
 
 from __future__ import annotations
@@ -9,11 +10,12 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src.utils.market_hours import (
-    current_trading_date,
-    expected_latest_daily_date,
-    next_phase_change_ms,
-)
+from src.data_client.instrument_clock import clock_for
+from src.utils.market_hours import current_trading_date
+
+_US = clock_for(None)
+expected_latest_daily_date = _US.expected_latest_daily_date
+next_phase_change_ms = _US.next_phase_change_ms
 
 ET = ZoneInfo("America/New_York")
 

@@ -117,6 +117,10 @@ async def test_cancel_workflow_publishes_only_for_unhandled_stamped_intent():
                 "src.server.services.runs.cancel.publish_cancel_nudge",
                 publish,
             ),
+            patch(
+                "src.server.database.runs.outbox.list_returned_steers",
+                AsyncMock(return_value=[]),
+            ),
         ):
             await wh.cancel_workflow("t-1")
         return publish

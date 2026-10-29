@@ -1,6 +1,6 @@
 """Declarative subagent definition.
 
-A SubagentDefinition describes *what* a subagent is — its mode, tools, skills,
+A SubagentDefinition describes *what* a subagent is — its tools, skills,
 prompt strategy, and section toggles.  It gets compiled into a SubAgent TypedDict
 at runtime by SubagentCompiler.
 """
@@ -10,7 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-SubagentMode = Literal["ptc", "flash"]
+from ptc_agent.agent.roles import ALL_ROLES, AgentRole
+
+BrokerageAccess = Literal["off", "on"]
+
+#: The sections about writing and running code, which follow ``execute_code``.
+CODE_SECTIONS = ("tool_guide", "workspace_paths", "data_processing", "visualizations")
 
 
 @dataclass
@@ -31,10 +36,6 @@ class SubagentDefinition:
     description: str
     """Shown to the main agent for delegation decisions."""
 
-    # ── Mode ──────────────────────────────────────────────────────────
-    mode: SubagentMode = "ptc"
-    """Determines base prompt template and default section toggles."""
-
     # ── Prompt configuration ──────────────────────────────────────────
     role_prompt: str = ""
     """Inline role-specific instructions appended to base template."""
@@ -49,15 +50,16 @@ class SubagentDefinition:
     """Raw prompt string — bypasses all template rendering."""
 
     # ── Skills ────────────────────────────────────────────────────────
-    skills: list[str] = field(default_factory=list)
-    """Skill names from SKILL_REGISTRY, loaded at runtime via SkillsMiddleware."""
-
     preload_skills: list[str] = field(default_factory=list)
-    """Skill names whose SKILL.md content is injected into the prompt at compile time."""
+    """Skill names whose SKILL.md is put into the prompt."""
 
     # ── Model ─────────────────────────────────────────────────────────
     model: str | None = None
     """Model override.  ``None`` = use the parent agent's model."""
+
+    reasoning_effort: str | None = None
+    """Effort the subagent runs at, whatever its model. ``None`` = the model's
+    saved effort when a model is pinned, else the turn's."""
 
     # ── Tools ─────────────────────────────────────────────────────────
     tools: list[str] = field(default_factory=list)
@@ -66,9 +68,30 @@ class SubagentDefinition:
     extra_tools: list[Any] = field(default_factory=list)
     """Additional raw tool objects injected at runtime (not serialisable to YAML)."""
 
-    # ── Execution limits ──────────────────────────────────────────────
-    max_iterations: int = 15
-    """Maximum tool-call iterations before the subagent stops."""
+    search_provider: str | None = None
+    """Search provider for this subagent's ``web_search``. ``None`` = the turn's."""
+
+    search_depth: str | None = None
+    """Search depth level for that provider. ``None`` = the turn's."""
+
+    tools_narrowed: bool = False
+    """Whether the user's settings leave out a tool its instructions were
+    written for. Its prompt then says a tool it names may be missing, since
+    the built-in role prompts and tool guide name tools by name."""
+
+    # ── Access ────────────────────────────────────────────────────────
+    connectors: bool = True
+    """Whether its code may call connectors other than brokerage connections."""
+
+    brokerages: BrokerageAccess = "on"
+    """Brokerage connections: none, or general access."""
+
+    memory: bool = False
+    """Whether it gets the user's memory indices and the rules for reading them.
+    Read only: anything worth saving comes back in its result."""
+
+    preferred_connectors: list[str] = field(default_factory=list)
+    """Servers its tool guide lists first. They never limit what it can call."""
 
     # ── Template section toggles ──────────────────────────────────────
     sections: dict[str, bool] = field(default_factory=dict)
@@ -78,10 +101,15 @@ class SubagentDefinition:
     or ``custom_prompt_template``).
     """
 
-    # ── Runtime requirements ──────────────────────────────────────────
-    stateful: bool = False
-    """Whether this subagent needs ``sandbox`` + ``mcp_registry`` at compile time."""
+    # ── Roles ─────────────────────────────────────────────────────────
+    roles: frozenset[AgentRole] = ALL_ROLES
+    """Which agent roles get this subagent in their roster.
+
+    Narrowed for a subagent whose work one role hands to another instead, so
+    the roster the prompt advertises is the one the build compiles.
+    """
 
     # ── Source tracking ───────────────────────────────────────────────
     source: str = "builtin"
-    """``"builtin"`` or ``"user"`` — for logging / debugging."""
+    """``"builtin"``, ``"user"`` (deployment YAML), ``"plugin"`` (a plugin's
+    ``agents/`` file) or ``"custom"`` (a user's own row)."""

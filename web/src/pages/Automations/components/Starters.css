@@ -1,0 +1,75 @@
+.automations-zero {
+  padding-top: 4px;
+}
+
+.automations-ledger {
+  max-width: 860px;
+  margin-top: 10px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.automations-ledger > li {
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.automations-ledger-row {
+  --starter-bleed: 12px;
+  grid-template-columns: var(--automations-label-col) minmax(0, 1fr) 14px;
+  column-gap: var(--automations-label-gap);
+  margin-block: 4px;
+  padding-block: 14px;
+}
+
+.automations-ledger-name {
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.automations-ledger-desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
+.automations-ledger-go {
+  color: var(--color-text-tertiary);
+  transition: transform var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+
+.automations-ledger-row:hover .automations-ledger-go {
+  color: var(--color-text-primary);
+  transform: translateX(2px);
+}
+
+/* Where the feed will be. The design system's one empty-canvas texture,
+   faded out at its edges rather than boxed. */
+.automations-zero-field {
+  display: flex;
+  justify-content: center;
+  max-width: 860px;
+  height: 240px;
+  margin-top: 28px;
+  padding-top: 64px;
+  -webkit-mask-image: radial-gradient(ellipse 55% 75% at 50% 32%, #000 25%, transparent 100%);
+  mask-image: radial-gradient(ellipse 55% 75% at 50% 32%, #000 25%, transparent 100%);
+}
+
+.automations-zero-field > p {
+  max-width: 36ch;
+  font-size: 0.8125rem;
+  text-align: center;
+  color: var(--color-text-tertiary);
+}
+
+@media (max-width: 767px) {
+  .automations-ledger-row {
+    grid-template-columns: minmax(0, 1fr) 14px;
+    row-gap: 10px;
+  }
+  .automations-zero-field {
+    margin-top: 24px;
+  }
+}

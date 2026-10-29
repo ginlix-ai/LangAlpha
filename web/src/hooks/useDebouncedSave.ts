@@ -7,9 +7,12 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
  * - `trigger()`: schedule a debounced save (resets timer on rapid calls)
  * - `flush()`: save immediately, cancelling any pending debounce
  * - `status`: 'idle' | 'saving' | 'saved' | 'error'
+ *
+ * A save that resolves `false` wrote nothing, and the status goes back to idle
+ * rather than claiming it saved.
  */
 export function useDebouncedSave(
-  saveFn: () => Promise<void>,
+  saveFn: () => Promise<void | false>,
   delay = 800,
 ) {
   const [status, setStatus] = useState<SaveStatus>('idle');
@@ -35,11 +38,18 @@ export function useDebouncedSave(
       clearTimeout(savedTimerRef.current);
       savedTimerRef.current = null;
     }
-    if (!mountedRef.current) { runningRef.current = false; pendingRef.current = false; return; }
-    setStatus('saving');
+    // The save itself must outlive unmount. `flush()` from a cleanup is the last
+    // chance to persist a pending edit, and React clears `mountedRef` first —
+    // this hook's own cleanup is registered before the caller's. Only the status
+    // updates are gated on still being mounted.
+    if (mountedRef.current) setStatus('saving');
     try {
-      await saveFnRef.current();
+      const saved = await saveFnRef.current();
       if (!mountedRef.current) return;
+      if (saved === false) {
+        setStatus('idle');
+        return;
+      }
       setStatus('saved');
       savedTimerRef.current = setTimeout(() => setStatus('idle'), 2000);
     } catch {
@@ -48,11 +58,10 @@ export function useDebouncedSave(
       savedTimerRef.current = setTimeout(() => setStatus('idle'), 3000);
     } finally {
       runningRef.current = false;
-      if (pendingRef.current && mountedRef.current) {
+      // An edit made while this save ran still has to land, unmounted or not.
+      if (pendingRef.current) {
         pendingRef.current = false;
         execute();
-      } else {
-        pendingRef.current = false;
       }
     }
   }, []);
@@ -67,6 +76,7 @@ export function useDebouncedSave(
   }, [execute]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);

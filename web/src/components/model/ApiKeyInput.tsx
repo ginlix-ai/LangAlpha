@@ -1,17 +1,14 @@
-import { useState, useCallback, useRef, useId, useEffect } from "react"
+import { useState, useCallback, useId } from "react"
 import { Eye, EyeOff, Check, X } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Loader } from "@/components/ui/loader"
-import { cn } from "@/lib/utils"
+import { useTranslation } from "react-i18next"
+import { useLocale } from "@/hooks/useLocale"
+import { createFormatter } from "@/lib/format"
+import type { TestResult } from "@/api/model"
 
-export interface TestResult {
-  success: boolean
-  model?: string
-  models_found?: number
-  latency_ms?: number
-  error?: string
-}
+const usd = createFormatter({ style: "currency", currency: "USD", maximumFractionDigits: 2 })
 
 export interface ApiKeyInputProps {
   provider: string
@@ -26,6 +23,10 @@ export interface ApiKeyInputProps {
     apiKey: string,
   ) => Promise<TestResult>
   testDisabled?: boolean
+  /** A key the endpoint may do without (a local server): blank is no error. */
+  optional?: boolean
+  /** For the key field, so a visible label outside can name it. */
+  id?: string
 }
 
 type TestState = "idle" | "loading" | "success" | "error"
@@ -40,22 +41,23 @@ export function ApiKeyInput({
   showBaseUrl = false,
   onTest,
   testDisabled = false,
+  optional = false,
+  id,
 }: ApiKeyInputProps) {
+  const { t } = useTranslation()
   const [visible, setVisible] = useState(false)
   const [touched, setTouched] = useState(false)
-  const [testState, setTestState] = useState<TestState>("idle")
-  const [testResult, setTestResult] = useState<TestResult | null>(null)
-  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // A result belongs to the key and endpoint it tested: it stays until either
+  // changes, and a different pair reads as untested.
+  const subject = `${value}\n${baseUrl ?? ""}`
+  const [test, setTest] = useState<{ subject: string; state: TestState; result: TestResult | null } | null>(null)
+  const locale = useLocale()
+  const current = test && test.subject === subject ? test : null
+  const testState: TestState = current?.state ?? "idle"
+  const testResult = current?.result ?? null
 
   const errorId = useId()
-  const hasError = touched && !value && !maskedKey
-
-  // Clean up fade timer on unmount
-  useEffect(() => {
-    return () => {
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-    }
-  }, [])
+  const hasError = touched && !optional && !value && !maskedKey
 
   const handleBlur = useCallback(() => {
     setTouched(true)
@@ -63,35 +65,20 @@ export function ApiKeyInput({
 
   const handleTest = useCallback(async () => {
     if (!onTest || testDisabled || !value) return
-
-    // Clear any pending fade timer
-    if (fadeTimerRef.current) {
-      clearTimeout(fadeTimerRef.current)
-      fadeTimerRef.current = null
-    }
-
-    setTestState("loading")
-    setTestResult(null)
-
+    const tested = subject
+    setTest({ subject: tested, state: "loading", result: null })
+    let result: TestResult
     try {
-      const result = await onTest(provider, value)
-      setTestResult(result)
-
-      if (result.success) {
-        setTestState("success")
-        // Auto-fade success after 5s
-        fadeTimerRef.current = setTimeout(() => {
-          setTestState("idle")
-          setTestResult(null)
-        }, 5000)
-      } else {
-        setTestState("error")
-      }
+      result = await onTest(provider, value)
     } catch {
-      setTestState("error")
-      setTestResult({ success: false, error: "Test request failed" })
+      result = { success: false, error: t("setup.testFailed") }
     }
-  }, [onTest, testDisabled, value, provider])
+    setTest((prev) => (prev && prev.subject === tested
+      ? { subject: tested, state: result.success ? "success" : "error", result }
+      : prev))
+  }, [onTest, testDisabled, value, subject, provider, t])
+
+  const credits = testState === "success" ? testResult?.credits : undefined
 
   return (
     <div className="flex flex-col gap-3 w-full">
@@ -99,12 +86,13 @@ export function ApiKeyInput({
       <div className="flex flex-col sm:flex-row gap-2 min-w-0">
         <div className="relative flex-1 min-w-0">
           <Input
+            id={id}
             type={visible ? "text" : "password"}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onBlur={handleBlur}
-            placeholder={maskedKey || "Paste your API key here"}
-            className={cn("pr-12 focus-visible:ring-offset-0", hasError && "focus-visible:ring-0")}
+            placeholder={maskedKey || t("setup.pasteKeyPlaceholder")}
+            className="pr-12"
             style={
               hasError
                 ? { borderColor: "var(--color-loss)" }
@@ -123,7 +111,7 @@ export function ApiKeyInput({
             size="icon"
             className="absolute right-1 top-1/2 -translate-y-1/2 h-8 w-8"
             onClick={() => setVisible((v) => !v)}
-            aria-label={visible ? "Hide API key" : "Show API key"}
+            aria-label={visible ? t("setup.hideKey") : t("setup.showKey")}
             tabIndex={0}
           >
             {visible ? (
@@ -142,15 +130,15 @@ export function ApiKeyInput({
             size="sm"
             disabled={testDisabled || testState === "loading" || !value}
             onClick={handleTest}
-            title={testDisabled ? "Test not available for this provider" : undefined}
+            title={testDisabled ? t("setup.testUnavailable") : undefined}
             className="shrink-0 self-start sm:self-auto h-10"
           >
             {testState === "loading" && (
               <>
-                <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                <span aria-hidden="true" className="mr-1.5 shrink-0">
                   <Loader size={14} className="text-current" />
                 </span>
-                Testing...
+                {t("setup.testing")}
               </>
             )}
             {testState === "success" && (
@@ -159,11 +147,10 @@ export function ApiKeyInput({
                   className="h-3.5 w-3.5 mr-1.5"
                   style={{ color: "var(--color-success)" }}
                 />
-                <span style={{ color: "var(--color-success)" }}>Key works!</span>
+                <span style={{ color: "var(--color-success)" }}>{t("setup.testSuccess")}</span>
               </>
             )}
-            {testState === "error" && "Test"}
-            {testState === "idle" && "Test"}
+            {(testState === "error" || testState === "idle") && t("setup.testButton")}
           </Button>
         )}
       </div>
@@ -176,7 +163,7 @@ export function ApiKeyInput({
           className="text-xs"
           style={{ color: "var(--color-loss)" }}
         >
-          Please enter an API key
+          {t("setup.errorNoApiKey")}
         </p>
       )}
 
@@ -185,8 +172,8 @@ export function ApiKeyInput({
         <p className="text-xs flex items-center gap-1" style={{ color: "var(--color-success)" }}>
           <span>
             {testResult.models_found != null && testResult.models_found > 0
-              ? `${testResult.models_found} model${testResult.models_found !== 1 ? 's' : ''} found`
-              : 'Key accepted'}
+              ? t("setup.modelsFound", { count: testResult.models_found })
+              : t("setup.keyAccepted")}
           </span>
           {testResult.latency_ms != null && (
             <>
@@ -194,6 +181,18 @@ export function ApiKeyInput({
               <span>{testResult.latency_ms}ms</span>
             </>
           )}
+        </p>
+      )}
+      {credits && credits.remaining != null && (
+        <p className="text-xs" style={{ color: "var(--color-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
+          {credits.limit != null
+            ? t("modelAccess.apiKey.creditsLeft", { left: usd(credits.remaining, locale), total: usd(credits.limit, locale) })
+            : t("modelAccess.apiKey.creditsLeftNoLimit", { left: usd(credits.remaining, locale) })}
+        </p>
+      )}
+      {credits && credits.remaining == null && credits.usage != null && (
+        <p className="text-xs" style={{ color: "var(--color-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
+          {t("modelAccess.apiKey.creditsUsed", { used: usd(credits.usage, locale) })}
         </p>
       )}
       {testState === "error" && testResult?.error && (
@@ -209,7 +208,7 @@ export function ApiKeyInput({
           type="url"
           value={baseUrl ?? ""}
           onChange={(e) => onBaseUrlChange?.(e.target.value)}
-          placeholder="Base URL (optional)"
+          placeholder={t("setup.baseUrlPlaceholder")}
         />
       )}
     </div>

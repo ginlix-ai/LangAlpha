@@ -191,9 +191,8 @@ class SessionState:
         auto_approve: bool = False,
         no_splash: bool = False,
         persist_session: bool = True,
-        plan_mode: bool = False,
         llm_model: str | None = None,
-        flash_mode: bool = False,
+        in_home: bool = False,
     ) -> None:
         """Initialize session state.
 
@@ -201,16 +200,14 @@ class SessionState:
             auto_approve: Whether to auto-approve tool executions
             no_splash: Whether to skip the splash screen
             persist_session: Whether to persist sandbox sessions
-            plan_mode: Whether to inject plan mode reminder
             llm_model: LLM model name from models.json (e.g., 'minimax-m3')
-            flash_mode: Whether to use Flash Agent (no sandbox)
+            in_home: Whether turns run in the user's Home, outside any workspace
         """
         self.auto_approve = auto_approve
         self.no_splash = no_splash
         self.persist_session = persist_session
-        self.plan_mode = plan_mode  # If True, inject plan mode reminder
         self.llm_model = llm_model  # Per-session LLM model override
-        self.flash_mode = flash_mode  # If True, use Flash Agent without sandbox
+        self.in_home = in_home  # If True, turns run in Home, with no workspace
         self.reusing_sandbox = False  # Set to True when reconnecting to existing sandbox
         self.thread_id = str(uuid.uuid4())
 
@@ -252,15 +249,6 @@ class SessionState:
         """Toggle auto-approve and return new state."""
         self.auto_approve = not self.auto_approve
         return self.auto_approve
-
-    def toggle_plan_mode(self) -> bool:
-        """Toggle plan mode.
-
-        Returns:
-            New plan_mode state
-        """
-        self.plan_mode = not self.plan_mode
-        return self.plan_mode
 
     def reset_thread(self) -> str:
         """Reset conversation by generating new thread_id.

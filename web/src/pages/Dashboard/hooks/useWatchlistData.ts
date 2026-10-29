@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/components/ui/use-toast';
 import {
   addWatchlistItem,
@@ -8,6 +8,8 @@ import {
   listWatchlistItems,
 } from '../utils/api';
 import { useQuotes, snapshotToStockPrice } from '@/lib/quotes';
+import { quoteCurrency } from '@/lib/bars/exchanges';
+import type { QuoteRow } from '../widgets/framework/snapshotSerializers';
 import { registerAuthReset } from '@/lib/authResets';
 import type { StockPrice } from '@/types/market';
 
@@ -22,7 +24,24 @@ export interface WatchlistRow {
   previousClose: number | null;
   earlyTradingChangePercent: number | null;
   lateTradingChangePercent: number | null;
+  /** ISO code the snapshot was quoted in; null on a payload that predates it. */
+  currency: string | null;
+  /** The snapshot's asset class: an `index` row prints a level, not a price. */
+  assetClass: string | null;
   [key: string]: unknown;
+}
+
+/** A row as the agent reads it: the figures the user sees, in the currency
+ *  the user sees them in, so a CN¥ price never reaches the agent as dollars. */
+export function watchlistQuoteRow(r: WatchlistRow): QuoteRow {
+  const hasQuote = r.quoteAvailable !== false;
+  return {
+    symbol: r.symbol,
+    price: hasQuote ? r.price : undefined,
+    change: hasQuote ? r.change : undefined,
+    changePercent: hasQuote ? r.changePercent : undefined,
+    currency: quoteCurrency(r.currency, r.symbol, r.assetClass),
+  };
 }
 
 interface WatchlistItem {
@@ -87,6 +106,37 @@ registerAuthReset(() => {
 });
 
 /**
+ * The watchlist's membership alone, for a reader that needs what is on the
+ * list but not its quotes (the welcome flow's holdings entry). The same entry
+ * the hook below polls, so a symbol added anywhere shows everywhere. The
+ * hook adds the polling; a reader that only needs the list does not poll.
+ */
+export const watchlistItemsQuery = queryOptions({
+  queryKey: ['watchlistData'],
+  queryFn: async (): Promise<WatchlistItemsData> => {
+    const speculativeId = readLastWatchlistId();
+    const speculative = speculativeId
+      ? (listWatchlistItems(speculativeId) as Promise<{ items?: WatchlistItem[] }>).catch(() => null)
+      : null;
+
+    const { watchlists } = await listWatchlists() as { watchlists?: Array<{ watchlist_id: string; [key: string]: unknown }> };
+    const firstWatchlist = watchlists?.[0];
+    const watchlistId = firstWatchlist?.watchlist_id || 'default';
+    storeLastWatchlistId(watchlistId);
+
+    let items: WatchlistItem[] | undefined;
+    if (speculative && speculativeId === watchlistId) {
+      items = (await speculative)?.items;
+    }
+    if (items === undefined) {
+      ({ items } = await listWatchlistItems(watchlistId) as { items?: WatchlistItem[] });
+    }
+    return { items: items ?? [], currentWatchlistId: watchlistId };
+  },
+  staleTime: 1000 * 30, // 30s fresh
+});
+
+/**
  * Shared hook for watchlist data fetching and CRUD operations.
  * Used by both Dashboard and MarketView sidebar.
  * Refactored to use TanStack Query for optimal polling and caching.
@@ -100,31 +150,10 @@ export function useWatchlistData() {
   // Watchlist membership (items) is its own query so add/delete invalidation and
   // polling still key on ['watchlistData']; the per-symbol quotes come from the
   // shared quote layer so overlapping watchlists/portfolios share one fetch.
-  const { data: itemsData = { items: [], currentWatchlistId: null }, isLoading: itemsLoading, refetch: refetchItems } = useQuery<WatchlistItemsData>({
-    queryKey: ['watchlistData'],
-    queryFn: async (): Promise<WatchlistItemsData> => {
-      const speculativeId = readLastWatchlistId();
-      const speculative = speculativeId
-        ? (listWatchlistItems(speculativeId) as Promise<{ items?: WatchlistItem[] }>).catch(() => null)
-        : null;
-
-      const { watchlists } = await listWatchlists() as { watchlists?: Array<{ watchlist_id: string; [key: string]: unknown }> };
-      const firstWatchlist = watchlists?.[0];
-      const watchlistId = firstWatchlist?.watchlist_id || 'default';
-      storeLastWatchlistId(watchlistId);
-
-      let items: WatchlistItem[] | undefined;
-      if (speculative && speculativeId === watchlistId) {
-        items = (await speculative)?.items;
-      }
-      if (items === undefined) {
-        ({ items } = await listWatchlistItems(watchlistId) as { items?: WatchlistItem[] });
-      }
-      return { items: items ?? [], currentWatchlistId: watchlistId };
-    },
+  const { data: itemsData = { items: [], currentWatchlistId: null }, isLoading: itemsLoading, isSuccess: loaded, refetch: refetchItems } = useQuery({
+    ...watchlistItemsQuery,
     refetchInterval: 60000,
     refetchIntervalInBackground: false,
-    staleTime: 1000 * 30, // 30s fresh
   });
 
   const { items, currentWatchlistId } = itemsData;
@@ -159,6 +188,8 @@ export function useWatchlistData() {
         previousClose: p.previousClose ?? null,
         earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
         lateTradingChangePercent: p.lateTradingChangePercent ?? null,
+        currency: p.currency ?? null,
+        assetClass: quotes[sym]?.asset_class ?? null,
       };
     });
   }, [items, symbols, quotes]);
@@ -235,6 +266,8 @@ export function useWatchlistData() {
   return {
     rows,
     loading,
+    /** The items arrived, as opposed to a read that failed or never ran. */
+    loaded,
     modalOpen,
     setModalOpen,
     currentWatchlistId,

@@ -84,6 +84,29 @@ describe('useDebouncedSave', () => {
     expect(saveFn).toHaveBeenCalledTimes(2);
   });
 
+  it('still runs the save queued during an in-flight save after unmount', async () => {
+    let resolveFirst!: () => void;
+    const saveFn = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>(r => { resolveFirst = r; }))
+      .mockResolvedValue(undefined);
+    const { result, unmount } = renderHook(() => useDebouncedSave(saveFn, 500));
+
+    act(() => { result.current.flush(); });
+    act(() => { result.current.flush(); });
+    unmount();
+
+    await act(async () => { resolveFirst(); });
+    expect(saveFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('goes back to idle, not saved, when the save wrote nothing', async () => {
+    const saveFn = vi.fn().mockResolvedValue(false);
+    const { result } = renderHook(() => useDebouncedSave(saveFn, 500));
+
+    await act(async () => { result.current.flush(); });
+    expect(result.current.status).toBe('idle');
+  });
+
   it('cleans up timers on unmount', async () => {
     const saveFn = vi.fn().mockResolvedValue(undefined);
     const { result, unmount } = renderHook(() => useDebouncedSave(saveFn, 500));

@@ -7,8 +7,14 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from src.data_client.registry import (
+    NewsGate,
+    news_article_owners,
+    news_gate,
+    news_source_available,
+)
 from src.server.models.news import (
     NewsArticle,
     NewsArticleCompact,
@@ -112,6 +118,40 @@ async def _get_news_data(
     return await fetch()
 
 
+def _first_accept_language(header: str | None) -> str:
+    """First language tag of an Accept-Language header, quality params stripped."""
+    if not header:
+        return ""
+    return header.split(",")[0].split(";")[0].strip()
+
+
+async def _eligible(gate: NewsGate, user_id: str, accept_language: str | None = None) -> bool:
+    """A gated feed: the gate's feature enabled AND a locale with its prefix.
+
+    ``users.locale`` is left null at signup and only ever written by the
+    Settings dropdown, so a null column means "unknown", not "some other
+    language", so the request's Accept-Language stands in for it. The feed is
+    public data; the gate keeps the provider contract truthful (server-side,
+    not just widget-side). Any lookup failure means ineligible.
+    """
+    from src.server.database.user import get_user
+    from src.server.services.features import user_feature_enabled
+
+    try:
+        enabled, user = await asyncio.gather(
+            user_feature_enabled(user_id, gate.feature), get_user(user_id)
+        )
+        if not enabled:
+            return False
+        locale = str((user or {}).get("locale") or "")
+        if not locale:
+            locale = _first_accept_language(accept_language)
+        return locale.lower().startswith(gate.locale)
+    except Exception:  # noqa: BLE001
+        logger.warning("news.eligibility_check_failed | feature=%s", gate.feature, exc_info=True)
+        return False
+
+
 def _compact(article: dict) -> NewsArticleCompact | None:
     """Convert a full article dict to a compact model. Returns None for invalid articles."""
     title = article.get("title")
@@ -140,6 +180,7 @@ def _compact(article: dict) -> NewsArticleCompact | None:
 
 @router.get("", response_model=NewsCompactResponse)
 async def get_news(
+    request: Request,
     user_id: CurrentUserId,
     tickers: str | None = Query(None, description="Comma-separated ticker symbols"),
     limit: int = Query(20, ge=1, le=100),
@@ -160,6 +201,17 @@ async def get_news(
         if tickers
         else None
     )
+
+    # A gated feed downgrades to the default chain HERE, before any cache/lock
+    # key is derived, so a fallback response can never be cached under the
+    # gated feed's key. That covers a server that cannot build the feed too:
+    # the client asks for it on eligibility alone.
+    gate = news_gate(provider)
+    if gate is not None and (
+        not news_source_available(provider)
+        or not await _eligible(gate, user_id, request.headers.get("accept-language"))
+    ):
+        provider = None
 
     # Cursors and date/sort filters make a request unique, but the cache and
     # single-flight/lock keys only carry (provider, tickers, limit). Sharing
@@ -183,16 +235,26 @@ async def get_news(
 
             source = await get_news_data_provider()
 
-        data = await source.get_news(
-            tickers=ticker_list,
-            limit=limit,
-            cursor=cursor,
-            published_after=published_after,
-            published_before=published_before,
-            order=order,
-            sort=sort,
-            user_id=user_id,
-        )
+        try:
+            data = await source.get_news(
+                tickers=ticker_list,
+                limit=limit,
+                cursor=cursor,
+                published_after=published_after,
+                published_before=published_before,
+                order=order,
+                sort=sort,
+                user_id=user_id,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # An upstream refusal (rate limit, outage) is not a server fault;
+            # the client retries on its next poll, so say "unavailable".
+            logger.warning("news.upstream_failed | provider=%s error=%s", provider, e)
+            raise HTTPException(
+                status_code=503, detail="News provider temporarily unavailable"
+            ) from e
         # Populate cache (stores full articles internally).
         if not bypass_cache:
             await _cache.set(data, tickers=ticker_list, limit=limit, provider=provider)
@@ -229,7 +291,19 @@ async def get_news(
 
 
 @router.get("/{article_id}", response_model=NewsArticle)
-async def get_news_article(article_id: str, user_id: CurrentUserId):
+async def get_news_article(article_id: str, request: Request, user_id: CurrentUserId):
+    not_found = HTTPException(status_code=404, detail="Article not found")
+
+    # An id a gated source claims is that feed's content, and ids travel in
+    # shared links. Refuse before any read, exactly as an unknown id, so the
+    # gate never confirms that the id exists.
+    owners = news_article_owners(article_id)
+    accept_language = request.headers.get("accept-language")
+    for name in owners:
+        gate = news_gate(name)
+        if gate is not None and not await _eligible(gate, user_id, accept_language):
+            raise not_found
+
     # Fast path: check cache
     cached = await _cache.get_article_by_id(article_id)
     if cached:
@@ -243,15 +317,16 @@ async def get_news_article(article_id: str, user_id: CurrentUserId):
     if article:
         return NewsArticle(**article)
 
-    # TickerTick is targeted directly (not in the chain) — try it for its rows.
-    try:
-        from src.data_client import get_news_source
+    # Directly-targeted providers (not in the chain) that may have issued this id.
+    for name in owners:
+        try:
+            from src.data_client import get_news_source
 
-        tickertick = await get_news_source("tickertick")
-        article = await tickertick.get_news_article(article_id, user_id=user_id)
-        if article:
-            return NewsArticle(**article)
-    except Exception:
-        logger.debug("news.tickertick.article_lookup_failed", exc_info=True)
+            source = await get_news_source(name)
+            article = await source.get_news_article(article_id, user_id=user_id)
+            if article:
+                return NewsArticle(**article)
+        except Exception:
+            logger.debug("news.%s.article_lookup_failed", name, exc_info=True)
 
-    raise HTTPException(status_code=404, detail="Article not found")
+    raise not_found

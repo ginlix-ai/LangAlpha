@@ -4,7 +4,7 @@ Tests for ptc_agent.config.utils — config factory functions and validators.
 Covers:
 - validate_required_sections()
 - validate_section_fields()
-- create_daytona_config()
+- DaytonaConfig.from_section()
 - create_mcp_config()
 - create_logging_config()
 - create_filesystem_config() — including the working_directory bug
@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
+from ptc_agent.config.core import DaytonaConfig
 from ptc_agent.config.utils import (
-    create_daytona_config,
     create_filesystem_config,
     create_logging_config,
     create_mcp_config,
@@ -63,8 +63,17 @@ class TestValidateSectionFields:
 
 
 # ---------------------------------------------------------------------------
-# create_daytona_config
+# DaytonaConfig.from_section
 # ---------------------------------------------------------------------------
+
+
+_REQUIRED = {
+    "base_url": "https://test.daytona.io/api",
+    "auto_stop_interval": 1800,
+    "auto_archive_interval": 43200,
+    "auto_delete_interval": 302400,
+    "python_version": "3.11",
+}
 
 
 class TestCreateDaytonaConfig:
@@ -77,7 +86,7 @@ class TestCreateDaytonaConfig:
             "python_version": "3.11",
         }
         with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
-            cfg = create_daytona_config(data)
+            cfg = DaytonaConfig.from_section(data)
         assert cfg.base_url == "https://test.daytona.io/api"
         assert cfg.api_key == "test-key"
         assert cfg.python_version == "3.11"
@@ -98,17 +107,25 @@ class TestCreateDaytonaConfig:
             },
         }
         with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
-            cfg = create_daytona_config(data)
+            cfg = DaytonaConfig.from_section(data)
         assert cfg.default_tier == "performance"
         assert set(cfg.resource_tiers) == {"standard", "performance"}
         assert cfg.resource_tiers["performance"].memory == 4
 
-    def test_over_ceiling_tier_is_clamped_and_logged(self, caplog):
-        """A tier above the org ceiling is clamped to it, with a warning."""
-        import logging
+    def test_forwards_host_unavailable_rebuild_after_minutes_when_present(self):
+        """0 is how an operator disables the rebuild, and differs from the default."""
+        data = {**_REQUIRED, "host_unavailable_rebuild_after_minutes": 0}
+        with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
+            cfg = DaytonaConfig.from_section(data)
+        assert cfg.host_unavailable_rebuild_after_minutes == 0
 
-        from ptc_agent.config.core import RESOURCE_TIER_CEILING
+    def test_host_unavailable_rebuild_after_minutes_defaults_to_an_hour(self):
+        with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
+            cfg = DaytonaConfig.from_section(dict(_REQUIRED))
+        assert cfg.host_unavailable_rebuild_after_minutes == 60
 
+    def test_a_tier_above_the_ceiling_is_refused(self):
+        """A size Daytona cannot build fails the load rather than shrinking."""
         data = {
             "base_url": "https://test.daytona.io/api",
             "auto_stop_interval": 1800,
@@ -117,19 +134,12 @@ class TestCreateDaytonaConfig:
             "python_version": "3.11",
             "resource_tiers": {
                 "standard": {"cpu": 1, "memory": 1, "disk": 3},
-                "huge": {"cpu": 32, "memory": 64, "disk": 100},
+                "huge": {"cpu": 4, "memory": 8, "disk": 20},
             },
         }
         with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
-            with caplog.at_level(logging.WARNING):
-                cfg = create_daytona_config(data)
-        huge = cfg.resource_tiers["huge"]
-        assert (huge.cpu, huge.memory, huge.disk) == (
-            RESOURCE_TIER_CEILING["cpu"],
-            RESOURCE_TIER_CEILING["memory"],
-            RESOURCE_TIER_CEILING["disk"],
-        )
-        assert any("exceeds the org ceiling" in r.message for r in caplog.records)
+            with pytest.raises(ValueError, match=r"resource_tiers\['huge'\].*disk=20 \(max 10\)"):
+                DaytonaConfig.from_section(data)
 
     def test_tier_fields_default_when_absent(self):
         """No tier keys in yaml → the DaytonaConfig defaults apply untouched."""
@@ -141,7 +151,7 @@ class TestCreateDaytonaConfig:
             "python_version": "3.11",
         }
         with patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}):
-            cfg = create_daytona_config(data)
+            cfg = DaytonaConfig.from_section(data)
         assert cfg.default_tier == "standard"
         assert set(cfg.resource_tiers) == {"standard", "performance", "max"}
 
@@ -156,7 +166,7 @@ class TestCreateDaytonaConfig:
         }
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("DAYTONA_API_KEY", None)
-            cfg = create_daytona_config(data)
+            cfg = DaytonaConfig.from_section(data)
         assert cfg.api_key == ""
 
     def test_snapshot_defaults(self):
@@ -167,7 +177,7 @@ class TestCreateDaytonaConfig:
             "auto_delete_interval": 604800,
             "python_version": "3.12",
         }
-        cfg = create_daytona_config(data)
+        cfg = DaytonaConfig.from_section(data)
         assert cfg.snapshot_enabled is True
         assert cfg.snapshot_name is None
         assert cfg.snapshot_auto_create is True
@@ -183,14 +193,14 @@ class TestCreateDaytonaConfig:
             "snapshot_name": "my-snapshot",
             "snapshot_auto_create": False,
         }
-        cfg = create_daytona_config(data)
+        cfg = DaytonaConfig.from_section(data)
         assert cfg.snapshot_enabled is False
         assert cfg.snapshot_name == "my-snapshot"
 
     def test_missing_required_field(self):
         data = {"base_url": "https://test.io/api"}
         with pytest.raises(ValueError, match="Missing required fields in daytona"):
-            create_daytona_config(data)
+            DaytonaConfig.from_section(data)
 
 
 # ---------------------------------------------------------------------------

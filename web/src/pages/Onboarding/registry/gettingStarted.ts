@@ -1,18 +1,17 @@
+import { DESKTOP_DOWNLOAD_URL, PLATFORM_URL } from '@/config/supportLinks';
+import { openComputersPanel } from '@/pages/ChatAgent/hooks/computerPanelStore';
+import { WELCOME_PATH } from '../welcome/paths';
 import type { GettingStartedTaskDef } from './types';
-
-const PLATFORM_URL = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
 
 /**
  * The getting-started checklist, in presentation order: tour the pages first,
- * then the Flash interview, then create a PTC workspace and run a first
- * research in it, then model configuration, then channel integrations. Tasks
+ * then the investing profile, then create a PTC workspace and run a first
+ * research in it, then model configuration, then the desktop app (from the
+ * browser) or remote control of this Mac (in the app), then channel
+ * integrations. Tasks
  * complete via a route visit (stamped into prefs), a derived signal
- * (`doneWhen`), or — for external destinations — the click itself; clicking a
- * pending task navigates to `to`.
- *
- * The two interview tasks both open the Flash personalization chat: it covers
- * watchlist/portfolio and preferences in one conversation, but each half has
- * its own completion signal so a partial interview shows what's still missing.
+ * (`doneWhen`), or, for an external destination with neither, the click
+ * itself; clicking a pending task navigates to `to`.
  */
 export const GETTING_STARTED_TASKS: GettingStartedTaskDef[] = [
   {
@@ -30,25 +29,16 @@ export const GETTING_STARTED_TASKS: GettingStartedTaskDef[] = [
     visitRoute: (p) => p === '/market',
   },
   {
-    id: 'stocks',
-    titleKey: 'onboarding.gettingStarted.tasks.stocks.title',
-    descKey: 'onboarding.gettingStarted.tasks.stocks.desc',
-    to: '/chat/t/__default__',
-    interview: true,
-    doneWhen: 'hasStocks',
-  },
-  {
-    id: 'preferences',
-    titleKey: 'onboarding.gettingStarted.tasks.preferences.title',
-    descKey: 'onboarding.gettingStarted.tasks.preferences.desc',
-    to: '/chat/t/__default__',
-    interview: true,
-    doneWhen: 'hasPreferences',
+    id: 'profile',
+    titleKey: 'onboarding.gettingStarted.tasks.profile.title',
+    descKey: 'onboarding.gettingStarted.tasks.profile.desc',
+    to: WELCOME_PATH,
+    doneWhen: 'onboardingCompleted',
   },
   {
     id: 'createWorkspace',
     titleKey: 'onboarding.gettingStarted.tasks.createWorkspace.title',
-    descKey: 'onboarding.gettingStarted.tasks.createWorkspace.desc',
+    descKey: 'agents.tour.createWorkspaceTask',
     to: '/chat',
     doneWhen: 'hasWorkspace',
   },
@@ -67,10 +57,31 @@ export const GETTING_STARTED_TASKS: GettingStartedTaskDef[] = [
     visitRoute: (p, s) => p === '/settings' && new URLSearchParams(s).get('tab') === 'model',
   },
   {
+    id: 'desktopApp',
+    titleKey: 'onboarding.gettingStarted.tasks.desktopApp.title',
+    descKey: 'onboarding.gettingStarted.tasks.desktopApp.desc',
+    to: DESKTOP_DOWNLOAD_URL,
+    external: true,
+    offeredOn: 'browser',
+    doneWhen: 'inDesktopApp',
+  },
+  {
+    id: 'remoteControl',
+    titleKey: 'onboarding.gettingStarted.tasks.remoteControl.title',
+    descKey: 'onboarding.gettingStarted.tasks.remoteControl.desc',
+    to: '/chat',
+    // The Computers panel mounts with the chat page and reads its store as it
+    // does, so it opens onto the form however the page is reached.
+    open: () => openComputersPanel({ view: 'create', pick: 'thisMac' }),
+    offeredOn: 'thisMac',
+    doneWhen: 'thisMacAdded',
+  },
+  {
     id: 'integrations',
     titleKey: 'onboarding.gettingStarted.tasks.integrations.title',
     descKey: 'onboarding.gettingStarted.tasks.integrations.desc',
-    to: `${PLATFORM_URL}/integrations`,
+    // Platform only, so the portal is configured wherever this task shows.
+    to: `${PLATFORM_URL ?? ''}/integrations`,
     external: true,
     platformOnly: true,
   },

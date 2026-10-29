@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { BarChart3, Newspaper, LayoutGrid, ListOrdered, FileText } from 'lucide-react';
 import { WidgetContextPreview, type WidgetContextPreviewShape } from './WidgetContextPreview';
+import { deckHeight, deckSlot, useDeckCollapse, type DeckGeometry } from '@/components/ui/cardDeck';
 
 /** Pick a thumb icon for a widget snapshot based on its type slug. Shared by
  *  the chat-input live deck and the chat-view inline deck so a given widget
@@ -14,12 +15,18 @@ export function pickWidgetIcon(widgetType: string): React.ComponentType<{ classN
   return FileText;
 }
 
-/** Card geometry — must stay in sync with the `.widget-deck-*` CSS so the
- *  computed inline transforms align with the card sizing rules. If these
- *  ever drift, the snapshot tests on the deck DOM will catch it. */
-const CARD_HEIGHT = 60;
-const CARD_GAP = 6;
-const PEEK_STEP = 6;
+/** Deeper than the provenance deck: a snapshot stack is a handful of cards the
+ *  user assembled, so showing more of it collapsed is the point. Must stay in
+ *  step with the `.widget-deck-*` CSS card sizing; the deck's DOM tests catch a
+ *  drift. */
+const GEOMETRY: DeckGeometry = {
+  cardHeight: 60,
+  cardGap: 6,
+  peekStep: 6,
+  maxPeekLayers: 4,
+  peekScaleStep: 0.03,
+  minPeekScale: 0.85,
+};
 
 export interface WidgetContextDeckProps {
   snapshots: WidgetContextPreviewShape[];
@@ -78,39 +85,17 @@ export function WidgetContextDeck({
 }: WidgetContextDeckProps) {
   const cards = useMemo(() => [...snapshots].reverse(), [snapshots]);
   const [preview, setPreview] = useState<WidgetContextPreviewShape | null>(null);
-  const peekDepth = Math.min(cards.length - 1, 4) * PEEK_STEP;
-  const stackHeight = fanned
-    ? cards.length * (CARD_HEIGHT + CARD_GAP) - CARD_GAP
-    : CARD_HEIGHT + peekDepth;
   const singleCard = cards.length === 1;
-
-  // Outside-click collapse with the same race-protection both surfaces
-  // need: pause while the preview modal is open, defer re-attachment one
-  // animation frame after close so the click that dismissed the modal
-  // can't leak through to a freshly registered listener.
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!fanned) return;
-    if (preview !== null) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest && target.closest('[role="dialog"]')) return;
-      if (!document.body.contains(target)) return;
-      const boundary = boundaryRef?.current ?? rootRef.current;
-      if (boundary && boundary.contains(target)) return;
-      onCollapse();
-    };
-    let attached = false;
-    const rafId = requestAnimationFrame(() => {
-      document.addEventListener('mousedown', handler);
-      attached = true;
-    });
-    return () => {
-      cancelAnimationFrame(rafId);
-      if (attached) document.removeEventListener('mousedown', handler);
-    };
-  }, [fanned, preview, onCollapse, boundaryRef]);
+  // The open preview modal suspends the collapse: it portals out of the deck,
+  // and the click that dismisses it must not leak through to a listener the
+  // deck re-registers in the same frame.
+  const rootRef = useDeckCollapse({
+    open: fanned,
+    onCollapse,
+    suspend: preview !== null,
+    ignoreWithin: '[role="dialog"]',
+    boundary: boundaryRef,
+  });
 
   return (
     <div
@@ -123,7 +108,7 @@ export function WidgetContextDeck({
       {eyebrow}
       <div
         className={`widget-deck-stack ${fanned ? 'fanned' : ''}`}
-        style={{ height: `${stackHeight}px` }}
+        style={{ height: deckHeight(cards.length, fanned, GEOMETRY) }}
         onClick={(e) => {
           // Stack-background click toggles fan only when the user actually
           // clicked on empty stack space — clicks on cards or remove
@@ -137,14 +122,11 @@ export function WidgetContextDeck({
         {cards.map((s, i) => {
           const Icon = pickWidgetIcon(s.widget_type);
           const hasImage = !!s.image_jpeg_data_url;
-          const top = fanned ? i * (CARD_HEIGHT + CARD_GAP) : 0;
-          const peekY = fanned ? 0 : i * PEEK_STEP;
-          const peekScale = fanned ? 1 : Math.max(1 - i * 0.03, 0.85);
-          const peekOpacity = fanned
-            ? 1
-            : i === 0
-              ? 1
-              : Math.max(0.85 - (i - 1) * 0.2, 0.25);
+          // `interactive` also drives the keyboard: a card buried under the
+          // deepest peek is drawn at zero opacity, and `pointer-events: none`
+          // does not take away a tab stop, so without it Tab lands the ring on
+          // nothing and Enter opens a card the reader cannot see.
+          const { style: slot, interactive } = deckSlot(i, cards.length, fanned, GEOMETRY);
           const handleActivate = () => {
             // Multi-card peeked deck: first click fans (so older cards
             // become reachable). Already fanned, or single-card deck:
@@ -159,17 +141,14 @@ export function WidgetContextDeck({
               data-kind={s.widget_type}
               className="widget-deck-card"
               style={{
-                top: `${top}px`,
-                transform: `translateY(${peekY}px) scale(${peekScale})`,
-                opacity: peekOpacity,
-                pointerEvents: fanned || i === 0 ? 'auto' : 'none',
-                zIndex: cards.length - i,
+                ...slot,
                 cursor: 'pointer',
                 ...(compactCardGrid ? { gridTemplateColumns: '32px 1fr' } : null),
               }}
               title={s.label}
               role="button"
-              tabIndex={0}
+              tabIndex={interactive ? 0 : -1}
+              aria-hidden={interactive ? undefined : true}
               onClick={(e) => {
                 if ((e.target as HTMLElement).closest('.widget-deck-card-remove')) return;
                 handleActivate();

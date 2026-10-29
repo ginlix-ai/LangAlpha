@@ -189,6 +189,18 @@ class TestPriceTriggerConfig:
         cfg = PriceTriggerConfig(symbol="aapl", conditions=[self._condition()])
         assert cfg.symbol == "AAPL"
 
+    def test_stores_shanghai_in_display_spelling(self):
+        for raw in ("600519.SS", "600519.sh"):
+            cfg = PriceTriggerConfig(symbol=raw, conditions=[self._condition()])
+            assert cfg.symbol == "600519.SH"
+
+    def test_a_padded_or_full_width_spelling_meets_the_same_checks(self):
+        cfg = PriceTriggerConfig(symbol="GSPC ", conditions=[self._condition()])
+        assert (cfg.symbol, cfg.market) == ("SPX", MarketType.INDEX)
+        for raw in (" ^GSPC", "＾GSPC", " I:SPX"):
+            with pytest.raises(ValidationError, match="bare symbol"):
+                PriceTriggerConfig(symbol=raw, conditions=[self._condition()])
+
     # -- Market auto-detection (infer_market_from_symbol) --
 
     def test_auto_detects_index_market_for_spx(self):

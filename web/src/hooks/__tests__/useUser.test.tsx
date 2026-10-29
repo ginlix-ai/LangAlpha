@@ -24,7 +24,6 @@ describe('useUser', () => {
     const { result } = renderHookWithProviders(() => useUser());
 
     await waitFor(() => expect(result.current.user).toEqual(mockUser));
-    expect(result.current.isSuccess).toBe(true);
   });
 
   it('falls back to raw response when .user field is absent', async () => {
@@ -45,14 +44,29 @@ describe('useUser', () => {
     expect(result.current.isLoading).toBe(true);
   });
 
-  it('does not retry on failure (retry: false)', async () => {
+  it('does not retry a failure other than a 503', async () => {
     mockGetCurrentUser.mockRejectedValue(new Error('Unauthorized'));
 
     const { result } = renderHookWithProviders(() => useUser());
 
     await waitFor(() => expect(result.current.isError).toBe(true));
-    // With retry: false, getCurrentUser should only be called once
     expect(mockGetCurrentUser).toHaveBeenCalledTimes(1);
     expect(result.current.user).toBeNull();
+  });
+
+  it('asks again after Retry-After when the plan cannot be read (503)', async () => {
+    // The server's answer while the platform is down and no plan is on record:
+    // not "no plan", so the user must stay loading rather than reach setup.
+    const unavailable = { response: { status: 503, headers: { 'retry-after': '1' } } };
+    const mockUser = { id: 'u-3', access_tier: 2 };
+    mockGetCurrentUser.mockRejectedValueOnce(unavailable).mockResolvedValue({ user: mockUser });
+
+    const { result } = renderHookWithProviders(() => useUser());
+
+    await waitFor(() => expect(mockGetCurrentUser).toHaveBeenCalledTimes(1));
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.user).toBeNull();
+    await waitFor(() => expect(result.current.user).toEqual(mockUser), { timeout: 3000 });
+    expect(mockGetCurrentUser).toHaveBeenCalledTimes(2);
   });
 });

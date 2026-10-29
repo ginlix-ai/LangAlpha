@@ -1,6 +1,8 @@
 """Middleware for providing subagents to an agent via a `Task` tool."""
 
-from collections.abc import Awaitable, Callable, Sequence
+import time
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 import structlog
@@ -15,13 +17,22 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
+from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
+from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
+from ptc_agent.agent.middleware.background_subagent.context import (
+    steer_resume_for,
+    steer_resume_held,
+)
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     current_background_token_tracker,
     current_background_tool_call_id,
+)
+from ptc_agent.agent.middleware.background_subagent.outcomes import (
+    SubagentTimeLimitError,
 )
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
@@ -31,10 +42,33 @@ from ptc_agent.agent.middleware.background_subagent.token_forwarder import (
     _SubagentTokenForwarder,
 )
 from ptc_agent.agent.middleware._utils import append_to_system_message
+from ptc_agent.agent.middleware.runtime_context.turn import (
+    TURN_DEADLINE_KEY,
+    TURN_TIME_LIMIT_KEY,
+)
 from ptc_agent.agent.state import DeltaAgentState
 from src.llms.llm import narrow_prompt_cache_key
+from src.observability.langsmith_tracer import with_run_tracer
+from src.utils.concurrency import aclose_within
+from src.utils.stream_coalescing import HEARTBEAT_EVENT_TYPE
 
 logger = structlog.get_logger(__name__)
+
+# How long past its clock a run may go before it is stopped. The ask for its
+# answer and the tool stop come well before the end, so this only lets an
+# answer already being written land.
+SUBAGENT_STOP_GRACE_S = 60.0
+
+# How long a stopped run waits on its graph's cleanup, as the turn's own stop
+# does: LangGraph awaits its cancelled node tasks with no bound.
+SUBAGENT_CLOSE_TIMEOUT_S = 30.0
+
+# The launching run's resume and replay flags, which LangGraph hands every task
+# of that run. A subagent takes both from its own input: inherited from a turn
+# that answered an interrupt, ``__pregel_resuming`` skips the prompt of a
+# follow-up to a task that already has state, and from a retried turn,
+# ``__pregel_replay_state`` loads the task's state from before the retry point.
+PARENT_RUN_STATE_KEYS = frozenset({"__pregel_resuming", "__pregel_replay_state"})
 
 
 
@@ -137,20 +171,23 @@ _EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response"}
 
 TASK_TOOL_DESCRIPTION = """Launch a subagent for complex, multi-step tasks.
 
+Use for: Complex tasks, isolated research, context-heavy operations.
+NOT for: Simple 1-2 tool operations (do directly).
+
 Args:
-    description: Short 1-2 sentence summary of the task (displayed as title)
-    prompt: Detailed instructions for the subagent to execute
-    subagent_type: Agent type to use
-    action: "init" (new task, default), "update" (instruct running task), "resume" (resume completed task)
-    task_id: Required for "update" and "resume" actions
+    description: Short 1-2 sentence title shown on the task card. Think commit subject line.
+    prompt: The subagent's complete instructions. It sees nothing of this conversation, so include all the context, data and expected output format it needs.
+    subagent_type: Which subagent to use (e.g. "general-purpose"). Required for "init".
+    action: "init" (new task, default), "update" (instruct a running task), "resume" (continue a completed or stopped task from its checkpoint, with its prior context intact)
+    task_id: The target task's short alphanumeric ID. Required for "update" and "resume".
 
-Usage:
-- Use for: Complex tasks, isolated research, context-heavy operations
-- NOT for: Simple 1-2 tool operations (do directly)
-- Parallel: Launch multiple agents in single message for concurrent tasks
-- Results: Subagent returns final report only (intermediate steps hidden)
+Returns:
+    A task ID immediately, not the subagent's work. The subagent runs
+    autonomously and reports only its final result; intermediate steps stay
+    hidden.
 
-The subagent works autonomously. Provide clear, complete instructions in the prompt."""
+You are notified when the task finishes. TaskOutput then returns its
+result."""
 
 
 def _get_subagents(
@@ -228,6 +265,68 @@ def _get_subagents(
     return agents, subagent_descriptions
 
 
+def _without_stream_tee(config: dict) -> dict:
+    return {
+        **config,
+        "configurable": {
+            k: v
+            for k, v in (config.get("configurable") or {}).items()
+            if k != "__pregel_stream"
+        },
+    }
+
+
+def _with_own_deadline(config: dict, limit: float | None = None) -> dict:
+    """Give the run its own wall clock in place of the launcher's.
+
+    A subagent outlives the turn that started it, so the turn's deadline does
+    not bound it, and with no step cap nothing else did. It gets the turn's
+    length from its own start, read the same way, and the same wrap-up before
+    the end: one row asking for its answer, then its tools stop. ``limit``
+    shortens it for a run something else kills sooner (a workflow child), so
+    the wrap-up comes before that kill rather than after it.
+    """
+    from src.config.settings import get_workflow_timeout
+
+    configurable = dict(config.get("configurable") or {})
+    configurable.pop(TURN_DEADLINE_KEY, None)
+    configurable.pop(TURN_TIME_LIMIT_KEY, None)
+    bounds = [
+        bound
+        for bound in (get_workflow_timeout(), limit)
+        if bound is not None and bound > 0
+    ]
+    if bounds:
+        clock = min(bounds)
+        configurable[TURN_DEADLINE_KEY] = time.time() + clock
+        configurable[TURN_TIME_LIMIT_KEY] = clock
+    return {**config, "configurable": configurable}
+
+
+@contextmanager
+def _detached_from_launcher() -> Iterator[None]:
+    """Run the enclosed subagent as its own run, not a child of its launcher.
+
+    LangGraph merges the ambient config's callbacks into an explicit
+    ``callbacks`` list, so the launcher's token tracker would bill every
+    subagent call a second time and its StreamMessagesHandler would keep every
+    token in a queue nobody drains once that turn ends. ``ensure_config`` reads
+    ``callbacks: None`` as absent, and the rest of the ambient config, launcher
+    metadata such as ``run_id`` included, still merges beneath the run's own.
+    """
+    ambient = var_child_runnable_config.get()
+    if not ambient:
+        yield
+        return
+    token = var_child_runnable_config.set(
+        {**_without_stream_tee(ambient), "callbacks": None}
+    )
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
+
+
 async def arun_subagent_streaming(
     subagent: Runnable,
     state: dict,
@@ -235,6 +334,7 @@ async def arun_subagent_streaming(
     *,
     registry: BackgroundTaskRegistry | None,
     tool_call_id: str | None = None,
+    time_limit: float | None = None,
 ) -> dict:
     """Drive the subagent through ``astream`` with combined ``values``,
     ``messages``, and ``custom`` modes; return the final state.
@@ -249,7 +349,7 @@ async def arun_subagent_streaming(
 
     ``tool_call_id`` identifies the BackgroundTask for event forwarding;
     when omitted it falls back to the ContextVar set by the Task-tool
-    interception path.
+    interception path. ``time_limit`` caps the run's own clock.
     """
     last_state: dict | None = None
     forwarder: _SubagentTokenForwarder | None = None
@@ -266,56 +366,126 @@ async def arun_subagent_streaming(
                     f"task:{bg_task.task_id}",
                 )
 
+    # A ``__pregel_stream`` copied from the launcher tees this run's graph
+    # updates into the launcher's stream, which nobody drains once that turn
+    # ends. Either configurable can reach the run: the explicit one when it
+    # carries checkpoint coordinates (``ensure_config`` then discards the
+    # ambient one), the ambient one when it does not, so each is stripped.
+    config = _without_stream_tee(config)
+    config = _with_own_deadline(config, time_limit)
+    # Built here, under the launcher's run, so the subagent's trace nests
+    # where langchain_core's own tracer would put it, without that tracer
+    # holding the subagent's whole tree until it ends.
+    config = with_run_tracer(config)
+    # The clock's own end, checked on every event: a model call beats about
+    # ten times a second, so a run is stopped within the grace of it unless a
+    # tool runs silent past it, which that tool's own timeout bounds. Checked
+    # here rather than under an ``asyncio.timeout``, whose cancel could land in
+    # this loop's own spill and tear the task's event stream.
+    configurable = config.get("configurable") or {}
+    deadline = configurable.get(TURN_DEADLINE_KEY)
+    stop_at = (
+        deadline + SUBAGENT_STOP_GRACE_S
+        if isinstance(deadline, int | float)
+        else None
+    )
     try:
-        async for mode, data in subagent.astream(
-            state, config, stream_mode=["values", "messages", "custom"]
-        ):
-            # Root symmetry (retention contract): once the spill circuit
-            # opens, every further frame widens the hole in the replay
-            # archive — abort the graph instead of completing a run
-            # whose stream is torn.
-            if bg_task is not None and bg_task.redis_write_failed:
-                raise TransportLostError(
-                    "transport_lost: subagent event spill failed; "
-                    "aborting so the run finalizes instead of "
-                    "completing with a torn stream"
-                )
-            if mode == "values":
-                last_state = data
-            elif mode == "messages" and forwarder is not None:
-                # ``messages`` data is ``(message_chunk, metadata)``.
-                # The metadata carries ``langgraph_node`` which lets the
-                # forwarder drop tool-internal LLM chunks. Duck-typed (no
-                # isinstance) so mocks and any future BaseMessage subclasses
-                # pass.
-                if isinstance(data, tuple):
-                    # Symmetric guards: production LangGraph emits
-                    # 2-tuples for ``messages`` mode, but defending
-                    # both indices keeps an upstream contract change
-                    # from raising IndexError out of the iterator.
-                    chunk = data[0] if len(data) > 0 else None
-                    chunk_meta = data[1] if len(data) > 1 else None
-                else:
-                    chunk = data
-                    chunk_meta = None
-                if chunk is not None and hasattr(chunk, "content"):
-                    try:
-                        await forwarder.forward(chunk, chunk_meta)
-                    except Exception as exc:
-                        # Token forwarding must never break the subagent.
-                        logger.debug(
-                            "Subagent token forwarding failed",
-                            error=str(exc),
+        with _detached_from_launcher():
+            # Sync, as the main graph runs: a model call confirms the steers
+            # the step before it injected, so that step must be saved first.
+            stream = subagent.astream(
+                state,
+                config,
+                stream_mode=["values", "messages", "custom"],
+                durability="sync",
+            )
+            try:
+                async for mode, data in stream:
+                    if stop_at is not None and time.time() >= stop_at:
+                        raise SubagentTimeLimitError(
+                            f"Timed out after "
+                            f"{int(configurable.get(TURN_TIME_LIMIT_KEY) or 0)}s"
                         )
-            elif mode == "custom" and forwarder is not None:
-                try:
-                    await forwarder.forward_custom(data)
-                except Exception as exc:
-                    logger.debug(
-                        "Subagent custom-event forwarding failed",
-                        error=str(exc),
-                    )
+                    # Root symmetry (retention contract): once the spill circuit
+                    # opens, every further frame widens the hole in the replay
+                    # archive — abort the graph instead of completing a run
+                    # whose stream is torn.
+                    if bg_task is not None and bg_task.redis_write_failed:
+                        raise TransportLostError(
+                            "transport_lost: subagent event spill failed; "
+                            "aborting so the run finalizes instead of "
+                            "completing with a torn stream"
+                        )
+                    if bg_task is not None:
+                        try:
+                            await registry.flush_held_delta(bg_task, due_only=True)
+                        except Exception as exc:
+                            logger.debug("Subagent delta flush failed", error=str(exc))
+                    # A beat wakes the flush above and tells the orphan
+                    # collector the model call it beats for is still running.
+                    if (
+                        mode == "custom"
+                        and isinstance(data, dict)
+                        and data.get("type") == HEARTBEAT_EVENT_TYPE
+                    ):
+                        if bg_task is not None:
+                            await registry.note_alive(bg_task)
+                        continue
+                    if mode == "values":
+                        last_state = data
+                    elif mode == "messages" and forwarder is not None:
+                        # ``messages`` data is ``(message_chunk, metadata)``.
+                        # The metadata carries ``langgraph_node`` which lets the
+                        # forwarder drop tool-internal LLM chunks. Duck-typed (no
+                        # isinstance) so mocks and any future BaseMessage subclasses
+                        # pass.
+                        if isinstance(data, tuple):
+                            # Symmetric guards: production LangGraph emits
+                            # 2-tuples for ``messages`` mode, but defending
+                            # both indices keeps an upstream contract change
+                            # from raising IndexError out of the iterator.
+                            chunk = data[0] if len(data) > 0 else None
+                            chunk_meta = data[1] if len(data) > 1 else None
+                        else:
+                            chunk = data
+                            chunk_meta = None
+                        if chunk is not None and hasattr(chunk, "content"):
+                            try:
+                                await forwarder.forward(chunk, chunk_meta)
+                            except Exception as exc:
+                                # Token forwarding must never break the subagent.
+                                logger.debug(
+                                    "Subagent token forwarding failed",
+                                    error=str(exc),
+                                )
+                    elif mode == "custom" and forwarder is not None:
+                        try:
+                            await forwarder.forward_custom(data)
+                        except Exception as exc:
+                            logger.debug(
+                                "Subagent custom-event forwarding failed",
+                                error=str(exc),
+                            )
+            finally:
+                # Leaving the loop early leaves the graph suspended mid-step,
+                # its model call or tools running on until the garbage
+                # collector closes it. Closed here, within a bound, a stop
+                # ends the work it stops before the run settles.
+                await aclose_within(
+                    stream,
+                    SUBAGENT_CLOSE_TIMEOUT_S,
+                    label=f"the subagent stream for {tool_call_id}",
+                )
     except Exception as exc:
+        # Every subagent run is nested, so LangGraph raises an interrupt here
+        # instead of ending the stream. Task HITL is unsupported, and this is
+        # its one explicit signal besides the error record below.
+        if isinstance(exc, GraphInterrupt):
+            logger.error(
+                "Unsupported interrupt from a background subagent",
+                tool_call_id=tool_call_id,
+                task_id=getattr(bg_task, "task_id", None),
+            )
         # Spill an ``error`` SSE record so per-task consumers can tell a
         # crashed subagent apart from a clean completion. ``asyncio.CancelledError``
         # (BaseException) skips this path on purpose — cancellation is an
@@ -334,6 +504,61 @@ async def arun_subagent_streaming(
     return last_state if last_state is not None else {}
 
 
+def _unknown_type_refusal(
+    effective_type: str, roster: Iterable[str], *, resuming: bool
+) -> str:
+    """Why a Task names a subagent this build did not compile.
+
+    A resumed task outlives the roster it started on: its subagent may have
+    been deleted, renamed or turned off since, or serve only the other role,
+    and saying so tells the model not to retry under the same name.
+    """
+    allowed_types = ", ".join([f"`{k}`" for k in roster])
+    if resuming:
+        return (
+            f"Cannot resume: subagent `{effective_type}` was deleted, renamed, "
+            f"turned off, or isn't available to this agent. "
+            f"Available types: {allowed_types}"
+        )
+    return (
+        f"We cannot invoke subagent {effective_type} because it does not exist, "
+        f"the only allowed types are {allowed_types}"
+    )
+
+
+def _launch_refusal(reason: str, runtime: Any) -> "str | ToolMessage":
+    """A Task refusal the frontend can settle on.
+
+    Nothing starts, so no channel will ever close to settle the launch card:
+    the reply is the only signal it has, and it carries the failure status
+    rather than riding on the default success. Without a tool_call_id there is
+    no ToolMessage to build, so the text falls back to the caller's default.
+    """
+    tool_call_id = getattr(runtime, "tool_call_id", None)
+    if not tool_call_id:
+        return reason
+    return ToolMessage(
+        content=reason, tool_call_id=tool_call_id, name="Task", status="error"
+    )
+
+
+def _run_opener(prompt: str, task_id: str) -> HumanMessage:
+    """The message a resumed run of ``task_id`` opens with. A resume for
+    messages the last run never read carries them as delivered steers, for
+    replay to show as its live stream did, and the rows the resume handed
+    this run, which its first model call confirms (``SubagentSteeringMiddleware``)
+    once this message is checkpointed. Not marked as steering, so it still
+    opens a run."""
+    kwargs: dict[str, Any] = {}
+    delivered = steer_resume_for(task_id)
+    if delivered:
+        kwargs["steering_delivered"] = delivered
+    held = steer_resume_held(task_id)
+    if held:
+        kwargs["held_jobs"] = held
+    return HumanMessage(content=prompt, additional_kwargs=kwargs)
+
+
 def return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
     """Convert a subagent's final state into the parent-facing ToolMessage Command."""
     # Validate that the result contains a 'messages' key
@@ -348,9 +573,19 @@ def return_command_with_state_update(result: dict, tool_call_id: str) -> Command
     state_update = {
         k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS
     }
-    # Strip trailing whitespace to prevent API errors with Anthropic
-    message_text = (
-        result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+    # The answer is the last thing the subagent said, which is not always the
+    # last message: a run the repeat guard ends on refused calls stops on the
+    # refusal, and handing that back would pass the harness's words off as the
+    # answer. Read the way the durable result is (``resolve_task_result_text``),
+    # so TaskOutput gives the same answer from either. Trailing whitespace is
+    # stripped to prevent API errors with Anthropic.
+    message_text = next(
+        (
+            message.text.rstrip()
+            for message in reversed(result["messages"])
+            if getattr(message, "type", None) == "ai" and message.text.strip()
+        ),
+        "",
     )
     return Command(
         update={
@@ -446,7 +681,7 @@ def _create_task_tool(
             "Task ID. Required for update and resume actions.",
         ] = None,
         runtime: ToolRuntime = None,  # type: ignore[assignment]
-    ) -> str | Command:
+    ) -> str | ToolMessage | Command:
         # Resolve subagent_type based on action
         effective_type = subagent_type
         if action == "update" or action == "resume":
@@ -454,30 +689,38 @@ def _create_task_tool(
             _bg_checkpoint_ns, resume_type = _get_background_task_context()
             effective_type = effective_type or resume_type or "general-purpose"
             if effective_type not in subagent_graphs:
-                allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
-                return f"We cannot invoke subagent {effective_type} because it does not exist, the only allowed types are {allowed_types}"
+                return _launch_refusal(
+                    _unknown_type_refusal(
+                        effective_type, subagent_graphs, resuming=action == "resume"
+                    ),
+                    runtime,
+                )
         else:
             # action == "init" (default)
             if effective_type is None:
-                return "Error: subagent_type is required for new tasks."
+                return _launch_refusal(
+                    "Error: subagent_type is required for new tasks.", runtime
+                )
             if effective_type not in subagent_graphs:
-                allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
-                return f"We cannot invoke subagent {effective_type} because it does not exist, the only allowed types are {allowed_types}"
+                return _launch_refusal(
+                    _unknown_type_refusal(effective_type, subagent_graphs, resuming=False),
+                    runtime,
+                )
 
         subagent, subagent_state = _validate_and_prepare_state(
             effective_type, prompt, runtime
         )
 
         # Build config: use parent's thread_id + checkpoint_ns for isolation.
-        # Drop parent callbacks entirely — the parent runtime registers its
-        # own PerCallTokenTracker on the workflow run, and inheriting it
-        # would double-bill every subagent LLM call (parent's tracker AND
-        # bg_tracker both record on_llm_end). LangSmith tracing rides on
-        # the SDK's ambient auto-tracer (ContextVar-propagated), so dropping
-        # the explicit callbacks list does not affect trace coverage.
+        # Only the background tracker is named explicitly; the launcher's
+        # callbacks are kept out by detaching, as on the async path.
         raw_parent_config = get_config()
         parent_config = {k: v for k, v in raw_parent_config.items() if k != "callbacks"}
-        parent_configurable = parent_config.get("configurable", {})
+        parent_configurable = {
+            k: v
+            for k, v in parent_config.get("configurable", {}).items()
+            if k not in PARENT_RUN_STATE_KEYS
+        }
 
         if checkpointer:
             # Get task_id from BackgroundTask via ContextVar
@@ -506,7 +749,10 @@ def _create_task_tool(
                 config = {}
             config["callbacks"] = [bg_tracker]
 
-        result = subagent.invoke(subagent_state, config)
+        with _detached_from_launcher():
+            result = subagent.invoke(
+                subagent_state, _without_stream_tee(with_run_tracer(config))
+            )
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -534,7 +780,7 @@ def _create_task_tool(
             "Task ID. Required for update and resume actions.",
         ] = None,
         runtime: ToolRuntime = None,  # type: ignore[assignment]
-    ) -> str | Command:
+    ) -> str | ToolMessage | Command:
         # Resolve subagent_type based on action
         effective_type = subagent_type
 
@@ -546,29 +792,41 @@ def _create_task_tool(
             # For resume/follow-up, type is inferred; validate if explicitly provided
             effective_type = effective_type or resume_type or "general-purpose"
             if effective_type not in subagent_graphs:
-                allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
-                return f"We cannot invoke subagent {effective_type} because it does not exist, the only allowed types are {allowed_types}"
+                return _launch_refusal(
+                    _unknown_type_refusal(
+                        effective_type, subagent_graphs, resuming=action == "resume"
+                    ),
+                    runtime,
+                )
         else:
             # action == "init" (default)
             if effective_type is None:
-                return "Error: subagent_type is required for new tasks."
+                return _launch_refusal(
+                    "Error: subagent_type is required for new tasks.", runtime
+                )
             if effective_type not in subagent_graphs:
-                allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
-                return f"We cannot invoke subagent {effective_type} because it does not exist, the only allowed types are {allowed_types}"
+                return _launch_refusal(
+                    _unknown_type_refusal(effective_type, subagent_graphs, resuming=False),
+                    runtime,
+                )
 
         subagent = subagent_graphs[effective_type]
 
-        # Get parent config to preserve streaming namespace.
-        # Drop parent callbacks entirely — the parent runtime registers its
-        # own PerCallTokenTracker on the workflow run, and inheriting it
-        # would double-bill every subagent LLM call. LangSmith tracing
-        # rides on the SDK's ambient auto-tracer (ContextVar-propagated),
-        # so dropping the explicit callbacks list does not affect coverage.
+        # Start from the parent config for its configurable and tags, minus
+        # its callbacks: the run names only its own tracker, and
+        # arun_subagent_streaming detaches it from the launcher and adds its
+        # LangSmith tracer, which nests under the launcher's run through the
+        # SDK's ContextVar, so dropping the explicit callbacks list does not
+        # affect coverage.
         raw_parent_config: dict[str, Any] = dict(get_config())
         parent_config: dict[str, Any] = {
             k: v for k, v in raw_parent_config.items() if k != "callbacks"
         }
-        parent_configurable: dict[str, Any] = parent_config.get("configurable", {})
+        parent_configurable: dict[str, Any] = {
+            k: v
+            for k, v in parent_config.get("configurable", {}).items()
+            if k not in PARENT_RUN_STATE_KEYS
+        }
 
         def _compose_callbacks() -> list[Any]:
             bg_tracker = current_background_token_tracker.get(None)
@@ -579,7 +837,9 @@ def _create_task_tool(
             invoke_state = {
                 k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS
             }
-            invoke_state["messages"] = [HumanMessage(content=prompt)]
+            invoke_state["messages"] = [
+                _run_opener(prompt, bg_checkpoint_ns.removeprefix("task:"))
+            ]
             config = {
                 **parent_config,
                 "configurable": {

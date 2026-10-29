@@ -19,7 +19,7 @@ interface DuplicateWorkspaceDialogProps {
   busy: boolean;
 }
 
-/** Confirm duplicating a workspace (copies files; always-on starts off on the copy). */
+/** Confirm duplicating a workspace (copies its files). */
 function DuplicateWorkspaceDialog({ target, onClose, onConfirm, busy }: DuplicateWorkspaceDialogProps) {
   const { t } = useTranslation();
 
@@ -31,7 +31,7 @@ function DuplicateWorkspaceDialog({ target, onClose, onConfirm, busy }: Duplicat
           <DialogDescription>
             {t('workspace.duplicateConfirm', {
               name: target?.name ?? '',
-              defaultValue: 'Create a copy of "{{name}}"? Files are copied; always-on starts off on the copy.',
+              defaultValue: 'Create a copy of "{{name}}"? Files are copied.',
             })}
           </DialogDescription>
         </DialogHeader>

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -57,7 +58,9 @@ describe('color token references', () => {
       if (file === TOKENS) continue;
       const lines = readFileSync(file, 'utf8').split('\n');
       lines.forEach((line, i) => {
-        for (const match of line.matchAll(/var\((--color-[\w-]+)/g)) {
+        // A `var()` reference, or the bare parenthesised name a Tailwind
+        // class takes instead (`bg-(...)`).
+        for (const match of line.matchAll(/(?:var)?\((--color-[\w-]+)/g)) {
           const name = match[1];
           if (declared.has(name) || isAllowlisted(name)) continue;
           orphans.push(`${relative(SRC, file)}:${i + 1} → ${name}`);

@@ -3,8 +3,13 @@
 Wraps every tool call (``awrap_tool_call``), runs the tool unchanged, then
 dispatches on the tool name to a per-tool extractor that yields zero or more
 :class:`ProvenanceSource` objects. Each source is emitted as a custom stream
-event via ``get_stream_writer`` — the same mechanism FileOperationMiddleware
-uses — so records accumulate into ``sse_events`` without entering LLM context.
+event via ``get_stream_writer``, the same mechanism FileOperationMiddleware
+uses, so records reach the turn's provenance without entering LLM context.
+
+A background command reports back after its tool call has returned, so its
+script's MCP sources come with its notice instead: the model call that first
+reads the notice emits them from the trace stored on the command's row
+(``awrap_model_call``, see ``command_trace``).
 
 Extraction NEVER breaks a tool call: the whole extraction path is wrapped in
 try/except and the original tool result is always returned. Agent attribution
@@ -19,19 +24,26 @@ import hashlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator
-from datetime import datetime, timezone
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
-from langgraph.config import get_stream_writer
+from langgraph.config import get_config, get_stream_writer
 
 from ptc_agent.agent.middleware.provenance.body_store import (
     drain_body_writes,
     schedule_body_write,
     store_bodies,
 )
+from ptc_agent.agent.middleware.provenance.command_trace import (
+    CommandTraceReader,
+    read_command_trace,
+    reported_commands,
+    shown_commands,
+)
+from ptc_agent.agent.middleware.direct_mcp import direct_tool_meta
+from ptc_agent.agent.tools.computer_reach import ran_elsewhere
+from ptc_agent.core.project_context import current_project
 from ptc_agent.agent.provenance import (
-    SNIPPET_MAX_CHARS,
     ProvenanceSource,
     build_provenance_event,
     fingerprint_result,
@@ -39,44 +51,54 @@ from ptc_agent.agent.provenance import (
     hash_args,
     redact_args,
 )
-from ptc_agent.agent.provenance.types import (
-    RESULT_BODY_MAX_BYTES,
+from ptc_agent.agent.provenance.trace import now_iso, sources_from_trace
+from ptc_agent.core.paths import (
+    AGENT_HISTORY_DIRS,
+    LEGACY_ROOT_TOOLS_DIR,
+    MEMO_USER_DIR,
+    MEMORY_USER_DIR,
+    SANDBOX_ROOTS,
+    SandboxLayout,
+    WorkspaceLayout,
+    computer_roots,
+    strip_previous_dir_name,
 )
-from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
 
 # Filesystem path prefixes used to classify reads — the same constants the
 # CompositeFilesystemBackend routes in agent.py are wired from.
 _MEMO_PREFIX = f"{MEMO_USER_DIR}/"
-_MEMORY_PREFIXES = (f"{MEMORY_USER_DIR}/", f"{MEMORY_WORKSPACE_DIR}/")
+_MEMORY_PREFIXES = (
+    f"{MEMORY_USER_DIR}/",
+    f"{WorkspaceLayout.MEMORY_DIR}/",
+)
 
 # Agent-infrastructure path roots whose reads are scaffolding the agent operates
 # with — skill docs, generated tool/MCP wrapper modules, system trace files,
 # spilled prior tool results — NOT external data its analysis is based on, so
 # they emit no provenance. Roots mirror AGENT_SYSTEM_DIRS in paths.py; note
-# .agents is split: its user/* + workspace/memory data subtrees stay tracked
+# .agents is split: the memo and memory subtrees named above stay tracked
 # (memo_read / memory_read / file_read), only these infra subdirs are skipped.
+# The wrappers are named three ways because a read can arrive from any of the
+# three: the computer-tier directory, the per-workspace one the agent addresses
+# relatively, and the root-level ``tools`` a sandbox built before the split
+# still carries.
 _INFRA_PREFIXES = (
-    ".system",
-    "tools",
-    "mcp_servers",
+    SandboxLayout.SYSTEM_DIR,
+    SandboxLayout.TOOLS_DIR,
+    WorkspaceLayout.TOOLS_DIR,
+    LEGACY_ROOT_TOOLS_DIR,
+    SandboxLayout.MCP_SERVERS_DIR,
     ".self-improve",
-    ".agents/skills",
-    ".agents/threads",
-    ".agents/large_tool_results",
+    SandboxLayout.SKILLS_DIR,
+    *AGENT_HISTORY_DIRS,
 )
 
 # Agent-scaffolding FILES (not dirs) at the workspace root: injected context, not
 # external data. agent.md is the per-workspace notebook auto-injected into every
 # turn, so the agent reading it back is not a tracked data access.
 _INFRA_FILES = ("agent.md",)
-
-# Sandbox-root prefixes the agent emits on absolute paths (e.g.
-# /home/workspace/.agents/...). Stripped before the infra/memo/memory prefix
-# checks so classification works for both absolute and relative path forms —
-# without this the agent's absolute paths bypass every prefix check.
-_SANDBOX_ROOT_PREFIXES = ("home/workspace/", "home/daytona/")
 
 # Market tools whose identifier is a single symbol-bearing arg.
 _MARKET_SYMBOL_ARGS = ("symbol", "underlying")
@@ -109,29 +131,6 @@ _MARKET_DATA_TOOLS = (
     "get_quote",
 )
 
-# Host-side bounds on the in-sandbox MCP trace (LLM-authored, untrusted): the
-# generated client is supposed to self-limit, but it's code the agent controls,
-# so re-clamp here so a poisoned/huge trace can't amplify into DB/SSE/render.
-# SNIPPET_MAX_CHARS is imported from provenance.types (the canonical cap shared
-# with the in-sandbox client) so host- and sandbox-side truncation stay equal.
-_SHA_MAX_CHARS = 128
-_IDENT_PART_MAX_CHARS = 256
-_MAX_TRACE_ENTRIES = 200
-# Cap on the agent-controlled trace timestamp. A well-formed ISO-8601 value is
-# ~25-35 chars; anything longer (or non-string) is a poisoned/buggy trace, so it
-# falls back to now(). Bounds the one trace field that otherwise rode the SSE
-# event unclamped (the DB writer already coerces a bad value to NULL).
-_TIMESTAMP_MAX_CHARS = 64
-
-# Sanity ceiling for the agent-claimed true result size (the one trace field that
-# otherwise rode through to the SSE event and the BIGINT column unvalidated). It's
-# the TRUE byte length of an MCP result, so it can legitimately exceed the 64 KiB
-# body cap (a truncated body); this only rejects a non-numeric, negative, or absurd
-# value a poisoned trace could forge. Generous — no honest single result approaches
-# it (real maxima are low single-digit MB), but it keeps a fabricated exabyte size
-# out of the record/event.
-_RESULT_SIZE_MAX_BYTES = 256 * 1024 * 1024
-
 # A tool result whose content begins with one of these is treated as failed, so
 # we don't record a "source accessed" for data the tool never actually returned.
 # Each prefix is qualified (not a bare verb) so legit content isn't misread as an
@@ -141,28 +140,53 @@ _RESULT_SIZE_MAX_BYTES = 256 * 1024 * 1024
 _ERROR_CONTENT_PREFIXES = ("[error]", "error:", "failed to ", "exception:", "exception ")
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _new_id() -> str:
     return str(uuid.uuid4())
 
 
-def _normalize_sandbox_path(path: str) -> str:
-    """Strip the sandbox root + leading ``./`` and ``/`` so the infra/memo/memory
-    prefix checks work whether the agent emitted an absolute
-    (``/home/workspace/.agents/...``) or relative (``.agents/...``) path."""
-    p = (path or "").lstrip("/").removeprefix("./")
-    for prefix in _SANDBOX_ROOT_PREFIXES:
-        if p.startswith(prefix):
-            return p[len(prefix):]
+def _normalize_sandbox_path(path: str, root: str | None = None) -> str:
+    """Fold a path to its workspace-relative form for the prefix checks.
+
+    Strips the sandbox root, then the turn's own workspace folder: the agent's
+    cwd is that folder, so a relative path it emits is already in this form and
+    only an absolute one carries the folder. Without the second strip a doc
+    read as ``/home/workspace/<ws>/.agents/tools/docs/...`` misses every infra
+    prefix and is recorded as a data source. An absolute path under a folder
+    the workspace was renamed out of names the same file, so it strips too.
+    ``root`` is the computer's own, which need not be one of the stock roots.
+    """
+    raw = path or ""
+    p = raw.lstrip("/").removeprefix("./")
+    rooted = False
+    # The root the agent's absolute paths start with (e.g.
+    # /home/workspace/.agents/...) goes before the infra/memo/memory prefix
+    # checks, which would otherwise miss every absolute path.
+    for candidate in computer_roots(root):
+        bare = candidate.strip("/")
+        if candidate in SANDBOX_ROOTS:
+            hit, rest = p.startswith(f"{bare}/"), p[len(bare) + 1:]
+        else:
+            # The computer's own root needs its leading slash: a one-segment
+            # root (`/work`) must not swallow the relative `work/tools/x.py`.
+            hit, rest = raw.startswith(f"/{bare}/"), raw[len(bare) + 2:]
+        if hit:
+            p = rest
+            rooted = True
+            break
+    project = current_project()
+    folder = (project.dir_name if project else None) or ""
+    if folder and (p == folder or p.startswith(folder + "/")):
+        p = p[len(folder) :].lstrip("/")
+    elif rooted and project is not None:
+        inside = strip_previous_dir_name(p, project.previous_dir_names)
+        if inside is not None:
+            p = inside
     return p
 
 
-def _classify_file_source_type(path: str) -> str:
+def _classify_file_source_type(path: str, root: str | None = None) -> str:
     """Map a read path to memo_read / memory_read / file_read by prefix."""
-    normalized = _normalize_sandbox_path(path)
+    normalized = _normalize_sandbox_path(path, root)
     if normalized.startswith(_MEMO_PREFIX):
         return "memo_read"
     if any(normalized.startswith(prefix) for prefix in _MEMORY_PREFIXES):
@@ -170,14 +194,14 @@ def _classify_file_source_type(path: str) -> str:
     return "file_read"
 
 
-def _is_agent_infra_path(path: str) -> bool:
+def _is_agent_infra_path(path: str, root: str | None = None) -> bool:
     """True for agent scaffolding (skills/tools/mcp/system/notebook) — not data.
 
     Dir prefixes match at a path-segment boundary so ``tools/x`` and the bare dir
     ``tools`` hit but a sibling like ``tools_analysis/x`` does not; the
     ``_INFRA_FILES`` notebook files (e.g. agent.md) match exactly.
     """
-    normalized = _normalize_sandbox_path(path).rstrip("/")
+    normalized = _normalize_sandbox_path(path, root).rstrip("/")
     if normalized in _INFRA_FILES:
         return True
     return any(
@@ -186,60 +210,27 @@ def _is_agent_infra_path(path: str) -> bool:
     )
 
 
-# Tools whose artifact carries an in-sandbox ``mcp_trace``. All run agent code
+# Tools whose artifact carries an in-sandbox ``mcp_trace``. Both run agent code
 # in the sandbox: ExecuteCode directly, Bash when it runs a script importing the
-# MCP wrappers, and BashOutput which surfaces a backgrounded script's trace when
-# the command finishes. They share the trace extractor, the error-result
-# exemption, and the mcp_trace strip.
-_MCP_TRACE_TOOLS = ("ExecuteCode", "Bash", "BashOutput")
+# MCP wrappers. They share the trace extractor, the error-result exemption, and
+# the mcp_trace strip. A command that outlives its call brings its trace with
+# its notice (``awrap_model_call``).
+_MCP_TRACE_TOOLS = ("ExecuteCode", "Bash")
+
+# A ThreadStatus look that showed a command's end first drops its notice, so
+# the look brings the command's sources (``shown_commands``).
+_THREAD_STATUS = "ThreadStatus"
 
 
 def _strip_mcp_trace(result: Any) -> None:
     """Drop the provenance-only mcp_trace key from an ExecuteCode/Bash artifact.
 
     Mutates the ToolMessage artifact in place so the raw in-sandbox trace never
-    propagates outward onto tool_call_result or into persisted sse_events.
+    propagates outward onto tool_call_result or into the checkpoint.
     """
     artifact = getattr(result, "artifact", None)
     if isinstance(artifact, dict):
         artifact.pop("mcp_trace", None)
-
-
-def _truncate(value: Any, limit: int) -> Any:
-    """Clamp a string field to ``limit`` chars; pass non-strings through."""
-    return value[:limit] if isinstance(value, str) else value
-
-
-def _clamp_body_bytes(value: Any, limit: int) -> str | None:
-    """Byte-clamp an untrusted trace body; pass None / non-strings to None.
-
-    Re-clamps the agent-authored ``result_body`` host-side (the sandbox already
-    byte-caps it) on a byte boundary with ``errors="ignore"`` so a multibyte
-    split is dropped, mirroring the sandbox's decode.
-    """
-    if not isinstance(value, str):
-        return None
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    return encoded[:limit].decode("utf-8", errors="ignore")
-
-
-def _coerce_result_size(value: Any) -> int | None:
-    """Trust the agent-authored ``result_size`` only as a bounded non-negative int.
-
-    Every other trace field is clamped on the way in; ``result_size`` rode through
-    raw onto the SSE event and the BIGINT column. On a verified body
-    ``_verify_source_sha`` overwrites it with the real length, so this guards the
-    unverified path (a truncated body, or a forged trace): a non-numeric, negative,
-    or absurd size becomes None rather than being emitted/persisted. ``bool`` is
-    excluded since it is an ``int`` subclass.
-    """
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    if value < 0 or value > _RESULT_SIZE_MAX_BYTES:
-        return None
-    return value
 
 
 def _is_error_result(result: Any) -> bool:
@@ -263,6 +254,25 @@ def _is_error_result(result: Any) -> bool:
     return False
 
 
+def _configurable() -> dict[str, Any]:
+    try:
+        return get_config().get("configurable") or {}
+    except RuntimeError:
+        return {}  # outside a runnable context: no run to report into
+
+
+def _main_thread_id() -> str | None:
+    """The thread a main agent's call runs in; None for a subagent's."""
+    from ptc_agent.agent.middleware.background_subagent.context import (
+        current_background_agent_id,
+    )
+
+    if current_background_agent_id.get():
+        return None
+    thread_id = _configurable().get("thread_id")
+    return str(thread_id) if thread_id else None
+
+
 class ProvenanceMiddleware(AgentMiddleware):
     """Emit a ``provenance`` event per external source read by a tool call.
 
@@ -273,14 +283,24 @@ class ProvenanceMiddleware(AgentMiddleware):
     secret values from every snippet before it is emitted/persisted — provenance
     fingerprints the raw result/artifact, which the leak middleware's
     content-only scan never touches.
+
+    ``sandbox_root`` is the computer's root, which the agent's absolute paths
+    start with; without it only the stock roots are recognised.
+
+    ``command_traces`` reads a background command's stored MCP trace; the
+    default reads the command's ledger row.
     """
 
     def __init__(
         self,
         redactor: Callable[[str | None], str | None] | None = None,
+        sandbox_root: str | None = None,
+        command_traces: CommandTraceReader | None = None,
     ) -> None:
         super().__init__()
         self._redactor = redactor
+        self._sandbox_root = sandbox_root
+        self._command_traces = command_traces or read_command_trace
         # Background body-store writes in flight (strong refs so they aren't GC'd
         # mid-flush), owned by this instance and drained best-effort at agent end.
         # Bounded concurrency + exception consumption live in body_store.
@@ -301,9 +321,6 @@ class ProvenanceMiddleware(AgentMiddleware):
             # Bash shares the trace extractor: a script it runs (e.g. `python
             # analysis.py`) writes the same mcp_trace, surfaced on the artifact.
             "Bash": self._extract_execute_code,
-            # BashOutput surfaces a backgrounded script's mcp_trace on the status
-            # read that observes completion — same artifact contract as Bash.
-            "BashOutput": self._extract_execute_code,
             **dict.fromkeys(_MARKET_DATA_TOOLS, self._extract_market_data),
         }
 
@@ -318,9 +335,19 @@ class ProvenanceMiddleware(AgentMiddleware):
         try:
             tool_call = request.tool_call
             tool_name = tool_call.get("name")
+            if tool_name == _THREAD_STATUS:
+                await self._emit_commands(shown_commands(result))
+                return result
             extractor = self._extractors.get(tool_name)
             if extractor is None:
-                return result
+                # A directly bound MCP tool is named per (server, tool) pair, so
+                # it can never be a key here. It carries its identity on the tool
+                # instead, which is also the only recoverable copy once the name
+                # has had to fall back to a digest.
+                if direct_tool_meta(getattr(request, "tool", None)):
+                    extractor = self._extract_direct_mcp
+                else:
+                    return result
 
             # Don't attest a source the tool never actually returned. The
             # MCP-trace tools (ExecuteCode/Bash) are exempt: the code/command may
@@ -335,46 +362,13 @@ class ProvenanceMiddleware(AgentMiddleware):
                 # mcp_trace is provenance-only scaffolding carrying raw in-sandbox
                 # args + snippets. Strip it from the artifact (after extraction
                 # reads it) so it never rides the public tool_call_result event or
-                # lands in persisted sse_events. In a finally so it runs even if
+                # lands in the checkpoint. In a finally so it runs even if
                 # the extractor raises — the raw-args-never-persisted property must
                 # not depend on extraction succeeding.
                 if tool_name in _MCP_TRACE_TOOLS:
                     _strip_mcp_trace(result)
 
-            if not sources:
-                return result
-
-            writer = get_stream_writer()
-            if writer is None:
-                return result
-
-            body_batch: list[tuple] = []
-            for source in sources:
-                self._verify_source_sha(source)
-                source.result_snippet = self._redact_snippet(source.result_snippet)
-                source.title = self._redact_snippet(source.title)
-                try:
-                    writer(build_provenance_event(source))
-                except Exception:
-                    logger.debug(
-                        "[PROVENANCE] failed to emit event for %s",
-                        tool_name,
-                        exc_info=True,
-                    )
-                item = self._body_item(source)
-                if item is not None:
-                    body_batch.append(item)
-            # One batched write per TOOL CALL, after this call's emits (best-effort,
-            # never on the SSE event): collapses this call's per-source fan-out —
-            # web_search's N URLs, the market fan-out's duplicate shas,
-            # execute_code's N mcp_trace entries — into a single chunked upsert.
-            # Scheduled OFF the tool-call critical path (background task, drained at
-            # agent end) so a DB/object-store write never delays the tool result or
-            # the next LLM step; the provenance events above already went out.
-            if body_batch:
-                await schedule_body_write(
-                    self._body_flush_tasks, store_bodies(body_batch)
-                )
+            await self._emit(sources, tool_name)
         except Exception:
             # WARNING, not DEBUG: a broken extractor silently degrades the
             # feature to "no provenance"; surface it so it's observable.
@@ -384,6 +378,77 @@ class ProvenanceMiddleware(AgentMiddleware):
             )
 
         return result
+
+    async def awrap_model_call(
+        self,
+        request: Any,
+        handler: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        """Emit the sources of the background commands whose notices this
+        call reads, then make the call unchanged.
+
+        Outer to the steering middleware's hooks, so a notice it injected
+        before this call is in the state.
+        """
+        try:
+            state = getattr(request, "state", None) or {}
+            await self._emit_commands(
+                reported_commands(state.get("messages") or [], _configurable())
+            )
+        except Exception:
+            logger.warning(
+                "[PROVENANCE] command sources failed; the model call goes on",
+                exc_info=True,
+            )
+        return await handler(request)
+
+    async def _emit_commands(self, command_ids: list[str]) -> None:
+        """Emit each command's stored sources. No call of this turn ran its
+        script, so the sources name none, and ids seeded by the command make
+        a re-read the same records whichever path delivered them. Main agent
+        only: a subagent shares this instance and inherits the run config,
+        but no notice is meant for it."""
+        thread_id = _main_thread_id() if command_ids else None
+        if thread_id is None:
+            return
+        for command_id in command_ids:
+            trace = await self._command_traces(thread_id, command_id)
+            await self._emit(
+                sources_from_trace(trace, record_seed=command_id), command_id
+            )
+
+    async def _emit(self, sources: list[ProvenanceSource], label: str | None) -> None:
+        """Verify, redact and stream ``sources``, then queue their bodies."""
+        if not sources:
+            return
+        writer = get_stream_writer()
+        if writer is None:
+            return
+
+        body_batch: list[tuple] = []
+        for source in sources:
+            self._verify_source_sha(source)
+            source.result_snippet = self._redact_snippet(source.result_snippet)
+            source.title = self._redact_snippet(source.title)
+            try:
+                writer(build_provenance_event(source))
+            except Exception:
+                logger.debug(
+                    "[PROVENANCE] failed to emit event for %s",
+                    label,
+                    exc_info=True,
+                )
+            item = self._body_item(source)
+            if item is not None:
+                body_batch.append(item)
+        # One batched write per emit (best-effort, never on the SSE event):
+        # collapses a call's per-source fan-out (web_search's N URLs, the
+        # market fan-out's duplicate shas, a trace's N entries) into a single
+        # chunked upsert. Scheduled OFF the critical path (background task,
+        # drained at agent end) so a DB/object-store write never delays the
+        # tool result or the next LLM step; the events above already went out.
+        if body_batch:
+            await schedule_body_write(self._body_flush_tasks, store_bodies(body_batch))
 
     def _redact_snippet(self, snippet: str | None) -> str | None:
         """Scrub secrets from a snippet; drop it if redaction itself fails."""
@@ -492,7 +557,7 @@ class ProvenanceMiddleware(AgentMiddleware):
         if not isinstance(artifact, dict):
             return
         tool_call_id = request.tool_call.get("id")
-        timestamp = _now_iso()
+        timestamp = now_iso()
         for item in artifact.get("results") or []:
             if not isinstance(item, dict):
                 continue
@@ -536,7 +601,7 @@ class ProvenanceMiddleware(AgentMiddleware):
             record_id=_new_id(),
             source_type="web_fetch",
             identifier=url,
-            timestamp=_now_iso(),
+            timestamp=now_iso(),
             title=artifact.get("title"),
             provider=provider,
             tool_call_id=request.tool_call.get("id"),
@@ -555,7 +620,7 @@ class ProvenanceMiddleware(AgentMiddleware):
         if not isinstance(artifact, dict):
             return
         tool_call_id = request.tool_call.get("id")
-        timestamp = _now_iso()
+        timestamp = now_iso()
         symbol = artifact.get("symbol")
         filings = artifact.get("filings")
 
@@ -609,7 +674,7 @@ class ProvenanceMiddleware(AgentMiddleware):
         args = request.tool_call.get("args") or {}
         tool_name = request.tool_call.get("name")
         tool_call_id = request.tool_call.get("id")
-        timestamp = _now_iso()
+        timestamp = now_iso()
 
         identifiers: list[str] = []
         for key in _MARKET_SYMBOL_ARGS:
@@ -675,15 +740,19 @@ class ProvenanceMiddleware(AgentMiddleware):
         path = args.get("file_path") or args.get("path")
         if not path:
             return
-        if _is_agent_infra_path(path):
+        # Read on another of the user's computers, where the Sources panel,
+        # which opens the path on the turn's own, would find another file.
+        if ran_elsewhere(args):
+            return
+        if _is_agent_infra_path(path, self._sandbox_root):
             return
         content = getattr(result, "content", result)
         sha256, size, snippet = fingerprint_result(content)
         yield ProvenanceSource(
             record_id=_new_id(),
-            source_type=_classify_file_source_type(path),
+            source_type=_classify_file_source_type(path, self._sandbox_root),
             identifier=path,
-            timestamp=_now_iso(),
+            timestamp=now_iso(),
             tool_call_id=request.tool_call.get("id"),
             args=redact_args(args),
             result_sha256=sha256,
@@ -691,63 +760,48 @@ class ProvenanceMiddleware(AgentMiddleware):
             result_snippet=snippet,
         )
 
+    def _extract_direct_mcp(
+        self, request: Any, result: Any
+    ) -> Iterator[ProvenanceSource]:
+        """One mcp_tool source for a tool the model called directly.
+
+        The same record the sandbox path yields per ``mcp_trace`` entry, so a
+        server reads identically in the Sources panel whichever path carried it.
+        The identity comes off the tool's stamp rather than the tool name, which
+        is lossy by design once it has had to fall back to a digest.
+        """
+        stamp = direct_tool_meta(getattr(request, "tool", None)) or {}
+        server = str(stamp.get("server") or "")[:256]
+        tool = str(stamp.get("tool") or "")[:256]
+        if not server or not tool:
+            return
+        content = getattr(result, "content", result)
+        sha256, size, snippet, body = fingerprint_result_with_body(content)
+        args = request.tool_call.get("args")
+        yield ProvenanceSource(
+            record_id=_new_id(),
+            source_type="mcp_tool",
+            identifier=f"{server}:{tool}",
+            timestamp=now_iso(),
+            provider=f"mcp:{server}",
+            tool_call_id=request.tool_call.get("id"),
+            args_fingerprint=hash_args(args),
+            args=redact_args(args),
+            result_sha256=sha256,
+            result_size=size,
+            result_snippet=snippet,
+            result_body=body,
+        )
+
     def _extract_execute_code(
         self, request: Any, result: Any
     ) -> Iterator[ProvenanceSource]:
         """One mcp_tool source per entry in the result artifact's ``mcp_trace``.
 
-        Shared by ExecuteCode and Bash — both surface an ``mcp_trace`` artifact
-        for the MCP calls their in-sandbox code made. Contract (Phase B2):
-        artifact is a dict with key ``mcp_trace``, a list of ``{server, tool,
-        args, result_sha256, result_size, result_snippet, timestamp}``. Yields
-        nothing when the artifact/trace is absent.
+        Shared by ExecuteCode and Bash, both of which surface the trace of the
+        MCP calls their in-sandbox code made (see ``sources_from_trace``).
+        Yields nothing when the artifact or trace is absent.
         """
         artifact = getattr(result, "artifact", None)
         trace = artifact.get("mcp_trace") if isinstance(artifact, dict) else []
-        if not isinstance(trace, list):
-            return
-        tool_call_id = request.tool_call.get("id")
-        # Cap entries per execution; the trace is agent-authored and unbounded.
-        for entry in trace[:_MAX_TRACE_ENTRIES]:
-            if not isinstance(entry, dict):
-                continue
-            server = entry.get("server")
-            tool = entry.get("tool")
-            if not server or not tool:
-                continue
-            # Clamp the agent-controlled identifier parts and result fields so a
-            # poisoned trace can't bloat the identifier/snippet/sha columns.
-            server = str(server)[:_IDENT_PART_MAX_CHARS]
-            tool = str(tool)[:_IDENT_PART_MAX_CHARS]
-            # Clamp the agent-controlled timestamp like the other trace fields:
-            # a non-string or oversized value would otherwise ride the SSE event.
-            raw_ts = entry.get("timestamp")
-            timestamp = (
-                raw_ts[:_TIMESTAMP_MAX_CHARS]
-                if isinstance(raw_ts, str) and raw_ts
-                else _now_iso()
-            )
-            yield ProvenanceSource(
-                record_id=_new_id(),
-                source_type="mcp_tool",
-                identifier=f"{server}:{tool}",
-                timestamp=timestamp,
-                provider=f"mcp:{server}",
-                tool_call_id=tool_call_id,
-                # Keep the readable redacted args alongside the legacy hash; the
-                # deny-list redactor strips any secrets/PII before they persist.
-                args_fingerprint=hash_args(entry.get("args")),
-                args=redact_args(entry.get("args")),
-                result_sha256=_truncate(entry.get("result_sha256"), _SHA_MAX_CHARS),
-                result_size=_coerce_result_size(entry.get("result_size")),
-                result_snippet=_truncate(
-                    entry.get("result_snippet"), SNIPPET_MAX_CHARS
-                ),
-                # The per-call body the sandbox captured for THIS MCP call (the
-                # root fix: NOT the aggregate ExecuteCode stdout). Re-clamped
-                # host-side as the trace is agent-authored. May be absent once
-                # the sandbox's per-execution body budget is exhausted.
-                result_body=_clamp_body_bytes(
-                    entry.get("result_body"), RESULT_BODY_MAX_BYTES
-                ),
-            )
+        yield from sources_from_trace(trace, request.tool_call.get("id"))

@@ -46,13 +46,13 @@ class TestCreateThread:
             conversation_thread_id=str(uuid.uuid4()),
             workspace_id=ws_id,
             current_status="completed",
-            msg_type="flash",
+            msg_type="ptc",
         )
         t2 = await create_thread(
             conversation_thread_id=str(uuid.uuid4()),
             workspace_id=ws_id,
             current_status="in_progress",
-            msg_type="flash",
+            msg_type="ptc",
         )
 
         assert t1["thread_index"] == 0
@@ -68,7 +68,7 @@ class TestCreateThread:
             conversation_thread_id=str(uuid.uuid4()),
             workspace_id=ws_id,
             current_status="in_progress",
-            msg_type="flash",
+            msg_type="ptc",
             external_id="telegram:12345:42",
             platform="telegram",
         )
@@ -96,7 +96,6 @@ class TestEnsureThreadExists:
             conversation_thread_id=thread_id,
             user_id=seed_user["user_id"],
             initial_query="What is AAPL trading at?",
-            msg_type="flash",
         )
 
         threads, total = await get_workspace_threads(ws_id)
@@ -131,7 +130,6 @@ class TestEnsureThreadExists:
             user_id=seed_user["user_id"],
             initial_query="Follow up",
             initial_status="in_progress",
-            msg_type="ptc",
         )
 
         threads, total = await get_workspace_threads(ws_id)
@@ -250,7 +248,7 @@ class TestResponseCRUD:
     ):
         from src.server.database.conversation import (
             create_thread,
-            get_responses_for_thread,
+            get_recent_responses_for_thread,
         )
 
         ws_id = str(seed_workspace["workspace_id"])
@@ -270,8 +268,8 @@ class TestResponseCRUD:
             execution_time=2.5,
         )
 
-        responses, total = await get_responses_for_thread(thread_id)
-        assert total == 1
+        responses = await get_recent_responses_for_thread(thread_id)
+        assert len(responses) == 1
         assert responses[0]["status"] == "completed"
         assert responses[0]["execution_time"] == pytest.approx(2.5)
 
@@ -329,7 +327,7 @@ class TestThreadLifecycle:
             create_thread,
             delete_thread,
             get_queries_for_thread,
-            get_responses_for_thread,
+            get_recent_responses_for_thread,
         )
 
         ws_id = str(seed_workspace["workspace_id"])
@@ -360,6 +358,6 @@ class TestThreadLifecycle:
 
         # Queries and responses should be cascade-deleted
         queries, q_total = await get_queries_for_thread(thread_id)
-        responses, r_total = await get_responses_for_thread(thread_id)
+        responses = await get_recent_responses_for_thread(thread_id)
         assert q_total == 0
-        assert r_total == 0
+        assert responses == []

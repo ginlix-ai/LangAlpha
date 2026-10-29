@@ -23,11 +23,13 @@ from unittest.mock import patch
 
 import pytest
 
+from src.server.database.runs.subagent_repair import (
+    repair_dangling_task_chains,
+    repair_task_chains,
+)
 from src.server.database.runs.subagent_runs import (
     count_open_runs_for_thread,
     find_open_run_from_turn,
-    repair_dangling_task_chains,
-    repair_task_chains,
 )
 
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
@@ -148,9 +150,10 @@ async def test_repair_runs_on_the_pinned_session(mock_connection, mock_cursor):
     _rowcounts(mock_cursor, [1, 1])
 
     @asynccontextmanager
-    async def _explode():  # pragma: no cover - must never be entered
-        raise AssertionError("repair_task_chains took a pool connection")
-        yield
+    async def _explode(conn=None):
+        if conn is None:
+            raise AssertionError("repair_task_chains took a pool connection")
+        yield conn
 
     with patch(POOL, new=_explode):
         result = await repair_task_chains(THREAD_ID, conn=mock_connection)

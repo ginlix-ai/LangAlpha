@@ -15,7 +15,6 @@ interface SymbolInfoConfig {
 function SymbolInfoWidget({ instance }: WidgetRenderProps<SymbolInfoConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="symbol-info"
       config={{ symbol: instance.config.symbol }}
     />

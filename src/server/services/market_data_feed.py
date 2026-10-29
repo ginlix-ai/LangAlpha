@@ -17,7 +17,7 @@ from typing import Any, Callable, Coroutine, Optional
 import websockets
 
 from src.config.settings import GINLIX_DATA_WS_URL
-from src.market_protocol import AssetClass, OhlcvBar, to_canonical
+from market_protocol import AssetClass, OhlcvBar, to_canonical
 
 logger = logging.getLogger(__name__)
 

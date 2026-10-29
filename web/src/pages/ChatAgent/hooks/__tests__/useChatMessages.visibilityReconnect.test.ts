@@ -42,15 +42,15 @@ const mockStatus = getWorkflowStatus as Mock;
 const mockReconnect = reconnectToWorkflowStream as Mock;
 
 // A sendChatMessageStream impl that mimics a long-lived SSE stream: it latches
-// the run_id (3rd-to-last arg, before signal + requestKey) synchronously so
+// the run_id (the onRunIdResolved option) synchronously so
 // currentRunIdRef is set, and the returned promise stays pending until the
 // AbortController.signal fires — then it resolves `{ aborted: true }`, exactly
 // as the real streamFetch does when the reader is aborted. This keeps
 // isLoading true until the foreground handler aborts the stream.
 function deferredStreamMock(runId = 'run-1', threadId = 'th-1') {
   return vi.fn((...args: unknown[]) => {
-    const latch = args[args.length - 3] as (rid: string, tid: string) => void;
-    const signal = args[args.length - 2] as AbortSignal;
+    const latch = (args[3] as { onRunIdResolved: (rid: string, tid: string) => void }).onRunIdResolved;
+    const signal = (args[3] as { signal: AbortSignal }).signal;
     latch(runId, threadId);
     return new Promise((resolve) => {
       const onAbort = () => resolve({ disconnected: false, aborted: true, contentLocation: null });
@@ -230,84 +230,5 @@ describe('useChatMessages — foreground (visibility) reconnect', () => {
     expect(mockStatus.mock.calls[0][0]).toBe('th-real');
     expect(mockReconnect.mock.calls[0][0]).toBe('th-real');
     expect(mockReconnect.mock.calls[0][1]).toBe('run-first');
-  });
-
-  // Regression: a steering follow-up sent mid-turn can be DEMOTED to a fresh
-  // backend turn (the prior turn went terminal before the POST landed). That
-  // demoted turn registers its own controller on mainStreamAbortRef, so the
-  // foreground handler can abort it on resume. Its result site must re-kick the
-  // existing reconnect — not fall through and finalize the live turn as
-  // truncated-complete (the silent-loss bug for the demote path).
-  it('re-kicks reconnect for a DEMOTED steering turn when the tab returns to foreground', async () => {
-    mockStatus.mockResolvedValue({ can_reconnect: false, status: 'completed' });
-
-    let steeringOnEvent: ((e: Record<string, unknown>) => void) | null = null;
-    mockSend.mockImplementation((...args: unknown[]) => {
-      const onEvent = args[5] as (e: Record<string, unknown>) => void;
-      const latch = args[args.length - 3] as (rid: string, tid: string) => void;
-      const signal = args[args.length - 2] as AbortSignal;
-      if (mockSend.mock.calls.length === 1) {
-        // Primary turn: latch a run so isLoading stays true, then hang. We never
-        // abort this stream — demotion reassigns mainStreamAbortRef away from it.
-        latch('run-main', 'th-1');
-        return new Promise(() => {});
-      }
-      // Steering POST: capture its onEvent so the test can drive demotion, and
-      // resolve { aborted } when its signal fires (what streamFetch does).
-      steeringOnEvent = onEvent;
-      return new Promise((resolve) => {
-        const onAbort = () =>
-          resolve({ disconnected: false, aborted: true, contentLocation: null });
-        if (signal.aborted) onAbort();
-        else signal.addEventListener('abort', onAbort, { once: true });
-      });
-    });
-
-    const { result } = renderHookWithProviders(() => useChatMessages('ws', 'th-1'));
-    await act(async () => { await flush(); });
-
-    // Primary turn → isLoading true.
-    await act(async () => {
-      void result.current.handleSendMessage('hello');
-      await flush();
-    });
-    await waitFor(() => expect(result.current.isLoading).toBe(true));
-
-    // Follow-up while streaming → handleSendSteering POSTs a second stream.
-    await act(async () => {
-      void result.current.handleSendMessage('steer me');
-      await flush();
-    });
-    await waitFor(() => expect(mockSend).toHaveBeenCalledTimes(2));
-    expect(steeringOnEvent).not.toBeNull();
-
-    // First non-steering frame = backend opened a NEW turn → demotion. The
-    // metadata frame carries the demoted run_id, latched into currentRunIdRef.
-    await act(async () => {
-      steeringOnEvent!({ event: 'metadata', thread_id: 'th-1', run_id: 'run-demoted' });
-      await flush();
-    });
-
-    // The demoted run is now reconnectable; isolate the resume's calls.
-    mockStatus.mockResolvedValue({
-      can_reconnect: true,
-      status: 'running',
-      run_id: 'run-demoted',
-      active_tasks: [],
-    });
-    mockStatus.mockClear();
-    mockReconnect.mockClear();
-
-    // Tab returns → foreground handler aborts the demoted stream → re-kick.
-    await act(async () => {
-      suspendTab();
-      document.dispatchEvent(new Event('visibilitychange'));
-      await flush();
-    });
-
-    await waitFor(() => expect(mockReconnect).toHaveBeenCalled());
-    expect(mockStatus).toHaveBeenCalled();
-    expect(mockReconnect.mock.calls[0][0]).toBe('th-1');
-    expect(mockReconnect.mock.calls[0][1]).toBe('run-demoted');
   });
 });

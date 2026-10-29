@@ -1,14 +1,50 @@
 """Grep tool for content searching with ripgrep."""
 
 import re
+import re._constants as sre_constants
+import re._parser as sre_parser
 from typing import Literal
 
 import structlog
 from langchain_core.tools import BaseTool, tool
 
 from ptc_agent.agent.backends import FilesystemBackend
+from ptc_agent.agent.tools.utils import mark_sandbox_raised, stamp_sandbox_served
+from ptc_agent.core.paths import logged_path
+from ptc_agent.core.sandbox.grep_render import GrepLine
+from src.observability.private_errors import failure
 
 logger = structlog.get_logger(__name__)
+
+# What neither rg's default engine nor RE2 runs, both being linear-time.
+_BACKTRACKING_ONLY = frozenset({
+    sre_constants.ASSERT,
+    sre_constants.ASSERT_NOT,
+    sre_constants.GROUPREF,
+    sre_constants.GROUPREF_EXISTS,
+    sre_constants.ATOMIC_GROUP,
+})
+
+
+def _needs_backtracking(pattern: str) -> bool:
+    """Whether *pattern*, valid for ``re``, uses what no search route runs.
+
+    Every route answers such a pattern with no lines, so without this a
+    search that never ran reads as one that found nothing. Read off ``re``'s
+    own parse rather than RE2's refusal, since RE2 also refuses syntax rg
+    takes (``(?x)``, ``\\u00e9``, ``\\<``) and the sandbox route runs rg.
+    """
+    stack: list = [sre_parser.parse(pattern)]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, sre_parser.SubPattern):
+            for op, av in node:
+                if op in _BACKTRACKING_ONLY:
+                    return True
+                stack.append(av)
+        elif isinstance(node, (tuple, list)):
+            stack.extend(node)
+    return False
 
 
 def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
@@ -48,7 +84,7 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
             path: Directory or file (default: ".")
             output_mode: "files_with_matches" | "content" | "count"
             glob: File filter (e.g., "*.py")
-            type: File type filter (e.g., "py", "js") - matches rg --type
+            type: File type filter (e.g., "py", "csv") - matches rg --type
             i: Case insensitive search
             n: Show line numbers in output
             A: Lines to show after each match
@@ -59,7 +95,8 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
             offset: Skip first N results
 
         Returns:
-            Search results or ERROR
+            Matching lines, the list of matching files, or a count — whichever
+            output_mode selects.
         """
         search_path = path if path is not None else "."
         try:
@@ -68,29 +105,37 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
                 re.compile(pattern)
             except re.error as e:
                 error_msg = f"Invalid regex pattern: {e}"
-                logger.error(error_msg, pattern=pattern)
+                logger.info("Invalid regex pattern", pattern_length=len(pattern))
                 return f"ERROR: {error_msg}"
+            if _needs_backtracking(pattern):
+                logger.info("Regex pattern search cannot run", pattern_length=len(pattern))
+                return (
+                    "ERROR: Invalid regex pattern: search does not support "
+                    "look-around, backreferences or atomic groups. Rewrite the "
+                    "pattern without them."
+                )
 
             # Normalize virtual path to absolute sandbox path
             normalized_path = backend.normalize_path(search_path)
 
             logger.info(
                 "Grepping content",
-                pattern=pattern,
-                path=search_path,
-                normalized_path=normalized_path,
+                pattern_length=len(pattern),
+                path=logged_path(search_path),
+                normalized_path=logged_path(normalized_path),
                 output_mode=output_mode,
-                glob=glob,
+                glob_length=len(glob) if glob else 0,
                 type=type,
                 case_insensitive=i,
             )
 
             # Validate normalized path
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(search_path):
                 error_msg = f"Access denied: {search_path} is not in allowed directories"
-                logger.error(error_msg, path=search_path)
+                logger.error("Access denied: path outside the allowed directories", path=logged_path(search_path))
                 return f"ERROR: {error_msg}"
 
+            stamp_sandbox_served(backend, normalized_path)
             results = await backend.agrep_rich(
                 pattern=pattern,
                 path=normalized_path,
@@ -107,9 +152,11 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
                 offset=offset,
             )
 
+            # What a search left out, such as files a route stopped before.
+            notes = "".join(f"\n\n{note}" for note in getattr(results, "notes", ()))
             if not results:
-                logger.info("No matches found", pattern=pattern, path=search_path)
-                return f"No matches found for pattern '{pattern}' in '{search_path}'"
+                logger.info("No matches found", path=logged_path(search_path))
+                return f"No matches found for pattern '{pattern}' in '{search_path}'{notes}"
 
             # Format output based on mode, virtualizing paths for agent
             if output_mode == "files_with_matches":
@@ -120,13 +167,11 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
             elif output_mode == "content":
                 result = f"Matches for pattern '{pattern}':\n\n"
                 for entry in results:
-                    # Content entries may contain file paths - virtualize them
-                    # Format is typically "filepath:line:content" or just content
-                    if isinstance(entry, str) and ":" in entry:
-                        parts = entry.split(":", 2)
-                        if len(parts) >= 2:
-                            virtual_path = backend.virtualize_path(parts[0])
-                            entry = ":".join([virtual_path, *parts[1:]])
+                    # A line names its file by the path it holds, as a path
+                    # may hold the `:` or `-` that ends it in the text. A
+                    # group's `--` and an error name none.
+                    if isinstance(entry, GrepLine):
+                        entry = entry.at(backend.virtualize_path(entry.path))
                     result += f"{entry}\n"
             elif output_mode == "count":
                 result = f"Match counts for pattern '{pattern}':\n"
@@ -138,23 +183,18 @@ def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
 
             logger.info(
                 "Grep completed successfully",
-                pattern=pattern,
-                path=search_path,
+                path=logged_path(search_path),
                 output_mode=output_mode,
                 results_count=len(results),
             )
 
-            return result.rstrip()
+            return result.rstrip() + notes
 
         except Exception as e:
+            mark_sandbox_raised(e)
             error_msg = f"Failed to grep content: {e!s}"
-            logger.error(
-                error_msg,
-                pattern=pattern,
-                path=search_path,
-                error=str(e),
-                exc_info=True,
-            )
+            fields, trace = failure(e)
+            logger.error("Failed to grep content", path=logged_path(search_path), exc_info=trace, **fields)
             return f"ERROR: {error_msg}"
 
     return grep

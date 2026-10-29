@@ -1,47 +1,22 @@
-"""Same-superstep replay ordering for `DeltaChannel`-backed `messages` (P2).
+"""Same-superstep replay ordering for `DeltaChannel`-backed `messages`.
 
-ACCEPTED RESIDUAL RISK (documented, not a blocker). When two or more parallel
-tasks write to the ``messages`` channel in the *same* superstep, the order they
-reconstruct from a non-snapshot delta checkpoint may differ from the order they
-ran live. Live ``apply_writes`` orders same-superstep task writes by ``task_path``
-(`langgraph/pregel/_algo.py`); the **Postgres** saver's delta stage-2 replay
-(`aget_delta_channel_history`) orders by ``(task_id, idx)`` and ignores the stored
-``task_path`` — so the two can disagree. This is library-level (beta); there is
-no app-side fix, and the plan accepts it because the UI renders from persisted
-SSE events in emission order, never from the reconstructed checkpoint list.
+When two or more parallel tasks write to ``messages`` in the same superstep, a
+non-snapshot checkpoint rebuilds the channel by replaying their stored writes.
+Live ``apply_writes`` applies them in ``task_path`` order; through
+langgraph-checkpoint 4.1 the savers replayed them in another (Postgres by
+``task_id, idx``, in memory nondeterministically), so a reload could reorder
+what the model saw live. langgraph-checkpoint 4.3 makes ``writes_sort_key``
+the order both sides use, so reconstruction must now equal the live order.
 
-What this test does:
-
-1. Builds a genuine FAN-OUT — one seed node fans out to two sibling nodes that
-   each write one ``messages`` update in the SAME superstep (NOT a single node
-   returning a 2-element list, which is one write and would never reorder).
-2. Asserts the LIVE order is deterministic and is the expected ``apply_writes`` /
-   ``task_path`` order. This guards the path the sequential orchestrator and the
-   model's live context actually depend on, and it is rock-solid (measured stable
-   across 50 runs).
-3. Best-effort: compares the reconstructed order against the live order.
-
-KNOWN LIMITATION — why the reconstruction comparison is `xfail`:
-
-The real, documented divergence (`task_id,idx` vs `task_path`) lives specifically
-in the POSTGRES saver's two-stage SQL replay. The in-memory saver has its OWN
-``get_delta_channel_history`` implementation that does NOT reproduce that
-particular ordering rule. What it DOES show is that same-superstep reconstruction
-order is *non-deterministic* in-memory (measured: live order is always
-``[seed, A, B]`` but reconstruction is ``[seed, A, B]`` or ``[seed, B, A]`` ~50/50
-across runs). That is a flaky, different-mechanism reorder, so we cannot make a
-stable in-memory assertion that reconstruction == live. We therefore mark the
-reconstruction-order comparison ``xfail(strict=False)``: it passes when the run
-happens to preserve order and "x-fails" when it doesn't, and the reason documents
-that exercising the *real* Postgres divergence requires a Postgres saver. This is
-exactly the residual the plan says to document, not block on.
+The graph is a genuine fan-out: one seed node fans out to two sibling nodes
+that each write one ``messages`` update in the same superstep (a single node
+returning a two-element list is one write and would never reorder).
 """
 
 from __future__ import annotations
 
 from collections import Counter
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
@@ -108,13 +83,11 @@ def test_fan_out_head_checkpoint_is_non_snapshot():
 
 
 def test_fan_out_reconstruction_preserves_all_messages():
-    """Integrity guard (reliable, NOT xfail): reconstruction loses/dups no message.
+    """Integrity guard: reconstruction loses or duplicates no message.
 
     Multiset-equality is the part that IS reliable — a dropped or duplicated
     message on delta replay is a real corruption regression and must fail loudly.
-    Only the *order* is the accepted non-deterministic residual, asserted separately
-    in the xfail test below; keeping integrity out of the xfail umbrella means a
-    genuine message-loss bug can no longer hide as an expected failure.
+    Order is asserted separately below, so a failure says which of the two broke.
     """
     graph = _build_fan_out_graph(InMemorySaver())
     config = {"configurable": {"thread_id": "fanout-recon-set"}}
@@ -126,42 +99,27 @@ def test_fan_out_reconstruction_preserves_all_messages():
     # Counter, not set: a DUPLICATED id must fail here too, and set() collapses
     # duplicates (so a [seed, A, A] reconstruction would pass against {seed, A}).
     # Duplication is exactly the corruption this guard exists to catch; order is
-    # the separate xfail concern, so compare as a multiset, not a sequence.
+    # the next test's concern, so compare as a multiset, not a sequence.
     assert Counter(recon_ids) == Counter(live_ids), (
         f"reconstruction lost or duplicated a message: recon {sorted(recon_ids)} "
         f"!= live {sorted(live_ids)}"
     )
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "In-memory delta reconstruction of same-superstep fan-out writes is "
-        "non-deterministic (~50/50 order across runs) and does NOT reproduce the "
-        "specific documented Postgres divergence (task_id,idx vs task_path). The "
-        "real divergence lives in AsyncPostgresSaver.aget_delta_channel_history and "
-        "requires a Postgres saver to exercise; this is an accepted residual risk "
-        "with no app-side fix. See module docstring."
-    ),
-)
 def test_fan_out_reconstruction_preserves_live_order():
-    """Best-effort (xfail): reconstructed ORDER matches live order.
+    """Reconstructed order matches live order on every run.
 
-    Passes when the in-memory replay happens to preserve order; x-fails when it
-    reorders. Message integrity (nothing lost/duplicated) is asserted reliably and
-    separately in ``test_fan_out_reconstruction_preserves_all_messages`` — only the
-    order is the accepted P2 residual absorbed here. Exercising the real Postgres
-    divergence is left to integration tests against a Postgres saver.
+    Repeated because the in-memory replay this replaced reordered about half
+    the time, so one run proves little.
     """
-    graph = _build_fan_out_graph(InMemorySaver())
-    config = {"configurable": {"thread_id": "fanout-recon"}}
-    result = graph.invoke({"messages": []}, config)
-    live_ids = [m.id for m in result["messages"]]
+    for run in range(20):
+        graph = _build_fan_out_graph(InMemorySaver())
+        config = {"configurable": {"thread_id": f"fanout-recon-{run}"}}
+        result = graph.invoke({"messages": []}, config)
+        live_ids = [m.id for m in result["messages"]]
 
-    recon_ids = [m.id for m in graph.get_state(config).values["messages"]]
+        recon_ids = [m.id for m in graph.get_state(config).values["messages"]]
 
-    # Order is the residual: assert it; xfail absorbs the in-memory non-determinism.
-    assert recon_ids == live_ids, (
-        f"reconstructed order {recon_ids} != live order {live_ids} "
-        "(accepted P2 residual under in-memory replay)"
-    )
+        assert recon_ids == live_ids, (
+            f"run {run}: reconstructed order {recon_ids} != live order {live_ids}"
+        )

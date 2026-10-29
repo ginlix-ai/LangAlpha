@@ -6,7 +6,7 @@ and adds server-specific infrastructure config loading.
 
 Config Files:
 - config.yaml: Infrastructure settings (server, Redis, background tasks, logging, CORS)
-- agent_config.yaml: Agent capabilities (LLM, MCP, tools, crawler, web_fetch, embedding, security)
+- agent_config.yaml: Agent capabilities (LLM, MCP, tools, crawler, web_fetch, security)
 """
 
 import logging
@@ -26,6 +26,7 @@ from ptc_agent.config.file_utils import (  # noqa: F401
     find_project_root,
     get_config_search_paths,
     get_default_config_dir,
+    load_agent_config,
     load_yaml_config,
     substitute_env_vars,
 )

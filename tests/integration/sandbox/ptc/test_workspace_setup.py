@@ -17,14 +17,13 @@ class TestWorkspaceSetup:
         assert state == RuntimeState.RUNNING
 
     async def test_setup_creates_directories(self, shared_sandbox):
-        """Verify all 8 standard directories exist after setup."""
+        """Verify the computer runtime and workspace directory skeletons."""
         expected_dirs = [
-            "tools",
-            "tools/docs",
-            "results",
+            "_internal/tools",
+            ".agents/tools/docs",
             "data",
             ".system/code",
-            "work",
+            ".agents/memory",
             ".agents/threads",
             ".agents/skills",
             "_internal/src",
@@ -36,5 +35,5 @@ class TestWorkspaceSetup:
     async def test_setup_idempotent_structure(self, shared_sandbox):
         """Calling _setup_workspace again should not fail."""
         await shared_sandbox._setup_workspace()
-        result = await shared_sandbox.runtime.exec(f"test -d {shared_sandbox._work_dir}/tools && echo OK")
+        result = await shared_sandbox.runtime.exec(f"test -d {shared_sandbox._work_dir}/_internal/tools && echo OK")
         assert "OK" in result.stdout

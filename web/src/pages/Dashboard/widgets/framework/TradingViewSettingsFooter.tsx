@@ -1,6 +1,5 @@
 import { useTranslation } from 'react-i18next';
 import { HelpCircle } from 'lucide-react';
-import { Link } from 'react-router-dom';
 
 /**
  * Shared attribution block at the bottom of every TradingView widget's
@@ -29,13 +28,18 @@ export function TradingViewSettingsFooter() {
         </a>
         .
       </span>
-      <Link
-        to="/legal"
+      {/* Same reason as the sign-in page's terms line: attribution is a document
+          about the product, so it opens in a browser rather than replacing the
+          dashboard, and the desktop shell sends it to the system browser. */}
+      <a
+        href="/legal"
+        target="_blank"
+        rel="noopener noreferrer"
         title={t('dashboard.widgets.tvFooter.legal')}
         style={{ color: 'var(--color-text-tertiary)', display: 'inline-flex' }}
       >
         <HelpCircle size={12} />
-      </Link>
+      </a>
     </div>
   );
 }

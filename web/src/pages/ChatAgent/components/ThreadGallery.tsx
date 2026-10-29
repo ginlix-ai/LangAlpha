@@ -1,8 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { ArrowLeft, Folder, FileText, Zap, Archive } from 'lucide-react';
+import { ArrowLeft, Folder, FileText, Archive } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { SwapCell } from '@/components/ui/crossfade';
+import { SkeletonBar } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
+import { HomeRowIcon } from '@/hooks/useHomeWorkspace';
+import { isHomeWorkspace } from '@/lib/homeWorkspace';
+import { useNavigate, useParams, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
@@ -10,27 +16,50 @@ import { patchThreadRows, rollbackThreadRows } from '@/lib/threadRowActions';
 import { patchThreadTitle } from '@/lib/threadListCache';
 import { threadGalleryQuery } from '../utils/threadGalleryQuery';
 import { useWorkspace } from '../../../hooks/useWorkspace';
-import { scrollMemory, useScrollMemory } from '@/lib/scrollMemory';
+import { useScrollMemory } from '@/lib/scrollMemory';
 import ThreadCard from './ThreadCard';
-import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
 import { useArchiveThreadConfirm } from './threadArchiveAction';
+import { useThreadDeleteConfirm } from './threadDeleteAction';
+import { deleteThreadRow } from '../hooks/deleteThreadRow';
 import ChatInput from '../../../components/ui/chat-input';
 import type { ChatInputHandle } from '../../../components/ui/chat-input';
 import { attachmentsToContexts } from '../utils/fileUpload';
-import { SYSTEM_DIR_PREFIXES } from './FilePanel';
-import RightPanel from './RightPanel';
+import FilePanel, { SYSTEM_DIR_PREFIXES } from './FilePanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import SandboxSettingsPanel from './SandboxSettingsPanel';
-import { deleteThread, updateThreadTitle, updateThread } from '../utils/api';
+import { updateThreadTitle, updateThread } from '../utils/api';
 import { isValidUuid } from '../utils/uuid';
-import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
-import { removeStoredThreadId } from '../hooks/utils/threadStorage';
+import { WorkspaceProvider } from '../contexts/WorkspaceContext';
+import { useComputerFolders } from '../hooks/useComputerFolders';
+import { usePanelFiles } from './chatView/usePanelFiles';
+import { usePanelAsks, usePanelLinkOpen } from './chatView/usePanelLinks';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
 import iconComputerLight from '../../../assets/img/icon-computer.svg';
 import iconComputerDark from '../../../assets/img/icon-computer-dark.svg';
 import { useTheme } from '../../../contexts/ThemeContext';
-import { motion, AnimatePresence } from 'framer-motion';
+import { PresenceFold } from '@/components/ui/Disclosure';
+import { motion, AnimatePresence } from '@/lib/framer';
+import { DURATION, EASE_OUT, TWEEN } from '@/lib/motion';
+
+/** Placeholder rows while the list is read: the first screen's worth. */
+const THREAD_SKELETON_ROWS = 5;
+
+/** A thread card's place while the list is read, in the card's box and with
+ *  its two lines, spaced as the list spaces its cards. */
+function ThreadCardSkeleton({ index }: { index: number }) {
+  return (
+    <div className="pb-2" aria-hidden="true" data-testid="thread-card-skeleton">
+      <div className="rounded-lg px-4 py-3 flex items-center gap-3" style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
+        <div className="w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ backgroundColor: 'var(--color-border-default)' }} />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm"><SkeletonBar style={{ width: `${40 + (index % 3) * 15}%` }} /></div>
+          <div className="text-xs mt-0.5"><SkeletonBar className="w-12" /></div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 interface ThreadRecord {
   thread_id: string;
@@ -43,11 +72,6 @@ interface ThreadRecord {
   [key: string]: unknown;
 }
 
-interface DeleteModalState {
-  isOpen: boolean;
-  thread: ThreadRecord | null;
-}
-
 interface RenameModalState {
   isOpen: boolean;
   thread: ThreadRecord | null;
@@ -56,7 +80,7 @@ interface RenameModalState {
 interface ThreadGalleryProps {
   workspaceId: string;
   onBack: () => void;
-  onThreadSelect: (workspaceId: string, threadId: string, agentMode?: string | null) => void;
+  onThreadSelect: (workspaceId: string, threadId: string) => void;
 }
 
 /**
@@ -76,15 +100,22 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const { data: wsData, error: wsError } = useWorkspace(workspaceId);
   // Keep location.state values as instant display fallbacks during navigation
   const locationState = location.state as Record<string, unknown> | null;
-  const workspaceName = (wsData?.name || locationState?.workspaceName || '') as string;
-  const workspaceStatus = (wsData?.status || locationState?.workspaceStatus || null) as string | null;
-  const isFlash = workspaceStatus === 'flash';
+  const label = useWorkspaceLabel();
+  const workspaceName = (label(wsData) || locationState?.workspaceName || '') as string;
+  // Home runs the full agent with a folder of its own, so its files show. It
+  // still has no machine controls of its own.
+  const isHome = isHomeWorkspace(wsData);
 
   // Archived view toggle. Both views live under the byWorkspace prefix
   // (queryKeys.threads.gallery), so prefix invalidations refresh both — and
   // the shared row patcher reaches this list's pages the same way it reaches
   // the sidebar's finite pages.
   const [showArchived, setShowArchived] = useState(false);
+  // Whether the reader has switched views yet, in this workspace. The list the
+  // gallery opens on arrives through the skeleton's crossfade; only a view the
+  // reader picked fades in on its own.
+  const [switchedIn, setSwitchedIn] = useState<string | null>(null);
+  const viewSwitched = switchedIn === workspaceId;
 
   // Paged thread list. React Query owns the pages, the total, and the
   // has-more arithmetic; the rows are rendered straight from the cache so a
@@ -141,11 +172,10 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     (threadError as { response?: { status?: number } } | null)?.response?.status === 404 ||
     (wsError as { response?: { status?: number } } | null)?.response?.status === 404;
 
-  const isLoading = isThreadsLoading;
+  // An empty outgoing list held while the other view loads says nothing about
+  // that view: it loads as placeholders, not as "no threads".
+  const isLoading = isThreadsLoading || (isPlaceholderData && threads.length === 0);
   const error = threadError && !accessDenied && !wsNotFound ? t('thread.failedLoadThreads') : null;
-  const [deleteModal, setDeleteModal] = useState<DeleteModalState>({ isOpen: false, thread: null });
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [renameModal, setRenameModal] = useState<RenameModalState>({ isOpen: false, thread: null });
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -153,7 +183,11 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [showSandboxPanel, setShowSandboxPanel] = useState(false);
   const [filePanelWidth, setFilePanelWidth] = useState(850);
-  const [filePanelTargetFile, setFilePanelTargetFile] = useState<string | null>(null);
+  // Expanded, the panel lies over the whole gallery, as it does over a chat.
+  // Closing the panel ends it, so the next open starts beside the cards.
+  const [panelExpanded, setPanelExpanded] = useState(false);
+  if (panelExpanded && (!showFilePanel || isMobile)) setPanelExpanded(false);
+  const handleTogglePanelExpanded = useCallback(() => setPanelExpanded((v) => !v), []);
   // Show system files in FilePanel (.agents/, code/, tools/, etc.)
   const [showSystemFiles, setShowSystemFiles] = useState(
     () => localStorage.getItem('filePanel.showSystemFiles') === 'true'
@@ -182,13 +216,52 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   // no overflow the sentinel is simply already on screen.
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
 
-  // Shared workspace files for the FilePanel (skip for flash workspaces -- no sandbox)
+  // Shared workspace files for the FilePanel.
+  // A link in one of them can open a sibling's files read-only in their
+  // place; the composer and the Files card keep listing the workspace's own.
   const {
+    override: panelOverride,
+    setOverride: setPanelOverride,
+    shownWorkspaceId,
     files: panelFiles,
     loading: panelFilesLoading,
     error: panelFilesError,
     refresh: refreshPanelFiles,
-  } = useWorkspaceFiles(isFlash ? null : workspaceId, { includeSystem: showSystemFiles });
+    mentionFiles: ownFiles,
+    panelAccess,
+  } = usePanelFiles({
+    isHome,
+    workspaceId,
+    workspaceName,
+    includeSystem: showSystemFiles,
+  });
+  // A path names a sibling by its folder from the workspace it was written
+  // in: the gallery's own for the link router, the shown one's for the
+  // documents the panel renders.
+  const folders = useComputerFolders(workspaceId);
+  const panelFolders = useComputerFolders(shownWorkspaceId);
+  const {
+    panelTarget,
+    askPanel,
+    handleTargetHandled,
+    handleTargetMemoryHandled,
+    handleTargetMemoHandled,
+    handleFilesLeaveGuardChange,
+    leaveFiles,
+  } = usePanelAsks();
+  const handleOpenFile = usePanelLinkOpen({
+    workspaceId,
+    folders,
+    override: panelOverride,
+    setOverride: setPanelOverride,
+    land: askPanel,
+    leave: leaveFiles,
+  });
+  // The gallery stays mounted from one workspace to the next, and a sibling
+  // the last one's panel showed need not be a sibling of this one.
+  useEffect(() => {
+    setPanelOverride(null);
+  }, [workspaceId, setPanelOverride]);
 
   const navigate = useNavigate();
   const { threadId: currentThreadId } = useParams();
@@ -235,11 +308,11 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
 
   // Derive sorted file list from hook data
   useEffect(() => {
-    if (panelFiles.length > 0) {
-      const sorted = sortFiles(panelFiles);
+    if (ownFiles.length > 0) {
+      const sorted = sortFiles(ownFiles);
       setFiles(sorted);
     }
-  }, [panelFiles, sortFiles]);
+  }, [ownFiles, sortFiles]);
 
   // Save workspace-level session on unmount so tab switching restores to this workspace
   useEffect(() => {
@@ -269,81 +342,25 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   // closure per render would defeat the memo for the whole list.
   const handleThreadClick = useCallback((thread: Record<string, unknown>) => {
     if (onThreadSelect) {
-      onThreadSelect(workspaceId, thread.thread_id as string, isFlash ? 'flash' : null);
+      onThreadSelect(workspaceId, thread.thread_id as string);
     }
-  }, [onThreadSelect, workspaceId, isFlash]);
+  }, [onThreadSelect, workspaceId]);
 
   /**
    * Handles delete icon click - opens confirmation modal
    */
+  const { requestDelete, dialog: deleteConfirmDialog } = useThreadDeleteConfirm();
   const handleDeleteClick = useCallback((thread: Record<string, unknown>) => {
-    setDeleteModal({ isOpen: true, thread: thread as ThreadRecord });
-    setDeleteError(null);
-  }, []);
-
-  /**
-   * Handles confirmed thread deletion
-   */
-  const handleConfirmDelete = async () => {
-    if (!deleteModal.thread) return;
-
-    const threadToDelete = deleteModal.thread;
-    const threadId = threadToDelete.thread_id;
-
-    if (!threadId) {
-      console.error('No thread ID found in thread object:', threadToDelete);
-      setDeleteError(t('thread.invalidThread'));
-      return;
-    }
-
-    setIsDeleting(true);
-    setDeleteError(null);
-
-    try {
-      await deleteThread(threadId);
-
-      scrollMemory.forget(`thread:${threadId}`);
-
-      // Clean up localStorage: remove thread ID for deleted thread
-      if (workspaceId) {
-        // Check if the deleted thread is the currently stored thread for this workspace
-        const storedThreadId = localStorage.getItem(`workspace_thread_id_${workspaceId}`);
-        if (storedThreadId === threadId) {
-          removeStoredThreadId(workspaceId);
-        }
-      }
-
-      // Drop the row from every cached list for this workspace (this gallery's
-      // pages and the sidebar's), totals included, then reconcile.
-      patchThreadRows(queryClient, queryKeys.threads.byWorkspace(workspaceId), (rows) =>
-        rows.some((th) => th.thread_id === threadId) ? rows.filter((th) => th.thread_id !== threadId) : rows,
-      );
-      queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) });
-
+    const { thread_id: threadId, title, thread_index: index } = thread as ThreadRecord;
+    if (!threadId) return;
+    requestDelete(title || `Thread ${index !== undefined ? index + 1 : ''}`, async () => {
+      await deleteThreadRow(queryClient, workspaceId, threadId);
       // If the deleted thread is currently active, navigate back to thread gallery
       if (currentThreadId === threadId) {
         navigate(isValidUuid(workspaceId) ? `/chat/${workspaceId}` : '/chat');
       }
-
-      // Close modal
-      setDeleteModal({ isOpen: false, thread: null });
-    } catch (err: any) { // TODO: type properly
-      console.error('Error deleting thread:', err);
-      const errorMessage = err.response?.data?.detail || err.message || t('thread.failedDeleteThread');
-      setDeleteError(errorMessage);
-      // Keep modal open so user can see the error
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  /**
-   * Handles canceling deletion
-   */
-  const handleCancelDelete = () => {
-    setDeleteModal({ isOpen: false, thread: null });
-    setDeleteError(null);
-  };
+    });
+  }, [requestDelete, queryClient, workspaceId, currentThreadId, navigate]);
 
   /**
    * Handles rename icon click - opens rename modal
@@ -448,10 +465,18 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
    */
   const handleSendMessage = async (
     message: string,
-    planMode = false,
     attachments: Array<{ file: File; type: string; preview: string | null; dataUrl: string | null }> = [],
     slashCommands: Array<{ type: string; skillName?: string; name?: string }> = [],
-    { model, reasoningEffort }: { model?: string; reasoningEffort?: string } = {},
+    {
+      model, reasoningEffort, fastMode, subagentsAllowed, reasoningEffortOverride, fastModeOverride,
+    }: {
+      model?: string | null;
+      reasoningEffort?: string | null;
+      fastMode?: boolean | null;
+      subagentsAllowed?: boolean;
+      reasoningEffortOverride?: string;
+      fastModeOverride?: boolean;
+    } = {},
   ) => {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || isSendingMessage || !workspaceId) {
       return;
@@ -487,12 +512,14 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
         state: {
           workspaceId,
           initialMessage: message.trim(),
-          planMode: planMode,
-          ...(isFlash ? { agentMode: 'flash' } : {}),
+          ...(subagentsAllowed !== undefined ? { subagentsAllowed } : {}),
           ...(additionalContext ? { additionalContext } : {}),
           ...(attachmentMeta ? { attachmentMeta } : {}),
           ...(model ? { model } : {}),
           ...(reasoningEffort ? { reasoningEffort } : {}),
+          ...(typeof fastMode === 'boolean' ? { fastMode } : {}),
+          ...(reasoningEffortOverride !== undefined ? { reasoningEffortOverride } : {}),
+          ...(fastModeOverride !== undefined ? { fastModeOverride } : {}),
         },
       });
     } catch (error) {
@@ -509,10 +536,13 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     if (showFilePanel) {
       setShowFilePanel(false);
     } else {
+      // The card is the workspace's own files; a sibling shown before the
+      // panel closed was reached through a link.
+      setPanelOverride(null);
       setFilePanelWidth(clampPanelWidth(850));
       setShowFilePanel(true);
     }
-  }, [showFilePanel, clampPanelWidth]);
+  }, [showFilePanel, clampPanelWidth, setPanelOverride]);
 
   /**
    * Handle drag panel width
@@ -553,38 +583,26 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     dragCleanupRef.current = teardown;
   }, [filePanelWidth]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="flex flex-col items-center gap-4">
-          <span aria-hidden="true" className="flex-shrink-0">
-            <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
-          </span>
-          <p className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-            {t('thread.loadingThreads')}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
-          <p className="text-sm" style={{ color: 'var(--color-loss)' }}>
-            {error}
-          </p>
-          <button
-            onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) })}
-            className="px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
-            style={{
-              backgroundColor: 'var(--color-btn-primary-bg)',
-              color: 'var(--color-btn-primary-text)',
-            }}
-          >
-            {t('common.retry')}
-          </button>
+      <div className="h-full flex flex-col">
+        <div className="chrome-drag-strip" aria-hidden="true" />
+        <div className="flex-1 min-h-0 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
+            <p className="text-sm" style={{ color: 'var(--color-loss)' }}>
+              {error}
+            </p>
+            <button
+              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(workspaceId) })}
+              className="px-4 py-2 rounded-md text-sm font-medium transition-opacity hover:opacity-90"
+              style={{
+                backgroundColor: 'var(--color-btn-primary-bg)',
+                color: 'var(--color-btn-primary-text)',
+              }}
+            >
+              {t('common.retry')}
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -593,16 +611,20 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   return (
     <div
       ref={containerRef}
-      className={`${isMobile ? 'h-full' : 'h-screen'} flex overflow-hidden`}
+      className="h-full flex overflow-hidden"
       style={{
         position: 'relative',
         backgroundColor: 'var(--color-bg-page)',
       }}
     >
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Back Button - Fixed at top left */}
-        <div className="flex-shrink-0 px-6 py-4 enter-fade-up">
+      {/* Main Content Area. Inert and isolated under an expanded panel, as
+          the chat is in ChatView. */}
+      <div className={cn('flex-1 flex flex-col overflow-hidden', panelExpanded && 'isolate')} inert={panelExpanded}>
+        {/* Back Button - Fixed at top left. Doubles as this route's drag region
+            in the desktop shell: it is the top bar the content column already
+            has, so it costs no layout, and the back button wins its own clicks
+            back through the `no-drag` list in chrome.css. */}
+        <div className="shrink-0 px-6 py-4" data-chrome="drag" style={{ paddingTop: 'calc(var(--page-top) - 4px)' }}>
           <button
             onClick={onBack}
             className="p-2 rounded-md transition-colors"
@@ -620,13 +642,20 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
           <div className="w-full max-w-[768px] mx-auto flex flex-col gap-8">
 
             {/* Workspace Header */}
-            <div className="w-full flex flex-col items-center mt-2 md:mt-[8vh] enter-fade-up enter-fade-up-d1">
+            <div className="w-full flex flex-col items-center mt-2 md:mt-[8vh]">
+              {/* Which icon, and whether it opens machine settings, waits on
+                  the workspace row: until then Home reads as any workspace,
+                  whose settings it does not have. A row that failed to load
+                  (a 403 or 404 redirects instead) draws the plain icon, inert,
+                  rather than loading for good. */}
               <div
-                className="flex items-center justify-center transition-colors cursor-pointer"
-                onClick={!isFlash ? () => setShowSandboxPanel(true) : undefined}
+                className={cn('flex items-center justify-center transition-colors', wsData && !isHome && 'cursor-pointer')}
+                onClick={wsData && !isHome ? () => setShowSandboxPanel(true) : undefined}
               >
-                {isFlash ? (
-                  <Zap className="w-10 h-10" style={{ color: 'var(--color-accent-primary)' }} />
+                {!wsData && !wsError ? (
+                  <SkeletonBar className="w-10 h-10 rounded-lg" />
+                ) : isHome ? (
+                  <HomeRowIcon className="w-10 h-10" style={{ color: 'var(--color-accent-primary)' }} />
                 ) : (
                   <img src={iconComputer} alt="Workspace" className="w-10 h-10" />
                 )}
@@ -635,30 +664,38 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 className="text-xl font-medium mt-3 text-center title-font"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                {workspaceName}
+                {workspaceName || (wsError ? '\u00a0' : <SkeletonBar className="w-40" />)}
               </h1>
               <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                 <span>{t('thread.workspace')}</span>
                 <div className="size-[3px] rounded-full bg-current opacity-50"></div>
-                <span>{totalThreads ?? threads.length} {(totalThreads ?? threads.length) === 1 ? t('thread.thread') : t('thread.threads')}</span>
+                {isLoading ? (
+                  <SkeletonBar className="w-14" />
+                ) : (
+                  <span>{totalThreads ?? threads.length} {(totalThreads ?? threads.length) === 1 ? t('thread.thread') : t('thread.threads')}</span>
+                )}
               </div>
             </div>
 
             {/* Chat Input */}
-            <div className="w-full enter-fade-up enter-fade-up-d2 relative z-20">
+            <div className="w-full relative z-20">
               <ChatInput
                 ref={chatInputRef}
                 onSend={handleSendMessage as any} // TODO: type properly — ChatInput expects strict ReadyAttachment[]
                 disabled={isSendingMessage || !workspaceId}
-                files={panelFiles}
+                files={ownFiles}
                 dropdownDirection="down"
-                mode={isFlash ? 'fast' : 'ptc'}
+                // The turn this composer sends lands in this workspace, so the
+                // slash menu has to be scoped to it too: without this it lists
+                // the account-level skills, hiding the workspace's own and
+                // still offering ones it has disabled.
+                selectedWorkspaceId={workspaceId}
                 minRows={2}
               />
             </div>
 
-            {/* Files Card -- hidden for flash workspaces (no sandbox) */}
-            {!isFlash && <div className="w-full enter-fade-up enter-fade-up-d3">
+            {/* Files Card */}
+            <div className="w-full">
               <div
                 className="flex-1 min-w-0 flex flex-col ps-[16px] pt-[12px] pb-[14px] pe-[20px] rounded-[12px] border cursor-pointer hover:bg-foreground/5 transition-colors"
                 style={{
@@ -693,12 +730,15 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                           style={{ color: 'var(--color-text-tertiary)' }}
                           onClick={(e) => {
                             e.stopPropagation();
-                            setFilePanelTargetFile(filePath);
+                            // The card lists the workspace's own files, so a
+                            // sibling's on show gives way to them.
+                            setPanelOverride(null);
+                            askPanel({ kind: 'file', path: filePath });
                             setFilePanelWidth(clampPanelWidth(850));
                             setShowFilePanel(true);
                           }}
                         >
-                          <FileText className="h-3.5 w-3.5 flex-shrink-0" />
+                          <FileText className="h-3.5 w-3.5 shrink-0" />
                           <span className="truncate">{fileName}</span>
                         </div>
                       );
@@ -706,17 +746,20 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                   </div>
                 )}
               </div>
-            </div>}
+            </div>
 
             {/* Threads Section */}
-            <div className="w-full flex flex-col gap-4 pb-8 enter-fade-up enter-fade-up-d4">
+            <div className="w-full flex flex-col gap-4 pb-8">
               <div className="flex items-center justify-between">
                 <h2 className="text-base font-medium" style={{ color: 'var(--color-text-primary)' }}>
                   {showArchived ? t('thread.archivedTasks') : t('thread.tasks')}
                 </h2>
                 <button
                   type="button"
-                  onClick={() => setShowArchived((v) => !v)}
+                  onClick={() => {
+                    setShowArchived((v) => !v);
+                    setSwitchedIn(workspaceId);
+                  }}
                   className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md transition-colors hover:bg-foreground/5"
                   style={{ color: showArchived ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
                   aria-pressed={showArchived}
@@ -726,105 +769,122 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                 </button>
               </div>
 
-              {threads.length === 0 ? (
-                // Empty state
-                <div className="flex flex-col items-center justify-center py-12">
-                  <p className="text-sm mb-2" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {showArchived ? t('thread.noArchivedThreads') : t('thread.noThreadsYet')}
-                  </p>
-                  {!showArchived && (
-                    <p className="text-xs text-center max-w-md" style={{ color: 'var(--color-text-tertiary)' }}>
-                      {t('thread.startConversation')}
+              {/* The rows take the placeholders' places in one crossfade. */}
+              <SwapCell as="div" swapKey={isLoading ? 'loading' : 'list'}>
+                {isLoading ? (
+                  <div className="flex flex-col" aria-busy="true">
+                    <span className="sr-only">{t('thread.loadingThreads')}</span>
+                    {Array.from({ length: THREAD_SKELETON_ROWS }, (_, i) => <ThreadCardSkeleton key={i} index={i} />)}
+                  </div>
+                ) : threads.length === 0 ? (
+                  // Empty state
+                  <div className="flex flex-col items-center justify-center py-12">
+                    <p className="text-sm mb-2" style={{ color: 'var(--color-text-tertiary)' }}>
+                      {showArchived ? t('thread.noArchivedThreads') : t('thread.noThreadsYet')}
                     </p>
-                  )}
-                </div>
-              ) : (
-                // Thread list. The container is keyed per view (workspace +
-                // archived flag) so a view swap remounts it with a single
-                // cross-fade — a fresh inner Presence with initial={false}
-                // keeps the bulk swap from playing 20 concurrent card
-                // animations. It dims while showing placeholder (outgoing)
-                // rows during the archived-toggle fetch. Per-card exit +
-                // layout animate the single-card case: archive/unarchive
-                // collapses the card while neighbors glide up. Card spacing
-                // lives INSIDE the motion wrapper (pb-2, not container gap)
-                // so the exit collapse swallows the gap too.
-                <motion.div
-                  key={`${workspaceId}:${showArchived}`}
-                  className="flex flex-col"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: isPlaceholderData ? 0.45 : 1 }}
-                  transition={{ duration: 0.15, ease: 'easeInOut' }}
-                >
-                  <AnimatePresence initial={false}>
-                    {threads.map((thread) => (
-                      <motion.div
-                        key={thread.thread_id}
-                        layout="position"
-                        layoutDependency={threadOrderSignature}
-                        className="pb-2"
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{
-                          layout: { duration: 0.22, ease: [0.22, 1, 0.36, 1] },
-                          height: { duration: 0.18, ease: 'easeInOut' },
-                          opacity: { duration: 0.15, ease: 'easeInOut' },
-                        }}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        {/* Archive affordances derive from the ROW, not the
-                            view toggle: while isPlaceholderData shows the
-                            previous view's rows the toggle has already
-                            flipped, so the view flag would offer Archive on
-                            an archived row. */}
-                        <ThreadCard
-                          thread={thread}
-                          onClick={handleThreadClick}
-                          onDelete={handleDeleteClick}
-                          onRename={handleRenameClick}
-                          onArchive={!thread.archived_at ? handleArchive : undefined}
-                          onUnarchive={thread.archived_at ? handleUnarchive : undefined}
-                        />
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                  {/* Infinite-scroll sentinel + its spinner */}
-                  {hasNextPage && (
-                    <div ref={loadMoreSentinelRef} className="flex items-center justify-center py-4">
-                      {isFetchingNextPage && (
-                        <Loader size={20} className="text-[color:var(--color-accent-primary)]" />
-                      )}
-                    </div>
-                  )}
-                </motion.div>
-              )}
+                    {!showArchived && (
+                      <p className="text-xs text-center max-w-md" style={{ color: 'var(--color-text-tertiary)' }}>
+                        {t('thread.startConversation')}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  // Thread list. The container is keyed per view (workspace +
+                  // archived flag) so a view the reader switches to remounts it
+                  // with a single fade in — a fresh inner Presence with
+                  // initial={false} keeps the bulk swap from playing 20
+                  // concurrent card animations. It dims while showing placeholder (outgoing)
+                  // rows during the archived-toggle fetch. Per-card fold +
+                  // layout animate the single-card case: archive/unarchive
+                  // folds the card shut while neighbors glide up. Card spacing
+                  // lives INSIDE the fold (pb-2, not container gap) so the
+                  // collapse swallows the gap too.
+                  <motion.div
+                    key={`${workspaceId}:${showArchived}`}
+                    className="flex flex-col"
+                    initial={viewSwitched ? { opacity: 0 } : false}
+                    animate={{ opacity: isPlaceholderData ? 0.45 : 1 }}
+                    transition={TWEEN.quick}
+                  >
+                    <AnimatePresence initial={false}>
+                      {threads.map((thread) => (
+                        <motion.div
+                          key={thread.thread_id}
+                          layout="position"
+                          layoutDependency={threadOrderSignature}
+                          transition={{ layout: TWEEN.fold }}
+                        >
+                          <PresenceFold className="pb-2">
+                            {/* Archive affordances derive from the ROW, not the
+                                view toggle: while isPlaceholderData shows the
+                                previous view's rows the toggle has already
+                                flipped, so the view flag would offer Archive on
+                                an archived row. */}
+                            <ThreadCard
+                              thread={thread}
+                              onClick={handleThreadClick}
+                              onDelete={handleDeleteClick}
+                              onRename={handleRenameClick}
+                              onArchive={!thread.archived_at ? handleArchive : undefined}
+                              onUnarchive={thread.archived_at ? handleUnarchive : undefined}
+                            />
+                          </PresenceFold>
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
+                    {/* Infinite-scroll sentinel + its spinner */}
+                    {hasNextPage && (
+                      <div ref={loadMoreSentinelRef} className="flex items-center justify-center py-4">
+                        {isFetchingNextPage && (
+                          <Loader size={20} className="text-(--color-accent-primary)" />
+                        )}
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </SwapCell>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Right Side: File Panel -- hidden for flash workspaces */}
+      {/* Right Side: File Panel */}
       <AnimatePresence>
-        {showFilePanel && !isFlash && (
+        {showFilePanel && (
           <motion.div
             initial={isMobile ? { x: '100%' } : { width: 0, opacity: 0 }}
             animate={isMobile ? { x: 0 } : { width: filePanelWidth + DIVIDER_WIDTH, opacity: 1 }}
             exit={isMobile ? { x: '100%' } : { width: 0, opacity: 0 }}
-            transition={{ duration: isDragging ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
-            className={isMobile ? 'flex overflow-hidden' : 'flex flex-shrink-0 overflow-hidden'}
+            transition={{ duration: isDragging ? 0 : DURATION.fold, ease: EASE_OUT }}
+            className={isMobile ? 'flex overflow-hidden' : 'flex shrink-0 overflow-hidden'}
             style={isMobile ? { position: 'absolute', inset: 0, zIndex: 30 } : undefined}
           >
-            {!isMobile && (
+            {!isMobile && !panelExpanded && (
               <div
-                className="w-[4px] bg-transparent hover:bg-foreground/20 cursor-col-resize flex-shrink-0 transition-colors"
+                className="w-[4px] bg-transparent hover:bg-foreground/20 cursor-col-resize shrink-0 transition-colors"
                 onMouseDown={handleDividerMouseDown}
               />
             )}
-            <div className="flex-shrink-0" style={{ width: isMobile ? '100%' : filePanelWidth }}>
-              <RightPanel
-                workspaceId={workspaceId}
+            {/* Expanded, the panel lies over the gallery while the wrapper
+                keeps its width in the row, so the panel stays the same
+                element and a running app's iframe does not reload. */}
+            <div
+              className={panelExpanded ? 'absolute inset-0 z-10' : 'shrink-0'}
+              style={panelExpanded ? undefined : { width: isMobile ? '100%' : filePanelWidth }}
+            >
+              <WorkspaceProvider workspaceId={shownWorkspaceId} downloadFile={null} folders={panelFolders}>
+              <FilePanel
+                workspaceId={shownWorkspaceId ?? workspaceId}
                 onClose={() => setShowFilePanel(false)}
-                panelTarget={filePanelTargetFile ? { kind: 'file', path: filePanelTargetFile } : null}
-                onTargetFileHandled={() => setFilePanelTargetFile(null)}
+                expanded={panelExpanded}
+                onToggleExpanded={isMobile ? null : handleTogglePanelExpanded}
+                onLeaveGuardChange={handleFilesLeaveGuardChange}
+                target={panelTarget}
+                onTargetHandled={handleTargetHandled}
+                onTargetMemoryHandled={handleTargetMemoryHandled}
+                onTargetMemoHandled={handleTargetMemoHandled}
+                onOpenFile={handleOpenFile}
+                persistTabs={false}
                 files={panelFiles}
                 filesLoading={panelFilesLoading}
                 filesError={panelFilesError}
@@ -837,22 +897,18 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                     return !v;
                   });
                 }}
+                readOnly={panelAccess.readOnly}
+                singleFileMode={panelAccess.singleFileMode}
+                onReturnHome={panelAccess.onReturnHome}
+                returnLabel={panelAccess.returnLabel}
               />
+              </WorkspaceProvider>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Delete Confirmation Modal */}
-      <DeleteConfirmModal
-        isOpen={deleteModal.isOpen}
-        workspaceName={deleteModal.thread?.title || `Thread ${deleteModal.thread?.thread_index !== undefined ? (deleteModal.thread.thread_index as number) + 1 : ''}`}
-        onConfirm={handleConfirmDelete}
-        onCancel={handleCancelDelete}
-        isDeleting={isDeleting}
-        error={deleteError}
-        itemType="thread"
-      />
+      {deleteConfirmDialog}
 
       {/* Archive-while-running confirmation (opens only for a live thread) */}
       {archiveConfirmDialog}

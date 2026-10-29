@@ -182,17 +182,18 @@ class TestAwrapToolCall:
         assert "saved in the filesystem" in result.content
 
     @pytest.mark.asyncio
-    async def test_glob_result_is_evicted_when_large(self):
-        """Glob is no longer on the exclusion list, so a pathological result must be
-        evicted to the filesystem instead of reaching the model (Glob self-caps for
-        the common case; eviction is the backstop)."""
-        assert "Glob" not in TOOLS_EXCLUDED_FROM_EVICTION
+    @pytest.mark.parametrize("tool", ["Glob", "Grep"])
+    async def test_search_result_is_evicted_when_large(self, tool):
+        """Glob and Grep are off the exclusion list, so a pathological result must be
+        evicted to the filesystem instead of reaching the model (each caps the common
+        case, Glob by match count and Grep by line length; eviction is the backstop)."""
+        assert tool not in TOOLS_EXCLUDED_FROM_EVICTION
         backend = _make_backend()
         limit = 10
         mw = LargeResultEvictionMiddleware(backend=backend, tool_token_limit_before_evict=limit)
-        request = _make_tool_request("Glob")
+        request = _make_tool_request(tool)
         large_content = "x" * (NUM_CHARS_PER_TOKEN * limit + 100)
-        msg = ToolMessage(content=large_content, tool_call_id="call_1", name="Glob")
+        msg = ToolMessage(content=large_content, tool_call_id="call_1", name=tool)
         handler = AsyncMock(return_value=msg)
         result = await mw.awrap_tool_call(request, handler)
         assert isinstance(result, ToolMessage)

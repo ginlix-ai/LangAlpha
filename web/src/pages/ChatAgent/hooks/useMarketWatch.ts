@@ -10,6 +10,8 @@ import { coerceSymbols, type MarketWatchState } from './utils/streamEventHandler
  *   (c) refetch once when a streaming turn completes.
  * Live mid-turn overwrites (b) arrive via `market_watch_update` SSE events —
  * the caller forwards the returned `setMarketWatch` into `handleMarketWatchUpdate`.
+ * The result of the agent's `watch_market` call calls `refreshMarketWatch`.
+ * Price targets are wakeups now and live in `useWakeups`.
  *
  * `threadIdRef` (the caller's latest-thread ref) is read by (c) so the refetch
  * targets the real thread id even when the `threadId` prop is still `__default__`.
@@ -21,6 +23,7 @@ export function useMarketWatch(
 ): {
   marketWatch: MarketWatchState | null;
   setMarketWatch: Dispatch<SetStateAction<MarketWatchState | null>>;
+  refreshMarketWatch: () => void;
 } {
   // Latest market-watch snapshot for this thread — seeded from the GET
   // /market-watch endpoint on thread load, overwritten live by
@@ -38,10 +41,26 @@ export function useMarketWatch(
     const symbols = coerceSymbols(data?.symbols);
     // Merge, don't replace: the turn-completion refetch (c) only knows the
     // symbol list, so it must preserve the `content`/`timestamp` that a live
-    // `market_watch_update` (b) just streamed — otherwise the Status panel
-    // blanks at turn end. Empty symbols still means "watch off" (null).
+    // `market_watch_update` (b) just streamed, otherwise the Status panel
+    // blanks at turn end. No symbols still means "watch off" (null).
     setMarketWatch((prev) => (symbols.length ? { ...prev, symbols } : null));
   }, []);
+
+  // Every read of the list goes through here. Reads start from the seed, a
+  // turn's end and a `watch_market` result, and can answer out of order, so
+  // an answer older than the one already shown is dropped.
+  const readSeqRef = useRef(0);
+  const shownSeqRef = useRef(0);
+  const readMarketWatch = useCallback((tid: string, stillWanted: () => boolean) => {
+    const seq = ++readSeqRef.current;
+    fetchMarketWatch(tid)
+      .then((data) => {
+        if (seq < shownSeqRef.current || !stillWanted()) return;
+        shownSeqRef.current = seq;
+        applyMarketWatchList(data);
+      })
+      .catch(() => { /* best-effort — leave prior state untouched */ });
+  }, [applyMarketWatchList]);
 
   // (a) Seed / re-seed from the thread's Redis watch list on load or switch so
   //     the chip survives a page reload and reflects the true watch state.
@@ -52,11 +71,9 @@ export function useMarketWatch(
     setMarketWatch(null);
     if (!threadId || threadId === '__default__' || !marketWatchEnabled) return;
     let cancelled = false;
-    fetchMarketWatch(threadId)
-      .then((data) => { if (!cancelled) applyMarketWatchList(data); })
-      .catch(() => { /* best-effort — leave prior state untouched */ });
+    readMarketWatch(threadId, () => !cancelled);
     return () => { cancelled = true; };
-  }, [threadId, applyMarketWatchList, marketWatchEnabled]);
+  }, [threadId, readMarketWatch, marketWatchEnabled]);
 
   // (c) Refetch once when a streaming turn completes (isLoading true -> false).
   //     Makes the chip disappear promptly after a `watch_market` unwatch and
@@ -69,13 +86,20 @@ export function useMarketWatch(
     const tid = threadIdRef.current;
     if (!tid || tid === '__default__') return;
     let cancelled = false;
-    fetchMarketWatch(tid)
-      .then((data) => { if (!cancelled) applyMarketWatchList(data); })
-      .catch(() => { /* best-effort */ });
+    readMarketWatch(tid, () => !cancelled && threadIdRef.current === tid);
     return () => { cancelled = true; };
     // threadIdRef is a stable ref (identity never changes) — listed only to
     // satisfy exhaustive-deps; the effect still fires solely on isLoading flips.
-  }, [isLoading, applyMarketWatchList, threadIdRef, marketWatchEnabled]);
+  }, [isLoading, readMarketWatch, threadIdRef, marketWatchEnabled]);
 
-  return { marketWatch, setMarketWatch };
+  // An out-of-band refetch. It lands only if the view is still on the thread
+  // it asked about: a switch in between already cleared the state for another.
+  const refreshMarketWatch = useCallback(() => {
+    if (!marketWatchEnabled) return;
+    const tid = threadIdRef.current;
+    if (!tid || tid === '__default__') return;
+    readMarketWatch(tid, () => threadIdRef.current === tid);
+  }, [readMarketWatch, threadIdRef, marketWatchEnabled]);
+
+  return { marketWatch, setMarketWatch, refreshMarketWatch };
 }

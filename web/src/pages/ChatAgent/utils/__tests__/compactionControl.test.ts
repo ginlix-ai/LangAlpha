@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Pure decision helpers for the manual-compaction Stop control in ChatView.
  * These cover three regressions:
@@ -37,7 +38,7 @@ describe('routeStopAction', () => {
 });
 
 describe('compactionErrorCode', () => {
-  it('extracts a structured detail code from an axios-style rejection', () => {
+  it('extracts a structured detail code from an API client rejection', () => {
     const err = { response: { data: { detail: { code: 'request_cancelled' } } } };
     expect(compactionErrorCode(err)).toBe('request_cancelled');
   });

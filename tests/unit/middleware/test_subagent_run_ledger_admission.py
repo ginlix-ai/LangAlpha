@@ -24,7 +24,13 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
     TaskRunRejected,
     TransportLostError,
+    UsageTake,
 )
+from ptc_agent.agent.middleware.background_subagent.subagent import (
+    _unknown_type_refusal,
+)
+from ptc_agent.agent.middleware.credit_gate import CreditStopError
+from src.server.contracts.status import CREDIT_STOP_ERROR_TYPE
 
 
 class FakeOwner:
@@ -81,7 +87,9 @@ class FakeLedger:
             "run": {"task_run_id": task_run_id, "status": status},
         }
 
-    async def append_run_end(self, task_run_id, *, task_id, outcome):
+    async def append_run_end(
+        self, task_run_id, *, task_id, outcome, finalized_at=None
+    ):
         self.journal.append(("run_end", task_run_id, outcome))
 
 
@@ -107,11 +115,15 @@ async def _ok_handler(_request) -> ToolMessage:
     return ToolMessage(content="done", tool_call_id="tc-1", name="Task")
 
 
-def _middleware(owner, ledger) -> BackgroundSubagentMiddleware:
+def _middleware(owner, ledger, subagent_models=None) -> BackgroundSubagentMiddleware:
     registry = BackgroundTaskRegistry(thread_id="")
     registry.run_ledger = ledger
     return BackgroundSubagentMiddleware(
-        registry=registry, enabled=True, namespace_owner=owner
+        registry=registry,
+        enabled=True,
+        subagent_types={"general-purpose"},
+        namespace_owner=owner,
+        subagent_models=subagent_models,
     )
 
 
@@ -179,6 +191,24 @@ async def test_init_admitted_stamps_identity_and_finalizes_before_release():
     assert journal.index(("finalize", "run-uuid-9", "completed")) < journal.index(
         ("release", task.task_id)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "models", [{"general-purpose": {"id": "glm-5.3-cn", "provider": "z-ai-cn"}}, None]
+)
+async def test_admission_records_the_model_its_type_runs(models):
+    """The row is born with the model, so every reader, live or replayed,
+    gets the one value; a type on the main agent's model records none."""
+    ledger = FakeLedger(admit="run-uuid-9")
+    mw = _middleware(FakeOwner(), ledger, subagent_models=models)
+    mw.registry.write_task_meta = AsyncMock()
+
+    await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    expected = (models or {}).get("general-purpose")
+    assert ledger.started[0]["model"] == expected
 
 
 @pytest.mark.asyncio
@@ -258,6 +288,27 @@ async def test_abort_path_normalizes_error_type_spelling():
     (_run_id, status, failure) = ledger.finalized[0]
     assert status == "error"
     assert failure["error_type"] == "transport_lost"
+
+
+@pytest.mark.asyncio
+async def test_a_credit_stop_settles_cancelled_with_the_resume_query_spelling():
+    """The gate stop is terminal-neutral, not a failure, and the resume query
+    selects rows on exactly this pair. Were the status to drift back to
+    "error", ``list_credit_stopped_for_resume`` would match nothing and every
+    gate-stopped subagent would be stranded with no visible symptom."""
+    ledger = FakeLedger()
+    mw = _middleware(FakeOwner(), ledger)
+    mw.registry.write_task_meta = AsyncMock()
+
+    async def _stopped(_request):
+        raise CreditStopError("You have run out of credits.")
+
+    await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _stopped)
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    (_run_id, status, failure) = ledger.finalized[0]
+    assert status == "cancelled"  # not "error" — the resume query filters on it
+    assert failure["error_type"] == CREDIT_STOP_ERROR_TYPE
 
 
 @pytest.mark.asyncio
@@ -375,6 +426,35 @@ async def test_resume_rejected_before_reset_leaves_task_resumable():
 
 
 @pytest.mark.asyncio
+async def test_resume_of_a_type_off_the_roster_is_refused_before_admission():
+    """A subagent deleted, renamed or turned off since its task ran. Spawned,
+    the Task tool's refusal came after a reply saying the task resumed, and
+    after an admitted row and a reset that made it the task's latest run."""
+    owner = FakeOwner()
+    ledger = FakeLedger(admit="run-uuid-next")
+    mw = _middleware(owner, ledger)
+    mw.subagent_types = frozenset({"general-purpose"})
+    task = await _register_settled_task(mw)
+    task.subagent_type = "gone-desk"
+    mw._reset_task_for_resume = AsyncMock()
+
+    result = await mw.awrap_tool_call(
+        _request(
+            {"action": "resume", "task_id": task.task_id, "prompt": "more"},
+            tool_call_id="tc-2",
+        ),
+        _ok_handler,
+    )
+
+    assert result.status == "error"
+    assert result.content == _unknown_type_refusal(
+        "gone-desk", sorted(mw.subagent_types), resuming=True
+    )
+    assert ledger.started == [] and owner.acquired == []
+    mw._reset_task_for_resume.assert_not_awaited()
+    assert task.completed and task.task_run_id == "run-uuid-prev"
+
+@pytest.mark.asyncio
 async def test_resume_setup_failure_leaves_the_task_resumable_not_inert():
     """A resume that dies in setup must not go inert: its durable result is
     still in the ``task:{id}`` checkpoint, so the entry has to stay
@@ -385,7 +465,12 @@ async def test_resume_setup_failure_leaves_the_task_resumable_not_inert():
     mw = _middleware(owner, ledger)
     task = await _register_settled_task(mw)
     task.result_seen = False
-    mw._reset_task_for_resume = AsyncMock()
+
+    async def rebind_only(task, *, task_run_id, spawned_run_id):
+        task.task_run_id = task_run_id
+        task.spawned_run_id = spawned_run_id
+
+    mw._reset_task_for_resume = AsyncMock(side_effect=rebind_only)
     mw.registry.write_task_meta = AsyncMock(side_effect=RuntimeError("redis gone"))
 
     result = await mw.awrap_tool_call(
@@ -433,6 +518,123 @@ async def test_resume_admitted_restamps_identity_and_uses_task_description():
     assert ledger.finalized[-1][:2] == ("run-uuid-next", "completed")
 
 
+@pytest.mark.asyncio
+async def test_resume_bills_an_earlier_runs_round_before_its_own():
+    """A resume takes the usage an earlier run's collector owned but had not
+    billed, and bills it under that run and the ledger run that spent it
+    before the resumed round's writer exists. The task is reminted in the
+    same step, so the take never pairs that usage with the new run id."""
+    owner = FakeOwner()
+    ledger = FakeLedger(admit="run-uuid-next")
+    mw = _middleware(owner, ledger)
+    task = await _register_settled_task(mw)
+    mw.registry.write_task_meta = AsyncMock()
+    task.collector_response_id = "response-prior"
+    task.per_call_records = [{"round": 1}]
+    billed: list = []
+
+    async def bill(thread_id, take):
+        billed.append((thread_id, take, task.asyncio_task, task.task_run_id))
+
+    mw.registry.usage_biller = bill
+
+    await mw.awrap_tool_call(
+        _request(
+            {"action": "resume", "task_id": task.task_id, "prompt": "more"},
+            tool_call_id="tc-2",
+        ),
+        _ok_handler,
+    )
+    await task.asyncio_task
+
+    assert billed == [
+        (
+            mw.registry.thread_id,
+            UsageTake(task, [{"round": 1}], {}, "run-uuid-prev", "response-prior"),
+            None,
+            "run-uuid-next",
+        )
+    ]
+    assert task.collector_response_id is None
+
+
+# ---------------------------------------------------------------------------
+# resume for steers its last run never read: the hand-off
+# ---------------------------------------------------------------------------
+
+
+async def _steer_resume(mw, task, hand_off):
+    """Resume ``task`` the way SteeringMiddleware does for unread steers."""
+    from ptc_agent.agent.middleware.background_subagent.context import (
+        current_steer_resume,
+    )
+
+    token = current_steer_resume.set(
+        {"task_id": task.task_id, "delivered": {"count": 1}, "hand_off": hand_off}
+    )
+    try:
+        return await mw.awrap_tool_call(
+            _request(
+                {"action": "resume", "task_id": task.task_id, "prompt": "more"},
+                tool_call_id="tc-2",
+            ),
+            _ok_handler,
+        )
+    finally:
+        current_steer_resume.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_a_steer_resume_hands_its_steers_to_the_admitted_run_before_spawning():
+    owner = FakeOwner()
+    ledger = FakeLedger(admit="run-uuid-next")
+    mw = _middleware(owner, ledger)
+    task = await _register_settled_task(mw)
+    mw.registry.write_task_meta = AsyncMock()
+    handed: list = []
+
+    async def hand_off(task_run_id):
+        # The run is admitted and rebound, and no writer exists yet.
+        handed.append((task_run_id, task.task_run_id, task.asyncio_task))
+        return True
+
+    result = await _steer_resume(mw, task, hand_off)
+
+    assert "Resumed" in result.content
+    assert handed == [("run-uuid-next", "run-uuid-next", None)]
+    await task.asyncio_task
+    assert ledger.finalized[-1][:2] == ("run-uuid-next", "completed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", ["moved_nothing", "raised"])
+async def test_a_failed_hand_off_aborts_the_admitted_run_and_refuses(fails):
+    """The launching run still holds the steers, so the refusal gives them
+    back; the admitted run never spawns and terminates rather than strand
+    in_progress, and the task stays resumable."""
+    owner = FakeOwner()
+    ledger = FakeLedger(admit="run-uuid-next")
+    mw = _middleware(owner, ledger)
+    task = await _register_settled_task(mw)
+    mw.registry.write_task_meta = AsyncMock()
+
+    async def hand_off(task_run_id):
+        if fails == "raised":
+            raise RuntimeError("db down")
+        return False
+
+    result = await _steer_resume(mw, task, hand_off)
+
+    assert result.status == "error"
+    assert "could not resume" in result.content
+    assert task.asyncio_task is None
+    # Only the abort's terminal meta: the spawn never wrote "running".
+    assert "running" not in [c.args[1] for c in mw.registry.write_task_meta.await_args_list]
+    assert ledger.finalized[-1][:2] == ("run-uuid-next", "error")
+    assert task.terminal_status == "error"
+    assert not task.cancelled
+
+
 # ---------------------------------------------------------------------------
 # record stamping
 # ---------------------------------------------------------------------------
@@ -449,44 +651,44 @@ async def test_captured_records_carry_task_run_identity():
         asyncio_task=None,
     )
     task.task_run_id = "run-uuid-3"
-    registry._spill_record_to_redis = AsyncMock()
+    registry._spill_records_to_redis = AsyncMock()
 
     await registry.append_captured_event(
         "tc-1", {"event": "message_chunk", "data": {"content": "hi"}}
     )
 
-    record = registry._spill_record_to_redis.await_args.args[1]
+    (record,) = registry._spill_records_to_redis.await_args.args[1]
     assert record["task_run"] == "run-uuid-3"
 
 
 # ---------------------------------------------------------------------------
-# M6-A: run_end resequenced past the steering sweep (CAS -> sweep -> run_end)
+# M6-A: run_end resequenced past the returned steering (CAS -> returned -> run_end)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_run_end_appends_after_the_sweep(monkeypatch):
+async def test_run_end_appends_after_the_returned_steering(monkeypatch):
     """steering_returned frames must precede the terminal frame, and
-    nothing may follow run_end — so the wrapper defers it past the sweep."""
+    nothing may follow run_end, so the wrapper defers it past them."""
     journal: list = []
     ledger = FakeLedger(admit="run-uuid-9", journal=journal)
     mw = _middleware(FakeOwner(journal=journal), ledger)
     mw.registry.write_task_meta = AsyncMock()
 
-    async def _sweep(_registry, _task):
-        journal.append(("sweep",))
+    async def _returned(_registry, _task, _run_row):
+        journal.append(("returned",))
 
     from ptc_agent.agent.middleware.background_subagent import run_executor
 
-    monkeypatch.setattr(run_executor, "_return_unconsumed_steering", _sweep)
+    monkeypatch.setattr(run_executor, "_emit_returned_steering", _returned)
 
     await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _ok_handler)
     await mw.registry._tasks["tc-1"].asyncio_task
 
     assert journal.index(("finalize", "run-uuid-9", "completed")) < journal.index(
-        ("sweep",)
+        ("returned",)
     )
-    assert journal.index(("sweep",)) < journal.index(
+    assert journal.index(("returned",)) < journal.index(
         ("run_end", "run-uuid-9", "completed")
     )
 

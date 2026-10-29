@@ -1,6 +1,13 @@
 import React from 'react';
-import Editor, { DiffEditor } from '@monaco-editor/react';
+import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
+import { useTheme } from '@/contexts/ThemeContext';
+import { rememberMonaco, saveViewState } from './editorModels';
+
+// @monaco-editor/loader fetches Monaco from the CDN at a release it picks, which
+// the monaco-editor package, installed only for its types, never moved. Pinned
+// to the installed release, the editor that runs is the one the types describe.
+loader.config({ paths: { vs: `https://cdn.jsdelivr.net/npm/monaco-editor@${__MONACO_VERSION__}/min/vs` } });
 
 const EXT_TO_MONACO_LANG: Record<string, string> = {
   py: 'python', js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
@@ -15,13 +22,6 @@ function getLanguageFromFileName(fileName: string | undefined): string {
   return EXT_TO_MONACO_LANG[ext] || 'plaintext';
 }
 
-function getTheme(): string {
-  if (typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'light') {
-    return 'vs';
-  }
-  return 'vs-dark';
-}
-
 const EDITOR_OPTIONS: editor.IStandaloneEditorConstructionOptions = {
   minimap: { enabled: false },
   lineNumbers: 'on',
@@ -30,6 +30,18 @@ const EDITOR_OPTIONS: editor.IStandaloneEditorConstructionOptions = {
   fontSize: 12,
   automaticLayout: true,
   padding: { top: 8 },
+  // Monaco draws its own scrollbar, so the app's inset (styles/tokens.css) is
+  // set here: a 6px slider centred in a 12px lane, and 4px arrows, hidden in
+  // CSS, that Monaco's own math keeps the track clear of at both ends.
+  scrollbar: {
+    verticalScrollbarSize: 12,
+    horizontalScrollbarSize: 12,
+    verticalSliderSize: 6,
+    horizontalSliderSize: 6,
+    verticalHasArrows: true,
+    horizontalHasArrows: true,
+    arrowSize: 4,
+  },
 };
 
 interface TextSelection {
@@ -53,18 +65,43 @@ interface CodeEditorProps {
   diffMode?: boolean;
   originalValue?: string;
   editorRef?: React.MutableRefObject<editor.IStandaloneCodeEditor | null>;
+  /** The Monaco model to edit. Given, the model outlives this editor, so undo
+   * history and view state survive a remount, and the caller disposes it.
+   * The model is then the draft: `value` only seeds it, and a later change to
+   * `value` does not reach it. */
+  modelPath?: string;
   onUndoRedoChange?: (state: UndoRedoState) => void;
   onTextSelect?: (selection: TextSelection | null) => void;
 }
 
-export default function CodeEditor({ value, onChange, fileName, readOnly = false, height = '100%', diffMode = false, originalValue, editorRef, onUndoRedoChange, onTextSelect }: CodeEditorProps) {
+export default function CodeEditor({ value, onChange, fileName, readOnly = false, height = '100%', diffMode = false, originalValue, editorRef, modelPath, onUndoRedoChange, onTextSelect }: CodeEditorProps) {
   const language = getLanguageFromFileName(fileName);
-  const theme = getTheme();
+  const theme = useTheme().theme === 'light' ? 'vs' : 'vs-dark';
   const showDiff = diffMode && originalValue != null;
+  // A kept model is the draft itself, so `value` only seeds it. The library
+  // writes a changed `value` over the model in a passive effect, which lands
+  // after any keystroke Monaco took since the render that read it, so handing
+  // the draft back as it rendered rolled those keystrokes off. The diff overlay
+  // types into the same model, which is how its edits reach this editor.
+  const seedOnly = modelPath != null;
 
   // Track DiffEditor listener disposables to prevent "TextModel got disposed" race
   const diffDisposablesRef = React.useRef<{ dispose(): void }[]>([]);
   const diffDisposedRef = React.useRef(false);
+
+  // The instance goes with this mount; a ref left pointing at it would
+  // drive a disposed editor from the toolbar.
+  const mountedRef = React.useRef<editor.IStandaloneCodeEditor | null>(null);
+  React.useEffect(() => () => {
+    if (editorRef && editorRef.current === mountedRef.current) editorRef.current = null;
+  }, [editorRef]);
+
+  // A kept model's scroll and selection are filed with its session in
+  // editorModels. This is a layout cleanup because the library disposes the
+  // editor in a passive one, and the state has to be read before that.
+  React.useLayoutEffect(() => () => {
+    if (modelPath && mountedRef.current) saveViewState(mountedRef.current);
+  }, [modelPath]);
 
   React.useEffect(() => {
     if (showDiff) {
@@ -81,28 +118,32 @@ export default function CodeEditor({ value, onChange, fileName, readOnly = false
     <div style={{ position: 'relative', height, width: '100%' }}>
       {/* Always-mounted editor — preserves undo stack across diff toggles */}
       <div style={showDiff ? { position: 'absolute', inset: 0, visibility: 'hidden', pointerEvents: 'none' } : { height: '100%' }}>
+        {/* One instance per model: onMount reports the undo state of the model
+            it opens on, and a model swapped into a live instance would leave
+            the toolbar showing the last one's. */}
         <Editor
+          key={modelPath}
           height="100%"
           language={language}
           theme={theme}
-          value={value ?? ''}
+          defaultValue={value ?? ''}
+          value={seedOnly ? undefined : value ?? ''}
+          path={modelPath}
+          keepCurrentModel={seedOnly}
+          saveViewState={false}
+          beforeMount={rememberMonaco}
           onMount={(monacoEditor: editor.IStandaloneCodeEditor) => {
+            mountedRef.current = monacoEditor;
             if (editorRef) editorRef.current = monacoEditor;
-            let undoDepth = 0;
-            let redoDepth = 0;
-            onUndoRedoChange?.({ canUndo: false, canRedo: false });
-            monacoEditor.onDidChangeModelContent((e) => {
-              if (e.isUndoing) {
-                undoDepth--;
-                redoDepth++;
-              } else if (e.isRedoing) {
-                undoDepth++;
-                redoDepth--;
-              } else {
-                undoDepth++;
-                redoDepth = 0;
-              }
-              onUndoRedoChange?.({ canUndo: undoDepth > 0, canRedo: redoDepth > 0 });
+            // Read from the model, not counted from this mount: a kept model
+            // arrives with the history it had when its tab was left.
+            const reportUndoRedo = () => {
+              const model = monacoEditor.getModel();
+              onUndoRedoChange?.({ canUndo: !!model?.canUndo(), canRedo: !!model?.canRedo() });
+            };
+            reportUndoRedo();
+            monacoEditor.onDidChangeModelContent(() => {
+              reportUndoRedo();
               onChange?.(monacoEditor.getValue());
             });
             // Text selection callback for "Add to context"
@@ -135,7 +176,8 @@ export default function CodeEditor({ value, onChange, fileName, readOnly = false
           options={{ ...EDITOR_OPTIONS, readOnly }}
         />
       </div>
-      {/* Diff overlay — edits here flow back to the normal editor via onChange → value prop */}
+      {/* Diff overlay — edits here reach the normal editor through the shared
+          model, or without one through onChange → value prop */}
       {showDiff && (
         <div style={{ position: 'absolute', inset: 0 }}>
           <DiffEditor
@@ -143,7 +185,9 @@ export default function CodeEditor({ value, onChange, fileName, readOnly = false
             language={language}
             theme={theme}
             original={originalValue}
-            modified={value ?? ''}
+            modified={seedOnly ? undefined : value ?? ''}
+            modifiedModelPath={modelPath}
+            keepCurrentModifiedModel={seedOnly}
             onMount={(diffEditor: editor.IStandaloneDiffEditor) => {
               // Dispose any stale listeners from a previous mount
               diffDisposablesRef.current.forEach((d) => d.dispose());

@@ -32,10 +32,17 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib import import_module
 from typing import Dict, List, Optional, Protocol, Tuple
 from urllib.parse import urlparse
 
+from src.observability.langsmith_run import (
+    ERROR_CLASS,
+    ERROR_TEXT_MAX,
+    TOOL_PROVIDER,
+    record_child_run,
+)
 from src.tools.web.breaker import CircuitBreaker
 from src.tools.decorators import get_tool_tracker
 from src.tools.web.manifest import (
@@ -71,20 +78,57 @@ def _needs_inhouse(url: str) -> bool:
     return bool(host and _INHOUSE_URL_PATTERNS.search(host))
 
 
-def _attempt_outcome(provider: str, results: List[FetchResult]) -> FetchAttempt:
-    """Summarize one provider's attempt. All-failed reports the dominant error,
-    so a fallback records why it happened, not just that it did — preferring the
-    provider's own name for it, since the normalized type buckets a dead target
-    and a broken provider into the same ``provider_error``."""
+# Each provider attempt is its own LangSmith run, as each failed LLM attempt
+# is: the in-house fallback turns a failing primary into an ok tool run, so
+# only a run per attempt lets a per-provider alarm see the primary is down.
+_ATTEMPT_RUN = "web_provider_attempt"
+
+
+def _trace_attempt(
+    provider: str,
+    urls: List[str],
+    outcome: str,
+    started: Optional[datetime] = None,
+    error: Optional[str] = None,
+    error_class: Optional[str] = None,
+) -> None:
+    record_child_run(
+        _ATTEMPT_RUN,
+        start_time=started,
+        inputs={"urls": urls},
+        outputs={"outcome": outcome},
+        error=error[:ERROR_TEXT_MAX] if error else None,
+        metadata={
+            TOOL_PROVIDER: provider,
+            "capability": CAPABILITY_FETCH,
+            "attempt_outcome": outcome,
+            ERROR_CLASS: error_class,
+        },
+    )
+
+
+def _error_kind(error: WebError) -> str:
+    return error.native_kind or error.type.value
+
+
+def _attempt_outcome(
+    provider: str, results: List[FetchResult]
+) -> Tuple[FetchAttempt, Optional[WebError]]:
+    """Summarize one provider's attempt, with the dominant error when all failed.
+
+    The dominant error records why a fallback happened, not just that it did.
+    It is counted by the provider's own name for the failure, since the
+    normalized type buckets a dead target and a broken provider into the same
+    ``provider_error``.
+    """
     ok = sum(1 for r in results if r.ok)
     if ok == len(results):
-        return FetchAttempt(provider, "ok")
+        return FetchAttempt(provider, "ok"), None
     if ok:
-        return FetchAttempt(provider, "partial")
-    kinds = Counter(
-        (r.error.native_kind or r.error.type.value) for r in results if r.error
-    )
-    return FetchAttempt(provider, kinds.most_common(1)[0][0] if kinds else "failed")
+        return FetchAttempt(provider, "partial"), None
+    errors = [r.error for r in results if r.error]
+    top = Counter(_error_kind(e) for e in errors).most_common(1)[0][0]
+    return FetchAttempt(provider, top), next(e for e in errors if _error_kind(e) == top)
 
 
 class FetchAdapter(Protocol):
@@ -327,9 +371,18 @@ class FetchRouter:
             await entry.breaker.check_state()
             if entry.breaker.is_open():
                 logger.debug("fetch: skipping %s (breaker open)", entry.adapter.name)
+                _trace_attempt(
+                    entry.adapter.name,
+                    urls_now,
+                    WebErrorType.CIRCUIT_OPEN.value,
+                    error=f"{entry.adapter.name} skipped: circuit breaker open",
+                    error_class=WebErrorType.CIRCUIT_OPEN.value,
+                )
                 continue
+            started = datetime.now(timezone.utc)
             results = await self._attempt(entry, urls_now, req, anti_bot)
-            attempts.append(_attempt_outcome(entry.adapter.name, results))
+            attempt, dominant = _attempt_outcome(entry.adapter.name, results)
+            attempts.append(attempt)
 
             any_ok = False
             for result in results:
@@ -343,18 +396,27 @@ class FetchRouter:
                 else:
                     last_error[result.url] = result
 
+            provider_failure: Optional[str] = None
+            failure_class: Optional[str] = None
             if any_ok:
                 await entry.breaker.record_success()
-            elif results and all(
-                r.error and r.error.provider_fault for r in results
-            ):
-                # Whole attempt failed at the provider level — count against
-                # its breaker. Per-URL failures (timeouts, anti_bot, and
-                # target-side 429/5xx) don't: a down target site must not
-                # open the shared provider breaker.
-                await entry.breaker.record_failure(
-                    reason="; ".join(str(r.error) for r in results if r.error)
-                )
+            elif results and all(r.error and r.error.provider_side for r in results):
+                # Whole attempt failed at the provider level, so the attempt
+                # is an errored run. Per-URL failures (timeouts, anti_bot, and
+                # target-side 429/5xx) are not: a down target site must not
+                # read as a broken provider, nor open its shared breaker.
+                provider_failure = "; ".join(str(r.error) for r in results if r.error)
+                failure_class = dominant.type.value
+                if all(r.error and r.error.provider_fault for r in results):
+                    await entry.breaker.record_failure(reason=provider_failure)
+            _trace_attempt(
+                entry.adapter.name,
+                urls_now,
+                attempt.outcome,
+                started,
+                error=provider_failure,
+                error_class=failure_class,
+            )
 
             pending = [u for u in pending if u not in final]
             if not pending:
@@ -368,6 +430,8 @@ class FetchRouter:
                     error=WebError(
                         type=WebErrorType.CIRCUIT_OPEN,
                         message="No fetch provider available (keys unset or breakers open)",
+                        # Ours, not the page's: no provider could take it.
+                        provider_fault=True,
                     ),
                 ),
             )

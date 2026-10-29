@@ -1,7 +1,8 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Both the protocol client (fetchBarsSeries) and the legacy loader
-// (fetchStockData) go through the shared axios client — mock it once and route
+// (fetchStockData) go through the shared API client — mock it once and route
 // by URL. Supabase is imported at api.ts module scope.
 const apiMock = vi.hoisted(() => ({ get: vi.fn(), defaults: { baseURL: '' } }));
 vi.mock('@/api/client', () => ({ api: apiMock }));

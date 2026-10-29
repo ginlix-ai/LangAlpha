@@ -1,6 +1,6 @@
 [project]
 name = "langalpha-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "PTC Agent CLI - Interactive command-line interface for the PTC Agent"
 readme = "README.md"
 license = { text = "Apache-2.0" }

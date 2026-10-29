@@ -16,7 +16,6 @@ interface EconomicEventsConfig {
 function EconomicEventsWidget({ instance }: WidgetRenderProps<EconomicEventsConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="events"
       config={{
         importanceFilter: instance.config.importanceFilter,

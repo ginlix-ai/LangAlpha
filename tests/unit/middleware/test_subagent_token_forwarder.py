@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import AIMessageChunk
 
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
@@ -22,7 +23,7 @@ from ptc_agent.agent.middleware.background_subagent.token_forwarder import (
 
 def _chunk(content, msg_id="msg-1", reasoning_kw=None):
     """Build a fake message chunk with content and optional reasoning kwarg."""
-    chunk = MagicMock()
+    chunk = MagicMock(spec=AIMessageChunk)
     chunk.content = content
     chunk.id = msg_id
     chunk.additional_kwargs = {}
@@ -292,6 +293,30 @@ async def test_forward_error_appends_error_record():
 
 
 @pytest.mark.asyncio
+async def test_forward_error_uses_the_declared_spelling_not_the_class_name():
+    """A credit stop reaches the frontend as ``credit_stop``, never
+    ``CreditStopError``.
+
+    The regression: this frame was built with ``type(exc).__name__``, so the
+    wire carried the class name while the frontend matched the contract
+    spelling. Nothing failed - the stop just rendered as a failure, and the
+    "task stopped" copy was unreachable in every locale.
+    """
+    from ptc_agent.agent.middleware.credit_gate import CreditStopError
+    from src.server.contracts.status import CREDIT_STOP_ERROR_TYPE
+
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    await fw.forward_error(CreditStopError("out of credits"))
+
+    record = next(e for e in task._test_records if e["event"] == "error")
+    assert record["data"]["error_type"] == CREDIT_STOP_ERROR_TYPE
+    assert record["data"]["error_type"] != "CreditStopError"
+
+
+@pytest.mark.asyncio
 async def test_forward_error_absorbs_registry_failure():
     """If append_captured_event raises (degraded Redis), forward_error must
     not propagate — it is always called inside an existing exception flow
@@ -332,7 +357,7 @@ async def test_arun_subagent_streaming_emits_error_event_on_exception(monkeypatc
     registry = BackgroundTaskRegistry()
     task = await _register(registry, task_id_override="taskerr")
 
-    async def fake_astream(state, config, stream_mode=None):
+    async def fake_astream(state, config, stream_mode=None, durability=None):
         yield ("messages", (_chunk("partial"), {}))
         raise RuntimeError("model crashed mid-stream")
 
@@ -527,7 +552,7 @@ async def test_atask_pipeline_forwards_messages_chunks_to_registry(monkeypatch):
     registry = BackgroundTaskRegistry()
     task = await _register(registry, task_id_override="taskpipe")
 
-    async def fake_astream(state, config, stream_mode=None):
+    async def fake_astream(state, config, stream_mode=None, durability=None):
         # Three text-token chunks then a final values yield.
         yield ("messages", (_chunk("Hel"), {}))
         yield ("messages", (_chunk("lo"), {}))
@@ -683,6 +708,64 @@ async def test_forward_custom_drops_non_whitelisted_event_types() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forward_custom_sends_file_operation_as_path_only_artifact() -> None:
+    """A subagent's file write reaches the client only through its own stream,
+    so the forwarder sends it as an ``artifact`` the file panel acts on, with
+    the path but never the written content."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="fo1")
+    fwd = _SubagentTokenForwarder(registry, task.tool_call_id, "task:fo1")
+
+    await fwd.forward_custom(
+        {
+            "artifact_type": "file_operation",
+            "artifact_id": "call-1",
+            "agent": "ptc",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "status": "completed",
+            "payload": {
+                "operation": "Edit",
+                "file_path": "notes/a.md",
+                "sandbox_path": "/home/workspace/notes/a.md",
+                "line_count": 1,
+                "old_string": "a" * 10000,
+                "new_string": "b",
+                "type": "message_chunk",
+            },
+        }
+    )
+    await fwd.forward_custom(
+        {
+            "artifact_type": "file_operation",
+            "artifact_id": "call-2",
+            "status": "failed",
+            "payload": {"operation": "Write", "file_path": "x.md", "error": "denied"},
+        }
+    )
+
+    first, second = task._test_records
+    assert first["event"] == "artifact"
+    assert first["data"] == {
+        "artifact_type": "file_operation",
+        "artifact_id": "call-1",
+        "agent": "task:fo1",
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "status": "completed",
+        "payload": {
+            "operation": "Edit",
+            "file_path": "notes/a.md",
+            "sandbox_path": "/home/workspace/notes/a.md",
+        },
+    }
+    assert second["data"]["status"] == "failed"
+    assert second["data"]["payload"] == {
+        "operation": "Write",
+        "file_path": "x.md",
+        "error": "denied",
+    }
+
+
+@pytest.mark.asyncio
 async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
     """End-to-end: when the subagent emits a ``custom``-mode payload, the
     Task-tool driver routes it through ``forward_custom`` so the per-task
@@ -701,7 +784,7 @@ async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
     registry = BackgroundTaskRegistry()
     task = await _register(registry, task_id_override="custompipe")
 
-    async def fake_astream(state, config, stream_mode=None):
+    async def fake_astream(state, config, stream_mode=None, durability=None):
         # The driver must subscribe to ``custom`` for this to surface.
         assert "custom" in (stream_mode or [])
         yield (
@@ -752,3 +835,75 @@ async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
     assert data["agent"] == "task:custompipe"
     assert data["action"] == "token_usage"
     assert data["total_tokens"] == 60
+
+
+@pytest.mark.asyncio
+async def test_whitespace_reasoning_deltas_round_trip():
+    """DeepSeek streams the space before a number as its own thinking token
+    (``" "`` then ``"9"``). The forwarded reasoning must keep those spaces,
+    and whitespace alone must not open a reasoning section. Mirrors
+    RunSSEProducer's main-agent path."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    def thinking(text):
+        return _chunk([{"type": "thinking", "thinking": text, "index": 0}])
+
+    for delta in [" ", "Oct", " ", "9", ",", " ", "202", "6"]:
+        await fw.forward(thinking(delta))
+    await fw.forward(_chunk("done"))
+    await fw.finalize()
+
+    timeline = [
+        (e["data"].get("content_type"), e["data"].get("content"))
+        for e in task._test_records
+        if e["event"] == "message_chunk"
+    ]
+    assert timeline[0] == ("reasoning_signal", "start")
+    reasoning = "".join(c for t, c in timeline if t == "reasoning")
+    assert reasoning == " Oct 9, 2026"
+
+
+@pytest.mark.asyncio
+async def test_whitespace_alone_does_not_open_reasoning():
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    await fw.forward(_chunk([{"type": "thinking", "thinking": " ", "index": 0}]))
+    await fw.forward(_chunk("done"))
+    await fw.finalize()
+
+    timeline = [
+        (e["data"].get("content_type"), e["data"].get("content"))
+        for e in task._test_records
+        if e["event"] == "message_chunk"
+    ]
+    assert timeline == [("text", "done")]
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_call_answer_is_not_subagent_prose():
+    """langchain answers a malformed tool call from the model node, so its
+    error ToolMessage and the RemoveMessage beside it stream as ``model``."""
+    from langchain_core.messages import RemoveMessage, ToolMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    model = {"langgraph_node": "model"}
+    await fw.forward(RemoveMessage(id=REMOVE_ALL_MESSAGES), model)
+    await fw.forward(
+        ToolMessage(
+            "Tool call web_search with id call_bad could not be executed",
+            tool_call_id="call_bad",
+            status="error",
+        ),
+        model,
+    )
+    await fw.finalize()
+
+    assert not [r for r in task._test_records if r["event"] == "message_chunk"]

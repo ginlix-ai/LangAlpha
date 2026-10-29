@@ -6,9 +6,16 @@ from src.observability import stamp_run
 
 
 class _FakeRun:
+    """Holds metadata under ``extra`` as RunTree does, so a stamp that swaps
+    the dict is read back the same way."""
+
     def __init__(self, tags=None):
-        self.metadata = {}
+        self.extra = {}
         self.tags = tags
+
+    @property
+    def metadata(self):
+        return self.extra.setdefault("metadata", {})
 
 
 @pytest.fixture

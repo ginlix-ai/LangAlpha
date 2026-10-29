@@ -128,6 +128,27 @@ describe('InlineWidget — hover action bar + fullscreen', () => {
     expect(frame.getAttribute('srcdoc')).toContain('overflow: auto; height: 100%;');
   });
 
+  // The srcDoc bakes the theme in at build time and is built once, when the
+  // widget mounts inline; the dialog makes a fresh document from that same
+  // string on every open. A theme the user changed in between reaches the
+  // inline frame through useHtmlSandbox's observer, but this frame did not
+  // exist to be pushed to, so without a push on load it opens wearing the
+  // theme the thread was first rendered in.
+  it('pushes the live theme into the fullscreen document when it loads', () => {
+    render(<InlineWidget html="<div>hi</div>" title="My widget" />);
+    fireEvent.click(screen.getByLabelText('filePanel.fullscreen'));
+    const frame = document.querySelector('iframe.html-fullscreen-frame') as HTMLIFrameElement;
+    const postMessage = vi.fn();
+    Object.defineProperty(frame, 'contentWindow', { value: { postMessage }, configurable: true });
+    fireEvent.load(frame);
+    // '*' and not a real origin: the frame is sandboxed without
+    // allow-same-origin, so it has no origin that can be named.
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'widget:themeUpdate' }),
+      '*',
+    );
+  });
+
   it('opens a blob tab when open-in-new-tab is clicked', () => {
     render(<InlineWidget html="<div>hi</div>" />);
     fireEvent.click(screen.getByLabelText('filePanel.openInNewTab'));

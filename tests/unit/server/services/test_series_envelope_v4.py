@@ -39,7 +39,7 @@ _FROZEN_ET_NOON = datetime(2026, 7, 1, 12, 0, tzinfo=_ET)  # Wed, regular sessio
 
 
 class _FrozenDatetime:
-    """Minimal datetime shim so market_hours' ``datetime.now(ET)`` returns a
+    """Minimal datetime shim so the clocks' ``datetime.now(tz)`` returns a
     fixed instant under monkeypatch (mirrors test_ohlcv_envelope_staleness)."""
 
     def __init__(self, now: datetime):
@@ -244,7 +244,7 @@ class _Provider:
         self.from_calls: list[str] = []
         self.fail_pinned = False
 
-    def source_names_for(self, symbol, capability=None):
+    def source_names_for(self, symbol, capability=None, **_kw):
         return list(self.source_names)
 
     async def get_daily_with_source(self, symbol, from_date, to_date, is_index, user_id):
@@ -278,16 +278,17 @@ def daily_svc(monkeypatch):
 @pytest.mark.asyncio
 async def test_legacy_v3_key_is_adopted_on_read(daily_svc, monkeypatch):
     svc, provider, cache = daily_svc
-    from src.server.services.cache._instrument_clock import UsClock
+    from src.data_client.instrument_clock import clock_for
 
     # Freeze the clock so the envelope built "fresh" here is still fresh when
     # get_stock_daily re-checks staleness — otherwise a trading-date (04:00 ET)
     # or market-open (09:30 ET) rollover between the two reads flips the result.
-    monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(_FROZEN_ET_NOON))
+    for module in ("src.utils.market_hours", "src.data_client.instrument_clock"):
+        monkeypatch.setattr(f"{module}.datetime", _FrozenDatetime(_FROZEN_ET_NOON))
 
     # Warm pre-cutover cache: v3 under the legacy fmp-segmented key, genuinely
     # fresh so no staleness path interferes with the adoption assertion.
-    cache.store["ohlcv:fmp:stock:AAPL:1day"] = _fresh_v3(UsClock(), 15.0)
+    cache.store["ohlcv:fmp:stock:AAPL:1day"] = _fresh_v3(clock_for(None), 15.0)
 
     result = await svc.get_stock_daily("AAPL")
 
@@ -304,13 +305,13 @@ async def test_adoption_prefers_capability_ordered_source(monkeypatch):
     """Dual-read adopts from the capability-preferred publisher, not config order:
     the daily service threads capability 'daily' and follows that ordering."""
     from src.server.services.cache import daily_cache_service as dcs
-    from src.server.services.cache._instrument_clock import UsClock
+    from src.data_client.instrument_clock import clock_for
 
     class _CapProvider:
         def __init__(self):
             self.capabilities: list = []
 
-        def source_names_for(self, symbol, capability=None):
+        def source_names_for(self, symbol, capability=None, **_kw):
             self.capabilities.append(capability)
             # Daily prefers fmp; every other capability prefers yfinance.
             return ["fmp", "yfinance"] if capability == "daily" else ["yfinance", "fmp"]
@@ -324,10 +325,11 @@ async def test_adoption_prefers_capability_ordered_source(monkeypatch):
 
     monkeypatch.setattr(dcs, "get_market_data_provider", _get_provider)
     monkeypatch.setattr(dcs, "get_cache_client", lambda: cache)
-    monkeypatch.setattr("src.utils.market_hours.datetime", _FrozenDatetime(_FROZEN_ET_NOON))
+    for module in ("src.utils.market_hours", "src.data_client.instrument_clock"):
+        monkeypatch.setattr(f"{module}.datetime", _FrozenDatetime(_FROZEN_ET_NOON))
     try:
         svc = DailyCacheService.get_instance()
-        clock = UsClock()
+        clock = clock_for(None)
         # Both legacy source keys are warm and fresh with distinct closes; the
         # daily-preferred source (fmp) must win the adoption, not config order.
         cache.store["ohlcv:fmp:stock:AAPL:1day"] = _fresh_v3(clock, 15.0)
@@ -359,6 +361,7 @@ async def test_miss_writes_v4_and_pin(daily_svc):
 @pytest.mark.asyncio
 async def test_pinned_publisher_serves_next_miss(daily_svc):
     svc, provider, cache = daily_svc
+    provider.source_names = ["yfinance", "fmp"]  # the pin heads the chain
     cache.store["pin:AAPL.XNAS:ohlcv-1d"] = {"publisher": "yfinance"}
 
     result = await svc.get_stock_daily("AAPL")
@@ -371,6 +374,7 @@ async def test_pinned_publisher_serves_next_miss(daily_svc):
 @pytest.mark.asyncio
 async def test_pinned_failure_falls_back_and_repins(daily_svc):
     svc, provider, cache = daily_svc
+    provider.source_names = ["yfinance", "fmp"]  # the pin heads the chain
     cache.store["pin:AAPL.XNAS:ohlcv-1d"] = {"publisher": "yfinance"}
     provider.fail_pinned = True
 
@@ -386,6 +390,7 @@ async def test_pinned_failure_falls_back_and_repins(daily_svc):
 @pytest.mark.asyncio
 async def test_delta_refresh_uses_series_publisher(daily_svc):
     svc, provider, cache = daily_svc
+    provider.source_names = ["yfinance", "fmp"]  # the series' publisher heads the chain
     import time as _t
     key = "ohlcv:AAPL.XNAS:ohlcv-1d"
     cache.store[key] = _build_envelope(
@@ -404,6 +409,7 @@ async def test_delta_refresh_uses_series_publisher(daily_svc):
 @pytest.mark.asyncio
 async def test_delta_discontinuity_triggers_full_refetch_and_revision_bump(daily_svc):
     svc, provider, cache = daily_svc
+    provider.source_names = ["yfinance", "fmp"]  # the series' publisher heads the chain
     import time as _t
     key = "ohlcv:AAPL.XNAS:ohlcv-1d"
     # Cached final bar at close=10; the stub's single-source fetch returns

@@ -1,9 +1,18 @@
 """Utility helpers for background subagent middleware."""
 
-import json
+import logging
 from collections.abc import Awaitable, Callable
 
-MessageChecker = Callable[[], Awaitable[bool]]
+from ptc_agent.agent.transcript.classify import MARKET_ALERT_SENDER, WAKEUP_SENDER
+
+logger = logging.getLogger(__name__)
+
+#: Who sent the steers waiting, empty when none: truthy is "wake up".
+MessageChecker = Callable[[], Awaitable[list[str]]]
+
+#: The outbox hook type each notice nobody sent waits as, by the sender a
+#: checker names it with.
+_ALERT_HOOK_TYPES = {MARKET_ALERT_SENDER: "market_target", WAKEUP_SENDER: "wakeup"}
 
 
 def config_own_run_id(config: dict | None) -> str | None:
@@ -13,43 +22,45 @@ def config_own_run_id(config: dict | None) -> str | None:
 
 
 async def build_message_checker(
-    thread_id: str | None, own_run_id: str | None = None
+    thread_id: str | None,
+    own_run_id: str | None = None,
+    *,
+    alert_senders: frozenset[str] = frozenset(),
 ) -> MessageChecker | None:
-    """Return an async closure that peeks at the Redis key for pending steering messages.
+    """An async closure: who sent the steers waiting that this run would take
+    in, empty when none.
 
-    Peeks without consuming. A payload stamped with a FOREIGN run_id is not
-    counted (v4 2.4c): SteeringMiddleware will never deliver it to this run,
-    so waking a wait or re-invoking the agent for it would chase a message
-    that cannot arrive. Returns ``None`` when Redis is unavailable or
-    *thread_id* is falsy, so callers can skip the check.
+    Mirrors what SteeringMiddleware takes (``pending_steer_senders`` shares its
+    predicate): counting a steer this run cannot take would wake a wait or
+    re-invoke the agent for a message that never arrives. A failed read
+    counts as nothing waiting. None without a thread, so callers skip it.
+    For a run whose steering takes reports in, a notice of a sender in
+    ``alert_senders`` waiting with no steer counts as that sender: a market
+    target's alert held until the tasks finish could arrive after the price
+    moved on, and the agent set a wakeup to act on when it fires, not after
+    its tasks end.
     """
     if not thread_id:
         return None
 
-    from src.utils.cache.redis_cache import get_cache_client
+    async def checker() -> list[str]:
+        from src.server.database.runs import outbox as outbox_db
 
-    cache = get_cache_client()
-    if not cache.enabled or not cache.client:
-        return None
-
-    key = f"workflow:steering:{thread_id}"
-
-    async def checker() -> bool:
-        raws = await cache.client.lrange(key, 0, -1)
-        for raw in raws:
-            try:
-                data = json.loads(
-                    raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                )
-            except (ValueError, UnicodeDecodeError):
-                continue
-            if (
-                isinstance(data, dict)
-                and own_run_id
-                and data.get("run_id") not in (None, own_run_id)
-            ):
-                continue
-            return True
-        return False
+        try:
+            senders = await outbox_db.pending_steer_senders(thread_id, own_run_id)
+            asked = {
+                sender: hook_type
+                for sender, hook_type in _ALERT_HOOK_TYPES.items()
+                if sender in alert_senders
+            }
+            if senders or not asked:
+                return senders
+            waiting = await outbox_db.steerable_alert_senders(thread_id, asked)
+            return [sender for sender in asked if sender in waiting]
+        except Exception:
+            logger.warning(
+                f"[Steering] Checking {thread_id} for steers failed", exc_info=True
+            )
+            return []
 
     return checker

@@ -2,7 +2,7 @@
  * Thread ID localStorage management utilities
  * Provides functions for persisting thread IDs per workspace
  */
-import { safeLocalStorage } from '@/lib/utils';
+import { userLocalStorage } from '@/lib/userStorage';
 
 /**
  * Storage key prefix for thread IDs
@@ -14,7 +14,7 @@ const THREAD_ID_STORAGE_PREFIX = 'workspace_thread_id_';
  */
 export function getStoredThreadId(workspaceId: string): string {
   if (!workspaceId) return '__default__';
-  const stored = safeLocalStorage.getItem(`${THREAD_ID_STORAGE_PREFIX}${workspaceId}`);
+  const stored = userLocalStorage.getItem(`${THREAD_ID_STORAGE_PREFIX}${workspaceId}`);
   return stored || '__default__';
 }
 
@@ -23,7 +23,7 @@ export function getStoredThreadId(workspaceId: string): string {
  */
 export function setStoredThreadId(workspaceId: string, threadId: string): void {
   if (!workspaceId || !threadId || threadId === '__default__') return;
-  safeLocalStorage.setItem(`${THREAD_ID_STORAGE_PREFIX}${workspaceId}`, threadId);
+  userLocalStorage.setItem(`${THREAD_ID_STORAGE_PREFIX}${workspaceId}`, threadId);
 }
 
 /**
@@ -32,6 +32,6 @@ export function setStoredThreadId(workspaceId: string, threadId: string): void {
  */
 export function removeStoredThreadId(workspaceId: string): void {
   if (!workspaceId) return;
-  safeLocalStorage.removeItem(`${THREAD_ID_STORAGE_PREFIX}${workspaceId}`);
+  userLocalStorage.removeItem(`${THREAD_ID_STORAGE_PREFIX}${workspaceId}`);
 }
 

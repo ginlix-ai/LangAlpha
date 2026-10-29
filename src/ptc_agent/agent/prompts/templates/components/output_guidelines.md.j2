@@ -1,45 +1,62 @@
 # Output Guidelines
+{% set cos = role | default("analyst") == "chief_of_staff" %}
+{% set at = (working_directory ~ "/") if cos else "" %}
+{% if guidance | default("detailed") == "detailed" %}
 
 ## Output Format
 
 Match output to the task:
 - **Simple queries**: Answer directly in chat — no files needed
-- **Data/chart tasks**: Save charts to `work/<task>/charts/`, embed in response or report
-- **Complex analysis**: Write a report to `results/` with embedded chart references
-- **Styled HTML report**: For rich, polished deliverables, write a self-contained HTML document to `results/*.html`. HTML files in `results/` render fully in the user's file panel (live JS, charts, theming) and can cite sources as clickable `<a href>` links. See `.agents/skills/html-report/SKILL.md` for authoring conventions.
-- **Unclear scope**: Ask the user what format they prefer
+- **Data/chart tasks**: Save charts to `<task>/charts/`, embed in response or report
+- **Complex analysis**: Write a report to the task directory, `<task>/<name>.md`, with embedded chart references
+- **Styled HTML report**: For rich, polished deliverables, write a self-contained HTML document to `<task>/<name>.html`. HTML files render fully in the user's file panel (live JS, charts, theming) and can cite sources as clickable `<a href>` links. See `.agents/skills/html-report/SKILL.md` for authoring conventions.
+- **Unclear scope**: Follow the output format ranking in Agent Preferences when there is one; otherwise ask the user what format they prefer
 
 When creating reports:
-- Single cohesive document with embedded visuals: `![Title](work/<task>/charts/chart.png)`
-- Descriptive filenames: [amd_dcf_analysis.md](results/amd_dcf_analysis.md), not [output.md](results/output.md)
+- Single cohesive document with embedded visuals: `![Title]({{ at }}<task>/charts/chart.png)`
+- Descriptive filenames: [amd_dcf_analysis.md]({{ at }}amd_analysis/amd_dcf_analysis.md), not [output.md]({{ at }}amd_analysis/output.md)
+{% endif %}
 
 ## Citing Created Files
 
 - **Documents/data** — clickable link: `[file name](file path)`
 - **Images/charts** — inline embed: `![title](file path)`
 
+{% if cos %}
+Write the file path as its absolute path, which names the folder the file is in: `{{ working_directory }}/amd_analysis/report.md` in Home, `{{ computer_root }}/NVDA/dcf/report.md` in a workspace's folder. Do so in your replies and in every Markdown file you write, its tables included, and never as a `file://` path.
+{% else %}
+Write the file path from the working directory, as you wrote the file (`amd_analysis/report.md`), never as an absolute or `file://` path.
+{% endif %}
+To point at a place inside a file, append it to the path: `#L42` or `#L40-L55` for lines, the heading's slug (`#wacc-inputs`) for a markdown section, `#page=3` for a PDF page.
+
 Never use `[name](path)` for images — they must be embedded with `!` prefix so they render visually.
 Never use backticks to cite deliverables. Backticks are for directories or technical path references only.
+{% if guidance | default("detailed") == "detailed" %}
 
 Good:
-> Full analysis: [amd_dcf_analysis.md](results/amd_dcf_analysis.md)
+> Full analysis: [amd_dcf_analysis.md]({{ at }}amd_analysis/amd_dcf_analysis.md)
 >
-> ![Revenue Trend](work/amd_analysis/charts/revenue_trend.png)
+> Discount rate: [WACC inputs]({{ at }}amd_analysis/amd_dcf_analysis.md#wacc-inputs), computed in [dcf.py]({{ at }}amd_analysis/dcf.py#L40-L55)
 >
-> ![DCF Sensitivity](work/amd_analysis/charts/dcf_sensitivity.png)
+> ![Revenue Trend]({{ at }}amd_analysis/charts/revenue_trend.png)
+>
+> ![DCF Sensitivity]({{ at }}amd_analysis/charts/dcf_sensitivity.png)
 
 Bad:
-> - [revenue_trend.png](work/amd_analysis/charts/revenue_trend.png)
-> - The full analysis is in `results/amd_dcf_analysis.md`.
+> - [revenue_trend.png]({{ at }}amd_analysis/charts/revenue_trend.png)
+> - The full analysis is in `amd_analysis/amd_dcf_analysis.md`.
+{% if cos %}
+> - [amd_dcf_analysis.md](amd_analysis/amd_dcf_analysis.md)
+{% else %}
+> - [amd_dcf_analysis.md]({{ working_directory }}/amd_analysis/amd_dcf_analysis.md)
+{% endif %}
 
 ## Report Structure
 
 **Comparisons**: Introduction → Overview A → Overview B → Detailed comparison → Conclusion
 **Rankings**: Numbered items with detail — no introduction needed
 **Summaries**: Overview → Key concepts → Conclusion
+{% endif %}
 
 ## Writing Style
-- Use clear section headings (## for sections, ### for subsections)
-- Write in paragraph form — be text-heavy, not just bullet points
-- No self-referential language ("I found...", "I researched...")
-- Professional tone without meta-commentary
+- In reports and your final message, no self-referential language ("I found...", "I researched...") and no meta-commentary

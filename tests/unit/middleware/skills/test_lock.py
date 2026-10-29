@@ -6,6 +6,7 @@ import json
 from ptc_agent.agent.middleware.skills.discovery import SkillMetadata
 from ptc_agent.agent.middleware.skills.lock import (
     LOCK_FILE_VERSION,
+    MANAGED_SOURCE_TYPE,
     build_lock_entry,
     lock_entry_to_skill_metadata,
     merge_lock_files,
@@ -321,6 +322,42 @@ class TestMergeLockFiles:
     def test_merge_both_empty(self):
         result = merge_lock_files({}, None)
         assert result == {"version": LOCK_FILE_VERSION, "skills": {}}
+
+    def test_merge_purges_managed_user_entry_whose_row_is_gone(self):
+        """Server-managed user skills are authoritative, not agent content: a
+        name missing from the authoritative set means the row was deleted or
+        disabled, and the sandbox copy must follow."""
+        managed = _make_lock_entry(
+            "managed-skill", owner="user", sourceType=MANAGED_SOURCE_TYPE
+        )
+        agent_installed = _make_lock_entry(
+            "agent-skill", owner="user", sourceType="agent"
+        )
+        existing = {"managed-skill": managed, "agent-skill": agent_installed}
+
+        result = merge_lock_files({}, existing)
+
+        assert "managed-skill" not in result["skills"]
+        assert "agent-skill" in result["skills"]
+
+    def test_merge_preserves_linked_entry_absent_from_authoritative(self):
+        """A linked entry is server-managed by source type but reconciler-owned
+        in fact; the delivery view deliberately never lists it, so purging on
+        absence would delete a two-way synced workspace skill every pass."""
+        linked = _make_lock_entry(
+            "ws-skill",
+            owner="user",
+            sourceType=MANAGED_SOURCE_TYPE,
+            sync={
+                "linkedSkillId": "sk-1",
+                "syncedTreeHash": "tree-1",
+                "syncedDbHash": "db-1",
+            },
+        )
+
+        result = merge_lock_files({}, {"ws-skill": linked})
+
+        assert result["skills"]["ws-skill"]["sync"]["linkedSkillId"] == "sk-1"
 
 
 # ---------------------------------------------------------------------------

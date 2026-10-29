@@ -1,0 +1,381 @@
+/* The Plugins page shell: a rail of sections beside one scrolling content
+   column. The scroll port is the column rather than the root, so the desktop
+   shell's drag strip can sit above both and stay put while the page scrolls,
+   and the rail keeps its place. Off the shell the strip collapses to nothing. */
+.plugins-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-page);
+}
+
+.plugins-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ---------- Rail ---------- */
+.plugins-rail {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px 16px;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border-subtle);
+  scrollbar-width: thin;
+}
+
+.plugins-rail-label {
+  margin: 18px 8px 4px;
+  font-size: 0.71875rem;
+  font-weight: 500;
+  color: var(--color-text-quaternary);
+}
+.plugins-rail > .plugins-rail-label:first-child { margin-top: 6px; }
+
+.plugins-rail-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.plugins-rail-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
+.plugins-rail-link.is-active { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.plugins-rail-link:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+
+.plugins-rail-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
+.plugins-rail-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plugins-rail-link .surface-dot { margin-left: auto; }
+.plugins-rail-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-quaternary);
+}
+.plugins-rail-link .surface-dot + .sr-only + .plugins-rail-count,
+.plugins-rail-link .surface-dot + .plugins-rail-count { margin-left: 8px; }
+
+/* A switched-off plugin reads as one: its mark dims and its name quiets. */
+.plugins-rail-link.is-off .plugins-rail-mark { opacity: 0.45; }
+.plugins-rail-link.is-off:not(.is-active) .plugins-rail-name { color: var(--color-text-quaternary); }
+
+.plugins-rail-fold { margin-top: 2px; width: 100%; }
+.plugins-rail-chevron {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--color-text-quaternary);
+}
+.plugins-rail-chevron svg { transition: transform var(--motion-quick) var(--ease-out); }
+
+/* ---------- Content column ---------- */
+.plugins-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  /* A section short enough to need no scrollbar must not sit 4px to the
+     right of one that does; the gutter is reserved either way. */
+  scrollbar-gutter: stable;
+}
+
+.plugins-column {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--page-top) 40px 64px;
+}
+
+.plugins-content {
+  min-height: 0;
+  /* `backwards`, not `both`: a fill that outlives the fade keeps an opacity
+     animation applied, which makes this a stacking context for good, and the
+     dialogs render inside it (ModalShell does not portal), so on a phone the
+     fixed tab bar painted over every one of them, buttons included. */
+  animation: plugins-section-in var(--motion-quick) var(--ease-out) backwards;
+}
+@keyframes plugins-section-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plugins-content { animation: none; }
+}
+
+/* ---------- Page header ---------- */
+.plugins-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 30px;
+}
+.plugins-head-text { flex: 1 1 auto; min-width: 0; }
+.plugins-head-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.plugins-head-title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 30px;
+  letter-spacing: -0.015em;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+/* What the section holds, once, under its name. */
+.plugins-head-def {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  line-height: 18px;
+  color: var(--color-text-secondary);
+}
+/* One line: the counts hold their width and the named problems give way, so
+   a long list of them ends in an ellipsis rather than a second line. */
+.plugins-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  min-height: 18px;
+  margin: 4px 0 0;
+  font-size: 0.78125rem;
+  line-height: 18px;
+  color: var(--color-text-tertiary);
+}
+.plugins-summary > * { flex-shrink: 0; }
+.plugins-summary b {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+.plugins-summary-sep { color: var(--color-text-quaternary); }
+.plugins-summary .surface-dot { margin-left: 2px; margin-right: -2px; }
+.plugins-summary-name { white-space: nowrap; }
+.plugins-summary-quiet { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.plugins-summary-quiet b { color: var(--color-text-primary); }
+.plugins-summary-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.plugins-summary-link:hover { color: var(--color-text-primary); }
+
+.plugins-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 1px;
+  flex-shrink: 0;
+}
+/* Search and Add sit level with the title only, so the lines under it run
+   the full width: a section line that ends in a link (Subagents' "set in
+   Settings") was cut off short of the empty space beneath the actions. */
+@media (min-width: 768px) {
+  .plugins-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 16px; }
+  .plugins-head-text { display: contents; }
+  .plugins-head-row { grid-column: 1; grid-row: 1; }
+  .plugins-head-actions { grid-column: 2; grid-row: 1; align-self: start; }
+  .plugins-head-text > :not(.plugins-head-row) { grid-column: 1 / -1; }
+}
+.plugins-head-add {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  border-radius: 8px;
+}
+/* An Add item with a second line saying where it starts. The icon sits level
+   with the first line rather than between the two. */
+.plugins-add-item { align-items: flex-start; }
+.plugins-add-item > svg { margin-top: 2px; }
+.plugins-add-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.plugins-add-hint { font-size: 0.6875rem; color: var(--color-text-tertiary); }
+
+/* Yours / Discover */
+.plugins-view {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-subtle);
+}
+.plugins-view button {
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.78125rem;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.plugins-view button:hover { color: var(--color-text-primary); }
+.plugins-view button[aria-pressed='true'] {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+.plugins-view button:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+
+/* Search */
+.plugins-search { position: relative; display: flex; align-items: center; }
+.plugins-search-icon {
+  position: absolute;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-quaternary);
+  pointer-events: none;
+}
+.plugins-search input {
+  width: 240px;
+  height: 30px;
+  padding: 0 28px 0 30px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.78125rem;
+  outline: none;
+}
+.plugins-search input::placeholder { color: var(--color-text-quaternary); }
+.plugins-search input::-webkit-search-cancel-button { display: none; }
+.plugins-search input:focus-visible {
+  border-color: var(--color-border-elevated);
+  box-shadow: 0 0 0 1px var(--color-focus-ring);
+}
+.plugins-search-clear {
+  position: absolute;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-quaternary);
+  cursor: pointer;
+}
+.plugins-search-clear:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+@media (max-width: 1199px) {
+  .plugins-column { padding-left: 28px; padding-right: 28px; }
+  .plugins-search input { width: 200px; }
+}
+
+/* ---------- Phone: the rail becomes a row of pills over the content ---------- */
+@media (max-width: 767px) {
+  .plugins-body { flex-direction: column; }
+  .plugins-rail {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+    scrollbar-width: none;
+    /* The current pill, scrolled into view, keeps the gutter beside it
+       rather than landing flush on the screen's edge. */
+    scroll-padding-inline: 16px;
+  }
+  .plugins-rail::-webkit-scrollbar { display: none; }
+  .plugins-rail-label,
+  .plugins-rail-plugins,
+  .plugins-rail-icon { display: none; }
+  .plugins-rail-link {
+    flex-shrink: 0;
+    gap: 6px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border-muted);
+    border-radius: 15px;
+  }
+  .plugins-rail-link.is-active {
+    background: var(--color-bg-elevated);
+    border-color: var(--color-border-default);
+  }
+  .plugins-rail-name { overflow: visible; }
+  .plugins-rail-count,
+  .plugins-rail-link .surface-dot { margin-left: 0; }
+  .plugins-rail-link .surface-dot + .sr-only + .plugins-rail-count,
+  .plugins-rail-link .surface-dot + .plugins-rail-count { margin-left: 0; }
+
+  .plugins-column { padding: 16px 16px 48px; }
+  .plugins-head { flex-wrap: wrap; gap: 12px; margin-bottom: 22px; }
+  .plugins-head-text { flex: 1 1 100%; }
+  /* Text that wraps as a sentence, so a long list of problems flows onto
+     the next line instead of leaving its dot behind on this one. */
+  .plugins-summary { display: block; white-space: normal; }
+  .plugins-summary > * { display: inline; }
+  .plugins-summary-sep { margin: 0 6px; }
+  .plugins-summary .surface-dot { display: inline-block; vertical-align: 1px; margin: 0 6px 0 0; }
+  /* The sentence wraps between words, never inside a plugin's name; a name
+     longer than the line ends in an ellipsis. */
+  .plugins-summary-name {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+  }
+  .plugins-head-actions { margin-left: 0; flex: 1 1 100%; }
+  .plugins-search { flex: 1; }
+  .plugins-search input { width: 100%; }
+}
+
+/* ---------- Section furniture ---------- */
+.plugins-load-note {
+  margin: -14px 0 22px;
+  font-size: 0.75rem;
+}
+
+/* Brokerages: the brokers grouped by what they need, beside the trading
+   permission and how a connection works. */
+.brokerages .surface-grid + * { margin-top: 16px; }
+.trading-level {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+.trading-level svg { flex-shrink: 0; width: 14px; height: 14px; color: var(--color-text-tertiary); }
+.trading-level.is-warning svg { color: var(--color-warning); }
+.trading-level + .accounts-aside-text { margin-top: 6px; }
+.trading-manage {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 10px;
+  font-size: 0.78125rem;
+  color: var(--color-text-secondary);
+}
+.trading-manage:hover { color: var(--color-text-primary); }

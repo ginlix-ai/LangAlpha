@@ -1,5 +1,6 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
-import { useMotionValue, animate, type MotionValue } from 'framer-motion';
+import { useRef, useEffect, useEffectEvent, useState, useCallback } from 'react';
+import { useMotionValue, animate, type MotionValue } from '@/lib/framer';
+import { SPRING_DRAG } from '@/lib/motion';
 
 interface UseSwipeToDismissOptions {
   onDismiss: () => void;
@@ -40,8 +41,7 @@ export function useSwipeToDismiss({
 
   const dragY = useMotionValue(0);
 
-  const onDismissRef = useRef(onDismiss);
-  useEffect(() => { onDismissRef.current = onDismiss; });
+  const dismiss = useEffectEvent(onDismiss);
 
   const contentRef = useCallback((node: HTMLDivElement | null) => {
     setContentNode(node);
@@ -126,9 +126,9 @@ export function useSwipeToDismiss({
       if (mode === 'drag') {
         const dy = dragY.get();
         if (velocityY > 300 || dy > 120) {
-          onDismissRef.current();
+          dismiss();
         } else {
-          animate(dragY, 0, { type: 'spring', damping: 28, stiffness: 280 });
+          animate(dragY, 0, SPRING_DRAG);
         }
       }
       mode = 'idle';
@@ -181,9 +181,9 @@ export function useSwipeToDismiss({
     const onTouchEnd = () => {
       const dy = dragY.get();
       if (velocityY > 300 || dy > 120) {
-        onDismissRef.current();
+        dismiss();
       } else {
-        animate(dragY, 0, { type: 'spring', damping: 28, stiffness: 280 });
+        animate(dragY, 0, SPRING_DRAG);
       }
     };
 

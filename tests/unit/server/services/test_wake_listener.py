@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.server.services.report_back.flash.keys import (
+from src.server.services.report_back.handoff.keys import (
     parse_thread_wake_key,
     thread_wake_key,
     thread_wake_pattern,
 )
-from src.server.services.report_back.flash.wake_listener import (
+from src.server.services.report_back.handoff.wake_listener import (
     ThreadWakeListener,
     WakeSubscription,
     _QUEUE_MAX,
@@ -208,7 +208,7 @@ class TestSubscriptionLoop:
             AsyncMock(return_value=client),
         )
         monkeypatch.setattr(
-            "src.server.services.report_back.flash.wake_listener._ACK_TIMEOUT_S", 0.05
+            "src.server.services.report_back.handoff.wake_listener._ACK_TIMEOUT_S", 0.05
         )
         listener.start()
         try:
@@ -227,7 +227,7 @@ class TestSubscriptionLoop:
             "src.server.services.workspace_status_pubsub.get_shared_pubsub_client",
             AsyncMock(return_value=client),
         )
-        mod = "src.server.services.report_back.flash.wake_listener."
+        mod = "src.server.services.report_back.handoff.wake_listener."
         monkeypatch.setattr(mod + "_PING_IDLE_S", 0.0)
         monkeypatch.setattr(mod + "_PING_TIMEOUT_S", 0.02)
         monkeypatch.setattr(mod + "_RETRY_BACKOFF_S", 0.01)

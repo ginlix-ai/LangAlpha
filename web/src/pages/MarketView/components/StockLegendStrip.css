@@ -1,0 +1,103 @@
+/* Toolbar-sized ticker legend. Everything here matches the interval buttons'
+   type so the strip reads as one row of equal weight. It is inline content,
+   spaced by margins rather than a flex gap, because the chart's lead slot
+   ellipsizes it as a line of text when the row is short of room. */
+.legend-lead {
+  display: inline;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.legend-lead > * {
+  vertical-align: middle;
+}
+
+.legend-lead > * + * {
+  margin-left: 8px;
+}
+
+.legend-lead .stock-symbol-btn,
+.legend-lead-symbol {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* The toolbar's collapse tier is measured net of this strip, so the price
+   keeps one width across a tick: a digit gained at 99.99 -> 100.00 must not
+   toggle the tier. */
+.legend-lead-price {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 6ch;
+  color: var(--color-text-primary);
+}
+
+/* Named once beside the price; every figure on both strips prints bare. */
+.legend-lead-currency {
+  font-size: 0.85em;
+  color: var(--color-text-secondary);
+}
+
+.legend-lead-change {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--color-text-secondary);
+}
+
+.legend-lead-price.positive,
+.legend-lead-change.positive { color: var(--color-profit); }
+.legend-lead-price.negative,
+.legend-lead-change.negative { color: var(--color-loss); }
+
+.legend-lead-ext {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.6875rem;
+}
+
+.legend-lead-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+}
+
+.legend-lead-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.legend-lead-status--live .legend-lead-dot { background: var(--color-profit); }
+.legend-lead-status--realtime .legend-lead-dot { background: var(--color-profit); }
+.legend-lead-status--closed .legend-lead-dot { background: var(--color-text-tertiary); }
+.legend-lead-status--warning .legend-lead-dot { background: var(--color-warning); }
+
+/* The day's figures as one mono string: label dim, value bright. */
+.legend-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  min-width: 0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+.legend-stat {
+  display: inline-flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.legend-stat-key { color: var(--color-text-tertiary); }
+.legend-stat-value { color: var(--color-text-primary); }
+.legend-stat-value.positive { color: var(--color-profit); }
+.legend-stat-value.negative { color: var(--color-loss); }

@@ -3,8 +3,8 @@
 Jobs are born on the run ledger's terminal CAS; the EXECUTOR arbitrates at
 claim time against the durable row (result_delivered_at → drop; live or
 interrupted parent → park until the thread's next completed finalize).
-The notification turn announces completion and directs the agent to
-TaskOutput — the result rides the durable archive, never the payload.
+The notification turn announces the outcome; the result rides the durable
+archive, never the payload.
 """
 
 import contextlib
@@ -14,16 +14,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.server.services.report_back.subagent import (
-    _build_notification_message,
-    publish_cleared_wake_if_no_open_job,
     execute_task_report_back,
+    publish_cleared_wake_if_no_open_job,
+    task_report,
+    task_report_message,
 )
 
-WAKE_MOD = "src.server.services.report_back.flash.wake"
+WAKE_MOD = "src.server.services.report_back.handoff.wake"
 
 
 # ---------------------------------------------------------------------------
-# _build_notification_message
+# task_report_message
 # ---------------------------------------------------------------------------
 
 
@@ -39,12 +40,46 @@ def _payload(**over) -> dict:
     return base
 
 
+class TestTaskReport:
+    def test_a_failed_run_without_a_display_id_names_the_task(self):
+        report = task_report(
+            _payload(display_id=None, description="", final_status="error")
+        )
+        assert report.model_dump(exclude_none=True) == {
+            "kind": "task",
+            "task_id": "abc123",
+            "display_id": "Task-abc123",
+            "failed": True,
+            "subagent_type": "research",
+        }
+
+    def test_the_row_gets_the_role(self):
+        report = task_report(_payload(final_status="completed"))
+        assert report.subagent_type == "research"
+
+
 class TestBuildNotificationMessage:
-    def test_directs_to_taskoutput(self):
-        msg = _build_notification_message(_payload())
-        assert 'TaskOutput(task_id="abc123")' in msg
-        assert "Retrieve it" in msg
-        assert "look things up" in msg
+    def test_carries_only_the_event(self):
+        """Posted, it names no time: a task that settled after the turn's last
+        model call is posted too, so "after your previous turn ended" could be
+        false."""
+        msg = task_report_message(task_report(_payload()), "research")
+        assert msg == (
+            "<system>\n"
+            "Background subagent Task-abc123 (research) completed.\n"
+            "Task description: look things up\n"
+            "</system>"
+        )
+
+    def test_a_posted_failure_says_so(self):
+        report = task_report(_payload(final_status="error"))
+        msg = task_report_message(report, "research")
+        assert "Background subagent Task-abc123 (research) FAILED.\n" in msg
+
+    def test_a_failure_taken_in_mid_turn_says_so(self):
+        report = task_report(_payload(final_status="error"))
+        msg = task_report_message(report, "research", steered=True)
+        assert "Task-abc123 (research) FAILED while you were working." in msg
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +92,8 @@ async def test_settled_wake_publishes_when_no_open_job():
     wake = AsyncMock()
     with (
         patch(
-            "src.server.database.runs.outbox.get_open_notification_job",
-            new=AsyncMock(return_value=None),
+            "src.server.database.runs.outbox.list_open_notification_jobs",
+            new=AsyncMock(return_value=[]),
         ),
         patch(f"{WAKE_MOD}.publish_wake", new=wake),
         patch("src.utils.cache.redis_cache.get_cache_client"),
@@ -76,8 +111,8 @@ async def test_settled_wake_skipped_while_a_job_is_open():
     wake = AsyncMock()
     with (
         patch(
-            "src.server.database.runs.outbox.get_open_notification_job",
-            new=AsyncMock(return_value={"hook_outbox_id": "j1"}),
+            "src.server.database.runs.outbox.list_open_notification_jobs",
+            new=AsyncMock(return_value=[{"hook_outbox_id": "j1"}]),
         ),
         patch(f"{WAKE_MOD}.publish_wake", new=wake),
         patch("src.utils.cache.redis_cache.get_cache_client"),
@@ -121,16 +156,19 @@ def _arb_env(
     defer=None,
     release=None,
     wake=None,
+    parent_run=None,
 ):
-    """Patch set for the executor's pre-dispatch arbitration."""
+    """Patch set for the executor's pre-dispatch arbitration. ``parent_run``
+    is the attempt row the task's ``parent_run_id`` names."""
     # A plain string is the status alone; a dict is the whole attempt row, for
     # the arms that read more of it than its status.
-    latest = AsyncMock(
-        side_effect=[
-            s if isinstance(s, dict) else ({"status": s} if s else None)
-            for s in latest_statuses
-        ]
-    )
+    rows = [
+        s if isinstance(s, dict) else ({"status": s} if s else None)
+        for s in latest_statuses
+    ]
+    # An owed report reads its claim marker before the park's reads; the
+    # first row stands for that read too.
+    latest = AsyncMock(side_effect=rows[:1] + rows)
     patches = (
         patch(
             "src.server.database.runs.subagent_runs.get_task_run",
@@ -138,6 +176,10 @@ def _arb_env(
         ),
         patch(
             "src.server.database.runs.lifecycle.get_latest_attempt", new=latest
+        ),
+        patch(
+            "src.server.database.runs.lifecycle.get_run",
+            new=AsyncMock(return_value=parent_run),
         ),
         patch(
             "src.server.services.report_back.notify_turn.post_notification_turn",
@@ -156,7 +198,7 @@ def _arb_env(
             new=defer or AsyncMock(return_value="pending"),
         ),
         patch(
-            "src.server.database.runs.outbox.release_deferred_jobs",
+            "src.server.database.runs.outbox.release_deferred_notifications",
             new=release or AsyncMock(return_value=1),
         ),
         patch(
@@ -258,6 +300,51 @@ async def test_dispatch_proceeds_for_undelivered_run_on_settled_parent():
     post.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("meta", [{"user_id": "u9", "workspace_id": "w9"}, None])
+async def test_a_ledger_job_posts_as_its_threads_owner_or_not_at_all(meta):
+    """Ledger-enqueued jobs carry task identity only: the turn posts as the
+    thread's owner into its workspace, and a thread that is gone owes none."""
+    post, wake = AsyncMock(return_value=("dispatched", "rb-run-1")), AsyncMock()
+    job = _arb_job()
+    del job["payload"]["user_id"], job["payload"]["workspace_id"]
+    with (
+        _arb_env(
+            run_row={"status": "completed", "result_delivered_at": None},
+            latest_statuses=["completed"],
+            post=post,
+            wake=wake,
+        ),
+        patch(
+            "src.server.database.conversation.get_thread_auth_meta",
+            new=AsyncMock(return_value=meta),
+        ),
+    ):
+        await execute_task_report_back(job)
+
+    if meta is None:
+        post.assert_not_awaited()
+        wake.assert_not_awaited()
+        return
+    assert post.await_args.kwargs["user_id"] == "u9"
+    assert post.await_args.kwargs["body"]["workspace_id"] == "w9"
+
+
+@pytest.mark.asyncio
+async def test_a_payload_naming_no_task_still_announces_unlabelled():
+    """The label would name nothing, and the turn is owed all the same."""
+    post = AsyncMock(return_value=("dispatched", "rb-run-1"))
+    with _arb_env(
+        run_row={"status": "completed", "result_delivered_at": None},
+        latest_statuses=["completed"],
+        post=post,
+    ):
+        await execute_task_report_back(_arb_job(task_id=None, display_id=None))
+
+    post.assert_awaited_once()
+    assert "report_source" not in post.await_args.kwargs["body"]
+
+
 # ---------------------------------------------------------------------------
 # dispatch: the notification turn points at TaskOutput
 # ---------------------------------------------------------------------------
@@ -275,7 +362,7 @@ def _job() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_posts_taskoutput_pointer_turn():
+async def test_dispatch_posts_the_report_as_its_own_turn():
     posted: list[dict] = []
 
     async def _post(*, thread_id, body, **kwargs):
@@ -309,7 +396,16 @@ async def test_dispatch_posts_taskoutput_pointer_turn():
 
     assert len(posted) == 1
     content = posted[0]["messages"][0]["content"]
-    assert 'TaskOutput(task_id="abc123")' in content
+    assert "Background subagent Task-abc123 (research) completed.\n" in content
+    # The message is hidden, so history labels the turn from this.
+    assert posted[0]["report_source"] == {
+        "kind": "task",
+        "task_id": "abc123",
+        "display_id": "Task-abc123",
+        "description": "look things up",
+        "failed": False,
+        "subagent_type": "research",
+    }
 
 
 @pytest.mark.asyncio
@@ -352,8 +448,8 @@ def _slice_env(recents):
     """Patches for read_task_report_back_status with a stubbed recents read."""
     return (
         patch(
-            "src.server.database.runs.outbox.get_open_notification_job",
-            new=AsyncMock(return_value=None),
+            "src.server.database.runs.outbox.list_open_notification_jobs",
+            new=AsyncMock(return_value=[]),
         ),
         patch(
             "src.server.services.subagent_liveness.get_active_task_ids",
@@ -362,6 +458,10 @@ def _slice_env(recents):
         patch(
             "src.server.database.runs.outbox.get_recent_notification_run_ids",
             new=recents,
+        ),
+        patch(
+            "src.server.database.runs.command_runs.list_running",
+            new=AsyncMock(return_value=[]),
         ),
     )
 
@@ -373,12 +473,17 @@ async def test_status_slice_lists_recent_notification_runs():
     )
 
     recents = AsyncMock(return_value=["rb-2", "rb-1"])
-    p1, p2, p3 = _slice_env(recents)
-    with p1, p2, p3:
+    p1, p2, p3, p4 = _slice_env(recents)
+    with p1, p2, p3, p4:
         out = await read_task_report_back_status("t1")
 
     assert out["recent_report_back_run_ids"] == ["rb-2", "rb-1"]
-    assert recents.await_args.args == ("t1", "task_report_back")
+    # A background command's report drains on the same chain, so it is
+    # recent the same way.
+    assert recents.await_args.args == (
+        "t1",
+        ("task_report_back", "command_report_back"),
+    )
 
 
 @pytest.mark.asyncio
@@ -388,8 +493,8 @@ async def test_status_slice_recents_read_failure_reports_empty():
     )
 
     recents = AsyncMock(side_effect=RuntimeError("db down"))
-    p1, p2, p3 = _slice_env(recents)
-    with p1, p2, p3:
+    p1, p2, p3, p4 = _slice_env(recents)
+    with p1, p2, p3, p4:
         out = await read_task_report_back_status("t1")
 
     # Recents failure degrades to an empty list plus UNKNOWN pendingness:
@@ -399,19 +504,48 @@ async def test_status_slice_recents_read_failure_reports_empty():
     assert out["pending_report_back"] is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unread",
+    [
+        "src.server.services.subagent_liveness.get_active_task_ids",
+        "src.server.database.runs.command_runs.list_running",
+    ],
+    ids=["tasks", "commands"],
+)
+async def test_an_unread_writer_list_leaves_pendingness_unknown(unread):
+    """A subagent or command still running has no job yet, so a list that
+    could not be read must not let an empty outbox read as drained."""
+    from src.server.services.report_back.subagent import (
+        read_task_report_back_status,
+    )
+
+    p1, p2, p3, p4 = _slice_env(AsyncMock(return_value=[]))
+    with p1, p2, p3, p4, patch(unread, new=AsyncMock(side_effect=RuntimeError("db down"))):
+        out = await read_task_report_back_status("t1")
+
+    assert out["pending_report_back"] is None
+    assert out["active_tasks"] == out["active_commands"] == []
+
+
 # ---------------------------------------------------------------------------
-# post-finalize/pre-ack window: an open job whose dispatched run is already
-# terminal joins recents at read time (terminal ⇒ persisted ⇒ replayable),
-# so a reloading client that replayed the turn never re-attaches the run.
+# post-finalize/pre-ack window: a job stays open through the executor's
+# terminal wait and ack, but is owed only until its dispatched run ends. An
+# ended run joins recents at read time (terminal ⇒ persisted ⇒ replayable),
+# so a reloading client that replayed the turn never re-attaches it.
 # ---------------------------------------------------------------------------
 
 
-def _open_job_env(recents, run_row):
-    job = {"payload": {"dispatched_run_id": "run-x"}}
+def _open_job(run_id=None, hook_type="task_report_back"):
+    return {"hook_type": hook_type, "payload": {"dispatched_run_id": run_id} if run_id else {}}
+
+
+def _open_job_env(recents, statuses, jobs=None):
+    jobs = jobs if jobs is not None else [_open_job("run-x")]
     return (
         patch(
-            "src.server.database.runs.outbox.get_open_notification_job",
-            new=AsyncMock(return_value=job),
+            "src.server.database.runs.outbox.list_open_notification_jobs",
+            new=AsyncMock(return_value=jobs),
         ),
         patch(
             "src.server.services.subagent_liveness.get_active_task_ids",
@@ -421,26 +555,26 @@ def _open_job_env(recents, run_row):
             "src.server.database.runs.outbox.get_recent_notification_run_ids",
             new=AsyncMock(return_value=recents),
         ),
-        patch("src.server.database.runs.lifecycle.get_run", new=run_row),
+        patch("src.server.database.runs.lifecycle.get_run_statuses", new=statuses),
     )
 
 
 @pytest.mark.asyncio
-async def test_open_jobs_terminal_run_joins_recents():
+async def test_an_ended_notification_run_is_no_longer_owed():
+    """The tip under a delivered notification must drop with the run, not
+    after the executor's terminal poll and ack."""
     from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
-    run_row = AsyncMock(return_value={"status": "completed"})
-    p1, p2, p3, p4 = _open_job_env(["rb-1"], run_row)
+    statuses = AsyncMock(return_value={"run-x": "completed"})
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], statuses)
     with p1, p2, p3, p4:
         out = await read_task_report_back_status("t1")
 
+    assert out["pending_report_back"] is False
+    assert out["report_back_run_id"] is None
     assert out["recent_report_back_run_ids"] == ["run-x", "rb-1"]
-    # The pointer stays named — a wake-missed client that never rendered
-    # the turn still attaches it.
-    assert out["report_back_run_id"] == "run-x"
-    assert out["pending_report_back"] is True
 
 
 @pytest.mark.asyncio
@@ -449,61 +583,129 @@ async def test_open_jobs_live_run_stays_out_of_recents():
         read_task_report_back_status,
     )
 
-    run_row = AsyncMock(return_value={"status": "in_progress"})
-    p1, p2, p3, p4 = _open_job_env(["rb-1"], run_row)
+    statuses = AsyncMock(return_value={"run-x": "in_progress"})
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], statuses)
     with p1, p2, p3, p4:
         out = await read_task_report_back_status("t1")
 
+    assert out["pending_report_back"] is True
     assert out["recent_report_back_run_ids"] == ["rb-1"]
     assert out["report_back_run_id"] == "run-x"
 
 
 @pytest.mark.asyncio
-async def test_terminal_pointer_already_in_recents_not_duplicated():
+async def test_a_dispatched_run_without_a_row_is_live():
+    """Admission returns the run id before its row commits."""
     from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
-    run_row = AsyncMock(return_value={"status": "completed"})
-    p1, p2, p3, p4 = _open_job_env(["run-x", "rb-1"], run_row)
+    statuses = AsyncMock(return_value={})
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], statuses)
+    with p1, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+
+    assert out["pending_report_back"] is True
+    assert out["report_back_run_id"] == "run-x"
+
+
+@pytest.mark.asyncio
+async def test_an_ended_head_names_the_next_owed_job():
+    from src.server.services.report_back.subagent import (
+        read_task_report_back_status,
+    )
+
+    jobs = [_open_job("run-x"), _open_job("run-y"), _open_job()]
+    statuses = AsyncMock(return_value={"run-x": "completed", "run-y": "in_progress"})
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], statuses, jobs)
+    with p1, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+
+    assert out["pending_report_back"] is True
+    assert out["report_back_run_id"] == "run-y"
+    assert out["recent_report_back_run_ids"] == ["run-x", "rb-1"]
+
+
+@pytest.mark.asyncio
+async def test_the_slice_names_whose_reports_are_owed():
+    """A client names what it waits on: a command's notice needs no wait, a
+    subagent's report does. An ended run's job is owed no more."""
+    from src.server.services.report_back.subagent import (
+        read_task_report_back_status,
+    )
+
+    jobs = [_open_job("run-x"), _open_job("run-y", "command_report_back"), _open_job(None, "command_report_back")]
+    statuses = AsyncMock(return_value={"run-x": "completed", "run-y": "in_progress"})
+    p1, p2, p3, p4 = _open_job_env([], statuses, jobs)
+    with p1, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+    assert out["owed_report_kinds"] == ["command"]
+
+    failing = patch(
+        "src.server.database.runs.outbox.list_open_notification_jobs",
+        new=AsyncMock(side_effect=RuntimeError("db down")),
+    )
+    p1, p2, p3, p4 = _open_job_env([], statuses, jobs)
+    with p1, failing, p2, p3, p4:
+        out = await read_task_report_back_status("t1")
+    assert out["pending_report_back"] is None and out["owed_report_kinds"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_ended_run_already_in_recents_is_not_duplicated():
+    from src.server.services.report_back.subagent import (
+        read_task_report_back_status,
+    )
+
+    statuses = AsyncMock(return_value={"run-x": "completed"})
+    p1, p2, p3, p4 = _open_job_env(["run-x", "rb-1"], statuses)
     with p1, p2, p3, p4:
         out = await read_task_report_back_status("t1")
 
     assert out["recent_report_back_run_ids"] == ["run-x", "rb-1"]
-    run_row.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_terminal_pointer_row_read_failure_leaves_recents():
+async def test_a_failed_run_status_read_keeps_the_job_owed():
     from src.server.services.report_back.subagent import (
         read_task_report_back_status,
     )
 
-    run_row = AsyncMock(side_effect=RuntimeError("db down"))
-    p1, p2, p3, p4 = _open_job_env(["rb-1"], run_row)
+    statuses = AsyncMock(side_effect=RuntimeError("db down"))
+    p1, p2, p3, p4 = _open_job_env(["rb-1"], statuses)
     with p1, p2, p3, p4:
         out = await read_task_report_back_status("t1")
 
-    # Degrades to today's behavior — the client-side replay dedup still
-    # covers the window.
     assert out["recent_report_back_run_ids"] == ["rb-1"]
     assert out["pending_report_back"] is True
+    assert out["report_back_run_id"] == "run-x"
 
 
 # ---------------------------------------------------------------------------
 # a cancel releases every parked job on the thread — but a stop must not be
-# the thing that starts a turn
+# the thing that starts a turn. Read off the task's own parent attempt.
 # ---------------------------------------------------------------------------
 
 _STOPPED_AT = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 _STOPPED_RUN = "attempt-stopped"
 
 
-def _cancelled_attempt() -> dict:
+def _cancelled_attempt(**over) -> dict:
     return {
         "status": "cancelled",
         "cancel_requested_at": _STOPPED_AT,
         "conversation_response_id": _STOPPED_RUN,
+        "metadata": {"cancelled_by_user": True},
+        **over,
+    }
+
+
+def _settled_run(*, settled_at, parent_run_id=_STOPPED_RUN) -> dict:
+    return {
+        "status": "completed",
+        "result_delivered_at": None,
+        "parent_run_id": parent_run_id,
+        "finalized_at": settled_at,
     }
 
 
@@ -515,12 +717,8 @@ async def test_dispatch_drops_when_the_users_own_stop_released_it():
     """
     post, wake = AsyncMock(), AsyncMock()
     with _arb_env(
-        run_row={
-            "status": "completed",
-            "result_delivered_at": None,
-            "parent_run_id": _STOPPED_RUN,
-            "finalized_at": _STOPPED_AT - timedelta(seconds=30),
-        },
+        run_row=_settled_run(settled_at=_STOPPED_AT - timedelta(seconds=30)),
+        parent_run=_cancelled_attempt(),
         latest_statuses=[_cancelled_attempt()],
         post=post,
         wake=wake,
@@ -528,6 +726,28 @@ async def test_dispatch_drops_when_the_users_own_stop_released_it():
         await execute_task_report_back(_arb_job())
 
     post.assert_not_awaited()
+    assert wake.await_args.kwargs.get("cleared") is True
+
+
+@pytest.mark.asyncio
+async def test_the_stop_still_covers_it_once_the_user_starts_another_turn():
+    """Whether the drainer reached the job before the user's next turn
+    started must not decide whether the stop opens a turn: the drop is read
+    off the task's own parent, so it holds while the next turn runs (no park
+    behind it) and after it ends."""
+    post, defer, wake = AsyncMock(), AsyncMock(return_value="pending"), AsyncMock()
+    with _arb_env(
+        run_row=_settled_run(settled_at=_STOPPED_AT - timedelta(seconds=30)),
+        parent_run=_cancelled_attempt(),
+        latest_statuses=[{"status": "in_progress", "conversation_response_id": "next"}],
+        post=post,
+        defer=defer,
+        wake=wake,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_not_awaited()
+    defer.assert_not_awaited()
     assert wake.await_args.kwargs.get("cleared") is True
 
 
@@ -540,12 +760,11 @@ async def test_dispatch_announces_a_task_the_stopped_turn_did_not_launch():
     """
     post = AsyncMock(return_value=("dispatched", "rb-run-1"))
     with _arb_env(
-        run_row={
-            "status": "completed",
-            "result_delivered_at": None,
-            "parent_run_id": "attempt-earlier",
-            "finalized_at": _STOPPED_AT - timedelta(seconds=30),
-        },
+        run_row=_settled_run(
+            settled_at=_STOPPED_AT - timedelta(seconds=30),
+            parent_run_id="attempt-earlier",
+        ),
+        parent_run={"status": "completed", "conversation_response_id": "attempt-earlier"},
         latest_statuses=[_cancelled_attempt()],
         post=post,
     ):
@@ -562,11 +781,8 @@ async def test_dispatch_still_announces_a_result_that_landed_after_the_stop():
     """
     post = AsyncMock(return_value=("dispatched", "rb-run-1"))
     with _arb_env(
-        run_row={
-            "status": "completed",
-            "result_delivered_at": None,
-            "finalized_at": _STOPPED_AT + timedelta(minutes=5),
-        },
+        run_row=_settled_run(settled_at=_STOPPED_AT + timedelta(minutes=5)),
+        parent_run=_cancelled_attempt(),
         latest_statuses=[_cancelled_attempt()],
         post=post,
     ):
@@ -582,8 +798,25 @@ async def test_dispatch_announces_when_the_stop_carries_no_timestamp():
     """
     post = AsyncMock(return_value=("dispatched", "rb-run-1"))
     with _arb_env(
-        run_row={"status": "completed", "result_delivered_at": None},
-        latest_statuses=[{"status": "cancelled", "cancel_requested_at": None}],
+        run_row=_settled_run(settled_at=_STOPPED_AT - timedelta(seconds=30)),
+        parent_run=_cancelled_attempt(cancel_requested_at=None),
+        latest_statuses=[_cancelled_attempt(cancel_requested_at=None)],
+        post=post,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_announces_a_result_a_shutdown_cancel_released():
+    """A shutdown or recovery cancels the turn and stamps the same time, but
+    nobody asked for silence, so the result still opens a turn."""
+    post = AsyncMock(return_value=("dispatched", "rb-run-1"))
+    with _arb_env(
+        run_row=_settled_run(settled_at=_STOPPED_AT - timedelta(seconds=30)),
+        parent_run=_cancelled_attempt(metadata={}),
+        latest_statuses=[_cancelled_attempt(metadata={})],
         post=post,
     ):
         await execute_task_report_back(_arb_job())

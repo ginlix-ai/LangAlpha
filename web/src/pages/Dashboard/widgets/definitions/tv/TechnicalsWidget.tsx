@@ -17,7 +17,6 @@ interface TechnicalsConfig {
 function TechnicalsWidget({ instance }: WidgetRenderProps<TechnicalsConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="technical-analysis"
       config={{
         symbol: instance.config.symbol,

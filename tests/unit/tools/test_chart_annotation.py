@@ -64,6 +64,8 @@ class FakeChartDB:
         # (workspace_id, chart_id) -> {annotation_id: payload}
         self.instances: dict[tuple[str, str], dict[str, dict]] = {}
         self.fail_on_add = fail_on_add
+        # Stands in for the read's statement timestamp: later reads stamp higher.
+        self.reads = 0
 
     async def add_annotation(self, workspace_id, chart_id, symbol, timeframe, annotation):
         if self.fail_on_add:
@@ -80,7 +82,8 @@ class FakeChartDB:
         # Mirrors the real combined write+read: the add raises on fail_on_add,
         # so the fail-closed path stays exercised.
         await self.add_annotation(workspace_id, chart_id, symbol, timeframe, annotation)
-        return await self.list_annotations(workspace_id, chart_id)
+        self.reads += 1
+        return await self.list_annotations(workspace_id, chart_id), self.reads
 
     async def remove_annotations(self, workspace_id, chart_id, ids):
         bucket = self.instances.get((workspace_id, chart_id), {})
@@ -693,6 +696,8 @@ class TestDrawChartAnnotation:
         assert second.artifact["type"] == "chart_annotation"
         prices = sorted(a["price"] for a in second.artifact["annotations"])
         assert prices == [200.0, 210.0]
+        # The chat card orders a turn's snapshots by this stamp.
+        assert second.artifact["read_at_us"] == fake_db.reads == 2
 
     @pytest.mark.asyncio
     async def test_timeframe_creates_distinct_instance(self, fake_db):
@@ -984,18 +989,17 @@ class TestManageChartAnnotations:
 
 
 class TestSkillRegistryVisibility:
-    def test_chart_annotation_registered_for_both_modes(self):
+    def test_chart_annotation_registered_as_a_listed_guide(self):
         from ptc_agent.agent.middleware.skills.registry import SKILL_REGISTRY
 
         skill = SKILL_REGISTRY["chart-annotation"]
-        # Discoverable in both modes so the agent can self-load it on demand
-        # (including from the standalone chat page, where it renders a card).
-        assert skill.exposure == "both"
-        tool_names = skill.get_tool_names()
-        assert set(tool_names) == {"draw_chart_annotation", "manage_chart_annotations"}
+        # The drawing guide, discoverable by the agent. The tools themselves
+        # are bound on every main-agent build, so the skill gates none.
+        assert not skill.hidden
+        assert skill.tool_names == ()
 
     def test_appears_in_default_listing(self):
-        """chart-annotation must be in the manifest the LLM sees in every mode.
+        """chart-annotation must be in the manifest the LLM sees.
 
         ``list_skills`` drives what gets injected into the system prompt via
         SkillsMiddleware. The agent can only choose to load a skill it can see,
@@ -1003,27 +1007,24 @@ class TestSkillRegistryVisibility:
         """
         from ptc_agent.agent.middleware.skills.registry import list_skills
 
-        for mode in ("ptc", "flash", None):
-            listed = {s["name"] for s in list_skills(mode=mode)}
-            assert "chart-annotation" in listed, (
-                f"chart-annotation missing from listing for mode={mode}"
-            )
+        assert "chart-annotation" in {s["name"] for s in list_skills()}
 
     def test_synced_to_sandbox(self):
-        """exposure=both ⇒ SKILL.md is uploaded so PTC can self-load by reading it."""
+        """SKILL.md is uploaded so the agent can self-load by reading it."""
         from ptc_agent.agent.middleware.skills.registry import (
-            get_sandbox_skill_names,
+            SKILL_REGISTRY,
+            skills_outside_sandbox,
         )
 
-        assert "chart-annotation" in get_sandbox_skill_names()
+        assert "chart-annotation" in SKILL_REGISTRY
+        assert "chart-annotation" not in skills_outside_sandbox()
 
-    def test_reachable_by_name_in_every_mode(self):
+    def test_reachable_by_name(self):
         from ptc_agent.agent.middleware.skills.registry import get_skill
 
-        for mode in ("ptc", "flash", None):
-            skill = get_skill("chart-annotation", mode=mode)
-            assert skill is not None, f"get_skill returned None for mode={mode}"
-            assert skill.name == "chart-annotation"
+        skill = get_skill("chart-annotation")
+        assert skill is not None
+        assert skill.name == "chart-annotation"
 
 
 # --------------------------------------------------------------------------- #

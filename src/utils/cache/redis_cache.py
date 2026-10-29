@@ -11,6 +11,7 @@ import os
 from datetime import datetime, date
 from typing import Any, Optional
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import redis.asyncio as redis
@@ -84,6 +85,15 @@ def is_pool_exhaustion(err: BaseException) -> bool:
 _RELEASE_LOCK_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
+end
+return 0
+"""
+
+# Compare-and-set, keeping the key's TTL.
+_SWAP_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    redis.call('set', KEYS[1], ARGV[2], 'KEEPTTL')
+    return 1
 end
 return 0
 """
@@ -180,8 +190,11 @@ class RedisCacheClient:
 
             # Test connection
             await self.client.ping()
+            # The URL's userinfo is the AUTH password; name only the server.
+            target = urlsplit(self.url)
             logger.info(
-                f"Redis cache connected: {self.url} "
+                f"Redis cache connected: {target.scheme}://"
+                f"{target.netloc.rpartition('@')[2]}{target.path} "
                 f"(pool max={self.max_connections}, acquire_timeout={pool_timeout}s, "
                 f"health_check=30s)"
             )
@@ -492,6 +505,17 @@ class RedisCacheClient:
         except Exception as e:
             self._log_error(f"Lock release error for {key}", e)
             self.stats["errors"] += 1
+
+    async def claim(self, key: str, value: str | bytes) -> bool:
+        """Delete ``key`` only while it still holds ``value``: True when this
+        caller took it. Raises when Redis cannot answer, since a caller acting
+        on a claim it never got would do the very thing the claim prevents."""
+        return bool(await self.client.eval(_RELEASE_LOCK_LUA, 1, key, value))
+
+    async def swap(self, key: str, old: str | bytes, new: str) -> bool:
+        """Replace ``key``'s value only while it still holds ``old``, keeping
+        its TTL: True when written."""
+        return bool(await self.client.eval(_SWAP_LUA, 1, key, old, new))
 
     async def exists(self, key: str) -> bool:
         """

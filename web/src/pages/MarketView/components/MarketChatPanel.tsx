@@ -1,36 +1,50 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate, useSearchParams } from 'react-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, RefreshCw, MessageSquare, ScrollText, X } from 'lucide-react';
+import { ArrowLeft, RefreshCw, MessageSquare } from 'lucide-react';
 import { queryKeys } from '@/lib/queryKeys';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { Loader } from '@/components/ui/loader';
 import LogoLoading from '@/components/ui/logo-loading';
 import ChatInput, { type ChatInputHandle } from '@/components/ui/chat-input';
-import { useNarrowContainer } from '@/hooks/useNarrowContainer';
+import type { ComposerScope } from '@/components/ui/chat-input.types';
 import { useStableHandler } from '@/hooks/useStableHandler';
-import MessageList from '../../ChatAgent/components/MessageList';
+import { useWorkspace } from '@/hooks/useWorkspace';
+import { usePreferences } from '@/hooks/usePreferences';
+import { useLocale } from '@/hooks/useLocale';
+import { compactNumber } from '@/lib/format';
+import { readTurnEndScroll } from '@/lib/turnEndScroll';
+import { LiveMessageList } from '../../ChatAgent/components/MessageList';
 import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/components/messageList/MessageActionsContext';
-import { SubagentTelemetryContext } from '../../ChatAgent/components/SubagentTelemetryContext';
+import { SubagentTelemetryContext, useHistoryTelemetry } from '../../ChatAgent/components/SubagentTelemetryContext';
 import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
+import { computerFolders } from '../../ChatAgent/utils/agentPaths';
 import { useChatMessages } from '../../ChatAgent/hooks/useChatMessages';
+import { useComputerRoots } from '../../ChatAgent/hooks/useComputers';
+import { useThreadModel } from '../../ChatAgent/hooks/useThreadModel';
+import { useThreadSubagents } from '../../ChatAgent/hooks/useThreadSubagents';
+import { useThreadTuning } from '../../ChatAgent/hooks/useThreadTuning';
+import { ThreadNotices } from '../../ChatAgent/components/chatView/ThreadNotices';
+import { DispatchStatusProvider } from '../../ChatAgent/hooks/usePTCDispatchStatus';
+import { useStreamFollow } from '../../ChatAgent/components/chatView/transcriptFollow';
+import { useTranscriptFollow } from '../../ChatAgent/components/chatView/useTranscriptFollow';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
-import { getFlashWorkspace, getPreviewUrl, summarizeThread, offloadThread } from '../../ChatAgent/utils/api';
+import { appendPathSuffix, getPreviewUrl, summarizeThread, offloadThread } from '../../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../../ChatAgent/utils/fileUpload';
-import {
-  resolveSubagentTelemetry as resolveSubagentTelemetryPure,
-  type SubagentHistoryLike,
-} from '../../ChatAgent/session/subagents/resolveSubagentTelemetry';
-import type { ToolCallProcessRecord, SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
+import type { SubagentInfo } from '../../ChatAgent/components/ToolCallDetailView';
+import { useToolCallLookup } from '../../ChatAgent/components/chatView/toolCallLookup';
 import type { PreviewData } from '../../ChatAgent/hooks/utils/types';
+import type { Workspace } from '@/types/api';
 import MarketChatHistoryButton from './MarketChatHistoryButton';
 import MarketDetailDialog, { type DialogPayload } from './MarketDetailDialog';
 import { getMarketThreadId, setMarketThreadId, clearMarketThreadId } from '../utils/threadPersistence';
+import { readMarketViewRoute } from '../utils/marketRoute';
 import { normalizeTimeframe } from '../stores/chartAnnotationStore';
 import { chartSelectionStore, useChartSelections, isConfirmedFor } from '../stores/chartSelectionStore';
 import { buildChartSelectionSend } from '../utils/selectionSend';
+import { SelectionChips } from './SelectionChips';
 import { marketViewAnnotationContext } from '../constants/annotationPrompt';
 import './MarketPanel.css';
 
@@ -46,18 +60,6 @@ function bannerStyle(background: string): React.CSSProperties {
     color: 'var(--color-text-tertiary)',
     fontSize: '0.75rem',
   };
-}
-
-/** Append a URL path suffix (e.g. "/report.html") to a resolved signed URL. */
-function appendPathSuffix(baseUrl: string, path?: string): string {
-  if (!path) return baseUrl;
-  try {
-    const parsed = new URL(baseUrl);
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '') + path;
-    return parsed.toString();
-  } catch {
-    return baseUrl;
-  }
 }
 
 /** Slash-command shapes emitted by ChatInput (skill/subagent pills, action verbs). */
@@ -76,13 +78,6 @@ interface ModelOptionsLike {
   fastMode?: boolean | null;
 }
 
-interface Workspace {
-  workspace_id: string;
-  name?: string;
-  status?: string;
-  [key: string]: unknown;
-}
-
 interface AttachmentItem {
   dataUrl: string;
   file: { name: string; size: number };
@@ -94,10 +89,16 @@ interface MarketChatPanelProps {
   symbol: string;
   /** Current chart interval — tells the agent which timeframe to annotate. */
   interval: string;
-  mode: 'fast' | 'ptc';
-  onModeChange: (mode: 'fast' | 'ptc') => void;
+  scope: ComposerScope;
+  onScopeChange: (scope: ComposerScope) => void;
+  /** The workspace the chat runs in: Home under the Chief of Staff, else the
+   *  selected one. Null until it resolves. */
+  activeWorkspaceId: string | null;
   workspaces: Workspace[];
   selectedWorkspaceId: string | null;
+  /** A workspace was restored but not yet checked against the list, so
+   *  `selectedWorkspaceId` is held back as null until it is. */
+  workspacePending?: boolean;
   onWorkspaceChange: (id: string) => void;
   chartImage: string | null;
   chartImageDesc: string | null;
@@ -116,31 +117,43 @@ interface MarketChatPanelProps {
   onJumpToChart?: (symbol: string, timeframe: string) => void;
 }
 
+function PanelLoading(): React.ReactElement {
+  return (
+    <div className="market-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: 16 }}>
+      <LogoLoading size={36} color="var(--color-accent-overlay)" />
+    </div>
+  );
+}
+
 /**
  * Desktop chat panel for MarketView. Drives the message stream via
  * ChatAgent's `useChatMessages` so the rendering (tool calls, reasoning,
  * artifacts, widgets) stays in lockstep with the main chat page.
+ *
+ * The workspace scope waits out a pending workspace rather than mounting
+ * without one: the scope resolves its stored thread once, at mount, so
+ * mounting early would start a fresh chat where the workspace's last one
+ * should have reopened.
  */
 export default function MarketChatPanel(props: MarketChatPanelProps): React.ReactElement {
-  const {
-    symbol,
-    mode,
-    workspaces,
-    selectedWorkspaceId,
-  } = props;
+  if (props.scope === 'workspace' && props.workspacePending) return <PanelLoading />;
+  return <MarketChatScope {...props} />;
+}
+
+function MarketChatScope(props: MarketChatPanelProps): React.ReactElement {
+  const { symbol, scope, activeWorkspaceId } = props;
   const { t } = useTranslation();
-
-  // Flash workspace: lazily fetched once, cached forever.
-  const { data: flashWs } = useQuery({
-    queryKey: queryKeys.workspaces.flash(),
-    queryFn: getFlashWorkspace,
-    staleTime: Infinity,
-  });
-
-  // Active workspace per mode. Flash mode uses the shared flash workspace.
-  const activeWorkspaceId = mode === 'fast'
-    ? (flashWs as { workspace_id?: string } | undefined)?.workspace_id ?? null
-    : selectedWorkspaceId;
+  // The folder the workspace lives in on a shared computer, and any a rename
+  // moved it out of, which the turn file deck needs to tell the workspace's
+  // own notes file from a deliverable. Read through the detail query, which a
+  // turn re-reads once the folder has settled. The page's list never does, nor
+  // does Home's cached row, which can predate the turn that gave Home its folder.
+  const { data: activeWorkspace } = useWorkspace(activeWorkspaceId);
+  // No sibling list: this page opens no files, so a sibling's has nowhere to go.
+  // The computers' roots are kept: the reply's absolute paths start with its
+  // own, or with one the workspace sat under before a move.
+  const computers = useComputerRoots({ enabled: !!activeWorkspace });
+  const folders = useMemo(() => computerFolders(activeWorkspace, null, computers), [activeWorkspace, computers]);
 
   // Initial thread resolution. URL `?thread=` wins, then localStorage keyed by
   // (workspace, symbol), then a new chat. This state determines which thread
@@ -148,21 +161,32 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
   // engine can re-initialise with a different thread.
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeThreadInit, setActiveThreadInit] = useState<string>(() => {
-    const fromUrl = searchParams.get('thread');
+    const fromUrl = readMarketViewRoute(searchParams).threadId;
     if (fromUrl) return fromUrl;
     return getMarketThreadId(activeWorkspaceId, symbol) ?? '__default__';
   });
 
-  // Re-resolve thread when symbol changes — restore the last-seen thread for
-  // the new symbol in the current workspace (or start a fresh chat if none).
+  // Re-resolve thread when symbol changes: restore the last-seen thread for
+  // the new symbol in the current workspace, or start a fresh chat if none.
+  // A fresh chat also drops `?thread` from the URL; the mirror below rewrites
+  // it for a restored thread but never touches it for a default one, so a
+  // reload would otherwise reopen the previous symbol's conversation and
+  // save it as this symbol's.
   const lastSymbolRef = useRef(symbol);
   useEffect(() => {
     if (lastSymbolRef.current === symbol) return;
     lastSymbolRef.current = symbol;
-    setActiveThreadInit(getMarketThreadId(activeWorkspaceId, symbol) ?? '__default__');
-  }, [symbol, activeWorkspaceId]);
+    const restored = getMarketThreadId(activeWorkspaceId, symbol);
+    setActiveThreadInit(restored ?? '__default__');
+    if (restored) return;
+    setSearchParams((p) => {
+      const next = new URLSearchParams(p);
+      if (next.has('thread')) next.delete('thread');
+      return next;
+    }, { replace: true });
+  }, [symbol, activeWorkspaceId, setSearchParams]);
 
-  // Reset to a fresh chat when scope (mode / workspace) changes. The user
+  // Reset to a fresh chat when the scope or workspace changes. The user
   // explicitly chose a different scope — surface a clean slate. localStorage
   // is keyed by (workspace, symbol), so the previous scope's pointer stays
   // intact and is reachable via the history dropdown.
@@ -200,7 +224,7 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
     }, { replace: true });
   }, [activeWorkspaceId, symbol, setSearchParams]);
 
-  if (mode === 'ptc' && !activeWorkspaceId) {
+  if (scope === 'workspace' && !activeWorkspaceId) {
     return (
       <div className="market-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: 16 }}>
         <span style={{ color: 'var(--color-text-tertiary)', fontSize: '0.875rem' }}>
@@ -210,22 +234,15 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
     );
   }
 
-  if (!activeWorkspaceId) {
-    return (
-      <div className="market-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: 16 }}>
-        <LogoLoading size={36} color="var(--color-accent-overlay)" />
-      </div>
-    );
-  }
+  if (!activeWorkspaceId) return <PanelLoading />;
 
   return (
-    <WorkspaceProvider workspaceId={activeWorkspaceId} downloadFile={null}>
+    <WorkspaceProvider workspaceId={activeWorkspaceId} downloadFile={null} folders={folders}>
       <ChatBody
         key={`${activeWorkspaceId}:${activeThreadInit}`}
         {...props}
         activeWorkspaceId={activeWorkspaceId}
         initialThreadId={activeThreadInit.split('#')[0]}
-        ptcWorkspaces={workspaces}
         onSelectThread={handleSelectThread}
         onStartNewChat={handleStartNewChat}
       />
@@ -236,7 +253,6 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
 interface ChatBodyProps extends MarketChatPanelProps {
   activeWorkspaceId: string;
   initialThreadId: string;
-  ptcWorkspaces: Workspace[];
   onSelectThread: (threadId: string) => void;
   onStartNewChat: () => void;
 }
@@ -245,9 +261,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   const {
     symbol,
     interval,
-    mode,
-    onModeChange,
-    ptcWorkspaces,
+    scope,
+    onScopeChange,
+    workspaces,
     selectedWorkspaceId,
     onWorkspaceChange,
     chartImage,
@@ -270,8 +286,10 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   } = props;
 
   const { t } = useTranslation();
+  const locale = useLocale();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { preferences } = usePreferences();
   const [, setSearchParams] = useSearchParams();
   const [dialogPayload, setDialogPayload] = useState<DialogPayload | null>(null);
   // Port of the preview currently shown — guards against a late URL resolution
@@ -282,8 +300,10 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   // Set when the user stops a running turn, so the input placeholder reflects it.
   const [wasStopped, setWasStopped] = useState(false);
 
-  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
-  const isNarrowChat = useNarrowContainer(messagesContainerRef, 640);
+  // The transcript's scroller and its content, as elements for its follow:
+  // the content mounts only once there is a transcript to show.
+  const [messagesContainer, setMessagesContainer] = useState<HTMLDivElement | null>(null);
+  const [transcript, setTranscript] = useState<HTMLDivElement | null>(null);
 
   // The user's confirmed chart selections (region / price level). Render a chip
   // per selection that still matches the live chart instance — selections drawn
@@ -296,15 +316,12 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     [selections, liveSym, liveTf],
   );
 
-  // PTC zero-state — disable PTC option if user has no non-flash workspaces.
-  const ptcDisabledReason = ptcWorkspaces.length === 0
-    ? t('marketView.chatPanel.ptcDisabledReason')
-    : null;
-
-  const agentMode = mode === 'fast' ? 'flash' : 'ptc';
+  // With no workspace to pick, the scope picker still offers the Chief of Staff
+  // and says why the workspace list is empty.
+  const emptyWorkspacesHint = workspaces.length === 0 ? t('agents.market.workspaceDisabledReason') : null;
 
   // MarketView always has the live chart beside the chat, so inline
-  // chart-annotation previews collapse to a confirmation chip. Tell the chip
+  // chart-annotation cards collapse to a confirmation chip. Tell the chip
   // which instance is on screen + how to switch the chart, so a chip for a
   // different ticker/timeframe can jump the chart to it.
   const chartSurface = useMemo<ChartSurface>(
@@ -324,7 +341,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   // Open the served-HTML preview. The SSE artifact carries only a port, so —
   // like ChatView — open immediately in a loading state, then resolve the
   // authenticated signed URL and swap it in (otherwise the viewer is blank).
-  const handlePreview = useCallback((preview: PreviewData) => {
+  const handlePreview = useCallback((data: PreviewData) => {
+    // Named on the entry so the dialog's open button reaches the app's link.
+    const preview = { ...data, workspaceId: data.workspaceId ?? activeWorkspaceId ?? undefined };
     previewPortRef.current = preview.port;
     setDialogPayload({ type: 'preview', preview: { ...preview, loading: true } });
 
@@ -365,37 +384,35 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       : 'market_view';
   }, [symbol]);
 
+  const readComposerOptions = useCallback(() => chatInputRef.current?.getModelOptions?.(), []);
   const chat = useChatMessages(
     activeWorkspaceId,
     initialThreadId,
     null,                       // updateTodoListCard
     null,                       // updateSubagentCard
     null,                       // finalizePendingTodos
-    null,                       // onOnboardingRelatedToolComplete
     null,                       // onFileArtifact
     handlePreview,              // onPreviewUrl
-    agentMode,
     null,                       // clearSubagentCards
     null,                       // onWorkspaceCreated
     platformValue,
+    readComposerOptions,
   );
 
   const {
     messages,
+    liveMessages,
     isLoading,
     isLoadingHistory,
     messageError,
     threadId,
     threadModels,
-    lastThreadModel,
-    handleSendMessage,
     stopWorkflow,
     getSubagentHistory,
-    // HITL handlers — plan approval, ask-user questions, workspace/PTC/secretary
-    // proposals. Without these wired into MessageList the cards render but their
-    // Accept/Decline buttons are dead.
-    handleApproveInterrupt,
-    handleRejectInterrupt,
+    getTaskRuns,
+    // HITL handlers: ask-user questions, workspace/PTC/secretary proposals,
+    // credit pauses and tool approvals. Without these wired into MessageList the
+    // cards render but their Accept/Decline buttons are dead.
     handleAnswerQuestion,
     handleSkipQuestion,
     handleApproveCreateWorkspace,
@@ -406,35 +423,45 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     handleRejectPTCAgent,
     handleApproveSecretaryAction,
     handleRejectSecretaryAction,
+    handleResumeCreditPause,
+    handleApproveToolCall,
+    handleRejectToolCall,
     // Turn/context state — drives the stop button, input gating, and the
-    // interrupted / plan-feedback / compaction status banners.
+    // interrupted / compaction status banners.
     pendingInterrupt,
-    pendingRejection,
     hasActiveSubagents,
     workspaceStarting,
     isCompacting,
     setIsCompacting,
+    compactionTokens,
     tokenUsage,
     insertNotification,
-    // Message-level actions — edit, regenerate, retry, and feedback thumbs.
-    handleEditMessage,
-    handleRegenerate,
-    handleRetry,
+    // Feedback thumbs. Send, edit, regenerate and retry come from
+    // useTranscriptFollow below.
     handleThumbUp,
     handleThumbDown,
     feedbackByTurn,
+    returnedSteering,
+    clearReturnedSteering,
+    returnedEdit,
+    clearReturnedEdit,
+    editDrafts,
   } = chat;
 
   // The market panel's thread is what the user is looking at — same active
   // contract as ChatAgent (no unseen dot for watched finishes, seen on open).
   useActiveThreadPublisher(threadId);
 
-  // Subagent telemetry resolver — feeds ActivityBlock's live token counts.
-  // MarketView has no floating cards layer, so we resolve through history only.
-  const resolveSubagentTelemetry = useCallback((subagentId: string) => {
-    const history = getSubagentHistory?.(subagentId) as SubagentHistoryLike | undefined;
-    return resolveSubagentTelemetryPure(undefined, history);
-  }, [getSubagentHistory]);
+  // The Chief of Staff runs the default model, as the full agent does in a workspace.
+  const threadModel = useThreadModel({ threadId, isLoading });
+  const threadSubagents = useThreadSubagents({ threadId });
+  const { toSend: subagentsToSend } = threadSubagents;
+  const threadTuning = useThreadTuning({ threadId });
+  const { toSend: tuningToSend } = threadTuning;
+
+  // MarketView has no floating cards layer, so subagent rows resolve through
+  // history only, and a run launched since the page loaded shows no progress.
+  const subagentTelemetry = useHistoryTelemetry(getSubagentHistory, getTaskRuns);
 
   // Persist thread id per (workspace, symbol) + sync to URL once the workflow
   // assigns a real id.
@@ -451,19 +478,27 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     queryClient.invalidateQueries({ queryKey: queryKeys.threads.byWorkspace(activeWorkspaceId) });
   }, [threadId, symbol, activeWorkspaceId, setSearchParams, queryClient]);
 
+  const showTranscript = messages.length > 0 || isLoading || isLoadingHistory;
+  const follow = useStreamFollow(messagesContainer, transcript, { live: isLoading, loading: isLoadingHistory });
+  const { handleSendMessage, handleEditMessage, handleRegenerate, handleRetry } = useTranscriptFollow(
+    chat,
+    follow,
+    () => messagesContainer,
+    readTurnEndScroll(preferences),
+  );
+
   // Send: shape attachments + chart screenshot like ChatAgent does.
   const handleSend = useCallback(
     (
       message: string,
-      planMode: boolean,
       attachments: AttachmentItem[] = [],
       slashCommands: SlashCommandLike[] = [],
       modelOptions: ModelOptionsLike = {},
     ) => {
-      // Always activate the chart-annotation skill so the agent can draw on
-      // the live chart from turn 1, and tell it which ticker + timeframe "the
-      // chart" is (chart_id = SYMBOL:timeframe — drawing on the wrong timeframe
-      // won't show on the view the user is looking at).
+      // The drawing tools are always bound; inject the chart-annotation skill
+      // every send for its drawing guide and to tell the agent which ticker +
+      // timeframe "the chart" is (chart_id = SYMBOL:timeframe — drawing on the
+      // wrong timeframe won't show on the view the user is looking at).
       const sym = symbol ? symbol.toUpperCase() : '';
       const tf = normalizeTimeframe(interval);
       const contexts: Record<string, unknown>[] = [
@@ -525,14 +560,16 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       const additionalContext = contexts.length > 0 ? contexts : null;
       const attachmentMeta = metaItems.length > 0 ? metaItems : null;
 
-      handleSendMessage(outgoingMessage, planMode, additionalContext, attachmentMeta, {
+      handleSendMessage(outgoingMessage, additionalContext, attachmentMeta, {
         ...modelOptions,
         ...(selectionSnapshots.length > 0 ? { chartSelections: selectionSnapshots } : {}),
+        subagentsAllowed: subagentsToSend,
+        ...tuningToSend,
       });
       onClearChartImage();
       chartSelectionStore.clearAll();
     },
-    [symbol, interval, chartImage, chartImageDesc, handleSendMessage, onClearChartImage],
+    [symbol, interval, chartImage, chartImageDesc, handleSendMessage, onClearChartImage, subagentsToSend, tuningToSend],
   );
 
   // Stop the running turn (the input's Stop button). Mirrors ChatView: the hook's
@@ -593,42 +630,21 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     }
   }, [threadId, setIsCompacting, insertNotification, t]);
 
-  // Track whether the user is currently parked near the bottom of the
-  // message list. Auto-scroll only fires while this is true, so a user
-  // who has scrolled up to read earlier content during an active stream
-  // isn't yanked back down on every SSE chunk.
-  const isNearBottomRef = useRef(true);
-  useEffect(() => {
-    const el = messagesContainerRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const threshold = 120;
-      isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
-  }, []);
-
-  // Auto-scroll to bottom on new messages / streaming — only when the
-  // user is already near the bottom (see isNearBottomRef above).
-  useEffect(() => {
-    if (!isNearBottomRef.current) return;
-    const el = messagesContainerRef.current;
-    if (!el || messages.length === 0) return;
-    const id = setTimeout(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    }, 80);
-    return () => clearTimeout(id);
-  }, [messages]);
-
   // Subagent navigation — chips deep-link to ChatAgent for full subagent view.
   const handleOpenSubagentTask = useCallback((info: SubagentInfo) => {
     if (!info.subagentId || !threadId || threadId === '__default__') return;
     onNavigateSubagent?.(threadId, info.subagentId);
   }, [threadId, onNavigateSubagent]);
 
-  const handleToolCallDetailClick = useCallback((proc: Record<string, unknown>) => {
-    setDialogPayload({ type: 'toolcall', toolCallProcess: proc as ToolCallProcessRecord });
+  // Main transcript only: the panel keeps no subagent cards (it hands the
+  // chat engine no card updater), so a subagent's own rows never render here
+  // and there is no transcript of theirs to search.
+  const getToolCallProcess = useToolCallLookup(messages);
+
+  // A row whose record the transcript no longer holds still opens the dialog:
+  // it says the call is gone, where a swallowed click reads as a dead row.
+  const handleToolCallDetailClick = useCallback((toolCallId: string) => {
+    setDialogPayload({ type: 'toolcall', toolCallId });
   }, []);
 
   // The panel's transcript action surface. Each member is useStableHandler'd
@@ -637,8 +653,6 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   // every settled bubble in the panel.
   const stableOpenSubagentTask = useStableHandler(handleOpenSubagentTask);
   const stableToolCallDetail = useStableHandler(handleToolCallDetailClick);
-  const stableApprovePlan = useStableHandler(handleApproveInterrupt);
-  const stableRejectPlan = useStableHandler(handleRejectInterrupt);
   const stableAnswerQuestion = useStableHandler(handleAnswerQuestion);
   const stableSkipQuestion = useStableHandler(handleSkipQuestion);
   const stableApproveCreateWorkspace = useStableHandler(handleApproveCreateWorkspace);
@@ -649,25 +663,39 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   const stableRejectPTCAgent = useStableHandler(handleRejectPTCAgent);
   const stableApproveSecretaryAction = useStableHandler(handleApproveSecretaryAction);
   const stableRejectSecretaryAction = useStableHandler(handleRejectSecretaryAction);
+  const stableResumeCreditPause = useStableHandler(handleResumeCreditPause);
+  const stableApproveToolCall = useStableHandler(handleApproveToolCall);
+  const stableRejectToolCall = useStableHandler(handleRejectToolCall);
   const stableEditMessage = useStableHandler((id: string, content: string) =>
     handleEditMessage(id, content, chatInputRef.current?.getModelOptions?.()));
   const stableRegenerate = useStableHandler((id: string) =>
     handleRegenerate(id, chatInputRef.current?.getModelOptions?.()));
   const stableRetry = useStableHandler(() => handleRetry(chatInputRef.current?.getModelOptions?.()));
+  // Steering the agent finished without reading comes back to the composer,
+  // beside whatever was typed there since.
+  useEffect(() => {
+    if (returnedSteering) {
+      chatInputRef.current?.giveBack(returnedSteering);
+      clearReturnedSteering();
+    }
+  }, [returnedSteering, clearReturnedSteering]);
+  // Edit text whose message is gone comes back to the composer, beside
+  // whatever is typed there.
+  useEffect(() => {
+    if (returnedEdit) {
+      chatInputRef.current?.giveBack(returnedEdit);
+      clearReturnedEdit();
+    }
+  }, [returnedEdit, clearReturnedEdit]);
   const stableThumbUp = useStableHandler(handleThumbUp);
   const stableThumbDown = useStableHandler(handleThumbDown);
-  const stableReportWithAgent = useStableHandler((instruction: string) => {
-    handleSendMessage(`/self-improve ${instruction}`, false, null, null, {});
-  });
   const stableWidgetSendPrompt = useStableHandler((text: string) => {
-    handleSendMessage(text, false, null, null, {});
+    handleSendMessage(text, null, null, {});
   });
 
   const messageActions = useMemo<MessageActions>(() => ({
     onOpenSubagentTask: stableOpenSubagentTask,
     onToolCallDetailClick: stableToolCallDetail,
-    onApprovePlan: stableApprovePlan,
-    onRejectPlan: stableRejectPlan,
     onAnswerQuestion: stableAnswerQuestion,
     onSkipQuestion: stableSkipQuestion,
     onApproveCreateWorkspace: stableApproveCreateWorkspace,
@@ -678,33 +706,37 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     onRejectPTCAgent: stableRejectPTCAgent,
     onApproveSecretaryAction: stableApproveSecretaryAction,
     onRejectSecretaryAction: stableRejectSecretaryAction,
+    onResumeCreditPause: stableResumeCreditPause,
+    onApproveToolCall: stableApproveToolCall,
+    onRejectToolCall: stableRejectToolCall,
     onEditMessage: stableEditMessage,
     onRegenerate: stableRegenerate,
     onRetry: stableRetry,
+    editDrafts,
     onThumbUp: stableThumbUp,
     onThumbDown: stableThumbDown,
-    onReportWithAgent: stableReportWithAgent,
     onWidgetSendPrompt: stableWidgetSendPrompt,
+    onRevealMessage: follow.reveal,
   }), [
-    stableOpenSubagentTask, stableToolCallDetail, stableApprovePlan, stableRejectPlan,
+    stableOpenSubagentTask, stableToolCallDetail,
     stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
     stableRejectCreateWorkspace, stableApproveStartQuestion, stableRejectStartQuestion,
     stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
-    stableRejectSecretaryAction, stableEditMessage, stableRegenerate, stableRetry,
-    stableThumbUp, stableThumbDown, stableReportWithAgent, stableWidgetSendPrompt,
+    stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,
+    stableEditMessage, stableRegenerate, stableRetry, editDrafts,
+    stableThumbUp, stableThumbDown, stableWidgetSendPrompt, follow.reveal,
   ]);
 
-  const initialModel = lastThreadModel ?? null;
-
-  // In fast mode, carry the source thread/workspace into a PTC-agent proposal so
-  // its "open in chat" deep-link lands back here. Null in PTC mode. Memoized:
-  // a fresh object per render would defeat the memoized bubbles downstream.
-  const flashContext = useMemo(
+  // In the Chief of Staff, carry the source thread/workspace into a PTC-agent
+  // proposal so its "open in chat" deep-link lands back here. Null in a
+  // workspace, since only the Chief of Staff hands work off to the workspaces.
+  // Memoized: a fresh object per render would defeat the memoized bubbles downstream.
+  const dispatcherContext = useMemo(
     () =>
-      agentMode === 'flash' && threadId && threadId !== '__default__'
+      scope === 'all' && threadId && threadId !== '__default__'
         ? { threadId, workspaceId: activeWorkspaceId }
         : null,
-    [agentMode, threadId, activeWorkspaceId],
+    [scope, threadId, activeWorkspaceId],
   );
 
   const showQuickQueries = messages.length === 0 && !isLoading && !isLoadingHistory;
@@ -715,7 +747,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   const canOpenInChat = !!threadId && threadId !== '__default__';
   const handleOpenInChat = useCallback(() => {
     if (!threadId || threadId === '__default__') return;
-    navigate(`/chat/t/${threadId}`, { state: { workspaceId: activeWorkspaceId } });
+    navigate(`/chat/t/${threadId}`, {
+      state: { workspaceId: activeWorkspaceId },
+    });
   }, [navigate, threadId, activeWorkspaceId]);
 
   // Shared styling for the header's right-hand action chip.
@@ -732,7 +766,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     fontSize: '0.75rem',
     fontWeight: 500,
     cursor: 'pointer',
-    transition: 'background 0.15s, border-color 0.15s, color 0.15s',
+    transition: 'background var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out)',
   };
   const headerBtnHover = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.style.background = 'var(--color-bg-hover)';
@@ -809,10 +843,10 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
       {/* Messages */}
       <div
-        ref={messagesContainerRef}
+        ref={setMessagesContainer}
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}
       >
-        {messages.length === 0 && !isLoading && !isLoadingHistory ? (
+        {!showTranscript ? (
           <div className="market-chat-empty-state" style={{ height: '100%' }}>
             <LogoLoading size={60} color="var(--color-accent-overlay)" />
             <p className="market-chat-empty-text" style={{ marginTop: 16 }}>
@@ -825,21 +859,22 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
             )}
           </div>
         ) : (
-          <div style={{ padding: '16px 24px', maxWidth: '100%' }}>
-            <ChartSurfaceContext.Provider value={chartSurface}>
-              <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
+          <div ref={setTranscript} style={{ padding: '16px 24px', maxWidth: '100%' }}>
+            <ChartSurfaceContext value={chartSurface}>
+              <SubagentTelemetryContext value={subagentTelemetry}>
                 <MessageActionsProvider actions={messageActions}>
-                  <MessageList
-                    messages={messages as never[]}
-                    isLoading={isLoading}
-                    isLoadingHistory={isLoadingHistory}
-                    hideAvatar={isNarrowChat}
-                    feedbackByTurn={feedbackByTurn}
-                    flashContext={flashContext}
-                  />
+                  <DispatchStatusProvider>
+                    <LiveMessageList
+                      store={liveMessages}
+                      isLoading={isLoading}
+                      isLoadingHistory={isLoadingHistory}
+                      feedbackByTurn={feedbackByTurn}
+                      dispatcherContext={dispatcherContext}
+                    />
+                  </DispatchStatusProvider>
                 </MessageActionsProvider>
-              </SubagentTelemetryContext.Provider>
-            </ChartSurfaceContext.Provider>
+              </SubagentTelemetryContext>
+            </ChartSurfaceContext>
             {messageError && (
               <div style={{ margin: '8px 0' }}>
                 <ErrorBanner error={messageError} />
@@ -867,20 +902,16 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         </div>
       )}
 
-      {/* Status banners — feedback for plan-rejection, interrupt, background
-          subagents, workspace warming, and context compaction. Mirrors the
-          indicators ChatView shows above its input. */}
-      {(pendingRejection
-        || (hasActiveSubagents && !isLoading)
+      {/* Status banners: background subagents, workspace warming, and context
+          compaction. Mirrors the indicators ChatView shows above its input. */}
+      {((hasActiveSubagents && !isLoading)
         || workspaceStarting
-        || isCompacting) && (
+        || isCompacting
+        || threadModel.retired
+        || threadModel.lapsed
+        || threadModel.offer
+        || threadSubagents.offer !== null) && (
         <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {pendingRejection && (
-            <div style={bannerStyle('var(--color-bg-surface)')}>
-              <ScrollText style={{ width: 14, height: 14, flexShrink: 0, color: 'var(--color-accent-primary)' }} />
-              <span>{t('chat.planFeedbackHint')}</span>
-            </div>
-          )}
           {hasActiveSubagents && !isLoading && (
             <div style={bannerStyle('transparent')}>
               <span style={{ position: 'relative', display: 'flex', height: 8, width: 8 }}>
@@ -893,7 +924,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           {workspaceStarting && (
             <div style={bannerStyle('transparent')}>
               <span aria-hidden="true" style={{ flexShrink: 0 }}>
-                <Loader size={14} className="text-[color:var(--color-accent-primary)]" />
+                <Loader size={14} className="text-(--color-accent-primary)" />
               </span>
               <span>{t(workspaceStarting === 'archived' ? 'chat.workspaceRestoring' : 'chat.workspaceStarting')}</span>
             </div>
@@ -901,89 +932,22 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           {isCompacting && (
             <div style={bannerStyle('transparent')}>
               <span aria-hidden="true" style={{ flexShrink: 0 }}>
-                <Loader size={14} className="text-[color:var(--color-accent-primary)]" />
+                <Loader size={14} className="text-(--color-accent-primary)" />
               </span>
               <span>{t(isCompacting === 'offload' ? 'chat.offloading' : 'chat.compacting')}</span>
+              {isCompacting === 'summarize' && compactionTokens != null && (
+                <span className="tabular-nums" style={{ color: 'var(--color-text-quaternary)' }}>
+                  {t('chat.compactingTokens', { value: compactNumber(compactionTokens, locale) })}
+                </span>
+              )}
             </div>
           )}
+          <ThreadNotices model={threadModel} subagents={threadSubagents} />
         </div>
       )}
 
-      {/* Chart selection chips — the regions / price levels the user picked on
-          the chart, each with its note, ready to attach to the next send. Click
-          a chip to re-open its note editor on the chart; ✕ removes it. Sits
-          directly above the input, matching the status-banner layout. */}
-      {chips.length > 0 && (
-        <div style={{ padding: '0 12px', marginBottom: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {chips.map((c) => {
-            const baseLabel = c.selectionType === 'region'
-              ? t('marketView.selection.chipRegion', { symbol: c.symbol, timeframe: c.timeframe })
-              : t('marketView.selection.chipPriceLevel', {
-                  price: Number.isFinite(c.priceLow) ? c.priceLow.toFixed(2) : '—',
-                  symbol: c.symbol,
-                  timeframe: c.timeframe,
-                });
-            const label = c.comment ? `${baseLabel} · "${c.comment}"` : baseLabel;
-            return (
-              <span
-                key={c.id}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  maxWidth: '100%',
-                  padding: '4px 6px 4px 10px',
-                  borderRadius: 6,
-                  background: 'var(--color-bg-surface)',
-                  border: '1px solid var(--color-border-muted)',
-                  color: 'var(--color-text-secondary)',
-                  fontSize: '0.75rem',
-                }}
-              >
-                <button
-                  type="button"
-                  title={t('marketView.selection.editChip')}
-                  onClick={() => chartSelectionStore.openEditor(c.id)}
-                  style={{
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    maxWidth: 240,
-                    border: 'none',
-                    background: 'transparent',
-                    color: 'inherit',
-                    font: 'inherit',
-                    padding: 0,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {label}
-                </button>
-                <button
-                  type="button"
-                  aria-label={t('marketView.selection.removeChip')}
-                  onClick={() => chartSelectionStore.remove(c.id)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                    width: 16,
-                    height: 16,
-                    padding: 0,
-                    border: 'none',
-                    background: 'transparent',
-                    color: 'var(--color-text-tertiary)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <X style={{ width: 12, height: 12 }} />
-                </button>
-              </span>
-            );
-          })}
-        </div>
-      )}
+      {/* Chart selection chips, directly above the input like the status banners. */}
+      <SelectionChips chips={chips} />
 
       {/* Input */}
       <ChatInput
@@ -993,10 +957,17 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         onStop={handleStop}
         onAction={handleAction}
         isLoading={isLoading}
-        mode={mode}
-        onModeChange={onModeChange}
-        ptcDisabledReason={ptcDisabledReason}
-        workspaces={ptcWorkspaces as never}
+        scope={scope}
+        onScopeChange={onScopeChange}
+        model={threadModel.model}
+        onPickModel={threadModel.pickModel}
+        subagentsAllowed={threadSubagents.allowed}
+        onToggleSubagents={threadSubagents.setAllowed}
+        tuning={threadTuning.tuning}
+        onPickReasoningEffort={threadTuning.setReasoningEffort}
+        onPickFastMode={threadTuning.setFastMode}
+        emptyWorkspacesHint={emptyWorkspacesHint}
+        workspaces={workspaces}
         selectedWorkspaceId={selectedWorkspaceId}
         onWorkspaceChange={onWorkspaceChange}
         onCaptureChart={onCaptureChart}
@@ -1006,16 +977,15 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         onClearPrefill={onClearPrefill}
         hasExternalContext={chips.length > 0}
         placeholder={
-          wasStopped && !isLoading && !pendingInterrupt && !pendingRejection
+          wasStopped && !isLoading && !pendingInterrupt
             ? t('chat.placeholderStopped')
             : (placeholder ?? t('marketView.chatPanel.defaultPlaceholder'))
         }
-        initialModel={initialModel}
         threadModels={threadModels}
         tokenUsage={tokenUsage}
       />
 
-      <MarketDetailDialog payload={dialogPayload} onClose={handleCloseDialog} />
+      <MarketDetailDialog payload={dialogPayload} onClose={handleCloseDialog} getToolCallProcess={getToolCallProcess} />
     </div>
   );
 }

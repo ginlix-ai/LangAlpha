@@ -121,6 +121,35 @@ class TestFileOperations:
 
         assert any(m.endswith("/index.js") for m in matches)
 
+    async def test_glob_hides_history_until_named(self, shared_sandbox):
+        """The agent's broad globs skip .agents/threads and .agents/large_tool_results,
+        a glob whose path or literal pattern prefix names them still lists them, and
+        a project's own threads/ is never hidden."""
+        wd = shared_sandbox._work_dir
+        root = f"{wd}/hist"
+        for rel in (
+            "src/a.json",
+            "threads/own.json",
+            ".agents/skills/s/SKILL.md",
+            ".agents/threads/abc/transcript/turn-0001.json",
+            ".agents/large_tool_results/call_1.json",
+        ):
+            await shared_sandbox.aupload_file_bytes(f"{root}/{rel}", b"{}")
+
+        async def glob(pattern, path=root, hide=True):
+            found = await shared_sandbox.aglob_files(pattern, path=path, hide_history=hide)
+            return sorted(m.removeprefix(f"{root}/") for m in found)
+
+        assert await glob("*.json") == ["src/a.json", "threads/own.json"]
+        assert await glob("**/*", path=f"{root}/.agents") == [".agents/skills/s/SKILL.md"]
+        assert await glob(".agents/threads/*/transcript/*.json") == [
+            ".agents/threads/abc/transcript/turn-0001.json"
+        ]
+        assert await glob("*.json", path=f"{root}/.agents/large_tool_results") == [
+            ".agents/large_tool_results/call_1.json"
+        ]
+        assert len(await glob("**/*.json", hide=False)) == 4
+
     async def test_grep_content(self, shared_sandbox):
         wd = shared_sandbox._work_dir
         await shared_sandbox.aupload_file_bytes(

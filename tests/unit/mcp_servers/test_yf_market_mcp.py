@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from mcp_servers.yf_market_mcp_server import (
+from plugins.yfinance.yf_market_mcp_server import (
     get_earnings_calendar,
     get_industry_info,
     get_market_status,
@@ -18,7 +18,7 @@ from .conftest import assert_error, assert_ok_envelope
 
 
 class TestSearchTickers:
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_basic_search(self, mock_yf):
         mock_search = MagicMock()
         mock_search.quotes = [{"symbol": "AAPL", "shortname": "Apple Inc."}]
@@ -34,7 +34,7 @@ class TestSearchTickers:
         ]
         assert len(result["data"]["news"]) == 1
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_search_with_custom_params(self, mock_yf):
         mock_search = MagicMock()
         mock_search.quotes = []
@@ -45,7 +45,7 @@ class TestSearchTickers:
 
         mock_yf.Search.assert_called_once_with("xyz", max_results=3, news_count=0)
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_search_error(self, mock_yf):
         mock_yf.Search.side_effect = Exception("network error")
 
@@ -55,7 +55,7 @@ class TestSearchTickers:
 
 
 class TestGetMarketStatus:
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_us_market(self, mock_yf):
         mock_market = MagicMock()
         mock_market.status = "OPEN"
@@ -69,7 +69,7 @@ class TestGetMarketStatus:
         assert result["market"] == "US"
         assert result["data"]["status"] == "OPEN"
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_default_market(self, mock_yf):
         mock_market = MagicMock()
         mock_market.status = "CLOSED"
@@ -80,7 +80,7 @@ class TestGetMarketStatus:
 
         mock_yf.Market.assert_called_once_with("US")
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_market_error(self, mock_yf):
         mock_yf.Market.side_effect = Exception("invalid market")
 
@@ -91,7 +91,7 @@ class TestGetMarketStatus:
 
 
 class TestScreenStocks:
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_single_filter(self, mock_yf):
         mock_query = MagicMock()
         mock_yf.EquityQuery.return_value = mock_query
@@ -107,7 +107,7 @@ class TestScreenStocks:
         assert_ok_envelope(result, source="yfinance", count=1)
         assert result["data"]["quotes"] == [{"symbol": "TSLA"}]
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_multiple_filters_wrapped_in_and(self, mock_yf):
         mock_query = MagicMock()
         mock_yf.EquityQuery.return_value = mock_query
@@ -124,7 +124,7 @@ class TestScreenStocks:
         )
         assert_ok_envelope(result, count=0)
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_nested_filters(self, mock_yf):
         mock_query = MagicMock()
         mock_yf.EquityQuery.return_value = mock_query
@@ -143,7 +143,7 @@ class TestScreenStocks:
 
         assert_ok_envelope(result, source="yfinance")
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_screen_error(self, mock_yf):
         mock_yf.EquityQuery.side_effect = Exception("bad filter")
 
@@ -151,7 +151,7 @@ class TestScreenStocks:
 
         assert_error(result, "upstream_error")
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_invalid_field_surfaces_validation_message(self, mock_yf):
         # EquityQuery validation raises ValueError/TypeError with a local,
         # actionable message (no URLs) — surfaced as invalid_argument so the
@@ -166,7 +166,7 @@ class TestScreenStocks:
 
 
 class TestGetPredefinedScreen:
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_valid_screen(self, mock_yf):
         mock_yf.PREDEFINED_SCREENER_QUERIES = {"day_gainers": MagicMock()}
         mock_yf.screen.return_value = {"quotes": [{"symbol": "NVDA"}], "total": 1}
@@ -177,7 +177,7 @@ class TestGetPredefinedScreen:
         assert_ok_envelope(result, count=1)
         assert result["screen_name"] == "day_gainers"
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_invalid_screen(self, mock_yf):
         mock_yf.PREDEFINED_SCREENER_QUERIES = {"day_gainers": MagicMock()}
 
@@ -186,7 +186,7 @@ class TestGetPredefinedScreen:
         assert_error(result, "invalid_argument")
         assert "day_gainers" in result["supported"]
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_screen_error(self, mock_yf):
         mock_yf.PREDEFINED_SCREENER_QUERIES = {"day_gainers": MagicMock()}
         mock_yf.screen.side_effect = Exception("api error")
@@ -197,7 +197,7 @@ class TestGetPredefinedScreen:
 
 
 class TestGetEarningsCalendar:
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_earnings_calendar(self, mock_yf):
         mock_cal = MagicMock()
         mock_cal.earnings_calendar = pd.DataFrame(
@@ -216,7 +216,7 @@ class TestGetEarningsCalendar:
         assert result["end"] == "2026-01-31"
         assert result["data"][0]["symbol"] == "AAPL"
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_empty_calendar(self, mock_yf):
         mock_cal = MagicMock()
         mock_cal.earnings_calendar = pd.DataFrame()
@@ -226,7 +226,7 @@ class TestGetEarningsCalendar:
 
         assert_ok_envelope(result, count=0)
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_calendar_error(self, mock_yf):
         mock_yf.Calendars.side_effect = Exception("bad dates")
 
@@ -236,7 +236,7 @@ class TestGetEarningsCalendar:
 
 
 class TestGetSectorInfo:
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_sector_info(self, mock_yf):
         mock_sector = MagicMock()
         mock_sector.overview = {"name": "Technology", "market_cap": 1e12}
@@ -259,7 +259,7 @@ class TestGetSectorInfo:
         assert result["data"]["top_etfs"] == {"XLK": "Technology Select SPDR"}
         assert len(result["data"]["industries"]) == 2
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_sector_error(self, mock_yf):
         mock_yf.Sector.side_effect = Exception("invalid sector")
 
@@ -270,7 +270,7 @@ class TestGetSectorInfo:
 
 
 class TestGetIndustryInfo:
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_industry_info(self, mock_yf):
         mock_industry = MagicMock()
         mock_industry.overview = {"name": "Software - Infrastructure"}
@@ -294,7 +294,7 @@ class TestGetIndustryInfo:
         assert len(result["data"]["top_performing_companies"]) == 1
         assert len(result["data"]["top_growth_companies"]) == 1
 
-    @patch("mcp_servers.yf_market_mcp_server.yf")
+    @patch("plugins.yfinance.yf_market_mcp_server.yf")
     def test_industry_error(self, mock_yf):
         mock_yf.Industry.side_effect = Exception("invalid industry")
 

@@ -1,9 +1,9 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useEffectEvent, type RefObject } from 'react';
 
 /**
  * Calls `handler` when a pointerdown event fires outside `ref`.
  * Uses `pointerdown` to handle mouse, touch, and stylus uniformly.
- * Handler is stored in a ref so callers don't need `useCallback`.
+ * Handler is read through an effect event so callers don't need `useCallback`.
  * No-ops when `enabled` is false.
  *
  * Taps on elements (or their descendants) with `data-click-outside-ignore`
@@ -15,8 +15,7 @@ export function useOnClickOutside(
   handler: () => void,
   enabled = true,
 ): void {
-  const handlerRef = useRef(handler);
-  useEffect(() => { handlerRef.current = handler; });
+  const onOutside = useEffectEvent(handler);
 
   useEffect(() => {
     if (!enabled) return;
@@ -26,7 +25,7 @@ export function useOnClickOutside(
         // Ignore taps inside portal-rendered elements marked with the ignore attribute
         const el = target instanceof Element ? target : target.parentElement;
         if (el?.closest('[data-click-outside-ignore]')) return;
-        handlerRef.current();
+        onOutside();
       }
     };
     document.addEventListener('pointerdown', handle);

@@ -30,9 +30,11 @@ _STRING_VALUED_ARGS: dict[str, frozenset[str]] = {
 def parse_tool_args(args, tool_name: str | None = None):
     """Coerce a tool-call args dict to match the tool's Pydantic schema.
 
-    Canonical for both the live middleware and checkpoint replay: string-valued
-    JSON args (Write/Edit payloads) are JSON-encoded, and JSON-looking strings on
-    other args are decoded. Non-dict input passes through unchanged.
+    Canonical for the live middleware, checkpoint replay, and the order ledger,
+    which has to hash the same form the relay will see: string-valued JSON args
+    (Write/Edit payloads) are JSON-encoded, and JSON-looking strings on other
+    args are decoded. Non-dict input passes through unchanged. Idempotent, so a
+    caller that parses early does not stop the middleware parsing again.
     """
     if not isinstance(args, dict):
         return args
@@ -81,18 +83,22 @@ class ToolArgumentParsingMiddleware(AgentMiddleware):
     def _parse_args(self, args, tool_name: str | None = None):
         return parse_tool_args(args, tool_name)
 
-    def wrap_tool_call(self, request, handler):
+    def _parsed(self, request):
+        """The request with parsed args, the model's own tool call left as sent.
+
+        The call dict is the one in the assistant message: writing into it
+        would have later requests of this run send the parsed args while the
+        checkpoint keeps the raw ones, so the next run's requests would differ
+        from those its earlier thinking was produced behind.
+        """
         tool_call = request.tool_call
-        if "args" in tool_call:
-            tool_call["args"] = self._parse_args(
-                tool_call["args"], tool_name=tool_call.get("name")
-            )
-        return handler(request)
+        if "args" not in tool_call:
+            return request
+        args = self._parse_args(tool_call["args"], tool_name=tool_call.get("name"))
+        return request.override(tool_call={**tool_call, "args": args})
+
+    def wrap_tool_call(self, request, handler):
+        return handler(self._parsed(request))
 
     async def awrap_tool_call(self, request, handler):
-        tool_call = request.tool_call
-        if "args" in tool_call:
-            tool_call["args"] = self._parse_args(
-                tool_call["args"], tool_name=tool_call.get("name")
-            )
-        return await handler(request)
+        return await handler(self._parsed(request))

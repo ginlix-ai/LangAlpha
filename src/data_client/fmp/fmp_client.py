@@ -12,8 +12,54 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
+from market_protocol import display_spelling, vendor_spelling
 
 _CACHE_MAX_SIZE = 512
+
+# Stable's ``economic-indicators`` answers at most this many days ending at
+# ``to``, so an indicator is read back in windows of that span from today in
+# UTC. Another implementation of this tool surface should walk the same windows
+# with the same caps and batches, so both serve the same rows.
+_INDICATOR_WINDOW_DAYS = 91
+_INDICATOR_MAX_WINDOWS = 64
+_INDICATOR_MAX_EMPTY_RUN = 16
+_INDICATOR_MAX_BATCH = 8
+
+
+def _vendor_symbol_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Respell the symbol params in FMP's form.
+
+    Every FMP request passes here, so callers hold our spelling (``600519.SH``)
+    and FMP still receives the ``600519.SS`` it resolves. A blank entry in a
+    list (``AAPL,,MSFT``) names nothing and is dropped; a symbol that cannot be
+    spelled raises :class:`FMPRequestError` rather than reaching FMP.
+    """
+    out = dict(params)
+    try:
+        if isinstance(out.get("symbol"), str):
+            out["symbol"] = vendor_spelling(out["symbol"])
+        if isinstance(out.get("symbols"), str):
+            out["symbols"] = ",".join(
+                vendor_spelling(s) for s in out["symbols"].split(",") if s.strip()
+            )
+    except ValueError as exc:
+        # 400, the status FMP gives a malformed request: callers that map
+        # statuses report it as a bad argument, with the reason.
+        raise FMPRequestError(f"Invalid symbol for FMP: {exc}", status_code=400) from exc
+    return out
+
+
+def _own_symbol_rows(data: Any) -> Any:
+    """Respell the ``symbol`` of each returned row in our spelling, in place.
+
+    The inbound half of :func:`_vendor_symbol_params`: FMP answers a Shanghai
+    listing as ``600519.SS``, and nothing past this client should see that.
+    """
+    rows = data if isinstance(data, list) else [data]
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("symbol"), str):
+            row["symbol"] = display_spelling(row["symbol"])
+    return data
 
 
 class FMPRequestError(Exception):
@@ -111,7 +157,7 @@ class FMPClient:
         version: Optional[str] = None,
         use_cache: bool = True,
     ) -> Union[Dict, List]:
-        params = params or {}
+        params = _vendor_symbol_params(params or {})
 
         cache_key = f"{endpoint}:{json.dumps(params, sort_keys=True)}"
 
@@ -127,7 +173,7 @@ class FMPClient:
                 url, params=params, headers={"apikey": self.api_key}
             )
             response.raise_for_status()
-            data = response.json()
+            data = _own_symbol_rows(response.json())
 
             if use_cache and data:
                 self._cache[cache_key] = data
@@ -898,9 +944,58 @@ class FMPClient:
     # =====================================================================
 
     async def get_economic_indicators(self, name: str, limit: int = 50) -> List[Dict]:
-        return await self._make_request(
-            "economic-indicators", params={"name": name, "limit": limit}
-        )
+        """The newest ``limit`` observations of an indicator, newest first.
+
+        Stable ignores ``limit`` and answers at most the 91 days ending at
+        ``to``, clamping a longer range without a word, so a quarterly series
+        such as GDP has nothing in its default window. The series is read back
+        a window at a time instead, the first alone and then a widening batch,
+        until ``limit`` rows are in hand. An answer that is not a list is FMP's
+        refusal and is returned as it came, as the single read returned it.
+        """
+        found: Dict[str, Dict] = {}
+        end = _today_utc()
+        batch, walked, empty_run = 1, 0, 0
+        while walked < _INDICATOR_MAX_WINDOWS:
+            spans = []
+            for _ in range(min(batch, _INDICATOR_MAX_WINDOWS - walked)):
+                start = end - timedelta(days=_INDICATOR_WINDOW_DAYS - 1)
+                spans.append((start.isoformat(), end.isoformat()))
+                end = start - timedelta(days=1)
+            walked += len(spans)
+            answers = await asyncio.gather(
+                *(
+                    self._make_request(
+                        "economic-indicators",
+                        params={"name": name, "from": lo, "to": hi},
+                    )
+                    for lo, hi in spans
+                ),
+                return_exceptions=True,
+            )
+            # Newest first, in window order rather than completion order: a
+            # window older than the rows already in hand, or past the empty run
+            # that ends the series, is not needed, and neither is its failure.
+            for (lo, hi), answer in zip(spans, answers):
+                if len(found) >= limit or empty_run >= _INDICATOR_MAX_EMPTY_RUN:
+                    break
+                if isinstance(answer, BaseException):
+                    raise answer
+                if not isinstance(answer, list):
+                    return answer
+                inside = [
+                    row
+                    for row in answer
+                    if isinstance(row, dict) and lo <= str(row.get("date"))[:10] <= hi
+                ]
+                for row in inside:
+                    found.setdefault(row["date"], row)
+                empty_run = 0 if inside else empty_run + 1
+            if len(found) >= limit or empty_run >= _INDICATOR_MAX_EMPTY_RUN:
+                break
+            batch = min(batch * 2, _INDICATOR_MAX_BATCH)
+        rows = sorted(found.values(), key=lambda row: row["date"], reverse=True)
+        return rows[: max(limit, 0)]
 
     async def get_economic_calendar(
         self, from_date: Optional[str] = None, to_date: Optional[str] = None

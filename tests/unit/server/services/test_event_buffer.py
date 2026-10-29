@@ -73,9 +73,8 @@ class TestBufferEventRedisHappyPath:
 
         assert mock_cache.pipelined_event_buffer.await_count == 1
         call = mock_cache.pipelined_event_buffer.await_args
-        # Stream-only, and no meta hash: persistence comes from
-        # StreamEventAccumulator, and the counter it used to keep was read by
-        # nobody.
+        # Stream-only, and no meta hash: the counter it used to keep was read
+        # by nobody.
         assert call.args[0] == "workflow:stream:thread-1:run-1"
         assert "meta_key" not in call.kwargs
         assert call.kwargs["event_id"] == 42
@@ -199,6 +198,56 @@ class TestBufferEventRedisFailureModes:
                 await btm._buffer_event_redis(
                     "thread-1", "run-1", "id: 1001\ndata: x\n\n"
                 )
+
+    @pytest.mark.asyncio
+    async def test_byte_quota_breach_is_fatal_and_says_bytes(self):
+        """The run's frames are counted in bytes too, on the run's own record:
+        a few huge frames finalize the run well under the event cap."""
+        btm = _make_btm()
+        btm.max_stream_bytes = 100
+        info = _register_task(btm)
+
+        mock_cache = MagicMock()
+        mock_cache.enabled = True
+        mock_cache.pipelined_event_buffer = AsyncMock(return_value=None)
+        frame_1 = "id: 1\nevent: x\ndata: " + "a" * 40 + "\n\n"
+        frame_2 = "id: 2\nevent: x\ndata: " + "é" * 20 + "\n\n"
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=mock_cache,
+        ):
+            await btm._buffer_event_redis("thread-1", "run-1", frame_1)
+            assert info.stream_quota.bytes == len(frame_1)
+
+            # Encoded bytes, not characters: 20 two-byte chars cross 100.
+            with pytest.raises(StreamQuotaExceededError, match=r"\d+/100 bytes"):
+                await btm._buffer_event_redis("thread-1", "run-1", frame_2)
+
+        # Charged before the write: the frame that would cross the cap never
+        # reaches Redis, so the cap bounds what the stream holds.
+        assert mock_cache.pipelined_event_buffer.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_byte_totals_are_per_run(self):
+        btm = _make_btm()
+        btm.max_stream_bytes = 60
+        first = _register_task(btm, run_id="run-1")
+        second = _register_task(btm, run_id="run-2")
+
+        mock_cache = MagicMock()
+        mock_cache.enabled = True
+        mock_cache.pipelined_event_buffer = AsyncMock(return_value=None)
+        frame = "id: 1\nevent: x\ndata: " + "a" * 30 + "\n\n"
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=mock_cache,
+        ):
+            await btm._buffer_event_redis("thread-1", "run-1", frame)
+            await btm._buffer_event_redis("thread-1", "run-2", frame)
+
+        assert first.stream_quota.bytes == second.stream_quota.bytes == len(frame)
 
     @pytest.mark.asyncio
     async def test_memory_backend_stays_best_effort(self):

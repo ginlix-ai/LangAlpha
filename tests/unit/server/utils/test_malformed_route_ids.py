@@ -53,10 +53,10 @@ def test_valid_workspace_id_query_param_is_not_flagged():
 
 
 def test_literal_endpoint_segments_allowlisted():
-    # POST /threads/messages and /workspaces/{flash,reorder} are endpoints, not ids.
+    # POST /threads/messages and /workspaces/{home,reorder} are endpoints, not ids.
     assert find_malformed_route_ids("/api/v1/threads/messages") == []
     assert find_malformed_route_ids("/api/v1/threads/dispatches/liveness") == []
-    assert find_malformed_route_ids("/api/v1/workspaces/flash") == []
+    assert find_malformed_route_ids("/api/v1/workspaces/home") == []
     assert find_malformed_route_ids("/api/v1/workspaces/reorder") == []
 
 

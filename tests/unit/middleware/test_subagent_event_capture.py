@@ -15,15 +15,39 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import base64
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import redis.exceptions as redis_exceptions
+from deepagents.backends.protocol import WriteResult
+from langchain_core.messages import ToolMessage
+
+from langgraph.types import Command
 
 from src.utils.cache import stream_append
 
+from ptc_agent.agent.middleware.background_subagent.event_capture import (
+    SubagentEventCaptureMiddleware,
+    SubagentToolResultCaptureMiddleware,
+    _tool_message_to_event_data,
+)
+from ptc_agent.agent.middleware.background_subagent.middleware import (
+    current_background_tool_call_id,
+)
+
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
+)
+from ptc_agent.agent.middleware.file_operations.multimodal import (
+    attach_to_tool_result,
+    build_content_blocks,
+)
+from ptc_agent.agent.middleware.file_operations.multimodal_strip import (
+    strip_unsupported_content_blocks,
+)
+from ptc_agent.agent.middleware.large_result_eviction import (
+    LargeResultEvictionMiddleware,
 )
 
 
@@ -127,10 +151,10 @@ async def test_record_carries_run_stamp(monkeypatch) -> None:
     )
     spilled: list[dict] = []
 
-    async def _capture(t, record):
-        spilled.append(record)
+    async def _capture(t, records):
+        spilled.extend(records)
 
-    monkeypatch.setattr(registry, "_spill_record_to_redis", _capture)
+    monkeypatch.setattr(registry, "_spill_records_to_redis", _capture)
 
     await registry.append_captured_event(task.tool_call_id, _event(0))
     task.spawned_run_id = "run-2"
@@ -432,7 +456,7 @@ async def test_redis_spill_v2_timeout_not_landed_trips_circuit(monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_redis_spill_circuit_breaker_short_circuits(monkeypatch) -> None:
-    """Once ``redis_write_failed`` is set, ``_spill_record_to_redis`` returns
+    """Once ``redis_write_failed`` is set, ``_spill_records_to_redis`` returns
     immediately on every subsequent append for that task — no cache fetch,
     no pipeline call."""
     fake_cache = MagicMock()
@@ -486,7 +510,7 @@ async def test_redis_spill_uses_durable_persistence_cap(monkeypatch) -> None:
     not expire mid-run; the attach-grace TTL is stamped at terminal) and a
     2x MAXLEN backstop over the quota — FIFO trim must never engage before
     the quota check opens the circuit, or early events would silently
-    truncate and corrupt ``conversation_responses.sse_events``.
+    drop out of the lane's archive.
     """
     fake_cache = MagicMock()
     fake_cache.enabled = True
@@ -653,9 +677,10 @@ async def test_sentinel_writes_xadd_no_seq_bump(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_quota_breach_opens_the_spill_circuit(monkeypatch) -> None:
-    """A write that lands PAST the per-agent quota flips redis_write_failed —
-    the abort loop + terminal escalation then finalize error(transport_lost)
-    instead of the 2x MAXLEN backstop silently trimming the served head.
+    """A record PAST the per-agent quota is refused before it is written and
+    flips redis_write_failed — the abort loop + terminal escalation then
+    finalize error(transport_lost) instead of the 2x MAXLEN backstop silently
+    trimming the served head.
 
     The gate reads the record's own seq now that the counter hash is gone; the
     seq is assigned by the same append that writes the frame, so it counts at
@@ -683,10 +708,11 @@ async def test_quota_breach_opens_the_spill_circuit(monkeypatch) -> None:
 
     await registry.append_captured_event(task.tool_call_id, _event(1))
     assert task.redis_write_failed is True
+    assert fake_cache.pipelined_event_buffer.await_count == 0
 
     # Circuit open: further appends never reach the pipeline.
     await registry.append_captured_event(task.tool_call_id, _event(2))
-    assert fake_cache.pipelined_event_buffer.await_count == 1
+    assert fake_cache.pipelined_event_buffer.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -1029,3 +1055,224 @@ async def test_an_ordinary_subagent_refreshes_nobody() -> None:
     await registry.append_captured_event(task.tool_call_id, _text_event(0))
 
     assert other.last_updated_at == 0.0
+
+
+def _attachment_tool_message(payload: bytes) -> ToolMessage:
+    """A visual ``Read`` result, assembled by the two functions that ship it."""
+    blocks = build_content_blocks(
+        base64.b64encode(payload).decode(), "chart.png", "image/png", None
+    )
+    return attach_to_tool_result(
+        ToolMessage(content="Loading image: chart.png", tool_call_id="tc1"), blocks
+    )
+
+
+def test_an_attachment_is_captured_as_its_acknowledgment() -> None:
+    """The bytes stay out of the captured event; the client gets the ack.
+
+    A subagent's ``Read`` result reaches this middleware with the attachment on
+    it, so stringifying the content would fill the whole 256 KiB budget with
+    base64 in place of the one line the user is meant to see.
+    """
+    msg = _attachment_tool_message(b"\x89PNG" + b"\x00" * 300_000)
+
+    data = _tool_message_to_event_data(msg, "task:x")
+
+    assert data["content"] == "Loading image: chart.png\n[Viewing image]"
+    assert "truncated" not in data["content"]
+
+
+def test_a_stripped_attachment_is_captured_as_its_placeholder() -> None:
+    """The strip runs inside the subagent too, and leaves an all-text list."""
+    stripped = strip_unsupported_content_blocks(
+        [_attachment_tool_message(b"\x89PNG")], has_image=False, has_pdf=False
+    )[0]
+
+    data = _tool_message_to_event_data(stripped, "task:x")
+
+    assert "not visible to the current model" in data["content"]
+
+
+def test_an_unrecognized_block_list_still_reaches_the_client() -> None:
+    """``str`` stays the fallback, so an extractor miss cannot blank a result."""
+    msg = ToolMessage(content=[{"rows": [1, 2]}], tool_call_id="tc1")
+
+    data = _tool_message_to_event_data(msg, "task:x")
+
+    assert data["content"] == "[{'rows': [1, 2]}]"
+
+
+# --- captured tool_call_result payload -------------------------------------
+#
+# These events feed the per-task stream, which the SSE producer never touches,
+# so the ``status`` the tool error handler stamped has to be carried here or the
+# client has only the failure prose to go on.
+
+
+def test_error_status_rides_the_captured_result() -> None:
+    msg = ToolMessage(
+        content="Tool 'WebFetch' failed: connection reset",
+        tool_call_id="tc1",
+        status="error",
+    )
+
+    data = _tool_message_to_event_data(msg, "task:x")
+
+    assert data["status"] == "error"
+
+
+def test_a_successful_result_carries_its_status_key() -> None:
+    msg = ToolMessage(content="ok", tool_call_id="tc1")
+
+    assert _tool_message_to_event_data(msg, "task:x")["status"] == "success"
+
+
+def test_successful_refusal_prose_from_a_direct_mcp_tool_keeps_its_success() -> None:
+    """A direct MCP tool whose successful output opens with "Refused:" reads as
+    a refusal to every prose heuristic, so its success has to ride the wire."""
+    msg = ToolMessage(content="Refused: 7 applications", tool_call_id="tc1")
+
+    data = _tool_message_to_event_data(msg, "task:x")
+
+    assert data["content"] == "Refused: 7 applications"
+    assert data["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_command_wrapped_error_result_keeps_its_status() -> None:
+    """A tool returning a Command goes through the same builder as a bare
+    ToolMessage, so the two capture paths cannot disagree."""
+    registry = MagicMock()
+    registry._tasks = {}
+    registry.update_metrics = AsyncMock()
+    registry.append_captured_event = AsyncMock()
+    middleware = SubagentToolResultCaptureMiddleware(registry=registry)
+
+    command = Command(
+        update={
+            "messages": [
+                ToolMessage(content="Refused: not permitted", tool_call_id="tc1", status="error")
+            ]
+        }
+    )
+    request = MagicMock()
+    request.tool_call = {"name": "mcp__moomoo__place_order", "id": "tc1"}
+
+    async def handler(_req):
+        return command
+
+    token = current_background_tool_call_id.set("tc1")
+    try:
+        await middleware.awrap_tool_call(request, handler)
+    finally:
+        current_background_tool_call_id.reset(token)
+
+    captured = [
+        call.args[1]
+        for call in registry.append_captured_event.await_args_list
+        if call.args[1]["event"] == "tool_call_result"
+    ]
+    assert captured and captured[0]["data"]["status"] == "error"
+
+
+def _capture_registry() -> MagicMock:
+    registry = MagicMock()
+    registry._tasks = {}
+    registry.update_metrics = AsyncMock()
+    registry.append_captured_event = AsyncMock()
+    return registry
+
+
+def _captured_results(registry: MagicMock) -> list[dict]:
+    return [
+        call.args[1]["data"]
+        for call in registry.append_captured_event.await_args_list
+        if call.args[1]["event"] == "tool_call_result"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_evicted_result_is_captured_as_the_pointer_the_checkpoint_keeps() -> None:
+    """Replay projects a subagent's results from its checkpoint, which keeps
+    the eviction pointer, so the live copy has to be that pointer too rather
+    than the full result eviction took out."""
+    registry = _capture_registry()
+    capture = SubagentToolResultCaptureMiddleware(registry=registry)
+    backend = MagicMock()
+    backend.awrite = AsyncMock(return_value=WriteResult(path="/evicted/c1.md"))
+    eviction = LargeResultEvictionMiddleware(
+        backend=backend, tool_token_limit_before_evict=100
+    )
+    full = "".join(f"row {i}\n" for i in range(1000))
+    request = MagicMock()
+    request.tool_call = {"name": "Bash", "id": "c1"}
+    request.runtime = MagicMock()
+
+    async def tool(_req):
+        return ToolMessage(content=full, tool_call_id="c1", name="Bash")
+
+    async def evicting(req):
+        return await eviction.awrap_tool_call(req, tool)
+
+    token = current_background_tool_call_id.set("task-tc")
+    try:
+        kept = await capture.awrap_tool_call(request, evicting)
+    finally:
+        current_background_tool_call_id.reset(token)
+
+    assert kept.content.startswith("Tool result too large")
+    (captured,) = _captured_results(registry)
+    assert captured["content"] == kept.content
+    assert full not in captured["content"]
+
+
+@pytest.mark.asyncio
+async def test_the_metrics_half_counts_without_capturing_the_result() -> None:
+    """The innermost half counts the call; the result is left to the capture
+    outside eviction, so one call never streams two results."""
+    registry = _capture_registry()
+    middleware = SubagentEventCaptureMiddleware(registry=registry)
+    request = MagicMock()
+    request.tool_call = {"name": "Bash", "id": "c1"}
+
+    async def tool(_req):
+        return ToolMessage(content="ok", tool_call_id="c1", name="Bash")
+
+    token = current_background_tool_call_id.set("task-tc")
+    try:
+        await middleware.awrap_tool_call(request, tool)
+    finally:
+        current_background_tool_call_id.reset(token)
+
+    registry.update_metrics.assert_awaited_once_with("task-tc", "Bash")
+    assert _captured_results(registry) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hidden", [False, True], ids=["the task's call", "a hidden call"])
+async def test_a_call_kept_out_of_the_stream_captures_no_tool_calls(hidden) -> None:
+    """A compaction summary written by the task's model runs as a hidden call;
+    a tool call it returns is never run, so the task's card must not show it."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables.config import var_child_runnable_config
+    from langchain.agents.middleware.types import ModelResponse
+    from langgraph.constants import TAG_NOSTREAM
+
+    registry = _capture_registry()
+    middleware = SubagentEventCaptureMiddleware(registry=registry)
+
+    async def model(_req):
+        return ModelResponse(
+            result=[AIMessage("", tool_calls=[{"name": "Bash", "id": "c1", "args": {}}])]
+        )
+
+    task = current_background_tool_call_id.set("task-tc")
+    tags = var_child_runnable_config.set({"tags": [TAG_NOSTREAM] if hidden else []})
+    try:
+        await middleware.awrap_model_call(MagicMock(), model)
+    finally:
+        var_child_runnable_config.reset(tags)
+        current_background_tool_call_id.reset(task)
+
+    captured = [c.args[1]["event"] for c in registry.append_captured_event.await_args_list]
+    assert captured == ([] if hidden else ["tool_calls"])

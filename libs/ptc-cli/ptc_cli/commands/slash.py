@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
+from ptc_cli.api.client import WorkspaceNameError, WorkspaceNameTakenError
 from ptc_cli.core import console
 from ptc_cli.display import show_help
 from ptc_cli.streaming.executor import execute_task, reconnect_to_workflow, replay_conversation
@@ -44,10 +46,22 @@ async def _select_or_create_workspace_interactive(
         return str(picked.get("workspace_id"))
 
     name_default = f"cli-{time.strftime('%Y%m%d-%H%M%S')}"
-    name = console.input(f"Workspace name [dim]({name_default})[/dim]: ").strip() or name_default
-    console.print("[dim]Creating workspace (can take ~60s)...[/dim]")
-    ws = await client.create_workspace(name=name)
-    return ws.get("workspace_id")
+    while True:
+        name = console.input(f"Workspace name [dim]({name_default})[/dim]: ").strip() or name_default
+        console.print("[dim]Creating workspace (can take ~60s)...[/dim]")
+        try:
+            ws = await client.create_workspace(name=name)
+        except WorkspaceNameTakenError as e:
+            # A new workspace was asked for; the holder stays one pick away in
+            # this menu's "Use existing" rows.
+            console.print(f"[yellow]{e} Choose another name.[/yellow]")
+        except WorkspaceNameError as e:
+            console.print(f"[yellow]{e}[/yellow]")
+        except httpx.HTTPStatusError as e:
+            handle_http_error(e, console, context="Could not create the workspace")
+            return None
+        else:
+            return ws.get("workspace_id")
 
 
 async def _ensure_workspace_running(client: "SSEStreamClient", workspace_id: str) -> bool:
@@ -55,9 +69,8 @@ async def _ensure_workspace_running(client: "SSEStreamClient", workspace_id: str
         workspace = await client.get_workspace(workspace_id)
         if not workspace:
             return False
-        status = workspace.get("status")
-        # "flash" workspaces have no sandbox - skip start
-        if status not in ("running", "flash"):
+        # Home joins the computer on its first turn - skip start
+        if workspace.get("status") != "running" and not workspace.get("is_home"):
             await client.start_workspace(workspace_id)
         return True
     except Exception:
@@ -91,8 +104,9 @@ def _normalize_path(path: str) -> str:
     if not path:
         return path
 
-    if path.startswith("/home/workspace/"):
-        return path[len("/home/workspace/"):]
+    root_prefix = f"{DEFAULT_SANDBOX_ROOT}/"
+    if path.startswith(root_prefix):
+        return path[len(root_prefix):]
 
     if path.startswith("/") and not path.startswith("/tmp/"):
         return path.lstrip("/")
@@ -320,9 +334,9 @@ async def handle_command(
         show_help()
 
     elif cmd_lower in ("/new", "/clear"):
-        # Guard sandbox command in flash mode
-        if getattr(session_state, "flash_mode", False):
-            # In flash mode, just reset the thread
+        # Guard workspace command in Home
+        if getattr(session_state, "in_home", False):
+            # In Home, just reset the thread
             session_state.reset_thread()
             client.thread_id = session_state.thread_id
             console.print("[green]Started new conversation.[/green]")
@@ -385,9 +399,9 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/refresh":
-        # Guard sandbox command in flash mode
-        if getattr(session_state, "flash_mode", False):
-            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+        # Guard workspace command in Home
+        if getattr(session_state, "in_home", False):
+            console.print("[yellow]This command is not available in Home (no workspace)[/yellow]")
             console.print()
             return "handled"
 
@@ -414,9 +428,9 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/files" or cmd_lower.startswith("/files "):
-        # Guard sandbox command in flash mode
-        if getattr(session_state, "flash_mode", False):
-            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+        # Guard workspace command in Home
+        if getattr(session_state, "in_home", False):
+            console.print("[yellow]This command is not available in Home (no workspace)[/yellow]")
             console.print()
             return "handled"
 
@@ -434,9 +448,9 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/view" or cmd_lower.startswith("/view "):
-        # Guard sandbox command in flash mode
-        if getattr(session_state, "flash_mode", False):
-            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+        # Guard workspace command in Home
+        if getattr(session_state, "in_home", False):
+            console.print("[yellow]This command is not available in Home (no workspace)[/yellow]")
             console.print()
             return "handled"
 
@@ -446,9 +460,9 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/copy" or cmd_lower.startswith("/copy "):
-        # Guard sandbox command in flash mode
-        if getattr(session_state, "flash_mode", False):
-            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+        # Guard workspace command in Home
+        if getattr(session_state, "in_home", False):
+            console.print("[yellow]This command is not available in Home (no workspace)[/yellow]")
             console.print()
             return "handled"
 
@@ -458,9 +472,9 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/download" or cmd_lower.startswith("/download "):
-        # Guard sandbox command in flash mode
-        if getattr(session_state, "flash_mode", False):
-            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+        # Guard workspace command in Home
+        if getattr(session_state, "in_home", False):
+            console.print("[yellow]This command is not available in Home (no workspace)[/yellow]")
             console.print()
             return "handled"
 
@@ -524,28 +538,13 @@ async def handle_command(
         console.print()
 
     elif cmd_lower.startswith("/workspace") or cmd_lower == "/workspaces":
-        # Guard sandbox command in flash mode
-        if getattr(session_state, "flash_mode", False):
-            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+        # Guard workspace command in Home
+        if getattr(session_state, "in_home", False):
+            console.print("[yellow]This command is not available in Home (no workspace)[/yellow]")
             console.print()
             return "handled"
 
         parts = cmd_lower.split()
-
-        # Shortcut: /workspace stop (stop current workspace)
-        if len(parts) >= 2 and parts[1] == "stop":
-            if not client.workspace_id:
-                console.print("[yellow]No active workspace[/yellow]")
-                console.print()
-                return "handled"
-            try:
-                await client.stop_workspace(client.workspace_id)
-                console.print(f"[green]Workspace stopped:[/green] {client.workspace_id}")
-                console.print()
-            except Exception as e:
-                console.print(f"[yellow]Could not stop workspace: {e}[/yellow]")
-                console.print()
-            return "handled"
 
         # Interactive workspace picker
         from prompt_toolkit.application import Application
@@ -564,7 +563,7 @@ async def handle_command(
             return "handled"
 
         selected = [0]
-        status_line = ["Enter = switch | s = start | x = stop | n = new | Ctrl+C = cancel"]
+        status_line = ["Enter = switch | s = start | n = new | Ctrl+C = cancel"]
 
         def menu_text() -> str:
             lines = ["Workspaces:", status_line[0], ""]
@@ -596,10 +595,6 @@ async def handle_command(
         @kb.add("s")
         def _(event: Any) -> None:
             event.app.exit(result=("start", selected[0]))
-
-        @kb.add("x")
-        def _(event: Any) -> None:
-            event.app.exit(result=("stop", selected[0]))
 
         @kb.add("n")
         def _(event: Any) -> None:
@@ -655,15 +650,6 @@ async def handle_command(
                 console.print(f"[green]Workspace started:[/green] {workspace_id}")
             except Exception as e:
                 console.print(f"[yellow]Could not start workspace: {e}[/yellow]")
-            console.print()
-            return "handled"
-
-        if action == "stop":
-            try:
-                await client.stop_workspace(workspace_id)
-                console.print(f"[green]Workspace stopped:[/green] {workspace_id}")
-            except Exception as e:
-                console.print(f"[yellow]Could not stop workspace: {e}[/yellow]")
             console.print()
             return "handled"
 
@@ -834,9 +820,8 @@ async def handle_command(
                 console.print(f"[red]Workspace not found: {workspace_id}[/red]")
                 console.print()
                 return "handled"
-            status = ws.get("status")
-            # "flash" workspaces have no sandbox - skip start
-            if status not in ("running", "flash"):
+            # Home joins the computer on its first turn - skip start
+            if ws.get("status") != "running" and not ws.get("is_home"):
                 await client.start_workspace(workspace_id)
         except Exception as e:
             console.print(f"[yellow]Could not start workspace: {e}[/yellow]")
@@ -876,8 +861,9 @@ async def handle_command(
         # Start user onboarding flow
         console.print()
 
-        # Ensure we have a workspace first (skip in flash mode — no sandbox needed)
-        if not getattr(session_state, "flash_mode", False):
+        # A Home turn has the profile files onboarding saves to; only a
+        # workspace turn needs one picked first.
+        if not getattr(session_state, "in_home", False):
             if not client.workspace_id:
                 console.print("[yellow]No workspace selected.[/yellow]")
                 workspace_id = await _select_or_create_workspace_interactive(client)

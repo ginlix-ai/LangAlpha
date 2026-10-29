@@ -7,7 +7,9 @@ Two separate completion flows:
    when the user has at least one API key or OAuth connection.
 
 2. **Onboarding** (investment preferences): auto-sets onboarding_completed
-   when the user has at least one stock + risk preference set.
+   when the user submits the profile form, which always sets
+   ``risk_preference.risk_level``, or, for a user who onboarded before it,
+   when any risk preference is set and they hold or watch at least one stock.
 """
 
 import logging
@@ -15,6 +17,7 @@ import logging
 from src.server.database import user as user_db
 from src.server.database import watchlist as watchlist_db
 from src.server.database import portfolio as portfolio_db
+from src.server.models.profile_vocabulary import RISK_LEVELS
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,13 @@ def _has_risk_preference(prefs: dict | None) -> bool:
         if v and isinstance(v, str) and v.strip():
             return True
     return False
+
+
+def _submitted_risk_level(prefs: dict | None) -> bool:
+    """Whether the profile form was submitted: it always sends a risk level,
+    and a value from its vocabulary is one the form or a checked write set."""
+    risk = (prefs or {}).get("risk_preference")
+    return isinstance(risk, dict) and risk.get("risk_level") in RISK_LEVELS
 
 
 async def maybe_complete_personalization(user_id: str) -> bool:
@@ -75,9 +85,12 @@ async def maybe_complete_onboarding(user_id: str) -> bool:
     """
     If onboarding requirements are met, set onboarding_completed=True.
 
-    Requirements:
-    - At least one stock (watchlist item OR portfolio holding)
-    - Risk preference set (risk_tolerance or tolerance field)
+    Requirements, either of:
+    - ``risk_preference.risk_level`` set: the profile form was submitted,
+      which is the whole of onboarding now, stocks or not.
+    - Any risk preference set and at least one stock (watchlist item OR
+      portfolio holding): the rule from before the form, kept so a user who
+      onboarded through the agent still completes the same way.
 
     Returns:
         True if onboarding was completed, False otherwise.
@@ -90,6 +103,10 @@ async def maybe_complete_onboarding(user_id: str) -> bool:
             return False
 
         prefs = await user_db.get_user_preferences(user_id)
+        if _submitted_risk_level(prefs):
+            await user_db.update_user(user_id=user_id, onboarding_completed=True)
+            logger.info(f"[onboarding] Auto-completed onboarding for user {user_id} (profile form)")
+            return True
         if not _has_risk_preference(prefs):
             return False
 

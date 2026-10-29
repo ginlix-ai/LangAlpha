@@ -6,11 +6,24 @@ that use the ptc-agent library for code execution in Daytona sandboxes.
 """
 
 import copy
-from typing import Any, Dict, List, Literal, Mapping, Optional, Union
+import uuid
+from typing import Annotated, Any, Dict, List, Literal, Mapping, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 
 from src.server.models.additional_context import AdditionalContext
+from src.server.models.command import FailureReason
+
+from src.llms.reasoning import ReasoningLevel
+
+
+def _uuid_text(value: str) -> str:
+    # The key is stored in a UUID column, so anything else failed at the
+    # insert as a 500; refused here it is the client's 422.
+    return str(uuid.UUID(value))
+
+
+RequestKey = Annotated[str, AfterValidator(_uuid_text)]
 
 # Roles the chat path can VALIDLY persist into the ``messages`` channel. The
 # chat path writes ``{"role", "content"}`` dicts straight in; under DeltaChannel
@@ -24,8 +37,8 @@ from src.server.models.additional_context import AdditionalContext
 #   2. langgraph's ``ensure_message_ids`` must STAMP it at ``put_writes`` (role in
 #      langgraph's ``_MESSAGE_ROLES``). An accepted-but-unstamped role persists
 #      id-less; the hard-stop checkpoint flush / offload write the full list back
-#      via ``aupdate_state`` (which does NOT re-run ``ensure_message_ids``), and the
-#      non-minting reducer can't dedup an id-less message, so it DUPLICATES.
+#      via ``aupdate_state``, and the non-minting reducer can't dedup an id-less
+#      message against that copy, so it DUPLICATES.
 #
 # ``developer`` clears bar 1 (``convert_to_messages`` maps it to SystemMessage) but
 # FAILS bar 2 (not in langgraph's ``_MESSAGE_ROLES``), so it is excluded — clients
@@ -41,6 +54,19 @@ _VALID_MESSAGE_ROLES = frozenset(
 # =============================================================================
 
 
+class HITLOverrides(BaseModel):
+    """What the user changed on a proposal before approving it.
+
+    A field the user left alone stays None, which the tool reads as no
+    change: it keeps what it proposed.
+    """
+
+    report_back: Optional[bool] = Field(
+        default=None,
+        description="A hand-off's report-back, as the approval card's switch left it",
+    )
+
+
 class HITLDecision(BaseModel):
     """Decision for a single HITL action request."""
 
@@ -51,28 +77,57 @@ class HITLDecision(BaseModel):
         None,
         description="Feedback message, typically used when rejecting to explain why or request changes",
     )
-
-
-class HITLResponse(BaseModel):
-    """Response to a HITL interrupt containing decisions for each action request."""
-
-    decisions: List[HITLDecision] = Field(
-        description="List of decisions corresponding to each action request in the interrupt"
+    overrides: Optional[HITLOverrides] = Field(
+        default=None,
+        description="Changes the user made to the proposal before approving it",
     )
 
 
+class HITLResponse(BaseModel):
+    """Response to a HITL interrupt: positional decisions, keyed order verdicts.
+
+    ``decisions`` answers the stock interrupt, where slot i is the answer to
+    action request i. ``order_decisions`` answers an order interrupt, where the
+    key is the attempt the verdict is about: an order authorizes one execution
+    of one call, so its answer cannot be positional, and an attempt nobody
+    names is refused rather than allowed through.
+    """
+
+    decisions: List[HITLDecision] = Field(
+        default_factory=list,
+        description="List of decisions corresponding to each action request in the interrupt",
+    )
+    order_decisions: Optional[Dict[str, HITLDecision]] = Field(
+        default=None,
+        description="Verdict per order attempt id, for an order_approval interrupt",
+    )
+
+
+REJECTED_WITH_FEEDBACK = "User rejected this action with the following feedback: "
+REJECTED_WITHOUT_FEEDBACK = "User rejected this action. No specific feedback was provided."
+
+
 def _format_rejection_message(user_feedback: Optional[str]) -> str:
-    """Format a clear rejection message for the agent.
+    """The tool message the agent reads after a rejection.
 
-    Args:
-        user_feedback: Optional feedback from the user explaining why they rejected.
-
-    Returns:
-        Formatted rejection message that clearly indicates the plan was rejected.
+    Worded for any interrupted action, not only a plan: the same resume path
+    now carries a declined order, and telling the model its "plan" was
+    rejected when it asked to place an order sends it off rewriting a plan it
+    never had.
     """
     if user_feedback and user_feedback.strip():
-        return f"User rejected the plan with the following feedback: {user_feedback.strip()}"
-    return "User rejected the plan. No specific feedback was provided."
+        return REJECTED_WITH_FEEDBACK + user_feedback.strip()
+    return REJECTED_WITHOUT_FEEDBACK
+
+
+def rejection_feedback(message: Optional[str]) -> str:
+    """What the user wrote when rejecting, from a message the resume path
+    reworded, for a tool that words its own result: quoting the reworded
+    message back puts the no-feedback sentence in the user's mouth."""
+    message = (message or "").strip()
+    if message == REJECTED_WITHOUT_FEEDBACK:
+        return ""
+    return message.removeprefix(REJECTED_WITH_FEEDBACK).strip()
 
 
 def serialize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, dict]:
@@ -131,14 +186,22 @@ def summarize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, A
 
     for interrupt_id, response in hitl_response.items():
         if hasattr(response, "decisions"):
-            decisions = getattr(response, "decisions")
+            decisions = list(getattr(response, "decisions") or [])
+            orders = getattr(response, "order_decisions", None) or {}
         elif isinstance(response, dict):
-            decisions = response.get("decisions") or []
+            decisions = list(response.get("decisions") or [])
+            orders = response.get("order_decisions") or {}
         else:
             raise TypeError(
                 "Unsupported HITL response type: "
                 f"interrupt_id={interrupt_id} type={type(response)!r}"
             )
+        # A declined order is a declined turn: the summary drives the stored
+        # feedback_action, and reading only the positional slots would file a
+        # rejected order as an approval.
+        decisions.extend(
+            orders.values() if hasattr(orders, "values") else []
+        )
 
         for decision in decisions:
             if hasattr(decision, "type"):
@@ -157,7 +220,10 @@ def summarize_hitl_response_map(hitl_response: Mapping[str, Any]) -> Dict[str, A
                 any_reject = True
                 if message:
                     msg = str(message).strip()
-                    if msg:
+                    # The web answers an order in its positional slot and
+                    # under order_decisions both, so the same reason arrives
+                    # twice; it is stored once.
+                    if msg and msg not in reject_messages:
                         reject_messages.append(msg)
 
     feedback_action = "DECLINED" if any_reject else "APPROVED"
@@ -217,32 +283,103 @@ class ChatMessage(BaseModel):
 class ThreadOrigin(BaseModel):
     """Who initiated a thread — stored under the thread's metadata['origin'].
 
-    'agent' = spawned by another agent (id = dispatching flash thread id),
+    'agent' = spawned by another agent (id = the dispatching thread's id),
     'automation' = scheduled/triggered run (id = automation id), 'system' =
     set aside for platform-initiated threads. The label is advisory —
     client-supplied, not authenticated, and nothing branches on it.
     User-initiated threads carry no origin at all rather than an explicit
-    'user' entry.
+    'user' entry. ``name`` is display only (the history label above a
+    message). ``agent`` labels it too, and the turn's run line names it as
+    acting for the user; the rest of the model's context reads ``type`` alone.
     """
 
     type: Literal["agent", "automation", "system"]
     id: Optional[str] = Field(default=None, max_length=100)
+    # automation: the automation's name at send time, capped as automations cap it
+    name: Optional[str] = Field(default=None, max_length=255)
+    # agent: which agent dispatched the thread
+    agent: Optional[Literal["chief_of_staff"]] = None
+
+
+class AnalystReport(BaseModel):
+    """A dispatched analyst's thread reporting back, and its workspace.
+
+    ``outcome`` says how the reported run ended. ``run_ids`` names that run
+    and the interrupted runs it continued, oldest first, so a hand-off finds
+    its report by the run its result named even when an approval split the
+    work across runs. ``steer_ids`` names the hand-offs those runs took in as
+    steers, oldest first, since one steered into a run that ended before
+    reading it is reported on by the later run that did. A list, empty or
+    not, is final; absent means unknown: a report stored before it was kept,
+    or one whose read of its steers failed. Rows stored before these were
+    kept have none of them.
+    """
+
+    kind: Literal["analyst"]
+    thread_id: str
+    workspace_id: Optional[str] = None
+    workspace_name: Optional[str] = None
+    outcome: Optional[Literal["completed", "error", "cancelled"]] = None
+    run_ids: Optional[List[str]] = None
+    steer_ids: Optional[List[str]] = None
+
+
+class TaskReport(BaseModel):
+    """A background subagent task in this thread, finished or failed.
+
+    ``subagent_type`` picks the role's glyph for the report's row. Reports
+    enqueued before it was kept have none.
+    """
+
+    kind: Literal["task"]
+    task_id: str
+    display_id: str
+    description: Optional[str] = None
+    failed: bool = False
+    subagent_type: Optional[str] = None
+
+
+class CommandReport(BaseModel):
+    """A background command (Bash) or code run (ExecuteCode) in this thread
+    that ended on its own, completed or failed, or that the user stopped (no
+    other stop reports).
+
+    ``tool_call_id`` is the call that started it, whose card the caption
+    opens. ``failure_reason`` says why a failed one failed: ``exit`` (a
+    non-zero exit), ``lost`` (its computer stopped under it), ``vanished``
+    (no exit recorded while its computer ran) or ``after_turn_limit``
+    (stopped an hour after its turn ended, which the caption calls stopped
+    early).
+    """
+
+    kind: Literal["command_report"]
+    command_id: str
+    tool: Literal["Bash", "ExecuteCode"]
+    description: Optional[str] = None
+    status: Literal["completed", "failed", "stopped"]
+    failure_reason: Optional[FailureReason] = None
+    tool_call_id: Optional[str] = None
+
+
+# What a report-back turn announces, kept on its query row for display only.
+# The turn's own message is model-facing and hidden from the user, so history
+# shows a labelled row built from this instead. Only the server's own
+# report-back requests keep it: any other request has it dropped once parsed,
+# so a malformed one is still refused there.
+ReportSource = Annotated[
+    AnalystReport | TaskReport | CommandReport, Field(discriminator="kind")
+]
 
 
 class ChatRequest(BaseModel):
     """Request model for streaming chat endpoint."""
 
-    # Agent mode selection
-    agent_mode: Optional[Literal["ptc", "flash"]] = Field(
-        default=None,
-        description="Agent mode: 'ptc' (default) for sandbox-based execution, "
-        "'flash' for lightweight, fast responses without sandbox",
-    )
-
     # Identity fields (user_id comes from Bearer token JWT sub claim)
     workspace_id: Optional[str] = Field(
         default=None,
-        description="Workspace identifier - required for 'full' mode, optional for 'flash' mode",
+        description="Workspace the turn runs in; Home's id (POST /workspaces/home) "
+        "runs it in the user's Home. Required on a new thread; a follow-up "
+        "turn defaults to its thread's.",
     )
 
     # Messages
@@ -255,10 +392,6 @@ class ChatRequest(BaseModel):
     subagents_enabled: Optional[List[str]] = Field(
         default=None,
         description="List of subagent names to enable (default: from config)",
-    )
-    plan_mode: bool = Field(
-        default=False,
-        description="When True, agent must submit a plan for approval via submit_plan tool before execution",
     )
     steer_only: bool = Field(
         default=False,
@@ -276,7 +409,7 @@ class ChatRequest(BaseModel):
     # (globally unique), so a lost-response resubmit reconnects to the
     # existing run instead of starting a duplicate. Server-minted fallback
     # when omitted (no dedup).
-    request_key: Optional[str] = Field(
+    request_key: Optional[RequestKey] = Field(
         default=None,
         description="Client-generated UUID identifying this logical send; "
         "reuse across retransmits for idempotent delivery.",
@@ -304,8 +437,39 @@ class ChatRequest(BaseModel):
     fork_from_turn: Optional[int] = Field(
         default=None,
         ge=0,
-        description="Turn index to truncate app DB from on edit/regenerate. "
-        "Deletes all queries/responses at turn_index >= this value before persisting.",
+        description="Marks the request as an edit/regenerate fork at checkpoint_id, "
+        "naming the turn it replaces. The server reads that turn from the "
+        "checkpoint and deletes queries/responses from it onward.",
+    )
+    expected_latest_run_id: Optional[str] = Field(
+        default=None,
+        description="The thread's newest run as this client last saw it: the "
+        "replay's latest_run_id, or a run the client started or joined since. A "
+        "fork is refused (409 stale_fork) when the thread's latest run is a "
+        "different one, so an edit or regenerate from a view that missed a turn "
+        "cannot delete it. Omit to skip the check.",
+    )
+    # Server-stamped: the thread's branch tip when the route read the fork's
+    # turn. Read only for a fork, whose validation always overwrites it, so a
+    # client value never reaches START, which admits the fork only while the
+    # tip still holds this value.
+    fork_branch_tip: Optional[str] = Field(
+        default=None,
+        description="Branch tip the fork was validated against. Server-stamped.",
+    )
+    # Server-stamped beside fork_branch_tip: the newest run_seq read with it.
+    fork_run_horizon: Optional[int] = Field(
+        default=None,
+        description="Newest run sequence read with fork_branch_tip. Server-stamped.",
+    )
+    # Server-stamped: the newest run_seq read before the route found a HITL
+    # answer's pause on the branch. Read only for an answer, whose route always
+    # overwrites it. START refuses the answer if a run started since, so a fork
+    # admitted after that check cannot leave it running on the replaced pause.
+    resume_run_horizon: Optional[int] = Field(
+        default=None,
+        description="Newest run sequence read with the pause a HITL answer "
+        "resumes. Server-stamped.",
     )
 
     # Localization and context
@@ -323,23 +487,45 @@ class ChatRequest(BaseModel):
         description="Additional context to be included. Supports: skills (skill instructions)",
     )
 
-    # LLM selection (optional - defaults to agent_config.yaml setting)
+    # LLM selection (optional)
     llm_model: Optional[str] = Field(
         default=None,
-        description="LLM model name from models.json (e.g., 'minimax-m3', 'claude-sonnet-4-5')",
+        description=(
+            "Model name from models.json or the user's own models (e.g., "
+            "'minimax-m3', 'claude-sonnet-4-5'). Omitted, the turn runs the "
+            "thread's llm_model, else the account default, else the deployment "
+            "default. A named model is stored on the thread once the turn is "
+            "admitted, so later turns keep it."
+        ),
+    )
+
+    # Unrelated to ``subagents_enabled``, which names the subagents a build
+    # compiles.
+    subagents_allowed: Optional[bool] = Field(
+        default=None,
+        description="The subagent switch for a thread this send creates; "
+        "omitted, or the side the user's default is on, the thread follows "
+        "that default. Ignored for an existing thread, which "
+        "PATCH /threads/{id} changes.",
     )
 
     # Reasoning effort override (optional - defaults to model's configured level)
-    # xhigh is honored only by Anthropic adaptive thinking (Opus 4.7+); other
-    # providers clamp it to high in src/llms/reasoning.py.
-    reasoning_effort: Optional[Literal["low", "medium", "high", "xhigh"]] = Field(
+    # The full canonical vocabulary, not a subset: a level the chosen model does
+    # not declare is clamped in LLM.__init__, which is the only layer that can
+    # see the model's enum. Narrowing here instead turns an unsupported level
+    # into a 422 the caller cannot act on.
+    reasoning_effort: Optional[ReasoningLevel] = Field(
         default=None,
-        description="Override reasoning effort for this request (low/medium/high/xhigh)",
+        description="Reasoning effort for this turn only. Omitted, the turn "
+        "runs the thread's own (PATCH /threads/{id}), else the user's "
+        "Settings. Never stored on the thread.",
     )
 
     fast_mode: Optional[bool] = Field(
         default=None,
-        description="When True, enables priority service tier for faster responses (Codex OAuth models only)",
+        description="When True, enables priority service tier for faster "
+        "responses (Codex OAuth models only), for this turn only. Omitted, the "
+        "turn runs the thread's own, else the user's Settings.",
     )
 
     # Internal: query type override (e.g., "system" for report-back invocations)
@@ -348,23 +534,23 @@ class ChatRequest(BaseModel):
         description="Override query_type for this request. Internal use only.",
     )
 
-    # Internal: PTC thread id whose report-back this flash run consumes. When a
-    # flash report-back run (dispatched after PTC completion) finishes, its
-    # completion hook clears the durable flash_watch entry for this PTC thread.
+    # Internal: PTC thread id whose report-back this run consumes. When a
+    # report-back run (dispatched after PTC completion) finishes, its
+    # completion hook clears the durable watch-set entry for this PTC thread.
     report_back_ptc_thread_id: Optional[str] = Field(
         default=None,
-        description="PTC thread id this flash report-back run consumes. "
+        description="PTC thread id this report-back run consumes. "
         "Internal use only.",
     )
 
-    # Internal: the flash thread watching this dispatched PTC run. Stamped
+    # Internal: the thread watching this dispatched PTC run, in Home. Stamped
     # into the run's START metadata so finalize can build report-back hook
-    # ordering keys (all completions reporting into one flash thread
+    # ordering keys (all completions reporting into one Chief of Staff thread
     # serialize) without I/O. An ordering hint only — executors re-resolve
     # the authoritative origin from Redis at execution time.
-    origin_flash_thread_id: Optional[str] = Field(
+    origin_home_thread_id: Optional[str] = Field(
         default=None,
-        description="Flash thread watching this dispatched PTC run. "
+        description="Thread watching this dispatched PTC run. "
         "Internal use only.",
     )
 
@@ -377,6 +563,31 @@ class ChatRequest(BaseModel):
         description="Report-back dispatch generation token. Internal use only.",
     )
 
+    # Internal: the automation run a report-back turn sends for. A run whose
+    # delivery the messaging service holds can hand work off; the turn that
+    # reports it back gets the run's id and targets in its config, as the
+    # run's own turn had them, so its sends to those targets are the run's.
+    automation_delivery: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="The automation run (id and targets) a report-back turn "
+        "sends for. Internal use only.",
+    )
+    # Internal: the other automation runs a report-back turn's requests came
+    # from, in the order of their requests, when there were several. A send
+    # to one of their targets names that run instead.
+    automation_earlier_runs: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="The earlier automation runs (id and targets) a "
+        "report-back turn sends for. Internal use only.",
+    )
+
+    # Internal: what a report-back turn announces, stamped on its query row so
+    # history can label the turn whose own message is hidden. Display only.
+    report_source: Optional[ReportSource] = Field(
+        default=None,
+        description="What this report-back turn reports on. Internal use only.",
+    )
+
     # Internal: build this turn's agent without the subagent machinery
     # (no Task/TaskOutput tools). Task report-back turns deliberately do
     # NOT set it — TaskOutput is their retrieval path; re-announce
@@ -386,6 +597,31 @@ class ChatRequest(BaseModel):
         default=None,
         description="Build this turn's agent without subagent tools. "
         "Internal use only.",
+    )
+
+    # Internal: the parked steer this turn is posted for. START claims the
+    # job in its own transaction, so a steer some running turn already read
+    # never also becomes a turn of its own.
+    steer_job_id: Optional[str] = Field(
+        default=None,
+        description="The steer job this turn carries. Internal use only.",
+    )
+
+    # Internal: the price-target notice a market_target wake turn delivers,
+    # kept on the turn's query metadata so a replay can tell which target
+    # the turn is about without reading the alert text.
+    market_target: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Market target notice this wake turn delivers. "
+        "Internal use only.",
+    )
+
+    # Server-set: the notices a wakeup's wake turn delivers ({"v": 1, "notices":
+    # [...]}), kept on the turn's query metadata as ``market_target`` is, so
+    # history can name what fired without reading the model-facing block.
+    wakeup: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Wakeup notices this wake turn delivers. Server use only.",
     )
 
     # Server-stamped: the burst-guard ZSET member held by this request's
@@ -418,15 +654,45 @@ class ChatRequest(BaseModel):
         "'market_view:AAPL', 'market_view:002851.SZ', 'telegram', 'slack', "
         "'discord', 'feishu'. Absent for system-initiated threads (see origin).",
     )
+    # The client that draws a surface owns what that surface accepts, so the
+    # rules for it are text on the request rather than a branch in langalpha.
+    # langalpha ships built-in rules only for the surfaces it renders itself
+    # (`web`, `market_view`), and this field replaces them when it is sent.
+    surface_rules: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description="Delivery rules for the surface this turn arrived on, "
+        "written by the client that owns the surface (a channel gateway). "
+        "Honoured only on a service-token request; a user's own value is "
+        "dropped. langalpha carries them to the model only when they are news "
+        "to the thread: the first turn, a change of surface or of the text, the "
+        "first turn after a compaction. The client sends them on every request; "
+        "langalpha decides whether to restate.",
+    )
     # Orthogonal to platform: platform = which user surface, origin = who
     # initiated. Absent origin = user-initiated (the common case is never
-    # written). Only affects the caller's own thread labeling, so it is
-    # accepted from any client without gating.
+    # written). Affects the caller's own thread labeling and the delivery
+    # rules of its own turn, so it is accepted from any client without gating.
     origin: Optional["ThreadOrigin"] = Field(
         default=None,
-        description="Thread initiator provenance, recorded at thread creation "
-        "(ignored for existing threads). Absent = user-initiated.",
+        description="Who sent this turn. Recorded on the thread at creation "
+        "and read on every turn for the turn's delivery rules, so an "
+        "automation sends it on every request; a turn without it is a "
+        "person's, even on a thread an automation started.",
     )
+
+    @field_validator("surface_rules")
+    @classmethod
+    def _normalize_surface_rules(cls, v: Optional[str]) -> Optional[str]:
+        """Blank text is no rules, not empty rules.
+
+        A gateway with nothing to say may send an empty string or drop the key,
+        and both have to land in the same state: the built-in behavior, and a
+        rules key that carries no digest of nothing.
+        """
+        if v is None:
+            return None
+        return v.strip() or None
 
 
 # =============================================================================
@@ -458,5 +724,15 @@ class SubagentMessageRequest(BaseModel):
     """Request model for sending a message to a running subagent."""
 
     content: str = Field(..., description="The instruction/message to send to the subagent")
+    input_id: Optional[str] = Field(
+        None,
+        pattern=r"^[A-Za-z0-9_-]{1,64}$",
+        description=(
+            "Client-chosen id for this instruction, echoed on the "
+            "steering_delivered entry or steering_returned frame that settles "
+            "it. The delivery can arrive before this request answers, so the "
+            "client names the instruction up front. Generated when omitted."
+        ),
+    )
 
 

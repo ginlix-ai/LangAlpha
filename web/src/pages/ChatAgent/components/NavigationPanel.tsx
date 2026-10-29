@@ -1,9 +1,6 @@
 import React, { useState, useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { DndContext, DragOverlay, closestCenter, PointerSensor, MeasuringStrategy, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragStartEvent, DragEndEvent, Modifier } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { ChevronsDown } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { useWorkspaceActions } from './workspaceActions';
@@ -23,6 +20,9 @@ import type { SidebarAgentRow } from '../session/subagents/subagentStatus';
 import { WorkspaceTreeRow, WorkspaceDragChip } from './NavigationRows';
 import type { ThreadsData } from './NavigationRows';
 import { useArchiveThreadConfirm } from './threadArchiveAction';
+import { useThreadDeleteConfirm } from './threadDeleteAction';
+import ShareThreadDialog, { type ShareThreadTarget } from './ShareThreadDialog';
+import { NavTreeContext, useNavTreeKit } from './navTreeKit';
 import './NavigationPanel.css';
 
 interface NavigationPanelProps {
@@ -57,6 +57,10 @@ interface NavigationPanelProps {
   onPinThread?: (wsId: string, threadId: string, pinned: boolean) => void;
   /** Archive a thread — removes it from the sidebar (hover action). */
   onArchiveThread?: (wsId: string, threadId: string) => void;
+  /** Persist a thread rename (right-click menu → inline edit). */
+  onRenameThread?: (wsId: string, threadId: string, title: string, previousTitle: string) => void;
+  /** Delete a thread for good (right-click menu, after a confirm). Rejects when the server refuses. */
+  onDeleteThread?: (wsId: string, threadId: string) => Promise<unknown>;
   /** Right-aligned controls (pin, minimize) rendered in a header row above the list. */
   headerActions?: React.ReactNode;
 }
@@ -71,7 +75,8 @@ const MAX_REVEAL_PAGES = 20;
  * Workspace -> Thread -> Agent hierarchy.
  *
  * The rows themselves live in ./NavigationRows; this file owns the tree's
- * state: expansion, inline rename, drag orchestration, and paging.
+ * state: expansion, inline rename, drag orchestration, and paging. Motion and
+ * drag arrive after first paint through ./navTreeKit.
  *
  * Expansion state lives in ./navExpansionStore (a globalThis-anchored module)
  * so it's shared across every cached panel instance and survives HMR. Keeping
@@ -100,14 +105,26 @@ function NavigationPanel({
   onNewThread,
   onPinThread,
   onArchiveThread,
+  onRenameThread,
+  onDeleteThread,
   headerActions,
 }: NavigationPanelProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
-  // Change-spec / always-on / duplicate / delete are self-contained (mutations +
-  // dialogs) so every host — sidebar tree, mobile drawer — gets the same menu
-  // as the gallery card without extra wiring.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const navTree = useNavTreeKit(rootRef);
+  const { TreeRoot } = navTree.kit;
+  // Duplicate / move / delete are self-contained (mutations + dialogs) so
+  // every host (sidebar tree, mobile drawer) gets the same menu as the
+  // gallery card without extra wiring.
   const wsActions = useWorkspaceActions({ currentWorkspaceId });
+  // The rows get the handlers without the dialogs node, which is new JSX on
+  // every render and would defeat their memo.
+  const { openDuplicate, openMove, openDelete } = wsActions;
+  const rowActions = useMemo(
+    () => ({ openDuplicate, openMove, openDelete }),
+    [openDuplicate, openMove, openDelete],
+  );
   // Same reasoning for the thread archive confirm: this panel is the one tree
   // both hosts render, so gating here covers the sidebar and the mobile drawer
   // without either wiring a dialog of its own.
@@ -115,17 +132,34 @@ function NavigationPanel({
   const handleArchiveThread = useCallback((wsId: string, threadId: string) => {
     requestArchive(threadId, () => onArchiveThread?.(wsId, threadId));
   }, [requestArchive, onArchiveThread]);
-  // 8px activation distance (same as the gallery's reorder mode) keeps plain
-  // clicks toggling expand/collapse instead of starting a drag.
-  const dndSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+  // The right-click menu's delete and share open one dialog each here, for
+  // the same reason.
+  const { requestDelete, dialog: deleteDialog } = useThreadDeleteConfirm();
+  const handleDeleteThread = useCallback((wsId: string, threadId: string, title: string) => {
+    requestDelete(title, async () => { await onDeleteThread?.(wsId, threadId); });
+  }, [requestDelete, onDeleteThread]);
+  const [shareTarget, setShareTarget] = useState<ShareThreadTarget | null>(null);
+  const handleShareThread = useCallback((wsId: string, threadId: string) => {
+    setShareTarget({ workspaceId: wsId, threadId });
+  }, []);
   // Id of the workspace currently being dragged — drives the DragOverlay chip.
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   // Subscribe to the shared expansion store (navExpansionStore). One panel mounts
   // per cached ChatView instance; subscribing re-renders this panel whenever any
   // instance toggles a folder, so cached ChatViews never show stale folder state.
-  // The render reads the sets directly (below), so only the subscription is
-  // needed, not the returned version value.
-  useSyncExternalStore(subscribeNavExpansion, getNavExpansionVersion);
+  const navExpansionVersion = useSyncExternalStore(subscribeNavExpansion, getNavExpansionVersion);
+
+  // The store mutates one long-lived Set rather than replacing it, so the Set
+  // itself is a constant and says nothing about what changed. The memoized
+  // workspace rows compare it by reference, so handing them the live Set froze
+  // a thread's agent rows in whatever state they first rendered. Copy it when
+  // the store's version moves: the reference then changes exactly when the
+  // expansion did, and not once per streamed token.
+  const expandedThreadIds = useMemo(
+    () => new Set(expandedThreads),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- version IS the signal
+    [navExpansionVersion],
+  );
 
   // Seed the current workspace/thread as expanded, then keep them expanded when
   // they change. A layout effect (not a render-phase mutation) runs before paint,
@@ -313,9 +347,13 @@ function NavigationPanel({
   }, []);
 
   const activeDragWs = activeDragId ? workspaces.find((ws) => ws.workspace_id === activeDragId) : null;
+  // Identity matters here: a fresh id array is a new sortable context value,
+  // and every row's useSortable re-renders on it, memo or not.
+  const sortableIds = useMemo(() => workspaces.map((ws) => ws.workspace_id), [workspaces]);
 
   return (
     <div
+      ref={rootRef}
       className="nav-panel h-full flex flex-col"
     >
       {headerActions && (
@@ -325,19 +363,21 @@ function NavigationPanel({
       )}
       <ScrollArea className="flex-1">
         <div className="py-2">
-          <DndContext
-            sensors={dndSensors}
-            collisionDetection={closestCenter}
-            measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+          <NavTreeContext value={navTree}>
+          <TreeRoot
+            ids={sortableIds}
             onDragStart={handleWorkspaceDragStart}
             onDragEnd={handleWorkspaceDragEnd}
             onDragCancel={handleWorkspaceDragCancel}
+            clampOverlay={clampChipToBlock}
+            overlay={activeDragWs ? (
+              <WorkspaceDragChip ws={activeDragWs} expanded={expandedWorkspaces.has(activeDragWs.workspace_id)} />
+            ) : null}
           >
-          <SortableContext items={workspaces.map((ws) => ws.workspace_id)} strategy={verticalListSortingStrategy}>
           {workspaces.map((ws) => {
             const wsId = ws.workspace_id;
             // While a drag is live, rows across the pin boundary from the
-            // lifted workspace (Flash counts as pinned) stop being drop
+            // lifted workspace (Home counts as pinned) stop being drop
             // targets, so the preview can never show an arrangement the drop
             // handler refuses — releasing there used to silently snap back.
             const crossBlock = !!activeDragWs && activeDragId !== wsId &&
@@ -358,10 +398,10 @@ function NavigationPanel({
                 dragDisabled={dragDisabled}
                 threadsData={workspaceThreads[wsId]}
                 currentThreadId={currentThreadId}
-                expandedThreadIds={expandedThreads}
+                expandedThreadIds={expandedThreadIds}
                 agents={agents}
                 activeAgentId={activeAgentId}
-                wsActions={wsActions}
+                wsActions={rowActions}
                 rename={renamingWsId === wsId ? activeRename : inactiveRename}
                 onToggleWorkspace={toggleWorkspace}
                 onToggleThread={toggleThread}
@@ -373,33 +413,21 @@ function NavigationPanel({
                 onNewThread={onNewThread}
                 onPinThread={onPinThread}
                 onArchiveThread={onArchiveThread ? handleArchiveThread : undefined}
+                onRenameThread={onRenameThread}
+                onShareThread={handleShareThread}
+                onDeleteThread={onDeleteThread ? handleDeleteThread : undefined}
               />
             );
           })}
-          </SortableContext>
-          {/* Compact lift preview — a content-hugging header pill that follows
-              the cursor, so the dragged section's real size never distorts.
-              Portaled to <body>: the overlay is position:fixed, and any
-              sidebar ancestor gaining a transform/filter/will-change would
-              become its containing block and drift the chip off the cursor
-              (the mount animation's fill mode did exactly that once). zIndex
-              must clear the sidebar's 1000. */}
-          {createPortal(
-            <DragOverlay dropAnimation={null} zIndex={1100} modifiers={[clampChipToBlock]}>
-              {activeDragWs ? (
-                <WorkspaceDragChip ws={activeDragWs} expanded={expandedWorkspaces.has(activeDragWs.workspace_id)} />
-              ) : null}
-            </DragOverlay>,
-            document.body,
-          )}
-          </DndContext>
+          </TreeRoot>
+          </NavTreeContext>
           {hasMore && (
             <div
               className="nav-panel-row"
               style={{ paddingLeft: 10, justifyContent: 'center' }}
               onClick={onLoadMore}
             >
-              <ChevronsDown className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+              <ChevronsDown className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                 {t('nav.loadAll')}
               </span>
@@ -409,6 +437,8 @@ function NavigationPanel({
       </ScrollArea>
       {wsActions.dialogs}
       {archiveDialog}
+      {deleteDialog}
+      <ShareThreadDialog target={shareTarget} onClose={() => setShareTarget(null)} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useState, type RefObject } from 'react';
 
 /**
  * Observed element BORDER-BOX width, quantized to `step` px so per-pixel
@@ -43,22 +43,36 @@ export function useContainerWidth(
 }
 
 /**
- * Returns true when the observed element's width is below `threshold`.
- * Element-based (not viewport) so embedded panels (e.g. MarketView's chat
- * column) can collapse avatars/tight layouts independent of window width.
+ * Whether the observed element's width is below `threshold`, or null until it
+ * has been measured. Element-based (not viewport) so an embedded panel can
+ * change layout independent of window width. The first read is a layout
+ * effect, so the render that knows is the first one painted: a caller that
+ * holds width-dependent content back while this is null never shows a frame
+ * laid out for the wrong width. Without ResizeObserver (jsdom) it reports false.
+ * An element measured at 0 wide after a real width keeps its last answer.
  */
 export function useNarrowContainer(
   ref: RefObject<HTMLElement | null>,
   threshold: number,
-): boolean {
-  const [narrow, setNarrow] = useState(false);
+): boolean | null {
+  const [narrow, setNarrow] = useState<boolean | null>(() => (typeof ResizeObserver === 'undefined' ? false : null));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
 
+    let last = -1;
     const update = (width: number) => {
+      if (width === last) return;
+      last = width;
       setNarrow((prev) => {
+        // A width of 0 after a real one is an element taken out of layout (a
+        // cached view under `display: none`): the last answer stands, so its
+        // subtree neither re-renders on the way out nor paints a frame at the
+        // wrong width on the way back. A first read of 0 still answers, or a
+        // caller holding content back for the answer would wait on a view
+        // that has no layout at all (jsdom).
+        if (width === 0 && prev !== null) return prev;
         const next = width > 0 && width < threshold;
         return next === prev ? prev : next;
       });
@@ -66,11 +80,14 @@ export function useNarrowContainer(
 
     update(el.getBoundingClientRect().width);
 
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver(([entry]) => {
       // Border box, same as the initial read — `entry.contentRect` is the
       // CONTENT box, which disagrees on padded/scrollbar-bearing elements
-      // and would flip `narrow` on the first no-op resize.
-      update(el.getBoundingClientRect().width);
+      // and would flip `narrow` on the first no-op resize. Read off the entry
+      // rather than the element: a transcript grows on every streamed line,
+      // and a height-only change should cost no layout read.
+      const box = entry?.borderBoxSize?.[0];
+      update(box ? box.inlineSize : el.getBoundingClientRect().width);
     });
     ro.observe(el);
     return () => ro.disconnect();

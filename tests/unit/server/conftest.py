@@ -35,6 +35,18 @@ async def threads_client():
 
 
 @pytest_asyncio.fixture
+async def public_client():
+    """Client with only the public sharing router."""
+    from src.server.app.public import router
+
+    app = create_test_app(router)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
+
+
+@pytest_asyncio.fixture
 async def users_client():
     """Client with only the users router."""
     from src.server.app.users import router

@@ -119,6 +119,29 @@ describe('useChatViewCache — touch()', () => {
     expect(result.current.entries[0].workspaceName).toBe('New Name');
     expect(result.current.entries[0].instanceId).toBe(instanceId);
   });
+
+  it('keeps one view per thread: a view of it under another workspace is dropped', () => {
+    const { result } = renderHook(() => useChatViewCache());
+
+    act(() => {
+      result.current.touch(makeParams({ workspaceId: 'ws-1', threadId: 'thread-1' }));
+      result.current.touch(makeParams({ workspaceId: 'ws-1', threadId: 'thread-2' }));
+      result.current.touch(makeParams({ workspaceId: 'ws-2', threadId: 'thread-1' }));
+    });
+
+    expect(result.current.entries.map(e => e.key)).toEqual(['ws-2-thread-1', 'ws-1-thread-2']);
+  });
+
+  it('keeps a new thread per workspace', () => {
+    const { result } = renderHook(() => useChatViewCache());
+
+    act(() => {
+      result.current.touch(makeParams({ workspaceId: 'ws-1', threadId: '__default__' }));
+      result.current.touch(makeParams({ workspaceId: 'ws-2', threadId: '__default__' }));
+    });
+
+    expect(result.current.entries.map(e => e.key)).toEqual(['ws-2-__default__', 'ws-1-__default__']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -149,6 +172,24 @@ describe('useChatViewCache — updateKey()', () => {
     expect(entry.threadId).toBe('real-uuid');
     expect(entry.workspaceId).toBe('ws-1');
     expect(entry.instanceId).toBe(instanceId);
+  });
+
+  it('gives the next new thread under the old key a view of its own', () => {
+    const { result } = renderHook(() => useChatViewCache());
+
+    act(() => {
+      result.current.touch(makeParams({ workspaceId: 'ws-1', threadId: '__default__' }));
+    });
+    act(() => {
+      result.current.updateKey('ws-1-__default__', 'ws-1-real-uuid', { threadId: 'real-uuid' });
+    });
+    act(() => {
+      result.current.touch(makeParams({ workspaceId: 'ws-1', threadId: '__default__' }));
+    });
+
+    const ids = result.current.entries.map(e => e.instanceId);
+    expect(result.current.entries.map(e => e.key)).toEqual(['ws-1-__default__', 'ws-1-real-uuid']);
+    expect(new Set(ids).size).toBe(2);
   });
 
   it('is a no-op when old key does not exist', () => {

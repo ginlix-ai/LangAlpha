@@ -84,5 +84,10 @@ class TestReachabilityWarning:
     def test_daytona_plus_a_routable_address_is_silent(self, base):
         assert relay_reachability_warning("daytona", base) is None
 
+    def test_e2b_plus_a_local_address_warns(self):
+        warning = relay_reachability_warning("e2b", "http://localhost:8000")
+        assert warning is not None
+        assert "E2B" in warning
+
     def test_local_providers_never_warn(self):
         assert relay_reachability_warning("docker", "http://localhost:8000") is None

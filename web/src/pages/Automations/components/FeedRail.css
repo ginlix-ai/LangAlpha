@@ -1,0 +1,155 @@
+.automations-rail {
+  position: sticky;
+  top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  min-width: 0;
+}
+
+.automations-rail-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.automations-rail-section > .automations-kicker {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.automations-rail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--color-border-muted);
+  min-width: 0;
+}
+
+.automations-rail-glyph {
+  display: inline-flex;
+  padding-top: 2px;
+  flex-shrink: 0;
+}
+
+/* Up next lines its times up in one column as wide as the longest of them.
+   A fixed width fits one locale's weekday forms and lets a date ("Oct 28,
+   10:15 PM", or any zh-CN date) run into the name beside it. */
+.automations-rail-schedule {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.automations-rail-schedule > * {
+  grid-column: 1 / -1;
+}
+
+.automations-rail-schedule > .automations-rail-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  column-gap: 16px;
+}
+
+.automations-rail-when {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.automations-rail-name {
+  display: block;
+  max-width: 100%;
+  font-size: 0.8125rem;
+}
+
+.automations-rail-sub {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+/* A reason in the quota service's words: its length is theirs, so it stops
+   after two lines and keeps the rest for the tooltip. */
+.automations-rail-quote {
+  margin-top: 2px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+/* What the reader can do about it, under the reason. Where they act on the
+   cause (a plan, a key) follows the buttons and wraps below them when the
+   rail runs out of room. */
+.automations-rail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.automations-rail-thread {
+  margin-left: 6px;
+}
+
+.automations-rail-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-left: 6px;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.automations-rail-watch {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+/* The starters line their cadences up the way Up next lines its times, and
+   for the same reason: a time with its zone ("10:00 PM · Eastern Time") runs
+   wider than the form's label column. That leaves a name less room than some
+   need, so it wraps rather than losing its end. */
+.automations-rail-starters {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  margin-top: 2px;
+}
+
+.automations-rail-starters > li {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+}
+
+.automations-rail-starter {
+  --starter-bleed: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  column-gap: 16px;
+  padding-block: 10px;
+}
+
+.automations-rail-starter > .automations-rail-name {
+  white-space: normal;
+}
+
+@media (max-width: 1023px) {
+  .automations-rail {
+    position: static;
+  }
+}
+
+/* On a phone the cadence takes the whole row (Automations.css), so the name
+   goes under it at full width instead of into the cadence column. */
+@media (max-width: 767px) {
+  .automations-rail-starters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .automations-rail-starter {
+    row-gap: 10px;
+  }
+}

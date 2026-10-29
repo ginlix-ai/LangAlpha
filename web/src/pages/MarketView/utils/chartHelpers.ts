@@ -1,7 +1,7 @@
+/** What the indicators read of a bar; a bar with more fields passes as one. */
 export interface OHLCDataPoint {
   time: number;
   close: number;
-  [key: string]: unknown;
 }
 
 export interface TimeValuePoint {

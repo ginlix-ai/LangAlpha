@@ -100,6 +100,9 @@ interface StoreState {
   needsInput: ReadonlySet<string>;
   unseen: ReadonlySet<string>;
   effStatus: ReadonlyMap<string, PublicRunStatus>;
+  /** Each thread's effective run seq, so a newer run that settles as the last
+   *  one did still notifies. */
+  effSeq: ReadonlyMap<string, number>;
   resetRegistered: boolean;
 }
 
@@ -114,6 +117,7 @@ function freshState(): StoreState {
     needsInput: new Set(),
     unseen: new Set(),
     effStatus: new Map(),
+    effSeq: new Map(),
     resetRegistered: false,
   };
 }
@@ -121,7 +125,13 @@ function freshState(): StoreState {
 const globalAnchor = globalThis as typeof globalThis & {
   [ANCHOR]?: StoreState;
 };
-const state: StoreState = globalAnchor[ANCHOR] ?? (globalAnchor[ANCHOR] = freshState());
+const retained = globalAnchor[ANCHOR];
+// A tab kept across a hot reload holds the state an older version of this
+// module built. It gains any field added since in place, so every copy of the
+// module still shares the one object.
+const state: StoreState = retained
+  ? Object.assign(retained, { ...freshState(), ...retained })
+  : (globalAnchor[ANCHOR] = freshState());
 
 if (!state.resetRegistered) {
   state.resetRegistered = true;
@@ -183,6 +193,12 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return true;
 }
 
+function mapsEqual<V>(a: ReadonlyMap<string, V>, b: ReadonlyMap<string, V>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) if (b.get(k) !== v) return false;
+  return true;
+}
+
 function notify(): void {
   state.emitter.emit();
 }
@@ -193,12 +209,14 @@ function recompute(): void {
   const needsInput = new Set<string>();
   const unseen = new Set<string>();
   const effStatus = new Map<string, PublicRunStatus>();
+  const effSeq = new Map<string, number>();
 
   for (const [tid, entry] of state.threads) {
     const eff = effective(entry);
     if (!eff) continue;
     effStatus.set(tid, eff.status);
     const seqKnown = typeof eff.runSeq === 'number';
+    if (seqKnown) effSeq.set(tid, eff.runSeq as number);
     if (LIVE_STATUSES.has(eff.status)) {
       if (!seqKnown || (eff.runSeq as number) > entry.liveSuppressedBelowSeq) {
         running.add(tid);
@@ -240,17 +258,12 @@ function recompute(): void {
   // effStatus consumers read individual (primitive) values; refresh the map
   // whenever entries changed shape. Compared entry-wise without materializing
   // an array — this runs on every feed event/snapshot.
-  let effChanged = changed || effStatus.size !== state.effStatus.size;
-  if (!effChanged) {
-    for (const [tid, status] of effStatus) {
-      if (state.effStatus.get(tid) !== status) {
-        effChanged = true;
-        break;
-      }
-    }
-  }
-  if (effChanged) {
+  if (changed || !mapsEqual(state.effStatus, effStatus)) {
     state.effStatus = effStatus;
+    changed = true;
+  }
+  if (!mapsEqual(state.effSeq, effSeq)) {
+    state.effSeq = effSeq;
     changed = true;
   }
   if (changed) notify();
@@ -333,6 +346,11 @@ export function applyFeedEvent(evt: {
   run_seq?: number | null;
   status?: string | null;
   interrupt_reason?: string | null;
+  /**
+   * Where the seen cursor stands after a settle that carried it over its run
+   * (a wakeup's quiet check that changed nothing), so the dot never shows.
+   */
+  last_seen_run_seq?: number | null;
 }): void {
   if (evt.type !== 'run_started' && evt.type !== 'run_settled') return;
   if (!evt.thread_id || !evt.status) return;
@@ -342,6 +360,11 @@ export function applyFeedEvent(evt: {
     status: evt.status as PublicRunStatus,
     interruptReason: evt.interrupt_reason ?? null,
   });
+  const seen = evt.last_seen_run_seq;
+  if (typeof seen === 'number') {
+    const entry = ensure(evt.thread_id);
+    if (seen > entry.lastSeenSeq) entry.lastSeenSeq = seen;
+  }
   recompute();
 }
 
@@ -498,6 +521,12 @@ export function isThreadRunning(threadId: string): boolean {
   return state.running.has(threadId);
 }
 
+/** The newest run the user feed has reported for the thread, this tab's own
+ *  stream aside: how a view learns that a run started somewhere else. */
+export function useThreadFeedRunId(threadId: string): string | null {
+  return useSyncExternalStore(subscribe, () => state.threads.get(threadId)?.feed?.runId ?? null);
+}
+
 /** True while the thread's latest run is interrupted (waiting for input). */
 export function useThreadNeedsInput(threadId: string): boolean {
   return useSyncExternalStore(subscribe, () => state.needsInput.has(threadId));
@@ -514,6 +543,50 @@ export function useThreadRunStatus(threadId: string): PublicRunStatus {
     subscribe,
     () => state.effStatus.get(threadId) ?? 'idle',
   );
+}
+
+/** `useThreadRunStatus` for several threads from ONE subscription, in the
+ *  order asked. The snapshot is a string, so an emit about any other thread
+ *  re-renders nothing. */
+export function useThreadRunStatuses(threadIds: readonly string[]): readonly PublicRunStatus[] {
+  const joined = useSyncExternalStore(subscribe, () => threadIds.map((id) => state.effStatus.get(id) ?? 'idle').join('|'));
+  return useMemo(() => (joined ? (joined.split('|') as PublicRunStatus[]) : []), [joined]);
+}
+
+export interface ThreadRunStates {
+  /** Each thread's effective public status: 'idle' when nothing is known,
+   *  including a live run a snapshot has since shown is over. */
+  status: ReadonlyMap<string, PublicRunStatus>;
+  /** Changes exactly when one of the threads starts, settles or runs again. */
+  revision: string;
+}
+
+/** A live or waiting status the snapshot watermark hides says nothing about
+ *  how that run ended, so it reads as unknown rather than still live. */
+function vouchedStatus(threadId: string): PublicRunStatus {
+  const status = state.effStatus.get(threadId) ?? 'idle';
+  if (LIVE_STATUSES.has(status)) return state.running.has(threadId) ? status : 'idle';
+  if (status === 'interrupted') return state.needsInput.has(threadId) ? status : 'idle';
+  return status;
+}
+
+function runStateKey(threadId: string): string {
+  return `${vouchedStatus(threadId)}:${state.effSeq.get(threadId) ?? ''}`;
+}
+
+/**
+ * A handful of threads' run states from ONE subscription, for a view that
+ * follows them by id. The snapshot is a string, so a store emit about any
+ * other thread re-renders nothing.
+ */
+export function useThreadRunStates(threadIds: readonly string[]): ThreadRunStates {
+  const revision = useSyncExternalStore(subscribe, () => threadIds.map(runStateKey).join('|'));
+  return useMemo(() => {
+    const keys = threadIds.length ? revision.split('|') : [];
+    const status = new Map<string, PublicRunStatus>();
+    threadIds.forEach((id, i) => status.set(id, (keys[i]?.split(':')[0] ?? 'idle') as PublicRunStatus));
+    return { status, revision };
+  }, [threadIds, revision]);
 }
 
 /** Status ordinals for the packed snapshot below; append-only (the packed
@@ -567,5 +640,6 @@ export function resetThreadLifecycle(): void {
   state.needsInput = new Set();
   state.unseen = new Set();
   state.effStatus = new Map();
+  state.effSeq = new Map();
   notify();
 }

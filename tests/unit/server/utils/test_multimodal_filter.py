@@ -47,7 +47,7 @@ def _make_csv_context():
 
 def _mock_sandbox():
     sandbox = AsyncMock()
-    sandbox.normalize_path = lambda p: f"/home/workspace/{p}"
+    sandbox.normalize_path = lambda p, project=None: f"/home/workspace/{p}"
     sandbox.virtualize_path = lambda p: p.replace("/home/workspace/", "/")
     sandbox.aupload_file_bytes = AsyncMock(return_value=True)
     return sandbox

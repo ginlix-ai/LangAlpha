@@ -37,7 +37,10 @@ function makeRefs() {
     subscribeVisibleLogicalRangeChange: vi.fn(),
     unsubscribeVisibleLogicalRangeChange: vi.fn(),
   };
-  const chart = { timeScale: vi.fn(() => timeScale) } as unknown as IChartApi;
+  const chart = {
+    timeScale: vi.fn(() => timeScale),
+    panes: () => [{ getHeight: () => 300, getHTMLElement: () => null }],
+  } as unknown as IChartApi;
   const series = { priceToCoordinate: vi.fn(() => 90) } as unknown as ISeriesApi<'Candlestick'>;
   const chartRef = createRef<IChartApi | null>() as { current: IChartApi | null };
   const seriesRef = createRef<ISeriesApi<'Candlestick'> | null>() as {

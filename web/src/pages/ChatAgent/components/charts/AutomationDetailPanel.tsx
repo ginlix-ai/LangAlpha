@@ -1,183 +1,123 @@
 import React from 'react';
+import type { TFunction } from 'i18next';
 import { relativeTime } from '@/lib/format';
-import { useNavigate } from 'react-router-dom';
-import { Clock, Timer, TrendingUp, ExternalLink } from 'lucide-react';
+import { useNavigate } from 'react-router';
+import { useRouteLeaveGuard } from '../../contexts/RouteLeaveGuardContext';
 import { useTranslation } from 'react-i18next';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
 import { cronToHuman } from '../../../Automations/utils/cron';
-import { isPriceTriggerConfig, formatPriceTrigger, formatRetriggerMode } from '../../../Automations/utils/price';
-import type { PriceTriggerConfig } from '@/types/automation';
+import { formatPriceTrigger, formatRetriggerMode } from '../../../Automations/utils/price';
+import { describeRun, isRunFailed } from '../../../Automations/utils/status';
+import type { AutomationExecution, ExecutionStatus, PriceTriggerConfig } from '@/types/automation';
 import { formatDateTime, formatDuration } from '../../../Automations/utils/time';
+import { AutomationStatus } from './InlineAutomationCards';
+import { readAutomations, records, type Automation, type PanelProps } from './cardReaders';
+import { scheduleLabel, triggerKind } from './cardWords';
+import { TermCard, TermKV, TermStatus, TermTag } from './TermCard';
+import { useCardNarrow } from './termContext';
+import { TermLink, TermPanelHead } from './TermPanel';
 
-// ─── Constants ───────────────────────────────────────────────────────
-
-const GREEN = 'var(--color-profit)';
-const YELLOW = 'var(--color-warning)';
-const RED = 'var(--color-loss)';
-const BLUE = 'var(--color-info)';
-const TEXT_SECONDARY = 'var(--color-text-tertiary)';
-
-const STATUS_COLORS: Record<string, string> = {
-  active: GREEN,
-  running: GREEN,
-  paused: YELLOW,
-  failed: RED,
-  completed: BLUE,
-  disabled: RED,
-};
-
-function statusColor(status: string): string {
-  return STATUS_COLORS[status] || TEXT_SECONDARY;
-}
-
-// ─── Shared sub-components ───────────────────────────────────────────
-
-const STATUS_BG: Record<string, string> = {
-  active: 'var(--color-profit-soft)',
-  running: 'var(--color-profit-soft)',
-  paused: 'var(--color-warning-soft)',
-  failed: 'var(--color-loss-soft)',
-  completed: 'var(--color-info-soft)',
-  disabled: 'var(--color-loss-soft)',
-};
-
-interface StatusBadgeProps {
-  status: string;
-}
-
-function StatusBadge({ status }: StatusBadgeProps): React.ReactElement {
-  const color = statusColor(status);
-  return (
-    <span
-      style={{
-        fontSize: '0.6875rem',
-        fontWeight: 600,
-        padding: '2px 8px',
-        borderRadius: 10,
-        backgroundColor: STATUS_BG[status] || 'var(--color-border-muted)',
-        color,
-        textTransform: 'capitalize',
-      }}
-    >
-      {status}
-    </span>
-  );
-}
-
-interface StatCardProps {
-  label: string;
-  value: string;
-  sub?: string | null;
-  badge?: string | null;
-}
-
-function StatCard({ label, value, sub, badge }: StatCardProps): React.ReactElement {
-  return (
-    <div
-      style={{
-        backgroundColor: 'var(--color-bg-surface)',
-        border: '1px solid var(--color-border-muted)',
-        borderRadius: 8,
-        padding: '8px 12px',
-      }}
-    >
-      <p style={{ fontSize: '0.625rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: TEXT_SECONDARY, marginBottom: 4 }}>
-        {label}
-      </p>
-      <p style={{ fontSize: '0.875rem', color: 'var(--color-text-primary)', fontWeight: 500 }}>{value}</p>
-      {(sub || badge) && (
-        <p style={{ fontSize: '0.6875rem', color: TEXT_SECONDARY, marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
-          {sub && <span>{sub}</span>}
-          {badge && (
-            <span
-              style={{
-                fontSize: '0.5625rem',
-                fontWeight: 600,
-                padding: '1px 5px',
-                borderRadius: 4,
-                backgroundColor: 'var(--color-info-soft)',
-                color: BLUE,
-                textTransform: 'uppercase',
-                letterSpacing: '0.03em',
-              }}
-            >
-              {badge}
-            </span>
-          )}
-        </p>
-      )}
-    </div>
-  );
-}
-
-interface ConfigRowProps {
-  label: string;
-  value: string;
-}
-
-function ConfigRow({ label, value }: ConfigRowProps): React.ReactElement {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: '0.8125rem' }}>
-      <span style={{ color: TEXT_SECONDARY }}>{label}</span>
-      <span style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>{value}</span>
-    </div>
-  );
-}
-
-function asPriceTrigger(v: unknown): PriceTriggerConfig | null {
-  return isPriceTriggerConfig(v) ? v : null;
-}
+// ─── Helpers ─────────────────────────────────────────────────────────
 
 function marketI18nKey(triggerConfig: PriceTriggerConfig | null | undefined): string | null {
   if (!triggerConfig) return null;
   return triggerConfig.market === 'index' ? 'automation.marketIndex' : null;
 }
 
-function scheduleLabel(auto: Record<string, unknown> | null | undefined): string {
-  if (!auto) return '\u2014';
-  if (auto.trigger_type === 'price') return formatPriceTrigger(asPriceTrigger(auto.trigger_config)) || '\u2014';
-  if (auto.trigger_type === 'cron' && auto.schedule) return cronToHuman(auto.schedule as string);
-  if (auto.next_run_at) return relativeTime(auto.next_run_at as string);
-  return (auto.schedule as string) || '\u2014';
+/** Where the card's automation ran, or null when the card does not say.
+ *  The tool that drew these cards is gone, so every one is kept history, and
+ *  names the agent it ran on rather than a workspace: `ptc` ran in one, and
+ *  the other, outside any, is the Chief of Staff now. */
+function cardPlace(auto: Automation, t: TFunction): string | null {
+  if (!auto.agentMode) return null;
+  return auto.agentMode === 'ptc' ? t('automation.detailWorkspace') : t('agents.chiefOfStaff');
 }
 
-const ACCENT = 'var(--color-accent-primary)';
-
-interface AutomationsPageLinkProps {
-  automationId?: string;
+/** A run's state in the cards' tones: one that ran out of time failed too,
+ *  and one still going reads as an executing automation. */
+function runTone(status: ExecutionStatus): string {
+  if (isRunFailed(status)) return 'failed';
+  return status === 'running' ? 'executing' : status;
 }
 
-function AutomationsPageLink({ automationId }: AutomationsPageLinkProps): React.ReactElement {
+/** A value with what qualifies it set after it in gray: a time and its date,
+ *  a schedule and its cron line. */
+function Qualified({ value, aside }: { value: React.ReactNode; aside?: React.ReactNode }): React.ReactElement {
+  return (
+    <>
+      {value}
+      {aside && <span className="term-t3" style={{ marginLeft: '1.25ch' }}>{aside}</span>}
+    </>
+  );
+}
+
+function When({ at }: { at: string }): React.ReactElement {
+  const locale = useLocale();
+  const now = useNow();
+  return <Qualified value={relativeTime(at, locale, now)} aside={formatDateTime(at, locale)} />;
+}
+
+type Pairs = Array<readonly [string, React.ReactNode] | null | false>;
+
+/** What sets the automation off: a price trigger and how it re-arms, with the
+ *  market when that is not stocks, or a schedule with its cron line and the
+ *  next run. */
+function planPairs(auto: Automation, t: TFunction, locale: string): Pairs {
+  if (auto.triggerType === 'price') {
+    const trigger = auto.priceTrigger;
+    const market = marketI18nKey(trigger);
+    const condition = <Qualified value={formatPriceTrigger(trigger, t)} aside={market && <TermTag>{t(market)}</TermTag>} />;
+    return [
+      [t('toolArtifact.trigger'), condition],
+      [t('toolArtifact.retrigger'), formatRetriggerMode(trigger, t)],
+    ];
+  }
+  const { schedule, nextRunAt } = auto;
+  const cron = auto.triggerType === 'cron' && schedule ? <Qualified value={cronToHuman(schedule, t, locale)} aside={schedule} /> : null;
+  const next = nextRunAt ? <When at={nextRunAt} /> : null;
+  return [cron && [t('toolArtifact.schedule'), cron], next && [t('toolArtifact.nextRun'), next]];
+}
+
+function AutomationsPageLink({ automationId }: { automationId?: string }): React.ReactElement {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const guardLeave = useRouteLeaveGuard();
   const path = automationId ? `/automations?id=${automationId}` : '/automations';
+  return <TermLink onClick={() => guardLeave(() => navigate(path))}>{t('toolArtifact.viewInAutomations')}</TermLink>;
+}
+
+/** `[ Weekly earnings recap ] RECURRING ...... [PAUSED]  VIEW IN AUTOMATIONS`:
+ *  the card's edge, with the way to the automation itself. */
+function AutomationHead({ auto, status }: { auto: Automation; status: React.ReactNode }): React.ReactElement {
+  const { t } = useTranslation();
   return (
-    <button
-      onClick={() => navigate(path)}
-      className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors hover:bg-foreground/5"
-      style={{ color: ACCENT, border: '1px solid var(--color-accent-soft)' }}
-    >
-      <ExternalLink size={14} />
-      {t('toolArtifact.viewInAutomations')}
-    </button>
+    <TermPanelHead
+      title={<span className="term-auto-name">{auto.name}</span>}
+      sub={triggerKind(auto, t) ?? t('toolArtifact.oneTime')}
+      aside={
+        <>
+          {status}
+          <AutomationsPageLink automationId={auto.id} />
+        </>
+      }
+    />
   );
 }
 
 // ─── Router ──────────────────────────────────────────────────────────
 
-interface AutomationDetailPanelProps {
-  data: Record<string, unknown>;
-}
-
-export default function AutomationDetailPanel({ data }: AutomationDetailPanelProps): React.ReactElement | null {
-  if (!data || data.type !== 'automations') return null;
-
-  switch (data.mode) {
+export default function AutomationDetailPanel({ data }: PanelProps): React.ReactElement | null {
+  const read = readAutomations(data);
+  switch (read?.mode) {
     case 'list':
-      return <ListPanel automations={(data.automations || []) as Record<string, unknown>[]} total={(data.total || 0) as number} />;
+      return <ListPanel automations={read.automations} total={read.total} />;
     case 'detail':
-      return <DetailPanel automation={data.automation as Record<string, unknown>} executions={(data.executions || []) as Record<string, unknown>[]} totalExecutions={(data.total_executions || 0) as number} />;
+      return read.automation && (
+        <DetailPanel automation={read.automation} executions={records(data.executions)} totalExecutions={read.totalExecutions} />
+      );
     case 'created':
-      return <CreatedPanel data={data} />;
+      return <CreatedPanel automation={read.automation} />;
     default:
       return null;
   }
@@ -186,286 +126,200 @@ export default function AutomationDetailPanel({ data }: AutomationDetailPanelPro
 // ─── List Panel ──────────────────────────────────────────────────────
 
 interface ListPanelProps {
-  automations: Record<string, unknown>[];
+  automations: Automation[];
   total: number;
 }
 
+/** The list card a size up: every automation, with when it runs next and
+ *  where, and its state in its own column. */
 function ListPanel({ automations, total }: ListPanelProps): React.ReactElement {
   const { t } = useTranslation();
-  if (automations.length === 0) {
-    return (
-      <div style={{ padding: 16, color: TEXT_SECONDARY, fontSize: '0.875rem' }}>
-        {t('toolArtifact.noAutomationsFound')}
+  const locale = useLocale();
+  const now = useNow();
+  const narrow = useCardNarrow();
+  const rows = automations.map((a, i) => ({
+    key: a.id || String(i),
+    name: a.name,
+    status: a.status,
+    schedule: scheduleLabel(a, t, locale, now),
+    next: a.nextRunAt ? relativeTime(a.nextRunAt, locale, now) : '',
+    place: cardPlace(a, t),
+  }));
+  // A column no row fills costs the table its width and says nothing.
+  const showNext = rows.some((r) => r.next);
+  const showPlace = rows.some((r) => r.place);
+
+  let body: React.ReactNode;
+  if (rows.length === 0) {
+    body = <div className="term-t3">{t('toolArtifact.noAutomationsFound')}</div>;
+  } else if (narrow) {
+    // A phone has no width for five columns: each name over its schedule.
+    body = (
+      <table className="term-table">
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td className="term-fill term-auto-wrap">
+                <div>{r.name}</div>
+                <div className="term-t3">
+                  {[r.schedule, r.next && t('toolArtifact.next', { time: r.next }), r.place].filter(Boolean).join(' · ')}
+                </div>
+              </td>
+              <td className="term-num">
+                <AutomationStatus status={r.status} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  } else {
+    body = (
+      <div style={{ overflowX: 'auto' }}>
+        <table className="term-table">
+          <thead>
+            <tr>
+              <th>{t('toolArtifact.termHead.name')}</th>
+              <th>{t('toolArtifact.schedule')}</th>
+              {showNext && <th>{t('toolArtifact.nextRun')}</th>}
+              {showPlace && <th>{t('automation.agentMode')}</th>}
+              <th className="term-num">{t('toolArtifact.status')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key}>
+                <td className="term-fill term-auto-wrap">{r.name}</td>
+                <td className="term-t2">{r.schedule}</td>
+                {showNext && <td className="term-t3">{r.next}</td>}
+                {showPlace && <td className="term-t3">{r.place}</td>}
+                <td className="term-num">
+                  <AutomationStatus status={r.status} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     );
   }
 
   return (
-    <div className="space-y-3">
-      <p style={{ fontSize: '0.75rem', color: TEXT_SECONDARY }}>
-        {t('toolArtifact.nAutomations', { count: total })}
-      </p>
-      {automations.map((a, i) => {
-        const isCron = a.trigger_type === 'cron';
-        const isPrice = a.trigger_type === 'price';
-        const Icon = isPrice ? TrendingUp : isCron ? Clock : Timer;
-        return (
-          <div
-            key={(a.automation_id as string) || i}
-            style={{
-              backgroundColor: 'var(--color-bg-surface)',
-              border: '1px solid var(--color-border-muted)',
-              borderRadius: 8,
-              padding: '10px 14px',
-            }}
-          >
-            {/* Row 1: icon + name + status badge */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <Icon size={14} style={{ color: TEXT_SECONDARY, flexShrink: 0 }} />
-              <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontSize: '0.875rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {a.name as string}
-              </span>
-              <StatusBadge status={a.status as string} />
-            </div>
-            {/* Row 2: schedule + next run + agent mode */}
-            <div style={{ display: 'flex', gap: 16, fontSize: '0.75rem', color: TEXT_SECONDARY, flexWrap: 'wrap' }}>
-              <span>{scheduleLabel(a)}</span>
-              {!!a.next_run_at && (
-                <span>{t('toolArtifact.next', { time: relativeTime(a.next_run_at as string) })}</span>
-              )}
-              {!!a.agent_mode && (
-                <span
-                  style={{
-                    fontSize: '0.625rem',
-                    fontWeight: 600,
-                    padding: '1px 6px',
-                    borderRadius: 4,
-                    backgroundColor: 'var(--color-bg-surface)',
-                    color: 'var(--color-text-tertiary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.03em',
-                  }}
-                >
-                  {a.agent_mode as string}
-                </span>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      <AutomationsPageLink />
-    </div>
+    <TermCard
+      title={t('toolArtifact.automations')}
+      meta={
+        <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '1.25ch' }}>
+          {rows.length > 0 && <span className="term-auto-count">{t('toolArtifact.nTotalItems', { count: total })}</span>}
+          <AutomationsPageLink />
+        </span>
+      }
+    >
+      {body}
+    </TermCard>
   );
 }
 
 // ─── Detail Panel ────────────────────────────────────────────────────
 
 interface DetailPanelProps {
-  automation: Record<string, unknown> | undefined;
+  automation: Automation;
   executions: Record<string, unknown>[];
   totalExecutions: number;
 }
 
-function DetailPanel({ automation, executions, totalExecutions }: DetailPanelProps): React.ReactElement | null {
+/** The detail card a size up, with what the card leaves out: the cron line,
+ *  the dates, the agent, the instruction and the latest runs. */
+function DetailPanel({ automation, executions, totalExecutions }: DetailPanelProps): React.ReactElement {
   const { t } = useTranslation();
-  if (!automation) return null;
-
-  const isCron = automation.trigger_type === 'cron';
-  const isPrice = automation.trigger_type === 'price';
-  const Icon = isPrice ? TrendingUp : isCron ? Clock : Timer;
+  const locale = useLocale();
+  const narrow = useCardNarrow();
+  const { lastRunAt, instruction } = automation;
+  const lastRun = lastRunAt ? <When at={lastRunAt} /> : null;
+  const place = cardPlace(automation, t);
 
   return (
-    <div className="space-y-4">
-      {/* Header: icon + name + status */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Icon size={16} style={{ color: TEXT_SECONDARY, flexShrink: 0 }} />
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: '1rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {automation.name as string}
-        </span>
-        <StatusBadge status={automation.status as string} />
-      </div>
+    <>
+      <AutomationHead auto={automation} status={<AutomationStatus status={automation.status} />} />
 
-      {/* Stat grid */}
-      {isPrice ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-          <StatCard
-            label={t('toolArtifact.trigger')}
-            value={formatPriceTrigger(asPriceTrigger(automation.trigger_config)) || '\u2014'}
-            sub={asPriceTrigger(automation.trigger_config)?.symbol || null}
-            badge={(() => { const k = marketI18nKey(asPriceTrigger(automation.trigger_config)); return k ? t(k) : null; })()}
-          />
-          <StatCard
-            label={t('toolArtifact.retrigger')}
-            value={formatRetriggerMode(asPriceTrigger(automation.trigger_config))}
-          />
-          <StatCard
-            label={t('toolArtifact.lastRun')}
-            value={automation.last_run_at ? relativeTime(automation.last_run_at as string) : '\u2014'}
-            sub={automation.last_run_at ? formatDateTime(automation.last_run_at as string) : null}
-          />
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-          <StatCard
-            label={t('toolArtifact.schedule')}
-            value={isCron ? cronToHuman(automation.schedule as string) : t('toolArtifact.oneTime')}
-            sub={isCron ? (automation.schedule as string) : null}
-          />
-          <StatCard
-            label={t('toolArtifact.nextRun')}
-            value={automation.next_run_at ? relativeTime(automation.next_run_at as string) : '\u2014'}
-            sub={automation.next_run_at ? formatDateTime(automation.next_run_at as string) : null}
-          />
-          <StatCard
-            label={t('toolArtifact.lastRun')}
-            value={automation.last_run_at ? relativeTime(automation.last_run_at as string) : '\u2014'}
-            sub={automation.last_run_at ? formatDateTime(automation.last_run_at as string) : null}
-          />
-        </div>
+      <TermCard title={t('toolArtifact.configuration')}>
+        <TermKV
+          cols={narrow ? 1 : 2}
+          pairs={[
+            ...planPairs(automation, t, locale),
+            lastRun && [t('toolArtifact.lastRun'), lastRun],
+            !!place && [t('automation.agentMode'), place],
+            // With no runs listed below, the count is said here, as the card says it.
+            !executions.length && totalExecutions > 0 && [t('toolArtifact.executions'), t('toolArtifact.nTotal', { count: totalExecutions })],
+          ]}
+        />
+      </TermCard>
+
+      {instruction && (
+        <TermCard title={t('toolArtifact.instruction')}>
+          <p className="term-prose term-auto-prose">{instruction}</p>
+        </TermCard>
       )}
 
-      {/* Instruction */}
-      {!!automation.instruction && (
-        <div>
-          <p style={{ fontSize: '0.625rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: TEXT_SECONDARY, marginBottom: 6 }}>
-            {t('toolArtifact.instruction')}
-          </p>
-          <div
-            style={{
-              backgroundColor: 'var(--color-bg-surface)',
-              borderRadius: 8,
-              padding: '10px 12px',
-              fontSize: '0.8125rem',
-              color: 'var(--color-text-tertiary)',
-              whiteSpace: 'pre-wrap',
-              lineHeight: 1.5,
-            }}
-          >
-            {automation.instruction as string}
-          </div>
-        </div>
-      )}
-
-      {/* Configuration */}
-      <div>
-        <p style={{ fontSize: '0.625rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: TEXT_SECONDARY, marginBottom: 6 }}>
-          {t('toolArtifact.configuration')}
-        </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
-          {!!automation.agent_mode && (
-            <ConfigRow label={t('toolArtifact.agentMode')} value={(automation.agent_mode as string).toUpperCase()} />
-          )}
-          <ConfigRow label={t('toolArtifact.triggerType')} value={isPrice ? t('toolArtifact.priceTrigger') : isCron ? t('toolArtifact.recurringCron') : t('toolArtifact.oneTime')} />
-        </div>
-      </div>
-
-      {/* Execution History */}
       {executions.length > 0 && (
-        <div>
-          <p style={{ fontSize: '0.625rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: TEXT_SECONDARY, marginBottom: 6 }}>
-            {t('toolArtifact.executionHistory', { count: totalExecutions })}
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {executions.map((e, i) => (
-              <div
-                key={(e.execution_id as string) || i}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  padding: '6px 10px',
-                  fontSize: '0.75rem',
-                  backgroundColor: 'var(--color-bg-surface)',
-                  borderRadius: 6,
-                }}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    backgroundColor: statusColor(e.status as string),
-                    flexShrink: 0,
-                  }}
-                />
-                <span style={{ color: 'var(--color-text-primary)', fontWeight: 500, flex: 1 }}>
-                  {e.scheduled_at ? formatDateTime(e.scheduled_at as string) : t('toolArtifact.manualTrigger')}
-                </span>
-                {!!(e.started_at && e.completed_at) && (
-                  <span style={{ color: TEXT_SECONDARY, fontSize: '0.6875rem' }}>
-                    {formatDuration(e.started_at as string, e.completed_at as string)}
-                  </span>
-                )}
-                {!!e.error_message && (
-                  <span style={{ color: RED, fontSize: '0.6875rem', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.error_message as string}>
-                    {e.error_message as string}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        <TermCard title={t('toolArtifact.executions')} meta={t('toolArtifact.nTotal', { count: totalExecutions })}>
+          <table className="term-table">
+            <tbody>
+              {executions.map((e, i) => {
+                const run = describeRun(e as unknown as AutomationExecution);
+                const error = e.error_message as string | undefined;
+                return (
+                  <React.Fragment key={(e.execution_id as string) || i}>
+                    <tr>
+                      <td className="term-fill">
+                        {e.scheduled_at ? formatDateTime(e.scheduled_at as string, locale) : t('toolArtifact.manualTrigger')}
+                      </td>
+                      <td className="term-num term-t3">
+                        {!!(e.started_at && e.completed_at) && formatDuration(e.started_at as string, e.completed_at as string, t)}
+                      </td>
+                      <td className="term-num">
+                        <AutomationStatus status={runTone(e.status as ExecutionStatus)}>{t(run.ui.labelKey)}</AutomationStatus>
+                      </td>
+                    </tr>
+                    {error && (
+                      <tr className="term-auto-error">
+                        <td colSpan={3}>
+                          <span className="term-auto-error-text" title={error}>{error}</span>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </TermCard>
       )}
-
-      <AutomationsPageLink automationId={automation.automation_id as string} />
-    </div>
+    </>
   );
 }
 
 // ─── Created Panel ───────────────────────────────────────────────────
 
-interface CreatedPanelProps {
-  data: Record<string, unknown>;
-}
-
-function CreatedPanel({ data }: CreatedPanelProps): React.ReactElement {
+/** The created card a size up: what was set, and the automation's state. */
+function CreatedPanel({ automation }: { automation: Automation }): React.ReactElement {
   const { t } = useTranslation();
-  const isCron = data.trigger_type === 'cron';
-  const isPrice = data.trigger_type === 'price';
+  const locale = useLocale();
+  const narrow = useCardNarrow();
+  const status = <AutomationStatus status={automation.status || 'active'} />;
 
   return (
-    <div className="space-y-4">
-      {/* Confirmation header */}
-      <div
-        style={{
-          backgroundColor: 'var(--color-profit-soft)',
-          border: '1px solid var(--color-profit-border)',
-          borderRadius: 8,
-          padding: '12px 14px',
-        }}
-      >
-        <p style={{ color: GREEN, fontWeight: 600, fontSize: '0.875rem', marginBottom: 4 }}>
-          {t('toolArtifact.automationCreatedSuccess')}
-        </p>
-        <p style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontSize: '1rem' }}>
-          {data.name as string}
-        </p>
-      </div>
+    <>
+      <AutomationHead
+        auto={automation}
+        status={<TermStatus tone="profit">{t('toolArtifact.automationStatus.created')}</TermStatus>}
+      />
 
-      {/* Details */}
-      {isPrice ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <StatCard label={t('toolArtifact.trigger')} value={formatPriceTrigger(asPriceTrigger(data.trigger_config)) || '\u2014'} sub={asPriceTrigger(data.trigger_config)?.symbol || null} badge={(() => { const k = marketI18nKey(asPriceTrigger(data.trigger_config)); return k ? t(k) : null; })()} />
-          <StatCard label={t('toolArtifact.retrigger')} value={formatRetriggerMode(asPriceTrigger(data.trigger_config))} />
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <StatCard label={t('toolArtifact.schedule')} value={isCron ? cronToHuman(data.schedule as string) : t('toolArtifact.oneTime')} sub={isCron ? (data.schedule as string) : null} />
-          <StatCard
-            label={t('toolArtifact.nextRun')}
-            value={data.next_run_at ? relativeTime(data.next_run_at as string) : '\u2014'}
-            sub={data.next_run_at ? formatDateTime(data.next_run_at as string) : null}
-          />
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
-        <ConfigRow label={t('toolArtifact.status')} value={(data.status as string) || 'active'} />
-        <ConfigRow label={t('toolArtifact.triggerType')} value={isPrice ? t('toolArtifact.priceTrigger') : isCron ? t('toolArtifact.recurring') : t('toolArtifact.oneTime')} />
-      </div>
-
-      <AutomationsPageLink automationId={data.automation_id as string} />
-    </div>
+      <TermCard title={t('toolArtifact.configuration')}>
+        <TermKV
+          cols={narrow ? 1 : 2}
+          pairs={[...planPairs(automation, t, locale), [t('toolArtifact.status'), status]]}
+        />
+      </TermCard>
+    </>
   );
 }

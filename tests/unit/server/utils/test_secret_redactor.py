@@ -5,14 +5,12 @@ MCP config and redacts them in text and bytes content.
 """
 
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import src.server.database.mcp_servers as mcp_servers_db
-import src.server.database.vault_secrets as vault_secrets_db
-import src.server.database.workspace as workspace_db
-import src.server.services.workspace_manager as workspace_manager
+import src.server.database.user_vault_secrets as user_vault_db
 import src.server.utils.secret_redactor as secret_redactor
 from src.server.utils.secret_redactor import (
     SecretRedactor,
@@ -22,13 +20,6 @@ from src.server.utils.secret_redactor import (
 
 # Patch targets (imported inside SecretRedactor.__init__)
 _GAC = "src.config.tool_settings._get_agent_config_dict"
-_GNC = "src.config.settings.get_nested_config"
-
-
-def _disable_github(key, default):
-    if key == "github.enabled":
-        return False
-    return default
 
 
 def _make_agent_config(servers=None):
@@ -47,7 +38,6 @@ class TestSecretDiscovery:
         with (
             patch.dict(os.environ, {"FMP_API_KEY": "fmp_secret_12345"}, clear=False),
             patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
         ):
             r = SecretRedactor()
         assert len(r._secrets) == 1
@@ -59,7 +49,6 @@ class TestSecretDiscovery:
         with (
             patch.dict(os.environ, {"SHORT": "abc"}, clear=False),
             patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
         ):
             r = SecretRedactor()
         assert len(r._secrets) == 0
@@ -67,10 +56,7 @@ class TestSecretDiscovery:
     def test_literal_env_values(self):
         """Literal (non-placeholder) values are also tracked."""
         cfg = _make_agent_config([_make_server(env={"KEY": "literal_secret_val"})])
-        with (
-            patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
-        ):
+        with patch(_GAC, return_value=cfg):
             r = SecretRedactor()
         assert len(r._secrets) == 1
         assert r._secrets[0][1] == "literal_secret_val"
@@ -81,10 +67,7 @@ class TestSecretDiscovery:
             "GIT_AUTHOR_NAME": "langalpha-bot",
             "GIT_AUTHOR_EMAIL": "bot@ginlix.ai",
         })])
-        with (
-            patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
-        ):
+        with patch(_GAC, return_value=cfg):
             r = SecretRedactor()
         assert len(r._secrets) == 0
 
@@ -95,33 +78,13 @@ class TestSecretDiscovery:
         with (
             patch.dict(os.environ, {"SECRET": "disabled_secret"}, clear=False),
             patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
         ):
             r = SecretRedactor()
         assert len(r._secrets) == 0
 
-    def test_github_token_from_config(self):
-        def _enable_github(key, default):
-            return {
-                "github.enabled": True,
-                "github.token_env": "GITHUB_BOT_TOKEN",
-            }.get(key, default)
-
-        cfg = _make_agent_config([])
-        with (
-            patch.dict(os.environ, {"GITHUB_BOT_TOKEN": "ghp_1234567890abcdef"}, clear=False),
-            patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_enable_github),
-        ):
-            r = SecretRedactor()
-        assert any(name == "GITHUB_TOKEN" for name, _ in r._secrets)
-
     def test_empty_config(self):
         cfg = _make_agent_config([])
-        with (
-            patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
-        ):
+        with patch(_GAC, return_value=cfg):
             r = SecretRedactor()
         assert r._secrets == []
 
@@ -131,10 +94,7 @@ class TestSecretDiscovery:
             "SHORT": "abcdefgh",
             "LONG": "abcdefghijklmnop",
         })])
-        with (
-            patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
-        ):
+        with patch(_GAC, return_value=cfg):
             r = SecretRedactor()
         assert len(r._secrets) == 2
         assert len(r._secrets[0][1]) >= len(r._secrets[1][1])
@@ -234,33 +194,40 @@ class TestRedactBytes:
 class TestVaultSecretsForRedaction:
     """The redaction input must always be current truth, never a cached copy."""
 
-    @pytest.mark.asyncio
-    async def test_reads_db_even_when_a_session_holds_a_stale_dict(self, monkeypatch):
-        """A sandbox session caches the merged secret set at upload time, and
-        that cache is process-local: after a rotation handled by another worker
-        it still holds the RETIRED value. Redacting from it would scrub the dead
-        secret and pass the live one through in cleartext.
-        """
-        stale = MagicMock()
-        stale.sandbox.vault_secrets = {"API_KEY": "retired_value_000"}
-        wm = MagicMock()
-        wm._sessions = {"ws-1": stale}
-        monkeypatch.setattr(
-            workspace_manager, "WorkspaceManager",
-            MagicMock(get_instance=MagicMock(return_value=wm)),
-        )
+    def _patch_sources(self, monkeypatch, *, vault):
         monkeypatch.setattr(
             secret_redactor, "_connector_secret_literals",
             AsyncMock(return_value={}),
         )
-        monkeypatch.setattr(
-            vault_secrets_db, "get_effective_secrets",
-            AsyncMock(return_value={"API_KEY": "rotated_value_111"}),
-        )
+        reader = vault if isinstance(vault, AsyncMock) else AsyncMock(return_value=vault)
+        monkeypatch.setattr(user_vault_db, "get_user_secrets_decrypted", reader)
+        return reader
 
-        assert await get_vault_secrets_for_redaction("ws-1") == {
+    @pytest.mark.asyncio
+    async def test_reads_db_even_when_a_session_holds_a_stale_dict(self, monkeypatch):
+        """A sandbox session caches the secret set at upload time, and that
+        cache is process-local: after a rotation handled by another worker it
+        still holds the RETIRED value. Redacting from it would scrub the dead
+        secret and pass the live one through in cleartext.
+        """
+        self._patch_sources(monkeypatch, vault={"API_KEY": "rotated_value_111"})
+
+        assert await get_vault_secrets_for_redaction("u1") == {
             "API_KEY": "rotated_value_111"
         }
+
+    @pytest.mark.asyncio
+    async def test_reads_the_owners_whole_vault(self, monkeypatch):
+        """Every workspace of the user can read every secret, so a value is a
+        secret here whether or not a server in this workspace references it."""
+        reader = self._patch_sources(
+            monkeypatch, vault={"UNREFERENCED": "agent_code_value_1"}
+        )
+
+        secrets = await get_vault_secrets_for_redaction("u7")
+
+        reader.assert_awaited_once_with("u7")
+        assert secrets == {"UNREFERENCED": "agent_code_value_1"}
 
     @pytest.mark.asyncio
     async def test_lookup_failure_propagates(self, monkeypatch):
@@ -268,28 +235,26 @@ class TestVaultSecretsForRedaction:
         disables vault redaction, and the caller then serves the file — on a
         route whose only credential is the workspace UUID. The 5xx is the
         correct answer to "I don't know"."""
-        monkeypatch.setattr(
-            secret_redactor, "_connector_secret_literals",
-            AsyncMock(return_value={}),
-        )
-        monkeypatch.setattr(
-            vault_secrets_db, "get_effective_secrets",
-            AsyncMock(side_effect=RuntimeError("db down")),
+        self._patch_sources(
+            monkeypatch, vault=AsyncMock(side_effect=RuntimeError("db down"))
         )
         with pytest.raises(RuntimeError):
-            await get_vault_secrets_for_redaction("ws-1")
+            await get_vault_secrets_for_redaction("u1")
 
     @pytest.mark.asyncio
     async def test_empty_vault_is_not_a_failure(self, monkeypatch):
-        """The other half of the contract: {} means the workspace has none."""
-        monkeypatch.setattr(
-            secret_redactor, "_connector_secret_literals",
-            AsyncMock(return_value={}),
-        )
-        monkeypatch.setattr(
-            vault_secrets_db, "get_effective_secrets", AsyncMock(return_value={}),
-        )
-        assert await get_vault_secrets_for_redaction("ws-1") == {}
+        """The other half of the contract: {} means the owner has none."""
+        self._patch_sources(monkeypatch, vault={})
+        assert await get_vault_secrets_for_redaction("u1") == {}
+
+    @pytest.mark.asyncio
+    async def test_a_missing_owner_is_not_an_empty_vault(self, monkeypatch):
+        """A workspace deleted mid-request names no owner; reading that as
+        "no secrets" served the file with nothing redacted."""
+        reader = self._patch_sources(monkeypatch, vault={"K": "v" * 12})
+        with pytest.raises(ValueError):
+            await get_vault_secrets_for_redaction("")
+        reader.assert_not_awaited()
 
 
 class TestConnectorLiteralRedaction:
@@ -300,45 +265,48 @@ class TestConnectorLiteralRedaction:
     workspace deserves the same scrubbing a vault value gets.
     """
 
-    def _patch_sources(
-        self, monkeypatch, *, ws_rows=(), catalog_rows=(), user_id="u1"
-    ):
+    def _patch_sources(self, monkeypatch, *, catalog_rows=()):
+        catalog = AsyncMock(return_value=list(catalog_rows))
+        monkeypatch.setattr(mcp_servers_db, "list_catalog_servers", catalog)
         monkeypatch.setattr(
-            mcp_servers_db, "list_workspace_servers",
-            AsyncMock(return_value=list(ws_rows)),
+            user_vault_db, "get_user_secrets_decrypted", AsyncMock(return_value={}),
         )
-        monkeypatch.setattr(
-            workspace_db, "get_workspace",
-            AsyncMock(return_value={"user_id": user_id} if user_id else None),
-        )
-        monkeypatch.setattr(
-            mcp_servers_db, "list_catalog_servers",
-            AsyncMock(return_value=list(catalog_rows)),
-        )
-        monkeypatch.setattr(
-            vault_secrets_db, "get_effective_secrets", AsyncMock(return_value={}),
-        )
+        return catalog
 
     @pytest.mark.asyncio
-    async def test_credential_literals_from_both_tiers_join_the_set(
-        self, monkeypatch
-    ):
+    async def test_credential_literals_join_the_set(self, monkeypatch):
+        catalog = self._patch_sources(
+            monkeypatch,
+            catalog_rows=[
+                {"name": "alpha", "env": {"API_TOKEN": "envtoken_value_123"}},
+                {
+                    "name": "beta",
+                    "headers": {"Authorization": "Bearer usertoken_9999"},
+                },
+            ],
+        )
+
+        secrets = await get_vault_secrets_for_redaction("u1")
+
+        catalog.assert_awaited_once_with("u1")
+        assert secrets["mcp:alpha:API_TOKEN"] == "envtoken_value_123"
+        assert secrets["mcp:beta:Authorization"] == "Bearer usertoken_9999"
+
+    @pytest.mark.asyncio
+    async def test_a_templated_vault_reference_is_not_a_literal(self, monkeypatch):
+        """``Bearer ${vault:K}`` resolves to a vault value already in the set.
+        Collected as a literal, the template text itself became a "secret",
+        and a served file quoting the plugin's own config came back mangled."""
         self._patch_sources(
             monkeypatch,
-            ws_rows=[{
-                "name": "alpha",
-                "config": {"env": {"API_TOKEN": "wstoken_value_123"}},
-            }],
             catalog_rows=[{
                 "name": "beta",
-                "headers": {"Authorization": "Bearer usertoken_9999"},
+                "headers": {"Authorization": "Bearer ${vault:BETA_API_KEY}"},
+                "env": {"API_TOKEN": "${vault:BETA_TOKEN}"},
             }],
         )
 
-        secrets = await get_vault_secrets_for_redaction("ws-1")
-
-        assert secrets["mcp:alpha:API_TOKEN"] == "wstoken_value_123"
-        assert secrets["mcp:beta:Authorization"] == "Bearer usertoken_9999"
+        assert await get_vault_secrets_for_redaction("u1") == {}
 
     @pytest.mark.asyncio
     async def test_ordinary_config_values_stay_servable(self, monkeypatch):
@@ -353,7 +321,7 @@ class TestConnectorLiteralRedaction:
             }],
         )
 
-        assert await get_vault_secrets_for_redaction("ws-1") == {}
+        assert await get_vault_secrets_for_redaction("u1") == {}
 
     @pytest.mark.asyncio
     async def test_a_long_opaque_value_is_a_credential_whatever_its_key(
@@ -367,26 +335,22 @@ class TestConnectorLiteralRedaction:
             }],
         )
 
-        secrets = await get_vault_secrets_for_redaction("ws-1")
+        secrets = await get_vault_secrets_for_redaction("u1")
         assert secrets == {"mcp:beta:SESSION": "abcdefghij0123456789abcde"}
 
     @pytest.mark.asyncio
-    async def test_arg_credentials_join_from_both_tiers(self, monkeypatch):
+    async def test_arg_credentials_join_the_set(self, monkeypatch):
         self._patch_sources(
             monkeypatch,
-            ws_rows=[{
-                "name": "alpha",
-                "config": {"args": ["--api-key=wsargkey_12345"]},
-            }],
-            catalog_rows=[{
-                "name": "beta",
-                "args": ["--token", "userargtok_9999"],
-            }],
+            catalog_rows=[
+                {"name": "alpha", "args": ["--api-key=argkey_value_12345"]},
+                {"name": "beta", "args": ["--token", "userargtok_9999"]},
+            ],
         )
 
-        secrets = await get_vault_secrets_for_redaction("ws-1")
+        secrets = await get_vault_secrets_for_redaction("u1")
 
-        assert secrets["mcp:alpha:api-key"] == "wsargkey_12345"
+        assert secrets["mcp:alpha:api-key"] == "argkey_value_12345"
         assert secrets["mcp:beta:token"] == "userargtok_9999"
 
     @pytest.mark.asyncio
@@ -405,7 +369,7 @@ class TestConnectorLiteralRedaction:
             }],
         )
 
-        assert await get_vault_secrets_for_redaction("ws-1") == {}
+        assert await get_vault_secrets_for_redaction("u1") == {}
 
     @pytest.mark.asyncio
     async def test_vault_refs_are_not_collected(self, monkeypatch):
@@ -419,17 +383,18 @@ class TestConnectorLiteralRedaction:
             }],
         )
 
-        assert await get_vault_secrets_for_redaction("ws-1") == {}
+        assert await get_vault_secrets_for_redaction("u1") == {}
 
     @pytest.mark.asyncio
     async def test_connector_lookup_failure_propagates(self, monkeypatch):
         """Same fail-closed contract as the vault read."""
+        self._patch_sources(monkeypatch)
         monkeypatch.setattr(
-            mcp_servers_db, "list_workspace_servers",
+            mcp_servers_db, "list_catalog_servers",
             AsyncMock(side_effect=RuntimeError("db down")),
         )
         with pytest.raises(RuntimeError):
-            await get_vault_secrets_for_redaction("ws-1")
+            await get_vault_secrets_for_redaction("u1")
 
 
 class TestGetRedactor:
@@ -439,7 +404,6 @@ class TestGetRedactor:
         cfg = _make_agent_config([])
         with (
             patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
             patch("src.server.utils.secret_redactor._instance", None),
         ):
             r1 = get_redactor()
@@ -450,7 +414,6 @@ class TestGetRedactor:
         cfg = _make_agent_config([])
         with (
             patch(_GAC, return_value=cfg),
-            patch(_GNC, side_effect=_disable_github),
             patch("src.server.utils.secret_redactor._instance", None),
         ):
             r = get_redactor()

@@ -25,9 +25,12 @@ from ptc_agent.agent.middleware.background_subagent.task import (
     WORKFLOW_SUBAGENT_TYPE,
 )
 from ptc_agent.agent.middleware.background_subagent.spawn import (
+    RunLedgerUnavailable,
     SpawnError,
+    SpawnStoppedError,
     TaskRunRefused,
     spawn_task_writer,
+    stopped_launch_artifact,
 )
 from ptc_agent.agent.middleware.background_subagent.workflow.driver import (
     WorkflowDriver,
@@ -46,8 +49,10 @@ from ptc_agent.core.paths import (
     HIDDEN_DIR_NAMES,
     MEMO_USER_DIR,
     MEMORY_USER_DIR,
-    MEMORY_WORKSPACE_DIR,
+    WorkspaceLayout,
 )
+from ptc_agent.core.project_context import current_project
+from src.observability import mark_tool_failed
 
 logger = structlog.get_logger(__name__)
 
@@ -56,7 +61,7 @@ logger = structlog.get_logger(__name__)
 # on the workspace filesystem the backend reads from.
 _UNREADABLE_SCRIPT_PREFIXES: tuple[str, ...] = (
     f"{MEMORY_USER_DIR}/",
-    f"{MEMORY_WORKSPACE_DIR}/",
+    f"{WorkspaceLayout.MEMORY_DIR}/",
     f"{MEMO_USER_DIR}/",
 )
 
@@ -71,17 +76,35 @@ class _Refused(Exception):
     """Carries the reply a refused call answers with, raised by the phase
     helpers so a resolved script has exactly one shape at the call site.
 
-    The failure prefix is stamped here rather than written at each raise. A
-    refusal starts no run, so no task artifact binds the launch card and no
-    channel will ever close it — this text is the only signal the card has to
-    settle on, and the one wording that omitted the prefix left the card
-    spinning "Running" for the life of the thread.
+    A refusal starts no run, so no task artifact binds the launch card and no
+    channel will ever close it: the reply is the only signal the card has to
+    settle on. That is why the failure status, and the prefix, are stamped
+    here rather than written at each raise.
     """
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, failure: str | None = None) -> None:
         reply = reason if reason[:5].lower() == "error" else f"Error: {reason}"
         super().__init__(reply)
         self.reply = reply
+        # Set when the refusal is our infrastructure failing rather than the
+        # call asking for something it can't have, so tracing counts it as a
+        # tool failure; most refusals are the agent's own to correct.
+        self.failure = failure
+
+    def as_reply(self, tool_call_id: str) -> str | ToolMessage:
+        """The refusal as the tool's return value, carrying ``status="error"``.
+
+        Without a tool_call_id there is no ToolMessage to build, so the text
+        falls back to the caller's own default status.
+        """
+        if not tool_call_id:
+            return self.reply
+        return ToolMessage(
+            content=self.reply,
+            tool_call_id=tool_call_id,
+            name="RunWorkflow",
+            status="error",
+        )
 
 
 def _script_path_forms(backend: Any, path: str) -> set[str]:
@@ -155,6 +178,19 @@ def _reply_with_artifact(
     )
 
 
+def _stopped_reply(run_task: Any, tool_call_id: str) -> str | ToolMessage:
+    """A launch a stop refused mid-setup, which settles its card as stopped."""
+    reply = f"Workflow run {run_task.display_id} was stopped before it started."
+    if not tool_call_id:
+        return reply
+    return ToolMessage(
+        content=reply,
+        tool_call_id=tool_call_id,
+        name="RunWorkflow",
+        artifact=stopped_launch_artifact(),
+    )
+
+
 def _run_started_reply(
     run_task: Any,
     *,
@@ -169,13 +205,8 @@ def _run_started_reply(
         f"- Workflow: {workflow_name}\n"
         "- Status: Running in background\n"
         f"- Run files: {base_rel}/\n\n"
-        "You can:\n"
-        "- Continue with other work\n"
-        f'- Use `TaskOutput(task_id="{run_task.task_id}")` for progress '
-        "or the final result\n"
-        f'- Use `TaskOutput(task_id="{run_task.task_id}", timeout=120)` '
-        "to wait for completion\n"
-        f"- Read per-child records from {base_rel}/children/"
+        "You will be notified when it finishes. "
+        f"Per-child records are in {base_rel}/children/."
     )
     return _reply_with_artifact(
         run_task,
@@ -273,7 +304,8 @@ def create_run_workflow_tool(
                 )
                 raise _Refused(
                     f"could not read script_path '{script_path}'. "
-                    "Try again, or pass the script inline."
+                    "Try again, or pass the script inline.",
+                    failure="script_read_failed",
                 ) from error
             if not from_file:
                 raise _Refused(
@@ -293,7 +325,8 @@ def create_run_workflow_tool(
                 )
                 raise _Refused(
                     f"could not read workflow '{workflow}' from the "
-                    "workflow store. Try again, or pass the script inline."
+                    "workflow store. Try again, or pass the script inline.",
+                    failure="workflow_store_unavailable",
                 ) from error
             if resolved is None:
                 raise _Refused(_unknown_workflow_error(workflow))
@@ -336,7 +369,8 @@ def create_run_workflow_tool(
                     run_task.mark_never_started("workflow cap ledger unreadable")
                     raise _Refused(
                         "could not read the workflow run ledger to "
-                        "check the per-thread cap. Try again shortly."
+                        "check the per-thread cap. Try again shortly.",
+                        failure=RunLedgerUnavailable.failure,
                     ) from error
                 active_ids = [
                     str(row["task_id"])
@@ -350,7 +384,7 @@ def create_run_workflow_tool(
                     f"{len(active_ids)} workflow run(s) already active "
                     f"({running}); the per-thread cap is "
                     f"{caps.max_runs_per_thread}. "
-                    "Wait for one to finish or cancel it first."
+                    "Start this run once one finishes, or cancel one first."
                 )
 
             # A workflow run task is a turn-lifecycle run like any Task spawn,
@@ -368,7 +402,8 @@ def create_run_workflow_tool(
                 run_task.mark_never_started(refusal.settle_reason)
                 raise _Refused(
                     f"could not start {run_task.display_id} — "
-                    f"{refusal.reason}."
+                    f"{refusal.reason}.",
+                    failure=refusal.failure,
                 ) from refusal
             run_task.task_run_id = admitted or None
 
@@ -381,7 +416,9 @@ def create_run_workflow_tool(
         tool_call_id: str,
     ) -> str | ToolMessage:
         """Every path that starts a run, raising ``_Refused`` for those that
-        do not — so the caller turns a refusal into a reply exactly once."""
+        do not — so the caller turns a refusal into a reply exactly once. A
+        stop that lands mid-setup is a cancellation, not a refusal, and
+        replies stopped instead."""
         sources = (script, script_path, workflow)
         if sum(source is not None for source in sources) != 1:
             raise _Refused(
@@ -455,9 +492,7 @@ def create_run_workflow_tool(
             return _reply_with_artifact(
                 existing,
                 f"Workflow run already active: **{existing.display_id}** "
-                f"({meta.name}). Use "
-                f'`TaskOutput(task_id="{existing.task_id}")` for progress '
-                "or the final result.",
+                f"({meta.name}). You will be notified when it finishes.",
                 workflow_name=meta.name,
                 description=launch_description,
                 tool_call_id=tool_call_id,
@@ -511,6 +546,7 @@ def create_run_workflow_tool(
             source=script_source,
             base_configurable=configurable,
             caps=caps,
+            project=current_project(),
         )
         driver = WorkflowDriver(spec)
         try:
@@ -523,9 +559,12 @@ def create_run_workflow_tool(
                 name=f"workflow_run_{run_task.display_id}",
                 action="init",
             )
+        except SpawnStoppedError:
+            return _stopped_reply(run_task, tool_call_id)
         except SpawnError as error:
             raise _Refused(
-                f"could not start {run_task.display_id} — {error}."
+                f"could not start {run_task.display_id} — {error}.",
+                failure=type(error).__name__,
             ) from error
 
         logger.info(
@@ -568,6 +607,8 @@ def create_run_workflow_tool(
                 script, script_path, workflow, params, description, tool_call_id
             )
         except _Refused as refused:
-            return refused.reply
+            if refused.failure:
+                mark_tool_failed(refused.failure)
+            return refused.as_reply(tool_call_id)
 
     return run_workflow

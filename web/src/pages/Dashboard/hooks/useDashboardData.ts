@@ -10,6 +10,7 @@ import {
   NEWS_STALE_MS,
   mapNewsResults,
 } from '../utils/newsItem';
+import { useCnNewsEligibility } from './useCnNewsEligibility';
 
 type NewsItem = DashboardNewsItem;
 
@@ -25,6 +26,9 @@ interface DashboardData {
   indicesLoading: boolean;
   newsItems: NewsItem[];
   newsLoading: boolean;
+  newsHasNextPage: boolean;
+  newsIsFetchingNextPage: boolean;
+  newsFetchNextPage: () => void;
   curatedItems: NewsItem[];
   curatedLoading: boolean;
   curatedHasNextPage: boolean;
@@ -32,6 +36,55 @@ interface DashboardData {
   curatedFetchNextPage: () => void;
   marketStatus: MarketStatusData | null;
   marketStatusRef: { current: MarketStatusData | null };
+}
+
+// Flatten infinite-query pages into one list, de-duping by id (guards against
+// feed rotation between page fetches reintroducing a story).
+function flattenNewsPages(
+  pages: { results: Record<string, unknown>[] }[] | undefined,
+): NewsItem[] {
+  const rows = pages?.flatMap((p) => p.results ?? []) ?? [];
+  const seen = new Set<string>();
+  const unique = rows.filter((r) => {
+    const id = r.id as string;
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return mapNewsResults(unique);
+}
+
+/**
+ * Cursor-paginated infinite news feed with a page-1-only polling policy.
+ *
+ * Auto-refresh runs ONLY while page 1 (the warm server-side buffer) is the sole
+ * loaded page: refetchInterval refetches every loaded page, and pages 2+ bypass
+ * the server cache and hit upstream directly, so we stop polling once the user
+ * scrolls past page 1.
+ */
+function useInfiniteNewsFeed(queryKey: (string | null)[], provider?: string, enabled = true) {
+  const query = useInfiniteQuery({
+    queryKey,
+    queryFn: ({ pageParam }) => getNews({ limit: 50, provider, cursor: pageParam }),
+    enabled,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    staleTime: NEWS_STALE_MS,
+    refetchInterval: (q) =>
+      (q.state.data?.pages.length ?? 0) <= 1 ? NEWS_POLL_INTERVAL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+  const items = useMemo<NewsItem[]>(() => flattenNewsPages(query.data?.pages), [query.data]);
+  return {
+    items,
+    // A feed held back until its provider is decided is still loading.
+    isLoading: query.isLoading || (!enabled && !query.data),
+    hasNextPage: !!query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    fetchNextPage: () => {
+      void query.fetchNextPage();
+    },
+  };
 }
 
 /**
@@ -96,61 +149,36 @@ export function useDashboardData(): DashboardData {
   );
   const indicesLoading = indexQuotesLoading;
 
-  // 3. Market General Feed — kept warm server-side by the news poller, so we
-  //    re-poll every 60s to surface the latest articles in an open tab.
-  const { data: newsItems = [], isLoading: newsLoading } = useQuery<NewsItem[]>({
-    queryKey: ['dashboard', 'news'],
-    queryFn: async (): Promise<NewsItem[]> => {
-      const data = await getNews({ limit: 50 });
-      return data.results?.length ? mapNewsResults(data.results) : [];
-    },
-    staleTime: NEWS_STALE_MS,
-    refetchInterval: NEWS_POLL_INTERVAL_MS,
-    refetchIntervalInBackground: false,
-  });
+  // 3. Market General Feed — cursor-paginated for infinite scroll, kept warm
+  //    server-side by the news poller.
+  //    Eligible CN users (A-share pack + zh locale) get the tushare CN feed;
+  //    the backend re-checks eligibility and falls back to the chain if not.
+  //    The chain feed serves next_cursor=null (it can't paginate), so
+  //    load-more simply never triggers for non-CN users. The feed waits while
+  //    eligibility is undecided, so a cold load fetches one feed, not two.
+  const cnNewsEligible = useCnNewsEligibility();
+  const newsProvider = cnNewsEligible ? 'tushare' : undefined;
+  const news = useInfiniteNewsFeed(
+    ['dashboard', 'news', newsProvider ?? null], newsProvider, cnNewsEligible !== null,
+  );
 
   // 4. Curated "Top" Feed (TickerTick) — cursor-paginated for infinite scroll,
-  //    also kept warm server-side. Auto-refresh ONLY page 1 (the warm buffer):
-  //    refetchInterval refetches every loaded page, and pages 2+ bypass the
-  //    server cache and hit upstream directly, so we stop polling once the user
-  //    scrolls past page 1.
-  const curated = useInfiniteQuery({
-    queryKey: ['dashboard', 'curatedNews'],
-    queryFn: ({ pageParam }) => getNews({ provider: 'tickertick', limit: 50, cursor: pageParam }),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
-    staleTime: NEWS_STALE_MS,
-    refetchInterval: (query) =>
-      (query.state.data?.pages.length ?? 0) <= 1 ? NEWS_POLL_INTERVAL_MS : false,
-    refetchIntervalInBackground: false,
-  });
-
-  // Flatten loaded pages, de-duping by id (guards against feed rotation between
-  // page fetches reintroducing a story).
-  const curatedItems = useMemo<NewsItem[]>(() => {
-    const rows = curated.data?.pages.flatMap((p) => p.results) ?? [];
-    const seen = new Set<string>();
-    const unique = rows.filter((r) => {
-      const id = r.id as string;
-      if (!id || seen.has(id)) return false;
-      seen.add(id);
-      return true;
-    });
-    return mapNewsResults(unique);
-  }, [curated.data]);
+  //    also kept warm server-side.
+  const curated = useInfiniteNewsFeed(['dashboard', 'curatedNews'], 'tickertick');
 
   return {
     indices,
     indicesLoading,
-    newsItems,
-    newsLoading,
-    curatedItems,
+    newsItems: news.items,
+    newsLoading: news.isLoading,
+    newsHasNextPage: news.hasNextPage,
+    newsIsFetchingNextPage: news.isFetchingNextPage,
+    newsFetchNextPage: news.fetchNextPage,
+    curatedItems: curated.items,
     curatedLoading: curated.isLoading,
-    curatedHasNextPage: !!curated.hasNextPage,
+    curatedHasNextPage: curated.hasNextPage,
     curatedIsFetchingNextPage: curated.isFetchingNextPage,
-    curatedFetchNextPage: () => {
-      void curated.fetchNextPage();
-    },
+    curatedFetchNextPage: curated.fetchNextPage,
     marketStatus,
     // Kept for backward compatibility with components that might use MarketStatusRef
     marketStatusRef: { current: marketStatus }

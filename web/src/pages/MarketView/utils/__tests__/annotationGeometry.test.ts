@@ -201,7 +201,7 @@ describe('buildPrimitiveData', () => {
     expect(data.texts[0].color).toBe('#22c55e');
   });
 
-  it('omits event annotations from primitive data by default (DOM overlay owns them)', () => {
+  it('omits event annotations from primitive data (DOM overlay owns them)', () => {
     const anns: StoredAnnotation[] = [
       {
         annotation_id: 'e1',
@@ -214,25 +214,6 @@ describe('buildPrimitiveData', () => {
       },
     ];
     expect(buildPrimitiveData(anns, CHART).texts).toHaveLength(0);
-  });
-
-  it('renders the event title as a canvas chip when eventsAsText is set (inline card)', () => {
-    const anns: StoredAnnotation[] = [
-      {
-        annotation_id: 'e1',
-        symbol: 'NVDA',
-        type: 'event',
-        time: '2024-11-14T00:00:00Z',
-        price: 205,
-        title: 'Earnings',
-        detail: 'Beat and raised.',
-        color: '#abcdef',
-      },
-    ];
-    const data = buildPrimitiveData(anns, CHART, { eventsAsText: true });
-    expect(data.texts).toHaveLength(1);
-    expect(data.texts[0].text).toBe('Earnings'); // title, not detail
-    expect(data.texts[0].color).toBe('#abcdef');
   });
 
   it('omits the trendline chip when the line has no label', () => {

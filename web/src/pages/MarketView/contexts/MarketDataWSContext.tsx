@@ -7,9 +7,9 @@ const MarketDataWSContext = createContext<UseMarketDataWSReturn | null>(null);
 export function MarketDataWSProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const ws = useMarketDataWS();
   return (
-    <MarketDataWSContext.Provider value={ws}>
+    <MarketDataWSContext value={ws}>
       {children}
-    </MarketDataWSContext.Provider>
+    </MarketDataWSContext>
   );
 }
 

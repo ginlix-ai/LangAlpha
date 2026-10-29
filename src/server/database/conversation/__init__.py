@@ -7,8 +7,8 @@ submodule directly.
 """
 
 from src.server.database.conversation._sql import (
-    _RESPONSE_COLUMNS,
     _SETTLED_ATTEMPTS,
+    settled_attempts,
 )
 from src.server.database.conversation.errors import (
     EXTERNAL_ID_CONFLICT_ERROR_TYPE,
@@ -29,6 +29,10 @@ from src.server.database.conversation.threads_read import (
     get_thread_with_summary,
     get_threads_for_user,
     get_workspace_threads,
+    list_computer_threads,
+    ThreadPrefixes,
+    fenced_workspace_thread_prefixes,
+    get_workspace_thread_prefixes,
     _like_escape,
     lookup_thread_by_external_id,
 )
@@ -41,13 +45,13 @@ from src.server.database.conversation.threads_write import (
     stamp_thread_seen,
     thread_exists_key,
     truncate_thread_from_turn,
-    update_thread_checkpoint_id,
     update_thread_external_id,
     update_thread_sharing,
     update_thread_status,
     update_thread_fields,
     update_thread_title_cas,
     ws_exists_key,
+    forget_workspace_exists,
 )
 from src.server.database.conversation.queries import (
     create_query,
@@ -55,11 +59,7 @@ from src.server.database.conversation.queries import (
     get_queries_for_thread,
 )
 from src.server.database.conversation.responses import (
-    append_sse_event,
     get_recent_responses_for_thread,
-    get_responses_for_thread,
-    rebase_sse_events,
-    _sse_has_provenance,
     _sync_provenance_for_response,
 )
 from src.server.database.conversation.usage import (
@@ -71,13 +71,13 @@ from src.server.database.conversation.feedback import (
     upsert_feedback,
 )
 from src.server.database.conversation.replay_rows import (
+    get_replay_responses,
     get_replay_thread_data,
 )
 
 # Legacy façade: symbols extracted into submodules stay importable from the
 # package root. New code should import the owning submodule directly.
 __all__ = [
-    "append_sse_event",
     "calculate_next_thread_index",
     "create_query",
     "create_thread",
@@ -95,8 +95,8 @@ __all__ = [
     "get_latest_turn_index",
     "get_queries_for_thread",
     "get_recent_responses_for_thread",
+    "get_replay_responses",
     "get_replay_thread_data",
-    "get_responses_for_thread",
     "get_thread_auth_meta",
     "get_thread_by_id",
     "get_thread_by_share_token",
@@ -105,19 +105,20 @@ __all__ = [
     "get_thread_with_summary",
     "get_threads_for_user",
     "get_workspace_threads",
+    "list_computer_threads",
+    "ThreadPrefixes",
+    "fenced_workspace_thread_prefixes",
+    "get_workspace_thread_prefixes",
     "get_thread_lifecycle_rows",
     "_like_escape",
     "lookup_thread_by_external_id",
     "QueryConflictError",
-    "rebase_sse_events",
-    "_RESPONSE_COLUMNS",
     "_SETTLED_ATTEMPTS",
-    "_sse_has_provenance",
+    "settled_attempts",
     "_sync_provenance_for_response",
     "thread_exists_key",
     "truncate_thread_from_turn",
     "_unique_violation_constraint",
-    "update_thread_checkpoint_id",
     "update_thread_external_id",
     "update_thread_sharing",
     "update_thread_status",
@@ -126,5 +127,6 @@ __all__ = [
     "stamp_thread_seen",
     "upsert_feedback",
     "ws_exists_key",
+    "forget_workspace_exists",
 ]
 

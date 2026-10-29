@@ -5,6 +5,7 @@ canonicalizes that one synonym and passes everything else through.
 """
 
 import uuid
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,9 +14,139 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from ptc_agent.core.paths import WorkspaceLayout
 from tests.conftest import create_test_app
 
 NOW = datetime.now(timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _folder_hold_is_free():
+    """The skills listing holds the workspace's folder against a settle, an
+    advisory lock these database-free tests cannot take."""
+    with (
+        patch(
+            "src.server.app.workspace_sandbox.workspace_folder_in_use",
+            lambda _workspace_id: nullcontext(),
+        ),
+        patch(
+            "src.server.app.workspace_sandbox.db_get_workspace_dir_name",
+            AsyncMock(return_value="Research"),
+        ),
+    ):
+        yield
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("folder", ["Macro", "_internal/moving/ws"])
+async def test_skills_are_listed_from_the_folder_read_under_the_hold(folder):
+    """A settle on another worker can move the folder after the acquisition.
+    Listed at the old path, the skills read as none, or as those of a sibling
+    that took it; mid-move there is no folder to list."""
+    from src.server.app.workspace_sandbox import _get_full_sandbox_stats
+
+    workspace = _ws()
+    session, sandbox = _sandbox_with_metadata({"state": "running"})
+    manager = MagicMock()
+    manager.tool_view.return_value = SimpleNamespace(mcp_registry=None)
+    events = []
+
+    @asynccontextmanager
+    async def hold(_workspace_id):
+        events.append("hold")
+        try:
+            yield
+        finally:
+            events.append("release")
+
+    async def read(_workspace_id):
+        events.append("read")
+        return folder
+
+    async def bash(cmd, **_kw):
+        if "SKILL.md" in cmd:
+            events.append(f"list {cmd.split()[3]}")
+        return {"success": False}
+
+    sandbox.execute_bash_command.side_effect = bash
+    with (
+        patch("src.server.app.workspace_sandbox._get_sandbox", AsyncMock(return_value=(session, sandbox))),
+        patch("src.server.app.workspace_sandbox._provider_kind", AsyncMock(return_value="docker")),
+        patch("src.server.app.workspace_sandbox.WorkspaceManager.get_instance", return_value=manager),
+        patch("src.server.app.workspace_sandbox.workspace_folder_in_use", hold),
+        patch("src.server.app.workspace_sandbox.db_get_workspace_dir_name", read),
+    ):
+        stats = await _get_full_sandbox_stats(workspace["workspace_id"], "test-user-123", workspace)
+
+    listed = [f"list {WorkspaceLayout('/home/workspace', folder).skills}/*/;"]
+    assert events == ["hold", "read", *(listed if folder == "Macro" else []), "release"]
+    assert stats.skills == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_stats_keep_the_requested_view_when_a_sibling_syncs():
+    from src.server.app.workspace_sandbox import _get_full_sandbox_stats
+
+    workspace = _ws()
+    session, sandbox = _sandbox_with_metadata({"state": "running"})
+    own_registry = SimpleNamespace(connectors={"own-server": object()})
+    session.mcp_registry = own_registry
+    manager = MagicMock()
+    manager.tool_view.return_value = SimpleNamespace(mcp_registry=own_registry)
+
+    async def sibling_sync(*args, **kwargs):
+        session.mcp_registry = SimpleNamespace(connectors={"sibling-server": object()})
+        return {"success": False}
+
+    sandbox.execute_bash_command.side_effect = sibling_sync
+    with (
+        patch("src.server.app.workspace_sandbox._get_sandbox", AsyncMock(return_value=(session, sandbox))),
+        patch("src.server.app.workspace_sandbox._provider_kind", AsyncMock(return_value="docker")),
+        patch("src.server.app.workspace_sandbox.WorkspaceManager.get_instance", return_value=manager),
+    ):
+        stats = await _get_full_sandbox_stats(workspace["workspace_id"], "test-user-123", workspace)
+
+    assert stats.mcp_servers == ["own-server"]
+    manager.tool_view.assert_called_once_with(session, workspace["workspace_id"])
+
+
+@pytest.mark.asyncio
+async def test_refresh_response_keeps_the_requested_workspace_tool_view():
+    from src.server.app import workspaces as workspaces_module
+
+    workspace = _ws()
+    session, _ = _sandbox_with_metadata({"state": "running"})
+    own_registry = SimpleNamespace(connectors={"own-server": object()})
+    manager = MagicMock()
+    manager.get_session_for_workspace = AsyncMock(return_value=session)
+
+    async def refresh(*args, **kwargs):
+        session.mcp_registry = SimpleNamespace(
+            connectors={"sibling-server": object()}
+        )
+        return SimpleNamespace(refreshed_modules=["mcp_servers"])
+
+    manager.refresh_project_assets = AsyncMock(side_effect=refresh)
+    manager.tool_view.return_value = SimpleNamespace(mcp_registry=own_registry)
+    with (
+        patch.object(
+            workspaces_module.WorkspaceManager,
+            "get_instance",
+            return_value=manager,
+        ),
+        patch.object(
+            workspaces_module,
+            "db_get_workspace",
+            AsyncMock(return_value=workspace),
+        ),
+        patch.object(workspaces_module, "require_workspace_owner"),
+    ):
+        response = await workspaces_module.refresh_workspace(
+            workspace["workspace_id"], workspace["user_id"]
+        )
+
+    assert response.servers == ["own-server"]
+    manager.tool_view.assert_called_once_with(session, workspace["workspace_id"])
 
 
 def _ws(status="running", sandbox_id="sandbox-abc"):
@@ -58,18 +189,23 @@ def _sandbox_with_metadata(meta, *, side_effect=None):
     return session, sandbox
 
 
-def _config_with_provider(name):
+def _config_with_provider(name, provider=None):
     """A WorkspaceManager stand-in whose config resolves a real provider string.
 
     A bare MagicMock would hand ``_configured_provider`` a mock attribute, which
-    then fails response validation instead of behaving like a config. ``config``
-    stays a MagicMock so ``to_core_config()`` still answers for the offline path's
-    ``create_provider`` call; only ``sandbox`` needs to be real.
+    then fails response validation instead of behaving like a config; only
+    ``sandbox`` needs to be real. ``provider_kind_for_workspace`` answers None
+    because these workspaces have no computer row, which is what sends the
+    reported kind back to the deployment config.
     """
+    from src.server.services.workspace_manager import WorkspaceManager
+
     config = MagicMock()
     config.sandbox = SimpleNamespace(provider=name)
-    manager = MagicMock()
+    manager = MagicMock(spec=WorkspaceManager)
     manager.config = config
+    manager.provider_kind_for_workspace = AsyncMock(return_value=None)
+    manager.provider_for_workspace = AsyncMock(return_value=provider)
     return MagicMock(get_instance=MagicMock(return_value=manager))
 
 
@@ -79,7 +215,7 @@ async def _get_stats(
     session, sandbox = _sandbox_with_metadata(meta, side_effect=side_effect)
     with (
         patch(
-            "src.server.app.workspace_sandbox.db_get_workspace",
+            "src.server.services.workspace_files.db_get_workspace",
             AsyncMock(return_value=workspace),
         ),
         patch(
@@ -196,7 +332,7 @@ async def test_workspace_without_a_sandbox_still_reports_provider(client):
 
     with (
         patch(
-            "src.server.app.workspace_sandbox.db_get_workspace",
+            "src.server.services.workspace_files.db_get_workspace",
             AsyncMock(return_value=workspace),
         ),
         patch(
@@ -253,16 +389,12 @@ async def _get_offline_stats(
 
     with (
         patch(
-            "src.server.app.workspace_sandbox.db_get_workspace",
+            "src.server.services.workspace_files.db_get_workspace",
             AsyncMock(return_value=workspace),
         ),
         patch(
-            "ptc_agent.core.sandbox.providers.create_provider",
-            MagicMock(return_value=provider),
-        ),
-        patch(
             "src.server.app.workspace_sandbox.WorkspaceManager",
-            _config_with_provider(provider_name),
+            _config_with_provider(provider_name, provider),
         ),
     ):
         return await client.get(
@@ -343,7 +475,7 @@ async def test_no_sandbox_id_reports_workspace_status(client):
     workspace = _ws(status="creating", sandbox_id=None)
 
     with patch(
-        "src.server.app.workspace_sandbox.db_get_workspace",
+        "src.server.services.workspace_files.db_get_workspace",
         AsyncMock(return_value=workspace),
     ):
         resp = await client.get(
@@ -369,7 +501,7 @@ async def test_another_users_workspace_is_forbidden(client, status):
 
     with (
         patch(
-            "src.server.app.workspace_sandbox.db_get_workspace",
+            "src.server.services.workspace_files.db_get_workspace",
             AsyncMock(return_value=workspace),
         ),
         patch(
@@ -387,7 +519,7 @@ async def test_another_users_workspace_is_forbidden(client, status):
 @pytest.mark.asyncio
 async def test_missing_workspace_is_not_found(client):
     with patch(
-        "src.server.app.workspace_sandbox.db_get_workspace",
+        "src.server.services.workspace_files.db_get_workspace",
         AsyncMock(return_value=None),
     ):
         resp = await client.get(f"/api/v1/workspaces/{uuid.uuid4()}/sandbox/stats")

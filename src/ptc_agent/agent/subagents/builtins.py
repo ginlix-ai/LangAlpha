@@ -1,7 +1,7 @@
 """Built-in subagent definitions.
 
-These are the default subagents shipped with the agent.  User-defined
-definitions in ``agent_config.yaml`` can override any of these by name.
+These are the default subagents shipped with the agent. A definition in
+``agent_config.yaml`` with one's name changes only the fields it sets.
 """
 
 from __future__ import annotations
@@ -16,11 +16,8 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
             "Give this researcher one specific topic or question at a time. "
             "The researcher will search the web and provide findings with citations."
         ),
-        mode="ptc",
         role_prompt_template="roles/researcher.md.j2",
         tools=["web_search", "filesystem"],
-        max_iterations=5,
-        stateful=False,
         sections={
             "workspace_paths": False,
             "tool_guide": False,
@@ -37,11 +34,9 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
             "code with MCP tools. Use for multi-step operations, data "
             "processing, file manipulation, or any task requiring full tool access."
         ),
-        mode="ptc",
         role_prompt_template="roles/general.md.j2",
         tools=["execute_code", "filesystem", "bash", "finance", "web_search"],
-        max_iterations=10,
-        stateful=True,
+        memory=True,
         sections={
             "workspace_paths": True,
             "tool_guide": True,
@@ -59,11 +54,8 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
             "multi-ticker data gathering, or preparing datasets for analysis. "
             "Can run multiple instances in parallel for different data needs."
         ),
-        mode="ptc",
         role_prompt_template="roles/data_prep.md.j2",
         tools=["execute_code", "filesystem", "bash", "finance"],
-        max_iterations=10,
-        stateful=True,
         sections={
             "workspace_paths": True,
             "tool_guide": True,
@@ -80,11 +72,13 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
             "valuation, earnings analysis, sector research, or any task requiring "
             "both web research and financial data processing."
         ),
-        mode="ptc",
         role_prompt_template="roles/equity_analyst.md.j2",
         tools=["execute_code", "filesystem", "bash", "finance", "web_search"],
-        max_iterations=15,
-        stateful=True,
+        # New analysis is the workspace's own: the Chief of Staff hands it to
+        # that workspace's analyst, so the workspace keeps the work and its
+        # history.
+        roles=frozenset({"analyst"}),
+        memory=True,
         sections={
             "workspace_paths": True,
             "tool_guide": True,
@@ -101,11 +95,8 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
             "results and desired output format. Loads the relevant format "
             "skill (xlsx/docx/pptx/pdf) as its first action."
         ),
-        mode="ptc",
         role_prompt_template="roles/report_builder.md.j2",
         tools=["execute_code", "filesystem", "bash"],
-        max_iterations=20,
-        stateful=True,
         sections={
             "workspace_paths": True,
             "tool_guide": True,

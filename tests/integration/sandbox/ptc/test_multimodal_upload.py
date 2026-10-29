@@ -10,6 +10,8 @@ No mocks — files are actually written to the sandbox filesystem and read back.
 from __future__ import annotations
 
 import base64
+import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -67,6 +69,32 @@ class TestMultimodalUploadPipeline:
     """Full pipeline: upload → filter → inject → verify messages."""
 
     # -- Upload to real sandbox -----------------------------------------------
+
+    async def test_request_uploads_use_each_resolved_project_before_turn_binding(self, shared_sandbox):
+        from ptc_agent.core.project_context import ProjectContext, current_project
+        from src.server.handlers.chat.attachments import attach_request_files
+        from src.server.models.chat import ChatRequest
+
+        assert current_project() is None
+        projects = (ProjectContext("upload-a", "upload-a"), ProjectContext("upload-b", "upload-b"))
+
+        async def upload(project):
+            ctx = _make_csv()
+            request = ChatRequest(messages=[{"role": "user", "content": "read it"}], additional_context=[ctx])
+            messages = await attach_request_files(
+                [{"role": "user", "content": "read it"}], request,
+                SimpleNamespace(sandbox=shared_sandbox), None, None, project=project,
+            )
+            text = messages[0]["content"]
+            path = text.split("It has been saved to ", 1)[1].split(". Use Python", 1)[0]
+            absolute = shared_sandbox.normalize_path(path, project=project)
+            assert absolute.startswith(shared_sandbox.working_dir + "/" + project.dir_name + "/work/uploads/")
+            assert await shared_sandbox.adownload_file_bytes(absolute) == b"col1,col2\n1,2\n3,4"
+            return path
+
+        paths = await asyncio.gather(*(upload(project) for project in projects))
+        assert paths[0] != paths[1]
+        assert current_project() is None
 
     async def test_upload_image_creates_file(self, shared_sandbox):
         """Image bytes are written to sandbox and path is relative."""
@@ -221,7 +249,8 @@ class TestMultimodalUploadPipeline:
         assert "Use Python to process it" in reminder
 
     async def test_ptc_mixed_image_pdf_xlsx(self, shared_sandbox):
-        """PTC + Claude + image + PDF + xlsx: all uploaded, image+PDF get blocks, xlsx gets file note."""
+        """PTC + Claude + image + PDF + xlsx: all uploaded, the image gets a block,
+        the saved PDF a note naming its path, the xlsx a file note."""
         image, pdf, xlsx = _make_image(), _make_pdf(), _make_xlsx()
         contexts = [image, pdf, xlsx]
 
@@ -246,7 +275,10 @@ class TestMultimodalUploadPipeline:
 
         blocks = messages[0]["content"]
         assert any(b.get("type") == "image_url" for b in blocks)
-        assert any(b.get("type") == "file" for b in blocks)
+        # Saved, the PDF is a note to Read it from, not the document inline.
+        note = {"type": "text", "text": f"[Attached PDF: report.pdf (saved to {supported_paths[1]})]"}
+        assert note in blocks
+        assert not any(b.get("type") == "file" for b in blocks)
         assert blocks[-1] == {"type": "text", "text": "analyze all files"}
 
         # File-only reminder (no "cannot view")
@@ -262,10 +294,10 @@ class TestMultimodalUploadPipeline:
         assert "cannot view" not in reminder.lower()
         assert "AMD_DCF_Analysis.xlsx" in reminder
 
-    # -- Flash pipeline (no sandbox) -----------------------------------------
+    # -- No-sandbox pipeline -------------------------------------------------
 
-    async def test_flash_image_supported_no_upload(self, shared_sandbox):
-        """Flash + Claude + image: native block merged, no file_paths."""
+    async def test_no_sandbox_image_supported_no_upload(self, shared_sandbox):
+        """No sandbox + Claude + image: native block merged, no file_paths."""
         contexts = [_make_image()]
         supported, unsupported, file_only = filter_multimodal_by_capability(
             contexts, ["text", "image"]
@@ -278,8 +310,8 @@ class TestMultimodalUploadPipeline:
         label = next(b for b in blocks if "Attached image" in b.get("text", ""))
         assert "saved to" not in label["text"]
 
-    async def test_flash_image_unsupported(self, shared_sandbox):
-        """Flash + DeepSeek + image: unsupported reminder, no upload."""
+    async def test_no_sandbox_image_unsupported(self, shared_sandbox):
+        """No sandbox + DeepSeek + image: unsupported reminder, no upload."""
         contexts = [_make_image()]
         supported, unsupported, file_only = filter_multimodal_by_capability(
             contexts, ["text"]

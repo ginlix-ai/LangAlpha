@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
 from langchain_core.tools import tool
 
+from src.tools.utils.validation_utils import validate_date_format
 from src.tools.web.providers._shared import (
     SNIPPET_MAX,
     assemble_results,
@@ -26,6 +27,8 @@ from src.tools.web.providers._shared import (
     report_or_empty,
     request_json,
     result_card,
+    search_failed,
+    search_refusal,
     time_range_to_start_date,
 )
 from src.tools.web.types import (
@@ -395,6 +398,13 @@ def build_web_search_tool(
             after_date: Only content published on/after this date (YYYY-MM-DD)
         """
         try:
+            # An empty string is an unset date, as it is below.
+            validate_date_format(after_date or None)
+        except ValueError as e:
+            # A malformed date is the agent's mistake, not a failed search.
+            return search_refusal(e, objective)
+
+        try:
             api = _get_api_wrapper()
             effective_after = after_date or time_range_to_start_date(
                 default_time_range, fmt="%Y-%m-%d", provider="Parallel"
@@ -415,15 +425,8 @@ def build_web_search_tool(
             )
             return [r.as_dict() for r in results], metadata
 
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code if e.response is not None else "unknown"
-            body = e.response.text if e.response is not None else "no response body"
-            logger.error(f"Parallel API HTTP {status}: {body}")
-            error_message = f"Search failed (HTTP {status}): {body}"
-            return error_message, {"error": error_message, "query": objective}
         except (httpx.HTTPError, ValueError) as e:
             logger.error(f"Parallel search failed: {e}", exc_info=True)
-            error_message = f"Search failed: {str(e)}"
-            return error_message, {"error": str(e), "query": objective}
+            return search_failed(e, objective, quote_http_body=True)
 
     return web_search

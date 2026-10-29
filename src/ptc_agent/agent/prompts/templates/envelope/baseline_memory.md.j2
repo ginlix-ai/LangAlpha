@@ -1,0 +1,19 @@
+{# One tier per render; the caller loops over the tiers it has. Byte-
+   deterministic for equal inputs, so no timestamps and no guidance fence.
+   `readonly` is a subagent without file tools: it reads the index but
+   can neither open the detail files it points to nor write one, so the
+   write instruction is dropped and the pointers are named as text.
+   `subagent` reads memory and never writes it, so it gets no write
+   instruction either. #}
+<memory path="{{ path }}">
+{% if content %}
+{{ content }}
+{% if readonly %}
+Read-only here: this run has no filesystem, so the files these lines point to cannot be opened. Use the lines themselves.
+{% endif %}
+{% elif readonly or subagent | default(false) %}
+No {{ path }} exists yet.
+{% else %}
+No {{ path }} exists yet. When you learn something durable, create a typed detail file with frontmatter and add a one-line pointer to it here. Keep {{ path }} an index, not a memory.
+{% endif %}
+</memory>

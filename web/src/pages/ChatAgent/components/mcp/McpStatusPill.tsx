@@ -1,19 +1,19 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, CheckCircle2, Clock, KeyRound, MinusCircle, HelpCircle } from 'lucide-react';
-import { StatusPill } from './McpPrimitives';
+import { StatusPill } from '@/components/mcp/McpPrimitives';
 import type { McpOauthStatus, McpStatus } from '../../utils/api';
 
 /**
  * Status pills for MCP server rows — the two vocabularies mapped onto the one
- * shared `StatusPill` shape so Connectors and the workspace tab stay
+ * shared `StatusPill` shape so the Plugins page and the workspace tab stay
  * pixel-identical:
  *
  * - `McpStatusPill` — per-workspace lifecycle terminal states (connected /
  *   error / needs_secret / pending / disabled / unknown). In-flight states are
  *   not rendered here — `McpLifecycle` owns the progressing track and
  *   delegates to this pill only for terminal states.
- * - `McpOauthPill` — the user-level OAuth connection state of a Connectors
+ * - `McpOauthPill` — the user-level OAuth connection state of a user-tier
  *   server (connected / needs_reauth / refresh_ambiguous / revoked).
  */
 
@@ -88,30 +88,40 @@ export function McpStatusPill({ status, enabled }: McpStatusPillProps) {
 
 const OAUTH_META: Record<McpOauthStatus, PillMeta> = {
   connected: {
-    labelKey: 'connectors.oauth.connected',
+    labelKey: 'plugins.oauth.connected',
     color: 'var(--color-profit)',
     bg: 'var(--color-profit-soft)',
     icon: CheckCircle2,
   },
   needs_reauth: {
-    labelKey: 'connectors.oauth.needsReauth',
+    labelKey: 'plugins.oauth.needsReauth',
     color: 'var(--color-warning)',
     bg: 'var(--color-warning-soft)',
     icon: AlertCircle,
   },
   refresh_ambiguous: {
-    labelKey: 'connectors.oauth.refreshAmbiguous',
+    labelKey: 'plugins.oauth.refreshAmbiguous',
     color: 'var(--color-warning)',
     bg: 'var(--color-warning-soft)',
     icon: AlertCircle,
   },
   revoked: {
-    labelKey: 'connectors.oauth.revoked',
+    labelKey: 'plugins.oauth.revoked',
     color: 'var(--color-text-tertiary)',
     bg: 'var(--color-bg-tag)',
     icon: MinusCircle,
   },
 };
+
+/**
+ * The i18n key naming an OAuth status, or null when there is no connection (or
+ * a status this build doesn't know). Reading it off `OAUTH_META` is the point:
+ * that record is exhaustive over `McpOauthStatus`, so a new status is a compile
+ * error here instead of a surface that quietly labels it nothing.
+ */
+export function oauthLabelKey(status: McpOauthStatus | null | undefined): string | null {
+  return (status && OAUTH_META[status]?.labelKey) || null;
+}
 
 export function McpOauthPill({ status }: { status: McpOauthStatus }) {
   const { t } = useTranslation();

@@ -5,10 +5,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 class TestErrorRecovery:
-    async def test_code_run_after_crash(self, sandbox_runtime):
+    async def test_python_after_crash(self, sandbox_runtime):
         """After code that crashes, the runtime should still be usable."""
-        await sandbox_runtime.code_run("import sys; sys.exit(1)")
-        result = await sandbox_runtime.code_run("print('recovered')")
+        await sandbox_runtime.exec("python3 -c 'import sys; sys.exit(1)'")
+        result = await sandbox_runtime.exec("python3 -c \"print('recovered')\"")
         assert result.exit_code == 0
         assert "recovered" in result.stdout
 
@@ -18,7 +18,7 @@ class TestErrorRecovery:
         await sandbox_runtime.stop()
         await sandbox_runtime.start()
         assert (await sandbox_runtime.exec("echo ok")).exit_code == 0
-        assert (await sandbox_runtime.code_run("print('ok')")).exit_code == 0
+        assert (await sandbox_runtime.exec("python3 -c 'print(1)'")).exit_code == 0
         await sandbox_runtime.upload_file(b"test", f"{wd}/recovery.txt")
         assert await sandbox_runtime.download_file(f"{wd}/recovery.txt") == b"test"
 

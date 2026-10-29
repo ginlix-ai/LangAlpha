@@ -1,0 +1,64 @@
+/* The theme every utility compiles against: Tailwind's defaults, the v3
+   values v4 changed laid back over them, then the app's own. index.css imports
+   it; a stylesheet that generates utilities of its own references it, so they
+   compile the same way (pages/Onboarding/engine/introScenes/scenes.css). */
+@import 'tailwindcss/theme.css' layer(theme);
+@import './tailwind-v3-theme.css';
+
+/* v3 `darkMode: ['class']`. The theme switch stamps `data-theme` on <html> and
+   never adds a `.dark` class, so these variants match nothing today; kept as
+   they were rather than silently switched on. */
+@custom-variant dark (&:is(.dark *));
+
+/* `inline` so a utility compiles to `hsl(var(--primary))` at the point of use,
+   as v3 did, instead of reading a variable resolved once on :root. */
+@theme inline {
+  /* No --font-mono: the default theme's `font-mono` already reads
+     var(--font-mono), and tokens.css holds the one stack (DESIGN.md). */
+
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  /* A small thing appearing in place (a renamed title, a chip): quick, on the
+     house curve. */
+  --animate-fade-in: fade-in var(--motion-quick) var(--ease-out);
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}

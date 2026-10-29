@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import { currencyForSymbol, formatPrice, resolveDisplayCurrency } from './currencyDisplay';
+import { formatPrice, resolveDisplayCurrency } from './currencyDisplay';
 
 export interface DisplayCurrency {
-  code: string;
+  /** ISO code, or null for an index level, which prints with no symbol. */
+  code: string | null;
   decimals: number;
 }
 
@@ -40,7 +41,7 @@ export interface UseCurrencyDisplay {
  */
 export function useCurrencyDisplay(symbol: string): UseCurrencyDisplay {
   const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>(
-    () => ({ code: currencyForSymbol(symbol), decimals: 2 }),
+    () => resolveDisplayCurrency(symbol),
   );
   const priceFormatRef = useRef(displayCurrency);
   priceFormatRef.current = displayCurrency;
@@ -57,7 +58,7 @@ export function useCurrencyDisplay(symbol: string): UseCurrencyDisplay {
   useEffect(() => {
     if (prevSymbolRef.current === symbol) return;
     prevSymbolRef.current = symbol;
-    setDisplayCurrency({ code: currencyForSymbol(symbol), decimals: 2 });
+    setDisplayCurrency(resolveDisplayCurrency(symbol));
   }, [symbol]);
 
   const onCurrencyMeta = useCallback((meta: CurrencyMeta | null | undefined) => {

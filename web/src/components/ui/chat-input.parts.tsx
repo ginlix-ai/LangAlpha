@@ -3,11 +3,14 @@ import { FileText, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Loader } from '@/components/ui/loader';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { motion, useIsPresent } from '@/lib/framer';
 import { cn } from '@/lib/utils';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
-import { getSlashCommandIcon } from './chat-input.helpers';
+import { CHIP_PRESENCE, MENU_PRESENCE, getSlashCommandIcon } from './chat-input.helpers';
+import { SUBAGENT_CORE, SUBAGENT_SEATS } from './subagents-rings.geometry';
 import type { FileAttachment, SlashCommand } from './chat-input.types';
 
 const formatFileSize = (bytes: number): string => {
@@ -18,13 +21,19 @@ const formatFileSize = (bytes: number): string => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-/* --- FILE PREVIEW CARD --- */
+/* --- FILE PREVIEW CARD ---
+ * Its root is a motion element: rendered as a child of an AnimatePresence, it
+ * plays CHIP_PRESENCE on the way in and on the way out. */
 export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRemove: (id: string) => void }) => {
+  const { t } = useTranslation();
   const isMobilePreview = useIsMobile();
   const isImage = file.type.startsWith('image/') && file.preview;
 
   return (
-    <div className="relative group flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden border border-[var(--color-border-muted)] bg-[var(--color-bg-elevated)] animate-fade-in transition-all hover:border-[var(--color-border-default)]">
+    <motion.div
+      {...CHIP_PRESENCE}
+      className="relative group shrink-0 w-24 h-24 rounded-xl overflow-hidden border border-(--color-border-muted) bg-(--color-bg-elevated) transition-colors hover:border-(--color-border-default)"
+    >
       {isImage ? (
         <div className="w-full h-full relative">
           <img src={file.preview!} alt={file.file.name} className="w-full h-full object-cover" />
@@ -53,7 +62,9 @@ export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRe
 
       {/* Remove Button Overlay */}
       <button
+        type="button"
         onClick={() => onRemove(file.id)}
+        aria-label={t('chat.composer.remove')}
         className={`absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white transition-opacity ${isMobilePreview ? 'opacity-60' : 'opacity-0 group-hover:opacity-100'}`}
       >
         <X className="w-3 h-3" />
@@ -62,17 +73,17 @@ export const FilePreviewCard = ({ file, onRemove }: { file: FileAttachment; onRe
       {/* Upload Status */}
       {file.uploadStatus === 'uploading' && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-          <Loader size={20} label="Uploading" className="text-white" />
+          <Loader size={20} label={t('chat.composer.uploading')} className="text-white" />
         </div>
       )}
-    </div>
+    </motion.div>
   );
 };
 
 /**
- * The single composer pill: every labeled control in the action bar (mode,
- * workspace, plan, watch) is one of these, so pill geometry exists once and
- * the hidden measure row can render the very same component.
+ * The single composer pill: every labeled control in the action bar (scope,
+ * mode, workspace) is one of these, so pill geometry exists once and the
+ * hidden measure row can render the very same component.
  *
  * Always transparent with a transient hover fill; active state is signaled by
  * the amber accent alone (icon + label), never a fill or border ring.
@@ -102,7 +113,7 @@ export function PillToggle({
   trailing?: ReactNode;
   /** Inert pill: dimmed, not-allowed cursor, reason shown as the tooltip. */
   disabledReason?: string | null;
-  /** Which state the pill announces: a toggle, a menu trigger, or neither. */
+  /** Which state the pill announces: a toggle, a picker trigger, or neither. */
   aria?: 'pressed' | 'expanded' | 'none';
   gap?: number;
   className?: string;
@@ -128,7 +139,6 @@ export function PillToggle({
     border: '1px solid transparent',
     opacity: blocked ? 0.6 : 1,
     cursor: blocked ? 'not-allowed' : 'pointer',
-    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
   };
   const body = (
     <>
@@ -143,7 +153,7 @@ export function PillToggle({
       <button
         type="button"
         tabIndex={-1}
-        className={cn('inline-flex items-center rounded-full border-none whitespace-nowrap', className)}
+        className={cn('inline-flex items-center rounded-lg border-none whitespace-nowrap transition-colors', className)}
         style={style}
       >
         {body}
@@ -151,17 +161,23 @@ export function PillToggle({
     );
   }
 
+  const opensPicker = aria === 'expanded';
   const ariaProps: ButtonHTMLAttributes<HTMLButtonElement> =
     aria === 'pressed' ? { 'aria-pressed': active }
-      : aria === 'expanded' ? { 'aria-haspopup': 'menu', 'aria-expanded': active }
+      : opensPicker ? { 'aria-haspopup': 'dialog', 'aria-expanded': active }
         : {};
 
   return (
     <button
       ref={buttonRef}
-      className={cn('inline-flex items-center rounded-full border-none whitespace-nowrap', className)}
+      className={cn('inline-flex items-center rounded-lg border-none whitespace-nowrap transition-colors', className)}
       style={style}
       onClick={(e) => { e.stopPropagation(); if (!blocked) onToggle?.(); }}
+      // A press leaves focus where it was, as a menu trigger's does: the picker
+      // hands focus back on close to whatever held it at open, which should
+      // be the draft, and a second press reaches the pill as a toggle rather
+      // than as a blur that has already closed the picker.
+      onMouseDown={opensPicker ? (e) => e.preventDefault() : undefined}
       onMouseEnter={(e) => { if (!blocked) e.currentTarget.style.background = 'var(--color-border-muted)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       type="button"
@@ -174,9 +190,114 @@ export function PillToggle({
   );
 }
 
+/**
+ * The agent with three seats around it. On, an agent leaves the core for each
+ * seat and fills it; off, they return and the seats stay as empty rings, so the
+ * state reads from the shape and not from color alone. Seats take a lighter
+ * stroke than the core, which keeps them secondary and still leaves an empty one
+ * a visible hole at 16px. The figure is centered on its box rather than on the
+ * core, to sit level with the lucide icons beside it (24 box, 2 stroke).
+ */
+const CORE = SUBAGENT_CORE;
+const SEATS = SUBAGENT_SEATS;
+
+export function SubagentsGlyph({ on, className, style }: { on: boolean; className?: string; style?: CSSProperties }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={cn('subagents-glyph', className)}
+      style={style}
+      data-on={on}
+      aria-hidden="true"
+    >
+      <circle cx={CORE.x} cy={CORE.y} r="3.5" />
+      {SEATS.map(([x, y]) => <circle key={`seat-${x}`} cx={x} cy={y} r="2.25" strokeWidth={1.5} />)}
+      {/* A filled disc the size of a seat's outer edge, so a landed agent
+          covers its ring exactly. It starts on the core, small and clear. */}
+      {SEATS.map(([x, y], i) => (
+        <circle
+          key={x}
+          className="subagents-glyph-node"
+          cx={x}
+          cy={y}
+          r="3"
+          stroke="none"
+          fill="currentColor"
+          style={{
+            '--dx': `${CORE.x - x}px`,
+            '--dy': `${CORE.y - y}px`,
+            '--seat': i,
+          } as CSSProperties}
+        />
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * A composer toggle with no label: the glyph carries the state and a tooltip
+ * names the control. Sized and colored like a PillToggle, so it sits in the
+ * same row and the hidden measure row renders the very same element.
+ */
+export function IconToggle({
+  active,
+  onToggle,
+  label,
+  tooltip,
+  children,
+  measureOnly = false,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  /** The control's name, for assistive tech. */
+  label: string;
+  /** What hovering says, including the current state. */
+  tooltip: string;
+  children: ReactNode;
+  measureOnly?: boolean;
+}) {
+  const className = 'inline-flex flex-none items-center justify-center h-8 w-8 rounded-lg border-none bg-transparent transition-colors';
+  const style: CSSProperties = {
+    color: active ? 'var(--color-accent-light)' : 'var(--color-text-muted)',
+  };
+  if (measureOnly) {
+    return <button type="button" tabIndex={-1} className={className} style={style}>{children}</button>;
+  }
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={cn(className, 'hover:bg-(--color-border-muted) cursor-pointer')}
+            style={style}
+            onClick={(e) => { e.stopPropagation(); onToggle(); }}
+            aria-label={label}
+            aria-pressed={active}
+          >
+            {children}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{tooltip}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 /* --- @MENTION / /SLASH AUTOCOMPLETE LISTS ---
  * Presentation only — the matching, selection and keyboard machinery lives in
- * chat-input.useMentions / chat-input.useSlashCommands. */
+ * chat-input.useMentions / chat-input.useSlashCommands. Each root is the
+ * motion element an AnimatePresence around it opens and closes; the menu is
+ * absolutely placed, so the motion stays on the element itself, where a
+ * wrapper would take a gap in the composer's column and, while it moved, be
+ * the box the menu is placed against. A closing menu is inert: its rows still
+ * hold the draft as it was, and a second press on one would splice into the
+ * draft the first press already changed. */
 
 export function MentionAutocompleteList({
   listRef,
@@ -193,11 +314,13 @@ export function MentionAutocompleteList({
   onSelect: (path: string) => void;
   onHover: (idx: number) => void;
 }) {
+  const { t } = useTranslation();
+  const present = useIsPresent();
   return (
-    <div className="mention-autocomplete" ref={listRef}>
+    <motion.div className="mention-autocomplete" ref={listRef} inert={!present} {...MENU_PRESENCE}>
       {files.length === 0 ? (
         <div className="mention-autocomplete-empty">
-          {hasWorkspaceFiles ? 'No matching files' : 'No files available'}
+          {hasWorkspaceFiles ? t('chat.mention.noMatching') : t('chat.mention.noFiles')}
         </div>
       ) : (
         files.map((filePath, idx) => {
@@ -210,14 +333,14 @@ export function MentionAutocompleteList({
               onMouseDown={(e) => { e.preventDefault(); onSelect(filePath); }}
               onMouseEnter={() => onHover(idx)}
             >
-              <FileText className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+              <FileText className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <span className="file-name">{name}</span>
               {dir && <span className="file-path">{dir}/</span>}
             </div>
           );
         })
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -235,8 +358,9 @@ export function SlashCommandList({
   onHover: (idx: number) => void;
 }) {
   const { t } = useTranslation();
+  const present = useIsPresent();
   return (
-    <div className="mention-autocomplete" ref={listRef}>
+    <motion.div className="mention-autocomplete" ref={listRef} inert={!present} {...MENU_PRESENCE}>
       {commands.length === 0 ? (
         <div className="mention-autocomplete-empty">{t('chat.slashCommand.noMatching')}</div>
       ) : (
@@ -247,13 +371,13 @@ export function SlashCommandList({
             onMouseDown={(e) => { e.preventDefault(); onSelect(cmd); }}
             onMouseEnter={() => onHover(idx)}
           >
-            {getSlashCommandIcon(cmd, 'h-4 w-4 flex-shrink-0 slash-cmd-icon')}
+            {getSlashCommandIcon(cmd, 'h-4 w-4 shrink-0 slash-cmd-icon')}
             <span className="slash-cmd-name">/{cmd.name}</span>
             <span className="slash-cmd-desc">{cmd.description}</span>
           </div>
         ))
       )}
-    </div>
+    </motion.div>
   );
 }
 

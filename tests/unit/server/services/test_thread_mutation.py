@@ -408,6 +408,40 @@ class TestLiveness:
         assert await idle.is_mutating("t1") is False
 
     @pytest.mark.asyncio
+    async def test_holding_verb_names_a_local_op(self):
+        runner = _make_runner()
+        with _guard_off(), _no_active_run():
+            async with runner.exclusive("t1", "handoff"):
+                assert await runner.holding_verb("t1") == "handoff"
+                assert await runner.is_mutating("t1") is True
+        assert await runner.holding_verb("t1") is None
+
+    @pytest.mark.asyncio
+    async def test_holding_verb_names_an_op_another_worker_advertised(self):
+        """The wait banner must name the mutation even when the op runs on a
+        different worker than the one serving the send."""
+        runner = _make_runner(
+            _FakeRedis({mutation_op_key("t1"): _foreign_op_payload()})
+        )
+        assert await runner.holding_verb("t1") == "compact"
+        assert await runner.is_mutating("t1") is True
+
+    @pytest.mark.asyncio
+    async def test_holding_verb_is_empty_for_a_payload_without_one(self):
+        """An older worker's payload still holds the thread; "" keeps it
+        distinct from None, which means free."""
+        payload = json.dumps({"op_id": "old1", "kind": "exclusive", "pid": 1})
+        runner = _make_runner(_FakeRedis({mutation_op_key("t1"): payload}))
+        assert await runner.holding_verb("t1") == ""
+        assert await runner.is_mutating("t1") is True
+
+    @pytest.mark.asyncio
+    async def test_holding_verb_is_none_when_nothing_holds_the_thread(self):
+        runner = _make_runner(_FakeRedis())
+        assert await runner.holding_verb("t1") is None
+        assert await runner.is_mutating("t1") is False
+
+    @pytest.mark.asyncio
     async def test_wait_until_idle_returns_when_local_op_finishes(self):
         runner = _make_runner()
         runner.open_auto_compaction_window("t1")

@@ -20,19 +20,18 @@ interface TickerRow {
  * mechanism as useDashboardData (no hand-rolled module cache or setInterval).
  * @param rows - Array of objects with a `symbol` property
  * @param cacheKey - Distinguishes feeds that share tickers (e.g. 'portfolio', 'watchlist')
- * @param provider - Optional news provider to target (e.g. 'tickertick')
+ * @param provider - The news provider to target (e.g. 'tickertick')
  */
-export function useTickerNews(rows: TickerRow[], cacheKey: string, provider?: string): { items: TickerNewsItem[]; loading: boolean } {
+export function useTickerNews(rows: TickerRow[], cacheKey: string, provider: string): { items: TickerNewsItem[]; loading: boolean } {
   const tickers = (rows || []).map((r) => r.symbol).filter(Boolean);
   // Sorted so row reordering doesn't churn the query key. The ticker set,
-  // cacheKey, and provider are all in the key, so a change refetches and the
-  // Classic (chain) and Custom ('tickertick') feeds never serve each other's
-  // articles.
+  // cacheKey, and provider are all in the key, so a change refetches and two
+  // providers' feeds never serve each other's articles.
   const tickerKey = [...tickers].sort().join(',');
   const hasTickers = tickers.length > 0;
 
   const query = useQuery<TickerNewsItem[]>({
-    queryKey: ['dashboard', 'tickerNews', cacheKey, provider ?? null, tickerKey],
+    queryKey: ['dashboard', 'tickerNews', cacheKey, provider, tickerKey],
     queryFn: async () => {
       const data = await getNews({ tickers, limit: 50, provider });
       return data.results?.length > 0 ? mapNewsResults(data.results) : [];

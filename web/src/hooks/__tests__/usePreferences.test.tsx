@@ -18,7 +18,7 @@ describe('usePreferences', () => {
   });
 
   it('fetches preferences via getPreferences()', async () => {
-    mockGetPreferences.mockResolvedValue({ theme: 'dark', other_preference: { dashboard: { mode: 'classic' } } });
+    mockGetPreferences.mockResolvedValue({ theme: 'dark', other_preference: { dashboard: { version: 2, widgets: [], layouts: {} } } });
     const { result } = renderHookWithProviders(() => usePreferences());
     await waitFor(() => expect(result.current.preferences).not.toBeNull());
     expect(result.current.preferences).toMatchObject({ theme: 'dark' });

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "yf_price": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/yfinance/yf_price_mcp_server.py"
+      ],
+      "env": {}
+    },
+    "yf_market": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/yfinance/yf_market_mcp_server.py"
+      ],
+      "env": {}
+    },
+    "yf_fundamentals": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/yfinance/yf_fundamentals_mcp_server.py"
+      ],
+      "env": {}
+    },
+    "yf_analysis": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "plugins/yfinance/yf_analysis_mcp_server.py"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -60,7 +60,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background-color 0.15s;
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
 .cwm-close-btn:hover {
@@ -90,6 +90,29 @@
   font-weight: 400;
 }
 
+.cwm-field-hint {
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+}
+
+/* A hold on the form, carried by the liveness glyph and its line. */
+.cwm-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+}
+
+.cwm-notice-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
 .cwm-textarea {
   width: 100%;
   border-radius: 6px;
@@ -99,55 +122,8 @@
   background-color: var(--color-bg-card);
   border: 1px solid var(--color-border-muted);
   color: var(--color-text-primary);
-  outline: none;
   font-family: inherit;
-  transition: border-color 0.15s;
-}
-
-.cwm-textarea:focus {
-  border-color: var(--color-accent-primary);
-}
-
-/* ---- Description mode toggle ---- */
-.cwm-toggle-group {
-  display: flex;
-  gap: 0;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid var(--color-border-muted);
-  width: fit-content;
-}
-
-.cwm-toggle-btn {
-  padding: 5px 12px;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary);
-  transition: background-color 0.15s, color 0.15s;
-}
-
-.cwm-toggle-btn:hover:not(.cwm-toggle-btn--active) {
-  background-color: var(--color-bg-hover);
-}
-
-.cwm-toggle-btn:not(:last-child) {
-  border-right: 1px solid var(--color-border-muted);
-}
-
-/* Selected segment must read STRONGER than a hovered unselected one, and
-   must differ from the modal ground (--color-bg-elevated). */
-.cwm-toggle-btn--active {
-  background-color: var(--color-bg-surface);
-  color: var(--color-text-primary);
-}
-
-.cwm-toggle-hint {
-  font-size: 0.75rem;
-  color: var(--color-text-secondary);
-  margin-top: 6px;
+  transition: border-color var(--motion-quick) var(--ease-out);
 }
 
 /* ---- Dropzone ---- */
@@ -178,7 +154,7 @@
   border: 1.5px dashed var(--color-border-muted);
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s, background-color 0.15s;
+  transition: border-color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 
 .cwm-dropzone:hover {
@@ -257,7 +233,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s, background-color 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 
 .cwm-file-remove:hover {
@@ -289,7 +265,7 @@
   background: none;
   border: none;
   cursor: pointer;
-  transition: background-color 0.15s;
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
 .cwm-btn-cancel:hover {
@@ -302,6 +278,9 @@
 }
 
 .cwm-btn-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 0.875rem;
@@ -310,7 +289,7 @@
   background-color: var(--color-btn-primary-bg);
   border: none;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity var(--motion-quick) var(--ease-out);
 }
 
 .cwm-btn-create:disabled {
@@ -428,7 +407,7 @@
   height: 100%;
   border-radius: 2px;
   background-color: var(--color-accent-primary);
-  transition: width 0.2s ease;
+  transition: width var(--motion-fold) var(--ease-out);
 }
 
 /* ---- Done / Error summary ---- */

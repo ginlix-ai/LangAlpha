@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+<title>LangAlpha</title>
+<style>
+  /* Standalone on purpose: this page renders precisely when the network is not
+     answering, so it cannot pull a stylesheet, a font or an icon from anywhere. */
+  :root {
+    color-scheme: dark;
+    --bg: #191919;
+    --fg: #e8e8e8;
+    --muted: #8b8b8b;
+    --line: #2e2e2e;
+    --field: #202020;
+    --accent: #e8e8e8;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b;
+    --line: #e2e2e2; --field: #f6f6f6; --accent: #1a1a1a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: grid; place-items: center;
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-app-region: drag;
+  }
+  main { width: 420px; -webkit-app-region: no-drag; }
+  /* The mark is inlined rather than loaded from a file: this page renders when
+     nothing is answering, and an inline path needs no img-src in the CSP and no
+     second round trip. It is monochrome, so one copy strokes currentColor and
+     both themes are covered. */
+  .mark { display: block; width: 34px; height: 34px; margin: 0 0 16px -4px; color: var(--fg); }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.01em; }
+  p.lede { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 8px; }
+  button {
+    padding: 9px 14px; border-radius: 7px; border: 1px solid transparent;
+    background: var(--accent); color: var(--bg); font: inherit; font-weight: 550;
+    font-size: 13px; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .status { margin-top: 14px; font-size: 12.5px; min-height: 18px; color: var(--muted); }
+  .detail {
+    margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--muted);
+  }
+  .detail dl { margin: 0; display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; }
+  .detail dt { color: var(--muted); }
+  .detail dd { margin: 0; overflow-wrap: anywhere; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .hint { margin-top: 12px; font-size: 12px; color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="mark" viewBox="0 0 60 60" fill="none" aria-hidden="true">
+    <path d="M40.0312 29.6023L49.9852 25.4051C50.5292 25.1758 50.7571 24.5277 50.4765 24.0084L45.6363 15.0496C45.3489 14.5178 44.6591 14.3605 44.1696 14.7153L34.6523 21.6136M40.0312 29.6023L33.933 32.1736C31.7869 33.0785 31.4456 35.9773 33.3229 37.3559L44.168 45.3202C44.6573 45.6795 45.3512 45.5235 45.6397 44.9895L50.5087 35.9776C50.7774 35.4803 50.5808 34.8593 50.0749 34.6072L40.0312 29.6023ZM34.6523 21.6136L30.5854 24.5614C28.7503 25.8916 26.1597 24.7846 25.8525 22.5391L24.1554 10.1356C24.0732 9.53499 24.54 9 25.1461 9H34.7163C35.3048 9 35.766 9.50561 35.7121 10.0916L34.6523 21.6136Z" stroke="currentColor" stroke-width="3"/>
+    <path d="M35.282 47L35.6587 50.0175C35.7338 50.6188 35.2611 51.1482 34.6551 51.1413L25.1712 51.034C24.5829 51.0273 24.1274 50.5167 24.1878 49.9315L25.1428 40.668C25.2309 39.8127 24.2701 39.2523 23.5691 39.7501L15.853 45.2293C15.3591 45.58 14.6693 45.4146 14.3882 44.8781L9.68991 35.911C9.41644 35.389 9.65127 34.745 10.1965 34.5215L18.1128 31.2775C18.9026 30.9539 18.9499 29.8532 18.1909 29.4629L17.5 29.1076L10.2106 25.3592C9.70888 25.1012 9.51977 24.4795 9.79284 23.9858L14.7222 15.0745C15.0166 14.5423 15.714 14.3939 16.1995 14.7603L18.5 16.4959" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+  </svg>
+
+  <h1 id="title">Can't reach LangAlpha</h1>
+  <p class="lede" id="lede"></p>
+
+  <div class="row">
+    <button id="retry" type="button">Try again</button>
+    <button id="browser" class="secondary" type="button">Open in browser</button>
+    <button id="server" class="secondary" type="button" hidden>Change server…</button>
+  </div>
+
+  <p class="status" id="status" role="status" aria-live="polite"></p>
+
+  <p class="hint" id="hint" hidden></p>
+
+  <div class="detail">
+    <dl>
+      <dt>Address</dt><dd id="target"></dd>
+      <dt id="detail-label" hidden>Error</dt><dd id="detail" hidden></dd>
+    </dl>
+  </div>
+</main>
+<script src="./outage.js"></script>
+</body>
+</html>

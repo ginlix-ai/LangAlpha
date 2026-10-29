@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/components/ui/use-toast';
 import {
   addPortfolioHolding,
@@ -29,7 +29,7 @@ export interface PortfolioRow {
   [key: string]: unknown;
 }
 
-interface PortfolioHolding {
+export interface PortfolioHolding {
   user_portfolio_id: string;
   symbol: string;
   quantity?: number;
@@ -38,6 +38,20 @@ interface PortfolioHolding {
   notes?: string;
   [key: string]: unknown;
 }
+
+/**
+ * The holdings list alone, for a reader that needs what is held but not its
+ * quotes (the welcome flow's holdings entry). The same entry the hook below
+ * polls, so a holding added anywhere shows everywhere.
+ */
+export const portfolioHoldingsQuery = queryOptions({
+  queryKey: ['portfolioData'],
+  queryFn: async (): Promise<PortfolioHolding[]> => {
+    const { holdings: rawHoldings } = await getPortfolio() as { holdings?: PortfolioHolding[] };
+    return rawHoldings ?? [];
+  },
+  staleTime: 1000 * 30, // 30s fresh cache
+});
 
 interface PortfolioEditForm {
   quantity: string;
@@ -80,15 +94,10 @@ export function usePortfolioData() {
   // Holdings membership is its own query (keyed ['portfolioData'] so CRUD
   // invalidation + polling are unchanged); per-symbol quotes come from the
   // shared quote layer so a symbol held here and watched elsewhere fetch once.
-  const { data: holdings = [], isLoading: holdingsLoading, refetch: refetchHoldings } = useQuery<PortfolioHolding[]>({
-    queryKey: ['portfolioData'],
-    queryFn: async (): Promise<PortfolioHolding[]> => {
-      const { holdings: rawHoldings } = await getPortfolio() as { holdings?: PortfolioHolding[] };
-      return rawHoldings ?? [];
-    },
+  const { data: holdings = [], isLoading: holdingsLoading, isSuccess: loaded, refetch: refetchHoldings } = useQuery({
+    ...portfolioHoldingsQuery,
     refetchInterval: 60000,
     refetchIntervalInBackground: false,
-    staleTime: 1000 * 30, // 30s fresh cache
   });
 
   const symbols = useMemo(
@@ -249,6 +258,8 @@ export function usePortfolioData() {
   return {
     rows,
     loading,
+    /** The holdings arrived, as opposed to a read that failed or never ran. */
+    loaded,
     hasRealHoldings,
     modalOpen,
     setModalOpen,

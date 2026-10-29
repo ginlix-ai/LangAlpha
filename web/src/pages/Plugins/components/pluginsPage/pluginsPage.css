@@ -1,0 +1,411 @@
+/* Plugins and Skills sections (Yours) and their detail pages. The shared cell,
+   section and detail vocabulary is surface.css; this file only adds what these
+   two sections draw that the others do not. */
+
+/* Two groups side by side once the column is wide enough that a single grid
+   would leave half a screen empty under a short group: From the catalog
+   beside Built in. Measured on the list, not the window, so a collapsed app
+   sidebar counts. */
+.pp-list { container-type: inline-size; }
+.pp-pair { display: flex; flex-direction: column; }
+.pp-pair-col { min-width: 0; }
+.pp-pair-col + .pp-pair-col,
+.pp-pair-col > .surface-section + .surface-section { margin-top: 30px; }
+.pp-list > .surface-section + .pp-pair,
+.pp-list > .pp-pair + .surface-section { margin-top: 30px; }
+@container (min-width: 1080px) {
+  .pp-pair.is-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 40px;
+    align-items: start;
+  }
+  .pp-pair.is-split > .pp-pair-col + .pp-pair-col { margin-top: 0; }
+  .pp-pair.is-split .surface-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* A skill group's header leads with its plugin's mark, once per group,
+   while the cells under it carry the skill glyph. */
+.pp-group-title { display: inline-flex; align-items: center; gap: 8px; }
+
+/* The quiet line under the groups: the install limit and the way to more. */
+.pp-foot {
+  margin-top: 36px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 0.75rem;
+  color: var(--color-text-quaternary);
+}
+.pp-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.pp-foot button:hover { color: var(--color-text-primary); }
+
+/* A cell asking before it removes: the same footprint as the cell it
+   replaces, so the grid does not jump. */
+.pp-confirm {
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 6px 10px;
+}
+.pp-confirm > * { flex: 1; min-width: 0; }
+
+/* A note at the foot of a cell menu ("Built-in plugins can be switched off"). */
+.pp-menu-note {
+  max-width: 220px;
+  padding: 6px 10px 4px;
+  font-size: 0.71875rem;
+  line-height: 1.45;
+  color: var(--color-text-quaternary);
+}
+
+/* The "On [switch]" control in a detail header. */
+.pp-onoff {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 8px 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  font-size: 0.78125rem;
+  color: var(--color-text-secondary);
+}
+.pp-onoff.is-disabled { color: var(--color-text-quaternary); }
+
+/* Side column pieces */
+.pp-note {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-text-quaternary);
+}
+.pp-note-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--color-text-tertiary);
+  font-size: inherit;
+  cursor: pointer;
+}
+.pp-note-link:hover { color: var(--color-text-primary); }
+.pp-keys { display: flex; flex-direction: column; gap: 8px; }
+.pp-key {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+}
+.pp-key-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+.pp-key-name svg { flex-shrink: 0; color: var(--color-text-tertiary); }
+.pp-key-link { width: fit-content; max-width: 100%; border-radius: 4px; text-decoration: none; }
+.pp-key-link:hover > span { text-decoration: underline; text-underline-offset: 2px; }
+/* A part's reach beside its name ("All workspaces except 1") is the longest
+   meta a cell carries: on a narrow column it gives way before the name and
+   the trailing state do, instead of pushing the state off the cell. */
+.pp-cell-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-key-state { margin-top: 4px; font-size: 0.75rem; color: var(--color-text-tertiary); }
+.pp-key-state.is-warn { color: var(--color-warning); }
+.pp-verbs { display: flex; flex-direction: column; gap: 8px; }
+.pp-verbs-row { display: flex; gap: 8px; }
+.pp-verbs-row > * { flex: 1; justify-content: center; }
+.pp-btn {
+  height: 32px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.78125rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pp-btn:hover { background: var(--color-bg-elevated); }
+.pp-btn:disabled { opacity: 0.5; cursor: default; }
+.pp-btn.is-primary {
+  border-color: transparent;
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+}
+.pp-btn.is-primary:hover { opacity: 0.9; }
+.pp-btn.is-danger { color: var(--color-loss); }
+.pp-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+.pp-callout-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.pp-empty-line { font-size: 0.8125rem; color: var(--color-text-tertiary); }
+
+/* Skill command box */
+.pp-cmdbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-input);
+  font-family: var(--font-mono);
+  font-size: 0.78125rem;
+  color: var(--color-text-primary);
+}
+.pp-cmdbox > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-cmdbox input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: inherit;
+  font: inherit;
+}
+.pp-cmdbox button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.pp-cmdbox button:hover { background: var(--color-bg-elevated); color: var(--color-text-primary); }
+.pp-cmdbox button:disabled { opacity: 0.5; cursor: default; }
+
+/* Skill instructions: an outline beside the document on a wide page. */
+.pp-skill-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; align-items: start; }
+.pp-outline { display: none; }
+@media (min-width: 1800px) {
+  .pp-skill-body.has-outline { grid-template-columns: 188px minmax(0, 1fr); }
+  .pp-outline { display: block; position: sticky; top: 24px; }
+}
+.pp-outline h3 {
+  margin: 0 0 10px;
+  font-size: 0.78125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.pp-outline button {
+  display: block;
+  width: 100%;
+  padding: 4px 0 4px 12px;
+  border: 0;
+  border-left: 1px solid var(--color-border-subtle);
+  background: none;
+  text-align: left;
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pp-outline button:hover { color: var(--color-text-primary); }
+.pp-outline button.is-sub { padding-left: 22px; font-size: 0.75rem; color: var(--color-text-quaternary); }
+.pp-outline button.is-sub:hover { color: var(--color-text-primary); }
+
+.pp-doc {
+  min-width: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+}
+.pp-doc-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 0.78125rem;
+  color: var(--color-text-secondary);
+}
+.pp-doc-bar svg { color: var(--color-text-quaternary); flex-shrink: 0; }
+.pp-doc-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-doc-lines { font-family: var(--font-mono); font-size: 0.65625rem; color: var(--color-text-quaternary); }
+.pp-seg {
+  margin-left: auto;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-muted);
+}
+.pp-seg button {
+  border: 0;
+  background: transparent;
+  padding: 2px 10px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.pp-seg button[aria-pressed='true'] { background: var(--color-bg-elevated); color: var(--color-text-primary); }
+.pp-doc-status { padding: 18px 16px; font-size: 0.78125rem; color: var(--color-text-tertiary); }
+.pp-doc-source {
+  margin: 0;
+  padding: 18px 20px;
+  max-height: 70vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+/* Prose wraps to the card; code keeps its lines and scrolls sideways, since a
+   wrapped flag or string reads as two. */
+.pp-doc-source.is-code { white-space: pre; overflow-wrap: normal; }
+
+.pp-md {
+  padding: 26px 30px 18px;
+  max-width: 780px;
+  font-family: var(--font-content);
+  font-size: 0.84375rem;
+  line-height: 1.65;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.pp-md > :first-child { margin-top: 0; }
+.pp-md h1 {
+  margin: 0 0 12px;
+  font-family: var(--font-ui);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  color: var(--color-text-primary);
+}
+.pp-md h2 { margin: 30px 0 10px; font-size: 0.9375rem; font-weight: 600; line-height: 1.35; color: var(--color-text-primary); }
+.pp-md h3, .pp-md h4 { margin: 22px 0 8px; font-size: 0.84375rem; font-weight: 600; color: var(--color-text-primary); }
+.pp-md h1, .pp-md h2, .pp-md h3 { scroll-margin-top: 24px; }
+.pp-md p { margin: 0 0 12px; }
+.pp-md ul, .pp-md ol { margin: 0 0 14px; padding-left: 20px; }
+.pp-md ul { list-style: disc; }
+.pp-md ol { list-style: decimal; }
+.pp-md li { margin: 5px 0; }
+.pp-md li::marker { color: var(--color-text-quaternary); }
+.pp-md strong { font-weight: 600; color: var(--color-text-primary); }
+.pp-md a { color: var(--color-text-primary); text-decoration: underline; text-underline-offset: 2px; }
+.pp-md code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--color-bg-tag);
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  color: var(--color-text-primary);
+}
+.pp-md pre {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-input);
+  overflow-x: auto;
+}
+.pp-md pre code { padding: 0; background: none; font-size: 0.71875rem; line-height: 1.6; color: var(--color-text-secondary); }
+.pp-md blockquote {
+  margin: 0 0 12px;
+  padding-left: 12px;
+  border-left: 1px solid var(--color-border-default);
+  color: var(--color-text-tertiary);
+}
+.pp-md hr { margin: 20px 0; border: 0; border-top: 1px solid var(--color-border-subtle); }
+.pp-md table { width: 100%; margin: 4px 0 16px; border-collapse: collapse; font-size: 0.78125rem; line-height: 1.5; }
+.pp-md th, .pp-md td {
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+.pp-md th { font-weight: 500; color: var(--color-text-tertiary); }
+.pp-md td:first-child { color: var(--color-text-primary); }
+
+/* Header meta and fact links */
+.pp-meta-mono { font-family: var(--font-mono); font-size: 0.75rem; }
+.pp-fact-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
+.pp-fact-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-fact-link svg { flex-shrink: 0; color: var(--color-text-quaternary); }
+.pp-outline-step {
+  display: inline-block;
+  min-width: 18px;
+  font-family: var(--font-mono);
+  font-size: 0.65625rem;
+  color: var(--color-text-quaternary);
+}
+.pp-cmdbox > span.pp-cmd-slash { flex: none; color: var(--color-text-tertiary); }
+.pp-meta-link { color: var(--color-text-secondary); }
+.pp-fact-button { font-size: inherit; color: inherit; text-align: left; }
+.pp-fact-button:hover { text-decoration: underline; text-underline-offset: 2px; }
+.pp-sep { color: var(--color-text-quaternary); }
+/* MetaLine. The clip box is padded so a focused link at a line's start keeps
+   its ring; the dot is 20px wide, so a line-start dot sits in the margin the
+   padding does not reach. */
+.pp-metaline { display: block; flex: 1 1 100%; min-width: 0; overflow: hidden; padding: 3px; margin: -3px; }
+.pp-metaline-row { display: flex; flex-wrap: wrap; align-items: center; margin-left: -20px; }
+.pp-metaline-part { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
+.pp-metaline-part > .pp-sep { flex: none; width: 20px; text-align: center; }
+.pp-cmdbox > span.pp-cmd-slash + input { margin-left: -8px; }
+
+/* A skill's files: SKILL.md and its neighbours, then each folder. The open
+   one reads as selected the way a rail entry does. */
+.pp-files { display: flex; flex-direction: column; gap: 1px; margin: 0 -8px; }
+.pp-file,
+.pp-files-dir {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 0.78125rem;
+}
+.pp-file {
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.pp-file.is-nested { padding-left: 30px; }
+.pp-file:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
+.pp-file.is-selected { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.pp-file:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+.pp-file span,
+.pp-files-dir span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-files-dir { color: var(--color-text-tertiary); }
+.pp-file svg,
+.pp-files-dir svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--color-text-quaternary); }

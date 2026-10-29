@@ -4,33 +4,69 @@
 defaults:
   # Runtime variables (set at render time, these are just documentation)
   # NOTE: date/datetime are auto-injected by PromptLoader - do NOT set here
-  tool_summary: ""  # Set at runtime with formatted tool summary
+  tool_summary: ""  # Subagent-only MCP roster; the main agents read <mcp-servers> in the baseline
+  direct_tool_summary: ""  # Set at runtime: tools bound to the model directly (empty = section omitted)
+  # Shape of the shared components/direct_tools.md.j2 section. Each template
+  # that includes it sets these; the values here only keep an unset render from
+  # dropping the heading.
+  direct_tools_heading: "Direct tools"
+  direct_tools_sandbox: false
   # Task workflow defaults
   max_concurrent_task_units: 3
-  max_task_iterations: 10
-
-  # General agent defaults
-  max_iterations: 15
 
   # Component defaults
   include_examples: true
   include_anti_patterns: true
 
-  # Long-term memory (store-backed; injected via MemoryContextMiddleware)
+  # Prompt scaffolding level. Templates carry one body; expanded scaffolding is
+  # wrapped in `{% if guidance | default("detailed") == "detailed" %}` so lean
+  # is a strict subset of detailed and the two cannot drift. Resolved per render
+  # from the user's model_preference, then this file, then the model's
+  # prompt_guidance (see prompts/guidance.py).
+  # Default detailed — an unresolved render gets more guidance, never less.
+  guidance: detailed
+
+  # Long-term memory (store-backed; injected via the runtime-context baseline)
   memory_enabled: true
 
   # User-managed memo store (read-only for the agent; count injected via
-  # MemoAwarenessMiddleware, static prompt component describes the feature)
+  # the runtime-context baseline; the static prompt component describes it)
   memo_enabled: true
 
-  # Sandbox/filesystem availability. Gates filesystem-dependent steering in the
-  # shared user_profile component (e.g. HTML-report output) so it never fires
-  # for Flash, which has no sandbox. PTC overrides to true at render time.
-  sandbox_enabled: false
+  # Gates the main agent's own steering in the shared user_profile component:
+  # the profile files, the HTML-deliverable format, and the automations and
+  # subagents folders. The baseline renders it true for the main agent and
+  # false for a subagent, which leaves them all out.
+  main_agent_steering: false
+
+  # Which agent the main prompt is for: "analyst" works in one workspace,
+  # "chief_of_staff" works from Home and hands workspace work to the analysts
+  # (adds components/chief_of_staff.md.j2).
+  role: analyst
 
   # Market watch (live price injection). Gates the watch_market row in
   # tool_guide. Agent render overrides with the config.yaml master switch.
   market_watch_enabled: true
+
+  # TodoWrite (opt-in feature). Gates the task_workflow line that names the
+  # tool; the agent render and the subagent compiler pass the real value.
+  todo_enabled: false
+
+  # Scratchpad (opt-in feature). Gates every scratchpad mention in the system
+  # prompt, which names only the folders' pattern; this thread's own folder
+  # rides the runtime-context baseline, so the prompt is the same across threads.
+  scratchpad_enabled: false
+
+  # Tool-tier gates for tool_guide. The main agent binds all three, so the
+  # default matches it; the subagent compiler passes the real per-agent value
+  # because a subagent that cannot call a tool must not be taught to.
+  show_widget_enabled: true
+  finance_enabled: true
+  web_enabled: true
+  # Gates the draw_chart_annotation line in the PTC visualizations section.
+  # The agent builds pass false when the chart-annotation skill is off, and
+  # the subagent compiler always does: only the main agent binds the tools.
+  chart_annotation_enabled: true
 
 # System prompt template metadata (for documentation)
 system:
@@ -62,9 +98,11 @@ subagents:
 # Component template metadata
 components:
   tool_guide:
-    description: Unified 3-tier tool reference (Core, Financial, MCP)
-    required_vars:
-      - tool_summary
+    description: >-
+      Unified 3-tier tool reference (Core, Financial, MCP). tool_summary is the
+      subagent's own roster, rendered inline because a subagent has no runtime-
+      context baseline; unset, the section points at <mcp-servers> in the
+      baseline instead, which is where the main agents read theirs.
 
   visualizations:
     description: Visualization instructions
@@ -80,3 +118,127 @@ components:
 
   data_processing:
     description: Data processing patterns - inspection, statistics, search, and storage strategies
+
+  time_rules:
+    description: >-
+      What runtime context is, who it is from and how to read a stamp, plus how
+      to resolve a time frame (Rule 1 current, Rule 2 explicit past, Rule 3
+      fresh tape). Static and cacheable; the stamp itself rides
+      envelope/turn.md.j2.
+
+# Runtime-context envelope fragments. Rendered per call by the tail middleware
+# and per turn by the turn and baseline middlewares, never included from a
+# system template. Each takes `guidance` plus the kwargs listed here; a template with
+# no defaults listed needs all of its kwargs supplied by the caller.
+envelope:
+  header:
+    template: envelope/header.md.j2
+    description: One-line framing for the tail block. Both guidance levels.
+    kwargs: []
+
+  turn:
+    template: envelope/turn.md.j2
+    description: >-
+      The turn_opened row body, one unlabelled line each: local stamp, the
+      preferred market's session as a fact, the gap since the last turn with
+      the sessions closed inside it, and the run context line. The caller
+      supplies market_line only when the session line moved since the last row
+      that stated it. Rendered once at the turn boundary and persisted, so it
+      is state only and reads the same at both levels. surface_rules is the
+      rendered envelope/surface_rules.md.j2 paragraph, supplied only on a turn
+      whose delivery rules are not the last ones still on the wire.
+    kwargs: [opened, local_tz, market_line, elapsed_human, sessions_closed, market, surface, symbol, origin, is_subagent, surface_rules]
+
+  surface_rules:
+    template: envelope/surface_rules.md.j2
+    description: >-
+      The delivery rules for one turn's situation, rendered into the turn row
+      rather than the system prefix: the surface's own paragraph, plus the
+      automation paragraph when an automation started the thread, or the
+      subagent paragraph instead of both. An undocumented surface renders
+      nothing. surface_rules is the client's own text for its surface and
+      replaces the built-in line; handoff marks the first attended turn after
+      an automation's, reset a turn with no rules of its own after one that
+      stated some. State only, so it reads the same at both levels.
+    kwargs: [surface, symbol, origin, is_subagent, surface_rules, handoff, reset]
+
+  updates:
+    template: envelope/updates.md.j2
+    description: >-
+      The live-price block a market_watch row carries, rendered once when the
+      row is written. stamp is the wrapped market-watch block and renders
+      verbatim.
+    kwargs: [stamp]
+
+  update_row:
+    template: envelope/update_row.md.j2
+    description: >-
+      One durable row, persisted as its own message in history rather than
+      rendered in the tail. Same item shape as `updates`, one row, no framing
+      of its own: the carrier adds that per call. A change row names in plain
+      words what moved and who moved it, and carries the paragraph that says
+      how to read it; no stamp, because the row's place in history already
+      says when. A harness block (runtime_context/harness_blocks.py, passed
+      in as `harness`) gets a paragraph of its own: it diffs like a file but
+      names no file to go and read. A kind with no words here keeps the
+      labelled `**kind**` form.
+    kwargs: [update, harness]
+
+  baseline_agentmd:
+    template: envelope/baseline_agentmd.md.j2
+    description: agent.md wrapped in <agentmd path=...>. Byte-deterministic.
+    kwargs: [path, content, role]
+
+  baseline_memory:
+    template: envelope/baseline_memory.md.j2
+    description: >-
+      One memory tier wrapped in <memory path=...>. Byte-deterministic.
+      readonly is a subagent without file tools, which reads the index but
+      cannot open or write the files it points to; subagent reads memory and
+      never writes it.
+    kwargs: [path, content, readonly, subagent]
+
+  baseline_identity:
+    template: envelope/baseline_identity.md.j2
+    description: User identity wrapped in <user_identity>. Byte-deterministic.
+    kwargs: [name, timezone, locale, preferred_market]
+
+  baseline_files:
+    template: envelope/baseline_files.md.j2
+    description: >-
+      Trust preface for the baseline file blocks, rendered once above the first
+      <agentmd>/<memory> block. Byte-deterministic.
+    kwargs: []
+
+  baseline_mcp_servers:
+    template: envelope/baseline_mcp_servers.md.j2
+    description: >-
+      The MCP server roster wrapped in <mcp-servers>, one lead line on how to
+      import a server. Empty content renders nothing. Byte-deterministic.
+    kwargs: [content]
+
+  baseline_skills:
+    template: envelope/baseline_skills.md.j2
+    description: >-
+      The skills manifest wrapped in <skills>, verbatim: it arrives with its
+      own heading and activation line. Empty content renders nothing.
+      Byte-deterministic.
+    kwargs: [content]
+
+  baseline_activity:
+    template: envelope/baseline_activity.md.j2
+    description: >-
+      The Chief of Staff's view of what the user has been doing (recent
+      workspaces and threads, today's automation runs, holdings), wrapped in
+      <activity> under one line dating the copy. Empty content renders
+      nothing. Byte-deterministic.
+    kwargs: [content]
+
+  baseline_scratchpad:
+    template: envelope/baseline_scratchpad.md.j2
+    description: >-
+      This thread's scratchpad folder and its note/ folder as a <scratchpad>
+      element, when the scratchpad feature is on. content is the folder,
+      absolute with a trailing slash; empty renders nothing.
+      Byte-deterministic.
+    kwargs: [content]

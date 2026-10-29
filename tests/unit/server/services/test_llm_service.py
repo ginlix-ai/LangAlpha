@@ -2,7 +2,7 @@
 
 Covers:
 - ``user_id=None`` bypasses ``resolve_llm_config`` and uses ``create_llm``
-  on ``agent_config.llm.flash`` (or ``request_model`` when provided).
+  on ``agent_config.llm.background`` (or ``request_model`` when provided).
 - ``user_id="..."`` calls ``resolve_llm_config`` with the correct args and
   uses the resolved ``llm_client``.
 - ``response_schema=None`` returns the raw string from ``make_api_call``.
@@ -29,9 +29,9 @@ class _DummySchema(BaseModel):
     summary: str
 
 
-def _make_agent_config(flash: str = "claude-haiku-4-5-20251001", name: str = "claude-opus-4") -> SimpleNamespace:
-    """Minimal agent_config stub with an ``llm.flash`` / ``llm.name`` shape."""
-    return SimpleNamespace(llm=SimpleNamespace(flash=flash, name=name))
+def _make_agent_config(background: str = "claude-haiku-4-5-20251001", name: str = "claude-opus-4") -> SimpleNamespace:
+    """Minimal agent_config stub with an ``llm.background`` / ``llm.name`` shape."""
+    return SimpleNamespace(llm=SimpleNamespace(background=background, name=name))
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ class TestUserIdNone:
     @pytest.mark.asyncio
     async def test_bypasses_resolve_llm_config(self):
         """With ``user_id=None``, ``resolve_llm_config`` must never be called."""
-        agent_config = _make_agent_config(flash="flash-default-model")
+        agent_config = _make_agent_config(background="background-default-model")
         service = LLMService(agent_config=agent_config)
 
         fake_llm = MagicMock(name="fake_llm")
@@ -71,7 +71,7 @@ class TestUserIdNone:
         assert result == "raw string response"
         mock_resolve.assert_not_called()
         mock_create.assert_called_once_with(
-            "flash-default-model", reasoning_effort=None
+            "background-default-model", reasoning_effort=None
         )
         mock_call.assert_awaited_once_with(
             fake_llm,
@@ -84,8 +84,8 @@ class TestUserIdNone:
 
     @pytest.mark.asyncio
     async def test_request_model_override_forwarded_to_create_llm(self):
-        """``request_model`` overrides ``agent_config.llm.flash`` on the None path."""
-        agent_config = _make_agent_config(flash="flash-default")
+        """``request_model`` overrides ``agent_config.llm.background`` on the None path."""
+        agent_config = _make_agent_config(background="background-default")
         service = LLMService(agent_config=agent_config)
 
         fake_llm = MagicMock(name="fake_llm")
@@ -130,7 +130,7 @@ class TestUserIdProvided:
 
         resolved_llm = MagicMock(name="resolved_llm")
         resolved_config = SimpleNamespace(
-            llm=SimpleNamespace(flash="flash-resolved", name="name-resolved"),
+            llm=SimpleNamespace(background="background-resolved", name="name-resolved"),
             llm_client=resolved_llm,
             credential_source=CredentialSource.BYOK,
         )
@@ -154,7 +154,7 @@ class TestUserIdProvided:
                 user_id="u1",
                 user_prompt="prompt",
                 system_prompt="sys",
-                mode="flash",
+                slot="background",
                 request_model="mymodel",
                 is_byok=False,
                 reasoning_effort="medium",
@@ -166,9 +166,10 @@ class TestUserIdProvided:
             user_id="u1",
             request_model="mymodel",
             is_byok=False,
-            mode="flash",
+            slot="background",
             reasoning_effort="medium",
             fast_mode=None,
+            user_facing=False,
         )
         # llm_client was present on the resolved config — no create_llm fallback
         mock_create.assert_not_called()
@@ -189,7 +190,7 @@ class TestUserIdProvided:
         service = LLMService(agent_config=agent_config)
 
         resolved_config = SimpleNamespace(
-            llm=SimpleNamespace(flash="flash-resolved", name="name-resolved"),
+            llm=SimpleNamespace(background="background-resolved", name="name-resolved"),
             llm_client=None,
             credential_source=CredentialSource.NONE,
         )
@@ -214,12 +215,12 @@ class TestUserIdProvided:
             await service.complete(
                 user_id="u1",
                 user_prompt="prompt",
-                mode="flash",
+                slot="background",
             )
 
-        # mode=flash → model_field="flash" → picks resolved_config.llm.flash
+        # slot=background → model_field="background" → picks resolved_config.llm.background
         mock_create.assert_called_once_with(
-            "flash-resolved", reasoning_effort=None
+            "background-resolved", reasoning_effort=None
         )
         assert mock_call.await_args.args[0] is fake_llm
 
@@ -323,7 +324,7 @@ class TestRequestModelOverride:
         service = LLMService(agent_config=agent_config)
 
         resolved_config = SimpleNamespace(
-            llm=SimpleNamespace(flash="flash-resolved", name="name-resolved"),
+            llm=SimpleNamespace(background="background-resolved", name="name-resolved"),
             llm_client=MagicMock(),
             credential_source=CredentialSource.BYOK,
         )
@@ -358,11 +359,11 @@ def _make_resolved_config(
     *,
     credential_source: CredentialSource,
     llm_client=None,
-    flash: str = "flash-model",
+    background: str = "background-model",
     name: str = "name-model",
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        llm=SimpleNamespace(flash=flash, name=name),
+        llm=SimpleNamespace(background=background, name=name),
         llm_client=llm_client,
         credential_source=credential_source,
     )
@@ -393,7 +394,7 @@ class TestPlatformKeyFallbackSignal:
                 return_value="ok",
             ),
         ):
-            await service.complete(user_id="user-a", user_prompt="test", mode="flash")
+            await service.complete(user_id="user-a", user_prompt="test", slot="background")
 
     @pytest.mark.asyncio
     async def test_platform_eager_emits_signal(self):
@@ -468,7 +469,7 @@ class TestPlatformKeyFallbackSignal:
     @pytest.mark.asyncio
     async def test_user_id_none_system_path_suppresses_signal(self):
         """user_id=None (system task) → no resolution → no platform log."""
-        agent_config = _make_agent_config(flash="sys-flash-model")
+        agent_config = _make_agent_config(background="sys-background-model")
         mock_logger = MagicMock()
         service = LLMService(agent_config=agent_config, logger=mock_logger)
 

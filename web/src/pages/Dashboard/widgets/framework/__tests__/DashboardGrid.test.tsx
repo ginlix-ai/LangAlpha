@@ -16,7 +16,10 @@ vi.mock('react-grid-layout', () => ({
     latestGridProps = props;
     return <div data-testid="mock-rgl">{props.children}</div>;
   },
-  useContainerWidth: () => ({ width: 1280, mounted: true, containerRef: { current: null } }),
+}));
+
+vi.mock('../useGridWidth', () => ({
+  useGridWidth: () => ({ width: 1280, containerRef: { current: null } }),
 }));
 
 vi.mock('../WidgetFrame', () => ({
@@ -45,8 +48,7 @@ registerWidget({
 
 function makePrefs(): DashboardPrefs {
   return {
-    version: 1,
-    mode: 'custom',
+    version: 2,
     widgets: [{ id: 'widget-1', type: 'test.fit-height', config: {} }],
     layouts: {
       lg: [{ i: 'widget-1', x: 0, y: 0, w: 8, h: 18, minW: 4, minH: 18, maxW: 12, maxH: 18 }],
@@ -63,27 +65,31 @@ describe('DashboardGrid fit-to-content height locking', () => {
 
   it('preserves the fitted height when RGL emits a stale onLayoutChange height during a width drag', () => {
     const onChange = vi.fn();
+    const onAdjust = vi.fn();
 
     render(
       <DashboardGrid
         prefs={makePrefs()}
         editMode
         onChange={onChange}
+        onAdjust={onAdjust}
         onOpenSettings={() => {}}
       />
     );
 
+    // A fit is the grid's own change; the drag after it is the reader's.
     fitHeightById.get('widget-1')?.(462);
 
-    expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange.mock.calls[0][0].layouts.lg[0]).toMatchObject({ w: 8, h: 20, minH: 20, maxH: 20 });
+    expect(onAdjust).toHaveBeenCalledTimes(1);
+    expect(onAdjust.mock.calls[0][0].layouts.lg[0]).toMatchObject({ w: 8, h: 20, minH: 20, maxH: 20 });
+    expect(onChange).not.toHaveBeenCalled();
 
     latestGridProps?.onLayoutChange?.([], {
       lg: [{ i: 'widget-1', x: 0, y: 0, w: 5, h: 18, minW: 4, minH: 18, maxW: 12, maxH: 18 }],
       md: [{ i: 'widget-1', x: 0, y: 0, w: 5, h: 18, minW: 4, minH: 18, maxW: 12, maxH: 18 }],
     });
 
-    expect(onChange).toHaveBeenCalledTimes(2);
-    expect(onChange.mock.calls[1][0].layouts.lg[0]).toMatchObject({ w: 5, h: 20, minH: 20, maxH: 20 });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0].layouts.lg[0]).toMatchObject({ w: 5, h: 20, minH: 20, maxH: 20 });
   });
 });

@@ -13,9 +13,9 @@
  */
 
 import type {
-  ISeriesPrimitivePaneView,
-  ISeriesPrimitivePaneRenderer,
-  SeriesPrimitivePaneViewZOrder,
+  IPrimitivePaneView,
+  IPrimitivePaneRenderer,
+  PrimitivePaneViewZOrder,
   Time,
   IChartApiBase,
 } from 'lightweight-charts';
@@ -65,11 +65,11 @@ export class ExtendedHoursBgPrimitive {
 
   updateAllViews(): void {}
 
-  paneViews(): ISeriesPrimitivePaneView[] {
+  paneViews(): IPrimitivePaneView[] {
     const source = this;
     return [{
-      zOrder(): SeriesPrimitivePaneViewZOrder { return 'bottom'; },
-      renderer(): ISeriesPrimitivePaneRenderer {
+      zOrder(): PrimitivePaneViewZOrder { return 'bottom'; },
+      renderer(): IPrimitivePaneRenderer {
         return {
           draw(target: CanvasRenderingTarget2D): void {
             const { _chart: chart, _regions: regions, _colors: colors } = source;

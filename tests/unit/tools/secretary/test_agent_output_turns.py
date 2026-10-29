@@ -1,8 +1,8 @@
-"""The ``turns`` arg must flow tool -> _get_thread_output -> extract_text_from_thread.
+"""The ``turns`` arg must flow agent_output -> extract_text_from_thread.
 
-agent_output and manage_threads(get_output) both expose an optional ``turns``
-window (default 1 = latest turn). These pin that the value reaches the
-extraction layer instead of being silently dropped at the tool boundary.
+agent_output exposes an optional ``turns`` window (default 1 = latest turn).
+These pin that the value reaches the extraction layer instead of being
+silently dropped at the tool boundary.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.tools.secretary.tools import agent_output, manage_threads
+from src.tools.secretary.chief_of_staff import agent_output
 
 USER_ID = "u-1"
 THREAD_ID = "33333333-3333-3333-3333-333333333333"
@@ -38,7 +38,7 @@ def _payload(result) -> dict:
 async def test_agent_output_defaults_to_one_turn():
     extract = _extract_stub()
     with patch(
-        "src.tools.secretary.tools._verify_thread_owner", AsyncMock(return_value=None)
+        "src.tools.secretary.chief_of_staff.verify_thread_owner", AsyncMock(return_value=None)
     ), patch(
         "src.tools.secretary.utils.extract_text_from_thread", extract
     ):
@@ -48,24 +48,24 @@ async def test_agent_output_defaults_to_one_turn():
             config={"configurable": {"user_id": USER_ID}},
         )
 
-    extract.assert_awaited_once_with(THREAD_ID, 1)
+    extract.assert_awaited_once_with(THREAD_ID, 1, timezone="UTC")
 
 
 @pytest.mark.asyncio
 async def test_agent_output_forwards_turns():
     extract = _extract_stub()
     with patch(
-        "src.tools.secretary.tools._verify_thread_owner", AsyncMock(return_value=None)
+        "src.tools.secretary.chief_of_staff.verify_thread_owner", AsyncMock(return_value=None)
     ), patch(
         "src.tools.secretary.utils.extract_text_from_thread", extract
     ):
         await agent_output.ainvoke(
             {"name": "agent_output", "args": {"thread_id": THREAD_ID, "turns": 5},
              "id": "c2", "type": "tool_call"},
-            config={"configurable": {"user_id": USER_ID}},
+            config={"configurable": {"user_id": USER_ID, "timezone": "Asia/Tokyo"}},
         )
 
-    extract.assert_awaited_once_with(THREAD_ID, 5)
+    extract.assert_awaited_once_with(THREAD_ID, 5, timezone="Asia/Tokyo")
 
 
 @pytest.mark.asyncio
@@ -73,7 +73,7 @@ async def test_agent_output_surfaces_read_failure_as_error():
     """A read failure becomes an error payload, not an empty success result."""
     extract = AsyncMock(side_effect=RuntimeError("db down"))
     with patch(
-        "src.tools.secretary.tools._verify_thread_owner", AsyncMock(return_value=None)
+        "src.tools.secretary.chief_of_staff.verify_thread_owner", AsyncMock(return_value=None)
     ), patch(
         "src.tools.secretary.utils.extract_text_from_thread", extract
     ):
@@ -85,21 +85,3 @@ async def test_agent_output_surfaces_read_failure_as_error():
 
     assert _payload(result)["success"] is False
 
-
-@pytest.mark.asyncio
-async def test_manage_threads_get_output_forwards_turns():
-    extract = _extract_stub()
-    with patch(
-        "src.tools.secretary.tools._verify_thread_owner", AsyncMock(return_value=None)
-    ), patch(
-        "src.tools.secretary.utils.extract_text_from_thread", extract
-    ):
-        result = await manage_threads.ainvoke(
-            {"name": "manage_threads",
-             "args": {"action": "get_output", "thread_id": THREAD_ID, "turns": 0},
-             "id": "c3", "type": "tool_call"},
-            config={"configurable": {"user_id": USER_ID}},
-        )
-
-    extract.assert_awaited_once_with(THREAD_ID, 0)
-    assert _payload(result)  # well-formed ToolMessage came back

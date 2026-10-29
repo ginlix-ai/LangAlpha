@@ -48,7 +48,7 @@ docs: |
   - `limit`: Line limit used
   - `content`: File content as string
   - `mime`: MIME type (guessed from extension, defaults to "text/plain")
-  - `truncated`: Whether content was truncated (always false, use offset for pagination)
+  - `truncated`: Whether the read stopped short of the end of the file; request the next page with `offset`
 
   ### Error Responses
   - 403: Forbidden (not workspace owner or path validation failed)

@@ -15,9 +15,15 @@ from langgraph.store.memory import InMemoryStore
 from ptc_agent.agent.backends.langgraph_store import (
     MAX_CONTENT_BYTES,
     InvalidStoreKeyError,
+    StoreContentInvalidError,
     StoreContentTooLargeError,
     StoreBackend,
+    memo_namespace,
+    store_label,
+    user_memory_namespace,
+    workspace_memory_namespace,
 )
+from ptc_agent.agent.backends.workflows import workflow_namespace
 
 USER_PREFIX = "/home/workspace/.agents/user/memory/"
 
@@ -161,6 +167,19 @@ class TestWriteRead:
             await backend.awrite_text(USER_PREFIX + "huge.md", oversized)
         # Nothing was written
         assert await backend.aread_text(USER_PREFIX + "huge.md") is None
+
+    @pytest.mark.asyncio
+    async def test_a_nul_is_refused_with_why_before_the_store_sees_it(self, store, sandbox_backend):
+        """Postgres stores no NUL in text, and its refusal quotes the row."""
+        backend = _make_backend(store, sandbox_backend)
+        with pytest.raises(StoreContentInvalidError, match="NUL"):
+            await backend.awrite_text(USER_PREFIX + "nul.md", "private\x00text")
+        assert await backend.aread_text(USER_PREFIX + "nul.md") is None
+
+        await backend.awrite_text(USER_PREFIX + "notes.md", "before")
+        result = await backend.aedit_text(USER_PREFIX + "notes.md", "before", "after\x00")
+        assert result["success"] is False and "NUL" in result["error"]
+        assert await backend.aread_text(USER_PREFIX + "notes.md") == "before"
 
     @pytest.mark.asyncio
     async def test_awrite_accepts_content_at_exact_cap(self, store, sandbox_backend):
@@ -456,7 +475,7 @@ class TestReadOnly:
 class TestCacheInvalidation:
     """Writes through the backend must invalidate the shared per-request cache.
 
-    Otherwise the next ``MemoryContextMiddleware`` read in the same turn
+    Otherwise the next runtime-context baseline read in the same turn
     would serve the pre-write value.
     """
 
@@ -515,3 +534,26 @@ class TestCacheInvalidation:
 
         refreshed = await cache.aget(store, ns, "memory.md")
         assert refreshed.value["content"] == "new body"
+
+
+class TestNamespaceLabels:
+    """The store refuses a dotted label on reads too (langgraph-checkpoint 4.3)."""
+
+    @pytest.mark.asyncio
+    async def test_dotted_user_id_reads_and_writes_every_tier(self):
+        store = InMemoryStore()
+        user = "alice@example.com"
+        for ns in (
+            user_memory_namespace(user),
+            workspace_memory_namespace(user, "ws-1"),
+            memo_namespace(user),
+            workflow_namespace(user),
+        ):
+            assert await store.asearch(ns) == []
+            await store.aput(ns, "k.md", {"content": "x"})
+            assert (await store.aget(ns, "k.md")).value == {"content": "x"}
+
+    def test_ids_without_a_dot_keep_the_label_they_were_written_under(self):
+        for user in ("local-dev-user", "5cd66c29-00cc-4f02-820e-b9bab633fbf1", "bob%42"):
+            assert user_memory_namespace(user) == (user, "memory")
+        assert store_label("alice@example.com") == "alice@example%2Ecom"

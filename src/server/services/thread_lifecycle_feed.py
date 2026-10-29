@@ -5,7 +5,7 @@ lifecycle transitions to that user's open tabs. The channel is TRANSPORT, not
 truth: ``run_settled`` rides the hook outbox (at-least-once, enqueued inside
 the finalize transaction), and the feed endpoint's 30s DB reconcile backs it
 up — every settle status is representable in the snapshot. The thread events
-(title, pinned, deleted, archived, unarchived) are NOT: they have no snapshot
+(title, pinned, subagents, deleted, archived, unarchived) are NOT: they have no snapshot
 representation, so a dropped publish for those is repaired only by the
 client's stream-cap reconnect, never by the reconcile.
 """
@@ -49,8 +49,15 @@ def build_lifecycle_event(
     title: Optional[str] = None,
     pinned: Optional[bool] = None,
     updated_at: Optional[str] = None,
+    last_seen_run_seq: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """The one wire shape (plan v6 §2.2). ``status`` is PUBLIC vocabulary."""
+    """The one wire shape (plan v6 §2.2). ``status`` is PUBLIC vocabulary.
+
+    ``last_seen_run_seq`` is the seen pointer a settle carried over its run:
+    a wakeup's check that ended without a reply and changed nothing, on a
+    thread with nothing unseen before it. The client takes it as it takes
+    any seen pointer, so the settle leaves no unseen dot.
+    """
     event: Dict[str, Any] = {
         "v": EVENT_VERSION,
         "type": type,
@@ -67,6 +74,8 @@ def build_lifecycle_event(
         event["pinned"] = pinned
     if updated_at is not None:
         event["updated_at"] = updated_at
+    if last_seen_run_seq is not None:
+        event["last_seen_run_seq"] = last_seen_run_seq
     return event
 
 
@@ -171,6 +180,45 @@ async def publish_thread_pinned(
     )
 
 
+async def publish_thread_subagents(
+    *,
+    user_id: Optional[str],
+    thread_id: str,
+    workspace_id: Optional[str],
+    allowed: Optional[bool],
+) -> None:
+    """Subagent-switch hint: the switch lives only on the thread row, so a tab
+    with the thread open learns of a flip made in another one only from this
+    event or its next read of the thread."""
+    event = build_lifecycle_event(
+        type="thread_subagents", thread_id=thread_id, workspace_id=workspace_id
+    )
+    # Always present: null is the thread following the owner's default.
+    event["subagents_allowed"] = allowed
+    await publish_user_event(user_id, event)
+
+
+async def publish_thread_tuning(
+    *,
+    user_id: Optional[str],
+    thread_id: str,
+    workspace_id: Optional[str],
+    reasoning_effort: Optional[str],
+    fast_mode: Optional[bool],
+) -> None:
+    """Tuning hint: a thread's effort and fast mode live only on its row, so a
+    tab with the thread open learns of a pick made in another one only from
+    this event or its next read of the thread. A stale tab would otherwise
+    send the level it still shows."""
+    event = build_lifecycle_event(
+        type="thread_tuning", thread_id=thread_id, workspace_id=workspace_id
+    )
+    # Always present: null is the thread following the user's Settings.
+    event["reasoning_effort"] = reasoning_effort
+    event["fast_mode"] = fast_mode
+    await publish_user_event(user_id, event)
+
+
 async def publish_thread_deleted(
     *,
     user_id: Optional[str],
@@ -226,6 +274,30 @@ async def publish_thread_unarchived(
     )
 
 
+async def publish_automation_wait(
+    *,
+    user_id: Optional[str],
+    thread_id: str,
+    automation_execution_id: str,
+    waiting: bool,
+) -> None:
+    """An automation firing joined (``waiting``) or left its thread's line.
+
+    The one event that carries ``automation_execution_id``: a chat open on the
+    thread shows or clears its notice for that firing rather than polling, and
+    the skip it offers names it. Advisory like the other thread events: the
+    chat reads the line again on load.
+    """
+    if waiting:
+        event = build_lifecycle_event(type="automation_waiting", thread_id=thread_id)
+    else:
+        event = build_lifecycle_event(
+            type="automation_waiting_ended", thread_id=thread_id
+        )
+    event["automation_execution_id"] = automation_execution_id
+    await publish_user_event(user_id, event)
+
+
 # ---------------------------------------------------------------------------
 # Outbox executor — the strict run_settled path
 # ---------------------------------------------------------------------------
@@ -261,6 +333,7 @@ async def _exec_user_feed(job: Dict[str, Any]) -> None:
             run_seq=payload.get("run_seq"),
             status=payload.get("status"),
             interrupt_reason=payload.get("interrupt_reason"),
+            last_seen_run_seq=payload.get("last_seen_run_seq"),
         ),
     )
 

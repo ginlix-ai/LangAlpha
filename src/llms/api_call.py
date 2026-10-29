@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional, Type, Union, Tuple
 from pydantic import BaseModel
 import asyncio
+import contextlib
 import logging
 import json
 from .token_counter import extract_token_usage
@@ -88,8 +89,9 @@ async def make_api_call(
 
     messages = create_messages(system_prompt, user_prompt)
 
-    # Use tracing_context to disable LangSmith tracing if requested
-    with tracing_context(enabled=not disable_tracing):
+    # Only ever switch tracing off: enabled=True would turn it on for a
+    # deployment that never configured LangSmith.
+    with tracing_context(enabled=False) if disable_tracing else contextlib.nullcontext():
         # Case 1: No schema requested, return raw content
         if response_schema is None:
             response = await llm.ainvoke(messages)

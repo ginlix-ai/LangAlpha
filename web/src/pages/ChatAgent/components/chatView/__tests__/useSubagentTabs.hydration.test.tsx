@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import React from 'react';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { useCardState } from '../../../hooks/useCardState';
 import { findWorkflowChildOwner } from '../../../session/subagents/workflowRunState';
+import { putTaskRun, runsOfTask, type TaskRun, type TaskRunIndex } from '../../../session/subagents/taskRuns';
+import { getSubagentTaskStatus } from '../../../utils/api';
 import { useSubagentTabs } from '../useSubagentTabs';
 
 // The status probe is a separate round trip from the transcript fetch; it is
@@ -33,22 +35,7 @@ interface HistoryEntry {
 }
 
 function harness() {
-  const history: Record<string, HistoryEntry> = {};
-  let resolveHydrate: (() => void) | undefined;
-
-  const hydrateTaskTranscript = vi.fn(
-    async (agentId: string, meta?: { description?: string; type?: string; status?: string }) => {
-      await new Promise<void>((r) => { resolveHydrate = r; });
-      history[agentId] = {
-        taskId: agentId,
-        description: meta?.description || '',
-        type: meta?.type || 'general-purpose',
-        status: meta?.status || 'completed',
-        messages: HYDRATED_MESSAGES,
-      };
-      return true;
-    },
-  );
+  const gate: { open?: () => void } = {};
 
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <MemoryRouter>{children}</MemoryRouter>
@@ -60,6 +47,35 @@ function harness() {
       const [activeAgentId, setActiveAgentId] = React.useState('main');
       const activeAgentIdRef = React.useRef('main');
       activeAgentIdRef.current = activeAgentId;
+      // The history the way useChatMessages publishes it: a snapshot the
+      // getter closes over, so a getter captured before the fetch cannot see
+      // the entry the fetch landed.
+      const [history, setHistory] = React.useState<Record<string, HistoryEntry>>({});
+      const getSubagentHistory = React.useCallback(
+        (id: string) => (history[id] ? { ...history[id], agentId: id } : null),
+        [history],
+      );
+      const [runs, setRuns] = React.useState<TaskRunIndex>(new Map());
+      const getTaskRuns = React.useCallback((id: string) => runsOfTask(runs, id), [runs]);
+      const putRun = React.useCallback(
+        (runId: string, patch: TaskRun) => setRuns((prev) => putTaskRun(prev, runId, patch)),
+        [],
+      );
+      const hydrateTaskTranscript = React.useCallback(
+        async (agentId: string, meta?: { description?: string; type?: string; status?: string }) => {
+          await new Promise<void>((r) => { gate.open = r; });
+          const entry: HistoryEntry = {
+            taskId: agentId,
+            description: meta?.description || '',
+            type: meta?.type || 'general-purpose',
+            status: meta?.status || 'completed',
+            messages: HYDRATED_MESSAGES,
+          };
+          setHistory((prev) => ({ ...prev, [agentId]: entry }));
+          return { ...entry, agentId };
+        },
+        [],
+      );
       const tabs = useSubagentTabs({
         threadId: 'thread-1',
         workspaceId: 'ws-1',
@@ -69,22 +85,22 @@ function harness() {
         setActiveAgentId,
         cards: cardState.cards,
         updateSubagentCard: cardState.updateSubagentCard,
-        getSubagentHistory: ((id: string) =>
-          history[id] ? { ...history[id], agentId: id } : null) as never,
+        sendSubagentInstruction: async () => {},
+        getSubagentHistory: getSubagentHistory as never,
+        getTaskRuns,
+        putTaskRun: putRun,
         resolveSubagentIdToAgentId: ((id: string) => id) as never,
         hydrateTaskTranscript: hydrateTaskTranscript as never,
         saveScrollPosition: () => {},
-        scrollPositionsRef: { current: {} },
-        skipSubagentAutoScrollRef: { current: false },
         activeAgentIdRef,
         resolvedThreadIdRef: { current: 'thread-1' },
       });
-      return { ...tabs, cards: cardState.cards };
+      return { ...tabs, cards: cardState.cards, runs };
     },
     { wrapper, initialProps: {} as { initialTaskId?: string } },
   );
 
-  return { rendered, history, flushHydrate: () => resolveHydrate?.() };
+  return { rendered, flushHydrate: () => gate.open?.() };
 }
 
 describe('useSubagentTabs — workflow-child transcript hydration', () => {
@@ -133,6 +149,57 @@ describe('useSubagentTabs — workflow-child transcript hydration', () => {
     await waitFor(() => {
       const sd = rendered.result.current.cards[`subagent-${CHILD}`]?.subagentData;
       expect(sd?.messages).toHaveLength(HYDRATED_MESSAGES.length);
+    });
+  });
+
+  it('names a task opened from history by its id, which only the live stream stamps', async () => {
+    const { rendered } = harness();
+
+    act(() => {
+      rendered.result.current.handleOpenSubagentTask({
+        subagentId: 'task:k7Xm2p',
+        description: 'Pull AMD calls',
+        type: 'general-purpose',
+        status: 'completed',
+      } as never);
+    });
+
+    await waitFor(() => {
+      const row = rendered.result.current.sidebarAgentRows.find((r) => r.id === 'task:k7Xm2p');
+      expect(row?.name).toBe('Task-k7Xm2p');
+    });
+  });
+
+  it('files the ledger\'s run from the status read on a task that settled unseen', async () => {
+    vi.mocked(getSubagentTaskStatus).mockResolvedValueOnce({
+      task_id: 'q2Wn8r',
+      status: 'completed',
+      error: null,
+      run_id: 'run-9',
+      started_ms: 1_000,
+      finished_ms: 4_000,
+      model: { id: 'glm-5.3-cn', provider: 'z-ai-cn' },
+    });
+    const { rendered } = harness();
+
+    act(() => {
+      rendered.result.current.handleOpenSubagentTask({
+        subagentId: 'task:q2Wn8r',
+        description: 'Pull AMD calls',
+        type: 'research',
+        status: 'running',
+      } as never);
+    });
+
+    await waitFor(() => expect(rendered.result.current.runs.get('run-9')).toEqual({
+      taskId: 'task:q2Wn8r',
+      startedAtMs: 1_000,
+      finishedAtMs: 4_000,
+      model: { id: 'glm-5.3-cn', provider: 'z-ai-cn' },
+    }));
+    expect(rendered.result.current.resolveSubagentTelemetry('task:q2Wn8r')).toMatchObject({
+      startedAtMs: 1_000,
+      finishedAtMs: 4_000,
     });
   });
 

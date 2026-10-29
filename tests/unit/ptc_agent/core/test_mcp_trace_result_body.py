@@ -188,7 +188,7 @@ def test_aggregate_guard_counter_is_per_module_instance(
 ) -> None:
     """A fresh module exec resets the budget — the counter is a module-global,
     so each execute_code run starts from zero. This holds in production because
-    every execute_code spawns a fresh interpreter (both providers run code_run as
+    every execute_code spawns a fresh interpreter (both providers run the code as
     a one-shot `python`, not a persistent kernel), so the module is re-imported
     per run and the counter never accumulates session-wide — the per-execution
     bound the host relies on."""

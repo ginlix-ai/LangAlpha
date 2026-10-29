@@ -1,5 +1,4 @@
 import { useTranslation } from 'react-i18next';
-import { Sparkles, Star } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -7,6 +6,11 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { TermCard, TermTag } from '@/pages/ChatAgent/components/charts/TermCard';
+import { TermPanelContext } from '@/pages/ChatAgent/components/charts/termContext';
+import '@/pages/ChatAgent/components/charts/termCard.css';
+import '@/pages/ChatAgent/components/charts/termCardStyles.css';
+import '../../components/dashWindow.css';
 import { PRESETS_META, type PresetId } from '../presets';
 import { PresetThumbnail } from './presets/Thumbnails';
 
@@ -18,157 +22,58 @@ interface PresetsDialogProps {
 
 export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProps) {
   const { t } = useTranslation();
+  const apply = (id: PresetId) => {
+    onApply(id);
+    onOpenChange(false);
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="max-w-[1120px] w-[96vw] max-h-[92vh] overflow-hidden flex flex-col"
-        style={{
-          backgroundColor: 'var(--color-bg-elevated)',
-          borderColor: 'var(--color-border-elevated)',
-        }}
-      >
-        <DialogHeader className="flex flex-row items-start justify-between gap-4">
-          <div>
-            <div
-              className="text-[0.6875rem] font-semibold uppercase tracking-[0.08em] mb-1.5"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            >
-              {t('dashboard.widgets.presetsDialog.eyebrow')}
-            </div>
-            <DialogTitle
-              className="text-[1.75rem] leading-tight tracking-tight"
-              style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
-            >
-              {t('dashboard.widgets.presetsDialog.title')}
-            </DialogTitle>
-            <DialogDescription
-              className="mt-2 text-[0.8125rem] max-w-[64ch]"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
-              {t('dashboard.widgets.presetsDialog.description')}
-            </DialogDescription>
+      <DialogContent className="dash-window dash-window--radix max-w-[1120px] w-[96vw] max-h-[92vh] overflow-hidden flex flex-col">
+        <DialogHeader className="dash-presets-head space-y-0 text-left">
+          <div className="term-line dash-window-meta">
+            <span className="term-t3">{t('dashboard.widgets.presetsDialog.eyebrow')}</span>
+            <TermTag tone="live">{t('dashboard.widgets.presetsDialog.tailoredBadge')}</TermTag>
           </div>
-          <div
-            className="flex items-center gap-1.5 text-[0.6875rem] px-2 py-1 rounded-full border flex-shrink-0"
-            style={{
-              backgroundColor: 'var(--color-accent-soft)',
-              borderColor: 'var(--color-accent-primary)',
-              color: 'var(--color-accent-primary)',
-            }}
-          >
-            <Sparkles size={10} /> {t('dashboard.widgets.presetsDialog.tailoredBadge')}
-          </div>
+          <DialogTitle className="dash-window-title">{t('dashboard.widgets.presetsDialog.title')}</DialogTitle>
+          <DialogDescription className="dash-window-prose dash-window-prose--sub max-w-[64ch]">
+            {t('dashboard.widgets.presetsDialog.description')}
+          </DialogDescription>
         </DialogHeader>
         <div className="flex-1 overflow-y-auto">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-            {PRESETS_META.map((preset) => (
-              <article
-                key={preset.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => {
-                  onApply(preset.id);
-                  onOpenChange(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onApply(preset.id);
-                    onOpenChange(false);
-                  }
-                }}
-                className="preset-card group relative rounded-2xl border p-5 cursor-pointer transition"
-                style={{
-                  backgroundColor: 'var(--color-bg-card)',
-                  borderColor: 'var(--color-border-muted)',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-accent-primary)')}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-              >
-                {preset.popular && (
-                  <span
-                    className="absolute top-3 right-3 text-[0.625rem] px-2 py-0.5 rounded-full border flex items-center gap-1"
-                    style={{
-                      backgroundColor: 'var(--color-bg-tag)',
-                      color: 'var(--color-text-secondary)',
-                      borderColor: 'var(--color-border-muted)',
-                    }}
-                  >
-                    <Star size={9} fill="currentColor" /> {t('dashboard.widgets.presetsDialog.popularBadge')}
-                  </span>
-                )}
-                <div className="flex items-start justify-between mb-3 gap-3 pr-20">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <span
-                        className="text-[1.375rem] leading-tight"
-                        style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
-                      >
-                        {t(preset.nameKey)}
-                      </span>
-                      <span
-                        className="text-[0.625rem] px-2 py-0.5 rounded-full border"
-                        style={{
-                          backgroundColor: 'var(--color-bg-subtle)',
-                          borderColor: 'var(--color-border-muted)',
-                          color: 'var(--color-text-secondary)',
-                        }}
-                      >
-                        {t(preset.tagKey)}
-                      </span>
-                    </div>
-                    <p
-                      className="text-[0.7813rem] leading-relaxed"
-                      style={{ color: 'var(--color-text-secondary)' }}
-                    >
-                      {t(preset.descriptionKey)}
-                    </p>
-                  </div>
-                </div>
-                <div
-                  className="rounded-xl p-3"
-                  style={{
-                    backgroundColor: 'var(--color-bg-page)',
-                    border: '1px solid var(--color-border-muted)',
-                  }}
+          <TermPanelContext value={true}>
+            <div className="dash-presets-grid">
+              {PRESETS_META.map((preset) => (
+                // The card's title is its button: a click anywhere on the card
+                // applies it, and the keyboard reaches it once.
+                <TermCard
+                  key={preset.id}
+                  className="dash-preset"
+                  title={t(preset.nameKey)}
+                  sub={t(preset.tagKey)}
+                  meta={preset.popular ? t('dashboard.widgets.presetsDialog.popularBadge') : undefined}
+                  onClick={() => apply(preset.id)}
                 >
-                  <PresetThumbnail id={preset.id} />
-                </div>
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {preset.pillKeys.map((key) => (
-                    <span
-                      key={key}
-                      className="text-[0.625rem] px-2 py-0.5 rounded-full border"
-                      style={{
-                        backgroundColor: 'var(--color-bg-subtle)',
-                        borderColor: 'var(--color-border-muted)',
-                        color: 'var(--color-text-secondary)',
-                      }}
-                    >
-                      {t(key)}
+                  <p className="dash-window-prose dash-window-prose--sub">{t(preset.descriptionKey)}</p>
+                  <div className="dash-preset-thumb">
+                    <PresetThumbnail id={preset.id} />
+                  </div>
+                  <div className="dash-window-tags">
+                    {preset.pillKeys.map((key) => (
+                      <TermTag key={key}>{t(key)}</TermTag>
+                    ))}
+                  </div>
+                  <div className="term-line dash-preset-foot">
+                    <span className="term-t3">
+                      {t('dashboard.widgets.presetsDialog.bestWhen', { bestFor: t(preset.bestForKey) })}
                     </span>
-                  ))}
-                </div>
-                <div className="mt-3 flex items-center justify-between text-[0.7188rem]">
-                  <span style={{ color: 'var(--color-text-tertiary)' }}>
-                    {t('dashboard.widgets.presetsDialog.bestWhen', {
-                      bestFor: t(preset.bestForKey),
-                    })}
-                  </span>
-                  <button
-                    type="button"
-                    className="h-8 px-3 rounded-md text-[0.75rem] whitespace-nowrap flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                    style={{
-                      backgroundColor: 'var(--color-text-primary)',
-                      color: 'var(--color-bg-card)',
-                    }}
-                  >
-                    {t('dashboard.widgets.presetsDialog.useLayout')}
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
+                    <span className="term-push dash-preset-use" aria-hidden="true">
+                      {t('dashboard.widgets.presetsDialog.useLayout')}
+                    </span>
+                  </div>
+                </TermCard>
+              ))}
+            </div>
+          </TermPanelContext>
         </div>
       </DialogContent>
     </Dialog>

@@ -62,7 +62,6 @@ class ToolUsageTracker:
 
 
 # ContextVar storage for tool usage tracker
-# This follows the same pattern as ExecutionTracker (agent message tracking)
 _tool_usage_context: ContextVar[Optional[ToolUsageTracker]] = ContextVar(
     'tool_usage_context',
     default=None

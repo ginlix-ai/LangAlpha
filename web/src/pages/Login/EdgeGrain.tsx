@@ -11,6 +11,7 @@ interface Seed {
 
 const SEED_FADE_MS = 2600; // ember -> plain ink transition length
 const MAX_SEEDS = 200; // plenty for a whole session of play
+const CENTERED_SPAN = 0.3; // centered: each side's ramp, as a share of the width
 
 /**
  * EdgeGrain - the page's only background texture: a dot field spanning the
@@ -26,8 +27,14 @@ const MAX_SEEDS = 200; // plenty for a whole session of play
  * color, cooling into ordinary ink over a few seconds. The canvas animates
  * only while a seed is still cooling; otherwise it stays still. Takes no
  * pointer events.
+ *
+ * `centered` is for a card alone in the middle of the page (e.g.
+ * AuthConfirm, ResetPassword) rather than the split frame: the field
+ * condenses against both side edges and thins toward the middle, leaving it
+ * to the card. No chart plays there, so it takes no seeds, never animates,
+ * and prints straight onto the visible canvas.
  */
-function EdgeGrain() {
+function EdgeGrain({ centered = false }: { centered?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -42,6 +49,7 @@ function EdgeGrain() {
     let width = 1;
     let height = 1;
     let x0 = 0; // ramp zero point, set from the auth pane in rebuild()
+    let ramp = 1; // ramp length: from x0 to the right edge, or in from each side
     let inkRgb: [number, number, number] = [255, 255, 255];
     let emberRgb: [number, number, number]; // set from --login-ember in rebuild()
     let aBoost = 1;
@@ -56,7 +64,7 @@ function EdgeGrain() {
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     // One grain dot: a size-bucketed square in `color` at (x, y), its alpha the
-    // field's density curve - fainter far from the right edge, denser near it.
+    // field's density curve - fainter far from the ramp's edge, denser near it.
     // Shared by the baked field and the cooling seeds so both read identically;
     // the settle `e` is 1 for the settled field and < 1 while a seed still burns
     // (0.9 -> finalA blend, so e = 1 collapses to plain finalA). Size buckets
@@ -89,7 +97,7 @@ function EdgeGrain() {
         if (t < 1) hot = true;
         const e = t * t * (3 - 2 * t); // hold the ember early, settle late
         const d = s.fu ** 1.8; // same density read as the field's ramp
-        const x = Math.round(x0 + s.fu * (width - x0));
+        const x = Math.round(x0 + s.fu * ramp);
         const y = Math.round(s.fy * height);
         const sz = s.r < 0.12 ? 3 : s.r < 0.4 ? 2 : 1;
         if (t < 1) {
@@ -147,39 +155,53 @@ function EdgeGrain() {
       emberRgb = pal.ember;
       aBoost = pal.aBoost;
 
-      // The ramp's zero point sits a little left of the auth column, so the
-      // fade bleeds over the chart's edge instead of stopping at the seam.
-      // When the visual pane is hidden (narrow layouts) the auth pane starts
-      // at the frame's left edge and the ramp simply spans the whole frame.
-      const pane = canvas.parentElement?.querySelector('.login-page__auth-pane');
-      const paneLeft = pane ? pane.getBoundingClientRect().left - rect.left : width * 0.5;
-      // Clamped inside the canvas so a degenerate layout (styles not applied
-      // yet) can never flip the ramp's direction.
-      x0 = Math.min(Math.max(0, paneLeft - 120), width - 8);
+      if (centered) {
+        // No pane to anchor to: each side's ramp runs in from its own edge.
+        ramp = Math.max(8, width * CENTERED_SPAN);
+      } else {
+        // The ramp's zero point sits a little left of the auth column, so the
+        // fade bleeds over the chart's edge instead of stopping at the seam.
+        // When the visual pane is hidden (narrow layouts) the auth pane starts
+        // at the frame's left edge and the ramp simply spans the whole frame.
+        const pane = canvas.parentElement?.querySelector('.login-page__auth-pane');
+        const paneLeft = pane ? pane.getBoundingClientRect().left - rect.left : width * 0.5;
+        // Clamped inside the canvas so a degenerate layout (styles not applied
+        // yet) can never flip the ramp's direction.
+        x0 = Math.min(Math.max(0, paneLeft - 120), width - 8);
+        ramp = width - x0;
+      }
 
-      base = base ?? document.createElement('canvas');
-      base.width = width * dpr;
-      base.height = height * dpr;
-      const bctx = base.getContext('2d');
-      if (!bctx) return;
-      bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      bctx.clearRect(0, 0, width, height);
+      // The offscreen layer only exists so seeds can composite over the
+      // field; with no seeds (centered), the field prints straight to screen.
+      let g = ctx;
+      if (!centered) {
+        base = base ?? document.createElement('canvas');
+        base.width = width * dpr;
+        base.height = height * dpr;
+        const bctx = base.getContext('2d');
+        if (!bctx) return;
+        bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g = bctx;
+      }
+      g.clearRect(0, 0, width, height);
       const fieldColor = `rgb(${inkRgb[0]}, ${inkRgb[1]}, ${inkRgb[2]})`;
       for (let cy = 0; cy < height; cy += 4) {
         const wob = 26 * Math.sin(cy * 0.011) + 14 * Math.sin(cy * 0.037 + 2);
         for (let cx = 0; cx < width; cx += 3) {
-          const u = (cx - x0 - wob) / (width - x0);
+          const u = centered
+            ? Math.max(cx - (width - ramp) - wob, ramp - cx + wob) / ramp
+            : (cx - x0 - wob) / ramp;
           if (u <= 0) continue;
-          const d = Math.min(1, u) ** 1.8; // read right to left: many -> few
+          const d = Math.min(1, u) ** 1.8; // dense at the edge, thinning inward
           const h = hash(cx * 0.37, cy * 0.61);
           if (h < 0.38 * d) {
             const sz = h < 0.02 * d ? 3 : h < 0.09 * d ? 2 : 1;
-            drawGrainDot(bctx, cx, cy, sz, hash(cx * 0.53, cy * 0.29), d, fieldColor);
+            drawGrainDot(g, cx, cy, sz, hash(cx * 0.53, cy * 0.29), d, fieldColor);
           }
         }
       }
-      bctx.globalAlpha = 1;
-      if (composite()) kick();
+      g.globalAlpha = 1;
+      if (!centered && composite()) kick();
     };
 
     // Coalesce rebuilds: a resize drag emits many events per frame, so schedule
@@ -206,7 +228,7 @@ function EdgeGrain() {
       else kick();
     };
     const frame = canvas.closest('.login-page__frame') ?? canvas.parentElement ?? canvas;
-    frame.addEventListener('login:ember-seed', onSeed);
+    if (!centered) frame.addEventListener('login:ember-seed', onSeed);
 
     const observer = new ResizeObserver(rebuild);
     observer.observe(canvas);
@@ -228,7 +250,7 @@ function EdgeGrain() {
       cancelAnimationFrame(raf);
       cancelAnimationFrame(rebuildRaf);
     };
-  }, []);
+  }, [centered]);
 
   return <canvas ref={canvasRef} className="login-page__edge-grain" aria-hidden="true" />;
 }

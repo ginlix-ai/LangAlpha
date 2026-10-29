@@ -68,9 +68,7 @@ function mockHangFirstStream(threadId: string): Deferred<{ disconnected: boolean
       _msg: string,
       _ws: string,
       _tid: string | null,
-      _hist: unknown[],
-      _plan: boolean,
-      onEvent: OnEvent,
+      { onEvent }: { onEvent: OnEvent },
     ) => {
       if (mockSendStream.mock.calls.length === 1) {
         onEvent({ event: 'thread_id', thread_id: threadId });
@@ -89,9 +87,7 @@ function mockEmptyStream() {
       _msg: string,
       _ws: string,
       _tid: string | null,
-      _hist: unknown[],
-      _plan: boolean,
-      _onEvent: (e: Record<string, unknown>) => void,
+            _onEvent: (e: Record<string, unknown>) => void,
     ) => {
       return { disconnected: false };
     },
@@ -185,6 +181,7 @@ describe('useChatMessages – queued send during compaction', () => {
       await result.current.handleSendMessage('deferred question');
     });
     expect(mockSendStream).not.toHaveBeenCalled();
+    const parkedId = result.current.messages.find((m) => m.role === 'user')?.id;
 
     // Compaction completes → the flush effect starts a fresh turn (no turn was
     // running, so it is sent rather than steered).
@@ -197,6 +194,12 @@ describe('useChatMessages – queued send during compaction', () => {
     });
     expect(mockSendStream.mock.calls[0][0]).toBe('deferred question');
     expect(result.current.queuedSend).toBe(false);
+    // The sent message takes over the parked bubble's id, so the list keeps
+    // that bubble mounted instead of playing its entrance a second time.
+    const userMsgs = result.current.messages.filter((m) => m.role === 'user');
+    expect(userMsgs).toHaveLength(1);
+    expect(userMsgs[0].id).toBe(parkedId);
+    expect((userMsgs[0] as { queued?: boolean }).queued).toBeUndefined();
   });
 
   it('drops the queued message when the user stops mid-compaction', async () => {
@@ -302,6 +305,57 @@ describe('useChatMessages – queued send during compaction', () => {
     });
   });
 
+  it('keeps a Send parked while the summary reports progress, and shows its count', async () => {
+    // A progress event is not the summary's end: it must leave isCompacting
+    // set, or the parked message would go out into the context being rewritten.
+    // The count rides an action of its own, as the server sends it.
+    const hang = deferred<{ disconnected: boolean }>();
+    let emit: OnEvent = () => {};
+    mockSendStream.mockImplementation(
+      async (_msg: string, _ws: string, _tid: string | null, { onEvent }: { onEvent: OnEvent }) => {
+        if (mockSendStream.mock.calls.length === 1) {
+          emit = onEvent;
+          onEvent({ event: 'thread_id', thread_id: 'thread-progress' });
+          return hang.promise;
+        }
+        return { disconnected: false };
+      },
+    );
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    let firstSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      firstSend = result.current.handleSendMessage('long task');
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(true));
+
+    const summarize = { event: 'context_window', agent: 'main', action: 'summarize' };
+    act(() => {
+      emit({ ...summarize, signal: 'start' });
+      emit({ event: 'context_window', agent: 'main', action: 'summary_progress', signal: 'progress', summary_tokens: 2400 });
+    });
+    expect(result.current.isCompacting).toBe('summarize');
+    expect(result.current.compactionTokens).toBe(2400);
+
+    await act(async () => {
+      await result.current.handleSendMessage('while it summarizes');
+    });
+    expect(result.current.queuedSend).toBe('while it summarizes');
+    expect(mockSendStream).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emit({ ...summarize, signal: 'complete', original_message_count: 40, summary_text: 'summary' });
+    });
+    expect(result.current.isCompacting).toBe(false);
+    expect(result.current.compactionTokens).toBeNull();
+
+    hang.resolve({ disconnected: false });
+    await act(async () => {
+      await firstSend.catch(() => undefined);
+    });
+  });
+
   it('clears the parked queue + compacting flag on thread switch (no cross-thread replay)', async () => {
     // A message parked during compaction on thread A must not survive a switch
     // to thread B: the queue payload, the preview chip, and the compacting flag
@@ -372,6 +426,9 @@ describe('useChatMessages – queued send during compaction', () => {
       await result.current.handleSendMessage('deferred');
     });
     expect(result.current.queuedSend).toBe('deferred');
+    const parkedId = result.current.messages.find(
+      (m) => m.role === 'user' && (m as { queued?: boolean }).queued,
+    )?.id;
 
     // Compaction finishes; turn still running → steer.
     await act(async () => {
@@ -384,8 +441,9 @@ describe('useChatMessages – queued send during compaction', () => {
       expect(mockSendStream).toHaveBeenCalledTimes(2);
     });
     const userMsgs = result.current.messages.filter((m) => m.role === 'user');
-    const lastUser = userMsgs[userMsgs.length - 1] as { steering?: boolean };
+    const lastUser = userMsgs[userMsgs.length - 1] as { steering?: boolean; id?: unknown };
     expect(lastUser?.steering).toBe(true);
+    expect(lastUser?.id).toBe(parkedId);
     expect(result.current.queuedSend).toBe(false);
 
     firstHang.resolve({ disconnected: false });
@@ -393,6 +451,70 @@ describe('useChatMessages – queued send during compaction', () => {
       await firstSend.catch(() => undefined);
       await Promise.resolve();
     });
+  });
+
+  it('keeps the parked bubble\'s id while it waits behind a refused steer, and when it goes out', async () => {
+    // A steer refused as not_running waits for the ended turn to let go. The
+    // message parked meanwhile joins it at the flush, and goes out after it:
+    // one bubble on screen throughout, so it never enters a second time.
+    const firstHang = deferred<{ disconnected: boolean }>();
+    mockSendStream.mockImplementation(
+      async (_msg: string, _ws: string, _tid: string | null, { onEvent }: { onEvent: OnEvent }) => {
+        const call = mockSendStream.mock.calls.length;
+        if (call === 1) {
+          onEvent({ event: 'thread_id', thread_id: 'thread-q-3' });
+          return firstHang.promise;
+        }
+        if (call === 2) {
+          throw Object.assign(new Error('The turn has ended.'), {
+            status: 409,
+            errorInfo: { code: 'not_running', message: 'The turn has ended.' },
+          });
+        }
+        return { disconnected: false };
+      },
+    );
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+    const bubbles = (text: string) =>
+      result.current.messages.filter((m) => m.role === 'user' && m.content === text) as Array<{ id: string; steering?: boolean }>;
+
+    let firstSend: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      firstSend = result.current.handleSendMessage('running turn');
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(true));
+    await act(async () => {
+      await result.current.handleSendMessage('refused steer');
+    });
+    expect(mockSendStream).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      result.current.setIsCompacting('summarize');
+    });
+    await act(async () => {
+      await result.current.handleSendMessage('deferred');
+    });
+    const parkedId = bubbles('deferred')[0]?.id;
+    expect(parkedId).toBeDefined();
+
+    await act(async () => {
+      result.current.setIsCompacting(false);
+      await Promise.resolve();
+    });
+    expect(mockSendStream).toHaveBeenCalledTimes(2);
+    expect(bubbles('deferred')).toMatchObject([{ id: parkedId, steering: true }]);
+
+    firstHang.resolve({ disconnected: false });
+    await act(async () => {
+      await firstSend.catch(() => undefined);
+    });
+    await waitFor(() => expect(mockSendStream).toHaveBeenCalledTimes(4));
+    expect(mockSendStream.mock.calls[2][0]).toBe('refused steer');
+    expect(mockSendStream.mock.calls[3][0]).toBe('deferred');
+    expect(bubbles('deferred')).toHaveLength(1);
+    expect(bubbles('deferred')[0].id).toBe(parkedId);
+    expect(bubbles('deferred')[0].steering).toBeFalsy();
   });
 
   it('preserves widget snapshots on the steered bubble after compaction flush', async () => {
@@ -415,7 +537,7 @@ describe('useChatMessages – queued send during compaction', () => {
       result.current.setIsCompacting('summarize');
     });
     await act(async () => {
-      await result.current.handleSendMessage('deferred with widget', false, null, null, {
+      await result.current.handleSendMessage('deferred with widget', null, null, {
         widgetSnapshots: [snapshot],
       });
     });

@@ -39,7 +39,7 @@
   white-space: nowrap;
   cursor: pointer;
   pointer-events: auto;
-  transition: border-color 0.12s ease, transform 0.12s ease;
+  transition: border-color var(--motion-quick) var(--ease-out), transform var(--motion-quick) var(--ease-out);
 }
 
 /* When there's no room above, flip the badge below the anchor. */
@@ -54,7 +54,7 @@
 }
 
 .agent-event-badge:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
 }
 

@@ -2,10 +2,13 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from market_protocol import display_spelling
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, field_validator
+
+from src.server.models.profile_vocabulary import STRUCTURED_PREFERENCES
 
 
 # =============================================================================
@@ -14,8 +17,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Strip whitespace and uppercase the instrument symbol."""
-    return symbol.strip().upper()
+    """The one spelling a row stores, so ``600519.SS`` and ``600519.SH`` are
+    one listing."""
+    return display_spelling(symbol)
+
+
+def _stored_symbol(v: Any) -> Any:
+    # A non-string is left for Pydantic to reject as one.
+    return normalize_symbol(v) if isinstance(v, str) else v
+
+
+StoredSymbol = Annotated[str, BeforeValidator(_stored_symbol)]
 
 
 # =============================================================================
@@ -42,13 +54,24 @@ def normalize_instrument_type(v: Any) -> Any:
 # =============================================================================
 
 
+def _doc(column: str, key: str) -> str:
+    """A structured key's description, the one its vocabulary carries."""
+    return STRUCTURED_PREFERENCES[column][key].doc
+
+
 class RiskPreference(BaseModel):
     """Risk preference settings stored in JSONB."""
 
     model_config = ConfigDict(extra="allow")
 
+    # The structured keys are Any and checked in the endpoint instead
+    # (``check_profile`` in ``profile_vocabulary``). Every response model
+    # parses the stored row, so a type here would fail the read of a value
+    # saved before the key had one; and a vocabulary refusal and a type
+    # refusal then share one 422 shape.
+    risk_level: Optional[Any] = Field(None, description=_doc("risk_preference", "risk_level"))
     risk_tolerance: Optional[str] = Field(
-        None, description="Risk tolerance description"
+        None, description="Free-text risk tolerance, from before risk_level"
     )
 
 
@@ -57,11 +80,28 @@ class InvestmentPreference(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    investor_type: Optional[Any] = Field(
+        None, description=_doc("investment_preference", "investor_type")
+    )
+    experience: Optional[Any] = Field(None, description=_doc("investment_preference", "experience"))
+    help_with: Optional[Any] = Field(None, description=_doc("investment_preference", "help_with"))
+    familiar_instruments: Optional[Any] = Field(
+        None, description=_doc("investment_preference", "familiar_instruments")
+    )
+    markets: Optional[Any] = Field(None, description=_doc("investment_preference", "markets"))
+    asset_classes: Optional[Any] = Field(
+        None, description=_doc("investment_preference", "asset_classes")
+    )
+    approaches: Optional[Any] = Field(None, description=_doc("investment_preference", "approaches"))
+    styles: Optional[Any] = Field(None, description=_doc("investment_preference", "styles"))
+    horizon: Optional[Any] = Field(None, description=_doc("investment_preference", "horizon"))
+    sectors: Optional[Any] = Field(None, description=_doc("investment_preference", "sectors"))
+    brokerages: Optional[Any] = Field(None, description=_doc("investment_preference", "brokerages"))
     company_interest: Optional[str] = Field(
         None, description="Type of companies interested in"
     )
     holding_period: Optional[str] = Field(
-        None, description="Preferred holding period"
+        None, description="Free-text holding period, from before horizon"
     )
     analysis_focus: Optional[str] = Field(
         None, description="Primary analysis focus area"
@@ -73,17 +113,39 @@ class AgentPreference(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    # Any, and checked in the endpoint, for the reasons RiskPreference gives.
+    # A null survives the parse too, which the JSONB merge reads as deleting
+    # the key: Settings sends one to go back to letting the agent decide.
+    research_depth: Optional[Any] = Field(None, description=_doc("agent_preference", "research_depth"))
+    proactivity: Optional[Any] = Field(None, description=_doc("agent_preference", "proactivity"))
     output_style: Optional[str] = Field(
         None, description="Preferred output style"
     )
-    output_format: Optional[str] = Field(
-        None,
-        description="Preferred output format: 'markdown' or 'html' (absent = default). Not a Literal so the endpoint validates and None-means-delete JSONB-merge semantics are preserved.",
-    )
+    output_format: Optional[Any] = Field(None, description=_doc("agent_preference", "output_format"))
 
 
 class OtherPreference(BaseModel):
     """Miscellaneous preferences stored in JSONB."""
+
+    model_config = ConfigDict(extra="allow")
+
+    # Strict: a setting that skips approval cards is refused unless it is a
+    # real boolean, rather than guessed from "yes" or 1.
+    auto_approve_handoffs: Optional[StrictBool] = Field(
+        None, description="Hand work to an analyst without asking; absent means ask."
+    )
+    auto_approve_workspace_creation: Optional[StrictBool] = Field(
+        None, description="Create workspaces without asking; absent means ask."
+    )
+
+
+class ModelPreference(BaseModel):
+    """Model configuration stored in JSONB: catalog, routing, and tuning.
+
+    Open like its sibling because the key set is owned by the resolver, not by
+    this schema. ``profiles`` is the one key with structure the DB layer knows
+    about — it merges per model name rather than wholesale.
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -158,6 +220,10 @@ class UserResponse(UserBase):
     access_tier: int = Field(
         default=-1, description="Platform access tier. -1 = no access, 0+ = tier level."
     )
+    deployment_serves: bool = Field(
+        default=False,
+        description="Whether the deployment's own key runs its default model, so the user needs no provider of their own",
+    )
     plan_display_name: Optional[str] = Field(
         default=None,
         description="Display name of the user's active plan (e.g. 'Pro'). None when no subscription.",
@@ -180,6 +246,10 @@ class UserResponse(UserBase):
 class UserPreferencesBase(BaseModel):
     """Base preferences fields."""
 
+    # ``model_preference`` collides with Pydantic's reserved ``model_`` prefix;
+    # the column name predates the schema and is the one users see in the API.
+    model_config = ConfigDict(protected_namespaces=())
+
     risk_preference: Optional[RiskPreference] = Field(
         default_factory=RiskPreference, description="Risk tolerance settings"
     )
@@ -192,6 +262,9 @@ class UserPreferencesBase(BaseModel):
     other_preference: Optional[OtherPreference] = Field(
         default_factory=OtherPreference, description="Miscellaneous preferences"
     )
+    model_preference: Optional[ModelPreference] = Field(
+        default_factory=ModelPreference, description="Model catalog, routing and tuning settings"
+    )
 
 
 class UserPreferencesCreate(UserPreferencesBase):
@@ -203,7 +276,13 @@ class UserPreferencesCreate(UserPreferencesBase):
 class UserPreferencesUpdate(UserPreferencesBase):
     """Request model for updating user preferences."""
 
-    pass
+    apply_default_to: Optional[Literal["new_threads", "existing_threads"]] = Field(
+        None,
+        description="This write's answer to what a changed default model does "
+        "to existing threads: 'existing_threads' moves the threads still on the "
+        "old default to the new one, 'new_threads' leaves them. Never stored; "
+        "absent, model_preference.default_model_scope decides.",
+    )
 
 
 class UserPreferencesResponse(UserPreferencesBase):
@@ -215,6 +294,24 @@ class UserPreferencesResponse(UserPreferencesBase):
     updated_at: datetime = Field(description="Last update timestamp")
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("model_preference", mode="before")
+    @classmethod
+    def _spell_borrowed_ladders(cls, value):
+        # Every read of the column reaches the web through here.
+        from src.server.services.llm.user_models import with_borrowed_ladders
+
+        return with_borrowed_ladders(value) if isinstance(value, dict) else value
+
+
+class UserPreferencesUpdateResponse(UserPreferencesResponse):
+    """Response model for a preferences write."""
+
+    threads_reassigned: int = Field(
+        0,
+        description="Threads this write moved from the old default model to "
+        "the new one (see apply_default_to).",
+    )
 
 
 # =============================================================================
@@ -269,7 +366,7 @@ class WatchlistResponse(WatchlistBase):
 class WatchlistItemBase(BaseModel):
     """Base watchlist item fields."""
 
-    symbol: str = Field(..., max_length=50, description="Instrument symbol")
+    symbol: StoredSymbol = Field(..., max_length=50, description="Instrument symbol")
     instrument_type: str = Field(
         ...,
         min_length=1,
@@ -290,13 +387,6 @@ class WatchlistItemBase(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(
         default_factory=dict, description="Additional metadata"
     )
-
-    @field_validator("symbol", mode="before")
-    @classmethod
-    def normalize_symbol_field(cls, v: Any) -> str:
-        if isinstance(v, str):
-            return normalize_symbol(v)
-        return v  # let Pydantic handle type validation
 
     @field_validator("instrument_type", mode="before")
     @classmethod
@@ -373,7 +463,7 @@ class WatchlistsResponse(BaseModel):
 class PortfolioHoldingBase(BaseModel):
     """Base portfolio holding fields."""
 
-    symbol: str = Field(..., max_length=50, description="Instrument symbol")
+    symbol: StoredSymbol = Field(..., max_length=50, description="Instrument symbol")
     instrument_type: str = Field(
         ...,
         min_length=1,
@@ -401,13 +491,6 @@ class PortfolioHoldingBase(BaseModel):
         None, description="First purchase date"
     )
 
-    @field_validator("symbol", mode="before")
-    @classmethod
-    def normalize_symbol_field(cls, v: Any) -> str:
-        if isinstance(v, str):
-            return normalize_symbol(v)
-        return v  # let Pydantic handle type validation
-
     @field_validator("instrument_type", mode="before")
     @classmethod
     def normalize_instrument_type_field(cls, v: Any) -> Any:
@@ -417,7 +500,15 @@ class PortfolioHoldingBase(BaseModel):
 class PortfolioHoldingCreate(PortfolioHoldingBase):
     """Request model for adding holding to portfolio."""
 
-    pass
+    currency: Optional[str] = Field(
+        None,
+        max_length=10,
+        description=(
+            "Currency of average_cost. Omitted, a new holding takes its listing's "
+            "quote currency (CNY for 600519.SH) and a merge keeps the existing "
+            "holding's. A currency other than the existing holding's is refused with 409."
+        ),
+    )
 
 
 class PortfolioHoldingUpdate(BaseModel):

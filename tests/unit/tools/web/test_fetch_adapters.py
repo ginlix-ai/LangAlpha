@@ -7,9 +7,15 @@ URLs and content per house rule.
 
 import httpx
 import pytest
+from langsmith.run_helpers import tracing_context
+from langsmith.run_trees import RunTree
 
-from src.tools.web.providers._shared import http_status_error, transport_error
-from src.tools.web.types import FetchRequest, WebErrorType
+from src.tools.web.providers._shared import (
+    http_status_error,
+    mark_web_outcome,
+    transport_error,
+)
+from src.tools.web.types import FetchRequest, WebError, WebErrorType, WebToolError
 
 
 URL_OK = "https://site.example/page"
@@ -44,6 +50,83 @@ class TestSharedErrorMapping:
     def test_transport_timeout_keeps_taxonomy_type(self):
         assert transport_error(httpx.ConnectTimeout("slow")).type == WebErrorType.TIMEOUT
         assert transport_error(httpx.ConnectError("down")).type == WebErrorType.PROVIDER_ERROR
+
+    @pytest.mark.parametrize(("status", "fault"), [(401, True), (402, True), (403, False)])
+    def test_only_our_key_or_account_faults_the_provider(self, status, fault):
+        """A 403 can be the provider refusing one site, which must not open
+        the breaker every other URL shares."""
+        assert http_status_error(status, "body").provider_fault is fault
+
+
+class _NullClient:
+    def create_run(self, **kwargs):
+        return None
+
+    def update_run(self, **kwargs):
+        return None
+
+
+def _web_error(etype, **kwargs):
+    return WebError(type=etype, message="scripted", **kwargs)
+
+
+class TestWebToolOutcome:
+    """Whose failure a web call was: the provider's is an errored run that
+    alarms, the target's refusal is ``unavailable`` and does not."""
+
+    @pytest.mark.parametrize(
+        ("error", "outcome", "error_class"),
+        [
+            pytest.param(_web_error(WebErrorType.NOT_FOUND), "unavailable", "not_found", id="not-found"),
+            pytest.param(_web_error(WebErrorType.PAYWALL), "unavailable", "paywall", id="paywall"),
+            pytest.param(_web_error(WebErrorType.ANTI_BOT), "unavailable", "anti_bot", id="anti-bot"),
+            pytest.param(_web_error(WebErrorType.EMPTY), "unavailable", "empty", id="empty"),
+            pytest.param(
+                _web_error(WebErrorType.UNSUPPORTED_URL), "unavailable", "unsupported_url",
+                id="unsupported-url",
+            ),
+            pytest.param(http_status_error(403, "refused"), "unavailable", "forbidden", id="site-403"),
+            pytest.param(_web_error(WebErrorType.TIMEOUT), "unavailable", "timeout", id="timeout"),
+            pytest.param(
+                _web_error(WebErrorType.PROVIDER_ERROR, provider_fault=False, native_kind="dns_error"),
+                "unavailable", "provider_error", id="dead-domain",
+            ),
+            pytest.param(
+                WebToolError(_web_error(WebErrorType.NOT_FOUND)), "unavailable", "not_found",
+                id="wrapped-target-refusal",
+            ),
+            pytest.param(http_status_error(401, "bad key"), "error", "forbidden", id="key-401"),
+            pytest.param(http_status_error(402, "no credit"), "error", "budget_exceeded", id="budget-402"),
+            pytest.param(http_status_error(429, "slow down"), "error", "rate_limited", id="rate-limited"),
+            pytest.param(
+                _web_error(WebErrorType.PROVIDER_ERROR), "error", "provider_error",
+                id="provider-fault",
+            ),
+            pytest.param(
+                _web_error(
+                    WebErrorType.CIRCUIT_OPEN, provider_fault=False, native_kind="host_circuit_open"
+                ),
+                "unavailable", "circuit_open", id="inhouse-host-breaker",
+            ),
+            pytest.param(
+                _web_error(WebErrorType.CIRCUIT_OPEN, provider_fault=False, native_kind="circuit_open"),
+                "error", "circuit_open", id="inhouse-infra-breaker",
+            ),
+            pytest.param(
+                _web_error(WebErrorType.CIRCUIT_OPEN, provider_fault=True), "error",
+                "circuit_open", id="no-provider-available",
+            ),
+            pytest.param(ValueError("bug"), "error", "ValueError", id="our-code"),
+        ],
+    )
+    def test_outcome_table(self, error, outcome, error_class):
+        run = RunTree(name="WebFetch", run_type="tool", client=_NullClient())
+        with tracing_context(parent=run):
+            mark_web_outcome(error, "acme")
+
+        assert run.metadata["tool_outcome"] == outcome
+        assert run.metadata["error_class"] == error_class
+        assert run.metadata["tool_provider"] == "acme"
 
 
 @pytest.mark.asyncio
@@ -289,6 +372,35 @@ class TestFirecrawlFetchAdapter:
         # The code is the only handle on which failure it was, so it must survive.
         assert "SCRAPE_DNS_RESOLUTION_ERROR" in error.message
 
+    @pytest.mark.parametrize(
+        ("paths", "expected", "fault"),
+        [
+            ([["url"], ["url"]], WebErrorType.UNSUPPORTED_URL, False),
+            ([["url"], ["formats"]], WebErrorType.PROVIDER_ERROR, True),
+        ],
+    )
+    async def test_a_400_rejecting_only_the_url_is_the_urls(
+        self, monkeypatch, paths, expected, fault
+    ):
+        """Firecrawl names the field it refused; a request of ours it refuses
+        is still a broken provider call."""
+        from src.tools.web.providers import firecrawl
+
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "test-key")
+        body = {"success": False, "details": [{"path": p, "message": "Invalid"} for p in paths]}
+        response = httpx.Response(400, json=body, request=httpx.Request("POST", URL_OK))
+
+        async def rejecting(self, url, proxy=None, max_age_seconds=None):
+            raise httpx.HTTPStatusError("bad request", request=response.request, response=response)
+
+        monkeypatch.setattr(firecrawl.FirecrawlAPI, "scrape", rejecting)
+        resp = await firecrawl.FirecrawlFetchAdapter().fetch(FetchRequest(urls=[URL_OK]), {})
+        error = resp.results[0].error
+
+        assert error.type == expected
+        assert error.provider_fault is fault
+        assert error.retryable
+
 
 # Every outcome SafeCrawlerWrapper can emit, with both routing axes.
 # provider_fault=True is what counts against the chain's breaker for this
@@ -300,6 +412,7 @@ _CRAWLER_OUTCOMES = [
     ("timeout", WebErrorType.TIMEOUT, True, False),
     ("connection_timeout", WebErrorType.TIMEOUT, True, False),
     ("rate_limited", WebErrorType.RATE_LIMITED, True, False),
+    ("host_circuit_open", WebErrorType.CIRCUIT_OPEN, True, False),
     ("circuit_open", WebErrorType.CIRCUIT_OPEN, True, False),
     ("empty_content", WebErrorType.EMPTY, True, False),
     ("dns_error", WebErrorType.PROVIDER_ERROR, True, False),

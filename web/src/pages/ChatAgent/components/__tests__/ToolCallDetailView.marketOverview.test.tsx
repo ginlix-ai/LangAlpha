@@ -25,15 +25,24 @@ vi.mock('@/hooks/useIsMobile', () => ({
   useIsMobile: () => false,
 }));
 
-vi.mock('../charts/MarketDataCharts', () => ({
+vi.mock('../charts/StockPricePanel', () => ({
   StockPriceChart: () => <div data-testid="stock-price-chart" />,
+}));
+
+vi.mock('../charts/CompanyOverviewDetail', () => ({
   CompanyOverviewCard: () => <div data-testid="company-overview-card" />,
+}));
+
+vi.mock('../charts/MarketOverviewParts', () => ({
   MarketIndicesChart: ({ data }: { data: Record<string, unknown> }) => (
     <div data-testid="market-indices-chart">{JSON.stringify(data)}</div>
   ),
   SectorPerformanceChart: ({ data }: { data: Record<string, unknown> }) => (
     <div data-testid="sector-performance-chart">{JSON.stringify(data)}</div>
   ),
+}));
+
+vi.mock('../charts/ScreenerPanel', () => ({
   StockScreenerTable: () => <div data-testid="stock-screener-table" />,
 }));
 
@@ -45,9 +54,8 @@ vi.mock('../charts/AutomationDetailPanel', () => ({
   default: () => <div data-testid="automation-detail-panel" />,
 }));
 
-vi.mock('../charts/InlineArtifactCards', () => ({
+vi.mock('../charts/FaviconImg', () => ({
   FaviconImg: () => null,
-  googleFaviconUrl: () => '',
 }));
 
 vi.mock('../Markdown', () => ({

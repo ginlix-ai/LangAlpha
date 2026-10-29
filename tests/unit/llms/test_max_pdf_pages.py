@@ -1,6 +1,6 @@
 import pytest
 
-from src.llms.llm import get_max_pdf_pages
+from src.llms.llm import LLM, get_max_pdf_pages
 
 
 class TestGetMaxPdfPages:
@@ -15,30 +15,31 @@ class TestGetMaxPdfPages:
 
     @pytest.mark.parametrize(
         "model",
-        ["claude-sonnet-5", "claude-opus-5", "claude-opus-4-8-oauth-1m"],
+        ["claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5-5-oauth"],
     )
     def test_a_1m_context_anthropic_route_gets_the_higher_ceiling(self, model):
         assert get_max_pdf_pages(model) == 600
 
-    @pytest.mark.parametrize(
-        "model",
-        ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-sonnet-4-6-oauth"],
-    )
-    def test_a_sub_1m_anthropic_route_gets_the_tighter_one(self, model):
+    @pytest.mark.parametrize("provider", ["anthropic", "claude-oauth"])
+    def test_a_sub_1m_anthropic_route_gets_the_tighter_one(self, monkeypatch, provider):
         """The pair that makes a single global cap impossible: same vendor, same
-        modality support, six-fold difference in what a request may carry."""
-        assert get_max_pdf_pages(model) == 100
+        modality support, six-fold difference in what a request may carry.
 
-    def test_an_anthropic_sdk_endpoint_we_have_no_docs_for_is_treated_as_anthropic(self):
-        """Volcengine's Anthropic-compatible route publishes no page limit. It
-        speaks the same protocol, so it inherits the same reading rather than
-        being assumed unbounded."""
-        assert get_max_pdf_pages("doubao-seed-2.0-pro-anthropic") == 100
+        Synthetic entries, because no shipped Anthropic route sits below 1M any
+        more and a model that is not in the manifest also gets 100. The 1M twin
+        answering 600 is what shows the entries were read at all."""
+        models = LLM.get_model_config().llm_config
+        for name, context in (("_wide", 1_000_000), ("_narrow", 200_000)):
+            monkeypatch.setitem(
+                models, name, {"model_id": name, "provider": provider, "context": context}
+            )
+        assert get_max_pdf_pages("_wide") == 600
+        assert get_max_pdf_pages("_narrow") == 100
 
     def test_a_provider_with_no_documented_page_limit_reports_none(self):
         """None means 'not bounded by pages', which is a different claim from
         'we don't know' — the latter has to fail closed instead."""
-        assert get_max_pdf_pages("gpt-5.5") is None
+        assert get_max_pdf_pages("gpt-6.1-sol") is None
 
     def test_an_unknown_model_fails_closed(self):
         """This gates transmission, so an over-generous guess becomes a 400 the

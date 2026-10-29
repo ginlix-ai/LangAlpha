@@ -188,10 +188,10 @@ class TestRuntimeCallIntegration:
         finally:
             await sb.cleanup()
 
-    async def test_runtime_call_unsafe_code_run(
+    async def test_runtime_call_unsafe_exec(
         self, sandbox_base_dir, core_config, _patch_create_provider
     ):
-        """_runtime_call with UNSAFE policy for code execution."""
+        """_runtime_call with UNSAFE policy for a command."""
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
         sb = PTCSandbox(core_config)
@@ -199,8 +199,8 @@ class TestRuntimeCallIntegration:
 
         try:
             result = await sb._runtime_call(
-                sb.runtime.code_run,
-                "print('unsafe_policy')",
+                sb.runtime.exec,
+                "echo unsafe_policy",
                 retry_policy=RetryPolicy.UNSAFE,
             )
             assert "unsafe_policy" in result.stdout

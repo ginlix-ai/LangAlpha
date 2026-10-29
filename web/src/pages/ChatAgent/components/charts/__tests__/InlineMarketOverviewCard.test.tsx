@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { InlineMarketOverviewCard } from '../InlineArtifactCards';
+import { InlineMarketOverviewCard } from '../InlineMarketCards';
 
 // The composite `market_overview` artifact nests the FULL legacy
 // market_indices / sector_performance artifacts verbatim under `indices` /
@@ -111,5 +111,28 @@ describe('InlineMarketOverviewCard', () => {
 
     fireEvent.click(screen.getByText('XX'));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+  // Freshness is said once, in the header, and a row whose state differs
+  // keeps its own mark.
+  it('says the shared freshness once and marks the row that differs', () => {
+    render(
+      <InlineMarketOverviewCard
+        artifact={{
+          type: 'market_overview',
+          region: 'us',
+          indices: {
+            type: 'market_indices',
+            indices: {
+              '^GSPC': { ...INDICES_ARTIFACT.indices['^GSPC'], tier: 'delayed_15m' },
+              '^IXIC': { name: 'Nasdaq', ohlcv: [{ close: 16000 }], stats: { period_change_pct: -0.4 }, tier: 'realtime' },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Delayed 15 min')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Delayed 15 min/)).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText(/Realtime/)).toHaveLength(1);
   });
 });

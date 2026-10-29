@@ -3,8 +3,7 @@
  * Use watchlistId "default" for the user's default watchlist.
  * GET/POST /api/v1/users/me/watchlists/:id/items, PUT/DELETE .../items/:itemId
  */
-import type { AxiosError } from 'axios';
-import { api } from '@/api/client';
+import { api, type ApiError } from '@/api/client';
 
 export interface AddWatchlistItemPayload {
   symbol: string;
@@ -40,7 +39,7 @@ export async function addWatchlistItem(watchlistId: string | null | undefined, p
     );
     return data;
   } catch (e) {
-    const err = e as AxiosError;
+    const err = e as ApiError;
     console.error(
       '[api] addWatchlistItem failed:',
       err.response?.status,

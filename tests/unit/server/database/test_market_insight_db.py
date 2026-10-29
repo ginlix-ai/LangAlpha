@@ -2,7 +2,9 @@
 Tests for src/server/database/market_insight.py
 
 Verifies insight lifecycle (create, complete, fail), lookups (by ID, today's
-insights, latest completed, generating check, recent completed dedup).
+insights, generating check, recent completed dedup). The system insight claim
+is a race between workers, so it is tested against real Postgres in
+tests/integration/test_market_insight_claim_db.py.
 """
 
 import uuid
@@ -125,45 +127,6 @@ def _card_row(
     }
     row.update(overrides)
     return row
-
-
-# ===========================================================================
-# create_market_insight
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_create_market_insight_no_user(mi_mock_db, mock_cursor):
-    """create_market_insight with user_id=None inserts with status='generating'."""
-    from src.server.database.market_insight import create_market_insight
-
-    returned = {"market_insight_id": "ins-1", "created_at": datetime.now(timezone.utc)}
-    mock_cursor.fetchone.return_value = returned
-
-    result = await create_market_insight(model="gpt-4o")
-
-    assert result["market_insight_id"] == "ins-1"
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "INSERT INTO market_insights" in sql
-    assert "'generating'" in sql
-    # user_id param should be None (second positional param)
-    params = mock_cursor.execute.call_args[0][1]
-    assert params[1] is None  # user_id
-
-
-@pytest.mark.asyncio
-async def test_create_market_insight_with_user(mi_mock_db, mock_cursor):
-    """create_market_insight with user_id sets user_id in the row."""
-    from src.server.database.market_insight import create_market_insight
-
-    returned = {"market_insight_id": "ins-2", "created_at": datetime.now(timezone.utc)}
-    mock_cursor.fetchone.return_value = returned
-
-    result = await create_market_insight(model="gpt-4o", user_id="user-abc")
-
-    assert result["market_insight_id"] == "ins-2"
-    params = mock_cursor.execute.call_args[0][1]
-    assert params[1] == "user-abc"  # user_id
 
 
 # ===========================================================================
@@ -333,73 +296,6 @@ async def test_get_todays_insights_fallback_no_yesterday(mi_mock_db, mock_cursor
     result = await get_todays_market_insights()
 
     assert result == []
-
-
-# ===========================================================================
-# get_latest_completed_at
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_get_latest_completed_at_no_filter(mi_mock_db, mock_cursor):
-    """get_latest_completed_at without type returns most recent completed_at."""
-    from src.server.database.market_insight import get_latest_completed_at
-
-    ts = datetime.now(timezone.utc)
-    mock_cursor.fetchone.return_value = {"completed_at": ts}
-
-    result = await get_latest_completed_at()
-
-    assert result == ts
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "status = 'completed'" in sql
-    assert "user_id IS NULL" in sql
-
-
-@pytest.mark.asyncio
-async def test_get_latest_completed_at_with_type(mi_mock_db, mock_cursor):
-    """get_latest_completed_at with type filter adds type condition."""
-    from src.server.database.market_insight import get_latest_completed_at
-
-    ts = datetime.now(timezone.utc)
-    mock_cursor.fetchone.return_value = {"completed_at": ts}
-
-    result = await get_latest_completed_at(type="daily_brief")
-
-    assert result == ts
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "type = %s" in sql
-    params = mock_cursor.execute.call_args[0][1]
-    assert "daily_brief" in params
-
-
-@pytest.mark.asyncio
-async def test_get_latest_completed_at_none(mi_mock_db, mock_cursor):
-    """get_latest_completed_at returns None when no completed insights."""
-    from src.server.database.market_insight import get_latest_completed_at
-
-    mock_cursor.fetchone.return_value = None
-
-    result = await get_latest_completed_at()
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_get_latest_completed_at_with_user_id(mi_mock_db, mock_cursor):
-    """get_latest_completed_at with user_id filters by user."""
-    from src.server.database.market_insight import get_latest_completed_at
-
-    ts = datetime.now(timezone.utc)
-    mock_cursor.fetchone.return_value = {"completed_at": ts}
-
-    result = await get_latest_completed_at(user_id="user-abc")
-
-    assert result == ts
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "user_id = %s" in sql
-    assert "user_id IS NULL" not in sql
-    params = mock_cursor.execute.call_args[0][1]
-    assert "user-abc" in params
 
 
 # ===========================================================================

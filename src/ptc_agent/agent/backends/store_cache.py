@@ -2,11 +2,12 @@
 
 Background
 ----------
-On every model call the agent runs ``MemoryContextMiddleware`` (two ``aget``
-calls — user + workspace ``memory.md``) and ``MemoAwarenessMiddleware`` (one
-``aget`` for the memo catalog row). A 3-tool-call turn pays 9 store reads
-before the model body runs, on data that is identical round-to-round in 99%
-of turns. This cache deduplicates those reads to one set per turn.
+``BaselineContextMiddleware`` reads user + workspace ``memory.md`` and the
+memo catalog row at the turn boundary, and the store-backed filesystem routes
+read the same keys whenever the agent touches those files. Without a shared
+cache a turn pays the same round-trips several times over, on data that is
+identical round-to-round in 99% of turns. This cache deduplicates them to one
+set per turn.
 
 Lifecycle
 ---------
@@ -14,7 +15,7 @@ A fresh cache is constructed per ``PTCAgent.create_agent`` call. Because one
 agent is built per request (see ``agent.py`` invariant), the cache is
 request-scoped: it never bridges users or turns. Writes through
 ``StoreBackend.awrite_text`` / ``aedit_text`` invalidate the affected
-key so the next middleware read sees the fresh value within the same turn.
+key so the next read sees the fresh value within the same turn.
 
 Bounds
 ------

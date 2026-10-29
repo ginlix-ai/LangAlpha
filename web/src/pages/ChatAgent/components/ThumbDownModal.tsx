@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Info, MessageSquareWarning } from 'lucide-react';
+import { Info } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -24,7 +24,6 @@ interface ThumbDownModalProps {
   isOpen: boolean;
   onSubmit: (issueCategories: string[], comment: string | null, consentHumanReview: boolean) => void;
   onCancel: () => void;
-  onReportWithAgent?: (instruction: string) => void;
 }
 
 /**
@@ -34,7 +33,7 @@ interface ThumbDownModalProps {
  * Allows selecting issue categories, adding comments, and
  * optionally consenting to anonymous human review for credit refund.
  */
-function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: ThumbDownModalProps): React.ReactElement {
+function ThumbDownModal({ isOpen, onSubmit, onCancel }: ThumbDownModalProps): React.ReactElement {
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [comment, setComment] = useState('');
   const [consentHumanReview, setConsentHumanReview] = useState(false);
@@ -109,7 +108,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setComment(e.target.value)}
           placeholder="Tell us more about the issue..."
           rows={3}
-          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none outline-none mb-2"
+          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none mb-2"
           style={{
             backgroundColor: 'var(--color-bg-page)',
             color: 'var(--color-text-primary)',
@@ -128,7 +127,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
         >
           <div className="flex items-center gap-2.5">
             <div
-              className="w-4 h-4 rounded flex-shrink-0 flex items-center justify-center"
+              className="w-4 h-4 rounded shrink-0 flex items-center justify-center"
               style={{
                 border: `1.5px solid ${consentHumanReview ? 'var(--color-accent-primary)' : 'var(--color-border-muted)'}`,
                 backgroundColor: consentHumanReview ? 'var(--color-accent-primary)' : 'transparent',
@@ -145,45 +144,10 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
             </span>
           </div>
           <p className="text-xs mt-1.5 flex items-start gap-1" style={{ color: 'var(--color-text-tertiary)' }}>
-            <Info className="h-3 w-3 flex-shrink-0 mt-0.5" />
+            <Info className="h-3 w-3 shrink-0 mt-0.5" />
             Share this conversation with our engineering team. Credits will be refunded for confirmed issues.
           </p>
         </div>
-
-        {/* Agent self-report CTA */}
-        {onReportWithAgent && (
-          <div
-            className="flex items-center gap-3 rounded-lg p-3 cursor-pointer transition-colors"
-            style={{
-              backgroundColor: 'var(--color-bg-surface)',
-              border: '1px solid var(--color-border-muted)',
-            }}
-            onClick={() => {
-              const categories = Array.from(selectedCategories);
-              const instruction = [
-                categories.length > 0 ? `User reported issues: ${categories.join(', ')}.` : '',
-                comment.trim() ? `User feedback: "${comment.trim()}"` : '',
-                'Reflect on your last response honestly. Identify the root cause — whether it\'s a bug in a tool, a flawed prompt instruction, bad data from an MCP server, or a reasoning error. Then file a GitHub issue via /self-improve with a truthful diagnosis.',
-              ].filter(Boolean).join(' ');
-              onReportWithAgent(instruction);
-            }}
-            onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => e.currentTarget.style.borderColor = 'var(--color-border-elevated)'}
-            onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => e.currentTarget.style.borderColor = 'var(--color-border-muted)'}
-          >
-            <MessageSquareWarning
-              className="h-5 w-5 flex-shrink-0"
-              style={{ color: 'var(--color-accent-primary)' }}
-            />
-            <div>
-              <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-                Ask agent to self-report
-              </span>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-                The agent will reflect on what went wrong, diagnose the root cause, and file a GitHub issue via <code style={{ color: 'var(--color-accent-primary)', fontSize: '0.6875rem' }}>/self-improve</code>.
-              </p>
-            </div>
-          </div>
-        )}
 
         {/* Action buttons */}
         <DialogFooter className="flex-row justify-end gap-3 sm:gap-3">

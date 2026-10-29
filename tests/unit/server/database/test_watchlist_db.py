@@ -37,6 +37,11 @@ def mock_connection(mock_cursor):
         yield mock_cursor
 
     conn.cursor = _cursor_cm
+    @asynccontextmanager
+    async def _transaction_cm():
+        yield
+
+    conn.transaction = _transaction_cm
     return conn
 
 
@@ -112,9 +117,10 @@ async def test_create_watchlist(wl_mock_db, mock_cursor):
     result = await create_watchlist("user-1", "Tech Stocks")
 
     assert result["name"] == "Tech Stocks"
-    # Verify duplicate check was performed
-    first_sql = mock_cursor.execute.call_args_list[0][0][0]
-    assert "SELECT watchlist_id FROM watchlists" in first_sql
+    # The profile lock first, then the duplicate check under it
+    lock_sql, check_sql = (c[0][0] for c in mock_cursor.execute.call_args_list[:2])
+    assert "pg_advisory_xact_lock" in lock_sql
+    assert "SELECT watchlist_id FROM watchlists" in check_sql
 
 
 @pytest.mark.asyncio
@@ -227,7 +233,8 @@ async def test_get_or_create_default_watchlist_creates(wl_mock_db, mock_cursor):
 
     assert result["name"] == "Default"
     assert result["is_default"] is True
-    assert mock_cursor.execute.await_count == 2
+    # SELECT, then the profile lock and the INSERT
+    assert mock_cursor.execute.await_count == 3
 
 
 # ===========================================================================
@@ -256,7 +263,8 @@ async def test_create_watchlist_item(wl_mock_db, mock_cursor):
     )
 
     assert result["symbol"] == "AAPL"
-    assert mock_cursor.execute.await_count == 3
+    # The profile lock, then the two checks and the INSERT
+    assert mock_cursor.execute.await_count == 4
 
 
 @pytest.mark.asyncio
@@ -358,3 +366,21 @@ async def test_delete_watchlist_item_not_found(wl_mock_db, mock_cursor):
 
     result = await delete_watchlist_item("nonexistent", "user-1")
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_create_watchlist_item_insert_race_is_a_duplicate(wl_mock_db, mock_cursor):
+    """The profile lock serializes a user's adds, so the unique index is the
+    backstop: a violation there must still read as "already exists", not a 500."""
+    from psycopg.errors import UniqueViolation
+
+    from src.server.database.watchlist import create_watchlist_item
+
+    mock_cursor.fetchone.side_effect = [{"watchlist_id": "wl-1"}, None]
+    # Profile lock, watchlist check, duplicate check, then the INSERT.
+    mock_cursor.execute.side_effect = [None, None, None, UniqueViolation()]
+
+    with pytest.raises(ValueError, match="already exists"):
+        await create_watchlist_item(
+            user_id="user-1", watchlist_id="wl-1", symbol="0700.HK", instrument_type="stock",
+        )

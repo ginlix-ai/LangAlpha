@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import AuthConfirm from '@/pages/Login/AuthConfirm';
 
 // The canvas pane needs a real 2d context and is irrelevant here.
-vi.mock('@/pages/Login/WavesBackground', () => ({ default: () => null }));
+vi.mock('@/pages/Login/EdgeGrain', () => ({ default: () => null }));
 
 vi.mock('@/config/hostMode', () => ({
   isPlatformMode: true,
@@ -96,5 +96,100 @@ describe('AuthConfirm no-token landings', () => {
 
     expect(screen.getByText('This link is invalid or has expired.')).toBeInTheDocument();
     expect(auth.verifyEmailOtp).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthConfirm with a session already here', () => {
+  it('takes a spent link to the app rather than to an error', async () => {
+    vi.useFakeTimers();
+    auth.isLoggedIn = true;
+    auth.verifyEmailOtp.mockResolvedValue({
+      data: {},
+      error: { code: 'otp_expired', message: 'Email link is invalid or has expired' },
+    });
+    window.history.replaceState(null, '', '/auth/confirm?token_hash=abc123&type=signup');
+    render(
+      <MemoryRouter initialEntries={['/auth/confirm']}>
+        <Routes>
+          <Route path="/auth/confirm" element={<AuthConfirm />} />
+          <Route path="/dashboard" element={<p>dashboard</p>} />
+        </Routes>
+      </MemoryRouter>
+    );
+    await act(async () => {});
+
+    expect(auth.verifyEmailOtp).toHaveBeenCalledWith('abc123', 'signup');
+    expect(screen.queryByText('This link is invalid or has expired.')).not.toBeInTheDocument();
+    expect(screen.getByText('Email confirmed — signing you in…')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(screen.getByText('dashboard')).toBeInTheDocument();
+  });
+
+  describe('loaded on top of another page', () => {
+    // The Navigation API, which jsdom lacks: the page Back leads to.
+    const behind = (path: string) => {
+      const here = { url: window.location.href, index: 1 };
+      Object.defineProperty(window, 'navigation', {
+        configurable: true,
+        value: { currentEntry: here, entries: () => [{ url: new URL(path, window.location.href).href, index: 0 }, here] },
+      });
+    };
+    let back: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      back.mockRestore();
+      delete (window as { navigation?: unknown }).navigation;
+    });
+
+    const spentLink = async () => {
+      vi.useFakeTimers();
+      auth.isLoggedIn = true;
+      auth.verifyEmailOtp.mockResolvedValue({
+        data: {},
+        error: { code: 'otp_expired', message: 'Email link is invalid or has expired' },
+      });
+      window.history.replaceState(null, '', '/auth/confirm?token_hash=abc123&type=signup');
+      render(
+        <MemoryRouter initialEntries={['/auth/confirm']}>
+          <Routes>
+            <Route path="/auth/confirm" element={<AuthConfirm />} />
+            <Route path="/dashboard" element={<p>dashboard</p>} />
+          </Routes>
+        </MemoryRouter>
+      );
+      await act(async () => {});
+      await act(async () => {
+        vi.advanceTimersByTime(1500);
+      });
+    };
+
+    it('goes back to the page a spent link interrupted', async () => {
+      behind('/chat/t/thread-1');
+      await spentLink();
+
+      expect(back).toHaveBeenCalledOnce();
+      expect(screen.queryByText('dashboard')).not.toBeInTheDocument();
+    });
+
+    it.each([
+      '/auth/confirm?token_hash=old&type=signup',
+      '/callback?token_hash=old&type=signup',
+      '/reset-password?token_hash=old&type=recovery',
+    ])(
+      'goes on to the app rather than back to the email link at %s',
+      async (path) => {
+        behind(path);
+        await spentLink();
+
+        expect(back).not.toHaveBeenCalled();
+        expect(screen.getByText('dashboard')).toBeInTheDocument();
+      }
+    );
   });
 });

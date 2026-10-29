@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "rooted": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/server.js"
+      ]
+    },
+    "cwded": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "s.js"
+      ],
+      "cwd": "./sub"
+    }
+  }
+}

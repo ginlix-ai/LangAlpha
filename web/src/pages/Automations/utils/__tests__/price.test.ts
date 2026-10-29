@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
+import i18n from '@/i18n';
 import {
   isPriceTriggerConfig,
   formatPriceTrigger,
   formatRetriggerMode,
 } from '../price';
 import type { PriceTriggerConfig } from '@/types/automation';
+
+const en = i18n.getFixedT('en-US');
 
 const validConfig: PriceTriggerConfig = {
   symbol: 'AAPL',
@@ -79,15 +82,15 @@ describe('isPriceTriggerConfig', () => {
 /* --------------------------------------------------------- */
 describe('formatPriceTrigger', () => {
   it('returns fallback for null', () => {
-    expect(formatPriceTrigger(null)).toBe('Price alert');
+    expect(formatPriceTrigger(null, en)).toBe('Price alert');
   });
 
   it('returns fallback for undefined', () => {
-    expect(formatPriceTrigger(undefined)).toBe('Price alert');
+    expect(formatPriceTrigger(undefined, en)).toBe('Price alert');
   });
 
   it('returns fallback for a malformed object', () => {
-    expect(formatPriceTrigger({ foo: 'bar' } as any)).toBe('Price alert');
+    expect(formatPriceTrigger({ foo: 'bar' } as any, en)).toBe('Price alert');
   });
 
   it('returns symbol alert when conditions array is empty', () => {
@@ -96,11 +99,11 @@ describe('formatPriceTrigger', () => {
       conditions: [],
       retrigger: { mode: 'one_shot' },
     };
-    expect(formatPriceTrigger(cfg)).toBe('TSLA price alert');
+    expect(formatPriceTrigger(cfg, en)).toBe('TSLA price alert');
   });
 
   it('formats price_above condition', () => {
-    expect(formatPriceTrigger(validConfig)).toBe('AAPL > $200.00');
+    expect(formatPriceTrigger(validConfig, en)).toBe('AAPL > $200.00');
   });
 
   it('formats price_below condition', () => {
@@ -109,7 +112,7 @@ describe('formatPriceTrigger', () => {
       conditions: [{ type: 'price_below', value: 150.5 }],
       retrigger: { mode: 'one_shot' },
     };
-    expect(formatPriceTrigger(cfg)).toBe('GOOG < $150.50');
+    expect(formatPriceTrigger(cfg, en)).toBe('GOOG < $150.50');
   });
 
   it('formats pct_change_above with day_open reference', () => {
@@ -118,9 +121,9 @@ describe('formatPriceTrigger', () => {
       conditions: [{ type: 'pct_change_above', value: 5, reference: 'day_open' }],
       retrigger: { mode: 'one_shot' },
     };
-    expect(formatPriceTrigger(cfg)).toContain('MSFT');
-    expect(formatPriceTrigger(cfg)).toContain('5.00%');
-    expect(formatPriceTrigger(cfg)).toContain('open');
+    expect(formatPriceTrigger(cfg, en)).toContain('MSFT');
+    expect(formatPriceTrigger(cfg, en)).toContain('5.00%');
+    expect(formatPriceTrigger(cfg, en)).toContain('open');
   });
 
   it('formats pct_change_below with previous_close reference', () => {
@@ -129,9 +132,9 @@ describe('formatPriceTrigger', () => {
       conditions: [{ type: 'pct_change_below', value: 3, reference: 'previous_close' }],
       retrigger: { mode: 'one_shot' },
     };
-    expect(formatPriceTrigger(cfg)).toContain('AMZN');
-    expect(formatPriceTrigger(cfg)).toContain('3.00%');
-    expect(formatPriceTrigger(cfg)).toContain('close');
+    expect(formatPriceTrigger(cfg, en)).toContain('AMZN');
+    expect(formatPriceTrigger(cfg, en)).toContain('3.00%');
+    expect(formatPriceTrigger(cfg, en)).toContain('close');
   });
 
   it('uses only the first condition', () => {
@@ -143,7 +146,7 @@ describe('formatPriceTrigger', () => {
       ],
       retrigger: { mode: 'one_shot' },
     };
-    expect(formatPriceTrigger(cfg)).toBe('NVDA > $100.00');
+    expect(formatPriceTrigger(cfg, en)).toBe('NVDA > $100.00');
   });
 });
 
@@ -152,19 +155,19 @@ describe('formatPriceTrigger', () => {
 /* --------------------------------------------------------- */
 describe('formatRetriggerMode', () => {
   it('returns One-shot for null', () => {
-    expect(formatRetriggerMode(null)).toBe('One-shot');
+    expect(formatRetriggerMode(null, en)).toBe('One-shot');
   });
 
   it('returns One-shot for undefined', () => {
-    expect(formatRetriggerMode(undefined)).toBe('One-shot');
+    expect(formatRetriggerMode(undefined, en)).toBe('One-shot');
   });
 
   it('returns One-shot for a malformed object', () => {
-    expect(formatRetriggerMode({ bad: true } as any)).toBe('One-shot');
+    expect(formatRetriggerMode({ bad: true } as any, en)).toBe('One-shot');
   });
 
   it('returns One-shot for one_shot mode', () => {
-    expect(formatRetriggerMode(validConfig)).toBe('One-shot');
+    expect(formatRetriggerMode(validConfig, en)).toBe('One-shot');
   });
 
   it('returns Recurring with hours when cooldown_seconds is set', () => {
@@ -173,7 +176,7 @@ describe('formatRetriggerMode', () => {
       conditions: [{ type: 'price_above', value: 200 }],
       retrigger: { mode: 'recurring', cooldown_seconds: 7200 },
     };
-    expect(formatRetriggerMode(cfg)).toBe('Recurring (2h)');
+    expect(formatRetriggerMode(cfg, en)).toBe('Recurring (2h)');
   });
 
   it('returns Recurring when cooldown rounds to zero hours', () => {
@@ -182,7 +185,7 @@ describe('formatRetriggerMode', () => {
       conditions: [{ type: 'price_above', value: 200 }],
       retrigger: { mode: 'recurring', cooldown_seconds: 60 },
     };
-    expect(formatRetriggerMode(cfg)).toBe('Recurring');
+    expect(formatRetriggerMode(cfg, en)).toBe('Recurring');
   });
 
   it('returns Recurring (daily) when no cooldown_seconds', () => {
@@ -191,13 +194,28 @@ describe('formatRetriggerMode', () => {
       conditions: [{ type: 'price_above', value: 200 }],
       retrigger: { mode: 'recurring' },
     };
-    expect(formatRetriggerMode(cfg)).toBe('Recurring (daily)');
+    expect(formatRetriggerMode(cfg, en)).toBe('Recurring (daily)');
   });
 
   it('returns One-shot when retrigger is missing entirely', () => {
     // Simulate an object that passes the guard but has no retrigger
     // (retrigger is required in the type but might be absent at runtime)
     const cfg = { symbol: 'AAPL', conditions: [] } as any;
-    expect(formatRetriggerMode(cfg)).toBe('One-shot');
+    expect(formatRetriggerMode(cfg, en)).toBe('One-shot');
+  });
+});
+
+describe('price text in Chinese', () => {
+  const zh = i18n.getFixedT('zh-CN');
+
+  it('reads in the reader\'s language', () => {
+    const move: PriceTriggerConfig = {
+      symbol: 'SPX',
+      conditions: [{ type: 'pct_change_above', value: 1.5, reference: 'previous_close' }],
+      retrigger: { mode: 'recurring', cooldown_seconds: 14400 },
+    };
+    expect(formatPriceTrigger(move, zh)).toBe('SPX 较昨收 ↑1.50%');
+    expect(formatRetriggerMode(move, zh)).toBe('循环（每 4 小时）');
+    expect(formatRetriggerMode(validConfig, zh)).toBe('单次触发');
   });
 });

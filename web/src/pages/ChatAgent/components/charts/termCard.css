@@ -1,0 +1,791 @@
+/* The transcript's data cards, drawn as a text UI: an unfilled box with its
+   title set into the top edge, the figures in mono, and every mark (a range,
+   a bar, a change) drawn as type would draw it. The ground shows through the
+   box, so the title cuts the edge with the ground's own fill: a surface that
+   puts the cards on another fill sets --term-ground. */
+
+/* The voice, Terminal's: the words' case and tracking (a multiplier on each
+   rule's own), their face, and the brackets around a tag, a state or a door.
+   The other card styles flip these (termCardStyles.css). */
+:root {
+  --term-case: uppercase;
+  --term-track: 1;
+  --term-words: var(--font-mono);
+  --term-open: '[';
+  --term-close: ']';
+}
+
+.term-card,
+.term-pill {
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-term-text);
+}
+.term-card {
+  --term-ground: var(--color-bg-page);
+  /* Half the title's line: where the edge runs through it. */
+  --term-edge-top: 0.725em;
+  position: relative;
+  padding: calc(var(--term-edge-top) + 0.875rem) 0.75rem 0.625rem;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Its own layer, so a card joining the one above (below) is drawn over it
+     whole, and the title stays over the joint it draws. */
+  isolation: isolate;
+}
+.term-card[data-scale='panel'] {
+  padding: calc(var(--term-edge-top) + 1rem) 1rem 0.875rem;
+  font-size: 0.78125rem;
+}
+.term-card[data-size='sm'] {
+  padding: calc(var(--term-edge-top) + 0.75rem) 0.625rem 0.5rem;
+  font-size: 0.6875rem;
+}
+/* The edge is drawn, not the box's border, so the title sits inside the
+   card's box: spacing measures from the title, and a fold that clips its box
+   never cuts the title in half. */
+.term-card::before {
+  content: '';
+  position: absolute;
+  inset: var(--term-edge-top) 0 0;
+  border: 1px solid var(--color-term-edge);
+  border-radius: 8px;
+  pointer-events: none;
+  transition: border-color var(--motion-quick) var(--ease-out);
+}
+.term-card[data-clickable] {
+  cursor: pointer;
+}
+.term-card[data-clickable]:hover::before {
+  border-color: var(--color-term-edge-hover);
+}
+/* The title is the card's button: its focus rings the whole frame, over the
+   joint of a card joined to it either way. */
+.term-card:has(> .term-card-head > .term-card-title:focus-visible) {
+  z-index: 1;
+}
+.term-card:has(> .term-card-head > .term-card-title:focus-visible)::before {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+}
+.term-card:has(> .term-card-head > .term-card-title:focus-visible)::after {
+  display: none;
+}
+
+/* Back-to-back lookups of one type share one box. Each card is still a block
+   of its own (marked `data-card-join` after the first, in a fold or not), so
+   the joint is the later card's to draw: it sits flush on the card above,
+   covers that card's rounded foot with its own sides, and sets its title on a
+   dashed rule. The joint comes and goes with the card that draws it, fading
+   in as it arrives. A card above that drew nothing leaves the next one on its
+   own. */
+/* Flush over whatever spacing the list gives its blocks. */
+:has(.term-card) + [data-card-join],
+:has(.term-card) + [data-fold-panel]:has(> * > [data-card-join]) {
+  margin-top: 0 !important;
+}
+:is(:has(.term-card) + [data-card-join], :has(.term-card) + [data-fold-panel] > * > [data-card-join]) > .term-card::before {
+  border-top-style: dashed;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+:is(:has(.term-card) + [data-card-join], :has(.term-card) + [data-fold-panel] > * > [data-card-join]) > .term-card::after {
+  content: '';
+  position: absolute;
+  /* From the top of the card above's 8px corners down to this card's rule. */
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: calc(8px + var(--term-edge-top));
+  border: 1px solid var(--color-term-edge);
+  border-block-width: 0;
+  background: var(--term-ground);
+  pointer-events: none;
+}
+
+/* ── The title on the edge ── */
+
+.term-card-head {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0.625rem;
+  right: 0.625rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  white-space: nowrap;
+}
+.term-card-head > * {
+  background: var(--term-ground);
+  padding: 0 0.375rem;
+}
+.term-card-title {
+  display: inline-flex;
+  min-width: 0;
+  font-family: var(--term-words);
+  font-weight: 600;
+  letter-spacing: calc(0.02em * var(--term-track));
+}
+button.term-card-title {
+  margin: 0;
+  border: 0;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  outline: none;
+}
+.term-card-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-bracket {
+  flex-shrink: 0;
+  color: var(--color-term-text-tertiary);
+  font-weight: 400;
+}
+.term-bracket:first-child {
+  margin-right: 0.5ch;
+}
+.term-bracket:last-child {
+  margin-left: 0.5ch;
+}
+/* The sub-title shares the title's cut. Whichever of the two the card keeps
+   holds its width, and the other gives way; a long kept title still stops at
+   most of the edge, so the meta keeps its room. */
+.term-card-head[data-keep='title'] > .term-card-title {
+  flex-shrink: 0;
+  max-width: 70%;
+}
+.term-card-head[data-keep='sub'] > .term-card-sub {
+  flex-shrink: 0;
+}
+.term-card-sub {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: -0.625rem;
+  padding-left: 0;
+  font-family: var(--term-words);
+  color: var(--color-term-text-tertiary);
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+}
+.term-card-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  margin-left: auto;
+  letter-spacing: calc(0.02em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-tertiary);
+}
+/* A card that opens says so on hover. Hidden, it takes its cut with it. */
+.term-card-go {
+  flex-shrink: 0;
+  color: var(--color-term-text-secondary);
+  opacity: 0;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+.term-card-head > :first-child + .term-card-go,
+.term-card-sub + .term-card-go {
+  margin-left: auto;
+}
+.term-card[data-clickable]:hover .term-card-go {
+  opacity: 1;
+}
+/* No hover to show it on: the edge keeps the room. */
+@media (hover: none) {
+  .term-card-go {
+    display: none;
+  }
+}
+
+/* ── Type ── */
+
+.term-t2 { color: var(--color-term-text-secondary); }
+.term-t3 { color: var(--color-term-text-tertiary); }
+.term-strong { font-weight: 600; }
+.term-num { text-align: right; }
+/* A word set in capitals, AFTER-HRS, CALL; a label also tracked out and in
+   the words' face. A word among figures (a name, a description) takes that
+   face with `term-word`; an identifier among words (a ticker, an OCC code, an
+   item number) stays mono and in its own case with `term-code`. */
+.term-caps { text-transform: var(--term-case); }
+.term-label { font-family: var(--term-words); letter-spacing: calc(0.06em * var(--term-track)); text-transform: var(--term-case); }
+.term-word { font-family: var(--term-words); }
+.term-code { font-family: var(--font-mono); text-transform: none; }
+
+.term-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.75rem;
+  row-gap: 0.125rem;
+}
+.term-line + .term-line {
+  margin-top: 0.25rem;
+}
+.term-big {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.term-card[data-size='sm'] .term-big {
+  font-size: 0.9375rem;
+}
+.term-hero {
+  font-size: 1.1875rem;
+}
+.term-card[data-size='sm'] .term-hero {
+  font-size: 1.0625rem;
+}
+/* Set after the word before it: a name's second spelling, a row's state. */
+.term-aside { margin-left: 1ch; }
+/* Pushed to the line's far end. */
+.term-push { margin-left: auto; }
+.term-ink { color: var(--color-term-text); }
+
+/* [EOD], [LAST CLOSE]: a word in brackets. */
+.term-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  font-family: var(--term-words);
+  font-size: 0.625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  white-space: nowrap;
+  color: var(--color-term-text-secondary);
+}
+.term-tag::before { content: var(--term-open); color: var(--color-term-text-tertiary); margin-right: -0.125rem; }
+.term-tag::after { content: var(--term-close); color: var(--color-term-text-tertiary); margin-left: -0.125rem; }
+.term-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-term-text-tertiary);
+}
+.term-dot[data-tone='live'],
+.term-dot[data-tone='profit'] { background: var(--color-profit); }
+.term-dot[data-tone='warning'] { background: var(--color-warning); }
+.term-dot[data-tone='loss'] { background: var(--color-loss); }
+.term-dot[data-tone='info'] { background: var(--color-info); }
+/* A row's state alone, ahead of its name: a size up, on the line's middle. */
+.term-dot[data-size='row'] {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  vertical-align: middle;
+}
+
+/* [FILLED], [PAUSED]: a state in brackets, in the state's own color. */
+.term-status {
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  font-weight: 600;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  white-space: nowrap;
+  color: var(--color-term-text-secondary);
+}
+.term-status::before { content: var(--term-open); }
+.term-status::after { content: var(--term-close); }
+.term-status[data-tone='profit'] { color: var(--color-profit); }
+.term-status[data-tone='loss'] { color: var(--color-loss); }
+.term-status[data-tone='warning'] { color: var(--color-warning); }
+.term-status[data-tone='info'] { color: var(--color-info); }
+.term-status[data-tone='success'] { color: var(--color-success); }
+.term-status[data-tone='danger'] { color: var(--color-icon-danger); }
+.term-status[data-tone='faint'] { color: var(--color-term-text-tertiary); }
+
+/* A row's own freshness, where it differs from the edge's: a dot in a fixed
+   box, its words in the tooltip, on the line's middle. */
+.term-fresh-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  align-self: center;
+  vertical-align: middle;
+  cursor: default;
+}
+.term-fresh-dot > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  align-self: center;
+  background: var(--color-text-tertiary);
+}
+.term-fresh-dot > [data-tone='live'] { background: var(--color-profit); }
+.term-fresh-dot > [data-tone='warning'] { background: var(--color-warning); }
+
+/* A change: ▲ up, ▼ down, · none. The arrow is drawn, not a glyph, so no
+   fallback font can widen it. */
+.term-chg {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3em;
+  white-space: nowrap;
+}
+.term-chg[data-dir='up'] { color: var(--color-profit); }
+.term-chg[data-dir='down'] { color: var(--color-loss); }
+.term-chg[data-dir='flat'] { color: var(--color-term-text-tertiary); }
+.term-chg-mark {
+  width: 0.62em;
+  height: 0.54em;
+  flex-shrink: 0;
+  align-self: center;
+  fill: currentColor;
+}
+
+/* Label ..... value, in up to --term-cols columns, fewer when a column would
+   be narrower than a label and a figure need: the grid answers to its own
+   width, so a card in a narrow chat panel drops a column rather than cut a
+   price short. In a tight column the label gives way, never the figure. */
+.term-kv {
+  --term-kv-gap: 1.625rem;
+  --term-kv-min: 12rem;
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(max(var(--term-kv-min), (100% - (var(--term-cols, 2) - 1) * var(--term-kv-gap)) / var(--term-cols, 2)), 1fr)
+  );
+  column-gap: var(--term-kv-gap);
+}
+.term-card[data-scale='panel'] .term-kv {
+  --term-kv-min: 15rem;
+}
+.term-card[data-size='sm'] .term-kv {
+  --term-kv-gap: 1rem;
+  --term-kv-min: 9.5rem;
+}
+.term-kv > div {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  padding: 0.1875rem 0;
+}
+.term-k {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--term-words);
+  font-size: 0.625rem;
+  letter-spacing: calc(0.08em * var(--term-track));
+  text-transform: var(--term-case);
+  white-space: nowrap;
+  color: var(--color-term-text-tertiary);
+}
+.term-kv-leader {
+  flex: 1;
+  min-width: 0.5rem;
+  margin: 0 0.375rem;
+  border-bottom: 1px dotted var(--color-term-edge);
+  transform: translateY(-0.2em);
+}
+.term-v {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* low ├───●──┤ high */
+.term-range {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 9ch;
+  height: 0.7em;
+  border-left: 1px solid var(--color-term-text-tertiary);
+  border-right: 1px solid var(--color-term-text-tertiary);
+  vertical-align: middle;
+}
+.term-range[data-fill] {
+  flex: 1;
+  width: auto;
+  min-width: 6ch;
+}
+.term-range::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px solid var(--color-term-edge);
+}
+.term-range-at {
+  position: absolute;
+  top: 50%;
+  left: calc(3px + var(--at) * (100% - 6px));
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-term-text);
+  transform: translate(-50%, -50%);
+}
+
+/* A table with its column heads over a dashed rule. */
+.term-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.term-table th {
+  padding: 0 0 0.25rem;
+  border-bottom: 1px dashed var(--color-term-edge);
+  font-family: var(--term-words);
+  font-size: 0.59375rem;
+  font-weight: 500;
+  letter-spacing: calc(0.1em * var(--term-track));
+  text-align: left;
+  text-transform: var(--term-case);
+  white-space: nowrap;
+  color: var(--color-term-text-tertiary);
+}
+.term-table td {
+  padding: 0.1875rem 0;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.term-table thead + tbody tr:first-child td {
+  padding-top: 0.3125rem;
+}
+.term-table td + td,
+.term-table th + th {
+  padding-left: 0.875rem;
+}
+.term-card[data-size='sm'] .term-table td + td,
+.term-card[data-size='sm'] .term-table th + th {
+  padding-left: 0.625rem;
+}
+.term-table .term-num { text-align: right; }
+/* The one column that gives up width: names, titles. */
+.term-table .term-fill {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-table .term-fill:not(.term-code) { font-family: var(--term-words); }
+
+/* ── SECTOR PERFORMANCE · 1D ─────── */
+.term-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.875rem 0 0.625rem;
+  font-family: var(--term-words);
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  white-space: nowrap;
+  color: var(--color-term-text-tertiary);
+}
+.term-divider::before,
+.term-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px dashed var(--color-term-edge);
+}
+.term-divider::before {
+  flex: 0 0 0.625rem;
+}
+
+/* +15 MORE */
+.term-more {
+  margin-top: 0.375rem;
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-tertiary);
+}
+
+/* HI 243.37  LO 210.18  AVG VOL 100.5M */
+.term-stats {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 1.125rem;
+  row-gap: 0.125rem;
+  color: var(--color-term-text-tertiary);
+}
+.term-stats > span > span:first-child {
+  font-family: var(--term-words);
+  text-transform: var(--term-case);
+}
+.term-stats b {
+  margin-left: 0.3125rem;
+  font-weight: 500;
+  color: var(--color-term-text-secondary);
+}
+
+.term-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 0.75rem;
+}
+.term-chip {
+  font-family: var(--term-words);
+  font-size: 0.625rem;
+  white-space: nowrap;
+  color: var(--color-term-text-secondary);
+}
+.term-chip::before { content: var(--term-open); color: var(--color-term-text-tertiary); }
+.term-chip::after { content: var(--term-close); color: var(--color-term-text-tertiary); }
+
+/* ── Bars either side of a zero axis ── */
+.term-bars {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 0.75rem;
+  align-items: center;
+}
+.term-bars-label {
+  font-family: var(--term-words);
+  white-space: nowrap;
+  color: var(--color-term-text-secondary);
+}
+.term-bars-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  height: 18px;
+}
+.term-bars-side {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  height: 100%;
+}
+.term-bars-side[data-side='down'] {
+  justify-content: flex-end;
+}
+.term-bars-side[data-side='up'] {
+  border-left: 1px solid var(--color-term-edge);
+}
+.term-bar {
+  flex-shrink: 1;
+  height: 0.75em;
+  min-width: 1px;
+}
+.term-bars-side[data-side='up'] .term-bar { background: var(--color-profit); }
+.term-bars-side[data-side='down'] .term-bar { background: var(--color-loss); }
+.term-bars-value {
+  flex-shrink: 0;
+  font-size: 0.65625rem;
+  color: var(--color-term-text-secondary);
+}
+
+/* ── A price line with its high and low read off a right axis ── */
+.term-plot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 0.375rem;
+}
+.term-plot-svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+.term-plot-grid {
+  stroke: var(--color-term-rule);
+  stroke-dasharray: 2 3;
+}
+.term-plot-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 0.65625rem;
+  line-height: 1;
+  color: var(--color-term-text-tertiary);
+}
+.term-plot-axis > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.term-plot-axis > span::before {
+  content: '';
+  width: 0.3125rem;
+  border-top: 1px solid var(--color-term-text-tertiary);
+}
+.term-plot-dates {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.25rem;
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  text-transform: var(--term-case);
+  color: var(--color-term-text-tertiary);
+}
+
+/* The column that takes the spare width without giving up its own, unlike
+   `.term-fill`: a strike, an expiry or a symbol, which a cut would misquote. */
+.term-table .term-grow {
+  width: 100%;
+}
+/* A table wider than its frame scrolls inside it. */
+.term-scroll {
+  overflow-x: auto;
+}
+
+/* ── A quote ── */
+
+/* The day's range under the price, `L 210.18 ├──●──┤ H 243.37`. */
+.term-line.term-range-line {
+  margin-top: 8px;
+  flex-wrap: nowrap;
+  align-items: center;
+  column-gap: 1ch;
+}
+/* The session's figures under the price. */
+.term-figures {
+  margin-top: 6px;
+}
+/* A company's day and year ranges: one grid, so the strips start and end together. */
+.term-ranges {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(6ch, 1fr) max-content;
+  align-items: center;
+  column-gap: 1ch;
+  row-gap: 2px;
+  margin-top: 6px;
+}
+.term-ranges > .term-label {
+  margin-right: 1ch;
+}
+/* The block's time, closing a phone's card. */
+.term-stamp-foot {
+  margin-top: 6px;
+  font-size: 0.65625rem;
+  text-align: right;
+}
+/* The panel's way to the symbol's page, at the frame's foot. */
+.term-line.term-links {
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
+/* ── A price line ── */
+
+.term-plot-lead {
+  margin-bottom: 6px;
+}
+.term-plot-foot {
+  margin-top: 8px;
+}
+
+/* ── Screens, filings and search ── */
+
+.term-filters {
+  margin-bottom: 8px;
+}
+.term-filters-more {
+  font-size: 0.625rem;
+}
+/* A yes in the profit ink: a filing with its press release, its call. */
+.term-yes {
+  color: var(--color-profit);
+}
+/* A link out of the card, in the accent. */
+.term-out {
+  color: var(--color-accent-primary);
+  text-decoration: none;
+}
+/* An 8-K's items on one line: each number whole, each description in what
+   room is left. */
+.term-items {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+.term-items-sep {
+  flex-shrink: 0;
+  white-space: pre;
+}
+.term-item {
+  display: flex;
+  min-width: 0;
+}
+.term-item > .term-code {
+  flex-shrink: 0;
+}
+.term-item-desc {
+  min-width: 1.5ch;
+  margin-left: 1ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-items-more {
+  flex-shrink: 0;
+  margin-left: 1ch;
+}
+/* `> "query"` over the results. */
+.term-query {
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A result's host, cut before the title is; shorter on a phone. */
+.term-host {
+  display: inline-block;
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+.term-card[data-size='sm'] .term-host {
+  max-width: 16ch;
+}
+
+/* ── Automations ── */
+
+/* When it runs, then a state other than active: a long schedule is cut
+   before the state is. */
+.term-sched {
+  display: inline-flex;
+  max-width: 48ch;
+  vertical-align: bottom;
+}
+.term-card[data-size='sm'] .term-sched {
+  max-width: 30ch;
+}
+.term-sched > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-sched > .term-caps {
+  flex-shrink: 0;
+  white-space: pre;
+}
+
+/* ── A message sent, as a pill among the cards ── */
+
+.term-pill {
+  gap: 7px;
+  padding: 4px 11px 4px 8px;
+  cursor: pointer;
+}
+.term-pill-files {
+  gap: 4px;
+  color: var(--color-term-text-secondary);
+}
+.term-pill-files > svg {
+  width: 12px;
+  height: 12px;
+}

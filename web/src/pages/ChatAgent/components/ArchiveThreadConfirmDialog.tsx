@@ -29,7 +29,7 @@ function ArchiveThreadConfirmDialog({ open, onCancel, onConfirm }: ArchiveThread
       <DialogContent style={{ backgroundColor: 'var(--color-bg-page)', borderColor: 'var(--color-border-muted)' }}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Archive aria-hidden className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+            <Archive aria-hidden className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
             {t('chat.archiveConfirm.title', 'Archive a running thread?')}
           </DialogTitle>
           <DialogDescription>

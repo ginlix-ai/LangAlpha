@@ -97,7 +97,7 @@ async def _resolve_task_run_id(thread_id: str, task_id: str) -> Optional[str]:
 
 def _record_to_v1_sse(record: dict, thread_id: str, task_id: str) -> str:
     """Render a v2 content payload as the v1 wire string, byte-identical to
-    the pre-rendered form ``spill_task_record`` wrote to the v1 leg."""
+    the pre-rendered form ``spill_task_records`` wrote to the v1 leg."""
     seq = int(record.get("seq") or 0)
     # Inner data spreads first so consumer-injected thread_id/agent always
     # win — ``record["agent_id"]`` is the LangGraph namespace UUID and must

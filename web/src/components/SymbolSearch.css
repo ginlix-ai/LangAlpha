@@ -1,0 +1,62 @@
+/* The ticker search a chart's symbol opens. It fills whatever holds it (a
+   popover), so the list sits under the field rather than floating. */
+.symbol-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+}
+.symbol-search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-input);
+}
+.symbol-search-field input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+}
+.symbol-search-field input::placeholder { color: var(--color-text-tertiary); }
+.symbol-search-list {
+  max-height: 16rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.symbol-search-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.symbol-search-hit.is-active { background: var(--color-bg-hover); }
+.symbol-search-symbol {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.symbol-search-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-tertiary);
+}
+.symbol-search-none {
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}

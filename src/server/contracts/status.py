@@ -100,20 +100,110 @@ def is_live(raw: Any) -> bool:
     return value is not None and str(value) in _LIVE
 
 
-def classify_interrupt_reason(interrupts: Any) -> str:
-    """Classify HITL interrupt payloads: user question vs plan review.
+def is_user_stop(row: Optional[dict[str, Any]]) -> bool:
+    """True iff a run or response row ended because the user stopped it.
 
-    One authority for the ``interrupt_reason`` column spelling — the live
-    streaming path and the recovery scanner must never drift apart on it.
-    Accepts Interrupt objects or their dict form.
+    A cancelled status alone is not a stop: shutdown and recovery cancel runs
+    too. The finalize records ``cancelled_by_user`` from the user's /cancel,
+    whichever worker took it, so readers check that flag and never
+    ``cancel_requested_at``, which a system cancel stamps as well.
+    """
+    if not row or row.get("status") != "cancelled":
+        return False
+    metadata = row.get("metadata")
+    return isinstance(metadata, dict) and bool(metadata.get("cancelled_by_user"))
+
+
+# Endings whose subagents are collected and billed. A user stop bills them
+# too, killed; any other ending (an error, a timeout, a shutdown) is not the
+# user's doing, so its subagents are killed unbilled.
+COLLECTED_ENDINGS = frozenset({"completed", "interrupted"})
+
+
+def bills_subagents(row: Optional[dict[str, Any]]) -> bool:
+    """True iff a settled run row's ending bills the subagents it spawned."""
+    return bool(row) and (row.get("status") in COLLECTED_ENDINGS or is_user_stop(row))
+
+
+# The credit gate's two wire spellings, declared rather than derived. Both are
+# matched outside Python — the resume query filters on them in SQL and the
+# stream reducer compares the error type in TypeScript — so neither may follow
+# a class name: a rename would silently stop the resume from finding anything
+# and the stopped task from ever reading as stopped. The frontend mirrors
+# CREDIT_STOP_ERROR_TYPE by hand in web/src/types/sse.ts, like the status
+# families above — change here first, then the mirror.
+INTERRUPT_REASON_CREDIT_PAUSE = "credit_pause"
+CREDIT_STOP_ERROR_TYPE = "credit_stop"
+
+# Every interrupt raised here names itself: the ones this codebase raises
+# directly carry ``type``, and the tool-approval middleware carries
+# ``name``/``args`` instead. Reading that discriminator IS the classification,
+# so the only thing spelled out below is which of the three questions the user
+# is being asked. Enumerating actions instead would rot on the next one added.
+_QUESTION_TYPE = "ask_user_question"
+
+# The ``interrupt_reason`` vocabulary, most specific first — one tuple serving
+# as both the closed value set and the precedence order, so a new reason cannot
+# be added without deciding what it outranks. ``credit_pause`` leads because it
+# is the one value with behaviour attached (the resume query selects on it), so
+# it must not lose to a proposal raised alongside it. ``_classify_one`` must
+# only ever return a member; ``.index`` below is what enforces that.
+INTERRUPT_REASONS = (
+    INTERRUPT_REASON_CREDIT_PAUSE,
+    "user_question",
+    "approval_required",
+)
+
+
+def _action_requests(interrupts: Any):
+    """Every action request across every payload.
+
+    The approval middleware batches a turn's whole approval set into one
+    ``interrupt()``, so a payload's requests are siblings, not a leader and a
+    tail — reading only the first would let precedence depend on tool-call
+    order within a payload while claiming to be order-independent.
     """
     for intr in interrupts:
         value = getattr(intr, "value", None)
-        if value is None and isinstance(intr, dict):
-            value = intr.get("value")
         if isinstance(value, dict):
-            requests = value.get("action_requests", [])
-            if requests and isinstance(requests[0], dict):
-                if requests[0].get("type") == "ask_user_question":
-                    return "user_question"
-    return "plan_review_required"
+            yield from (
+                r for r in value.get("action_requests", ()) if isinstance(r, dict)
+            )
+
+
+def _classify_one(request: dict) -> Optional[str]:
+    kind = request.get("type")
+    if kind == INTERRUPT_REASON_CREDIT_PAUSE:
+        return INTERRUPT_REASON_CREDIT_PAUSE
+    if kind == _QUESTION_TYPE:
+        return "user_question"
+    if kind:
+        # A typed interrupt this function has not met. An interrupt always
+        # waits on the user, and past a question or a top-up the only shape
+        # left is "approve this", so the generalization holds where naming a
+        # specific action would be a guess.
+        return "approval_required"
+    return "approval_required" if request.get("name") else None
+
+
+def classify_interrupts(interrupts: Any) -> tuple[Optional[str], Optional[str]]:
+    """Classify HITL interrupt payloads -> (``interrupt_reason``, the credit
+    pause's denial).
+
+    One authority for both: the live producer, the finalize fallback and the
+    recovery scanner must never drift apart on the spelling or on which
+    words a pause stamps. The reason is ``None`` when no payload carries a
+    discriminator, which the column stores as NULL. The denial is the quota
+    service's own words, relayed verbatim or not at all; the last pause wins.
+    """
+    reasons: list[str] = []
+    message: Optional[str] = None
+    for request in _action_requests(interrupts):
+        reason = _classify_one(request)
+        if reason:
+            reasons.append(reason)
+        if reason == INTERRUPT_REASON_CREDIT_PAUSE and isinstance(
+            request.get("message"), str
+        ):
+            message = request["message"]
+    return min(reasons, key=INTERRUPT_REASONS.index, default=None), message

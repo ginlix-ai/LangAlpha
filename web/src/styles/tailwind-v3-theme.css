@@ -1,0 +1,74 @@
+/* ============================================
+   Tailwind v3 defaults that v4 changed
+   ============================================
+
+   v4 ships a new default theme and changes a few core utilities. Each block
+   here puts back the v3 value so the upgrade moves no pixels. Delete a block
+   only as a deliberate visual change. (Preflight's differences live in
+   base.css.) */
+
+@theme {
+  /* v4's breakpoints are rem. These stay in px to match the px media queries
+     in the component stylesheets and the JS layout checks, which a larger
+     browser font size would otherwise leave behind. */
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+  --breakpoint-2xl: 1536px;
+
+  /* v4's text-* line heights are unitless ratios, so a child that sets only
+     its font size (text-[11px], an inline style) inherits the ratio instead
+     of the parent's line height, so its lines change height. v3's were lengths. */
+  --text-xs--line-height: 1rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl--line-height: 2.5rem;
+
+  /* v4 redefined the palette in oklch, which moves most shades a little
+     (red-500, the badges' 400s). These are v3's sRGB values. A family missing
+     here falls back to Tailwind 4's default palette, so add it back before using it. */
+  --color-gray-50: #f9fafb; --color-gray-100: #f3f4f6; --color-gray-200: #e5e7eb; --color-gray-300: #d1d5db; --color-gray-400: #9ca3af; --color-gray-500: #6b7280; --color-gray-600: #4b5563; --color-gray-700: #374151; --color-gray-800: #1f2937; --color-gray-900: #111827; --color-gray-950: #030712;
+  --color-neutral-50: #fafafa; --color-neutral-100: #f5f5f5; --color-neutral-200: #e5e5e5; --color-neutral-300: #d4d4d4; --color-neutral-400: #a3a3a3; --color-neutral-500: #737373; --color-neutral-600: #525252; --color-neutral-700: #404040; --color-neutral-800: #262626; --color-neutral-900: #171717; --color-neutral-950: #0a0a0a;
+  --color-red-50: #fef2f2; --color-red-100: #fee2e2; --color-red-200: #fecaca; --color-red-300: #fca5a5; --color-red-400: #f87171; --color-red-500: #ef4444; --color-red-600: #dc2626; --color-red-700: #b91c1c; --color-red-800: #991b1b; --color-red-900: #7f1d1d; --color-red-950: #450a0a;
+  --color-yellow-50: #fefce8; --color-yellow-100: #fef9c3; --color-yellow-200: #fef08a; --color-yellow-300: #fde047; --color-yellow-400: #facc15; --color-yellow-500: #eab308; --color-yellow-600: #ca8a04; --color-yellow-700: #a16207; --color-yellow-800: #854d0e; --color-yellow-900: #713f12; --color-yellow-950: #422006;
+  --color-green-50: #f0fdf4; --color-green-100: #dcfce7; --color-green-200: #bbf7d0; --color-green-300: #86efac; --color-green-400: #4ade80; --color-green-500: #22c55e; --color-green-600: #16a34a; --color-green-700: #15803d; --color-green-800: #166534; --color-green-900: #14532d; --color-green-950: #052e16;
+  --color-emerald-50: #ecfdf5; --color-emerald-100: #d1fae5; --color-emerald-200: #a7f3d0; --color-emerald-300: #6ee7b7; --color-emerald-400: #34d399; --color-emerald-500: #10b981; --color-emerald-600: #059669; --color-emerald-700: #047857; --color-emerald-800: #065f46; --color-emerald-900: #064e3b; --color-emerald-950: #022c22;
+  --color-blue-50: #eff6ff; --color-blue-100: #dbeafe; --color-blue-200: #bfdbfe; --color-blue-300: #93c5fd; --color-blue-400: #60a5fa; --color-blue-500: #3b82f6; --color-blue-600: #2563eb; --color-blue-700: #1d4ed8; --color-blue-800: #1e40af; --color-blue-900: #1e3a8a; --color-blue-950: #172554;
+}
+
+/* v4 wraps `hover:` in `@media (hover: hover)`, so a tap on a touch screen no
+   longer leaves the hover style behind. v3 applied it on any :hover; kept that
+   way until the mobile layout adopts the new behavior on purpose. */
+@custom-variant hover (&:hover);
+
+/* v4 added outline-color to these two lists, so the focus ring (an outline,
+   tokens.css) would fade in from the text color on every control that
+   transitions its colors. Otherwise v3's lists, plus the translate, scale and
+   rotate properties v4's transform utilities now set. Tailwind emits a
+   same-named @utility as a second rule right after the built-in one, so these
+   lists win. */
+@utility transition {
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, translate, scale, rotate, filter, -webkit-backdrop-filter, backdrop-filter;
+}
+
+@utility transition-colors {
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+}
+
+/* v4's space-y-* puts the gap under every child but the last, as a margin
+   with no specificity: a child's own margin beats it, and a hidden last child
+   still counts as the last. v3 put it on top of every shown child after the
+   first, over the child's own margins. The containers whose children bring
+   margins of their own, or that read the gap off the next sibling (FoldPanel),
+   use this to keep v3's placement. */
+@utility sibling-space-y-* {
+  & > :not([hidden]) ~ :not([hidden]) {
+    margin-top: calc(var(--spacing) * --value(number));
+    margin-bottom: 0;
+  }
+}

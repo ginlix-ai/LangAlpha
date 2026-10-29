@@ -88,7 +88,6 @@ export async function uploadUserMemo(
     '/api/v1/memo/user/upload',
     formData,
     {
-      headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: onProgress
         ? (e) => onProgress(Math.round((e.loaded * 100) / (e.total || 1)))
         : undefined,
@@ -124,7 +123,7 @@ export async function regenerateUserMemo(
 }
 
 /**
- * Fetch the original memo bytes via axios (bearer-token auth attached) and
+ * Fetch the original memo bytes via the API client (bearer-token auth attached) and
  * return a blob URL suitable for `<object data=...>` or an `<a download>`
  * anchor. Callers are responsible for `URL.revokeObjectURL()` when done.
  *

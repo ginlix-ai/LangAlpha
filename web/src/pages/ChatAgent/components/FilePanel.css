@@ -5,7 +5,11 @@
     background-color: var(--color-bg-page);
     border-left: 1px solid var(--color-border-muted);
   }
-  
+  /* Expanded, the panel's left edge is the sidebar's, which draws its own line. */
+  .file-panel.is-expanded {
+    border-left: none;
+  }
+
   .file-panel-header {
     display: flex;
     align-items: center;
@@ -22,7 +26,7 @@
     padding: 0.375rem;
     border-radius: 4px;
     color: var(--color-text-tertiary);
-    transition: all 0.15s;
+    transition: all var(--motion-quick) var(--ease-out);
     cursor: pointer;
     background: none;
     border: none;
@@ -41,136 +45,10 @@
     inset: 0;
     overflow-y: auto;
   }
-  .file-panel-content::-webkit-scrollbar {
-    width: 6px;
-  }
   .file-panel-content::-webkit-scrollbar-thumb {
     background-color: var(--color-border-muted);
-    border-radius: 3px;
-  }
-  .file-panel-content::-webkit-scrollbar-track {
-    background: transparent;
   }
   
-  .file-panel-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 16px;
-    cursor: pointer;
-    transition: background-color 0.15s;
-  }
-  .file-panel-item:hover,
-  .file-panel-item-context-active {
-    background-color: var(--color-border-muted);
-  }
-  .file-panel-item-nested {
-    padding-left: 32px;
-  }
-
-  /* ====== Indent Guide Lines (VS Code-style) ====== */
-  .file-tree-row {
-    position: relative;
-  }
-  .file-tree-indent-guide {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background-color: var(--color-border-muted);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s ease;
-  }
-  .file-tree-root:hover .file-tree-indent-guide {
-    opacity: 1;
-  }
-
-  /* ====== Filter & Sort Toolbar ====== */
-  .file-panel-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--color-border-muted);
-    flex-shrink: 0;
-  }
-  .file-panel-filter-chips {
-    display: flex;
-    gap: 4px;
-    flex: 1;
-    flex-wrap: wrap;
-    min-width: 0;
-  }
-  .file-panel-chip {
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 0.6875rem;
-    font-weight: 500;
-    border: 1px solid var(--color-border-muted);
-    background: transparent;
-    color: var(--color-text-tertiary);
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .file-panel-chip:hover {
-    border-color: var(--color-border-muted);
-    color: var(--color-text-tertiary);
-  }
-  .file-panel-chip.active {
-    background: var(--color-bg-hover);
-    border-color: var(--color-border-default);
-    color: var(--color-text-primary);
-  }
-
-  /* Sort dropdown */
-  .file-panel-sort-wrapper {
-    position: relative;
-    flex-shrink: 0;
-  }
-  .file-panel-sort-menu {
-    position: absolute;
-    right: 0;
-    top: 100%;
-    margin-top: 4px;
-    background-color: var(--color-bg-elevated);
-    border: 1px solid var(--color-border-muted);
-    border-radius: 6px;
-    overflow: hidden;
-    z-index: 50;
-    min-width: 110px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  }
-  .file-panel-sort-item {
-    padding: 6px 12px;
-    font-size: 0.75rem;
-    color: var(--color-text-tertiary);
-    cursor: pointer;
-    transition: background-color 0.1s;
-  }
-  .file-panel-sort-item:hover {
-    background-color: var(--color-border-muted);
-  }
-  .file-panel-sort-item.active {
-    color: var(--color-text-primary);
-    background-color: var(--color-bg-hover);
-  }
-
-  /* ====== Directory Group Header ====== */
-  .file-panel-dir-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 16px;
-    cursor: pointer;
-    user-select: none;
-    transition: background-color 0.15s;
-  }
-  .file-panel-dir-header:hover {
-    background-color: var(--color-border-muted);
-  }
-
   /* ====== Resizable Split Layout ====== */
   .chat-split-container {
     display: flex;
@@ -191,7 +69,7 @@
     cursor: col-resize;
     background-color: transparent;
     flex-shrink: 0;
-    transition: background-color 0.15s;
+    transition: background-color var(--motion-quick) var(--ease-out);
     position: relative;
     z-index: 2;
   }
@@ -223,7 +101,7 @@
   .file-panel-upload-progress-bar {
     height: 100%;
     background-color: var(--color-accent-primary);
-    transition: width 0.2s ease;
+    transition: width var(--motion-fold) var(--ease-out);
   }
 
   /* ====== Upload Error ====== */
@@ -240,10 +118,11 @@
   }
 
   /* ====== Drag & Drop Overlay ====== */
+  /* Over the tree's floating sheet (30) as well: the sheet takes the drop too. */
   .file-panel-drag-overlay {
     position: absolute;
     inset: 0;
-    z-index: 20;
+    z-index: 31;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -259,14 +138,6 @@
     pointer-events: none;
   }
 
-  /* ====== Selected File Row ====== */
-  .file-panel-item-selected {
-    background-color: var(--color-bg-elevated);
-  }
-  .file-panel-item-selected:hover {
-    background-color: var(--color-bg-elevated);
-  }
-
   /* ====== Indeterminate Progress Bar (delete) ====== */
   .file-panel-progress-indeterminate {
     height: 3px;
@@ -280,6 +151,7 @@
     height: 100%;
     width: 40%;
     background-color: var(--color-accent-primary);
+    /* motion-exempt: the sweep's loop period, and a loop breathes on ease-in-out rather than the one-shot collapse curve */
     animation: indeterminate-slide 1.2s ease-in-out infinite;
   }
   @keyframes indeterminate-slide {
@@ -287,64 +159,9 @@
     100% { transform: translateX(350%); }
   }
 
-  /* ====== Delete Confirmation Button ====== */
-  .file-panel-delete-confirm-btn {
-    padding: 2px 10px;
-    border-radius: 10px;
-    font-size: 0.6875rem;
-    font-weight: 600;
-    border: 1px solid var(--color-border-loss);
-    background: var(--color-loss-soft);
-    color: var(--color-loss);
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
-    animation: confirm-pulse 0.3s ease-out;
-  }
-  .file-panel-delete-confirm-btn:hover:not(:disabled) {
-    background: var(--color-loss-soft);
-    border-color: var(--color-border-loss);
-  }
-  .file-panel-delete-confirm-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
   @keyframes confirm-pulse {
     0% { transform: scale(0.92); opacity: 0.6; }
     100% { transform: scale(1); opacity: 1; }
-  }
-
-  /* ====== Row Status Group (memo badge + backup dot) ====== */
-  .file-panel-row-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: auto;
-    flex-shrink: 0;
-  }
-  .file-panel-memo-badge {
-    display: inline-flex;
-    align-items: center;
-    line-height: 0;
-  }
-
-  /* ====== Backup Status Dot ====== */
-  .file-panel-backup-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    transition: all 0.2s ease;
-  }
-  .file-panel-backup-dot.backed-up {
-    background-color: var(--color-profit-muted);
-    border: 1px solid var(--color-profit-border);
-    box-shadow: 0 0 4px var(--color-profit-soft);
-  }
-  .file-panel-backup-dot.modified {
-    background-color: var(--color-status-modified);
-    border: 1px solid var(--color-status-modified-border);
-    box-shadow: 0 0 4px var(--color-status-modified-glow);
   }
 
   /* ====== Backup Result Notification ====== */
@@ -358,17 +175,64 @@
     color: var(--color-profit);
     background-color: var(--color-border-muted);
     flex-shrink: 0;
-    animation: confirm-pulse 0.3s ease-out;
+    animation: confirm-pulse var(--motion-enter) var(--ease-out);
   }
   .file-panel-backup-result.error {
     color: var(--color-loss);
     background-color: var(--color-loss-soft);
+  }
+  .file-panel-backup-result.unsaved {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px 12px;
+    color: var(--color-text-secondary);
+    background-color: var(--color-bg-elevated);
+    border-bottom: 1px solid var(--color-border-muted);
+  }
+  .file-panel-backup-result-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .file-panel-unsaved-count {
+    color: var(--color-accent-primary);
+    font-weight: 500;
+  }
+  .file-panel-unsaved-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .file-panel-unsaved-list li {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .file-panel-unsaved-path {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: var(--color-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-panel-unsaved-reason,
+  .file-panel-unsaved-more {
+    color: var(--color-text-tertiary);
   }
 
   /* ====== Active Icon Button (toggled on) ====== */
   .file-panel-icon-btn-active {
     color: var(--color-accent-primary) !important;
     background-color: var(--color-accent-soft) !important;
+  }
+  .file-panel-icon-btn[aria-pressed='true'] {
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
   }
   .file-panel-icon-btn[data-state=open] {
     color: var(--color-accent-primary) !important;
@@ -431,7 +295,7 @@
     color: inherit;
     cursor: pointer;
     flex-shrink: 0;
-    transition: opacity 0.15s ease;
+    transition: opacity var(--motion-quick) var(--ease-out);
     white-space: nowrap;
   }
   .file-panel-memo-banner-action:hover:not(:disabled) {
@@ -468,15 +332,18 @@
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
     backdrop-filter: blur(12px);
     cursor: pointer;
+    font: inherit;
     font-size: 0.75rem;
     font-weight: 500;
     color: var(--color-text-primary);
     white-space: nowrap;
-    transition: background 0.1s, border-color 0.1s;
+    transition: background var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
     user-select: none;
   }
+  /* The hover tint is translucent and the chip sits over the text it was
+     raised for, so it layers over the opaque fill rather than replacing it. */
   .file-panel-selection-tooltip:hover {
-    background: var(--color-bg-hover);
+    background-image: linear-gradient(var(--color-bg-hover), var(--color-bg-hover));
     border-color: var(--color-border-elevated);
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
   }
@@ -496,14 +363,23 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    width: 100%;
     padding: 8px 12px;
+    border: 0;
+    background: none;
+    font: inherit;
+    text-align: left;
     font-size: 0.75rem;
     color: var(--color-text-primary);
     cursor: pointer;
-    transition: background-color 0.1s;
+    transition: background-color var(--motion-quick) var(--ease-out);
   }
-  .file-panel-context-menu-item:hover {
+  .file-panel-context-menu-item:hover:not(:disabled) {
     background-color: var(--color-bg-hover);
+  }
+  .file-panel-context-menu-item:disabled {
+    color: var(--color-text-tertiary);
+    cursor: default;
   }
 
   /* Monaco editor container — fills available panel height */
@@ -524,6 +400,98 @@
     border-radius: 0 !important;
   }
 
+  /* ====== Breadcrumb / actions row ====== */
+  .file-panel-crumbs {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 34px;
+    padding: 0.125rem 0.5rem 0.125rem 0.75rem;
+    border-bottom: 1px solid var(--color-border-muted);
+    flex-shrink: 0;
+  }
+  .file-panel-crumb-trail {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+  }
+  .file-panel-crumb {
+    max-width: 9rem;
+    padding: 1px 3px;
+    border: 0;
+    border-radius: 3px;
+    background: none;
+    font-size: 0.6875rem;
+    color: var(--color-text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .file-panel-crumb:hover {
+    color: var(--color-text-primary);
+    background-color: var(--color-bg-hover);
+  }
+  .file-panel-crumb.is-file {
+    color: var(--color-text-primary);
+    cursor: default;
+  }
+  .file-panel-crumb.is-file:hover {
+    background: none;
+  }
+  .file-panel-crumb-sep {
+    flex-shrink: 0;
+    color: var(--color-icon-muted);
+  }
+  .file-panel-crumb-unsaved {
+    color: var(--color-status-modified);
+  }
+  .file-panel-crumb-spacer {
+    flex: 1 1 auto;
+    min-width: 0.25rem;
+  }
+  .file-panel-crumb-meta {
+    flex-shrink: 0;
+    font-size: 0.6875rem;
+    color: var(--color-text-tertiary);
+    white-space: nowrap;
+  }
+  /* A served path can be long; it gives way to an ellipsis before the
+     actions beside it give up any width. */
+  .file-panel-crumb-path {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+  }
+
+  /* ====== Viewer + tree split ====== */
+  .file-panel-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+  .file-panel-viewer {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+  .file-panel-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 8px 12px 12px;
+  }
+
   /* ====== Mobile responsive ====== */
   @media (max-width: 767px) {
     .chat-split-left { min-width: 0; }
@@ -534,7 +502,105 @@
        so content doesn't get clipped behind the floating bottom tab bar */
     .mobile-panel-overlay [class*="overflow-y-auto"],
     .mobile-panel-overlay [class*="overflow-auto"],
-    .mobile-panel-overlay .file-panel-content {
+    .mobile-panel-overlay .file-panel-content,
+    .mobile-panel-overlay .file-panel-tree-list {
       padding-bottom: var(--bottom-tab-height);
     }
   }
+/* A reference's target inside the open file. The tint is annotation, so it
+   stays flat amber on the target; arrival fades it in once from a stronger mix. */
+.file-focus-line {
+  display: block;
+  background-color: var(--color-accent-soft);
+}
+.file-focus-block {
+  border-radius: 4px;
+  background-color: var(--color-accent-soft);
+  box-shadow: 0 0 0 4px var(--color-accent-soft);
+}
+.file-focus-enter {
+  animation: file-focus-in var(--motion-enter) var(--ease-out);
+}
+.file-focus-block.file-focus-enter {
+  animation-name: file-focus-in-block;
+}
+@keyframes file-focus-in {
+  from { background-color: color-mix(in srgb, var(--color-accent-primary) 34%, transparent); }
+  to { background-color: var(--color-accent-soft); }
+}
+@keyframes file-focus-in-block {
+  from {
+    background-color: color-mix(in srgb, var(--color-accent-primary) 34%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent-primary) 34%, transparent);
+  }
+  to {
+    background-color: var(--color-accent-soft);
+    box-shadow: 0 0 0 4px var(--color-accent-soft);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .file-focus-enter { animation: none; }
+}
+
+.file-focus-chip {
+  display: inline-flex;
+  align-items: center;
+  /* Location is secondary to the file's name: it gives up width first. */
+  flex: 0 1000 auto;
+  min-width: 4.5rem;
+  max-width: 14rem;
+  height: 1.375rem;
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+}
+.file-focus-chip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  height: 100%;
+  padding: 0 0.125rem 0 0.5rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.file-focus-chip-label:hover {
+  color: var(--color-text-primary);
+}
+.file-focus-chip-label.is-missing {
+  cursor: default;
+}
+.file-focus-chip-dot {
+  flex-shrink: 0;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background-color: var(--color-accent-primary);
+}
+.file-focus-chip-close {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 100%;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+/* A larger hit area than the quiet icon it wraps. */
+.file-focus-chip-close::after {
+  content: '';
+  position: absolute;
+  inset: -0.375rem -0.25rem;
+}
+.file-focus-chip-close:hover {
+  color: var(--color-text-primary);
+}

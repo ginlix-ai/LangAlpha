@@ -54,11 +54,11 @@ export function morningBriefPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts'
 
   const widgets = [markets, brief, holdings, news, earnings];
   const layouts: RGLItem[] = [
-    { i: markets.id, x: 0, y: 0, w: 12, h: 11 },
-    { i: brief.id, x: 0, y: 11, w: 8, h: 22 },
-    { i: holdings.id, x: 8, y: 11, w: 4, h: 30 },
-    { i: news.id, x: 0, y: 33, w: 8, h: 38 },
-    { i: earnings.id, x: 8, y: 41, w: 4, h: 29 },
+    { i: markets.id, x: 0, y: 0, w: 12, h: 6 },
+    { i: brief.id, x: 0, y: 6, w: 8, h: 10 },
+    { i: holdings.id, x: 8, y: 6, w: 4, h: 16 },
+    { i: news.id, x: 0, y: 16, w: 8, h: 18 },
+    { i: earnings.id, x: 8, y: 22, w: 4, h: 14 },
   ];
   return makePrefs(widgets, layouts);
 }
@@ -79,12 +79,12 @@ export function researcherPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts' |
 
   const widgets = [markets, agent, news, brief, holdings, earnings];
   const layouts: RGLItem[] = [
-    { i: markets.id, x: 0, y: 0, w: 12, h: 11 },
+    { i: markets.id, x: 0, y: 0, w: 12, h: 6 },
     { i: agent.id, x: 0, y: 11, w: 8, h: 13 },
-    { i: news.id, x: 8, y: 11, w: 4, h: 42 },
+    { i: news.id, x: 8, y: 11, w: 4, h: 36 },
     { i: brief.id, x: 0, y: 24, w: 8, h: 18 },
-    { i: holdings.id, x: 0, y: 42, w: 8, h: 28 },
-    { i: earnings.id, x: 8, y: 53, w: 4, h: 20 },
+    { i: holdings.id, x: 0, y: 42, w: 8, h: 16 },
+    { i: earnings.id, x: 8, y: 47, w: 4, h: 14 },
   ];
   return makePrefs(widgets, layouts);
 }
@@ -108,13 +108,13 @@ export function traderPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts' | 've
 
   const widgets = [markets, nvdaDay, nvdaWeek, nvdaQuarter, spyQuarter, holdings, news];
   const layouts: RGLItem[] = [
-    { i: markets.id, x: 0, y: 0, w: 12, h: 11 },
+    { i: markets.id, x: 0, y: 0, w: 12, h: 6 },
     { i: nvdaDay.id, x: 0, y: 11, w: 6, h: 22 },
     { i: nvdaWeek.id, x: 6, y: 11, w: 6, h: 22 },
     { i: nvdaQuarter.id, x: 0, y: 33, w: 6, h: 22 },
     { i: spyQuarter.id, x: 6, y: 33, w: 6, h: 22 },
-    { i: holdings.id, x: 0, y: 55, w: 5, h: 26 },
-    { i: news.id, x: 5, y: 55, w: 7, h: 26 },
+    { i: holdings.id, x: 0, y: 55, w: 5, h: 18 },
+    { i: news.id, x: 5, y: 55, w: 7, h: 18 },
   ];
   return makePrefs(widgets, layouts);
 }
@@ -168,9 +168,9 @@ export function portfolioStewardPreset(): Pick<DashboardPrefs, 'widgets' | 'layo
 
   const widgets = [markets, topHolding, holdings, agent, news, threads];
   const layouts: RGLItem[] = [
-    { i: markets.id, x: 0, y: 0, w: 12, h: 11 },
+    { i: markets.id, x: 0, y: 0, w: 12, h: 6 },
     { i: topHolding.id, x: 0, y: 11, w: 8, h: 30 },
-    { i: holdings.id, x: 8, y: 11, w: 4, h: 30 },
+    { i: holdings.id, x: 8, y: 11, w: 4, h: 18 },
     { i: agent.id, x: 0, y: 41, w: 8, h: 13 },
     { i: news.id, x: 8, y: 41, w: 4, h: 31 },
     { i: threads.id, x: 0, y: 54, w: 8, h: 15 },
@@ -201,7 +201,7 @@ export function agentDeskPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts' | 
     { i: picker.id, x: 0, y: 40, w: 8, h: 22 },
     { i: threads.id, x: 8, y: 40, w: 4, h: 22 },
     { i: automations.id, x: 0, y: 62, w: 6, h: 18 },
-    { i: holdings.id, x: 6, y: 62, w: 6, h: 18 },
+    { i: holdings.id, x: 6, y: 62, w: 6, h: 16 },
   ];
   return makePrefs(widgets, layouts);
 }
@@ -307,6 +307,23 @@ const PRESET_FACTORIES: Record<PresetId, () => Pick<DashboardPrefs, 'widgets' | 
   'portfolio-steward': portfolioStewardPreset,
   'agent-desk': agentDeskPreset,
 };
+
+/**
+ * The layout of a user who has saved none: Morning brief, with fixed widget
+ * ids. It can be drawn many times before anything saves it, and the dashboard
+ * remembers a widget's last loaded shape by its id, so the ids must not change
+ * between loads.
+ */
+export function defaultLayout(): Pick<DashboardPrefs, 'widgets' | 'layouts' | 'version'> {
+  const preset = morningBriefPreset();
+  const ids = new Map(preset.widgets.map((w) => [w.id, `default-${w.type}`]));
+  const rename = (items: RGLItem[] | undefined) => items?.map((l) => ({ ...l, i: ids.get(l.i) ?? l.i }));
+  return {
+    ...preset,
+    widgets: preset.widgets.map((w) => ({ ...w, id: ids.get(w.id) ?? w.id })),
+    layouts: { lg: rename(preset.layouts.lg), md: rename(preset.layouts.md) },
+  };
+}
 
 export function getPreset(id: PresetId): Pick<DashboardPrefs, 'widgets' | 'layouts' | 'version'> {
   return PRESET_FACTORIES[id]();

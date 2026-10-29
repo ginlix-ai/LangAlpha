@@ -1,0 +1,191 @@
+/* The getting-started checklist in the sidebar. Loaded with the guide, so a
+   user who has finished or hidden it never downloads these rules.
+
+   A card between the workspace tree and the account. A new user's tree is
+   short, so the list has the room; the tree keeps flex: 1 and scrolls when it
+   grows. On a short window the card gives up height as well and scrolls its
+   list, down to its header, while the tree keeps a few rows: the account
+   below never leaves the screen. */
+
+.sidebar-tree:has(~ .sidebar-guide) {
+  min-height: 112px;
+}
+
+.sidebar-guide {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 6px 10px 10px;
+  border: 1px solid hsl(var(--sidebar-border));
+  border-radius: 10px;
+  background: hsl(var(--sidebar-hover));
+}
+
+.sidebar-guide-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.8438rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+.sidebar-guide-head:hover {
+  background: hsl(var(--sidebar-hover));
+}
+
+/* The ring is the shadow; the transparent outline is what forced-colors mode
+   repaints, since it drops box shadows. */
+.sidebar-guide-head:focus-visible,
+.sidebar-guide-task:focus-visible,
+.sidebar-guide-hide:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 2px var(--color-focus-ring);
+}
+
+.sidebar-guide-count {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
+
+.sidebar-guide-chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  transform: rotate(-90deg);
+  transition: transform var(--motion-fold) var(--ease-out);
+}
+
+.sidebar-guide-head[aria-expanded='true'] .sidebar-guide-chevron {
+  transform: none;
+}
+
+/* Folds by animating the row track, so the list keeps its natural height. */
+.sidebar-guide-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--motion-fold) var(--ease-out);
+}
+
+.sidebar-guide-body[data-open='true'] {
+  grid-template-rows: 1fr;
+}
+
+.sidebar-guide-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 4px;
+}
+
+.sidebar-guide-body[data-open='false'] .sidebar-guide-scroll {
+  overflow: hidden;
+}
+
+.sidebar-guide-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 5px 7px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+.sidebar-guide-task:enabled:hover {
+  background: hsl(var(--sidebar-hover));
+}
+
+.sidebar-guide-task:disabled {
+  cursor: default;
+}
+
+.sidebar-guide-mark {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+
+.sidebar-guide-task-title {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-text-secondary);
+}
+
+.sidebar-guide-task[data-next] .sidebar-guide-task-title {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.sidebar-guide-task:disabled .sidebar-guide-task-title {
+  color: var(--color-text-tertiary);
+}
+
+.sidebar-guide-task-desc {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--color-text-tertiary);
+}
+
+.sidebar-guide-go {
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+
+.sidebar-guide-hide {
+  margin: 2px 0 2px 28px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+
+.sidebar-guide-hide:hover {
+  color: var(--color-text-secondary);
+}
+
+/* The rail's ring, above the avatar. */
+.sidebar-guide-rail {
+  margin-bottom: 4px;
+}
+
+.sidebar-guide-ring-arc {
+  transition: stroke-dashoffset var(--motion-fold) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-guide-chevron,
+  .sidebar-guide-body,
+  .sidebar-guide-ring-arc {
+    transition: none;
+  }
+}

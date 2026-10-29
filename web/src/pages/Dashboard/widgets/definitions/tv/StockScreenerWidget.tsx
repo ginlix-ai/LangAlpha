@@ -17,7 +17,6 @@ interface StockScreenerConfig {
 function StockScreenerWidget({ instance }: WidgetRenderProps<StockScreenerConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="screener"
       config={{
         screener_type: 'stock',

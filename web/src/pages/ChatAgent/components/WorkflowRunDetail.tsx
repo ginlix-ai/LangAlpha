@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { StopCircle } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 import { compactNumber } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
 import {
   WORKFLOW_TASK_TYPE,
   deriveChildIdentity,
@@ -167,6 +168,7 @@ function PhaseGroup({
   onOpenChild?: (child: WorkflowChild) => void;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const locale = useLocale();
   const doneCount = items.filter((c) => c.status !== 'running').length;
   return (
     <div style={{ marginBottom: 10 }}>
@@ -201,7 +203,7 @@ function PhaseGroup({
           const toolCalls = telemetry?.toolCalls ?? 0;
           const meta = [
             toolCalls > 0 ? t('chat.workflowRun.toolCalls', { count: toolCalls }) : null,
-            tokens > 0 ? t('chat.workflowRun.tokensShort', { value: compactNumber(tokens) }) : null,
+            tokens > 0 ? t('chat.workflowRun.tokensShort', { value: compactNumber(tokens, locale) }) : null,
           ].filter(Boolean).join(' · ');
           const showError =
             child.status !== 'running' && child.status !== 'ok' && !!child.error;
@@ -254,6 +256,7 @@ function WorkflowRunDetail({
   onStop,
 }: WorkflowRunDetailProps): React.ReactElement {
   const { t } = useTranslation();
+  const locale = useLocale();
   const ctxRun = useWorkflowRun(agent.id);
   const run = agent.workflowRun ?? ctxRun;
 
@@ -371,7 +374,7 @@ function WorkflowRunDetail({
           )}
           {duration && <Stat label={t('chat.workflowRun.statDuration')} value={duration} />}
           {run.tokensSpent != null && (
-            <Stat label={t('chat.workflowRun.statTokens')} value={compactNumber(run.tokensSpent)} />
+            <Stat label={t('chat.workflowRun.statTokens')} value={compactNumber(run.tokensSpent, locale)} />
           )}
         </div>
       )}

@@ -1,4 +1,5 @@
 import { Select } from '@/components/ui/select';
+import '@/pages/Dashboard/components/dashForms.css';
 
 interface Option {
   value: string;
@@ -16,7 +17,7 @@ interface Props {
 export function EnumField({ label, value, onChange, options, helper }: Props) {
   return (
     <label className="block">
-      <span className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+      <span className="term-label dash-form-label">
         {label}
       </span>
       <Select value={value} onChange={(e) => onChange(e.target.value)}>
@@ -27,7 +28,7 @@ export function EnumField({ label, value, onChange, options, helper }: Props) {
         ))}
       </Select>
       {helper && (
-        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="dash-form-help">
           {helper}
         </span>
       )}

@@ -13,9 +13,11 @@ export interface ByokProvider {
   base_url: string | null;
   is_custom?: boolean;
   use_response_api?: boolean;
+  /** Stored for a provider the catalog no longer has: listed only to be removed. */
+  withdrawn?: boolean;
 }
 
-export type SdkType = 'openai' | 'anthropic' | 'gemini' | 'codex' | 'deepseek' | 'qwq';
+export type SdkType = 'openai' | 'anthropic' | 'gemini' | 'codex' | 'deepseek' | 'openrouter' | 'qwq' | 'dashscope';
 
 export interface RegionVariant {
   provider: string;
@@ -24,6 +26,8 @@ export interface RegionVariant {
   sdk?: SdkType | string;
   base_url?: string | null;
   use_response_api?: boolean;
+  /** Whose manifest models a key saved here offers: the region's plan. */
+  models_from?: string;
 }
 
 export interface ProviderCatalogEntry {
@@ -37,7 +41,39 @@ export interface ProviderCatalogEntry {
   base_url?: string | null;
   use_response_api?: boolean;
   dynamic_models?: boolean;
+  /** Whose manifest models a key saved here offers: the provider's own, else
+   *  a coding plan's brand. */
+  models_from?: string;
   region_variants?: RegionVariant[];
+  /** The connection's other APIs (OpenCode Go's Chat Completions beside its
+   *  Anthropic Messages): a model it serves on one is saved under that one,
+   *  and stays this connection's. */
+  routes?: string[];
+  /** The provider this entry is a plan or region of (the providers.json group). */
+  group?: string;
+  group_display_name?: string;
+  /** What kind of provider the group is; the key picker sorts by it. */
+  category?: ProviderCategory | null;
+}
+
+export type ProviderCategory = 'closed_source' | 'open_source' | 'inference';
+
+/** Where the server looks for a provider's stored key, from `/api/v1/models`. */
+export interface KeyCandidates {
+  /** Every slug the lookup visits, in its order. */
+  slugs: string[];
+  /** Those whose key the vendor issues as one with the provider's. */
+  shared: string[];
+}
+
+/**
+ * Which reasoning levels a model takes, and where the chosen one is written
+ * (`reasoning_block` on the server). An empty `efforts` says it takes none.
+ */
+export interface ReasoningDeclaration {
+  efforts: string[];
+  default?: string;
+  write?: string;
 }
 
 export interface CustomModelEntry {
@@ -47,6 +83,13 @@ export interface CustomModelEntry {
   parameters?: Record<string, unknown>;
   extra_body?: Record<string, unknown>;
   input_modalities?: string[];
+  /** Context window in tokens, as the provider lists it; picks the compaction band. */
+  context?: number;
+  reasoning?: ReasoningDeclaration;
+  /** The prompt scaffolding the model is tuned for, where it is known. */
+  prompt_guidance?: string;
+  /** The name a gateway's catalog gives the model, shown in place of `name`. */
+  display_name?: string;
 }
 
 export interface CustomModelFormState {

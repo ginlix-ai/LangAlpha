@@ -1,16 +1,44 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import type { EmailOtpType } from '@supabase/supabase-js';
 import { useAuth } from '../../contexts/AuthContext';
 import { isPlatformMode, APP_ENTRY_PATH } from '../../config/hostMode';
 import { AUTH_BROADCAST_CHANNEL, type AuthBroadcastMessage } from '../../lib/oauthPopup';
 import { authErrorMessage } from '../../lib/authErrors';
-import WavesBackground from './WavesBackground';
+import { landAfterSignIn } from '../../lib/hostedSignIn';
+import { useShellHandoff } from './useShellHandoff';
+import ShellHandoff from './ShellHandoff';
+import EdgeGrain from './EdgeGrain';
 import './LoginPage.css';
 
 /** How long to wait for the client's automatic `?code=` exchange to land. */
 const PKCE_FALLBACK_TIMEOUT_MS = 8000;
+
+/** The slice of the Navigation API read below, which not every browser has. */
+type SessionHistory = {
+  currentEntry: { index: number } | null;
+  entries(): { url: string | null }[];
+};
+
+/** Pages an email link lands on; going back to one would redeem its link again. */
+const EMAIL_LINK_PAGES = ['/callback', '/auth/confirm', '/reset-password'];
+
+/**
+ * Whether Back leads to a page of this site that this link was loaded on top
+ * of. Only the Navigation API can say what Back leads to, and it lists this
+ * site's entries alone, so a window the link opened, or one that came from
+ * another site, has none.
+ */
+function interruptedPage(): boolean {
+  const nav = (window as unknown as { navigation?: SessionHistory }).navigation;
+  const index = nav?.currentEntry?.index ?? 0;
+  if (!nav || index < 1) return false;
+  const url = nav.entries()[index - 1]?.url;
+  if (!url) return false;
+  const { pathname } = new URL(url);
+  return !EMAIL_LINK_PAGES.some((page) => pathname === page || pathname.startsWith(`${page}/`));
+}
 
 /** Let any still-open login tab pick up the fresh session cookie (cookie
  * writes don't fire events). */
@@ -41,10 +69,15 @@ function AuthConfirm() {
   const [status, setStatus] = useState<'verifying' | 'confirmed' | 'error'>('verifying');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pkceFallback, setPkceFallback] = useState(false);
+  const { handingOff, continueHere } = useShellHandoff();
   const ranRef = useRef(false);
 
   useEffect(() => {
     if (!isPlatformMode) return;
+    // The app is redeeming this one. Bail BEFORE claiming the run, so pressing
+    // "continue in this browser" can still take it back -- a token consumed
+    // here is a token the app can no longer use.
+    if (handingOff) return;
     // verifyOtp consumes the single-use token — never run it twice (StrictMode).
     if (ranRef.current) return;
     ranRef.current = true;
@@ -107,7 +140,7 @@ function AuthConfirm() {
         // Confirmed signup / magic link.
         broadcastAuthComplete();
         setStatus('confirmed');
-        redirectTimer = setTimeout(() => navigate('/dashboard', { replace: true }), 1500);
+        redirectTimer = setTimeout(() => landAfterSignIn(navigate), 1500);
       } catch (err: unknown) {
         setErrorMessage(authErrorMessage(err, t).message);
         setStatus('error');
@@ -119,7 +152,7 @@ function AuthConfirm() {
     return () => {
       if (redirectTimer) clearTimeout(redirectTimer);
     };
-  }, [verifyEmailOtp, navigate, t]);
+  }, [verifyEmailOtp, navigate, t, handingOff]);
 
   // PKCE fallback: succeed as soon as the auto-exchanged session lands; if it
   // never does (link opened in a different browser, expired code), fail after
@@ -132,19 +165,34 @@ function AuthConfirm() {
     }
     broadcastAuthComplete();
     setStatus('confirmed');
-    const timer = setTimeout(() => navigate('/dashboard', { replace: true }), 1500);
+    const timer = setTimeout(() => landAfterSignIn(navigate), 1500);
     return () => clearTimeout(timer);
   }, [pkceFallback, isLoggedIn, navigate]);
+
+  // A link that fails in a window that already holds a session has nothing left
+  // to do. The desktop app loads an email link once per click, in its window
+  // wherever that is, so a second click brings in a token the first one spent,
+  // on top of the page the user was on. The session it would have made is
+  // already here, so the window goes back to that page; with no such page behind
+  // it, on to the app. Either beats an error with no way out but the app.
+  const spentWhileSignedIn = status === 'error' && isLoggedIn;
+  useEffect(() => {
+    if (!spentWhileSignedIn) return;
+    const timer = setTimeout(() => (interruptedPage() ? window.history.back() : landAfterSignIn(navigate)), 1500);
+    return () => clearTimeout(timer);
+  }, [spentWhileSignedIn, navigate]);
 
   if (!isPlatformMode) {
     return <Navigate to={APP_ENTRY_PATH} replace />;
   }
 
   return (
-    <div className="login-page">
-      <WavesBackground />
+    <div className="login-page owns-its-edge">
+      <EdgeGrain centered />
       <div className="login-page__card">
-        {status === 'error' ? (
+        {handingOff ? (
+          <ShellHandoff onContinueHere={continueHere} />
+        ) : status === 'error' && !spentWhileSignedIn ? (
           <div className="login-page__status">
             <div className="login-page__error">{errorMessage || t('auth.confirmError')}</div>
             <button
@@ -157,7 +205,7 @@ function AuthConfirm() {
           </div>
         ) : (
           <p className="login-page__status-text">
-            {status === 'confirmed' ? t('auth.confirmedSigningIn') : t('auth.confirming')}
+            {status === 'confirmed' || spentWhileSignedIn ? t('auth.confirmedSigningIn') : t('auth.confirming')}
           </p>
         )}
       </div>

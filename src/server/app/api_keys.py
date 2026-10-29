@@ -7,20 +7,22 @@ Endpoints:
 - DELETE /api/v1/users/me/api-keys/{prov} — Remove one provider key
 - POST /api/v1/keys/test                  — Test an API key with a lightweight inference call
 - GET  /api/v1/models                     — List available models by provider
+- GET  /api/v1/providers/{p}/available-models — What the user's credential can use
 """
 
-import functools
 import logging
-import os
-import re
-import time
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
-from src.config.env import HOST_MODE, HOST_IP
+from src.config.env import HOST_IP
+from src.server.services.llm import key_probe
+from src.server.services.llm.config import deployment_key, deployment_local_provider
+from src.server.services.llm.egress import EndpointRefused
+from src.server.services.llm.provider_catalog import key_candidates, provider_catalog
 from src.server.utils.api import CurrentUserId
+from src.utils.cache.throttle import throttle
 from src.server.database.api_keys import (
     get_user_api_keys,
     get_base_url_for_provider,
@@ -28,7 +30,10 @@ from src.server.database.api_keys import (
     upsert_api_key,
     delete_api_key,
     invalidate_byok_cache,
+    key_writes,
+    update_base_url,
 )
+from src.server.services.llm.provider_models import invalidate_available_models
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +44,19 @@ _BYOK_PROVIDERS_CACHE: list[str] | None = None
 
 
 def _get_supported_providers() -> list[str]:
-    """Get BYOK-eligible providers from LLM manifest (cached at module level)."""
+    """BYOK-eligible connections from the LLM manifest (cached at module level).
+
+    A gateway's route is one API of its connection and takes the gateway's
+    key, so it is no connection of its own: listed, a deployment key would
+    show as one plan row per API, and a key saved under one would be a second
+    key for the same connection.
+    """
     global _BYOK_PROVIDERS_CACHE
     if _BYOK_PROVIDERS_CACHE is None:
         from src.llms.llm import ModelConfig
 
         config = ModelConfig()
-        _BYOK_PROVIDERS_CACHE = config.get_byok_eligible_providers()
+        _BYOK_PROVIDERS_CACHE = [p for p in config.get_byok_eligible_providers() if config.connection_of(p) == p]
     return _BYOK_PROVIDERS_CACHE
 
 
@@ -64,6 +75,7 @@ def _get_provider_info_map() -> dict[str, dict]:
             "access_type": info.get("access_type", "api_key"),
             "brand_key": info.get("parent_provider", p),
             "env_key": info.get("env_key"),
+            "base_url": info.get("base_url"),
         }
     return info_map
 
@@ -92,14 +104,16 @@ def _format_response(
     # In standalone mode (no platform service), server .env keys belong to the
     # user — surface them so the frontend shows the right models.
     providers = []
+    # A local server the deployment's default runs on is configured too, at the
+    # manifest's address, and named as the server's so it offers no removal.
+    served_locally = deployment_local_provider()
     for p in _get_supported_providers():
         raw = keys.get(p)
         pinfo = info_map.get(p, {})
         # Local providers (Ollama, LM Studio, vLLM) are "configured" when a
         # base_url is stored, even without an API key.
         has_base_url = bool(base_urls.get(p))
-        env_key = pinfo.get("env_key")
-        has_env = HOST_MODE == "oss" and bool(env_key and os.getenv(env_key))
+        has_env = deployment_key(p) is not None or (p == served_locally and not has_base_url)
         providers.append({
             "provider": p,
             "display_name": pinfo.get("display_name", p.title()),
@@ -107,13 +121,18 @@ def _format_response(
             "brand_key": pinfo.get("brand_key", p),
             "has_key": bool(raw) or has_base_url or has_env,
             "masked_key": _mask_key(raw) if raw else ("(server)" if has_env else None),
-            "base_url": base_urls.get(p),
+            "base_url": base_urls.get(p) or (pinfo.get("base_url") if p == served_locally else None),
             "is_custom": False,
         })
 
     # Append user-defined sub-providers
+    builtin = {row["provider"] for row in providers}
     for cp in custom_providers or []:
         name = cp["name"]
+        # One saved before its name became a built-in keeps routing its own
+        # models, but the key under the name is the built-in row's: one row.
+        if name in builtin:
+            continue
         raw = keys.get(name)
         entry = {
             "provider": name,
@@ -128,21 +147,51 @@ def _format_response(
             entry["use_response_api"] = True
         providers.append(entry)
 
+    providers.extend(_withdrawn_rows(keys, base_urls, listed={p["provider"] for p in providers}))
     return {"byok_enabled": byok_enabled, "providers": providers}
+
+
+def _withdrawn_rows(keys: dict, base_urls: dict, *, listed: set[str]) -> list[dict]:
+    """A key still stored for a provider the manifest no longer has, or for a
+    custom provider built on one: nothing can use it, but it is the user's
+    secret, so it is listed for them to remove (``DELETE`` takes it). An empty
+    manifest is a load failure, not a catalog with nothing in it."""
+    from src.llms.llm import ModelConfig
+
+    known = ModelConfig().flat_providers
+    if not known:
+        return []
+    return [
+        {
+            "provider": slug,
+            "display_name": slug,
+            "access_type": "api_key",
+            "has_key": True,
+            "masked_key": _mask_key(raw) if raw else None,
+            "base_url": base_urls.get(slug),
+            "is_custom": False,
+            "withdrawn": True,
+        }
+        for slug, raw in keys.items()
+        if slug not in listed and slug not in known and (raw or base_urls.get(slug))
+    ]
 
 
 # ── BYOK Endpoints ──────────────────────────────────────────────────────
 
 
 async def _get_custom_providers(user_id: str) -> list:
-    """Load user-defined sub-providers from other_preference.custom_providers."""
-    from src.server.database.user import get_user_preferences
+    """Load user-defined sub-providers from ``custom_providers``.
 
-    prefs = await get_user_preferences(user_id)
-    if not prefs:
-        return []
-    other = prefs.get("other_preference") or {}
-    return other.get("custom_providers") or []
+    Goes through the resolver's merged read because the key moved into
+    ``model_preference``: reading ``other_preference`` alone returns empty
+    for every migrated user, which drops their custom providers out of this
+    response and out of every client that builds a provider list from it.
+    """
+    from src.server.services.llm.user_models import get_model_preference
+
+    model_pref = await get_model_preference(user_id)
+    return model_pref.get("custom_providers") or []
 
 
 @router.get("/api/v1/users/me/api-keys")
@@ -191,18 +240,34 @@ class UpdateApiKeysRequest(BaseModel):
         return v
 
 
+async def _refuse_base_urls(base_urls: Dict[str, Optional[str]]) -> None:
+    """Refuse, in platform mode, a base URL the server must not dial."""
+    from src.server.services.llm import egress
+
+    if not egress.enforced():
+        return
+    reasons = await egress.save_refusals(base_urls.values())
+    for provider, url in base_urls.items():
+        if url and reasons[url]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Base URL for {provider} cannot be used: {reasons[url]}",
+            )
+
+
 def _get_allowed_providers(custom_providers: list) -> set[str]:
     """Return the set of provider names allowed for API key operations.
 
     Excludes OAuth-only providers (codex-oauth, claude-oauth) since those
     are authenticated via OAuth flow, not user-supplied API keys.
-    Excludes platform variants (system-only proxy routes).
+    Excludes platform variants (system-only proxy routes), and a gateway's
+    routes, whose key is the gateway's (``_get_supported_providers``).
     """
     from src.llms.llm import ModelConfig
     config = ModelConfig()
     allowed = {
         name for name, info in config.flat_providers.items()
-        if info.get("access_type") != "oauth" and not info.get("platform")
+        if info.get("access_type") != "oauth" and not info.get("platform") and config.connection_of(name) == name
     }
     for cp in custom_providers:
         allowed.add(cp["name"])
@@ -217,45 +282,56 @@ async def update_api_keys(body: UpdateApiKeysRequest, user_id: CurrentUserId):
     - byok_enabled: toggle the global switch
     - api_keys: { "openai": "sk-..." } to set, { "openai": null } to delete
     """
-    # Toggle BYOK if requested
-    if body.byok_enabled is not None:
-        await set_byok_enabled(user_id, body.byok_enabled)
-
     custom_providers = await _get_custom_providers(user_id)
     allowed = _get_allowed_providers(custom_providers)
 
-    # Upsert / delete individual provider keys
-    if body.api_keys:
-        for provider, key_value in body.api_keys.items():
-            if provider not in allowed:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported provider: {provider}.",
-                )
-            base_url = body.base_urls.get(provider) if body.base_urls else None
-            if key_value is None and not base_url:
-                await delete_api_key(user_id, provider)
-            else:
-                # Upsert with key (or empty string for local providers with only base_url)
-                await upsert_api_key(user_id, provider, key_value or "", base_url=base_url)
-
-    # Update base_urls independently (when key already exists)
+    # Before anything is written, so a refused request leaves nothing applied.
+    # Names first: a URL is resolved only for a provider there is, which bounds
+    # the lookups one request can ask for.
+    for provider in (*(body.api_keys or {}), *(body.base_urls or {})):
+        if provider not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported provider: {provider}.",
+            )
     if body.base_urls:
-        for provider, url in body.base_urls.items():
-            if provider not in allowed:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported provider: {provider}.",
-                )
-            # Skip if already handled in api_keys upsert above
-            if body.api_keys and provider in body.api_keys:
-                continue
-            # Update base_url on existing key row
-            from src.server.database.api_keys import update_base_url
-            await update_base_url(user_id, provider, url)
+        await _refuse_base_urls(body.base_urls)
+
+    # All or nothing, so a failed write leaves the keys as they were.
+    async with key_writes(user_id) as conn:
+        # Toggle BYOK if requested
+        if body.byok_enabled is not None:
+            await set_byok_enabled(user_id, body.byok_enabled, conn=conn)
+
+        # Upsert / delete individual provider keys
+        if body.api_keys:
+            from src.llms.llm import LLM as LLMFactory
+
+            mc = LLMFactory.get_model_config()
+            for provider, key_value in body.api_keys.items():
+                base_url = body.base_urls.get(provider) if body.base_urls else None
+                if key_value is None and not base_url:
+                    await delete_api_key(user_id, provider, conn=conn)
+                else:
+                    # Upsert with key (or empty string for local providers with only base_url)
+                    await upsert_api_key(user_id, provider, key_value or "", base_url=base_url, conn=conn)
+                # One region per plan, whatever the client last saw stored.
+                if key_value:
+                    for region in mc.plan_regions(provider):
+                        await delete_api_key(user_id, region, conn=conn)
+
+        # Update base_urls independently (when key already exists)
+        if body.base_urls:
+            for provider, url in body.base_urls.items():
+                # Skip if already handled in api_keys upsert above
+                if body.api_keys and provider in body.api_keys:
+                    continue
+                # Update base_url on existing key row
+                await update_base_url(user_id, provider, url, conn=conn)
 
     # Invalidate cached BYOK status so the next chat picks up key changes
     await invalidate_byok_cache(user_id)
+    await invalidate_available_models(user_id)
 
     # Auto-complete personalization if keys were added
     from src.server.services.onboarding import maybe_complete_personalization
@@ -271,15 +347,19 @@ async def update_api_keys(body: UpdateApiKeysRequest, user_id: CurrentUserId):
 
 @router.delete("/api/v1/users/me/api-keys/{provider}")
 async def remove_api_key(provider: str, user_id: CurrentUserId):
-    """Remove one provider's API key."""
+    """Remove one provider's API key, including one saved for a provider
+    since withdrawn: it is still the user's secret to take back."""
     custom_providers = await _get_custom_providers(user_id)
     allowed = _get_allowed_providers(custom_providers)
-    if provider not in allowed:
+    if provider not in allowed and provider not in (await get_user_api_keys(user_id))["keys"]:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported provider: {provider}.",
         )
     await delete_api_key(user_id, provider)
+    # As on PUT: the cached BYOK status still lists the deleted key.
+    await invalidate_byok_cache(user_id)
+    await invalidate_available_models(user_id)
     data = await get_user_api_keys(user_id)
     return _format_response(
         data["byok_enabled"], data["keys"], data.get("base_urls"),
@@ -288,29 +368,6 @@ async def remove_api_key(provider: str, user_id: CurrentUserId):
 
 
 # ── Key Test Endpoint ────────────────────────────────────────────────────
-
-
-# Cheapest model per SDK type for key validation.
-# These are used for lightweight "say hello" test calls.
-_TEST_MODELS: dict[str, str] = {
-    "anthropic": "claude-haiku-4-5-20251001",
-    "openai": "gpt-4.1-nano",
-    "gemini": "gemini-2.0-flash-lite",
-}
-
-# Regex to strip potential API key fragments from error messages.
-# Matches common key prefixes (sk-, key-, anthropic-, ...) followed by
-# 6+ alphanumeric/dash chars.
-_KEY_FRAGMENT_RE = re.compile(
-    r"(?:sk-|key-|anthropic-|ant-|ANTHROPIC_|OPENAI_|AIza|gsk_|or-)[A-Za-z0-9_-]{6,}", re.ASCII
-)
-
-
-def _sanitize_error(msg: str) -> str:
-    """Strip API key fragments and URLs with query params from error messages."""
-    # Also strip full URLs that may contain keys in query strings
-    msg = re.sub(r"https?://[^\s\"']+", "[URL_REDACTED]", msg)
-    return _KEY_FRAGMENT_RE.sub("[REDACTED]", msg)
 
 
 class TestApiKeyRequest(BaseModel):
@@ -323,165 +380,23 @@ class TestApiKeyRequest(BaseModel):
     @field_validator("api_key")
     @classmethod
     def validate_key(cls, v: str) -> str:
-        if not v:
-            return v  # Allow empty for local providers (lm-studio, vllm, ollama)
-        if len(v) > 4096:
-            raise ValueError("API key must be under 4096 characters")
-        if not v.isascii():
-            raise ValueError("API key must contain only ASCII characters")
-        return v
+        return key_probe.probe_key(v)
 
     @field_validator("base_url")
     @classmethod
     def validate_url(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None:
-            if not v.startswith(("http://", "https://")):
-                raise ValueError("Base URL must start with http:// or https://")
-            if len(v) > 512:
-                raise ValueError("Base URL must be under 512 characters")
-        return v
+        return key_probe.probe_url(v)
 
 
-async def _test_anthropic_key(
-    api_key: str, model: str, base_url: str | None, timeout: float
-) -> dict:
-    """Test an Anthropic API key. Try /models first, fall back to inference."""
-    import httpx
-
-    base = (base_url or "https://api.anthropic.com").rstrip("/")
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        # Strategy 1: list models
-        resp = await client.get(f"{base}/v1/models?limit=5", headers=headers)
-        if resp.status_code not in (404, 405, 422):
-            resp.raise_for_status()
-            data = resp.json()
-            models = data.get("data", [])
-            return {"models_found": len(models), "model": models[0].get("id", "") if models else ""}
-
-        # Strategy 2: minimal inference
-        resp2 = await client.post(
-            f"{base}/v1/messages",
-            json={"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
-            headers={**headers, "content-type": "application/json"},
-        )
-        if resp2.status_code not in (404, 405):
-            resp2.raise_for_status()
-            return {"models_found": None, "model": model}
-
-        # Both 404 — server reachable but no known endpoints responded
-        raise ValueError("Server reachable but could not verify key — no compatible API endpoint found")
-
-
-async def _test_openai_key(
-    api_key: str, model: str, base_url: str | None, timeout: float
-) -> dict:
-    """Test an OpenAI-compatible API key. Try /models first, fall back to inference."""
-    import httpx
-
-    base = (base_url or "https://api.openai.com/v1").rstrip("/")
-    headers = {"Authorization": f"Bearer {api_key}"}
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        # Strategy 1: list models
-        resp = await client.get(f"{base}/models", headers=headers)
-        if resp.status_code not in (404, 405):
-            resp.raise_for_status()
-            data = resp.json()
-            models = data.get("data", [])
-            return {"models_found": len(models), "model": models[0].get("id", "") if models else ""}
-
-        # Strategy 2: minimal inference (some providers have non-standard paths)
-        resp2 = await client.post(
-            f"{base}/chat/completions",
-            json={"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
-            headers={**headers, "content-type": "application/json"},
-        )
-        if resp2.status_code not in (404, 405):
-            resp2.raise_for_status()
-            return {"models_found": None, "model": model}
-
-        # Both paths 404 — server reachable but no known endpoints responded
-        raise ValueError("Server reachable but could not verify key — no compatible API endpoint found")
-
-
-async def _test_gemini_key(
-    api_key: str, model: str, base_url: str | None, timeout: float
-) -> dict:
-    """Test a Gemini API key. Try /models first, fall back to inference."""
-    import httpx
-
-    base = (base_url or "https://generativelanguage.googleapis.com").rstrip("/")
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        # Strategy 1: list models
-        resp = await client.get(f"{base}/v1beta/models?key={api_key}&pageSize=5")
-        if resp.status_code not in (404, 405):
-            resp.raise_for_status()
-            data = resp.json()
-            models = data.get("models", [])
-            return {
-                "models_found": len(models),
-                "model": models[0].get("name", "").replace("models/", "") if models else "",
-            }
-
-        # Strategy 2: minimal inference
-        resp2 = await client.post(
-            f"{base}/v1beta/models/{model}:generateContent?key={api_key}",
-            json={"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}},
-            headers={"content-type": "application/json"},
-        )
-        if resp2.status_code not in (404, 405):
-            resp2.raise_for_status()
-            return {"models_found": None, "model": model}
-
-        # Both 404 — server reachable but no known endpoints responded
-        raise ValueError("Server reachable but could not verify key — no compatible API endpoint found")
-
-
-# Maps SDK type -> (test function, test model)
-_SDK_TEST_DISPATCH: dict[str, tuple] = {
-    "anthropic": (_test_anthropic_key, _TEST_MODELS["anthropic"]),
-    "openai": (_test_openai_key, _TEST_MODELS["openai"]),
-    "gemini": (_test_gemini_key, _TEST_MODELS["gemini"]),
-}
-
-
-_SSRF_BLOCKED_HOSTS = frozenset({"localhost", "metadata.google.internal", "metadata.goog", "instance-data"})
-
-
-async def _check_ssrf(base_url: str) -> None:
-    """Block private/internal IPs in platform mode. No-op in OSS mode."""
-    if HOST_MODE != "platform" or not base_url:
-        return
-    from urllib.parse import urlparse
-    import ipaddress
-    import socket
-    import asyncio
-
-    hostname = urlparse(base_url).hostname or ""
-
-    if hostname.rstrip(".").lower() in _SSRF_BLOCKED_HOSTS or hostname.endswith(".internal"):
-        raise HTTPException(
-            status_code=400,
-            detail="Base URL cannot point to a private or internal address.",
-        )
+async def _user_endpoint_transport(base_url: str | None):
+    """The transport a request to a user's endpoint goes out on; a URL the
+    egress policy refuses is a 400."""
+    from src.server.services.llm import egress
 
     try:
-        loop = asyncio.get_running_loop()
-        infos = await loop.run_in_executor(
-            None, socket.getaddrinfo, hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM,
-        )
-        for family, _type, _proto, _canonname, sockaddr in infos:
-            addr = ipaddress.ip_address(sockaddr[0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Base URL cannot point to a private or internal address.",
-                )
-    except socket.gaierror:
-        pass  # DNS resolution failed — allow; the actual HTTP call will fail later
+        return await egress.user_endpoint_transport(base_url)
+    except EndpointRefused as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/api/v1/keys/test")
@@ -489,99 +404,50 @@ async def test_api_key(body: TestApiKeyRequest, user_id: CurrentUserId):
     """
     Test an API key by listing models from the provider.
 
-    Calls the provider's /models endpoint to verify the key is valid and
-    returns how many models are accessible. Supports providers using the
-    anthropic, openai, and gemini SDKs.
+    Lists the provider's models with the key, as the provider's model list
+    does, and falls back to a one-token call where it serves no list. Supports
+    providers using the anthropic, openai, and gemini SDKs. OpenRouter is
+    checked against ``/key`` instead and answers with ``credits`` (USD
+    ``limit``, ``usage``, ``remaining``, ``is_free_tier``, ``limit_reset``) for
+    the key.
 
-    Rate limited to 1 request per 10 seconds per user (Redis SET NX EX 10).
-    Timeout: 5 seconds hard cap.
+    Rate limited to 1 request per 10 seconds per user. Timeout: 5 seconds hard cap.
     """
-    import httpx
-
-    # Validate provider against known providers (all flat providers + custom)
     from src.llms.llm import LLM as LLMFactory
 
+    # Validate provider against known providers (all flat providers + custom)
     mc = LLMFactory.get_model_config()
     custom_providers = await _get_custom_providers(user_id)
-    custom_names = {cp["name"] for cp in custom_providers}
     provider_info = mc.get_provider_info(body.provider)
-    if not provider_info and body.provider not in custom_names:
+    custom = next((cp for cp in custom_providers if cp["name"] == body.provider), None)
+    if not provider_info and custom is None:
         raise HTTPException(status_code=400, detail=f"Unsupported provider: {body.provider}")
 
-    # Rate limit: 1 per 10s per user
-    try:
-        from src.utils.cache.redis_cache import get_cache_client
+    if not await throttle(f"key_test:{user_id}", 1, 10):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many test requests. Please wait 10 seconds.",
+            headers={"Retry-After": "10"},
+        )
 
-        cache = get_cache_client()
-        if cache.enabled and cache.client:
-            rate_key = f"key_test:{user_id}"
-            was_set = await cache.client.set(rate_key, "1", nx=True, ex=10)
-            if not was_set:
-                raise HTTPException(
-                    status_code=429,
-                    detail="Too many test requests. Please wait 10 seconds.",
-                    headers={"Retry-After": "10"},
-                )
-    except HTTPException:
-        raise
-    except Exception:
-        pass  # Redis unavailable: fail-open
-
-    # For custom sub-providers, resolve through parent
+    # A custom sub-provider is tested as its parent.
     if not provider_info:
-        for cp in custom_providers:
-            if cp["name"] == body.provider:
-                parent = cp["parent_provider"]
-                provider_info = mc.get_provider_info(parent)
-                break
+        provider_info = mc.get_provider_info(custom["parent_provider"])
 
-    sdk = provider_info.get("sdk", "openai") if provider_info else "openai"
-
-    dispatch = _SDK_TEST_DISPATCH.get(sdk)
-    if not dispatch:
-        # Fall back to openai-compatible for unknown SDKs (deepseek, qwq, codex)
-        dispatch = _SDK_TEST_DISPATCH["openai"]
-
-    test_fn, default_model = dispatch
-
-    # Prefer a model from this specific provider's model list
-    provider_models = mc.manifest.get("models", {}).get(body.provider, [])
-    if provider_models:
-        default_model = provider_models[0].get("id", default_model)
-
-    base_url = body.base_url or provider_info.get("base_url") if provider_info else body.base_url
-
-    await _check_ssrf(base_url)
-
-    start = time.monotonic()
+    transport = await _user_endpoint_transport(body.base_url or provider_info.get("base_url"))
     try:
-        result = await test_fn(body.api_key, default_model, base_url, timeout=5.0)
-        latency_ms = int((time.monotonic() - start) * 1000)
-        return {
-            "success": True,
-            "models_found": result.get("models_found", 0),
-            "model": result.get("model", ""),
-            "latency_ms": latency_ms,
-        }
-    except httpx.TimeoutException:
+        return await key_probe.check_key(
+            body.provider, provider_info, body.api_key, body.base_url, transport=transport
+        )
+    except key_probe.ProbeTimedOut:
         raise HTTPException(
             status_code=504,
             detail="API call timed out (5s limit). Check the provider URL and try again.",
         )
-    except httpx.HTTPStatusError as e:
-        latency_ms = int((time.monotonic() - start) * 1000)
-        status = e.response.status_code
-        try:
-            err_body = e.response.json()
-            msg = err_body.get("error", {}).get("message", "") if isinstance(err_body.get("error"), dict) else str(err_body.get("error", ""))
-        except Exception:
-            msg = e.response.text[:200]
-        msg = _sanitize_error(msg) if msg else f"HTTP {status}"
-        return {"success": False, "error": msg, "latency_ms": latency_ms}
-    except Exception as e:
-        latency_ms = int((time.monotonic() - start) * 1000)
-        msg = _sanitize_error(str(e))
-        return {"success": False, "error": msg, "latency_ms": latency_ms}
+    except EndpointRefused as e:
+        # A name that passed the check above and then resolved inward at
+        # connect time gets the same 400 as one that was inward from the start.
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── Provider Models (dynamic discovery) ─────────────────────────────────
@@ -589,15 +455,14 @@ async def test_api_key(body: TestApiKeyRequest, user_id: CurrentUserId):
 
 @router.get("/api/v1/providers/{provider}/models")
 async def list_provider_models(provider: str, user_id: CurrentUserId):
-    """List models available on a remote provider via its OpenAI-compatible /models endpoint.
+    """List models available on a local server via its OpenAI-compatible /models endpoint.
 
     Used by the setup wizard for dynamic_models providers (Ollama, LM Studio, vLLM).
-    All three expose an OpenAI-compatible ``GET /v1/models`` regardless of which SDK
-    is used for inference, so we always use that format here.
     """
     import httpx
 
     from src.llms.llm import LLM as LLMFactory
+    from src.server.services.llm import provider_models as pm
 
     mc = LLMFactory.get_model_config()
     provider_info = mc.get_provider_info(provider)
@@ -623,179 +488,121 @@ async def list_provider_models(provider: str, user_id: CurrentUserId):
     if not base_url:
         raise HTTPException(status_code=400, detail="No base URL configured for provider")
 
-    await _check_ssrf(base_url)
-
-    # All local providers (Ollama, LM Studio, vLLM) expose OpenAI-compatible
-    # GET /v1/models. The base_url may or may not already include /v1.
-    base = base_url.rstrip("/")
-    if base.endswith("/v1"):
-        url = f"{base}/models"
-    else:
-        url = f"{base}/v1/models"
+    transport = await _user_endpoint_transport(base_url)
 
     # Minimal auth — local providers generally don't require it
-    headers: dict[str, str] = {}
+    api_key = None
     try:
         from src.server.database.api_keys import get_key_for_provider
         api_key = await get_key_for_provider(user_id, provider)
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
     except Exception:
         pass  # No key available — proceed without auth
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            models = data.get("data", [])
-            return {
-                "models": [
-                    {"id": m.get("id", ""), "name": m.get("id", "")}
-                    for m in models
-                    if m.get("id")
-                ],
-            }
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Timed out connecting to provider")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"Provider returned {e.response.status_code}")
-    except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail="Could not connect to provider — is it running?")
-    except Exception as e:
+        return {"models": await pm.local_server_models(base_url, api_key, transport=transport)}
+    except pm.ListFetchError as e:
+        if e.timed_out:
+            raise HTTPException(status_code=504, detail="Timed out connecting to provider")
+        if e.status is not None:
+            raise HTTPException(status_code=502, detail=f"Provider returned {e.status}")
+        if isinstance(e.__cause__, EndpointRefused):
+            raise HTTPException(status_code=400, detail=str(e.__cause__))
+        if isinstance(e.__cause__, httpx.ConnectError):
+            raise HTTPException(status_code=502, detail="Could not connect to provider — is it running?")
         logger.error("list_provider_models failed for %s: %s", provider, e, exc_info=True)
         raise HTTPException(status_code=502, detail="Internal error while querying provider")
 
 
-# ── Visible Models by Parent Provider ───────────────────────────────────
+# ── Models a Credential Can Use ─────────────────────────────────────────
 
 
-@router.get("/api/v1/providers/{parent}/visible-models")
-async def list_visible_models_by_parent(parent: str, user_id: CurrentUserId):
-    """Return built-in visible models grouped under ``parent``'s brand.
+@router.get("/api/v1/providers/{provider}/available-models")
+async def list_available_models(
+    provider: str,
+    user_id: CurrentUserId,
+    refresh: bool = False,
+    q: Optional[str] = Query(None, max_length=200),
+):
+    """The models the user's key or subscription for ``provider`` can use.
 
-    Used by the setup wizard's "Import parent models" step when the user
-    creates a custom provider variant: we show the parent's catalog with
-    checkboxes so the user can copy selected models into their variant.
-
-    The returned ``models`` are the names as they appear in ``models.json``
-    (same keys the model picker uses). Rendering metadata (display name,
-    modalities) is included so the wizard can show rich rows without a
-    second round-trip.
+    The provider's live list intersected with the manifest (see
+    ``services/llm/provider_models``): ``ready`` manifest keys, ``others``
+    (the rest of the list, Not tuned), and ``status: "fallback"`` with the
+    manifest list when the provider list could not be read or names no
+    manifest model. ``q`` narrows ``others`` by id and name; ``refresh`` skips
+    the cache. Local servers stay on ``/providers/{p}/models``.
     """
-    from src.llms.llm import LLM as LLMFactory, get_configured_llm_models
+    from src.server.services.llm import provider_models as pm
 
-    mc = LLMFactory.get_model_config()
-    parent_info = mc.get_provider_info(parent)
-    if not parent_info:
-        raise HTTPException(status_code=404, detail=f"Unknown provider: {parent}")
-    if parent_info.get("platform"):
-        raise HTTPException(status_code=400, detail="Platform-only providers cannot be imported")
-
-    grouped = get_configured_llm_models()
-    model_names = grouped.get(parent, [])
-
-    models = []
-    for name in model_names:
-        info = mc.get_model_config(name) or {}
-        models.append({
-            "name": name,
-            "model_id": info.get("model_id", name),
-            "display_name": name,
-            "input_modalities": info.get("input_modalities", ["text"]),
-        })
-
-    return {
-        "parent": parent,
-        "parent_display_name": mc.get_display_name(parent),
-        "models": models,
-    }
+    try:
+        return await pm.available_models(user_id, provider, refresh=refresh, q=q)
+    except pm.UnknownProvider:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_provider", "message": f"Unknown provider: {provider}"},
+        )
+    except pm.UnsupportedProvider:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "unsupported_provider",
+                "message": "This provider's models are not listed here.",
+            },
+        )
+    except pm.NotConnected:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "not_connected",
+                "message": "No key or account is connected for this provider.",
+            },
+        )
 
 
-# ── Models Endpoint ──────────────────────────────────────────────────────
+# ── A custom endpoint's models ──────────────────────────────────────────
+
+_ENDPOINT_LIST_PER_MINUTE = 12
 
 
-@functools.lru_cache(maxsize=1)
-def _build_provider_catalog() -> list[dict]:
-    """Build wizard-visible provider catalog from flat provider config.
+class EndpointModelsRequest(BaseModel):
+    """Request body for POST /api/v1/providers/custom/models."""
 
-    A provider is wizard-visible if:
-    - It has no parent_provider (root brand), OR
-    - Its access_type differs from its parent's access_type
+    api_format: Literal["openai-responses", "openai-completions", "anthropic", "gemini"]
+    base_url: str
+    api_key: str = ""
 
-    Region variants (same access_type, different region) are attached as
-    ``region_variants`` on the parent catalog entry so the wizard can show
-    an inline region toggle.
+    @field_validator("api_key")
+    @classmethod
+    def validate_key(cls, v: str) -> str:
+        return key_probe.probe_key(v)
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        return key_probe.probe_url(v) or ""
+
+
+@router.post("/api/v1/providers/custom/models")
+async def list_endpoint_models(body: EndpointModelsRequest, user_id: CurrentUserId):
+    """The models a custom endpoint lists, before its provider is saved.
+
+    ``recognized`` are manifest models the endpoint serves (offered to add,
+    each keeping the manifest's tuning); ``others`` are the chat models the
+    manifest does not know, offered as suggestions to describe by hand. Read
+    with the key in the body, which is not stored, through the same egress
+    check as a key test.
     """
-    from src.llms.llm import ModelConfig
+    from src.server.services.llm import provider_models as pm
 
-    config = ModelConfig()
-    flat = config.flat_providers
+    if not await throttle(f"endpoint_models:{user_id}", _ENDPOINT_LIST_PER_MINUTE, 60):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many model list requests. Please wait a minute.",
+            headers={"Retry-After": "60"},
+        )
 
-    # First pass: collect region variants per parent
-    # region_variant_key -> {provider, region, base_url, sdk, ...}
-    region_variants_by_parent: dict[str, list[dict]] = {}
-    for key, info in flat.items():
-        if info.get("platform"):
-            continue
-        parent_key = info.get("parent_provider")
-        if not parent_key:
-            continue
-        access_type = info.get("access_type", "api_key")
-        parent_info = flat.get(parent_key, {})
-        parent_access_type = parent_info.get("access_type", "api_key")
-        # Same access_type + different region = region variant
-        if access_type == parent_access_type and info.get("region") != parent_info.get("region"):
-            region_variants_by_parent.setdefault(parent_key, []).append({
-                "provider": key,
-                "display_name": config.get_display_name(key),
-                "region": info.get("region", "intl"),
-                "sdk": info.get("sdk"),
-                "base_url": (info.get("base_url") or "").replace("{HOST_IP}", HOST_IP) or None,
-                "use_response_api": info.get("use_response_api", False),
-            })
-
-    catalog = []
-    for key, info in flat.items():
-        if info.get("platform"):
-            continue
-        # Local providers (Ollama, LM Studio, vLLM) are OSS-only
-        if info.get("access_type") == "local" and HOST_MODE == "platform":
-            continue
-        parent_key = info.get("parent_provider")
-        access_type = info.get("access_type", "api_key")
-
-        def _entry(k: str, inf: dict, brand: str) -> dict:
-            entry = {
-                "provider": k,
-                "display_name": config.get_display_name(k),
-                "access_type": inf.get("access_type", "api_key"),
-                "brand_key": brand,
-                "byok_eligible": inf.get("byok_eligible", False),
-                "region": inf.get("region", "intl"),
-                "sdk": inf.get("sdk"),
-                "base_url": (inf.get("base_url") or "").replace("{HOST_IP}", HOST_IP) or None,
-                "use_response_api": inf.get("use_response_api", False),
-                "dynamic_models": inf.get("dynamic_models", False),
-            }
-            # Attach region variants if this is a root brand
-            rv = region_variants_by_parent.get(k)
-            if rv:
-                entry["region_variants"] = rv
-            return entry
-
-        # Root brand: always visible
-        if not parent_key:
-            catalog.append(_entry(key, info, key))
-            continue
-
-        # Variant: visible only if access_type differs from parent
-        parent_info = flat.get(parent_key, {})
-        parent_access_type = parent_info.get("access_type", "api_key")
-        if access_type != parent_access_type:
-            catalog.append(_entry(key, info, parent_key))
-
-    return catalog
+    transport = await _user_endpoint_transport(body.base_url)
+    return await pm.endpoint_models(body.api_format, body.base_url, body.api_key, transport=transport)
 
 
 @router.get("/api/v1/models")
@@ -806,7 +613,10 @@ async def list_models():
     No auth required — this is public configuration info.
     Includes provider_catalog for wizard provider selection.
     """
+    from src.config.settings import get_prompt_guidance_default
+    from src.llms.gateway_names import gateway_index
     from src.llms.llm import get_configured_llm_models, LLM
+    from src.llms.task_costs import task_cost_baseline
     from src.server.app import setup
     from src.tools.web.manifest import (
         CAPABILITY_SEARCH,
@@ -817,6 +627,7 @@ async def list_models():
     models = get_configured_llm_models()
     config = LLM.get_model_config()
     from ptc_agent.config.agent import COMPACTION_PROFILES
+    from src.server.services.llm.config import system_default_models
 
     llm_cfg = setup.agent_config.llm if setup.agent_config and setup.agent_config.llm else None
     # Tiers are pre-resolved (env floor folded in) so clients never need to
@@ -848,16 +659,27 @@ async def list_models():
         },
         "model_metadata": config.get_model_metadata(),
         "system_defaults": {
-            "default_model": llm_cfg.name if llm_cfg else "",
-            "flash_model": (llm_cfg.flash or "") if llm_cfg else "",
+            # One source with the default-model reassignment on preference
+            # writes, so "threads on the old default" means what the composer showed.
+            **system_default_models(),
+            # Blank: a summary runs on the model each turn runs.
             "compaction_model": (llm_cfg.compaction or "") if llm_cfg else "",
             # Legacy alias for cached frontend bundles / third-party clients that
             # still read the pre-rename key. Remove once clients have cycled.
             "summarization_model": (llm_cfg.compaction or "") if llm_cfg else "",
-            "fetch_model": (llm_cfg.fetch or "") if llm_cfg else "",
+            "fetch_model": (llm_cfg.fetch_name or "") if llm_cfg else "",
             "fallback_models": (llm_cfg.fallback or []) if llm_cfg else [],
+            # Null for "auto". A pin sits between the account value and the
+            # model's own declaration when a turn resolves guidance, so the
+            # client cannot name what "Default" will do without it.
+            "prompt_guidance": get_prompt_guidance_default(),
         },
         "compaction_profiles": COMPACTION_PROFILES,
+        # model_metadata's task_cost values are multiples of this model at this level.
+        "task_cost_baseline": task_cost_baseline(),
         "search_providers": search_providers,
-        "provider_catalog": _build_provider_catalog(),
+        "provider_catalog": provider_catalog(),
+        "key_candidates": key_candidates(),
+        # A pick from a gateway's list is tuned as the built-in it matched.
+        "gateway_index": gateway_index(config),
     }

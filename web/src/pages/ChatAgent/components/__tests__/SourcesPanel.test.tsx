@@ -40,6 +40,7 @@ function asMap(records: ProvenanceRecord[]): Record<string, ProvenanceRecord> {
 }
 
 afterEach(() => {
+  vi.resetAllMocks();
   vi.restoreAllMocks();
 });
 

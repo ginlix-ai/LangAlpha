@@ -5,11 +5,14 @@
   overflow: hidden;
 }
 
-/* Controls bar */
+/* Controls bar. Wraps, so the zoom group drops below the page controls in a
+   panel too narrow for both rather than being clipped. */
 .pdf-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--color-border-muted);
   flex-shrink: 0;
@@ -30,7 +33,7 @@
   background: var(--color-border-muted);
   border: 1px solid var(--color-border-muted);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-quick) var(--ease-out);
   line-height: 1.4;
 }
 
@@ -39,9 +42,26 @@
   background: var(--color-border-muted);
 }
 
+/* Fit is a mode, not an action: while it holds, the control reads as on. */
+.pdf-btn[aria-pressed='true'] {
+  color: var(--color-text-primary);
+}
+
 .pdf-btn:disabled {
   opacity: 0.3;
   cursor: default;
+}
+
+.pdf-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 5px;
+}
+
+.pdf-page-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .pdf-page-info,
@@ -50,33 +70,101 @@
   color: var(--color-text-tertiary);
   min-width: 48px;
   text-align: center;
+  font-variant-numeric: tabular-nums;
   user-select: none;
 }
 
-/* Document area */
-.pdf-document-wrapper {
-  flex: 1;
-  overflow: auto;
-  min-height: 0;
-  display: flex;
-  justify-content: center;
-  padding: 12px;
-  background: var(--color-bg-page);
+/* The field takes the page the reader is on and any page they type. Sized to
+   the page count's digits, so the toolbar does not shift as the page changes. */
+.pdf-page-input {
+  box-sizing: border-box;
+  padding: 1px 6px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 4px;
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  user-select: text;
 }
 
-.pdf-document-wrapper .react-pdf__Document {
+.pdf-page-input:disabled {
+  opacity: 0.5;
+}
+
+.pdf-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* Document area */
+.pdf-scroller {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  /* Fit width is measured off this box. Reserving the scrollbar's lane keeps
+     a scrollbar that appears once the pages grow taller from narrowing it,
+     which would shrink the pages and take the scrollbar away again. */
+  scrollbar-gutter: stable;
+  /* The viewer puts the reader back itself after a zoom or resize. */
+  overflow-anchor: none;
+  background: var(--color-bg-canvas);
+}
+
+/* Safari before 18.2 has no scrollbar-gutter. A scrollbar that is always
+   there holds the same lane, so fit width cannot flip it on and off. */
+@supports not (scrollbar-gutter: stable) {
+  .pdf-scroller {
+    overflow-y: scroll;
+  }
+}
+
+/* Wider than the panel when zoomed in, so the scroller pans across it. A
+   justify-content: center on the scroller would push the left edge past
+   scroll position 0 instead. */
+.pdf-scroller .pdf-pages {
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: var(--pdf-gap);
+  padding: var(--pdf-gap);
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
 }
 
-.pdf-document-wrapper .react-pdf__Page {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+/* Sized from the page's own dimensions before it draws, so the column is its
+   full height from the start and a page leaving the render window keeps its
+   place. Paper in both themes: a PDF is drawn on white. */
+.pdf-page {
+  position: relative;
+  flex: none;
+  overflow: hidden;
   border-radius: 2px;
+  background: var(--color-sheet-paper);
+  box-shadow: 0 0 0 1px var(--color-border-muted), var(--shadow-card);
 }
 
-.pdf-document-wrapper .react-pdf__Page canvas {
+.pdf-page-surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.pdf-page .react-pdf__Page canvas {
   display: block;
+}
+
+.pdf-page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--color-sheet-ink) 45%, transparent);
 }
 
 .pdf-loading {
@@ -84,4 +172,112 @@
   text-align: center;
   color: var(--color-text-tertiary);
   font-size: 0.75rem;
+}
+
+/* Side rail: page thumbnails, and the document's bookmarks when it has any.
+   104px thumbnails plus 20px either side (THUMB_WIDTH in pdf/PdfRail.tsx). */
+.pdf-rail {
+  flex: none;
+  width: 144px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border-muted);
+}
+
+.pdf-rail-tabs {
+  display: flex;
+  justify-content: center;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+/* Positioned, so a thumbnail's offsetTop is measured from it. */
+.pdf-rail-scroller {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pdf-thumbs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+
+.pdf-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-decoration: none;
+  border-radius: 6px;
+}
+
+.pdf-thumb-paper {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--color-sheet-paper);
+  box-shadow: 0 0 0 1px var(--color-border-muted);
+  transition: box-shadow var(--motion-quick) var(--ease-out);
+}
+
+.pdf-thumb-paper canvas {
+  display: block;
+}
+
+.pdf-thumb:hover .pdf-thumb-paper {
+  box-shadow: 0 0 0 1px var(--color-border-default);
+}
+
+/* The page being read: a neutral edge, since selection is not an annotation. */
+.pdf-thumb[aria-current='page'] .pdf-thumb-paper {
+  box-shadow: 0 0 0 2px var(--color-text-secondary);
+}
+
+.pdf-thumb-number {
+  font-size: 0.6875rem;
+  /* Secondary, not tertiary: tertiary reads under AA at this size on paper-white. */
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.pdf-thumb[aria-current='page'] .pdf-thumb-number {
+  color: var(--color-text-primary);
+}
+
+/* react-pdf's Outline: nested lists of links, indented by depth. */
+.pdf-outline {
+  padding: 8px 6px;
+  font-size: 0.75rem;
+}
+
+.pdf-outline ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pdf-outline ul ul {
+  padding-left: 10px;
+}
+
+.pdf-outline a {
+  display: block;
+  padding: 4px 6px;
+  border-radius: var(--radius);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.pdf-outline a:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
 }

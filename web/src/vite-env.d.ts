@@ -14,7 +14,13 @@ interface ImportMetaEnv {
   // Origin (or same-host path) of the platform console — account, plans,
   // integrations. Cross-app links only; never a router target.
   readonly VITE_PLATFORM_URL?: string;
+  readonly VITE_CONTACT_EMAILS?: string;
+  readonly VITE_PRIVACY_URL?: string;
 }
+
+/** The installed monaco-editor release, from `scripts/monaco-version.ts`. */
+declare const __MONACO_VERSION__: string;
+
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }

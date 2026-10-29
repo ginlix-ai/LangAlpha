@@ -1,15 +1,14 @@
-import { Component as ReactComponent, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
-import { useTranslation } from 'react-i18next';
-import i18n from '@/i18n';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ResponsiveGridLayout,
-  useContainerWidth,
   type Layout,
   type LayoutItem,
   type ResponsiveLayouts,
 } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { WidgetFrame } from './WidgetFrame';
+import { WidgetBody } from './WidgetBody';
+import { useGridWidth } from './useGridWidth';
 import { getWidget } from './WidgetRegistry';
 import { reconcileLayouts } from './reconcile';
 import { newWidgetId } from './ids';
@@ -29,51 +28,13 @@ function pxToRows(px: number): number {
   return Math.max(1, Math.ceil((px + MARGIN_Y) / (ROW_HEIGHT + MARGIN_Y)));
 }
 
-function WidgetFallback() {
-  const { t } = useTranslation();
-  return (
-    <div
-      className="h-full w-full flex items-center justify-center text-[0.6875rem]"
-      style={{ color: 'var(--color-text-tertiary)' }}
-    >
-      {t('dashboard.widgets.common.loading')}
-    </div>
-  );
-}
-
-/** Isolates one widget's render failure so a bug in, say, ChartWidget can't
- *  blank out every other widget on the dashboard. */
-class WidgetErrorBoundary extends ReactComponent<
-  { widgetType: string; children: ReactNode },
-  { error: Error | null }
-> {
-  state = { error: null as Error | null };
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error(`[widget:${this.props.widgetType}] render error`, error, info.componentStack);
-  }
-  render() {
-    if (this.state.error) {
-      return (
-        <div
-          className="h-full w-full flex flex-col items-center justify-center px-3 py-2 text-center gap-1"
-          style={{ color: 'var(--color-text-tertiary)', fontSize: '0.6875rem', lineHeight: 1.4 }}
-        >
-          <span style={{ fontWeight: 500 }}>{i18n.t('dashboard.widgets.frame.errorBoundary')}</span>
-          <span style={{ opacity: 0.75 }}>{this.props.widgetType}</span>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
 interface DashboardGridProps {
   prefs: DashboardPrefs;
   editMode: boolean;
   onChange: (next: DashboardPrefs) => void;
+  /** A change the grid makes on its own, not one the reader made: a layout
+   *  clamped to its widgets' bounds, a cell fitted to its content. */
+  onAdjust: (next: DashboardPrefs) => void;
   onOpenSettings: (id: string) => void;
 }
 
@@ -106,9 +67,9 @@ function fromLayout(layout: Layout): RGLItem[] {
   }));
 }
 
-export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: DashboardGridProps) {
+export function DashboardGrid({ prefs, editMode, onChange, onAdjust, onOpenSettings }: DashboardGridProps) {
   const [currentBp, setCurrentBp] = useState<BreakpointKey>(prefs.lastBreakpoint ?? 'lg');
-  const { width, containerRef, mounted } = useContainerWidth();
+  const { width, containerRef } = useGridWidth();
 
   const reconciled = useMemo(() => reconcileLayouts(prefs.widgets, prefs.layouts), [prefs.widgets, prefs.layouts]);
   const latestPrefsRef = useRef(prefs);
@@ -117,6 +78,8 @@ export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: Das
   latestPrefsRef.current = prefs;
   latestReconciledRef.current = reconciled;
   latestOnChangeRef.current = onChange;
+  const latestOnAdjustRef = useRef(onAdjust);
+  latestOnAdjustRef.current = onAdjust;
 
   // If reconcile clamped stored widths/heights to new [min, max] bounds,
   // flush the corrected layouts back to prefs so the DB catches up. Without
@@ -148,10 +111,10 @@ export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: Das
       });
     });
     if (needsWrite) {
-      // Read onChange via ref so a new onChange identity (parent re-render)
+      // Read onAdjust via ref so a new onAdjust identity (parent re-render)
       // doesn't re-fire this effect and risk a loop. The write itself triggers
       // a prefs change, which IS the intended retrigger signal.
-      latestOnChangeRef.current({ ...prefs, layouts: reconciled });
+      latestOnAdjustRef.current({ ...prefs, layouts: reconciled });
     }
   }, [reconciled, prefs]);
 
@@ -379,7 +342,7 @@ export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: Das
     if (changed) {
       const nextPrefs = { ...currentPrefs, layouts: nextLayouts };
       latestPrefsRef.current = nextPrefs;
-      latestOnChangeRef.current(nextPrefs);
+      latestOnAdjustRef.current(nextPrefs);
     }
   };
 
@@ -404,22 +367,12 @@ export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: Das
         if (!def) {
           return { id: instance.id, instance, def: null, cb, body: null as ReactNode };
         }
-        const Component = def.component;
         return {
           id: instance.id,
           instance,
           def,
           cb,
-          body: (
-            <WidgetErrorBoundary widgetType={def.type}>
-              <Suspense fallback={<WidgetFallback />}>
-                <Component
-                  instance={instance}
-                  updateConfig={cb.updateConfig as (patch: Partial<unknown>) => void}
-                />
-              </Suspense>
-            </WidgetErrorBoundary>
-          ) as ReactNode,
+          body: <WidgetBody definition={def} instance={instance} updateConfig={cb.updateConfig} /> as ReactNode,
         };
       }),
     [prefs.widgets, getWidgetCallbacks]
@@ -450,7 +403,7 @@ export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: Das
 
   return (
     <div ref={containerRef} className="widget-grid-container">
-      {mounted && width > 0 && (
+      {width > 0 && (
         <ResponsiveGridLayout
           width={width}
           className={`widget-grid ${editMode ? 'widget-grid--edit' : ''}`}

@@ -9,11 +9,11 @@
  *  3. Action commands are deferred to send — selecting one inserts a pill and
  *     does NOT fire onAction; the dispatch happens when the user sends.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { render, fireEvent, screen, waitFor, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import ChatInput from '../chat-input';
+import ChatInput, { type ChatInputProps } from '../chat-input';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
@@ -28,18 +28,21 @@ vi.mock('@/hooks/usePreferences', () => ({
   usePreferences: () => ({ data: undefined, isLoading: false }),
 }));
 
-vi.mock('@/lib/modelCapabilities', () => ({
-  supportsXhighEffort: () => false,
-}));
 
 vi.mock('../use-toast', () => ({
   useToast: () => ({ toast: vi.fn() }),
+  toast: vi.fn(),
 }));
 
-function renderInput(props: { onSend?: ReturnType<typeof vi.fn>; onAction?: ReturnType<typeof vi.fn> } = {}) {
+function renderInput(
+  props: {
+    onSend?: Mock<ChatInputProps['onSend']>;
+    onAction?: Mock<NonNullable<ChatInputProps['onAction']>>;
+  } = {},
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const onSend = props.onSend ?? vi.fn();
-  const onAction = props.onAction ?? vi.fn();
+  const onSend = props.onSend ?? vi.fn<ChatInputProps['onSend']>();
+  const onAction = props.onAction ?? vi.fn<NonNullable<ChatInputProps['onAction']>>();
   const utils = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>

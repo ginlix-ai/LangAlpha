@@ -21,7 +21,6 @@ interface CryptoScreenerConfig {
 function CryptoScreenerWidget({ instance }: WidgetRenderProps<CryptoScreenerConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="screener"
       config={{
         screener_type: 'crypto_mkt',

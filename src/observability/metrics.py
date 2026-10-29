@@ -159,8 +159,8 @@ sandbox_asset_sync_total_ms = meter.create_histogram(
     unit="ms",
 )
 
-# Replay endpoints — read-heavy user-facing routes that re-emit persisted
-# sse_events. http_server_duration auto-metric covers latency by route; these
+# Replay endpoints: read-heavy user-facing routes that re-emit a thread's
+# history as SSE. http_server_duration auto-metric covers latency by route; these
 # add business-level labels (private vs public) and event-count semantics that
 # http_server_* cannot express.
 replay_duration_ms = meter.create_histogram(

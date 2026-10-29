@@ -97,6 +97,19 @@ def test_services_do_not_import_handlers():
     assert not msg, "\n".join(msg)
 
 
+def test_agent_and_tools_do_not_import_handlers():
+    """The agent's backends and tools reach the server through services: a
+    handler is a request tier, and the rules they share live below it."""
+    offenders = [
+        (str(py_file.relative_to(REPO_ROOT)), mod)
+        for root in (SRC / "ptc_agent", SRC / "tools")
+        for py_file in sorted(root.rglob("*.py"))
+        for mod in _resolved_imports(py_file)
+        if mod == HANDLERS_PREFIX or mod.startswith(HANDLERS_PREFIX + ".")
+    ]
+    assert not offenders, f"agent/tools → handlers imports (import a service instead): {offenders}"
+
+
 def test_no_new_imports_of_legacy_aliased_paths():
     if not LEGACY_ALIASED_PATHS:
         return

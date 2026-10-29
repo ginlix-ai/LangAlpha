@@ -1,5 +1,6 @@
-import { useEffect, type RefObject } from 'react';
-import type { ISeriesApi, Time } from 'lightweight-charts';
+import { useEffect, useRef, type RefObject } from 'react';
+import { createSeriesMarkers } from 'lightweight-charts';
+import type { ISeriesApi, ISeriesMarkersPluginApi, SeriesMarker, Time } from 'lightweight-charts';
 import type { ChartDataPoint } from '@/types/market';
 import { getChartTheme } from '../utils/chartConstants';
 
@@ -58,13 +59,7 @@ function snapToNearestBar(chartData: ChartDataPoint[], dateStr: string): number 
   return chartData[lo].time;
 }
 
-type OverlayMarker = {
-  time: Time;
-  position: 'aboveBar' | 'belowBar' | 'inBar';
-  shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
-  color: string;
-  text?: string;
-};
+type OverlayMarker = SeriesMarker<Time>;
 
 const VALID_MARKER_SHAPES: ReadonlySet<string> = new Set([
   'arrowUp',
@@ -76,8 +71,10 @@ const VALID_MARKER_SHAPES: ReadonlySet<string> = new Set([
 /**
  * Manages series markers on the candlestick series.
  * Combines earnings surprises, analyst grade changes, and caller-supplied
- * agent markers into a single ``setMarkers`` call (LWC replaces the full
- * list each call, so all sources must merge here).
+ * agent markers into one markers plugin (``setMarkers`` replaces the full
+ * list each call, so all sources must merge here). The plugin is created
+ * once per series and reused, since each ``createSeriesMarkers`` call would
+ * attach another primitive to the series.
  */
 export function useChartOverlays(
   candlestickSeriesRef: RefObject<ISeriesApi<'Candlestick'> | null>,
@@ -89,12 +86,23 @@ export function useChartOverlays(
   extraMarkers: OverlayMarker[] = [],
   theme: 'dark' | 'light' = 'dark'
 ): void {
+  const pluginRef = useRef<{ series: ISeriesApi<'Candlestick'>; plugin: ISeriesMarkersPluginApi<Time> } | null>(null);
+
   useEffect(() => {
     const series = candlestickSeriesRef.current;
-    if (!series || !chartData || chartData.length === 0) {
-      if (series) {
-        try { series.setMarkers([]); } catch (_) { /* series may be disposed */ }
+    const setMarkers = (markers: OverlayMarker[]): void => {
+      if (!series) return;
+      try {
+        if (pluginRef.current?.series !== series) {
+          pluginRef.current = { series, plugin: createSeriesMarkers(series) };
+        }
+        pluginRef.current.plugin.setMarkers(markers);
+      } catch (_) {
+        /* series may be disposed */
       }
+    };
+    if (!series || !chartData || chartData.length === 0) {
+      setMarkers([]);
       return;
     }
 
@@ -159,16 +167,8 @@ export function useChartOverlays(
     // Sort markers by time (required by lightweight-charts)
     safeMarkers.sort((a, b) => (a.time as number) - (b.time as number));
 
-    try {
-      series.setMarkers(safeMarkers);
-    } catch (_) {
-      /* series may be disposed */
-    }
+    setMarkers(safeMarkers);
 
-    return () => {
-      if (series) {
-        try { series.setMarkers([]); } catch (_) { /* already cleaned */ }
-      }
-    };
+    return () => { setMarkers([]); };
   }, [candlestickSeriesRef, chartData, earningsData, overlayData, overlayVisibility, symbol, extraMarkers, theme]);
 }

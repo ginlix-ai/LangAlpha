@@ -38,6 +38,7 @@ function LogoLoading({ size = 60, color = 'currentColor', className = '', style 
           style={{
             strokeDasharray: 260,
             strokeDashoffset: 260,
+            // eslint-disable-next-line no-restricted-syntax -- the draw loop's period and its in-out stroke, which no token names
             animation: 'logo-loading-draw-reverse 4s ease-in-out infinite',
           }}
         />
@@ -50,6 +51,7 @@ function LogoLoading({ size = 60, color = 'currentColor', className = '', style 
           style={{
             strokeDasharray: 260,
             strokeDashoffset: 260,
+            // eslint-disable-next-line no-restricted-syntax -- the same loop, the second stroke trailing the first
             animation: 'logo-loading-draw-reverse 4s ease-in-out 0.2s infinite',
           }}
         />
@@ -62,6 +64,14 @@ function LogoLoading({ size = 60, color = 'currentColor', className = '', style 
           55%  { stroke-dashoffset: 0; }
           85%  { stroke-dashoffset: 260; }
           100% { stroke-dashoffset: 260; }
+        }
+        /* The loop rests undrawn, so under reduced motion, where it runs once
+           and stops, the mark holds drawn instead. */
+        @media (prefers-reduced-motion: reduce) {
+          .logo-loading-path1, .logo-loading-path2 {
+            animation: none !important;
+            stroke-dashoffset: 0 !important;
+          }
         }
       `}</style>
     </div>

@@ -34,3 +34,7 @@ dist-ssr
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# streaming smoothness benchmark output (e2e/perf)
+/perf-results/
+/dist-perf/

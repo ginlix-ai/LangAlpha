@@ -9,21 +9,12 @@
   box-sizing: border-box;
 }
 
-.company-overview-panel::-webkit-scrollbar {
-  width: 5px;
-}
-
-.company-overview-panel::-webkit-scrollbar-track {
-  background: transparent;
-}
-
 .company-overview-panel::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 3px;
+  background-color: var(--color-border-muted);
 }
 
 .company-overview-panel::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-tertiary);
+  background-color: var(--color-text-tertiary);
 }
 
 .company-overview-header {
@@ -53,7 +44,7 @@
   border-radius: 6px;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
 
 .company-overview-close:hover {
@@ -69,6 +60,13 @@
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
   gap: 8px;
+}
+
+.company-overview-note {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  text-align: center;
+  padding: 24px 20px;
 }
 
 .company-overview-error {

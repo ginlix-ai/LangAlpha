@@ -1,6 +1,6 @@
 """Sanitization helpers for untrusted (user-configured) MCP server schemas.
 
-Untrusted MCP servers (``source`` ``"workspace"`` or ``"user"``) report
+Untrusted MCP servers (``source`` ``"user"``) report
 arbitrary tool names, parameter names, and descriptions. That text reaches
 generated Python code (docstrings, wrapper modules) and the system prompt, so
 it is hostile input. These helpers bound identifiers and text before either
@@ -50,6 +50,71 @@ def looks_like_secret(key: str, value: str) -> bool:
     return len(v) >= _OPAQUE_TOKEN_MIN_LEN and " " not in v and not v.isdigit()
 
 
+# A placeholder is the other half of the same question: ``<your-api-key>`` is
+# what a vendor's docs print where the key goes, so the same spelling in two
+# servers is two blanks rather than one shared credential. Mirrored by
+# ``isPlaceholder`` in
+# web/src/pages/ChatAgent/components/mcp/mcpImportPlaceholders.ts, which offers
+# the user a field per server before the blob is sent.
+_PLACEHOLDER_ANGLE_RE = re.compile(r"^<[^<>]{1,80}>\Z")
+# Hint words that read as a stand-in wherever they sit in the value:
+# ``your-api-key``, ``REPLACE_ME``, ``paste-token-here``.
+_PLACEHOLDER_HINT_RE = re.compile(
+    r"(?i)\b(your[-_ ]?|replace[-_ ]?me|change[-_ ]?me|todo|placeholder|"
+    r"insert[-_ ]|paste[-_ ])"
+)
+# Words that only read as a stand-in when they are the whole value. ``xxx`` is a
+# blank; ``sk-live-xxxx9f8e`` is a key.
+_PLACEHOLDER_ALONE_RE = re.compile(r"(?i)^(x{3,}|example)\Z")
+_PLACEHOLDER_MAX_LEN = 64
+
+
+def looks_like_placeholder(value: str) -> bool:
+    """Heuristic: is this literal a blank the user still has to fill in?"""
+    v = (value or "").strip()
+    if not v:
+        return False
+    if _PLACEHOLDER_ANGLE_RE.match(v):
+        return True
+    return len(v) <= _PLACEHOLDER_MAX_LEN and bool(
+        _PLACEHOLDER_ALONE_RE.match(v) or _PLACEHOLDER_HINT_RE.search(v)
+    )
+
+
+def iter_arg_flag_pairs(args) -> "list[tuple[int, str, str]]":
+    """``(value_index, flag, value)`` for space-separated ``--token VALUE`` pairs.
+
+    The one arg shape every lane agrees on, and the reason it is here rather
+    than inlined three times: vault extraction and the export scrub have to
+    rewrite the value, so they need its index, while output redaction only
+    needs the pair — but all three must reach the same verdict or one lane
+    serves a value another vaulted.
+
+    Key-signal only, deliberately: the element after a flag is usually a path,
+    a port, or a URL, and the opaque-value heuristic reads plenty of those as
+    credentials. The flag naming itself is the only signal narrow enough to act
+    on, so a bare positional secret is accepted as missed.
+    """
+    found: list[tuple[int, str, str]] = []
+    prev_flag = ""
+    for i, arg in enumerate(args or []):
+        if not isinstance(arg, str):
+            prev_flag = ""
+            continue
+        if arg.startswith("-"):
+            flag, sep, _ = arg.partition("=")
+            prev_flag = flag if not sep else ""
+            continue
+        if (
+            prev_flag
+            and _SECRET_KEY_RE.search(prev_flag)
+            and not VAULT_REF_RE.search(arg)
+        ):
+            found.append((i, prev_flag.lstrip("-"), arg))
+        prev_flag = ""
+    return found
+
+
 def iter_arg_credentials(args) -> "list[tuple[str, str]]":
     """Credential literals in a stdio arg list: ``--token=X`` and ``--token X``.
 
@@ -59,29 +124,18 @@ def iter_arg_credentials(args) -> "list[tuple[str, str]]":
     positional secret with no flag naming it is accepted as missed.
     """
     found: list[tuple[str, str]] = []
-    prev_flag = ""
     for arg in args or []:
-        if not isinstance(arg, str):
-            prev_flag = ""
+        if not isinstance(arg, str) or not arg.startswith("-"):
             continue
-        if arg.startswith("-"):
-            flag, sep, val = arg.partition("=")
-            if (
-                sep
-                and val
-                and not VAULT_REF_RE.search(val)
-                and _SECRET_KEY_RE.search(flag)
-            ):
-                found.append((flag.lstrip("-"), val))
-            prev_flag = flag if not sep else ""
-            continue
+        flag, sep, val = arg.partition("=")
         if (
-            prev_flag
-            and _SECRET_KEY_RE.search(prev_flag)
-            and not VAULT_REF_RE.search(arg)
+            sep
+            and val
+            and not VAULT_REF_RE.search(val)
+            and _SECRET_KEY_RE.search(flag)
         ):
-            found.append((prev_flag.lstrip("-"), arg))
-        prev_flag = ""
+            found.append((flag.lstrip("-"), val))
+    found.extend((flag, val) for _, flag, val in iter_arg_flag_pairs(args))
     return found
 
 
@@ -103,15 +157,16 @@ def vault_refs(value: str) -> list[str]:
 
 
 def is_untrusted_server(server) -> bool:
-    """True for user-configured servers (``source`` 'workspace' or 'user').
+    """True for every server that is not a built-in.
 
-    The single definition of the trust-boundary predicate — built-ins (no
-    ``source`` attr, or ``'builtin'``) are trusted; workspace-local and
-    user-level (workspace-inherited) servers are not. Named for the property
-    that matters: ``source='user'`` is one of the untrusted tiers, not the
-    complement of this predicate.
+    The single definition of the trust-boundary predicate. Only a built-in (no
+    ``source`` attr, or ``'builtin'``) is trusted, so a source this code does
+    not know, such as the retired ``'workspace'`` tier, fails closed rather
+    than inheriting the sandbox's environment. Named for the property that
+    matters, so a caller asks about trust rather than about which tier a
+    server came from.
     """
-    return getattr(server, "source", "builtin") in ("workspace", "user")
+    return getattr(server, "source", "builtin") != "builtin"
 
 
 def discovery_should_use_secrets(server) -> bool:

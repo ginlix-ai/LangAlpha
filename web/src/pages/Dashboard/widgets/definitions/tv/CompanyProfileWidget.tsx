@@ -15,7 +15,6 @@ interface CompanyProfileConfig {
 function CompanyProfileWidget({ instance }: WidgetRenderProps<CompanyProfileConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="symbol-profile"
       config={{ symbol: instance.config.symbol }}
     />

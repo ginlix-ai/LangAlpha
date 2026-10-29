@@ -1,0 +1,343 @@
+/* Every field on the form: the input fill on the page ground, edged by the
+   same hairline that separates the rows. The select triggers carry both
+   already, as the shared primitive draws them. */
+.automation-form :is(input, textarea, select, .automation-moment-field) {
+  background-color: var(--color-bg-input);
+  border-color: var(--color-border-muted);
+}
+
+/* The Settings shape: one hairline stack, a setting's name on the left in
+   the column the starting points draw their cadence in, its field on the
+   right. No card around it, so the form reads as the page it opened on. */
+.automation-form-rows {
+  border-top: 1px solid var(--color-border-muted);
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.automation-form-rows > * + * {
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.automation-form-row {
+  display: grid;
+  grid-template-columns: var(--automations-label-col) minmax(0, 1fr);
+  column-gap: var(--automations-label-gap);
+  align-items: start;
+  padding: 14px 0;
+}
+
+.automation-form-label {
+  padding-top: 9px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-text-primary);
+}
+
+.automation-form-field {
+  min-width: 0;
+}
+
+.automation-form-trigger {
+  margin-top: 14px;
+}
+
+/* A kind of trigger and a day of the week press alike: a hairline chip the
+   pointer only tints, lighter than the pressed fill, as the list's rows are.
+   Pressed, it takes full ink and an edge in the secondary ink. The default
+   border sits a shade off the hairline, too close to tell chosen from
+   hovered. */
+.automation-trigger-option,
+.automation-day {
+  border: 1px solid var(--color-border-muted);
+  transition: background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+
+.automation-trigger-option:not([aria-pressed='true']):hover,
+.automation-day:not([aria-pressed='true']):hover {
+  --automation-meter-wash: var(--color-bg-subtle);
+  background-color: var(--color-bg-subtle);
+}
+
+.automation-trigger-option[aria-pressed='true'],
+.automation-day[aria-pressed='true'] {
+  --automation-meter-wash: var(--color-bg-hover);
+  border-color: var(--color-text-secondary);
+  background-color: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+/* The kinds of trigger, each drawn with its own cadence mark. */
+.automation-trigger-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.automation-trigger-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1 1 0;
+  /* Never narrower than its mark and label: a narrow field wraps the kinds
+     onto a second line instead of squeezing them under their marks. */
+  min-width: max-content;
+  max-width: 184px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  text-align: left;
+  color: var(--color-text-secondary);
+}
+
+/* An edit's kind is fixed: shown pressed, never dimmed as disabled. */
+.automation-trigger-option[data-locked] {
+  cursor: default;
+}
+
+/* An unpicked kind shows its mark faded, like a day a schedule skips. */
+.automation-trigger-option[aria-pressed='false'] > [aria-hidden='true'] {
+  opacity: 0.6;
+}
+
+.automation-trigger-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+/* The days a schedule runs, pressed like the week strip reads: the days
+   it lands on in full ink, the rest faded. */
+.automation-day-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.automation-day {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+
+/* What the trigger as set would do, read back in words. */
+.automation-form-readout {
+  margin-top: 8px;
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
+/* A ticker's live price, shown as soon as one is picked. */
+.automation-form-quote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+}
+
+.automation-form-quote-symbol {
+  color: var(--color-text-secondary);
+}
+
+.automation-form-quote-price {
+  color: var(--color-text-primary);
+}
+
+.automation-form-meter {
+  max-width: 420px;
+}
+
+/* The meter's reading, set as the inspector sets the same one. */
+.automation-form-meter > .automation-form-readout {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.6875rem;
+}
+
+.automation-form-unit {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+  pointer-events: none;
+}
+
+/* A level is typed, not stepped by ones, and the steppers would sit where a
+   % unit is drawn. */
+.automation-form-level {
+  appearance: textfield;
+}
+
+.automation-form-level::-webkit-inner-spin-button,
+.automation-form-level::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.automation-form-joiner {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+}
+
+/* Where results go: the picked chats as chips above the list they come from. */
+.automation-delivery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.automation-delivery-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.automation-delivery-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0 2px 0 8px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+}
+
+.automation-delivery-chip[data-invalid] {
+  border-color: var(--color-icon-danger);
+}
+
+.automation-delivery-chip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 4px;
+  outline: none;
+}
+
+.automation-delivery-chip-label[data-hovered],
+.automation-delivery-chip-label[data-pressed] {
+  color: var(--color-text-secondary);
+}
+
+.automation-delivery-chip-label[data-focus-visible] {
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+.automation-delivery-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--color-text-tertiary);
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+
+.automation-delivery-chip-remove:hover {
+  background-color: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+/* Which way a default was reached, beside the app's Default in the list. */
+.automation-delivery-tag {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.automation-delivery-error,
+.automation-delivery-problems {
+  font-size: 0.8125rem;
+  color: var(--color-icon-danger);
+  overflow-wrap: anywhere;
+}
+
+.automation-delivery-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.automation-delivery > .automation-delivery-problems {
+  margin-top: 0;
+}
+
+/* The folded options, a row of their own that still says what they are
+   set to. */
+.automation-form-more-toggle {
+  align-items: baseline;
+  width: 100%;
+  padding: 5px 0 14px;
+  text-align: left;
+}
+
+.automation-form-more-toggle > .automation-form-label {
+  color: var(--color-text-secondary);
+  transition: color var(--motion-quick) var(--ease-out);
+}
+
+.automation-form-more-toggle:hover > .automation-form-label,
+.automation-form-more-toggle[aria-expanded='true'] > .automation-form-label {
+  color: var(--color-text-primary);
+}
+
+.automation-form-summary {
+  min-width: 0;
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
+.automation-form-rows-nested {
+  border-bottom: 0;
+}
+
+.automation-form-actions {
+  display: flex;
+  gap: 8px;
+  padding: 20px 0 0 calc(var(--automations-label-col) + var(--automations-label-gap));
+}
+
+/* On a desktop the form sits in the manage pane, which narrows with the list
+   beside it rather than with the viewport. Once the pane cannot seat the
+   label column (160px with its gap) beside all three trigger kinds (about
+   350px), each name goes above its field, as on a phone. */
+@container automations-pane (max-width: 519px) {
+  .automation-form-row {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 8px;
+  }
+  .automation-form-label {
+    padding-top: 0;
+  }
+  .automation-form-actions {
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 767px) {
+  .automation-form-row {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 8px;
+  }
+  .automation-form-label {
+    padding-top: 0;
+  }
+  .automation-form-actions {
+    flex-direction: column;
+    padding-left: 0;
+  }
+  .automation-form-actions button {
+    width: 100%;
+    justify-content: center;
+  }
+}

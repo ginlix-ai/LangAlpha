@@ -16,6 +16,26 @@ describe('coerceMcpName', () => {
   it('passes through an already-legal name', () => {
     expect(coerceMcpName('already_ok')).toEqual({ name: 'already_ok', renamed: false });
   });
+  // Same table as the backend's coerce_mcp_name, so the preview names what
+  // the import will actually create.
+  it.each([
+    ['class', 'class_server'],
+    ['mcp_client', 'mcp_client_server'],
+    ['mcp-client', 'mcp_client_server'],
+    ['__init__', 'init__'],
+    ['__class', 'class_server'],
+    ['__3d', '_3d'],
+    ['---', 'server'],
+  ])('renames %s, which the sandbox reserves, to %s', (raw, name) => {
+    expect(coerceMcpName(raw)).toEqual({ name, renamed: true });
+  });
+  it.each(['match', 'type', '_'])('keeps %s, a soft keyword the sandbox accepts', (raw) => {
+    expect(coerceMcpName(raw)).toEqual({ name: raw, renamed: false });
+  });
+  it('underscores an astral character once, as the backend does', () => {
+    // Same case as test_coerce_mcp_name_counts_an_astral_character_once.
+    expect(coerceMcpName('rocket\u{1F680}mcp')).toEqual({ name: 'rocket_mcp', renamed: true });
+  });
 });
 
 describe('normalizeTransport', () => {

@@ -1,0 +1,254 @@
+/* Discover: the catalog as cards, and a catalog entry's page. Builds on the
+   surface vocabulary (surface.css); only what a card has and a cell does not
+   lives here. The root is a size container so the featured row can take a
+   side card when the column, not the window, is wide enough. */
+
+.discover { container-type: inline-size; min-width: 0; }
+
+/* Filter chips across the top */
+.discover-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 22px;
+}
+.discover-chips .surface-chip {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-muted);
+  color: var(--color-text-secondary);
+}
+.discover-chips .surface-chip:hover { color: var(--color-text-primary); }
+.discover-chips .surface-chip.is-on { border-color: var(--color-border-default); color: var(--color-text-primary); }
+.discover-chips .surface-chip:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); }
+
+/* Featured entry, and what came from the catalog beside it */
+.discover-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 30px;
+}
+.discover-mine { display: none; }
+@container (min-width: 1080px) {
+  .discover-top.has-mine { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  .discover-top.has-mine .discover-mine { display: flex; }
+}
+.discover-feature {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-card);
+}
+.discover-feature:hover,
+.discover-feature:focus-within { background: var(--color-bg-card-hover); }
+.discover-feature-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  line-height: 22px;
+}
+.discover-feature-name .surface-cell-name {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.discover-feature-kick { font-size: 0.71875rem; font-weight: 500; color: var(--color-text-quaternary); }
+.discover-feature-desc {
+  margin-top: 3px;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+}
+.discover-feature .discover-meta { margin-top: 6px; }
+.discover-feature-action { position: relative; z-index: 1; }
+.discover-mine {
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+}
+.discover-mine-label {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 0.71875rem;
+  font-weight: 500;
+  color: var(--color-text-quaternary);
+}
+.discover-mine-stack { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 10px; }
+.discover-mine-names { font-size: 0.78125rem; line-height: 1.5; color: var(--color-text-secondary); }
+.discover-mine-names .is-faint { color: var(--color-text-tertiary); }
+.discover-mine .surface-section-link { align-self: flex-start; margin-top: auto; padding-top: 8px; }
+.discover-mine-attn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.75rem;
+  color: var(--color-warning);
+  cursor: pointer;
+}
+.discover-mine-attn:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+/* The card grid: bordered cards, so a tighter gap than the cell grid */
+.surface-grid.discover-grid { gap: 12px; margin: 0; }
+.discover-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px 16px 15px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+}
+.discover-card:hover,
+.discover-card:focus-within { background: var(--color-bg-card-hover); }
+.discover-card .surface-cell-l1 { gap: 6px; line-height: 20px; }
+.discover-card-desc { margin: 3px 0 0; min-height: 36px; }
+.discover-card .surface-cell-end { padding-top: 2px; }
+.discover-card:hover .surface-cell-add,
+.discover-feature:hover .surface-cell-add {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-elevated);
+}
+
+/* "by vendor · Sign in" */
+.discover-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 0.71875rem;
+  color: var(--color-text-quaternary);
+}
+.discover-by { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* An installed entry that needs the user, or has a newer version: its state
+   in place of the line above, over the card's stretched open target so it
+   opens the plugin page */
+.discover-card-state {
+  position: relative;
+  z-index: 1;
+  display: block;
+  max-width: 100%;
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 0.71875rem;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.discover-card-state.is-warn { color: var(--color-warning); }
+.discover-card-state:hover { text-decoration: underline; text-underline-offset: 2px; }
+.discover-card-attn { display: inline-flex; padding: 5px; }
+.discover-sep { opacity: 0.7; }
+.discover-access {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+.discover-official { display: inline-flex; flex-shrink: 0; color: var(--color-text-tertiary); }
+.discover-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.discover-installed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+}
+
+/* The page foot: the catalog itself */
+.discover-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 36px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 0.75rem;
+  color: var(--color-text-quaternary);
+}
+.discover-foot a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--color-text-tertiary);
+  text-decoration: none;
+}
+.discover-foot a:hover { color: var(--color-text-primary); }
+
+/* A catalog entry's page */
+.discover-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  column-gap: 40px;
+  row-gap: 32px;
+}
+.discover-static .surface-cell:hover,
+.discover-static .surface-cell:focus-within { background: transparent; }
+.discover-note { margin: 2px 0 0 46px; font-size: 0.75rem; line-height: 1.5; color: var(--color-text-quaternary); }
+.discover-needs { display: flex; flex-direction: column; gap: 2px; margin: 0 -10px; }
+.discover-need { display: flex; align-items: center; gap: 12px; padding: 10px; }
+.discover-need-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+  color: var(--color-text-tertiary);
+}
+.discover-need-title { font-size: 0.8125rem; font-weight: 500; line-height: 19px; color: var(--color-text-primary); }
+.discover-need-body { font-size: 0.78125rem; line-height: 18px; color: var(--color-text-tertiary); }
+.discover-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.discover-parts { display: flex; flex-direction: column; gap: 8px; }
+.discover-note + .discover-parts { margin-top: 16px; }
+.discover-parts.is-under { margin: 2px 0 6px 46px; }
+.discover-parts-label { font-size: 0.75rem; color: var(--color-text-tertiary); }
+.discover-link { display: inline-flex; align-items: center; gap: 4px; }
+.discover-link svg { color: var(--color-text-quaternary); }
+.discover-head-badge { display: inline-flex; align-items: center; gap: 4px; color: var(--color-text-secondary); }
+.discover-head-badge .discover-official { color: inherit; }
+
+@media (max-width: 767px) {
+  .discover-feature { grid-template-columns: auto minmax(0, 1fr); }
+  .discover-feature-action { grid-column: 1 / -1; justify-self: start; }
+  .discover-foot { flex-direction: column; gap: 8px; }
+}

@@ -1,4 +1,5 @@
-import { z } from 'zod';
+import * as z from 'zod/mini';
+import { en } from 'zod/locales';
 
 /**
  * Client-side validation for user-configured MCP servers — a mirror of the
@@ -8,7 +9,8 @@ import { z } from 'zod';
  * here gives instant feedback and avoids round-tripping obviously-bad input.
  *
  * Discriminated on `transport`:
- *   - stdio → command (allowlist, NO `bash`), args, env (no headers/url)
+ *   - stdio → command (any non-empty word; it runs in the user's own sandbox),
+ *     args, env (no headers/url)
  *   - sse/http → url (https-only, SSRF-hardened), headers (no command/args/env)
  *
  * env/header values are either a single `${vault:NAME}` reference or a plain
@@ -23,20 +25,74 @@ import { z } from 'zod';
 export const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 
-// Allowlist deliberately WITHOUT `bash` (or any shell) — running a user command
-// is arbitrary code execution; this bounds it (backend plan §Security #4).
-export const ALLOWED_COMMANDS = ['npx', 'uvx', 'uv', 'python', 'python3', 'node'] as const;
-export type AllowedCommand = (typeof ALLOWED_COMMANDS)[number];
+// A copy of the backend's rule (`sandbox_name_error` and `_PY_KEYWORDS` in
+// `src/server/models/mcp_server.py`): Python 3.13's hard keywords, written out.
+// Soft keywords (`match`, `type`, `case`, `_`) are legal module names.
+const PYTHON_KEYWORDS: ReadonlySet<string> = new Set([
+  'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break',
+  'class', 'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for',
+  'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal', 'not',
+  'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield',
+]);
+const RUNTIME_MODULE = 'mcp_client';
+const NAME_SHAPE_MESSAGE =
+  'name must be 1-64 chars: letter/underscore then letters/digits/underscores';
+const NAME_RESERVED_MESSAGE = 'name is reserved in the sandbox';
 
-export const TRANSPORTS = ['stdio', 'sse', 'http'] as const;
+/** Why a server name is refused. A code rather than a sentence: the form words
+ *  it in the user's locale. */
+export type ServerNameError = 'shape' | 'runtimeModule' | 'dunder' | 'keyword';
+
+/**
+ * Why the sandbox reserves `name`, or null. A server name is also the Python
+ * module its tool wrappers are generated into, beside the runtime's own
+ * `mcp_client`. Mirrors `sandbox_name_error` in the backend model.
+ */
+function sandboxNameError(name: string): Exclude<ServerNameError, 'shape'> | null {
+  if (name === RUNTIME_MODULE) return 'runtimeModule';
+  if (name.startsWith('__')) return 'dunder';
+  if (PYTHON_KEYWORDS.has(name)) return 'keyword';
+  return null;
+}
+
+/**
+ * Why a server cannot be saved under `name`, or null. `keepName` is the name
+ * the row is already saved under: like the backend, which checks reserved
+ * names only where a name is introduced, an edit keeps a name the sandbox
+ * reserved after it was saved.
+ */
+export function serverNameError(
+  name: string,
+  keepName?: string | null,
+): ServerNameError | null {
+  if (!NAME_RE.test(name)) return 'shape';
+  return name === keepName ? null : sandboxNameError(name);
+}
+
+/**
+ * Rename a `NAME_RE`-legal name the sandbox reserves into one it accepts
+ * (mirrors the backend's `_unreserve`): `class` → `class_server`, `__init__` →
+ * `init__`, and a dunder with nothing after its underscores → `server`.
+ */
+export function unreserveName(name: string): string {
+  let cand = name;
+  if (cand.startsWith('__')) {
+    cand = cand.replace(/^_+/, '');
+    if (!cand) return 'server';
+    if (/^[0-9]/.test(cand)) cand = `_${cand}`;
+  }
+  if (cand === RUNTIME_MODULE || PYTHON_KEYWORDS.has(cand)) cand = `${cand}_server`;
+  return cand;
+}
+
+// Ordered for the transport picker: http leads because a remote service is the
+// common case, and sse sits beside it as the legacy form of the same thing.
+export const TRANSPORTS = ['http', 'sse', 'stdio'] as const;
 export const EXPOSURE_MODES = ['summary', 'detailed'] as const;
 
 export const DESCRIPTION_MAX = 512;
 export const INSTRUCTION_MAX = 1024;
 
-// `${vault:NAME}` reference — must be a FULL match for the value to count as a
-// reference (mirrors `VAULT_REF_RE.fullmatch` on the backend).
-const VAULT_REF_FULL_RE = /^\$\{vault:[A-Za-z_][A-Za-z0-9_]{0,127}\}$/;
 // Extract vault names from a value (global, for ref collection / display).
 const VAULT_REF_GLOBAL_RE = /\$\{vault:([A-Za-z_][A-Za-z0-9_]{0,127})\}/g;
 // A bare host-env placeholder like `${VAR}` or `$VAR` — never resolves.
@@ -46,14 +102,31 @@ const BARE_ENV_RE = /\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/;
 // Value-level validation (env + headers)
 // ---------------------------------------------------------------------------
 
-/** True iff `value` is a single full `${vault:NAME}` ref OR a clean literal. */
+/**
+ * True iff `value` is a literal that may EMBED well-formed `${vault:NAME}`
+ * refs. `Authorization: Bearer ${vault:TOKEN}` is the shape an auth header
+ * takes almost everywhere, and the backend and the sandbox both substitute
+ * refs in place (`_validate_secret_value`, `_resolve_vault_refs`), so the
+ * whole-value rule this used to enforce only pushed the scheme word into the
+ * secret. What stays rejected is a malformed ref and a host-env placeholder.
+ */
 export function isValidSecretValue(value: string): boolean {
-  if (VAULT_REF_FULL_RE.test(value)) return true;
-  // A malformed vault ref (`${vault:` present but not a full match) is invalid.
-  if (value.includes('${vault:')) return false;
-  // Any other `${...}` / `$VAR` token is a host-env placeholder → reject.
-  if (BARE_ENV_RE.test(value)) return false;
+  const stripped = value.replace(VAULT_REF_GLOBAL_RE, '');
+  if (stripped.includes('${vault:')) return false;
+  if (BARE_ENV_RE.test(stripped)) return false;
   return true;
+}
+
+const SCHEME_WORD_RE = /^(?:bearer|basic|token)?$/i;
+
+/**
+ * `value` when it holds nothing but `${vault:NAME}` refs (an auth scheme word
+ * in front is allowed, so `Bearer ${vault:T}` survives), else ''. A ref is
+ * only a name and safe to keep around; anything typed beside one may be a key.
+ */
+export function refsOnlyValue(value: string): string {
+  const rest = value.replace(VAULT_REF_GLOBAL_RE, '');
+  return rest !== value && SCHEME_WORD_RE.test(rest.trim()) ? value : '';
 }
 
 /**
@@ -87,7 +160,24 @@ export function collectVaultRefs(mapping: Record<string, string> | undefined): s
 }
 
 const secretMapSchema = (kind: 'env' | 'header') =>
-  z.record(z.string(), z.string()).superRefine((mapping, ctx) => {
+  z.record(z.string(), z.string()).check(z.superRefine((mapping, ctx) => {
+    // HTTP field names are case-insensitive and the relay folds them, so two
+    // spellings of one header would put the value nobody configured on the
+    // wire. Mirrors `_validate_header_map`; env names are case-sensitive.
+    if (kind === 'header') {
+      const seen = new Set<string>();
+      for (const key of Object.keys(mapping)) {
+        const folded = key.toLowerCase();
+        if (seen.has(folded)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'header names must be unique case-insensitively',
+            path: [key],
+          });
+        }
+        seen.add(folded);
+      }
+    }
     for (const [key, value] of Object.entries(mapping)) {
       if (!ENV_KEY_RE.test(key)) {
         ctx.addIssue({
@@ -106,7 +196,7 @@ const secretMapSchema = (kind: 'env' | 'header') =>
         });
       }
     }
-  });
+  }));
 
 // ---------------------------------------------------------------------------
 // URL policy (sse/http) — SSRF hardening, mirrors `validate_remote_url`.
@@ -234,42 +324,48 @@ function isDisallowedIp(host: string): boolean {
 // The server-definition schema — discriminated on transport.
 // ---------------------------------------------------------------------------
 
-const nameField = z
-  .string()
-  .regex(NAME_RE, 'name must be 1-64 chars: letter/underscore then letters/digits/underscores');
+// Shape only: whether the sandbox reserves the name depends on the name the
+// row is saved under, which `validateMcpServer` is told and the schema is not.
+const nameField = z.string().check(z.regex(NAME_RE, NAME_SHAPE_MESSAGE));
 
-const descriptionField = z.string().max(DESCRIPTION_MAX).default('');
-const instructionField = z.string().max(INSTRUCTION_MAX).default('');
-const exposureField = z.enum(EXPOSURE_MODES).default('summary');
+const descriptionField = z._default(z.string().check(z.maxLength(DESCRIPTION_MAX)), '');
+const instructionField = z._default(z.string().check(z.maxLength(INSTRUCTION_MAX)), '');
+const exposureField = z._default(z.enum(EXPOSURE_MODES), 'summary');
 // Off (default) = tool discovery runs secret-less. On = resolve vault secrets
 // during discovery (for servers that need auth even to list tools).
-const discoveryUsesSecretsField = z.boolean().optional().default(false);
+const discoveryUsesSecretsField = z._default(z.boolean(), false);
 
-const urlField = z.string().superRefine((url, ctx) => {
+const urlField = z.string().check(z.superRefine((url, ctx) => {
   const reason = validateRemoteUrl(url);
   if (reason) ctx.addIssue({ code: 'custom', message: reason });
-});
+}));
 
 // stdio args: literals + embedded `${vault:NAME}` refs are fine; a malformed
 // vault ref or a bare host-env placeholder is rejected (mirrors env/header).
-const argsField = z
-  .array(z.string())
-  .default([])
-  .superRefine((args, ctx) => {
-    args.forEach((arg, i) => {
-      const reason = validateArg(arg);
-      if (reason) ctx.addIssue({ code: 'custom', message: reason, path: [i] });
-    });
-  });
+// The check sits inside the default: `.check()` on a default copies its def,
+// which freezes one `[]` that every parse would then share.
+const argsField = z._default(
+  z.array(z.string()).check(
+    z.superRefine((args, ctx) => {
+      args.forEach((arg, i) => {
+        const reason = validateArg(arg);
+        if (reason) ctx.addIssue({ code: 'custom', message: reason, path: [i] });
+      });
+    }),
+  ),
+  [],
+);
 
 const stdioSchema = z.object({
   name: nameField,
   transport: z.literal('stdio'),
-  command: z.enum(ALLOWED_COMMANDS, {
-    message: `command must be one of: ${ALLOWED_COMMANDS.join(', ')}`,
-  }),
+  command: z.string().check(
+    z.trim(),
+    z.minLength(1, 'command is required'),
+    z.maxLength(256, 'command is too long'),
+  ),
   args: argsField,
-  env: secretMapSchema('env').default({}),
+  env: z._default(secretMapSchema('env'), {}),
   description: descriptionField,
   instruction: instructionField,
   tool_exposure_mode: exposureField,
@@ -280,7 +376,7 @@ const sseSchema = z.object({
   name: nameField,
   transport: z.literal('sse'),
   url: urlField,
-  headers: secretMapSchema('header').default({}),
+  headers: z._default(secretMapSchema('header'), {}),
   description: descriptionField,
   instruction: instructionField,
   tool_exposure_mode: exposureField,
@@ -291,7 +387,7 @@ const httpSchema = z.object({
   name: nameField,
   transport: z.literal('http'),
   url: urlField,
-  headers: secretMapSchema('header').default({}),
+  headers: z._default(secretMapSchema('header'), {}),
   description: descriptionField,
   instruction: instructionField,
   tool_exposure_mode: exposureField,
@@ -306,19 +402,36 @@ const SCHEMA_BY_TRANSPORT = {
   http: httpSchema,
 } as const;
 
-/** Validate a raw form object, returning either ok or the list of errors. */
-export function validateMcpServer(input: unknown):
+// The modal shows zod's own message for an issue that carries none of its own
+// (a description over the cap, a non-string arg). `zod/mini` ships no locale,
+// so English is supplied per parse rather than installed globally.
+const localeError = en().localeError;
+
+/**
+ * Validate a raw form object, returning either ok or the list of errors.
+ * `keepName` is the name an edited row is saved under (see `serverNameError`).
+ */
+export function validateMcpServer(
+  input: unknown,
+  { keepName = null }: { keepName?: string | null } = {},
+):
   | { ok: true }
   | { ok: false; errors: Array<{ path: string; message: string }> } {
   const transport = (input as { transport?: keyof typeof SCHEMA_BY_TRANSPORT })?.transport;
   const schema = (transport && SCHEMA_BY_TRANSPORT[transport]) || stdioSchema;
-  const result = schema.safeParse(input);
-  if (result.success) return { ok: true };
-  return {
-    ok: false,
-    errors: result.error.issues.map((i) => ({
-      path: i.path.map(String).join('.'),
-      message: i.message,
-    })),
-  };
+  const result = schema.safeParse(input, { error: localeError });
+  const errors = result.success
+    ? []
+    : result.error.issues.map((i) => ({
+        path: i.path.map(String).join('.'),
+        message: i.message,
+      }));
+  // A name that already failed the shape has that one message, not two.
+  const name = (input as { name?: unknown } | null)?.name;
+  if (typeof name === 'string' && NAME_RE.test(name)) {
+    if (serverNameError(name, keepName)) {
+      errors.unshift({ path: 'name', message: NAME_RESERVED_MESSAGE });
+    }
+  }
+  return errors.length ? { ok: false, errors } : { ok: true };
 }

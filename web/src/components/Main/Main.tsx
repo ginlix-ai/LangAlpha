@@ -1,72 +1,177 @@
-import React, { Suspense } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { Suspense, useEffect } from 'react';
+import { Routes, Route, Navigate, useLocation } from 'react-router';
 import PageLoading from '@/components/PageLoading/PageLoading';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useSyncUserLocale } from '@/hooks/useSyncUserLocale';
 import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
+import NetworkBanner from '@/components/NetworkBanner/NetworkBanner';
+import { StaleBuildBoundary } from '@/components/StaleBuildBoundary';
+import { lazyWithMotion, preloadableLazy } from '@/lib/lazyWithMotion';
+import type { AppSection } from '@/lib/appRoutes';
 
 // Chunk thunks shared by the lazy components and preloadRouteChunk — import()
 // is deduped by the module system, so a preload and the lazy mount share one
-// network fetch.
+// network fetch. Keyed by every section `APP_SECTIONS` names, so a link the
+// chat routes in place always has a page here.
 const routeChunks = {
-  dashboard: () => import('../../pages/Dashboard/DashboardRouter'),
+  dashboard: () => import('../../pages/Dashboard/Dashboard'),
   chat: () => import('../../pages/ChatAgent/ChatAgent'),
   market: () => import('../../pages/MarketView/MarketView'),
   news: () => import('../../pages/Detail/NewsDetailPage'),
   automations: () => import('../../pages/Automations/Automations'),
-  connectors: () => import('../../pages/Connectors/Connectors'),
+  orders: () => import('../../pages/Orders/Orders'),
+  plugins: () => import('../../pages/Plugins/Plugins'),
   settings: () => import('../../pages/Settings/Settings'),
-};
+  // Alias so preloading /connectors (the legacy path) warms the right chunk.
+  connectors: () => import('../../pages/Plugins/Plugins'),
+} satisfies Record<AppSection, () => Promise<unknown>>;
 
-const Dashboard = React.lazy(routeChunks.dashboard);
-const ChatAgent = React.lazy(routeChunks.chat);
-const MarketView = React.lazy(routeChunks.market);
-const NewsDetailPage = React.lazy(routeChunks.news);
-const Automations = React.lazy(routeChunks.automations);
-const Connectors = React.lazy(routeChunks.connectors);
-const Settings = React.lazy(routeChunks.settings);
+const Dashboard = lazyWithMotion(routeChunks.dashboard);
+const ChatAgent = lazyWithMotion(routeChunks.chat);
+const MarketView = lazyWithMotion(routeChunks.market);
+// Animates nothing, so it skips the framer download (see lib/lazyWithMotion).
+const NewsDetailPage = preloadableLazy(routeChunks.news);
+const Automations = lazyWithMotion(routeChunks.automations);
+const Orders = lazyWithMotion(routeChunks.orders);
+const Plugins = lazyWithMotion(routeChunks.plugins);
+const Settings = lazyWithMotion(routeChunks.settings);
+
+// What a preload warms for each section: the page itself, not only its chunk,
+// so a page warmed ahead renders on its first mount rather than behind the
+// pane's spinner (see lib/lazyWithMotion).
+const routePreloads = {
+  dashboard: Dashboard.preload,
+  chat: ChatAgent.preload,
+  market: MarketView.preload,
+  news: NewsDetailPage.preload,
+  automations: Automations.preload,
+  orders: Orders.preload,
+  plugins: Plugins.preload,
+  settings: Settings.preload,
+  connectors: Plugins.preload,
+} satisfies Record<AppSection, () => Promise<unknown>>;
 
 /** Start downloading the chunk for `pathname` without rendering it, so the
  * shell can warm the target route while the /users/me gate is still
  * resolving instead of serializing the two network legs. Unknown segments
  * warm the dashboard chunk (the catch-all redirect's target). */
 export function preloadRouteChunk(pathname: string): void {
-  const chunkFor: Record<string, () => Promise<unknown>> = routeChunks;
+  const chunkFor: Record<string, () => Promise<unknown>> = routePreloads;
   const segment = pathname.split('/')[1] || 'dashboard';
-  void (chunkFor[segment] ?? routeChunks.dashboard)();
+  // Swallowed on purpose, but it must be caught: a deploy deletes the previous
+  // build's chunks, so this rejects routinely for a stale tab, and an unhandled
+  // rejection is noise that hides real ones. The failure still surfaces — Vite
+  // fires vite:preloadError (index.html reports it), and React.lazy retries the
+  // same import at mount, where StaleBuildBoundary catches it.
+  void (chunkFor[segment] ?? routePreloads.dashboard)().catch(() => {});
+}
+
+// Warmed in the order the rail lists them, the likeliest next stops first.
+const WARM_ORDER = ['dashboard', 'chat', 'market', 'automations', 'plugins', 'settings', 'orders', 'news'] as const satisfies readonly AppSection[];
+const WARM_IDLE_TIMEOUT_MS = 2000;
+
+/** Warms every section's chunk once the shell is idle, one at a time so none
+ * competes with what the page in view is still loading. A section's first
+ * visit then renders at once: its keyed Suspense mounts fresh, with nothing of
+ * its own to hold, so a chunk still in flight showed the pane's loader. */
+function useWarmSections(): void {
+  useEffect(() => {
+    let cancelled = false;
+    let cancelWait = () => {};
+    const whenIdle = (run: () => void) => {
+      if (typeof window.requestIdleCallback === 'function') {
+        const id = window.requestIdleCallback(run, { timeout: WARM_IDLE_TIMEOUT_MS });
+        cancelWait = () => window.cancelIdleCallback(id);
+      } else {
+        const id = window.setTimeout(run, WARM_IDLE_TIMEOUT_MS);
+        cancelWait = () => window.clearTimeout(id);
+      }
+    };
+    const warm = (i: number) => {
+      if (cancelled || i >= WARM_ORDER.length) return;
+      // A failed warm is the mount's to retry (see preloadRouteChunk).
+      void routePreloads[WARM_ORDER[i]]()
+        .catch(() => {})
+        .then(() => whenIdle(() => warm(i + 1)));
+    };
+    whenIdle(() => warm(0));
+    return () => {
+      cancelled = true;
+      cancelWait();
+    };
+  }, []);
+}
+
+/** Permanent alias for the pre-rename Connectors page. Keeps search + hash:
+ * OAuth `return_to` values persisted before the rename (Redis ConnectState,
+ * 600s TTL) still land on `/connectors?mcp_connected=…` and must reach the
+ * page that renders the toast. */
+export function LegacyConnectorsRedirect() {
+  const { search, hash } = useLocation();
+  return <Navigate to={`/plugins${search}${hash}`} replace />;
 }
 
 function Main() {
   const location = useLocation();
   const isMobile = useIsMobile();
   useSyncUserLocale();
+  useWarmSections();
   // Key by top-level path segment so /chat sub-routes share a key (no re-animation)
   const pageKey = location.pathname.split('/')[1] || 'dashboard';
 
+  // A chunk a deploy deleted rejects rather than stays pending, so Suspense
+  // hands the throw straight up; without a boundary it reaches the root and
+  // takes the sidebar with it, and the pane's spinner hangs forever.
+  //
+  // Inside Suspense, not around it, even though both placements catch the
+  // rejection (pinned in src/lib/__tests__/staleBuild.test.tsx). The boundary is keyed by
+  // route so navigating away from a dead chunk clears the error, and a key on
+  // the outside remounts Suspense along with it. Desktop already remounts this
+  // subtree through the keyed fade wrapper, but mobile renders it directly, and a
+  // freshly mounted Suspense boundary has no previous content to hold — so it
+  // must show its fallback, and with the router's transition-wrapped updates
+  // every first navigation to a route flashed the pane spinner where it used to
+  // switch in place.
   const routes = (
     <Suspense fallback={<PageLoading variant="pane" />}>
-      <Routes location={location}>
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/chat" element={<ChatAgent />} />
-        <Route path="/chat/t/:threadId/:taskId" element={<ChatAgent />} />
-        <Route path="/chat/t/:threadId" element={<ChatAgent />} />
-        <Route path="/chat/:workspaceId" element={<ChatAgent />} />
-        <Route path="/market" element={<MarketView />} />
-        <Route path="/automations" element={<Automations />} />
-        <Route path="/connectors" element={<Connectors />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/news/:id" element={<NewsDetailPage />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      </Routes>
+      <StaleBuildBoundary key={pageKey} variant="pane">
+        <Routes location={location}>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/chat" element={<ChatAgent />} />
+          <Route path="/chat/t/:threadId/:taskId" element={<ChatAgent />} />
+          <Route path="/chat/t/:threadId" element={<ChatAgent />} />
+          <Route path="/chat/:workspaceId" element={<ChatAgent />} />
+          <Route path="/market" element={<MarketView />} />
+          <Route path="/automations" element={<Automations />} />
+          <Route path="/orders" element={<Orders />} />
+          <Route path="/plugins" element={<Plugins />} />
+          <Route path="/connectors" element={<LegacyConnectorsRedirect />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/news/:id" element={<NewsDetailPage />} />
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
+      </StaleBuildBoundary>
     </Suspense>
   );
 
-  // On mobile, skip AnimatePresence — instant page switches feel snappier
+  // On mobile, skip the fade: instant page switches feel snappier. The
+  // wrapper is not cosmetic symmetry with the desktop branch below: it carries
+  // the same `minHeight: 0`, which is the only thing that lets the route shrink
+  // when the banner takes part of the column. Without it a route root pinned
+  // with `min-height: 100%` (the dashboard) keeps the full column height and
+  // its last banner's-worth of scroll area slides under the bottom tab bar —
+  // invisible to an `.app-main` overflow check, because `.app-main` reserves
+  // exactly that strip as padding for the tab bar. It must also stay a flex
+  // column: the mobile dashboard is `height: auto` and relies on being a flex
+  // item for its height, so a plain block wrapper would let it grow to its full
+  // scroll height instead.
   if (isMobile) {
     return (
       <div className="main" style={{ height: '100%' }}>
-        {routes}
+        <NetworkBanner />
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+          {routes}
+        </div>
         <ContextOverflowPill />
       </div>
     );
@@ -74,18 +179,23 @@ function Main() {
 
   return (
     <div className="main">
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={pageKey}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15, ease: 'easeInOut' }}
-          style={{ height: '100%' }}
-        >
-          {routes}
-        </motion.div>
-      </AnimatePresence>
+      <NetworkBanner />
+      {/* Keyed on the section so a new one mounts fresh. It swaps in at once:
+          the page under it draws in its final frame, and a fade over that
+          only delays it. */}
+      <div
+        key={pageKey}
+        // `minHeight: 0` is what lets flex actually shrink this when the
+        // banner takes part of the column. A flex item defaults to
+        // `min-height: auto`, so without it a tall route (the dashboard grid)
+        // refuses to go below its min-content height and hangs out of the
+        // shell instead. It only sizes THIS wrapper though: a route root that
+        // pins itself to the viewport instead of its container overflows the
+        // shrunken column by exactly the banner's height (see AGENTS.md).
+        style={{ height: '100%', minHeight: 0 }}
+      >
+        {routes}
+      </div>
       <ContextOverflowPill />
     </div>
   );

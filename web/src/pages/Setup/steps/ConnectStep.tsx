@@ -1,13 +1,12 @@
 import { useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router';
 import type { LocationState } from './connectStep/shared';
-import { ExistingCustomConnect } from './connectStep/ExistingCustomConnect';
+import { SubscriptionConnect } from './connectStep/SubscriptionConnect';
 import { CustomProviderConnect } from './connectStep/CustomProviderConnect';
-import { OAuthConnect } from './connectStep/OAuthConnect';
 import { ApiKeyConnect } from './connectStep/ApiKeyConnect';
 
 // ---------------------------------------------------------------------------
-// ConnectStep — Step 3: OAuth redirect or API key input
+// ConnectStep — Step 3: a subscription sign-in or an API key
 // ---------------------------------------------------------------------------
 
 export default function ConnectStep() {
@@ -19,17 +18,12 @@ export default function ConnectStep() {
   // Redirect to method step if essential state is missing (e.g. browser refresh)
   // Custom provider flows don't have a provider yet — skip the guard for those.
   useEffect(() => {
-    if (!state.provider && !state.isCustom && !state.isExistingCustom) {
+    if (!state.provider && !state.isCustom) {
       navigate('/setup/method', { replace: true });
     }
-  }, [state.provider, state.isCustom, state.isExistingCustom, navigate]);
+  }, [state.provider, state.isCustom, navigate]);
 
-  const method = state.method ?? 'api_key';
-  const isCustom = state.isCustom ?? false;
-  const isExistingCustom = state.isExistingCustom ?? false;
-
-  if (isExistingCustom) return <ExistingCustomConnect state={state} />;
-  if (isCustom) return <CustomProviderConnect state={state} />;
-  if (method === 'oauth') return <OAuthConnect state={state} />;
+  if (state.isCustom) return <CustomProviderConnect state={state} />;
+  if (state.method === 'oauth') return <SubscriptionConnect state={state} />;
   return <ApiKeyConnect state={state} />;
 }

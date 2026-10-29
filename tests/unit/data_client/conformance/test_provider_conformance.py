@@ -7,9 +7,9 @@ strict-xfail during Phase 0 and flipped green with the Phase 1 normalizers.
 
 from datetime import datetime, timezone
 
-from src.market_protocol import OhlcvBar, Series, to_canonical
-from src.market_protocol.calendars import get_calendar
-from src.market_protocol.enums import MarketPhase
+from market_protocol import OhlcvBar, Series, to_canonical
+from market_protocol.calendars import get_calendar
+from market_protocol.enums import MarketPhase
 
 from .conftest import series_normalizer
 

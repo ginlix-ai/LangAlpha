@@ -14,7 +14,6 @@ from fastapi import HTTPException
 
 from src.server.services.runs.executor import LocalRunExecutor
 
-from .steering import drain_steering_return_event
 from .run_stream_reader import stream_from_log
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
@@ -121,7 +120,7 @@ async def classify_reconnect(
         if task_info is not None:
             return run_id or task_info.run_id
         raise HTTPException(
-            status_code=404, detail=f"Workflow {thread_id} not found"
+            status_code=404, detail=f"No active turn on thread {thread_id}"
         )
 
     if run["status"] == "in_progress":
@@ -168,25 +167,5 @@ async def reconnect_to_workflow_stream(
     """
     async for event in stream_from_log(thread_id, run_id, last_event_id):
         yield event
-
-    # After the workflow ends, return any unconsumed steering messages so the
-    # client can re-render them instead of silently dropping them — but only
-    # when NO run is active on the thread. A stale reconnect to an old
-    # terminal run must not drain a newer live run's stamped payloads out
-    # from under SteeringMiddleware (v4 2.4c review F4).
-    try:
-        from src.server.database.runs import lifecycle as tl_db
-
-        thread_is_idle = await tl_db.get_active_run(thread_id) is None
-    except Exception:
-        thread_is_idle = False  # unknown ledger state: don't consume
-    if thread_is_idle:
-        steering_event = await drain_steering_return_event(thread_id)
-        if steering_event:
-            logger.info(
-                f"[PTC_RECONNECT] Returning unconsumed steering message(s) "
-                f"to client: thread_id={thread_id}"
-            )
-            yield steering_event
 
 

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ptc_agent.config.core import MCPServerConfig
-from ptc_agent.core.session import Session
+from ptc_agent.core.session import Session, SessionManager
 
 
 def _server(name):
@@ -93,3 +93,19 @@ async def test_stop_restores_even_with_sandbox_present():
 
     sandbox.stop_sandbox.assert_awaited_once()
     assert [s.name for s in session.config.mcp.servers] == ["builtin-a"]
+
+
+def test_detach_all_forgets_sessions_without_stopping_shared_sandboxes():
+    first = MagicMock()
+    first.stop = AsyncMock()
+    second = MagicMock()
+    second.stop = AsyncMock()
+    original = SessionManager._sessions
+    SessionManager._sessions = {"computer-a": first, "computer-b": second}
+    try:
+        SessionManager.detach_all()
+        assert SessionManager._sessions == {}
+        first.stop.assert_not_awaited()
+        second.stop.assert_not_awaited()
+    finally:
+        SessionManager._sessions = original

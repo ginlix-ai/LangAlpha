@@ -132,7 +132,7 @@ class WorkflowEmitter:
         self._script_emits = 0
         # Lifecycle frames mirrored for the terminal ui-channel snapshot —
         # replay rebuilds the workflow panel from these (the live SSE frames
-        # are transient and their sse_events archive is being deprecated).
+        # are transient).
         self._frames: list[dict[str, Any]] = []
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:

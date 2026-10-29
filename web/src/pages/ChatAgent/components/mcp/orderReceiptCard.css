@@ -1,0 +1,139 @@
+/* The order receipt in the transcript's terminal type. The frame and the
+   shared marks are TermCard's (charts/termCard.css); these are the pieces
+   only a receipt has. */
+
+.order-term-mark {
+  display: inline-block;
+  margin-right: 0.5ch;
+  vertical-align: -0.15em;
+}
+
+/* The owner, where the edge has no room for it. */
+.order-term-owner {
+  margin-bottom: 0.25rem;
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-tertiary);
+}
+
+.order-term-headline {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.order-term-headline .font-medium { font-weight: 500; }
+
+/* EQUITY · DAY · REGULAR HOURS */
+.order-term-words {
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+}
+
+.order-term-note {
+  margin-top: 0.25rem;
+  font-family: var(--term-words);
+  overflow-wrap: anywhere;
+}
+
+/* What follows the order sits under a dashed rule. */
+.order-term-ticket + .order-term-rest {
+  margin-top: 0.5625rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--color-term-edge);
+}
+
+.order-term-id {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.order-term-figures + .order-term-outcome {
+  margin-top: 0.5rem;
+}
+.order-term-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.order-term-prose {
+  min-width: 0;
+  font-family: var(--term-words);
+  overflow-wrap: anywhere;
+}
+.order-term-failure {
+  display: flex;
+  gap: 0.375rem;
+  color: var(--color-loss);
+}
+.order-term-failure-mark {
+  flex-shrink: 0;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-top: 0.15em;
+}
+
+/* The state in words on the left, the ways off the card on the right. */
+.order-term-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  column-gap: 1rem;
+  row-gap: 0.25rem;
+}
+.order-term-foot > .order-term-prose {
+  flex: 1 1 auto;
+}
+.order-term-links {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1rem;
+  margin-left: auto;
+}
+.order-term-links:empty {
+  display: none;
+}
+
+.order-term-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  white-space: nowrap;
+  color: var(--color-term-text-secondary);
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.order-term-link:hover {
+  color: var(--color-term-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.order-term-link svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+/* The vendor's own client is the action on a staged order, so it reads as
+   one, [ OPEN IN MOOMOO ], in the primary ink rather than a button's fill. */
+.order-term-action {
+  font-weight: 600;
+  color: var(--color-term-text);
+}
+.order-term-action::before {
+  content: var(--term-open);
+  margin-right: 0.5ch;
+  font-weight: 400;
+  color: var(--color-term-text-tertiary);
+}
+.order-term-action::after {
+  content: var(--term-close);
+  margin-left: 0.5ch;
+  font-weight: 400;
+  color: var(--color-term-text-tertiary);
+}

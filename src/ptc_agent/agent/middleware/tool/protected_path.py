@@ -74,7 +74,9 @@ class ProtectedPathMiddleware(AgentMiddleware):
 
     def _make_blocked(self, tool_call_id: str, tool_name: str) -> ToolMessage:
         logger.warning("Protected path access blocked", tool=tool_name)
-        return ToolMessage(content=_BLOCKED_RESPONSE, tool_call_id=tool_call_id)
+        return ToolMessage(
+            content=_BLOCKED_RESPONSE, tool_call_id=tool_call_id, status="error"
+        )
 
     def _maybe_warn_output(self, result: ToolMessage, tool_name: str) -> ToolMessage:
         if isinstance(result.content, str) and self._references_protected(result.content):

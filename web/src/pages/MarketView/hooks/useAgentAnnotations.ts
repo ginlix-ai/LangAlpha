@@ -5,13 +5,13 @@
  * Responsibilities:
  * - Create and remove ``priceLine`` primitives on the candlestick series.
  * - Create and remove two-point ``lineSeries`` primitives for trendlines
- *   via ``chart.addLineSeries()``.
+ *   via ``chart.addSeries(LineSeries, options)``.
  * - Drive one ``AgentAnnotationsPrimitive`` for the canvas shapes
  *   (rectangle, vertical_line, text, fib_retracement).
  * - Derive a list of ``SeriesMarker`` objects for ``marker`` annotations
  *   — the caller passes this list to ``useChartOverlays`` so they merge
- *   with earnings/grade markers (``series.setMarkers()`` replaces, so
- *   everything must be set in one call).
+ *   with earnings/grade markers (the markers plugin's ``setMarkers()``
+ *   replaces, so everything must be set in one call).
  *
  * The pure annotation→drawable translation lives in
  * ``utils/annotationGeometry`` so it can be shared with the inline mini
@@ -23,14 +23,7 @@
  */
 
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
-import {
-  LineStyle,
-  type IChartApi,
-  type IPriceLine,
-  type ISeriesApi,
-  type SeriesMarker,
-  type Time,
-} from 'lightweight-charts';
+import { LineStyle, type IChartApi, type IPriceLine, type ISeriesApi, type SeriesMarker, type Time, LineSeries } from 'lightweight-charts';
 
 import type { ChartDataPoint } from '@/types/market';
 
@@ -142,7 +135,7 @@ export function useAgentAnnotations(
           let lineSeries = trendlines.get(ann.annotation_id);
           if (!lineSeries) {
             try {
-              lineSeries = chart.addLineSeries({
+              lineSeries = chart.addSeries(LineSeries, {
                 color: ann.color ?? DEFAULT_TRENDLINE_COLOR,
                 lineWidth: 2,
                 lineStyle: LineStyle.Dashed,
@@ -155,7 +148,7 @@ export function useAgentAnnotations(
               });
               trendlines.set(ann.annotation_id, lineSeries);
             } catch (err) {
-              console.warn('[useAgentAnnotations] addLineSeries failed', err);
+              console.warn('[useAgentAnnotations] addSeries(LineSeries) failed', err);
               continue;
             }
           }

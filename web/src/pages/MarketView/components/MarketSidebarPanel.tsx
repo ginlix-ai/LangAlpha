@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { X, ChevronLeft, ChevronRight, BarChart3, Sunrise, Sunset } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
+import { useTranslation } from 'react-i18next';
 import { useWatchlistData } from '../../Dashboard/hooks/useWatchlistData';
 import { usePortfolioData } from '../../Dashboard/hooks/usePortfolioData';
 import { useMarketDataWSContext } from '../contexts/MarketDataWSContext';
@@ -8,6 +9,8 @@ import AddWatchlistItemDialog from '../../Dashboard/components/AddWatchlistItemD
 import AddPortfolioHoldingDialog from '../../Dashboard/components/AddPortfolioHoldingDialog';
 import ConfirmDialog from '../../Dashboard/components/ConfirmDialog';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
+import { grouped2 } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
 import { EXT_COLOR_PRE, EXT_COLOR_POST } from '../utils/chartConstants';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import './MarketSidebarPanel.css';
@@ -35,6 +38,7 @@ interface DeleteConfirmState {
   onConfirm: (() => Promise<void>) | null;
 }
 
+
 interface MarketSidebarPanelProps {
   activeSymbol: string | null;
   onSymbolClick?: (symbol: string) => void;
@@ -42,8 +46,10 @@ interface MarketSidebarPanelProps {
 }
 
 function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: MarketSidebarPanelProps) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  const locale = useLocale();
   const [expanded, setExpanded] = useState(false);
   const effectiveExpanded = isMobile || expanded;
   const [activeTab, setActiveTab] = useState('watchlist');
@@ -89,7 +95,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
 
   const formatPrice = (price: number | null | undefined): string => {
     if (price == null || price === 0) return '--';
-    return Number(price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return grouped2(Number(price), locale);
   };
 
   const formatChange = (val: number | null | undefined): string => {
@@ -132,7 +138,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
             <button
               className="market-sidebar-row-delete"
               onClick={(e: React.MouseEvent) => { e.stopPropagation(); onDelete(row[keyField] as string); }}
-              title="Remove"
+              title={t('marketView.sidebar.remove')}
             >
               <X size={12} />
             </button>
@@ -184,7 +190,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
         <button
           className="market-sidebar-expand-btn"
           onClick={() => setExpanded(true)}
-          title="Show Watchlist & Portfolio"
+          title={t('marketView.sidebar.show')}
         >
           <BarChart3 size={16} />
           <ChevronLeft size={14} />
@@ -212,7 +218,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
         open={deleteConfirm.open}
         title={deleteConfirm.title}
         message={deleteConfirm.message}
-        confirmLabel="Delete"
+        confirmLabel={t('common.delete')}
         onConfirm={runDeleteConfirm}
         onOpenChange={(open: boolean) => !open && setDeleteConfirm((p) => ({ ...p, open: false }))}
       />
@@ -223,19 +229,19 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
           className={`market-sidebar-tab${activeTab === 'watchlist' ? ' market-sidebar-tab--active' : ''}`}
           onClick={() => setActiveTab('watchlist')}
         >
-          Watchlist
+          {t('marketView.header.watchlist')}
         </button>
         <button
           className={`market-sidebar-tab${activeTab === 'portfolio' ? ' market-sidebar-tab--active' : ''}`}
           onClick={() => setActiveTab('portfolio')}
         >
-          Portfolio
+          {t('marketView.sidebar.portfolio')}
         </button>
         {!isMobile && (
           <button
             className="market-sidebar-collapse-btn"
             onClick={() => setExpanded(false)}
-            title="Collapse"
+            title={t('marketView.sidebar.collapse')}
           >
             <ChevronRight size={14} />
           </button>
@@ -245,8 +251,8 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
       {/* Section header */}
       <div className="market-sidebar-section-header">
         <span className="market-sidebar-section-title">
-          {isWatchlist ? 'WATCHLIST' : 'PORTFOLIO'}
-          {wsStatus === 'connected' && wsPrices.size > 0 && <span className="market-sidebar-live-dot" title="Live prices" />}
+          {isWatchlist ? t('marketView.header.watchlist') : t('marketView.sidebar.portfolio')}
+          {wsStatus === 'connected' && wsPrices.size > 0 && <span className="market-sidebar-live-dot" title={t('marketView.sidebar.livePrices')} />}
         </span>
         <button
           className="market-sidebar-add-btn"
@@ -255,7 +261,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
               ? watchlist.setModalOpen(true)
               : portfolio.setModalOpen(true)
           }
-          title={isWatchlist ? 'Add to watchlist' : 'Add holding'}
+          title={isWatchlist ? t('marketView.sidebar.addToWatchlist') : t('marketView.sidebar.addHolding')}
         >
           +
         </button>
@@ -270,8 +276,8 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
               <div className="market-sidebar-empty">
                 <div className="market-sidebar-empty-text">
                   {isWatchlist
-                    ? 'No stocks in your watchlist yet. Click + to add one.'
-                    : 'No holdings in your portfolio yet. Click + to add one.'}
+                    ? t('marketView.sidebar.emptyWatchlist')
+                    : t('marketView.sidebar.emptyPortfolio')}
                 </div>
               </div>
             )
@@ -287,7 +293,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
             className="market-sidebar-footer-link"
             onClick={() => navigate('/')}
           >
-            View all
+            {t('marketView.sidebar.viewAll')}
           </button>
         </div>
       )}

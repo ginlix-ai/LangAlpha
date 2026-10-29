@@ -1,0 +1,6 @@
+# One toolchain for every build of the helper: this checkout, CI and the
+# signed release, so a lint or codegen change arrives as a commit here.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

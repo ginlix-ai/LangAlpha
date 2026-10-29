@@ -1,0 +1,11 @@
+{# Rendered into the cached per-thread baseline: byte-deterministic for equal
+   inputs, so no timestamps, no dict iteration, and no guidance fence. #}
+<agentmd path="{{ path | default("/agent.md") }}">
+{% if content %}
+{{ content }}
+{% elif role | default("analyst") == "chief_of_staff" %}
+No agent.md exists yet. Create /agent.md in Home, laid out as `<role>` describes.
+{% else %}
+No agent.md exists yet. Create /agent.md at the workspace root with the workspace purpose, the initial goals and planned artifacts, and section stubs for Thread Index, Key Findings, File Index.
+{% endif %}
+</agentmd>

@@ -2,18 +2,17 @@
 
 Modeled on ``resolve_llm_config``. Merges the process-global built-in MCP
 servers (from ``base_config.mcp.servers``), the user's enabled user-level
-servers, and a workspace's DB-backed rows into one deterministic effective set:
+servers, and a workspace's selection rows into one deterministic effective set:
 
     effective = built-ins (config order)
                 MINUS names disabled by a (source='builtin', enabled=false) row
+                MINUS names disabled account-wide (server or owning bundle)
                 PLUS  enabled user-level servers (alphabetical)
                 MINUS names disabled by a (source='user', enabled=false) row
-                MINUS names shadowed by a workspace-local server
-                PLUS  source='workspace' enabled rows (alphabetical, appended)
 
-Collision policy: built-in names are reserved (a user or workspace server can
-never shadow one); a workspace-local server shadows an inherited user server
-of the same name (the explicit local-fork affordance).
+Servers are installed per user and selected per workspace, so a name means
+the same server in every workspace of its user. Built-in names are reserved:
+a user server can never shadow one.
 
 User-level mutations bump every workspace of the user (one transaction), so
 the single per-workspace ``mcp_config_version`` remains the only drift signal
@@ -26,14 +25,30 @@ effective-list endpoint and the sandbox-sync path can import the same logic
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
+from typing import Literal
 from urllib.parse import urlsplit
 
 from ptc_agent.config.core import MCPServerConfig
 from src.server.database.mcp_oauth import ConnectionStatus
+from src.server.services.tool_binding import (
+    BindingPlan,
+    inputs_from_row,
+    resolve_plan,
+)
+from src.server.services.brokerage_capabilities import (
+    denied_tools,
+    group_keys_for,
+    vendor_for_url,
+)
+from src.server.services.mcp_descriptions.prompt_text import (
+    effective_description,
+    profiles_by_server,
+)
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -85,22 +100,19 @@ class Origin(StrEnum):
     """Which tier defined a server. Matches the wire value of ``origin``."""
 
     BUILTIN = "builtin"
-    WORKSPACE = "workspace"
     USER = "user"
 
 
 class State(StrEnum):
     """How a server participates in one workspace's effective set.
 
-    Only ``ACTIVE`` servers run. The other three are carried so the API can
-    render a re-enable affordance (``DISABLED``/``TOMBSTONED``) or flag the
-    local fork that hides an inherited server (``SHADOWED``).
+    Only ``ACTIVE`` servers run. The other two are carried so the API can
+    render a re-enable affordance.
     """
 
     ACTIVE = "active"
     DISABLED = "disabled"
     TOMBSTONED = "tombstoned"
-    SHADOWED = "shadowed"
 
 
 @dataclass(frozen=True)
@@ -110,11 +122,36 @@ class ResolvedServer:
     config: MCPServerConfig
     origin: Origin
     state: State
-    # OAuth connection status INCLUDING revoked (unlike the config's
-    # ``oauth_connection_id``, which only binds live connections) — lets
-    # consumers tell "never OAuth" from "OAuth but disconnected". Only ever
-    # set on ``USER``-origin entries.
+    # OAuth connection status for a row a connection still claims, a repairable
+    # one (``needs_reauth``) included, so consumers can tell "never OAuth" from
+    # "OAuth but needs repair". A revoked connection is history and leaves this
+    # None: the row is served by its own headers from then on, and the Plugins
+    # catalog, which keeps the revoked status on its own rows, is where the
+    # reconnect is offered. Only ever set on ``USER``-origin entries.
     oauth_status: ConnectionStatus | None = None
+    # DISABLED built-ins only: whether the disable came from this workspace's
+    # marker row or the account-wide user disable. A scalar, not a new State —
+    # the enums are locked and both disables render the same, only the copy
+    # (and which toggle can undo it) differs.
+    disabled_scope: Literal["workspace", "user"] | None = None
+    # USER-origin rows installed by a plugin: the owning plugin's name,
+    # display only. Rides here rather than MCPServerConfig — provenance must
+    # never enter the config blob round-trip.
+    plugin_name: str | None = None
+    # The tools this connection's consent permits, or None for a server we
+    # curate no capability groups for, which is every server that is not a
+    # shipped brokerage. Empty is a real answer and distinct from None: it
+    # means the user granted no group, so the server runs and offers nothing.
+    denied_tools: frozenset[str] | None = None
+    # How each granted tool reaches the model (sandbox wrapper, JSON tool,
+    # or both), with the set the sandbox must not wrap and the set whose calls
+    # stop for the user. None for a server nothing binds directly.
+    binding_plan: BindingPlan | None = None
+    # A connection-less http row whose stored bindings ask for a direct tool
+    # while nothing has probed the address yet: the plan above is clamped to
+    # the sandbox, and the first verdict is what releases it. False once a
+    # probe has answered, however it answered.
+    awaiting_probe: bool = False
 
     @property
     def name(self) -> str:
@@ -124,9 +161,10 @@ class ResolvedServer:
     def host_side_oauth(self) -> bool:
         """Whether this server's tools are discovered host-side, never in-sandbox.
 
-        True for a DISCONNECTED OAuth server too: ``oauth_connection_id`` is
-        None once revoked, but the sandbox still holds no vendor token, so a
-        probe from there could only cache a junk failure.
+        True while a connection still claims the row, even a repairable one: the
+        sandbox holds no vendor token, so a probe from there could only cache a
+        junk failure. A revoked connection makes no such claim, so the row is
+        served by its own headers and discovered like any header row.
         """
         return bool(self.config.oauth_connection_id) or (
             self.origin is Origin.USER and self.oauth_status is not None
@@ -139,8 +177,8 @@ class ResolvedMCP:
 
     ``entries`` is the single source of truth: one labelled row per server the
     workspace knows about, ordered so that filtering to ``ACTIVE`` yields the
-    effective run order (built-ins in config order, then inherited, then local
-    — both alphabetical). The projections below are derived from it, so the
+    effective run order (built-ins in config order, then user servers
+    alphabetically). The projections below are derived from it, so the
     partition can never disagree with itself. ``version`` is
     ``workspaces.mcp_config_version``.
     """
@@ -163,17 +201,38 @@ class ResolvedMCP:
         return self._names(Origin.BUILTIN, State.DISABLED)
 
     @cached_property
-    def shadowed_inherited_names(self) -> frozenset[str]:
-        return self._names(Origin.USER, State.SHADOWED)
+    def binding_plans_by_name(self) -> dict[str, BindingPlan]:
+        """ACTIVE servers with a plan that binds at least one tool directly."""
+        return {
+            e.name: e.binding_plan
+            for e in self.entries
+            if e.state is State.ACTIVE
+            and e.binding_plan is not None
+            and e.binding_plan.direct
+        }
+
+    @cached_property
+    def denied_tools_by_name(self) -> dict[str, frozenset[str]]:
+        """Consent filters for the running set, keyed by server name.
+
+        Only servers that have one, so a caller reads "absent" as "no policy"
+        without having to know which vendors we curate. The value is what to
+        subtract, never what to keep: a tool no capability group names is not in
+        it, and stays visible.
+        """
+        return {
+            e.name: e.denied_tools
+            for e in self.entries
+            if e.state is State.ACTIVE and e.denied_tools is not None
+        }
 
 
 @dataclass(frozen=True)
 class ServerRef:
     """A workspace-addressable MCP name, classified for the mutation endpoints.
 
-    ``row`` is the workspace row for local/tombstone/marker refs and the
-    Connectors row for a live inherited one — whichever tier the ref resolved
-    from.
+    ``row`` is the workspace row for tombstone/marker refs and the Plugins row
+    for a live inherited one, whichever tier the ref resolved from.
     """
 
     name: str
@@ -195,24 +254,37 @@ def builtin_names() -> set[str]:
     return {s.name for s in setup.agent_config.mcp.servers}
 
 
-def workspace_row_to_server_config(row: dict) -> MCPServerConfig:
-    """Convert a ``workspace_mcp_servers`` row into an ``MCPServerConfig``.
+async def account_disabled_builtins(user_id: str) -> frozenset[str]:
+    """Built-in names this account has switched off, by either route.
 
-    Defined ONCE; imported by the API and sandbox-sync lanes. ``source`` is
-    forced to ``"workspace"`` and any stored ``vault_blueprints`` key is
-    stripped (defense in depth — user servers never declare blueprints).
+    Two different writes produce the same subtraction: a per-server disable,
+    and a disable of the bundle that ships the server. Both outrank every
+    workspace, so every surface that asks "is this off for the whole account"
+    has to mean both — asked once here rather than assembled per call site,
+    which is how the workspace re-enable came to report success for a name it
+    could not turn back on.
     """
-    config = dict(row.get("config") or {})
-    config.pop("vault_blueprints", None)
-    config.pop("source", None)  # never trust a stored source tag
-    # A resolution OUTPUT, never an input: a stored blob must not be able to
-    # bind itself to someone's OAuth connection.
-    config.pop("oauth_connection_id", None)
-    # The row's name is authoritative over any name baked into the JSON blob.
-    config["name"] = row["name"]
-    config["source"] = "workspace"
-    config["enabled"] = bool(row.get("enabled", True))
-    return MCPServerConfig(**config)
+    from src.server.database.account_disables import list_account_disables
+    from src.server.services.plugins.bundled import enforcement_owners
+
+    disables = await list_account_disables(user_id)
+    if not disables.bundles:
+        return disables.servers
+    owned, _ = enforcement_owners().owned_by(disables.bundles)
+    return disables.servers | owned
+
+
+def reserved_catalog_names() -> set[str]:
+    """Names a catalog row may not claim, whichever door it arrives through.
+
+    Both sets are joined to a shipped definition by name and then shown wearing
+    it, so the reservation has to hold at every writer rather than at the one
+    the feature was built against: every create and import door mints a
+    catalog row, and a name is only reserved if all of them agree it is.
+    """
+    from src.server.services.brokerages import brokerage_names
+
+    return builtin_names() | brokerage_names()
 
 
 def user_row_to_server_config(
@@ -243,13 +315,11 @@ async def classify_server_name(
 ) -> ServerRef | None:
     """Classify one MCP name for a workspace mutation, or ``None`` if unknown.
 
-    Reads the two mutable tiers directly (workspace rows, then the Connectors
+    Reads the two mutable tiers directly (workspace rows, then the Plugins
     catalog) rather than going through ``resolve_mcp_config`` — mutations need
     the raw row, not the merged set, and the built-in tier is checked by the
-    caller against the process config. A workspace-local row wins over an
-    inherited server of the same name (it is the fork); a stale
-    ``source='builtin'`` marker only classifies as ``BUILTIN`` once the
-    Connectors tier has been ruled out.
+    caller against the process config. A stale ``source='builtin'`` marker
+    only classifies as ``BUILTIN`` once the Plugins tier has been ruled out.
     """
     from src.server.database.mcp_servers import (
         get_catalog_server,
@@ -259,9 +329,6 @@ async def classify_server_name(
     rows = {r["name"]: r for r in await list_workspace_servers(workspace_id)}
     row = rows.get(name)
     source = (row or {}).get("source")
-    if source == "workspace":
-        state = State.ACTIVE if row["enabled"] else State.DISABLED
-        return ServerRef(name, Origin.WORKSPACE, state, row)
     if source == "user":
         # A (source='user', enabled=false) marker: this workspace's tombstone
         # for an inherited server.
@@ -283,21 +350,20 @@ async def resolve_mcp_config(
     """Resolve the effective MCP server set for ``workspace_id``.
 
     Built-ins come from ``base_config.mcp.servers`` (enabled ones, config
-    order); a ``(source='builtin', enabled=false)`` row removes a built-in by
-    name; enabled user-level servers are inherited (alphabetical) unless
-    tombstoned by a ``(source='user', enabled=false)`` row or shadowed by a
-    workspace-local server; ``source='workspace'`` enabled rows are appended
-    alphabetically. A workspace with zero rows AND zero inherited servers
-    returns the built-in objects unchanged (no copies) so the common case
-    stays byte-identical downstream.
+    order); a ``(source='builtin', enabled=false)`` row, an account-wide
+    ``user_mcp_builtin_disables`` row, or a disable of the bundle that ships
+    it removes a built-in by name; enabled user-level servers are inherited
+    (alphabetical) unless tombstoned by a ``(source='user', enabled=false)``
+    row. A workspace with zero rows AND zero user-level state returns the built-in
+    objects unchanged (no copies) so the common case stays byte-identical
+    downstream.
     """
-    import asyncio
-
     from src.server.database.mcp_oauth import list_connections
     from src.server.database.mcp_servers import (
         get_workspace_servers_and_version,
         list_enabled_user_servers,
     )
+    from src.server.models.mcp_server import probe_ok, snapshot_probe
 
     # Built-ins from the global config, enabled only, in declaration order.
     builtin_servers = [
@@ -314,14 +380,18 @@ async def resolve_mcp_config(
     # mutations fan the bump out to every workspace of the user, so the same
     # ordering argument covers the user reads below.
     rows, version = await get_workspace_servers_and_version(workspace_id)
-    user_rows, connections = await asyncio.gather(
+    # A switched-off bundle is not a tier of its own: it expands into the
+    # names of the built-ins it ships, and every rule below applies to them
+    # unchanged. That expansion is what account_disabled_builtins does.
+    user_rows, connections, user_disabled_builtins = await asyncio.gather(
         list_enabled_user_servers(user_id),
         list_connections(user_id),
+        account_disabled_builtins(user_id),
     )
 
     # Short-circuit: nothing user-level and no workspace rows ⇒ the effective
     # set IS the built-in list (same objects, no copies).
-    if not rows and not user_rows:
+    if not rows and not user_rows and not user_disabled_builtins:
         return ResolvedMCP(
             entries=tuple(
                 ResolvedServer(config=s, origin=Origin.BUILTIN, state=State.ACTIVE)
@@ -330,64 +400,55 @@ async def resolve_mcp_config(
             version=version,
         )
 
+    # A revoked connection is history, not a claim on the row: it neither binds
+    # the row nor labels it OAuth, so the row resolves as the header row it is
+    # and is planned and discovered off its own headers, the same reading the
+    # catalog and the relay already take. (One connection per name is a table
+    # invariant, so one filtered pass builds both maps.)
     oauth_status_by_name = {
-        c["server_name"]: ConnectionStatus(c["status"]) for c in connections
+        c["server_name"]: status
+        for c in connections
+        if (status := ConnectionStatus(c["status"])) is not ConnectionStatus.REVOKED
     }
     connection_by_server = {
         c["server_name"]: c
         for c in connections
-        if oauth_status_by_name[c["server_name"]] is not ConnectionStatus.REVOKED
+        if c["server_name"] in oauth_status_by_name
     }
+
+    # A stored ``direct`` override on a header-authenticated row is honoured
+    # only once the host probe has said those headers work, because the egress
+    # grant that makes the direct path callable is issued on the same verdict
+    # (``grant_scope._probe_ok``). Honouring it earlier would take the tool out
+    # of the sandbox with nothing to replace it, so an unprobed row clamps to
+    # the sandbox exactly like a stdio one and the override goes live the
+    # moment a verdict lands. Read only where some row could be in that
+    # position: an OAuth row is decided by its connection instead.
+    snapshots = None
+    if any(
+        row.get("transport") == "http" and row["name"] not in connection_by_server
+        for row in user_rows
+    ):
+        from src.server.database.mcp_tool_schemas import get_user_tool_schemas
+        from src.server.services.mcp_discovery import ToolSnapshotIndex
+
+        snapshots = ToolSnapshotIndex(user_rows=await get_user_tool_schemas(user_id))
 
     disabled_builtins: set[str] = set()
     tombstoned_user_names: set[str] = set()
-    local_servers: list[MCPServerConfig] = []
-    disabled_local_servers: list[MCPServerConfig] = []
-    local_names: set[str] = set()
     for row in rows:
         if row["source"] == "builtin":
             # Disable-marker: only acts when it turns a built-in off.
             if not row["enabled"]:
                 disabled_builtins.add(row["name"])
-            continue
-        if row["source"] == "user":
+        elif row["source"] == "user" and not row["enabled"]:
             # Tombstone: removes an inherited user server from THIS workspace.
-            if not row["enabled"]:
-                tombstoned_user_names.add(row["name"])
-            continue
-        # source == 'workspace'
-        if row["name"] in builtin_name_set:
-            # Backstop for the API's 409: a user server must never collide with
-            # a built-in name. Skip + log; do not let it shadow the built-in.
-            logger.warning(
-                "[MCP] Skipping workspace server %r in workspace %s: name "
-                "collides with a built-in (API should reject at write).",
-                row["name"], workspace_id,
-            )
-            continue
-        try:
-            cfg = workspace_row_to_server_config(row)
-        except Exception:
-            logger.error(
-                "[MCP] Failed to parse workspace server %r in workspace %s; "
-                "skipping.", row["name"], workspace_id, exc_info=True,
-            )
-            continue
-        # A workspace-local row shadows an inherited user server of the same
-        # name whether enabled or not — a disabled local fork must not fall
-        # back to running the inherited config the user explicitly forked.
-        local_names.add(cfg.name)
-        # Disabled workspace servers are excluded from the effective set (they
-        # don't run), but carried separately so the API keeps a re-enable
-        # toggle in the UI — mirrors the disabled built-in entries.
-        if row["enabled"]:
-            local_servers.append(cfg)
-        else:
-            disabled_local_servers.append(cfg)
+            tombstoned_user_names.add(row["name"])
 
     inherited_servers: list[MCPServerConfig] = []
     tombstoned_inherited: list[MCPServerConfig] = []
-    shadowed_inherited: list[MCPServerConfig] = []
+    user_row_by_name = {row["name"]: row for row in user_rows}
+    profiles = await profiles_by_server(user_id, user_rows, connection_by_server)
     for row in user_rows:
         name = row["name"]
         if name in builtin_name_set:
@@ -407,7 +468,7 @@ async def resolve_mcp_config(
             # The catalog URL was edited since consent (or a write path missed
             # the revoke): the stored token was issued for a different host.
             # Never bind it — leave the server un-connected so no grant is
-            # created and sync_oauth_grants retires any prior one; surface
+            # created and sync_egress_grants retires any prior one; surface
             # needs_reauth so the UI prompts re-consent to the new URL. This is
             # defense-in-depth behind the edit-time revoke and the grant's own
             # server_url pinning.
@@ -426,56 +487,139 @@ async def resolve_mcp_config(
                     connection["connection_id"] if connection else None
                 ),
             )
+            # A prompt-only field, outside the discovery fingerprint, so this
+            # changes what the agent reads and nothing about the server.
+            cfg = cfg.model_copy(
+                update={"description": effective_description(row, profiles.get(name))}
+            )
         except Exception:
             logger.error(
                 "[MCP] Failed to parse user server %r for user %s; skipping.",
                 name, user_id, exc_info=True,
             )
             continue
-        if name in local_names:
-            shadowed_inherited.append(cfg)
-        elif name in tombstoned_user_names:
+        if name in tombstoned_user_names:
             tombstoned_inherited.append(cfg)
         else:
             inherited_servers.append(cfg)
 
     inherited_servers.sort(key=lambda s: s.name)
     tombstoned_inherited.sort(key=lambda s: s.name)
-    shadowed_inherited.sort(key=lambda s: s.name)
-    local_servers.sort(key=lambda s: s.name)
-    disabled_local_servers.sort(key=lambda s: s.name)
+
+    plugin_name_by_server = {
+        row["name"]: row["plugin_name"]
+        for row in user_rows
+        if row.get("plugin_name")
+    }
+
+    def _denied_tools(cfg: MCPServerConfig) -> frozenset[str] | None:
+        """What consent refuses for this server, or None if we curate no groups.
+
+        Keyed on the address, never on ``cfg.name``: the name is the user's to
+        choose and to edit, so a row called anything else at a broker's host
+        used to derive no policy at all, and one holding a broker's name while
+        pointed elsewhere derived a policy against the wrong vendor's tools.
+        The consented URL is what the token was issued for, and it is what the
+        relay dials, so it is the only identity worth deriving from. Without a
+        connection there is nothing consented to read, and the row's own URL is
+        all there is -- which is the conservative direction anyway, since it
+        denies that vendor's whole curation.
+
+        A brokerage whose connection carries no record of consent is read as
+        consent to nothing, so every curated tool is denied. That is the one
+        place this policy is still strict: an absent record is a bug, not a
+        vendor publishing something new, and the two must not be confused.
+
+        Loud only where it is actually a bug, which is why the warning asks
+        whether the vendor has groups rather than whether it has a policy. A
+        brokerage listed but not yet curated has no groups to consent to, so it
+        legitimately stores no record, and it denies nothing.
+        """
+        connection = connection_by_server.get(cfg.name)
+        if connection is None:
+            return denied_tools(vendor_for_url(cfg.url), ())
+        vendor = vendor_for_url(connection.get("server_url"))
+        capabilities = connection.get("granted_capabilities")
+        if capabilities is None and group_keys_for(vendor):
+            logger.warning(
+                "[MCP] user %s connection %r has no recorded capability "
+                "consent; refusing every curated tool until it is reconnected",
+                user_id, cfg.name,
+            )
+        return denied_tools(vendor, capabilities or ())
+
+    def _binding_plan(cfg: MCPServerConfig) -> tuple[BindingPlan, bool]:
+        """Which path each granted tool takes, and whether a probe still gates
+        it. Same identity rule as the denial: the consented URL, never the row
+        name.
+
+        A row with no connection is planned off its own address and consent to
+        nothing: a header-authenticated server has no consent record to read,
+        and a curated vendor's tools are all denied by that emptiness anyway.
+        What survives is what the row itself asked for, and whether it may ask
+        at all is the row's transport -- a stdio server has no address the
+        relay could dial, so ``inputs_from_row`` clamps every one of its tools
+        back to the sandbox -- and, for an http row, whether the probe has said
+        the headers work.
+        """
+        connection = connection_by_server.get(cfg.name)
+        inputs = inputs_from_row(user_row_by_name.get(cfg.name))
+        if connection is not None:
+            return resolve_plan(
+                vendor_for_url(connection.get("server_url")),
+                connection.get("granted_capabilities") or (),
+                inputs,
+            ), False
+        # Planning off ``()`` is deliberate: a row that never went through a
+        # consent screen is denied a curated vendor's whole curation, while
+        # its uncurated tools still take the path the row asked for.
+        vendor = vendor_for_url(cfg.url)
+        plan = resolve_plan(vendor, (), inputs)
+        snapshot = snapshots.snapshot(cfg) if snapshots is not None else None
+        if not inputs.relayable or probe_ok(snapshot):
+            return plan, False
+        return (
+            resolve_plan(vendor, (), replace(inputs, relayable=False)),
+            bool(plan.direct) and snapshot_probe(snapshot) is None,
+        )
 
     def _user_entry(cfg: MCPServerConfig, state: State) -> ResolvedServer:
+        plan, awaiting_probe = _binding_plan(cfg)
         return ResolvedServer(
             config=cfg,
             origin=Origin.USER,
             state=state,
             oauth_status=oauth_status_by_name.get(cfg.name),
+            plugin_name=plugin_name_by_server.get(cfg.name),
+            denied_tools=_denied_tools(cfg),
+            binding_plan=plan,
+            awaiting_probe=awaiting_probe,
         )
 
     # Entry order IS the API's row order: the running set first (built-ins,
-    # inherited, local), then the carried-but-not-running rows.
+    # then inherited), then the carried-but-not-running rows.
     entries: list[ResolvedServer] = [
         *(
             ResolvedServer(config=s, origin=Origin.BUILTIN, state=State.ACTIVE)
             for s in builtin_servers
             if s.name not in disabled_builtins
+            and s.name not in user_disabled_builtins
         ),
         *(_user_entry(s, State.ACTIVE) for s in inherited_servers),
         *(
-            ResolvedServer(config=s, origin=Origin.WORKSPACE, state=State.ACTIVE)
-            for s in local_servers
-        ),
-        *(
-            ResolvedServer(config=s, origin=Origin.BUILTIN, state=State.DISABLED)
+            ResolvedServer(
+                config=s,
+                origin=Origin.BUILTIN,
+                state=State.DISABLED,
+                # The user scope wins the label when both disables exist: the
+                # workspace toggle can't undo an account-wide disable anyway.
+                disabled_scope=(
+                    "user" if s.name in user_disabled_builtins else "workspace"
+                ),
+            )
             for s in builtin_servers
-            if s.name in disabled_builtins
+            if s.name in disabled_builtins or s.name in user_disabled_builtins
         ),
         *(_user_entry(s, State.TOMBSTONED) for s in tombstoned_inherited),
-        *(
-            ResolvedServer(config=s, origin=Origin.WORKSPACE, state=State.DISABLED)
-            for s in disabled_local_servers
-        ),
-        *(_user_entry(s, State.SHADOWED) for s in shadowed_inherited),
     ]
     return ResolvedMCP(entries=tuple(entries), version=version)

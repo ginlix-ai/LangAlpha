@@ -12,10 +12,9 @@ def show_help() -> None:
 
 [bold]Usage:[/bold]
   ptc-agent                     Start interactive session
-  ptc-agent --flash             Flash mode (no sandbox, external tools only)
+  ptc-agent --home              Chat in your Home, outside any workspace
   ptc-agent --agent NAME        Use named agent with separate memory
   ptc-agent --model NAME        Use specific LLM model
-  ptc-agent --plan-mode         Enable plan mode (agent submits plan first)
   ptc-agent --reconnect         Reconnect to latest workflow
   ptc-agent --reconnect ID      Reconnect to specific workflow
   ptc-agent --list-sessions     List available reconnection sessions
@@ -29,7 +28,7 @@ def show_help() -> None:
   /status                       Show workflow and background task status
   /cancel                       Cancel running workflow
   /compact [keep=N]             Compact conversation context (keep N recent messages)
-  /workspace                    List/switch/start/stop workspaces
+  /workspace                    List/switch/start workspaces
   /conversation                 List/open past conversations
   /reconnect                    Reconnect to running workflow after ESC
   /onboarding                   Start user profile onboarding flow
@@ -48,7 +47,6 @@ def show_help() -> None:
   Enter                         Submit input
   Esc+Enter / Alt+Enter         Insert newline
   Ctrl+E                        Open in external editor
-  Shift+Tab                     Toggle plan mode
   Esc (during streaming)        Soft-interrupt (background tasks continue)
   Ctrl+C                        Clear input / Interrupt / Exit (x3)
 

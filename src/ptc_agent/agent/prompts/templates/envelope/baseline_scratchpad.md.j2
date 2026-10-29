@@ -1,0 +1,11 @@
+{# This thread's scratchpad, rendered into the cached per-thread baseline:
+   byte-deterministic for equal inputs, so no timestamps and no guidance
+   fence. `content` is the folder, absolute with a trailing slash so code
+   reaches it from any directory; the static prompt says what goes in it. A
+   build without the feature passes nothing and renders nothing. A
+   subagent's folder is its task's, with no checkpoint notes in it. #}
+{% if content and subagent | default(false) %}
+<scratchpad path="{{ content }}"/>
+{% elif content %}
+<scratchpad path="{{ content }}" notes="{{ content }}note/"/>
+{% endif %}

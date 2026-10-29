@@ -18,7 +18,6 @@ interface ETFHeatmapConfig {
 function ETFHeatmapWidget({ instance }: WidgetRenderProps<ETFHeatmapConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="etf-heatmap"
       config={{
         dataSource: instance.config.dataSource,

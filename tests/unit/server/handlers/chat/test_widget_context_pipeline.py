@@ -6,7 +6,10 @@ HTTP round-trip would require live DB/Redis/API keys; the parsers themselves
 are pure and easy to compose into a deterministic test.
 """
 
-from src.server.handlers.chat.request_prep import _append_to_last_user_message
+from src.server.handlers.chat.request_prep import (
+    _append_to_last_user_message,
+    inject_inline_reminders,
+)
 from src.server.utils.directive_context import (
     build_directive_reminder,
     parse_directive_contexts,
@@ -95,7 +98,7 @@ def test_widget_directive_image_and_skill_coexist_without_conflict():
     + a skill all in the same additional_context list. Each parser only
     extracts its own type."""
     raw = [
-        {"type": "skills", "name": "user-profile"},
+        {"type": "skills", "name": "onboarding"},
         {"type": "directive", "content": "Be terse."},
         {
             "type": "widget",
@@ -159,6 +162,53 @@ def test_widget_directive_image_and_skill_coexist_without_conflict():
             for b in last["content"]
         )
         assert has_image_block
+
+
+def test_onboarding_market_brief_lands_verbatim_in_the_kickoff_reminder():
+    """The welcome flow sends the day's market brief as a directive beside the
+    onboarding skill and the screenshots. Composed the way the PTC run does it
+    (attachments first, then the inline reminders), the brief reaches the user
+    message whole, inside its reminder, after the user's text and images."""
+    brief = (
+        "<market-brief>\n"
+        "# Chip stocks slide on new export curbs\n"
+        "Type: daily · Completed: 2026-10-19T13:30:00Z · Model: example\n\n"
+        "Semiconductors led the market lower.\n\n"
+        "1. Export curbs widen\n   https://example.com/curbs\n   Details.\n"
+        "</market-brief>"
+    )
+    raw = [
+        {
+            "type": "skills",
+            "name": "onboarding",
+            "instruction": (
+                "Onboarding kickoff. Action: propose. Brokerage: none. Screenshots: 1. "
+                "Market brief: attached. The investing profile is already saved; "
+                "do not ask for it again."
+            ),
+        },
+        {"type": "directive", "content": brief},
+        {
+            "type": "image",
+            "data": "data:image/png;base64,iVBORw0KGgo=",
+            "description": "positions.png",
+        },
+    ]
+
+    messages = [
+        {"role": "user", "content": "Bring in my holdings and suggest where to start."}
+    ]
+    inject_multimodal_context(messages, parse_multimodal_contexts(raw))
+    inject_inline_reminders(
+        messages, [build_directive_reminder(parse_directive_contexts(raw))]
+    )
+
+    blocks = messages[-1]["content"]
+    assert isinstance(blocks, list)
+    assert any(b.get("type") in {"image", "image_url"} for b in blocks)
+    texts = [b["text"] for b in blocks if b.get("type") == "text"]
+    assert "Bring in my holdings and suggest where to start." in texts
+    assert texts[-1] == f"\n\n<system-reminder>\n{brief}\n</system-reminder>"
 
 
 def test_widget_metadata_serialization_keeps_text_and_data():

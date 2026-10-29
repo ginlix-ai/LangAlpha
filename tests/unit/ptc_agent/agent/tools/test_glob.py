@@ -71,3 +71,17 @@ class TestGlobCap:
         result = await glob.ainvoke({"pattern": "**/*.py"})
 
         assert "No files matching" in result
+
+
+class TestGlobBraces:
+    @pytest.mark.asyncio
+    async def test_a_pattern_past_the_brace_cap_is_refused_before_any_search(self):
+        """The sandbox's walk would answer an overflow with no matches, which
+        reads as an empty folder."""
+        backend = _make_backend([])
+        glob = create_glob_tool(backend)
+
+        result = await glob.ainvoke({"pattern": "{a,b}" * 7})
+
+        assert result.startswith("ERROR: pattern expands to more than")
+        backend.aglob_paths.assert_not_awaited()

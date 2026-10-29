@@ -1,0 +1,13 @@
+{# The Chief of Staff's view of what the user has been doing (see
+   src/tools/secretary/activity.py), rendered into the cached per-thread
+   baseline: byte-deterministic for equal inputs, so no timestamps of its own,
+   no dict iteration, and no guidance fence. How to use it is the role
+   section's business; the lead-in only dates the copy. A user with nothing to
+   list renders nothing rather than an empty element. #}
+{% if content %}
+<activity>
+What the user has been doing, as of when this copy was frozen; a later activity row in the thread brings it up to date.
+
+{{ content }}
+</activity>
+{% endif %}

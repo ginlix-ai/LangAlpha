@@ -19,6 +19,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
 from src.server.services.runs import subagent_collection
+from src.server.services.runs.subagent_archive import ArchiveBuffer
 
 REGISTRY_STORE_MOD = "src.server.services.background_registry_store"
 
@@ -55,14 +56,17 @@ def _patch_registry(registry: BackgroundTaskRegistry):
 
 
 async def _adopt_parent(parent: BackgroundTask, tasks: list, pending: dict) -> bool:
-    """Run one adopt round where the parent's writer just finished."""
+    """Run one adopt round where the parent's writer just finished; True
+    when no replay was withheld."""
     writer = asyncio.create_task(_noop())
     await writer
     parent.asyncio_task = writer
     pending[writer] = parent
-    return await subagent_collection._adopt_settled_batch(
-        {writer}, pending, "thread-A", "run-1", [], tasks=tasks
+    buf = ArchiveBuffer("run-1", "thread-A", "ws", "u", None)
+    await subagent_collection._adopt_settled_batch(
+        {writer}, pending, buf, tasks=tasks
     )
+    return not buf.withheld
 
 
 class TestAdoptTimeChildClaim:

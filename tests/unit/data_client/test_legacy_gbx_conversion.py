@@ -17,10 +17,10 @@ import pytest
 
 from src.data_client.fmp.data_source import FMPDataSource
 from src.data_client.fmp.data_source import normalize_series as fmp_normalize_series
-from src.data_client.normalize import minor_unit_scale
+from src.data_client.normalize import minor_unit_places
 from src.data_client.yfinance.data_source import YFinanceDataSource, _normalize_bar
 from src.data_client.yfinance.data_source import normalize_series as yf_normalize_series
-from src.market_protocol import to_canonical
+from market_protocol import to_canonical
 
 LSE = "VOD.L"   # XLON — quotes GBX (pence)
 US = "AAPL"     # XNAS — quotes USD (major units)
@@ -162,7 +162,7 @@ def _yf_snapshot(sym, **over):
 @pytest.mark.asyncio
 async def test_yfinance_intraday_lse_scaled_to_major_units():
     with patch(
-        "src.data_client.yfinance.data_source.yf.Ticker",
+        "src.data_client.yfinance.yahoo.yf.Ticker",
         return_value=_FakeTicker(_yf_df()),
     ):
         bars = await YFinanceDataSource().get_intraday(LSE, "1hour")
@@ -177,7 +177,7 @@ async def test_yfinance_intraday_lse_scaled_to_major_units():
 @pytest.mark.asyncio
 async def test_yfinance_intraday_us_untouched():
     with patch(
-        "src.data_client.yfinance.data_source.yf.Ticker",
+        "src.data_client.yfinance.yahoo.yf.Ticker",
         return_value=_FakeTicker(_yf_df(open_=190.0, high=191.0, low=189.0, close=190.5)),
     ):
         bars = await YFinanceDataSource().get_intraday(US, "1hour")
@@ -218,10 +218,10 @@ async def test_yfinance_snapshot_us_untouched():
 
 # --- scale resolution + no double-conversion --------------------------------
 
-def test_minor_unit_scale_resolution():
-    assert minor_unit_scale(LSE) == 0.01
-    assert minor_unit_scale(US) == 1.0
-    assert minor_unit_scale("0700.HK") == 1.0  # HKD listing, not pence
+def test_minor_unit_places_resolution():
+    assert minor_unit_places(LSE) == 2
+    assert minor_unit_places(US) == 0
+    assert minor_unit_places("0700.HK") == 0  # HKD listing, not pence
 
 
 def test_no_double_conversion_fmp():
@@ -231,7 +231,7 @@ def test_no_double_conversion_fmp():
     ref = to_canonical(LSE)
     raw = _fmp_bar()
     protocol = fmp_normalize_series([raw], ref=ref, schema="ohlcv-1d").records[0]
-    legacy = FMPDataSource._normalize(raw, _LONDON, minor_unit_scale(LSE))
+    legacy = FMPDataSource._normalize(raw, _LONDON, minor_unit_places(LSE))
     assert protocol.close == pytest.approx(0.985)
     assert legacy["close"] == pytest.approx(0.985)
     assert 0.1 < legacy["close"] < 10
@@ -250,7 +250,7 @@ def test_no_double_conversion_yfinance():
     idx = datetime(2024, 1, 15, 12, tzinfo=timezone.utc)
     legacy_bar = _normalize_bar(
         idx, {"Open": 98.0, "High": 99.0, "Low": 97.0, "Close": 98.5, "Volume": 1000},
-        minor_unit_scale(LSE),
+        minor_unit_places(LSE),
     )
     assert legacy_bar["close"] == pytest.approx(0.985)
     doubled = yf_normalize_series([legacy_bar], ref=ref, schema="ohlcv-1d").records[0]

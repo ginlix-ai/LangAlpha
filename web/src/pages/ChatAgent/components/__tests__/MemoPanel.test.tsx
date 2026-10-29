@@ -60,7 +60,7 @@ vi.mock('@/pages/ChatAgent/utils/api', () => ({
   regenerateUserMemo: vi.fn(),
   triggerUserMemoDownload: vi.fn(),
   downloadUserMemoBlobUrl: vi.fn(),
-  // workspace listing happens inside MemoPanel via useWorkspaces → axios.
+  // workspace listing happens inside MemoPanel via useWorkspaces → the API client.
   // We stub the workspaces hook below; this remains for the api path used
   // by useUserMemoList / useReadUserMemo / etc.
   getWorkspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
@@ -182,6 +182,19 @@ describe('MemoPanel — list rendering', () => {
 
     await waitFor(() => expect(screen.getByText('broken.md')).toBeInTheDocument());
     expect(screen.getByText('memoPanel.status.failed')).toBeInTheDocument();
+  });
+
+  it('leaves the date cell empty for an unparseable created_at', async () => {
+    mockList.mockResolvedValue({
+      entries: [{ ...baseEntry, key: 'odd-1', original_filename: 'odd.md', created_at: 'not-a-date' }],
+      truncated: false,
+    });
+
+    renderWithProviders(<MemoPanel />);
+
+    const row = (await screen.findByText('odd.md')).closest('tr');
+    expect(row?.textContent).not.toContain('Invalid Date');
+    expect(row?.querySelector('td:last-child')?.textContent).toBe('');
   });
 });
 

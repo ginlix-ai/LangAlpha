@@ -217,3 +217,63 @@ class TestPollOnce:
         await svc._poll_once()
 
         assert seen == ["tickertick", None]  # second feed still ran
+
+
+class TestTushareFeed:
+    """PR4 wiring: the CN feed is polled like any other named provider."""
+
+    def test_config_declares_tushare_feed(self):
+        from src.config.settings import get_news_poll_config
+
+        cfg = get_news_poll_config()
+        assert any(f.provider == "tushare" and f.limit == 50 for f in cfg.feeds)
+
+    @pytest.mark.asyncio
+    async def test_refresh_warms_tushare_key(self, monkeypatch):
+        svc = _make_service()
+        cache = AsyncMock()
+        cache.acquire_lock = AsyncMock(return_value=True)
+        cache.get = AsyncMock(return_value=None)
+        cache.set = AsyncMock()
+        svc._cache = cache
+
+        source = AsyncMock()
+        source.get_news.return_value = {
+            "results": [_article("ts-a", 9)], "count": 1, "next_cursor": None,
+        }
+        monkeypatch.setattr(svc, "_resolve_source", AsyncMock(return_value=source))
+
+        await svc._refresh_feed(NewsPollFeedConfig(provider="tushare", limit=50))
+
+        source.get_news.assert_awaited_once_with(
+            tickers=None, limit=50, user_id=_SERVICE_USER_ID
+        )
+        assert cache.set.await_args.kwargs.get("provider") == "tushare"
+        assert cache.set.await_args.args[0]["results"][0]["id"] == "ts-a"
+
+
+class TestStart:
+    @pytest.mark.asyncio
+    async def test_unavailable_named_feed_is_dropped_once_at_start(self, monkeypatch, caplog):
+        """Without ginlix-data the CN feed cannot be built; it is skipped with one
+        INFO line instead of an ERROR traceback every interval."""
+        from src.config.models import NewsPollConfig
+        from src.server.services import news_refresh_service as mod
+
+        monkeypatch.setattr("src.config.settings.GINLIX_DATA_URL", "")
+        monkeypatch.setattr(mod, "get_news_poll_config", lambda: NewsPollConfig(feeds=[
+            NewsPollFeedConfig(provider="tickertick", limit=50),
+            NewsPollFeedConfig(provider=None, limit=50),
+            NewsPollFeedConfig(provider="tushare", limit=50),
+        ]))
+        svc = _make_service()
+        monkeypatch.setattr(svc, "_poll_loop", AsyncMock())
+
+        with caplog.at_level("INFO", logger=mod.__name__):
+            await svc.start()
+            await svc.stop()
+
+        assert [f.provider for f in svc._feeds] == ["tickertick", None]
+        skipped = [r for r in caplog.records if "unavailable" in r.getMessage()]
+        assert len(skipped) == 1 and skipped[0].levelname == "INFO"
+        assert "tushare" in skipped[0].getMessage()

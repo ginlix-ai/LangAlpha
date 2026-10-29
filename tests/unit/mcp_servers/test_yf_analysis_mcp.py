@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from mcp_servers.yf_analysis_mcp_server import (
+from plugins.yfinance.yf_analysis_mcp_server import (
     get_analyst_price_targets,
     get_analyst_recommendations,
     get_earnings_estimates,
@@ -31,10 +31,18 @@ from .conftest import assert_error, assert_ok_envelope
 
 @pytest.fixture
 def mock_ticker():
-    with patch("mcp_servers.yf_analysis_mcp_server.yf.Ticker") as mock_cls:
+    with patch("plugins.yfinance.yf_analysis_mcp_server.yf.Ticker") as mock_cls:
         stock = MagicMock()
         mock_cls.return_value = stock
         yield stock
+
+
+@pytest.fixture
+def mock_search():
+    """Yahoo search, the news fallback; empty unless a test sets ``.news``."""
+    with patch("plugins.yfinance.yf_analysis_mcp_server.yf.Search") as mock_cls:
+        mock_cls.return_value.news = []
+        yield mock_cls
 
 
 def _df(data, columns=None, index=None):
@@ -274,12 +282,12 @@ class TestGetNews:
         assert_ok_envelope(result, symbol="AAPL", count=2)
         assert result["data"][0]["title"] == "Apple announces new product"
 
-    def test_empty(self, mock_ticker):
+    def test_empty(self, mock_ticker, mock_search):
         mock_ticker.get_news.return_value = []
         result = get_news("AAPL")
         assert_ok_envelope(result, count=0)
 
-    def test_none(self, mock_ticker):
+    def test_none(self, mock_ticker, mock_search):
         mock_ticker.get_news.return_value = None
         result = get_news("AAPL")
         assert_ok_envelope(result, count=0)
@@ -303,10 +311,48 @@ class TestGetNews:
         result = get_news("AAPL")
         assert result["data"][0]["score"] is None
 
-    def test_tab_parameter(self, mock_ticker):
+    def test_tab_parameter(self, mock_ticker, mock_search):
         mock_ticker.get_news.return_value = []
         get_news("AAPL", count=5, tab="press releases")
         mock_ticker.get_news.assert_called_once_with(count=5, tab="press releases")
+
+    def test_empty_primary_falls_back_to_search_in_the_same_shape(
+        self, mock_ticker, mock_search
+    ):
+        mock_ticker.get_news.return_value = []
+        mock_search.return_value.news = [
+            {
+                "uuid": "abc",
+                "title": "Headline",
+                "publisher": "Wire",
+                "link": "https://example.com/a",
+                "providerPublishTime": 1700000000,
+                "type": "STORY",
+            }
+        ]
+        result = get_news("AAPL", count=5)
+        assert_ok_envelope(result, symbol="AAPL", count=1)
+        assert result["data"][0] == {
+            "id": "abc",
+            "content": {
+                "title": "Headline",
+                "contentType": "STORY",
+                "pubDate": "2023-11-14T22:13:20+00:00",
+                "provider": {"displayName": "Wire"},
+                "canonicalUrl": {"url": "https://example.com/a"},
+            },
+        }
+
+    def test_press_releases_never_fall_back(self, mock_ticker, mock_search):
+        mock_ticker.get_news.return_value = []
+        result = get_news("AAPL", tab="press releases")
+        assert_ok_envelope(result, count=0)
+        mock_search.assert_not_called()
+
+    def test_a_failed_search_leaves_the_empty_result(self, mock_ticker, mock_search):
+        mock_ticker.get_news.return_value = []
+        mock_search.side_effect = Exception("down")
+        assert_ok_envelope(get_news("AAPL"), count=0)
 
     def test_exception(self, mock_ticker):
         mock_ticker.get_news.side_effect = Exception("API error")

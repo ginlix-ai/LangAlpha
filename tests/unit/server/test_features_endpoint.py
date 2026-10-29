@@ -81,6 +81,21 @@ class TestGetFeatures:
         assert mw["user_override"] is True
         assert mw["gate"] == "opt_in"
 
+    @pytest.mark.asyncio
+    async def test_an_override_for_a_retired_feature_is_inert(self, features_client):
+        """A feature leaves the catalog while users still hold overrides for it."""
+        with patch(
+            "src.server.services.features.get_user_preferences",
+            new=AsyncMock(
+                return_value=_prefs({"retired_feature": False, "market_watch": True})
+            ),
+        ):
+            resp = await features_client.get("/api/v1/features")
+        assert resp.status_code == 200
+        by_key = {f["key"]: f for f in resp.json()["features"]}
+        assert "retired_feature" not in by_key
+        assert by_key["market_watch"]["enabled"] is True
+
 
 class TestPutFeatureOverride:
     @pytest.mark.asyncio
@@ -108,6 +123,32 @@ class TestPutFeatureOverride:
             USER_ID, other_preference={"feature_overrides": {"market_watch": True}}
         )
         invalidate.assert_awaited_once_with(USER_ID)
+
+    @pytest.mark.asyncio
+    async def test_setting_one_keeps_a_retired_features_override(self, features_client):
+        """Stored data is left alone: the bag is rewritten whole, retired keys too."""
+        upsert = AsyncMock(return_value={})
+        with (
+            patch(
+                "src.server.services.features.get_user_preferences",
+                new=AsyncMock(return_value=_prefs({"retired_feature": False})),
+            ),
+            patch("src.server.services.features.upsert_user_preferences", new=upsert),
+            patch(
+                "src.server.services.features.invalidate_user_prefs_cache",
+                new=AsyncMock(),
+            ),
+        ):
+            resp = await features_client.put(
+                "/api/v1/features/market_watch", json={"enabled": True}
+            )
+        assert resp.status_code == 200
+        upsert.assert_awaited_once_with(
+            USER_ID,
+            other_preference={
+                "feature_overrides": {"retired_feature": False, "market_watch": True}
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_clearing_last_override_deletes_the_key(self, features_client):
@@ -194,6 +235,10 @@ class TestPlanGate:
         no_access = await _fetch(USER_ID, -1)
         assert no_access["gate"] == "plan"
         assert no_access["enabled"] is False
+
+        # Unknown (the platform down, no membership on record) fails closed too.
+        unknown = await _fetch(USER_ID, None)
+        assert unknown["enabled"] is False
 
         # Positive control: a tier meeting min_tier flows through the same
         # wiring and unlocks the feature.

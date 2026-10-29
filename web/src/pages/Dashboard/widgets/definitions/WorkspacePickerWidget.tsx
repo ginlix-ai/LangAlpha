@@ -1,11 +1,17 @@
 import { useTranslation } from 'react-i18next';
 import { relativeTime } from '@/lib/format';
-import { LayoutGrid, Zap, ArrowUpRight, Plus } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
+import { LayoutGrid, ArrowUpRight, Plus } from 'lucide-react';
+import { useNavigate } from 'react-router';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
+import { useWorkspaceText } from '@/hooks/useWorkspaceLabel';
+import { HomeRowIcon } from '@/hooks/useHomeWorkspace';
+import { isHomeWorkspace } from '@/lib/homeWorkspace';
 import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
 import type { Workspace } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { WidgetCardMeta } from '../framework/widgetCardSlots';
 import { useWidgetContextExport } from '../framework/contextSnapshot';
 import { serializeRowsToMarkdown, wrapWidgetContext } from '../framework/snapshotSerializers';
 import { WorkspacePickerConfigSchema } from '../framework/configSchemas';
@@ -28,36 +34,39 @@ function WorkspaceTile({
   onOpen: () => void;
 }) {
   const { t } = useTranslation();
-  const isFlash = workspace.status === 'flash';
-  const relative = relativeTime(workspace.updated_at as string | undefined);
+  const locale = useLocale();
+  const now = useNow();
+  const workspaceText = useWorkspaceText();
+  const text = workspaceText(workspace);
+  const isHome = isHomeWorkspace(workspace);
+  const relative = relativeTime(workspace.updated_at as string | undefined, locale, now);
   const idx = String(index + 1).padStart(2, '0');
 
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="group relative flex flex-col text-left overflow-hidden rounded-[10px] border transition-colors duration-200"
+      className="group relative flex flex-col text-left overflow-hidden rounded-[10px] border transition-colors"
       style={{
-        background: isFlash
+        background: isHome
           ? 'linear-gradient(135deg, var(--color-accent-soft) 0%, var(--color-bg-card) 75%)'
           : 'var(--color-bg-card)',
-        borderColor: isFlash ? 'var(--color-accent-overlay)' : 'var(--color-border-muted)',
+        borderColor: isHome ? 'var(--color-accent-overlay)' : 'var(--color-border-muted)',
         minHeight: 86,
       }}
       onMouseEnter={(e) => {
-        if (!isFlash) e.currentTarget.style.borderColor = 'var(--color-border-default)';
+        if (!isHome) e.currentTarget.style.borderColor = 'var(--color-border-default)';
       }}
       onMouseLeave={(e) => {
-        if (!isFlash) e.currentTarget.style.borderColor = 'var(--color-border-muted)';
+        if (!isHome) e.currentTarget.style.borderColor = 'var(--color-border-muted)';
       }}
     >
       <div className="flex items-start justify-between gap-2 px-3.5 pt-3 pb-1.5">
         <div className="flex items-center gap-2 min-w-0">
-          {isFlash ? (
-            <Zap
-              className="h-3.5 w-3.5 flex-shrink-0"
+          {isHome ? (
+            <HomeRowIcon
+              className="h-3.5 w-3.5 shrink-0"
               style={{ color: 'var(--color-accent-primary)' }}
-              fill="currentColor"
             />
           ) : (
             <span
@@ -74,34 +83,34 @@ function WorkspaceTile({
               letterSpacing: '-0.005em',
             }}
           >
-            {workspace.name || t('dashboard.widgets.workspacePicker.untitled')}
+            {text.name || t('dashboard.widgets.workspacePicker.untitled')}
           </span>
         </div>
         <ArrowUpRight
-          className="h-3.5 w-3.5 flex-shrink-0 opacity-0 -translate-x-0.5 translate-y-0.5 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0 group-hover:translate-y-0"
+          className="h-3.5 w-3.5 shrink-0 opacity-0 -translate-x-0.5 translate-y-0.5 transition-all group-hover:opacity-100 group-hover:translate-x-0 group-hover:translate-y-0"
           style={{ color: 'var(--color-text-secondary)' }}
         />
       </div>
       <div className="px-3.5 pb-2.5 flex-1 flex flex-col justify-between gap-2">
-        {workspace.description ? (
+        {text.description ? (
           <div
             className="text-[0.7188rem] line-clamp-2 leading-snug"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {workspace.description}
+            {text.description}
           </div>
         ) : (
           <div
             className="text-[0.7188rem] italic"
             style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}
           >
-            {isFlash ? t('dashboard.widgets.workspacePicker.flashDesc') : t('dashboard.widgets.workspacePicker.noDescription')}
+            {t('dashboard.widgets.workspacePicker.noDescription')}
           </div>
         )}
         {relative ? (
           <div className="flex items-center justify-between text-[0.625rem] dashboard-mono uppercase tracking-wider">
             <span style={{ color: 'var(--color-text-tertiary)', opacity: 0.75 }}>
-              {isFlash ? t('dashboard.widgets.workspacePicker.tagFlash') : t('dashboard.widgets.workspacePicker.tagWorkspace')}
+              {text.tag}
             </span>
             <span style={{ color: 'var(--color-text-tertiary)' }}>{relative}</span>
           </div>
@@ -118,7 +127,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
   // slice locally to honor the widget's configured display limit.
   const { data, isLoading } = useWorkspaces({ limit: 100 });
   const displayLimit = instance.config.limit ?? 12;
-  const workspaces: WorkspaceRecord[] = ((data?.workspaces ?? []) as WorkspaceRecord[]).slice(0, displayLimit);
+  const workspaces: WorkspaceRecord[] = (data?.workspaces ?? []).slice(0, displayLimit);
 
   useWidgetContextExport(instance.id, {
     full: () => {
@@ -164,43 +173,21 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
   });
 
   return (
-    <div className="dashboard-glass-card p-5 flex flex-col h-full">
-      <div className="flex items-baseline justify-between mb-4 pb-3 border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
-        <div className="flex items-baseline gap-2.5 min-w-0">
-          <LayoutGrid className="h-3.5 w-3.5 flex-shrink-0 self-center" style={{ color: 'var(--color-text-tertiary)' }} />
-          <span
-            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
-            style={{ color: 'var(--color-text-secondary)' }}
-          >
-            {t('dashboard.widgets.workspacePicker.header')}
-          </span>
-          <span
-            className="title-font text-lg leading-none dashboard-mono"
-            style={{ color: 'var(--color-text-primary)' }}
-          >
-            {workspaces.length}
-          </span>
-        </div>
+    <div className="flex flex-col h-full">
+      <WidgetCardMeta>
+        <span>{workspaces.length}</span>
         <button
           type="button"
           onClick={() => {
             clearChatSession();
             navigate('/chat');
           }}
-          className="group flex items-center gap-1 text-[0.6875rem] uppercase tracking-wider transition-colors"
-          style={{ color: 'var(--color-text-tertiary)' }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--color-text-primary)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = 'var(--color-text-tertiary)';
-          }}
+          className="dash-link widget-drag-cancel"
         >
-          <span>{t('dashboard.widgets.workspacePicker.viewAll')}</span>
-          <ArrowUpRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+          {t('dashboard.widgets.workspacePicker.viewAll')}
+          <ArrowUpRight className="h-3 w-3" />
         </button>
-      </div>
-
+      </WidgetCardMeta>
       <div className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
         {isLoading && workspaces.length === 0 ? (
           <div className="grid grid-cols-2 gap-2">
@@ -263,6 +250,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
 registerWidget<WorkspacePickerConfig>({
   type: 'workspace.picker',
   titleKey: 'dashboard.widgets.workspacePicker.title',
+  cardTitleKey: 'dashboard.widgets.workspacePicker.header',
   descriptionKey: 'dashboard.widgets.workspacePicker.description',
   category: 'workspace',
   icon: LayoutGrid,

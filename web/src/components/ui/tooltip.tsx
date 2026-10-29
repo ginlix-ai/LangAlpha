@@ -9,29 +9,32 @@ const Tooltip = TooltipPrimitive.Root
 
 const TooltipTrigger = TooltipPrimitive.Trigger
 
-const TooltipContent = React.forwardRef<
-  React.ComponentRef<typeof TooltipPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>
->(({ className, sideOffset = 4, collisionPadding = 8, style, ...props }, ref) => (
-  <TooltipPrimitive.Portal>
-    <TooltipPrimitive.Content
-      ref={ref}
-      sideOffset={sideOffset}
-      collisionPadding={collisionPadding}
-      className={cn(
-        "z-[1030] overflow-hidden rounded-md px-2.5 py-1.5 text-xs shadow-md animate-fade-in",
-        className
-      )}
-      style={{
-        backgroundColor: "var(--color-bg-elevated)",
-        border: "1px solid var(--color-border-muted)",
-        color: "var(--color-text-primary)",
-        ...style,
-      }}
-      {...props}
-    />
-  </TooltipPrimitive.Portal>
-))
-TooltipContent.displayName = TooltipPrimitive.Content.displayName
+function TooltipContent({
+  className,
+  sideOffset = 4,
+  collisionPadding = 8,
+  style,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+  return (
+    <TooltipPrimitive.Portal>
+      <TooltipPrimitive.Content
+        sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
+        className={cn(
+          "z-1030 overflow-hidden rounded-md px-2.5 py-1.5 text-xs shadow-md pop-in",
+          className
+        )}
+        style={{
+          backgroundColor: "var(--color-bg-elevated)",
+          border: "1px solid var(--color-border-muted)",
+          color: "var(--color-text-primary)",
+          ...style,
+        }}
+        {...props}
+      />
+    </TooltipPrimitive.Portal>
+  )
+}
 
 export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }

@@ -1,226 +1,206 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useId, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Input } from '@/components/ui/input';
-import { Select } from '@/components/ui/select';
+import { useLocale } from '@/hooks/useLocale';
+import {
+  Select,
+  SelectItem,
+  SelectListBox,
+  SelectPopover,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/aria-select';
+import { buildCron, MINUTE_INTERVALS, scheduleDraft, type Frequency, type ScheduleDraft } from '../utils/cron';
+import { weekdayInitials } from '../utils/time';
+import OptionSelect, { type Option } from './OptionSelect';
+import TimeField from './TimeField';
 
-// ── Types ─────────────────────────────────────────────────
-
-type Frequency = 'minutes' | 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'custom';
-
-interface ScheduleState {
-  frequency: Frequency;
-  interval: number;
-  minute: number;
-  hour: number;
-  dayOfWeek: number;
-  dayOfMonth: number;
-  raw: string;
-}
-
-// ── Parse / Build ─────────────────────────────────────────
-
-const DEFAULTS: ScheduleState = {
-  frequency: 'daily',
-  interval: 30,
-  minute: 0,
-  hour: 9,
-  dayOfWeek: 1,
-  dayOfMonth: 1,
-  raw: '',
-};
-
-export function parseCron(expr: string): ScheduleState {
-  const raw = expr.trim();
-  if (!raw) return { ...DEFAULTS };
-
-  const parts = raw.split(/\s+/);
-  if (parts.length !== 5) return { ...DEFAULTS, frequency: 'custom', raw };
-
-  const [min, hr, dom, mon, dow] = parts;
-
-  // */N * * * *
-  if (min.startsWith('*/') && hr === '*' && dom === '*' && mon === '*' && dow === '*') {
-    const n = parseInt(min.slice(2), 10);
-    if (n > 0 && n <= 59) return { ...DEFAULTS, frequency: 'minutes', interval: n, raw };
-  }
-
-  // M * * * *
-  if (/^\d+$/.test(min) && hr === '*' && dom === '*' && mon === '*' && dow === '*') {
-    return { ...DEFAULTS, frequency: 'hourly', minute: parseInt(min, 10), raw };
-  }
-
-  if (!/^\d+$/.test(min) || !/^\d+$/.test(hr)) return { ...DEFAULTS, frequency: 'custom', raw };
-
-  const m = parseInt(min, 10);
-  const h = parseInt(hr, 10);
-
-  if (dom === '*' && mon === '*' && dow === '1-5') return { ...DEFAULTS, frequency: 'weekdays', minute: m, hour: h, raw };
-  if (dom === '*' && mon === '*' && /^[0-6]$/.test(dow)) return { ...DEFAULTS, frequency: 'weekly', minute: m, hour: h, dayOfWeek: parseInt(dow, 10), raw };
-  if (dom === '*' && mon === '*' && dow === '*') return { ...DEFAULTS, frequency: 'daily', minute: m, hour: h, raw };
-  if (/^\d+$/.test(dom) && mon === '*' && dow === '*') return { ...DEFAULTS, frequency: 'monthly', minute: m, hour: h, dayOfMonth: parseInt(dom, 10), raw };
-
-  return { ...DEFAULTS, frequency: 'custom', raw };
-}
-
-export function buildCron(s: ScheduleState): string {
-  switch (s.frequency) {
-    case 'minutes': return `*/${s.interval} * * * *`;
-    case 'hourly': return `${s.minute} * * * *`;
-    case 'daily': return `${s.minute} ${s.hour} * * *`;
-    case 'weekdays': return `${s.minute} ${s.hour} * * 1-5`;
-    case 'weekly': return `${s.minute} ${s.hour} * * ${s.dayOfWeek}`;
-    case 'monthly': return `${s.minute} ${s.hour} ${s.dayOfMonth} * *`;
-    case 'custom': return s.raw;
-  }
-}
-
-// ── Day-of-week options ───────────────────────────────────
-
-const DOW_KEYS = [
-  { v: 0, k: 'automation.daySun' },
-  { v: 1, k: 'automation.dayMon' },
-  { v: 2, k: 'automation.dayTue' },
-  { v: 3, k: 'automation.dayWed' },
-  { v: 4, k: 'automation.dayThu' },
-  { v: 5, k: 'automation.dayFri' },
-  { v: 6, k: 'automation.daySat' },
+const FREQUENCIES: Option<Frequency>[] = [
+  { value: 'days', labelKey: 'automation.freqDays' },
+  { value: 'minutes', labelKey: 'automation.freqMinutes' },
+  { value: 'hourly', labelKey: 'automation.freqHourly' },
+  { value: 'monthly', labelKey: 'automation.freqMonthly' },
+  { value: 'custom', labelKey: 'automation.freqCustom' },
 ];
+
+const MINUTE_STEPS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+const MONTH_DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
+
+// ── Day picker ────────────────────────────────────────────
+
+const DAY_NAME_KEYS = [
+  'automation.dayMon',
+  'automation.dayTue',
+  'automation.dayWed',
+  'automation.dayThu',
+  'automation.dayFri',
+  'automation.daySat',
+  'automation.daySun',
+];
+
+/** Any set of weekdays, one press each. The last day left on stays on: a
+ *  schedule with no days would never run. */
+function DayPicker({ days, onChange }: { days: boolean[]; onChange: (days: boolean[]) => void }) {
+  const { t } = useTranslation();
+  const locale = useLocale();
+  const initials = weekdayInitials(locale);
+  const count = days.filter(Boolean).length;
+  return (
+    <div className="automation-day-picker" role="group" aria-label={t('automation.freqDays')}>
+      {initials.map((initial, i) => (
+        <button
+          key={i}
+          type="button"
+          className="automation-mono automation-day"
+          aria-pressed={days[i]}
+          aria-label={t(DAY_NAME_KEYS[i])}
+          onClick={() => {
+            if (days[i] && count === 1) return;
+            onChange(days.map((on, j) => (j === i ? !on : on)));
+          }}
+        >
+          {initial}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // ── Component ─────────────────────────────────────────────
 
 interface CronScheduleBuilderProps {
   value: string;
   onChange: (cron: string) => void;
+  /** The zone control, set beside the time. Only a schedule every few
+   *  minutes reads the same in any zone; an hourly minute does not, since
+   *  some zones sit a half or quarter hour off the rest. */
+  zone?: React.ReactNode;
+  /** The row label, which names the frequency choice. */
+  labelledBy?: string;
 }
 
-export default function CronScheduleBuilder({ value, onChange }: CronScheduleBuilderProps) {
+export default function CronScheduleBuilder({ value, onChange, zone, labelledBy }: CronScheduleBuilderProps) {
   const { t } = useTranslation();
-  const lastEmitted = useRef(value);
-  const [state, setState] = useState<ScheduleState>(() => parseCron(value));
+  const helpId = useId();
+  // The form mounts the builder afresh for each automation it opens, and
+  // nothing else writes the schedule, so the value is read only here.
+  const [state, setState] = useState<ScheduleDraft>(() => scheduleDraft(value));
 
-  // Sync when parent value changes externally (e.g., template switch)
+  // An empty schedule opens on the default, so the form holds what it shows.
   useEffect(() => {
-    if (value !== lastEmitted.current) {
-      setState(parseCron(value));
-      lastEmitted.current = value;
-    }
-  }, [value]);
-
-  // Emit default cron on mount when starting from empty
-  useEffect(() => {
-    if (!value.trim() && state.frequency !== 'custom') {
-      const cron = buildCron(state);
-      lastEmitted.current = cron;
-      onChange(cron);
-    }
+    if (!value.trim()) onChange(buildCron(state));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const update = (patch: Partial<ScheduleState>) => {
+  const update = (patch: Partial<ScheduleDraft>) => {
     const next = { ...state, ...patch };
-    const cron = buildCron(next);
-    lastEmitted.current = cron;
     setState(next);
-    onChange(cron);
+    onChange(buildCron(next));
   };
 
-  const needsTime = ['daily', 'weekdays', 'weekly', 'monthly'].includes(state.frequency);
-  const timeStr = `${String(state.hour).padStart(2, '0')}:${String(state.minute).padStart(2, '0')}`;
+  // Custom starts from the schedule as built so far, not from the expression
+  // the form opened with, which would undo every change made since.
+  const changeKind = (kind: Frequency) =>
+    update(kind === 'custom' && state.kind !== 'custom' ? { kind, raw: buildCron(state) } : { kind });
 
-  const inputBg = {
-    backgroundColor: 'var(--color-bg-card)',
-    borderColor: 'var(--color-border-default)',
-  };
+  // A schedule written elsewhere may run off the five-minute grid; offer its
+  // minute too, so the control shows what the schedule says.
+  const minuteSteps = MINUTE_STEPS.includes(state.minute)
+    ? MINUTE_STEPS
+    : [...MINUTE_STEPS, state.minute].sort((a, b) => a - b);
+  const needsTime = state.kind === 'days' || state.kind === 'monthly';
+  const needsZone = state.kind !== 'minutes';
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-end gap-3">
-        {/* Frequency */}
-        <Select
-          className="w-40"
-          value={state.frequency}
-          onChange={(e) => update({ frequency: e.target.value as Frequency })}
-        >
-          <option value="minutes">{t('automation.freqMinutes')}</option>
-          <option value="hourly">{t('automation.freqHourly')}</option>
-          <option value="daily">{t('automation.freqDaily')}</option>
-          <option value="weekdays">{t('automation.freqWeekdays')}</option>
-          <option value="weekly">{t('automation.freqWeekly')}</option>
-          <option value="monthly">{t('automation.freqMonthly')}</option>
-          <option value="custom">{t('automation.freqCustom')}</option>
-        </Select>
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <OptionSelect
+          aria-labelledby={labelledBy}
+          value={state.kind}
+          options={FREQUENCIES}
+          onChange={changeKind}
+          className="min-w-40"
+        />
 
         {/* Every N minutes */}
-        {state.frequency === 'minutes' && (
+        {state.kind === 'minutes' && (
           <div className="flex items-center gap-2">
-            <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            <span className="automation-form-joiner">
               {t('automation.every')}
             </span>
-            <Input
-              type="number"
-              min={1}
-              max={59}
-              value={state.interval}
-              onChange={(e) => update({ interval: parseInt(e.target.value, 10) || 1 })}
-              className="w-20 border"
-              style={inputBg}
-            />
-            <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            <Select
+              aria-label={t('automation.intervalMinutes')}
+              selectedKey={state.interval}
+              onSelectionChange={(k) => {
+                if (typeof k === 'number') update({ interval: k });
+              }}
+              className="w-20"
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectPopover>
+                <SelectListBox>
+                  {MINUTE_INTERVALS.map((n) => (
+                    <SelectItem key={n} id={n}>{String(n)}</SelectItem>
+                  ))}
+                </SelectListBox>
+              </SelectPopover>
+            </Select>
+            <span className="automation-form-joiner">
               {t('automation.minutes')}
             </span>
           </div>
         )}
 
         {/* Hourly at minute */}
-        {state.frequency === 'hourly' && (
+        {state.kind === 'hourly' && (
           <div className="flex items-center gap-2">
-            <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            <span className="automation-form-joiner">
               {t('automation.atMinute')}
             </span>
             <Select
+              aria-label={t('automation.atMinute')}
+              selectedKey={state.minute}
+              onSelectionChange={(k) => {
+                if (typeof k === 'number') update({ minute: k });
+              }}
               className="w-24"
-              value={state.minute}
-              onChange={(e) => update({ minute: parseInt(e.target.value, 10) })}
             >
-              {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55].map((m) => (
-                <option key={m} value={m}>:{String(m).padStart(2, '0')}</option>
-              ))}
-            </Select>
-          </div>
-        )}
-
-        {/* Day of week */}
-        {state.frequency === 'weekly' && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              {t('automation.onDay')}
-            </span>
-            <Select
-              className="w-32"
-              value={state.dayOfWeek}
-              onChange={(e) => update({ dayOfWeek: parseInt(e.target.value, 10) })}
-            >
-              {DOW_KEYS.map((d) => (
-                <option key={d.v} value={d.v}>{t(d.k)}</option>
-              ))}
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectPopover>
+                <SelectListBox>
+                  {minuteSteps.map((m) => (
+                    <SelectItem key={m} id={m}>{`:${String(m).padStart(2, '0')}`}</SelectItem>
+                  ))}
+                </SelectListBox>
+              </SelectPopover>
             </Select>
           </div>
         )}
 
         {/* Day of month */}
-        {state.frequency === 'monthly' && (
+        {state.kind === 'monthly' && (
           <div className="flex items-center gap-2">
-            <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            <span className="automation-form-joiner">
               {t('automation.onDay')}
             </span>
             <Select
-              className="w-24"
-              value={state.dayOfMonth}
-              onChange={(e) => update({ dayOfMonth: parseInt(e.target.value, 10) })}
+              aria-label={t('automation.onDay')}
+              selectedKey={state.dayOfMonth}
+              onSelectionChange={(k) => {
+                if (k === 'L' || typeof k === 'number') update({ dayOfMonth: k });
+              }}
+              className="min-w-24"
             >
-              {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
-                <option key={d} value={d}>{d}</option>
-              ))}
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectPopover>
+                <SelectListBox>
+                  {/* A day of the month is a phrase, not a bare number: Chinese writes "1 日". */}
+                  {MONTH_DAYS.map((d) => (
+                    <SelectItem key={d} id={d}>{t('automation.monthDay', { day: d })}</SelectItem>
+                  ))}
+                  <SelectItem id="L">{t('automation.lastDay')}</SelectItem>
+                </SelectListBox>
+              </SelectPopover>
             </Select>
           </div>
         )}
@@ -228,40 +208,49 @@ export default function CronScheduleBuilder({ value, onChange }: CronScheduleBui
         {/* Time */}
         {needsTime && (
           <div className="flex items-center gap-2">
-            <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            <span className="automation-form-joiner">
               {t('automation.atTime')}
             </span>
-            <Input
-              type="time"
-              value={timeStr}
-              onChange={(e) => {
-                const [h, m] = (e.target.value || '00:00').split(':').map(Number);
-                update({ hour: h || 0, minute: m || 0 });
-              }}
-              className="w-32 border"
-              style={inputBg}
+            <TimeField
+              value={{ hour: state.hour, minute: state.minute }}
+              onChange={(time) => update(time)}
+              aria-label={t('automation.time')}
+              className="w-32"
             />
+          </div>
+        )}
+
+        {zone && needsZone && (
+          <div className="flex items-center gap-2">
+            <span className="automation-form-joiner">{t('automation.inZone')}</span>
+            {zone}
           </div>
         )}
       </div>
 
+      {state.kind === 'days' && <DayPicker days={state.days} onChange={(days) => update({ days })} />}
+
+      {/* Cron has no "or the last day if shorter": a 31st skips the months
+          that lack one, so say so and point at the option that does not. */}
+      {state.kind === 'monthly' && typeof state.dayOfMonth === 'number' && state.dayOfMonth > 28 && (
+        <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          {t('automation.skipsShortMonths', { day: state.dayOfMonth })}
+        </span>
+      )}
+
       {/* Custom cron fallback */}
-      {state.frequency === 'custom' && (
+      {state.kind === 'custom' && (
         <div className="flex flex-col gap-1.5">
           <Input
             value={state.raw}
-            onChange={(e) => {
-              const raw = e.target.value;
-              setState((prev) => ({ ...prev, raw }));
-              lastEmitted.current = raw;
-              onChange(raw);
-            }}
+            onChange={(e) => update({ raw: e.target.value })}
             placeholder="*/30 * * * *"
             required
-            className="font-mono border placeholder:text-gray-500"
-            style={inputBg}
+            aria-label={t('automation.freqCustom')}
+            aria-describedby={helpId}
+            className="font-mono"
           />
-          <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          <span id={helpId} className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
             {t('automation.cronHelp')}
           </span>
         </div>

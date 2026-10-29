@@ -15,7 +15,6 @@ interface SingleTickerConfig {
 function SingleTickerWidget({ instance }: WidgetRenderProps<SingleTickerConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="single-quote"
       config={{ symbol: instance.config.symbol }}
     />

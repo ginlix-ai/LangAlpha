@@ -170,11 +170,6 @@ def parse_args() -> argparse.Namespace:
         help="Create new workspace (don't reuse existing session)",
     )
     parser.add_argument(
-        "--plan-mode",
-        action="store_true",
-        help="Enable plan mode: agent must submit a plan for approval before execution",
-    )
-    parser.add_argument(
         "--reconnect",
         nargs="?",
         const=True,
@@ -191,12 +186,18 @@ def parse_args() -> argparse.Namespace:
         help="LLM model name from models.json (e.g., 'minimax-m3', 'claude-sonnet-4-5')",
     )
     parser.add_argument(
-        "--flash",
+        "--home",
         action="store_true",
-        help="Use Flash Agent: fast responses without sandbox (no code execution)",
+        help="Chat in your Home, outside any workspace",
     )
+    # The old name of --home, refused by name so a script still passing it
+    # learns the new one rather than reading an unknown-flag error.
+    parser.add_argument("--flash", action="store_true", help=argparse.SUPPRESS)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.flash:
+        parser.error("--flash was renamed to --home")
+    return args
 
 
 async def chat_loop(
@@ -211,7 +212,7 @@ async def chat_loop(
 
     Args:
         client: SSE stream client for API communication
-        workspace_id: Active workspace ID (None in flash mode)
+        workspace_id: Active workspace ID (None in Home)
         assistant_id: Agent identifier for session storage
         session_state: Session state with settings
         no_splash: If True, skip displaying the startup splash screen
@@ -227,8 +228,8 @@ async def chat_loop(
         console.print()
 
     # Display mode-specific info
-    if session_state.flash_mode:
-        console.print("[bold cyan]Flash Mode[/bold cyan] [dim](no sandbox, external tools only)[/dim]")
+    if session_state.in_home:
+        console.print("[bold cyan]Home[/bold cyan] [dim](outside any workspace)[/dim]")
     else:
         console.print(f"[yellow]Workspace: {workspace_id}[/yellow]")
     console.print(f"[dim]Server: {client.base_url}[/dim]")
@@ -236,10 +237,6 @@ async def chat_loop(
 
     if session_state.llm_model:
         console.print(f"  [cyan]Model: {session_state.llm_model}[/cyan]")
-        console.print()
-
-    if session_state.plan_mode:
-        console.print("  [cyan]Plan Mode: ON[/cyan] [dim](agent will submit plan for approval)[/dim]")
         console.print()
 
     if session_state.auto_approve:
@@ -260,8 +257,8 @@ async def chat_loop(
     sandbox_completer = None
     files: list[str] = []
 
-    # Skip file completer setup in flash mode (no sandbox)
-    if not session_state.flash_mode:
+    # Skip file completer setup in Home (no workspace)
+    if not session_state.in_home:
         sandbox_completer = SandboxFileCompleter()
         try:
             files = await client.list_workspace_files(include_system=False)
@@ -377,13 +374,13 @@ async def main(
     try:
         console.print()
 
-        # Flash mode: skip workspace creation entirely
-        if session_state.flash_mode:
-            console.print("[bold cyan]Starting Flash Mode...[/bold cyan]")
+        # Home: skip workspace creation entirely
+        if session_state.in_home:
+            console.print("[bold cyan]Starting in Home...[/bold cyan]")
             client = SSEStreamClient(base_url=server_url, user_id=assistant_id)
             await chat_loop(
                 client,
-                None,  # No workspace in flash mode
+                None,  # No workspace in Home
                 assistant_id,
                 session_state,
                 no_splash=session_state.no_splash,
@@ -559,10 +556,9 @@ def run_cli() -> None:
             session_state = SessionState(
                 auto_approve=args.auto_approve,
                 no_splash=args.no_splash,
-                persist_session=not args.new_workspace and not args.flash,
-                plan_mode=args.plan_mode,
+                persist_session=not args.new_workspace and not args.home,
                 llm_model=args.model,
-                flash_mode=args.flash,
+                in_home=args.home,
             )
             session_state.log_file_path = str(log_path)
 

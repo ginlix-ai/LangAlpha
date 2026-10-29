@@ -1,20 +1,34 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import i18n from '@/i18n';
+import type { TFunction } from 'i18next';
 import { relativeTime } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
 import {
   Workflow,
   ArrowUpRight,
   Pause,
   Play,
-  AlertTriangle,
   Zap,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
+import { StatusGlyph } from '@/pages/Automations/components/StatusMark';
 import { useAutomations } from '@/pages/Automations/hooks/useAutomations';
 import { useAutomationMutations } from '@/pages/Automations/hooks/useAutomationMutations';
+import { useOrderedGroups, type OrderedGroup } from '@/pages/Automations/hooks/useOrderedGroups';
+import {
+  automationActions,
+  automationCensus,
+  automationState,
+  automationStatusUi,
+  GROUP_LABEL_KEY,
+  rowTrailing,
+  type AutomationCensus,
+  type AutomationGroup,
+} from '@/pages/Automations/utils/status';
 import type { Automation } from '@/types/automation';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { WidgetCardMeta } from '../framework/widgetCardSlots';
 import { useWidgetContextExport } from '../framework/contextSnapshot';
 import { serializeRowsToMarkdown, wrapWidgetContext } from '../framework/snapshotSerializers';
 import { AutomationsConfigSchema } from '../framework/configSchemas';
@@ -22,64 +36,66 @@ import type { WidgetRenderProps } from '../types';
 
 type AutomationsConfig = { limit?: number };
 
-type BucketKey = 'active' | 'paused' | 'error';
+/** The census in the page's own words and order, for the agent's copy. */
+const CENSUS_WORDS: ReadonlyArray<[keyof AutomationCensus, string]> = [
+  ['attention', 'need attention'],
+  ['running', 'running'],
+  ['scheduled', 'scheduled'],
+  ['watching', 'watching'],
+  ['paused', 'paused'],
+  ['off', 'switched off'],
+  ['finished', 'finished'],
+];
 
-const BUCKET_KEY: Record<BucketKey, string> = {
-  active: 'dashboard.widgets.automations.bucket_active',
-  paused: 'dashboard.widgets.automations.bucket_paused',
-  error: 'dashboard.widgets.automations.bucket_attention',
-};
-
-function triggerLabel(a: Automation): string {
+function triggerLabel(a: Automation, t: TFunction): string {
   if (a.trigger_type === 'price') {
     const sym = a.trigger_config?.symbol;
     return sym
-      ? i18n.t('dashboard.widgets.automations.trigger.priceSymbol', { symbol: sym })
-      : i18n.t('dashboard.widgets.automations.trigger.price');
+      ? t('dashboard.widgets.automations.trigger.priceSymbol', { symbol: sym })
+      : t('dashboard.widgets.automations.trigger.price');
   }
-  if (a.trigger_type === 'once') return i18n.t('dashboard.widgets.automations.trigger.once');
-  if (a.schedule) return i18n.t('dashboard.widgets.automations.trigger.cron');
-  return i18n.t('dashboard.widgets.automations.trigger.auto');
+  if (a.trigger_type === 'once') return t('dashboard.widgets.automations.trigger.once');
+  if (a.cron_expression) return t('dashboard.widgets.automations.trigger.cron');
+  return t('dashboard.widgets.automations.trigger.auto');
 }
 
 function AutomationRow({
   automation,
+  group,
   onOpen,
   onToggle,
   onRun,
   busy,
 }: {
   automation: Automation;
+  group: AutomationGroup;
   onOpen: () => void;
   onToggle: () => void;
   onRun: () => void;
   busy: boolean;
 }) {
   const { t } = useTranslation();
-  const isActive = automation.status === 'active';
-  const isPaused = automation.status === 'paused';
-  const isError = automation.status === 'error';
+  const locale = useLocale();
+  const now = useNow();
+  const { canPause, canResume, canRun, runBusy } = automationActions(automation);
 
-  const dotColor = isError
-    ? 'var(--color-loss)'
-    : isActive
-      ? 'var(--color-accent-primary)'
-      : 'var(--color-text-tertiary)';
-
-  const nextRun = isActive ? relativeTime(automation.next_run_at) : '';
-  const lastRun = !isActive && automation.last_run_at ? relativeTime(automation.last_run_at) : '';
-  const rightText = nextRun
-    || (lastRun
-      ? t('dashboard.widgets.automations.lastRun', { when: lastRun })
-      : isPaused
-        ? t('dashboard.widgets.automations.statusPaused')
-        : isError
-          ? t('dashboard.widgets.automations.statusError')
-          : '');
+  // The Automations list's rule, so the two never read differently; a watch
+  // has no quote here and reads as its last run.
+  const ui = automationStatusUi(automation);
+  const row = rowTrailing(automation, group);
+  const rightText = !row
+    ? ''
+    : row.kind === 'state'
+      ? t(row.labelKey)
+      : row.kind === 'next'
+        ? relativeTime(row.at, locale, now)
+        : row.at
+          ? t('dashboard.widgets.automations.lastRun', { when: relativeTime(row.at, locale, now) })
+          : '';
 
   return (
     <div
-      className="group relative w-full flex items-center gap-3 py-2 pr-2 pl-3 rounded-md transition-colors duration-150"
+      className="group relative w-full flex items-center gap-3 py-2 pr-2 pl-3 rounded-md transition-colors"
       onMouseEnter={(e) => {
         e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
       }}
@@ -92,24 +108,9 @@ function AutomationRow({
         onClick={onOpen}
         className="flex-1 min-w-0 flex items-center gap-3 text-left"
       >
-        {isError ? (
-          <AlertTriangle
-            className="h-3 w-3 flex-shrink-0"
-            style={{ color: 'var(--color-loss)' }}
-          />
-        ) : (
-          <span
-            aria-hidden
-            className="flex-shrink-0 rounded-full"
-            style={{
-              width: 6,
-              height: 6,
-              backgroundColor: dotColor,
-              opacity: isActive ? 1 : 0.55,
-              boxShadow: isActive ? `0 0 0 3px color-mix(in srgb, ${dotColor} 18%, transparent)` : 'none',
-            }}
-          />
-        )}
+        <span className="flex w-3 shrink-0 justify-center">
+          <StatusGlyph ui={ui} label={t(ui.labelKey)} size={12} />
+        </span>
         <span className="flex-1 min-w-0 flex flex-col gap-0.5 overflow-hidden">
           <span
             className="text-[0.8125rem] truncate leading-tight font-medium"
@@ -121,14 +122,14 @@ function AutomationRow({
             className="text-[0.625rem] uppercase tracking-wider truncate"
             style={{ color: 'var(--color-text-tertiary)', opacity: 0.85 }}
           >
-            {triggerLabel(automation)}
+            {triggerLabel(automation, t)}
           </span>
         </span>
       </button>
 
       {rightText ? (
         <span
-          className="text-[0.6563rem] dashboard-mono uppercase tracking-wider tabular-nums flex-shrink-0 group-hover:opacity-0 transition-opacity"
+          className="text-[0.6563rem] dashboard-mono uppercase tracking-wider tabular-nums shrink-0 group-hover:opacity-0 transition-opacity"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
           {rightText}
@@ -136,38 +137,16 @@ function AutomationRow({
       ) : null}
 
       <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRun();
-          }}
-          disabled={busy}
-          title={t('dashboard.widgets.automations.runNow')}
-          aria-label={t('dashboard.widgets.automations.runNow')}
-          className="p-1 rounded-md transition-colors disabled:opacity-50"
-          style={{ color: 'var(--color-text-secondary)' }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = 'var(--color-bg-subtle)';
-            e.currentTarget.style.color = 'var(--color-text-primary)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = 'transparent';
-            e.currentTarget.style.color = 'var(--color-text-secondary)';
-          }}
-        >
-          <Zap className="h-3.5 w-3.5" fill="currentColor" />
-        </button>
-        {!isError && (
+        {canRun && (
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onToggle();
+              onRun();
             }}
-            disabled={busy}
-            title={isActive ? t('dashboard.widgets.automations.pause') : t('dashboard.widgets.automations.resume')}
-            aria-label={isActive ? t('dashboard.widgets.automations.pauseAria') : t('dashboard.widgets.automations.resumeAria')}
+            disabled={busy || runBusy}
+            title={t('dashboard.widgets.automations.runNow')}
+            aria-label={t('dashboard.widgets.automations.runNow')}
             className="p-1 rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--color-text-secondary)' }}
             onMouseEnter={(e) => {
@@ -179,7 +158,31 @@ function AutomationRow({
               e.currentTarget.style.color = 'var(--color-text-secondary)';
             }}
           >
-            {isActive ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+            <Zap className="h-3.5 w-3.5" fill="currentColor" />
+          </button>
+        )}
+        {(canPause || canResume) && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+            disabled={busy}
+            title={canPause ? t('dashboard.widgets.automations.pause') : t('dashboard.widgets.automations.resume')}
+            aria-label={canPause ? t('dashboard.widgets.automations.pauseAria') : t('dashboard.widgets.automations.resumeAria')}
+            className="p-1 rounded-md transition-colors disabled:opacity-50"
+            style={{ color: 'var(--color-text-secondary)' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--color-bg-subtle)';
+              e.currentTarget.style.color = 'var(--color-text-primary)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.color = 'var(--color-text-secondary)';
+            }}
+          >
+            {canPause ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
           </button>
         )}
       </div>
@@ -188,20 +191,21 @@ function AutomationRow({
 }
 
 function BucketSection({
-  label,
+  group,
   items,
   onOpen,
   onToggle,
   onRun,
   busy,
 }: {
-  label: string;
+  group: AutomationGroup;
   items: Automation[];
   onOpen: (a: Automation) => void;
   onToggle: (a: Automation) => void;
   onRun: (a: Automation) => void;
   busy: boolean;
 }) {
+  const { t } = useTranslation();
   if (items.length === 0) return null;
   return (
     <div className="flex flex-col">
@@ -213,7 +217,7 @@ function BucketSection({
           className="text-[0.5938rem] font-semibold uppercase tracking-[0.16em]"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          {label}
+          {t(GROUP_LABEL_KEY[group])}
         </span>
         <span
           className="flex-1 h-px"
@@ -229,8 +233,9 @@ function BucketSection({
       <div className="flex flex-col">
         {items.map((a) => (
           <AutomationRow
-            key={a.id}
+            key={a.automation_id}
             automation={a}
+            group={group}
             busy={busy}
             onOpen={() => onOpen(a)}
             onToggle={() => onToggle(a)}
@@ -247,30 +252,29 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
   const navigate = useNavigate();
   const limit = instance.config.limit ?? 8;
 
-  const { automations, loading, refetch } = useAutomations();
-  const { pause, resume, trigger, loading: mutating } = useAutomationMutations(refetch);
+  const { automations, loading } = useAutomations();
+  const { pause, resume, trigger, busy } = useAutomationMutations();
 
   useWidgetContextExport(instance.id, {
     full: () => {
       const tableRows = automations.map((a) => ({
         name: a.name || t('dashboard.widgets.automations.untitled'),
-        trigger: triggerLabel(a),
-        status: a.status ?? 'active',
+        trigger: triggerLabel(a, t),
+        state: automationState(a),
         next_run: a.next_run_at ?? '',
         last_run: a.last_run_at ?? '',
       }));
-      const counts = {
-        total: automations.length,
-        active: automations.filter((a) => a.status === 'active').length,
-        paused: automations.filter((a) => a.status === 'paused').length,
-        error: automations.filter((a) => a.status === 'error').length,
-      };
+      // The page header's census, so the agent reads the states the reader sees.
+      const counts = { total: automations.length, ...automationCensus(automations) };
+      const summary = CENSUS_WORDS.filter(([key]) => counts[key])
+        .map(([key, word]) => `${counts[key]} ${word}`)
+        .join(', ');
       const body = automations.length
-        ? `**${counts.active} active · ${counts.paused} paused · ${counts.error} error**\n\n` +
+        ? (summary ? `**${summary}**\n\n` : '') +
           serializeRowsToMarkdown(tableRows, [
             { key: 'name', label: 'name' },
             { key: 'trigger', label: 'trigger' },
-            { key: 'status', label: 'status' },
+            { key: 'state', label: 'state' },
             { key: 'next_run', label: 'next run' },
             { key: 'last_run', label: 'last run' },
           ])
@@ -280,9 +284,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
         widget_type: 'automations.list',
         widget_id: instance.id,
         label: `${t('dashboard.widgets.automations.title')} · ${counts.total}`,
-        description: counts.total
-          ? `${counts.active} active, ${counts.paused} paused${counts.error ? `, ${counts.error} error` : ''}`
-          : 'empty',
+        description: counts.total ? summary || `${counts.total} automations` : 'empty',
         captured_at: new Date().toISOString(),
         text,
         data: { counts, automations },
@@ -290,94 +292,46 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
     },
   });
 
-  const grouped = useMemo(() => {
-    const buckets: Record<BucketKey, Automation[]> = { active: [], paused: [], error: [] };
-    for (const a of automations) {
-      if (a.status === 'error') buckets.error.push(a);
-      else if (a.status === 'paused') buckets.paused.push(a);
-      else buckets.active.push(a);
+  // The Automations page's own groups, in its order, so what needs attention
+  // leads and the limit trims from the finished end.
+  const groups = useOrderedGroups(automations);
+  const shownGroups = useMemo(() => {
+    const out: OrderedGroup[] = [];
+    let room = limit;
+    for (const { group, items } of groups) {
+      if (room <= 0) break;
+      out.push({ group, items: items.slice(0, room) });
+      room -= items.length;
     }
-    buckets.active.sort((a, b) => {
-      const at = a.next_run_at ? new Date(a.next_run_at).getTime() : Infinity;
-      const bt = b.next_run_at ? new Date(b.next_run_at).getTime() : Infinity;
-      return at - bt;
-    });
-    const total = buckets.error.length + buckets.active.length + buckets.paused.length;
-    if (total > limit) {
-      const keep = (arr: Automation[], n: number) => arr.slice(0, n);
-      const errorSlice = keep(buckets.error, limit);
-      const remaining = Math.max(0, limit - errorSlice.length);
-      const activeSlice = keep(buckets.active, remaining);
-      const pausedSlice = keep(buckets.paused, Math.max(0, remaining - activeSlice.length));
-      return { error: errorSlice, active: activeSlice, paused: pausedSlice };
-    }
-    return buckets;
-  }, [automations, limit]);
+    return out;
+  }, [groups, limit]);
 
   const total = automations.length;
 
   const handleOpen = (a: Automation) => {
-    navigate(`/automations?id=${encodeURIComponent(a.id)}`);
+    navigate(`/automations?id=${encodeURIComponent(a.automation_id)}`);
   };
 
-  const handleToggle = async (a: Automation) => {
-    try {
-      if (a.status === 'active') await pause(a.id);
-      else await resume(a.id);
-    } catch {
-      // toast already shown by mutation hook
-    }
+  const handleToggle = (a: Automation) => {
+    if (automationActions(a).canPause) pause.mutate(a.automation_id);
+    else resume.mutate(a.automation_id);
   };
 
-  const handleRun = async (a: Automation) => {
-    try {
-      await trigger(a.id);
-    } catch {
-      // toast already shown
-    }
-  };
+  const handleRun = (a: Automation) => trigger.mutate(a.automation_id);
 
   return (
-    <div className="dashboard-glass-card p-5 flex flex-col h-full">
-      <div
-        className="flex items-baseline justify-between mb-3 pb-3 border-b"
-        style={{ borderColor: 'var(--color-border-muted)' }}
-      >
-        <div className="flex items-baseline gap-2.5 min-w-0">
-          <Workflow
-            className="h-3.5 w-3.5 flex-shrink-0 self-center"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          />
-          <span
-            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
-            style={{ color: 'var(--color-text-secondary)' }}
-          >
-            {t('dashboard.widgets.automations.header')}
-          </span>
-          <span
-            className="title-font text-lg leading-none dashboard-mono"
-            style={{ color: 'var(--color-text-primary)' }}
-          >
-            {total}
-          </span>
-        </div>
+    <div className="flex flex-col h-full">
+      <WidgetCardMeta>
+        <span>{total}</span>
         <button
           type="button"
           onClick={() => navigate('/automations')}
-          className="group flex items-center gap-1 text-[0.6875rem] uppercase tracking-wider transition-colors"
-          style={{ color: 'var(--color-text-tertiary)' }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--color-text-primary)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = 'var(--color-text-tertiary)';
-          }}
+          className="dash-link widget-drag-cancel"
         >
-          <span>{t('dashboard.widgets.automations.viewAll')}</span>
-          <ArrowUpRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+          {t('dashboard.widgets.automations.viewAll')}
+          <ArrowUpRight className="h-3 w-3" />
         </button>
-      </div>
-
+      </WidgetCardMeta>
       <div className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
         {loading && total === 0 ? (
           <div className="space-y-1.5 py-1">
@@ -419,30 +373,17 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            <BucketSection
-              label={t(BUCKET_KEY.error)}
-              items={grouped.error}
-              busy={mutating}
-              onOpen={handleOpen}
-              onToggle={handleToggle}
-              onRun={handleRun}
-            />
-            <BucketSection
-              label={t(BUCKET_KEY.active)}
-              items={grouped.active}
-              busy={mutating}
-              onOpen={handleOpen}
-              onToggle={handleToggle}
-              onRun={handleRun}
-            />
-            <BucketSection
-              label={t(BUCKET_KEY.paused)}
-              items={grouped.paused}
-              busy={mutating}
-              onOpen={handleOpen}
-              onToggle={handleToggle}
-              onRun={handleRun}
-            />
+            {shownGroups.map(({ group, items }) => (
+              <BucketSection
+                key={group}
+                group={group}
+                items={items}
+                busy={busy}
+                onOpen={handleOpen}
+                onToggle={handleToggle}
+                onRun={handleRun}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -453,6 +394,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
 registerWidget<AutomationsConfig>({
   type: 'automations.list',
   titleKey: 'dashboard.widgets.automations.title',
+  cardTitleKey: 'dashboard.widgets.automations.header',
   descriptionKey: 'dashboard.widgets.automations.description',
   category: 'personal',
   icon: Workflow,

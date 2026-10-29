@@ -1,3 +1,5 @@
+import { isDirectToolName } from '../../utils/directTools';
+
 /**
  * Single source of truth for a subagent's display status.
  *
@@ -29,6 +31,14 @@ export type SubagentTerminalStatus = 'completed' | 'cancelled' | 'error';
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'cancelled', 'error']);
 
+// What separates the failure envelope from its detail, across every producer
+// that reaches the prefix rule: ':' for the "ERROR: "/"Error: " convention the
+// tools, middleware and Task/RunWorkflow refusals share, and '\n' for
+// ExecuteCode's "ERROR\n<traceback>". A space is deliberately absent: it is
+// what an English sentence starts with, and admitting it is the whole false
+// positive.
+const ERROR_DELIMITERS: ReadonlySet<string> = new Set([':', '\n']);
+
 /**
  * A subagent status is terminal when the task has settled — completed, cancelled,
  * or errored. Terminal status is authoritative and monotonic: once observed, no
@@ -41,24 +51,63 @@ export function isTerminalStatus(
 }
 
 /**
- * A tool result reports failure iff it is the bare failure ToolMessage:
- * string content prefixed "Error" (backend convention — e.g. "Error: could
- * not start Task-…") with no artifact attached. A result carrying an
- * artifact is never a failure. For Task results this is the settle-or-spin
- * discriminator: a failed spawn opens no channel, so no chan_close will ever
- * arrive — the caller must stamp 'error' from this signal alone.
- * Case-insensitive: older persisted turns carry "ERROR: …" spawn failures
- * (pre-normalization RunWorkflow), which must settle the same way.
+ * The one predicate that decides whether a tool result is a failure, for every
+ * consumer (timeline row, render blocks, detail header, subagent settle).
+ *
+ * An explicit `status` of 'error' decides failure outright, and a result
+ * carrying an artifact is never a failure. An explicit 'success' only silences
+ * the "Refused:" rule, which is the heuristic that value was carried on the
+ * wire to fix (a direct MCP tool whose own successful output opens with that
+ * prefix; every other tool is free to print it too, so the rule stays off
+ * without a resolved `toolName`). The "Error" prefix rule keeps firing under
+ * any status, case-insensitively, because producers demonstrably do not all
+ * stamp their failures and a defaulted 'success' would silence the only settle
+ * signal a failed Task launch has: it opens no channel, so no chan_close ever
+ * arrives and the card spins forever.
+ *
+ * That prefix has to be the failure envelope and not the first word of a
+ * sentence, so "error" only counts when the text ends there or continues with
+ * one of ERROR_DELIMITERS. Every producer that reaches this rule writes one of
+ * those; ordinary output that merely opens with the word ("Error rate: 0%" out
+ * of a Bash command that exited 0) continues with a letter and is left alone.
+ *
+ * `toolName` is the raw wire name (`mcp__<server>__<tool>` for a direct tool).
  */
 export function isToolResultFailure(result: {
   content?: unknown;
   artifact?: unknown;
+  status?: unknown;
+  toolName?: unknown;
 }): boolean {
+  if (result.status === 'error') return true;
+  const claimsSuccess = typeof result.status === 'string' && result.status !== '';
+  if (typeof result.content !== 'string' || result.artifact) return false;
+  const text = result.content.trim().toLowerCase();
+  // `undefined` past the end is the whole result being the bare envelope,
+  // which is what an empty ExecuteCode stderr trims down to.
+  if (text.slice(0, 5) === 'error') {
+    const next = text[5];
+    if (next === undefined || ERROR_DELIMITERS.has(next)) return true;
+  }
+  if (claimsSuccess) return false;
   return (
-    typeof result.content === 'string' &&
-    result.content.trim().slice(0, 5).toLowerCase() === 'error' &&
-    !result.artifact
+    text.startsWith('refused:') &&
+    typeof result.toolName === 'string' &&
+    isDirectToolName(result.toolName)
   );
+}
+
+/**
+ * The raw wire tool name recorded when the call streamed, read back out of a
+ * message's tool-call map. Absent when the result outran its `tool_calls`
+ * event and no name has been recorded yet.
+ */
+export function toolNameOf(
+  processes: Record<string, Record<string, unknown>>,
+  toolCallId: string,
+): string | undefined {
+  const name = processes[toolCallId]?.toolName;
+  return typeof name === 'string' ? name : undefined;
 }
 
 /**
@@ -116,6 +165,12 @@ export interface SidebarAgentRow {
   description: string;
   isMainAgent: boolean;
   status: SubagentDisplayStatus;
+}
+
+/** What a row is called: a subagent by its task's description when it has one. */
+export function sidebarAgentRowLabel(row: SidebarAgentRow): string {
+  const description = row.description.trim();
+  return !row.isMainAgent && description ? description : row.name;
 }
 
 export function toSidebarAgentRow(agent: {

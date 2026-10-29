@@ -23,56 +23,58 @@ FILES_BASE = f"/api/v1/workspaces/{TEST_WS_ID}/files"
 
 
 # ---------------------------------------------------------------------------
-# TestFlashWorkspaceHandling
+# TestUnboundHomeHandling
 # ---------------------------------------------------------------------------
 
 
-class TestFlashWorkspaceHandling:
-    """Flash workspaces return 200 empty for list, 400 for everything else."""
+class TestUnboundHomeHandling:
+    """An unbound Home returns 200 empty for list, 400 for everything else."""
 
     @pytest_asyncio.fixture
-    async def flash_client(self):
+    async def home_client(self):
         from src.server.app.workspace_files import router
 
         app = create_test_app(router)
-        with patch(
-            "src.server.app.workspace_files.crud.db_get_workspace",
-            AsyncMock(return_value=_make_workspace(status="flash")),
+        read = AsyncMock(return_value=_make_workspace(status="unbound"))
+        with (
+            patch("src.server.app.workspace_files.crud.db_get_workspace", read),
+            patch("src.server.services.workspace_files.db_get_workspace", read),
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
                 yield client
 
-    async def test_list_files_flash_returns_200_empty(self, flash_client):
-        resp = await flash_client.get(FILES_BASE)
+    async def test_list_files_unbound_home_returns_200_empty(self, home_client):
+        resp = await home_client.get(FILES_BASE)
         assert resp.status_code == 200
         data = resp.json()
         assert data["files"] == []
-        assert data.get("flash_workspace") is True
+        assert data["sandbox_ready"] is False
+        assert data["reason"] == "home_not_on_computer"
 
-    async def test_read_file_flash_returns_400(self, flash_client):
-        resp = await flash_client.get(
+    async def test_read_file_unbound_home_returns_400(self, home_client):
+        resp = await home_client.get(
             f"{FILES_BASE}/read", params={"path": "data/test.txt"}
         )
         assert resp.status_code == 400
 
-    async def test_write_file_flash_returns_400(self, flash_client):
-        resp = await flash_client.put(
+    async def test_write_file_unbound_home_returns_400(self, home_client):
+        resp = await home_client.put(
             f"{FILES_BASE}/write",
             params={"path": "data/test.txt"},
             json={"content": "hello"},
         )
         assert resp.status_code == 400
 
-    async def test_download_flash_returns_400(self, flash_client):
-        resp = await flash_client.get(
+    async def test_download_unbound_home_returns_400(self, home_client):
+        resp = await home_client.get(
             f"{FILES_BASE}/download", params={"path": "data/test.txt"}
         )
         assert resp.status_code == 400
 
-    async def test_upload_flash_returns_400(self, flash_client):
-        resp = await flash_client.post(
+    async def test_upload_unbound_home_returns_400(self, home_client):
+        resp = await home_client.post(
             f"{FILES_BASE}/upload",
             params={"path": "data/test.txt"},
             files={"file": ("test.txt", b"hello", "text/plain")},
@@ -93,9 +95,10 @@ class TestStoppedWorkspaceWriteRejection:
         from src.server.app.workspace_files import router
 
         app = create_test_app(router)
-        with patch(
-            "src.server.app.workspace_files.crud.db_get_workspace",
-            AsyncMock(return_value=_make_workspace(status="stopped")),
+        read = AsyncMock(return_value=_make_workspace(status="stopped"))
+        with (
+            patch("src.server.app.workspace_files.crud.db_get_workspace", read),
+            patch("src.server.services.workspace_files.db_get_workspace", read),
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
@@ -140,9 +143,10 @@ class TestWorkspaceNotFound:
         from src.server.app.workspace_files import router
 
         app = create_test_app(router)
-        with patch(
-            "src.server.app.workspace_files.crud.db_get_workspace",
-            AsyncMock(return_value=None),
+        read = AsyncMock(return_value=None)
+        with (
+            patch("src.server.app.workspace_files.crud.db_get_workspace", read),
+            patch("src.server.services.workspace_files.db_get_workspace", read),
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
@@ -173,9 +177,10 @@ class TestOwnershipEnforcement:
         from src.server.app.workspace_files import router
 
         app = create_test_app(router)
-        with patch(
-            "src.server.app.workspace_files.crud.db_get_workspace",
-            AsyncMock(return_value=_make_workspace(user_id="other-user-999")),
+        read = AsyncMock(return_value=_make_workspace(user_id="other-user-999"))
+        with (
+            patch("src.server.app.workspace_files.crud.db_get_workspace", read),
+            patch("src.server.services.workspace_files.db_get_workspace", read),
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"

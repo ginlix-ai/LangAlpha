@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
-import { ArrowLeft, Brain, FileText, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, BookMarked, FileText, RefreshCw, X } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { formatBytes, paddedClockTime, shortMonthDay } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
 import { useTranslation } from 'react-i18next';
 import {
   useUserMemory,
@@ -11,6 +14,7 @@ import {
 import Markdown from './Markdown';
 import type { MemoryEntry } from '../utils/api';
 import { MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR } from '../utils/agentPaths';
+import type { FileLocation, OpenFileHandler } from '../utils/fileLocation';
 
 type Tier = 'user' | 'workspace';
 
@@ -25,25 +29,16 @@ interface MemoryPanelProps {
    * parent's path-aware router. The panel resolves bare sibling refs
    * (e.g. `feedback_visualization_preference.md`) against the current
    * memory tier's dir before calling. */
-  onOpenFile?: (path: string, workspaceId?: string) => void;
+  onOpenFile?: OpenFileHandler;
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
 
-function formatTime(iso: string | null): string {
+function formatTime(iso: string | null, now: number, locale: string): string {
   if (!iso) return '';
   try {
     const d = new Date(iso);
-    const now = new Date();
-    const sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) {
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    const sameDay = d.toDateString() === new Date(now).toDateString();
+    return sameDay ? paddedClockTime(d, locale) : shortMonthDay(d, locale);
   } catch {
     return '';
   }
@@ -66,6 +61,8 @@ export default function MemoryPanel({
   onOpenFile,
 }: MemoryPanelProps) {
   const { t } = useTranslation();
+  const locale = useLocale();
+  const now = useNow();
   const [tier, setTier] = useState<Tier>(targetTier ?? 'user');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [notFoundKey, setNotFoundKey] = useState<string | null>(null);
@@ -82,7 +79,7 @@ export default function MemoryPanel({
   // them through to file routing instead of forcing them into the memory
   // store path (where they'd 404).
   const handleBodyLinkOpen = useCallback(
-    (href: string, wsId?: string) => {
+    (href: string, wsId?: string, location?: FileLocation) => {
       if (!onOpenFile || !href) return;
       const isAlreadyQualified =
         href.startsWith('.agents/') ||
@@ -90,7 +87,7 @@ export default function MemoryPanel({
         href.startsWith('/') ||
         /^[a-z][a-z0-9+.-]*:/i.test(href);
       if (isAlreadyQualified) {
-        onOpenFile(href, wsId);
+        onOpenFile(href, wsId, location);
         return;
       }
       const clean = href.replace(/^\.\//, '');
@@ -99,11 +96,11 @@ export default function MemoryPanel({
       const SIBLING_EXTS = new Set(['md', 'markdown']);
       if (!SIBLING_EXTS.has(ext)) {
         // Not a memory entry — let file routing decide where it belongs.
-        onOpenFile(clean, wsId);
+        onOpenFile(clean, wsId, location);
         return;
       }
       const dir = tier === 'user' ? MEMORY_USER_DIR : MEMORY_WORKSPACE_DIR;
-      onOpenFile(`${dir}/${clean}`, wsId);
+      onOpenFile(`${dir}/${clean}`, wsId, location);
     },
     [onOpenFile, tier],
   );
@@ -181,8 +178,7 @@ export default function MemoryPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entriesSig, notFoundKey]);
 
-  const rootLabel =
-    tier === 'user' ? '.agents/user/memory/' : '.agents/workspace/memory/';
+  const rootLabel = `${tier === 'user' ? MEMORY_USER_DIR : MEMORY_WORKSPACE_DIR}/`;
 
   // Viewer mode
   if (selectedKey) {
@@ -290,7 +286,7 @@ export default function MemoryPanel({
           <button
             type="button"
             onClick={() => setNotFoundKey(null)}
-            className="flex-shrink-0"
+            className="shrink-0"
             title={t('memoryPanel.dismissNotFound')}
           >
             <X className="h-3.5 w-3.5" />
@@ -315,7 +311,7 @@ export default function MemoryPanel({
         {!list.loading && !list.error && sorted.length === 0 && (
           <div className="px-4 py-8 flex flex-col items-center gap-3 text-center"
                style={{ color: 'var(--color-text-tertiary)' }}>
-            <Brain className="h-8 w-8 opacity-40" />
+            <BookMarked className="h-8 w-8 opacity-40" />
             <div className="text-xs max-w-[16rem]">
               <div>
                 {tier === 'user'
@@ -341,15 +337,15 @@ export default function MemoryPanel({
             }}
           >
             <FileText
-              className="h-4 w-4 flex-shrink-0"
+              className="h-4 w-4 shrink-0"
               style={{ color: 'var(--color-text-tertiary)' }}
             />
             <div className="flex-1 min-w-0">
               <div className="text-sm truncate">{entry.key}</div>
               <div className="text-[0.625rem]"
                    style={{ color: 'var(--color-text-tertiary)' }}>
-                {formatBytes(entry.size)}
-                {entry.modified_at && ` · ${formatTime(entry.modified_at)}`}
+                {formatBytes(entry.size, locale)}
+                {entry.modified_at && ` · ${formatTime(entry.modified_at, now, locale)}`}
               </div>
             </div>
           </button>

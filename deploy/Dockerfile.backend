@@ -25,7 +25,12 @@ WORKDIR /app
 
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock README.md ./
+# Copied but not installed: the CLI is the `cli` extra. uv.lock still lists it
+# as a path source, and every unfrozen `uv run` reads it to check the lock, MCP
+# servers included; they start with a filtered environment, so setting
+# UV_FROZEN here would not reach them.
 COPY libs/ptc-cli/ libs/ptc-cli/
+COPY libs/market-protocol/ libs/market-protocol/
 
 # Install dependencies (frozen = use lockfile exactly).
 ARG INSTALL_OBSERVABILITY=false
@@ -46,11 +51,16 @@ COPY src/ src/
 COPY server.py .
 COPY scripts/ scripts/
 RUN chmod +x scripts/docker_entrypoint.sh
-COPY config.yaml .
-COPY agent_config.yaml .
+COPY config*.yaml ./
+COPY agent_config*.yaml ./
 COPY mcp_servers/ mcp_servers/
-COPY skills/ skills/
+COPY plugins/ plugins/
 COPY workflows/ workflows/
+
+# The commit this image was built from, stamped on every LangSmith run so a
+# regression can be pinned to a deploy. Last, so a new SHA rebuilds only this.
+ARG LANGALPHA_BUILD_SHA=
+ENV LANGALPHA_BUILD_SHA=${LANGALPHA_BUILD_SHA}
 
 EXPOSE 8000
 

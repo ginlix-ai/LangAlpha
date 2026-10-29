@@ -1,0 +1,802 @@
+/* The Plugins page list and detail vocabulary (Surface.tsx, DetailPage.tsx).
+   Plain classes rather than utilities because every list and every
+   detail page shares them, and one place to tune a 34px cell beats five. */
+
+/* Sections */
+.surface-section + .surface-section { margin-top: 30px; }
+.surface-section-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.surface-section-head h2 {
+  margin: 0;
+  font-size: 0.84375rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.surface-count {
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  color: var(--color-text-quaternary);
+}
+.surface-note { font-size: 0.75rem; color: var(--color-text-quaternary); }
+.surface-section-dot { position: absolute; left: -14px; top: 11px; }
+.surface-section-side { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.surface-section-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.surface-section-link:hover:not(:disabled) { color: var(--color-text-primary); }
+.surface-section-link:disabled { opacity: 0.6; cursor: default; }
+.surface-section-link:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); border-radius: 4px; }
+
+/* Filter chips in a section head ("All 29 / On / Off") */
+.surface-chip {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.78125rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.surface-chip:hover { color: var(--color-text-primary); }
+.surface-chip.is-on { background: var(--color-bg-elevated); color: var(--color-text-primary); }
+.surface-chip .surface-count { font-size: 0.65625rem; }
+
+/* The grid: as many ~340px columns as fit. The negative margin lets a cell's
+   hover fill reach past the column edge while its content lines up with the
+   section title. */
+.surface-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  column-gap: 20px;
+  row-gap: 2px;
+  margin: 0 -10px;
+}
+.surface-grid.is-wide { grid-template-columns: repeat(auto-fill, minmax(min(400px, 100%), 1fr)); }
+.surface-grid.is-one { grid-template-columns: minmax(0, 1fr); }
+
+/* Cells */
+.surface-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+}
+.surface-cell:hover,
+.surface-cell:focus-within { background: var(--color-bg-hover); }
+.surface-cell.is-selected { background: var(--color-bg-hover); }
+.surface-cell-mark { flex-shrink: 0; display: flex; }
+
+/* Select mode: a box before the mark, filled in the page ink when chosen. The
+   trailing state stays to read and takes no clicks. */
+.surface-cell-check {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-elevated);
+  color: transparent;
+  transition: background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+.surface-cell.is-selected .surface-cell-check {
+  background: var(--color-text-primary);
+  border-color: var(--color-text-primary);
+  color: var(--color-bg-page);
+}
+.surface-cell.is-selecting .surface-cell-end { opacity: 0.55; }
+
+/* "It went here": a cell added a moment ago is lifted with the hover fill and
+   marked with an accent dot in the gutter, in the column the section heads
+   put theirs, while the mark lasts, and lets both go slowly. Layers of their
+   own, so hover keeps its instant fill; the fill under the content, so the
+   text is not tinted with it. The accent stays a dot: a filled cell would be
+   the accent used as a surface, which it never is. */
+.surface-cell { isolation: isolate; }
+.surface-cell::before,
+.surface-cell::after {
+  content: '';
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  /* motion-exempt: the just-added mark lingers and lets go slowly on purpose, longer than any token */
+  transition: opacity 500ms var(--ease-out);
+}
+.surface-cell::before {
+  z-index: -1;
+  inset: 0;
+  border-radius: 8px;
+  background: var(--color-bg-hover);
+}
+.surface-cell::after {
+  left: -4px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--color-accent-primary);
+}
+.surface-cell.is-just-added::before,
+.surface-cell.is-just-added::after { opacity: 1; transition-duration: var(--motion-quick); }
+/* A phone's gutter is the 6px the cell does not bleed into: the dot keeps a
+   little of it, so it stays clear of the screen's edge and of the cell's mark. */
+@media (max-width: 767px) {
+  .surface-cell::after { left: -3px; }
+}
+.surface-cell-text { flex: 1; min-width: 0; }
+.surface-cell-l1 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  line-height: 19px;
+}
+/* The name is the cell's button, and its hit area is the whole cell. */
+.surface-cell-open {
+  min-width: 0;
+  flex-shrink: 1;
+  display: flex;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.surface-cell-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+}
+.surface-cell-open:focus-visible { outline: none; }
+.surface-cell-open:focus-visible::after { box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+.surface-cell-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+/* The meta (a badge, a slash command, a reach) gives way before the name and
+   the trailing state do: on a phone column a long one ends in an ellipsis
+   rather than pushing the state off the cell. */
+.surface-cell-meta {
+  flex-shrink: 100;
+  min-width: 0;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 0.71875rem;
+  color: var(--color-text-quaternary);
+}
+.surface-cell-meta > :not(svg) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A count cut to "1 co…" says nothing, so a plain-text meta shows whole or
+   not at all: one that does not fit beside the name wraps onto a line the
+   head clips. The name keeps the line and only truncates when it alone is
+   too long; shrinking it with the meta cost it a sub-pixel, and an ellipsis. */
+.surface-cell-l1.has-text-meta { flex-wrap: wrap; height: 19px; overflow: hidden; }
+.surface-cell-l1.has-text-meta > :not(.surface-cell-meta) { max-width: 100%; }
+.surface-cell-meta > svg { flex-shrink: 0; }
+.surface-cell-l2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78125rem;
+  line-height: 18px;
+  color: var(--color-text-tertiary);
+}
+.surface-cell-l2.is-warn { color: var(--color-warning); }
+.surface-cell-l2.is-two {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+/* Trailing controls sit above the stretched open button. */
+.surface-cell-end {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 20px;
+  color: var(--color-text-secondary);
+}
+.surface-cell-menu { display: flex; opacity: 0; }
+.surface-cell:hover .surface-cell-menu,
+.surface-cell:focus-within .surface-cell-menu,
+.surface-cell-menu:has([data-state='open']) { opacity: 1; }
+@media (hover: none) { .surface-cell-menu { opacity: 1; } }
+
+.surface-cell.is-off .surface-cell-mark { opacity: 0.45; }
+.surface-cell.is-off .surface-cell-name { color: var(--color-text-secondary); font-weight: 400; }
+.surface-cell.is-off .surface-cell-l2:not(.is-warn) { color: var(--color-text-quaternary); }
+
+/* Trailing state */
+.surface-state-on { display: inline-flex; color: var(--color-text-tertiary); }
+.surface-state-off { font-size: 0.75rem; color: var(--color-text-quaternary); }
+.surface-state-warn { display: inline-flex; color: var(--color-warning); }
+.surface-cell-action {
+  height: 28px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.78125rem;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+}
+.surface-cell-action:hover { background: var(--color-bg-elevated); }
+.surface-cell-action:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); }
+.surface-cell-action:disabled { opacity: 0.5; cursor: default; }
+.surface-cell-add {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  border: 1px solid var(--color-border-default);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.surface-cell:hover .surface-cell-add { color: var(--color-text-primary); border-color: var(--color-border-elevated); }
+.surface-cell-add:disabled { opacity: 0.5; cursor: default; }
+.surface-cell-kebab {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.surface-cell-kebab:hover,
+.surface-cell-kebab[data-state='open'] { background: var(--color-bg-elevated); color: var(--color-text-primary); }
+
+/* Names can run to a second line on a phone: it reads from the left like the
+   cells above it, the chevron level with the first line. */
+.surface-more {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  text-align: start;
+  line-height: 18px;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-tertiary);
+  font-size: 0.78125rem;
+  cursor: pointer;
+}
+.surface-more > svg { flex-shrink: 0; margin-top: 2px; }
+.surface-more:hover { color: var(--color-text-primary); }
+
+.surface-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.surface-dot-attn { background: var(--color-warning); }
+.surface-dot-on { background: var(--color-profit); }
+.surface-dot-off { background: var(--color-text-quaternary); }
+
+.surface-command {
+  font-family: var(--font-mono);
+  font-size: 0.65625rem;
+  color: var(--color-text-quaternary);
+}
+.surface-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--color-bg-tag);
+  color: var(--color-text-secondary);
+  font-size: 0.65625rem;
+  white-space: nowrap;
+}
+
+/* Detail pages (DetailPage, under the page's DetailPageProvider) */
+.detail-page { min-width: 0; container-type: inline-size; }
+.detail-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  margin-bottom: 22px;
+  font-size: 0.78125rem;
+  color: var(--color-text-quaternary);
+}
+.detail-crumbs button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.detail-crumbs button:hover { color: var(--color-text-primary); }
+.detail-crumbs [aria-current] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+.detail-page-head {
+  padding-bottom: 26px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.detail-head { display: flex; align-items: flex-start; gap: 18px; }
+.detail-head-text { flex: 1; min-width: 0; }
+/* The name and meta line keep 16rem beside the controls. Short of that the
+   controls take the next line, under the name: squeezed in beside it, a
+   phone broke the name mid-word and ran the description one word a line. */
+.detail-head-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 18px; }
+.detail-head-title { flex: 1 1 16rem; min-width: 0; }
+.detail-head h1 {
+  margin: 0;
+  font-size: 1.625rem;
+  font-weight: 600;
+  line-height: 32px;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+.detail-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 10px;
+  margin-top: 5px;
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+}
+.detail-head-desc {
+  max-width: 720px;
+  margin-top: 12px;
+  font-family: var(--font-content);
+  font-size: 0.84375rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+.detail-head-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-top: 2px;
+}
+/* The Accounts sections (Brokerages, Secrets) share the detail page's
+   two columns: what the user acts on, and beside it what they read once. */
+.detail-page-body,
+.accounts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 40px;
+  align-items: start;
+}
+.detail-page-body.is-single { grid-template-columns: minmax(0, 1fr); }
+.detail-page-lead { margin-bottom: 28px; }
+.detail-page-main { min-width: 0; display: flex; flex-direction: column; gap: 32px; }
+.detail-page-aside { display: flex; flex-direction: column; gap: 26px; min-width: 0; }
+.detail-aside-block h3 {
+  margin: 0 0 10px;
+  font-size: 0.78125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.detail-aside-block h3.has-side {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.detail-aside-side {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  font-size: 0.71875rem;
+  color: var(--color-text-tertiary);
+}
+.detail-page-verbs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+.accounts-main { min-width: 0; }
+.accounts-aside { display: flex; flex-direction: column; gap: 26px; min-width: 0; }
+.accounts-aside-lead,
+.accounts-aside-text {
+  margin: 0;
+  font-size: 0.78125rem;
+  line-height: 1.55;
+  color: var(--color-text-tertiary);
+}
+.accounts-aside-lead { color: var(--color-text-secondary); }
+.accounts-aside-text + .accounts-aside-text { margin-top: 8px; }
+.accounts-aside-snippet {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-bg-code);
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: pre;
+  overflow-x: auto;
+}
+.accounts-aside-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+.accounts-aside-list li { position: relative; padding-left: 12px; }
+.accounts-aside-list li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0.62em;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--color-text-quaternary);
+}
+.accounts-aside-code {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+}
+@media (min-width: 1800px) {
+  .detail-page-body,
+  .accounts { grid-template-columns: minmax(0, 1fr) 300px; gap: 48px; }
+}
+/* Brokerages' lead, above the cards once the aside stacks below them. */
+.accounts-lead-stacked { display: none; }
+/* The aside stacks under the main column by the room the page itself has, not
+   the window's: the shell's own rails take a different share of it at each
+   width, and a window-keyed breakpoint left the main column about 150px wide
+   between 1024px and 1060px. 720px keeps the main column at 400px or more
+   beside the 280px aside. */
+@container (max-width: 719px) {
+  .detail-page-body { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+}
+@media (max-width: 1023px) {
+  .accounts { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .accounts-lead-stacked {
+    display: block;
+    margin: 0 0 16px;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    color: var(--color-text-secondary);
+  }
+  .brokerages .accounts-aside-lead { display: none; }
+}
+@media (max-width: 767px) {
+  .detail-head { gap: 14px; }
+  .detail-head h1 { font-size: 1.25rem; line-height: 26px; }
+  .detail-head-controls { padding-top: 0; }
+  .surface-grid { grid-template-columns: minmax(0, 1fr); }
+  /* The 16px gutter has no room to hang the dot in: it sits in the title row,
+     before the title, where it cannot touch the screen edge. */
+  .surface-section-dot { position: static; margin-right: -2px; }
+  /* A note longer than the room left beside the title takes the next line,
+     rather than squeezing the title into two lines beside it. A short one
+     ("Built in") still fits beside the title and stays there. */
+  .surface-section-head { flex-wrap: wrap; row-gap: 2px; }
+  /* Beside the text, an action squeezes the explanation into a sliver; below
+     it, under the text's left edge (icon 16px + gap 14px), it reads as the
+     next step of the same callout. */
+  .detail-callout { flex-wrap: wrap; row-gap: 10px; }
+  .detail-callout > .detail-callout-text { flex-basis: calc(100% - 30px); }
+  .detail-callout > .detail-callout-text ~ * { margin-left: 30px; }
+}
+
+/* A callout at the top of a detail page: the problem and its fix. */
+.detail-callout {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 14px 14px 16px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+}
+.detail-callout-icon { flex-shrink: 0; display: flex; color: var(--color-warning); }
+.detail-callout-icon.is-quiet { color: var(--color-text-tertiary); }
+.detail-callout-text { flex: 1; min-width: 0; }
+.detail-callout-title { font-size: 0.8125rem; font-weight: 500; color: var(--color-text-primary); }
+.detail-callout-body { margin-top: 2px; font-size: 0.78125rem; color: var(--color-text-tertiary); }
+
+/* Label/value facts in the side column */
+.detail-facts {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  row-gap: 9px;
+  column-gap: 12px;
+  margin: 0;
+  font-size: 0.78125rem;
+}
+.detail-facts dt { color: var(--color-text-tertiary); }
+.detail-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+.detail-facts dd a { color: inherit; text-decoration: none; }
+.detail-facts dd a:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---------- List controls: the state pills and Select ---------- */
+.list-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -12px 0 22px;
+}
+.list-controls-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-left: -10px; }
+.list-controls-side { margin-left: auto; display: flex; align-items: center; flex-shrink: 0; }
+.list-controls-btn {
+  height: 26px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.78125rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.list-controls-btn:hover { color: var(--color-text-primary); background: var(--color-bg-subtle); }
+.list-controls-btn:focus-visible,
+.surface-chip:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+
+/* ---------- First run: a section that starts from the catalog ---------- */
+.catalog-start { margin-bottom: 40px; }
+.catalog-start-lead {
+  margin: 0 0 14px;
+  font-size: 0.84375rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+}
+.surface-grid.catalog-start-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.catalog-start-notice { margin-top: 12px; }
+.catalog-start-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  margin-top: 16px;
+}
+.catalog-start-routes { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; }
+.catalog-start-routes button {
+  min-height: 30px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.catalog-start-routes button:hover { color: var(--color-text-primary); }
+.catalog-start-routes button:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); border-radius: 4px; }
+@media (max-width: 767px) {
+  .surface-grid.catalog-start-grid { grid-template-columns: minmax(0, 1fr); }
+  .catalog-start-routes button { min-height: 44px; }
+}
+
+/* No results: the reset, and the catalog's answer to the same search. */
+.filter-empty-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.filter-empty-catalog {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+  font-size: 0.78125rem;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+.filter-empty-catalog:hover { color: var(--color-text-primary); }
+.filter-empty-catalog:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--color-focus-ring); border-radius: 4px; }
+
+/* ---------- Select mode's action bar ---------- */
+/* Stuck to the bottom of the content column rather than the window, so it
+   sits under the list it acts on and never over the rail. As the list's last
+   child it rests after the final row once scrolled there, covering nothing. */
+.bulk-bar-spacer { display: none; }
+.bulk-bar {
+  position: sticky;
+  bottom: 24px;
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 24px auto 0;
+  padding: 6px 6px 6px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-elevated);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  animation: bulk-bar-in var(--motion-quick) var(--ease-out) both;
+}
+@keyframes bulk-bar-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bulk-bar { animation: none; }
+}
+.bulk-bar-count {
+  font-size: 0.78125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+.bulk-bar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+}
+.bulk-bar-status.is-ask { color: var(--color-text-secondary); }
+.bulk-bar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.bulk-bar-btn {
+  height: 32px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.78125rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.bulk-bar-btn:hover:not(:disabled),
+.bulk-bar-btn[data-state='open'] { background: var(--color-bg-hover); }
+.bulk-bar-btn:disabled { opacity: 0.4; cursor: default; }
+.bulk-bar-btn.is-destructive { color: var(--color-loss); }
+.bulk-bar-btn:focus-visible,
+.bulk-bar-exit:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+.bulk-bar-exit {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.bulk-bar-exit:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+.bulk-bar-note {
+  flex-basis: 100%;
+  /* Wraps to the bar's width rather than setting it: a long note would
+     otherwise stretch the bar across the column. */
+  contain: inline-size;
+  margin: 0 0 4px;
+  font-size: 0.71875rem;
+  color: var(--color-text-tertiary);
+}
+
+@media (max-width: 767px) {
+  /* One row: the pills scroll under a fade rather than pushing Select onto a
+     line of its own. The padding keeps the taller hit areas inside the
+     scroller, which would otherwise clip them. */
+  .list-controls { margin: -8px 0 18px; flex-wrap: nowrap; }
+  .list-controls-pills {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 9px 0;
+    margin-block: -9px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  }
+  .list-controls-pills::-webkit-scrollbar { display: none; }
+  .list-controls .surface-chip { flex-shrink: 0; }
+  /* 44px to the finger, 26px to the eye. */
+  .list-controls .surface-chip,
+  .list-controls-btn { position: relative; }
+  .list-controls .surface-chip::after,
+  .list-controls-btn::after,
+  .surface-more::after { content: ''; position: absolute; inset: -9px 0; }
+
+  /* Above the tab bar, edge to edge inside the gutters; the count and the
+     exit share the first line and the actions wrap under them. */
+  .bulk-bar-spacer { display: block; height: 140px; }
+  .bulk-bar {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: calc(var(--bottom-tab-height, 0px) + 8px);
+    width: auto;
+    max-width: none;
+    margin: 0;
+    justify-content: space-between;
+    padding: 6px 6px 8px 14px;
+  }
+  .bulk-bar-actions { order: 3; flex-basis: 100%; margin-left: -10px; }
+  .bulk-bar-note { order: 4; }
+  /* The bar's right padding is sized for the exit button, which the confirm
+     line runs without; this gives that line the left side's margin. */
+  .bulk-bar-status.is-ask { padding-right: 8px; }
+  .bulk-bar-btn,
+  .bulk-bar-exit { height: 44px; min-width: 44px; }
+  /* "Switch on 0" is room the phone does not have: what the selection
+     cannot take is left out rather than greyed. */
+  .bulk-bar-actions > .bulk-bar-btn:disabled { display: none; }
+}

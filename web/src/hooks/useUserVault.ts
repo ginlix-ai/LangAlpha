@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
+import { invalidateMcpFanout } from './useMcpServers';
 import {
+  apiErrorStatus,
   createUserVaultSecret,
   deleteUserVaultSecret,
+  getUserVaultBlueprints,
   getUserVaultSecrets,
   updateUserVaultSecret,
 } from '../pages/ChatAgent/utils/api';
 
-/** React Query hooks for the user-level vault (Connectors → Secrets). */
+/** React Query hooks for the user-level vault (Plugins → Secrets). */
 
 export function useUserVaultSecrets(enabled = true) {
   return useQuery({
@@ -18,6 +21,29 @@ export function useUserVaultSecrets(enabled = true) {
   });
 }
 
+/** Credentials builtin servers and enabled plugins declare but the vault
+ * doesn't hold yet; any secret/plugin mutation invalidates it by prefix. */
+export function useUserVaultBlueprints(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.userVault.blueprints(),
+    queryFn: getUserVaultBlueprints,
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * A 404 or 409 means the list the user acted on is out of date (the key was
+ * added or deleted from another tab, or the account filled up there), so the
+ * list is read again and the form can point at what is really there.
+ */
+function refreshIfStale(queryClient: ReturnType<typeof useQueryClient>, err: unknown) {
+  const status = apiErrorStatus(err);
+  if (status === 404 || status === 409) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.userVault.all });
+  }
+}
+
 export function useCreateUserVaultSecret() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -25,10 +51,11 @@ export function useCreateUserVaultSecret() {
       createUserVaultSecret(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.userVault.all });
-      // User-tier secrets feed needs_secret on the catalog AND on inherited
-      // rows in every workspace list, and settled MCP queries stop polling.
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      // Account secrets feed needs_secret on the catalog AND on every workspace
+      // list, and settled MCP queries stop polling.
+      invalidateMcpFanout(queryClient);
     },
+    onError: (err) => refreshIfStale(queryClient, err),
   });
 }
 
@@ -44,8 +71,9 @@ export function useUpdateUserVaultSecret() {
     }) => updateUserVaultSecret(name, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.userVault.all });
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
+    onError: (err) => refreshIfStale(queryClient, err),
   });
 }
 
@@ -55,7 +83,8 @@ export function useDeleteUserVaultSecret() {
     mutationFn: (name: string) => deleteUserVaultSecret(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.userVault.all });
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.all });
+      invalidateMcpFanout(queryClient);
     },
+    onError: (err) => refreshIfStale(queryClient, err),
   });
 }

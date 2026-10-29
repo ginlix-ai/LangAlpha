@@ -41,6 +41,20 @@ def simplify_tool_error(error: Exception) -> str:
     return error_str
 
 
+
+def format_tool_error(error: Exception, tool_name: str | None = None) -> str:
+    """The one shape a failed tool call is reported in.
+
+    Module level because the converter below is not the only place that has to
+    produce it: a middleware that must build the error message itself, to keep
+    something the converter would strip, still has to say it the same way.
+    """
+    simplified = simplify_tool_error(error)
+    if tool_name:
+        return f"Tool '{tool_name}' failed: {simplified}"
+    return f"Tool execution failed: {simplified}"
+
+
 class ToolErrorHandlingMiddleware(AgentMiddleware):
     """Middleware that handles tool execution errors with simplified messages.
 
@@ -54,24 +68,6 @@ class ToolErrorHandlingMiddleware(AgentMiddleware):
     - Removes verbose input arguments that make errors unreadable
     """
 
-    def _format_error_message(self, error: Exception, tool_name: str = None) -> str:
-        """Format error message with tool name prefix.
-
-        Args:
-            error: The exception that occurred
-            tool_name: Name of the tool that failed (optional)
-
-        Returns:
-            Formatted error message string
-        """
-        # Simplify error message
-        simplified = simplify_tool_error(error)
-
-        # Add tool name prefix if available
-        if tool_name:
-            return f"Tool '{tool_name}' failed: {simplified}"
-        return f"Tool execution failed: {simplified}"
-
     def wrap_tool_call(self, request, handler):
         """Synchronous tool error handler."""
         try:
@@ -80,7 +76,7 @@ class ToolErrorHandlingMiddleware(AgentMiddleware):
             raise  # Let LangGraph control-flow exceptions (interrupt, etc.) propagate
         except Exception as e:
             tool_name = request.tool_call.get("name", "unknown")
-            error_message = self._format_error_message(e, tool_name)
+            error_message = format_tool_error(e, tool_name)
             return ToolMessage(
                 content=error_message,
                 tool_call_id=request.tool_call["id"],
@@ -95,7 +91,7 @@ class ToolErrorHandlingMiddleware(AgentMiddleware):
             raise  # Let LangGraph control-flow exceptions (interrupt, etc.) propagate
         except Exception as e:
             tool_name = request.tool_call.get("name", "unknown")
-            error_message = self._format_error_message(e, tool_name)
+            error_message = format_tool_error(e, tool_name)
             return ToolMessage(
                 content=error_message,
                 tool_call_id=request.tool_call["id"],

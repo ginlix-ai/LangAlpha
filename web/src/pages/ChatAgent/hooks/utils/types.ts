@@ -55,4 +55,6 @@ export interface PreviewData {
   error?: boolean;
   /** Monotonic counter — incremented on user clicks to force iframe reload even when URL is unchanged. */
   reloadToken?: number;
+  /** The workspace the app runs in, when not the view's own: an `/a/` link from a sibling. */
+  workspaceId?: string;
 }

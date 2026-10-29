@@ -43,7 +43,6 @@ def get_bottom_toolbar(
                 current_text = session.default_buffer.text
                 if current_text.startswith("!"):
                     parts.append(("bg:#ff1493 fg:#ffffff bold", " BASH MODE "))
-                    parts.append(("", " | "))
         except (AttributeError, TypeError):
             # Silently ignore - toolbar is non-critical and called frequently
             pass
@@ -56,13 +55,11 @@ def get_bottom_toolbar(
             completed = len(bg_status.get("completed_tasks") or bg_status.get("completed_subagents") or [])
             if running > 0 or completed > 0:
                 parts.append(("class:toolbar-cyan", f" {running} running | {completed} completed "))
-                parts.append(("", " | "))
 
         # Show if workflow was soft-interrupted
         if getattr(session_state, "soft_interrupted", False):
             thread_id = getattr(session_state, "thread_id", "unknown")
             parts.append(("class:toolbar-yellow", f" [Paused: {thread_id[:8]}...] "))
-            parts.append(("", " | "))
 
         # Fallback: Show background subagent status from in-process agent (non-API mode)
         if not bg_status:
@@ -91,27 +88,15 @@ def get_bottom_toolbar(
 
                         if running > 0 or completed_unseen > 0:
                             parts.append(("class:toolbar-cyan", f" {running} running | {completed_unseen} completed "))
-                            parts.append(("", " | "))
             except (AttributeError, TypeError):
                 # Silently ignore - toolbar is non-critical
                 pass
-
-        # Base status message
-        if session_state.plan_mode:
-            base_msg = "plan mode ON (Shift+Tab to toggle)"
-            base_class = "class:toolbar-cyan"
-        else:
-            base_msg = "plan mode OFF (Shift+Tab to toggle)"
-            base_class = "class:toolbar-dim"
-
-        parts.append((base_class, base_msg))
 
         # Show revision hint if active (after first Esc)
         hint_until = session_state.esc_hint_until
         if hint_until is not None:
             now = time.monotonic()
             if now < hint_until:
-                parts.append(("", " | "))
                 parts.append(("class:toolbar-exit", " Esc again to revise "))
             else:
                 session_state.esc_hint_until = None
@@ -122,7 +107,6 @@ def get_bottom_toolbar(
             now = time.monotonic()
             if now < exit_hint_until and session_state.ctrl_c_count > 0:
                 remaining = CTRL_C_EXIT_COUNT - session_state.ctrl_c_count
-                parts.append(("", " | "))
                 if remaining == 1:
                     parts.append(("class:toolbar-exit", " Ctrl+C 1 more time to exit "))
                 else:
@@ -131,7 +115,12 @@ def get_bottom_toolbar(
                 session_state.exit_hint_until = None
                 session_state.ctrl_c_count = 0
 
-        return parts
+        joined: list[tuple[str, str]] = []
+        for part in parts:
+            if joined:
+                joined.append(("", " | "))
+            joined.append(part)
+        return joined
 
     return toolbar
 
@@ -212,14 +201,6 @@ def create_prompt_session(
         session_state.exit_hint_handle = loop.call_later(EXIT_CONFIRM_WINDOW, clear_hint)
 
         app.invalidate()
-
-    # Bind Shift+Tab to toggle plan mode
-    @kb.add("s-tab")
-    def _(event: KeyPressEvent) -> None:
-        """Toggle plan mode (takes effect on next task)."""
-        session_state.toggle_plan_mode()
-        # Force UI refresh to update toolbar
-        event.app.invalidate()
 
     # Bind regular Enter to submit (intuitive behavior)
     @kb.add("enter")

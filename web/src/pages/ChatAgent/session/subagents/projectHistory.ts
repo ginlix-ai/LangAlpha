@@ -14,8 +14,12 @@ import {
   handleSubagentToolCalls,
   handleSubagentToolCallResult,
   handleTaskSteeringAccepted,
+  returnTaskInstruction,
+  returnedTaskInstruction,
+  type DeliveredInstruction,
 } from './liveEventHandlers';
 import { countToolCalls } from './subagentMetrics';
+import { createSubagentHistoryStore } from './historyStore';
 import {
   type SubagentTokenUsage, ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage,
 } from '../../utils/tokenUsage';
@@ -27,13 +31,16 @@ import {
   type WorkflowLifecycleFrame,
   type WorkflowRunState,
 } from './workflowRunState';
-import type { SubagentHistoryData, StreamProcessorRefs, TaskRefs } from '../types';
+import type { SubagentHistoryData, SubagentHistoryEntry, StreamProcessorRefs, TaskRefs } from '../types';
 import type { SubagentRuntime } from '../runtime';
 
 export function projectSubagentHistory(
-  rt: SubagentRuntime,
+  rt: Pick<SubagentRuntime, 't' | 'subagentHistory' | 'subagentStateRefsRef'>,
   subagentHistoryByTaskId: Map<string, SubagentHistoryData>,
 ): void {
+  // Built here and published as one snapshot at the end, so the backfill below
+  // edits entries nobody else holds yet.
+  const projected: Record<string, SubagentHistoryEntry> = {};
   // Workflow runs whose reduced state names their children (label/type/owner);
   // backfilled onto the child entries after the loop — a child's own lane
   // carries anonymous content only, and map iteration order is not chronology.
@@ -93,6 +100,7 @@ export function projectSubagentHistory(
           contentType: contentType as string,
           content: event.content as string,
           finishReason: event.finish_reason,
+          elapsedMs: typeof event.elapsed_ms === 'number' ? event.elapsed_ms : undefined,
           refs: tempRefs,
           updateSubagentCard: historyUpdateSubagentCard,
         });
@@ -114,6 +122,7 @@ export function projectSubagentHistory(
             content_type: event.content_type,
             tool_call_id: event.tool_call_id,
             artifact: event.artifact,
+            status: event.status,
           },
           refs: tempRefs,
           updateSubagentCard: historyUpdateSubagentCard,
@@ -126,6 +135,7 @@ export function projectSubagentHistory(
           handleTaskSteeringAccepted({
             taskId,
             content: event.content as string,
+            steered: eventType === 'subagent_followup_injected',
             refs: tempRefs,
             updateSubagentCard: historyUpdateSubagentCard,
           });
@@ -137,6 +147,8 @@ export function projectSubagentHistory(
           handleTaskSteeringAccepted({
             taskId,
             content: event.content as string,
+            entries: event.entries as DeliveredInstruction[] | undefined,
+            steered: true,
             refs: tempRefs,
             updateSubagentCard: historyUpdateSubagentCard,
           });
@@ -147,15 +159,28 @@ export function projectSubagentHistory(
         // Run boundary from the wire: the spawn/resume instruction the
         // backend materializes from the task namespace. Same mechanics
         // as a steering follow-up — finalize the previous run's
-        // message, render the instruction bubble, open a new run.
+        // message, render the instruction bubble, open a new run. Only
+        // the main agent spawns or resumes a task.
         if (event.content) {
           handleTaskSteeringAccepted({
             taskId,
             content: event.content as string,
+            entries: [{ content: event.content as string, sender: 'agent' }],
+            steered: false,
             refs: tempRefs,
             updateSubagentCard: historyUpdateSubagentCard,
           });
           currentRunIndex = tempSubagentStateRefs[taskId].runIndex;
+        }
+      } else if (eventType === 'steering_returned') {
+        // Steering the run handed back unread, placed where the run returned
+        // it: the same notice the live stream put up. The notice carries the
+        // input id, so the live frame re-sent on reconnect does not repeat it.
+        const returned = returnedTaskInstruction(event);
+        if (returned) {
+          returnTaskInstruction(
+            tempSubagentStateRefs[taskId], returned, rt.t('chat.taskSteeringReturnedNotification'),
+          );
         }
       } else if (eventType === 'context_window') {
         // Embed notification as content segment in the assistant message
@@ -183,8 +208,8 @@ export function projectSubagentHistory(
             if (msgIdx !== -1) {
               const taskMsg = taskRefsLocal.messages[msgIdx];
               if (taskMsg.role === 'assistant') {
-                const aMsg = taskMsg as unknown as AssistantMessage;
-                taskRefsLocal.messages[msgIdx] = { ...aMsg, contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order, detail }] } as unknown as Record<string, unknown>;
+                const aMsg = taskMsg as AssistantMessage;
+                taskRefsLocal.messages[msgIdx] = { ...aMsg, contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order, detail }] };
               }
             }
           }
@@ -209,7 +234,7 @@ export function projectSubagentHistory(
     // processes on the last assistant message so SubagentStatusBar shows 'completed'.
     const finalMessages = rawMessages.map((msg) => {
       if (msg.role !== 'assistant') return msg;
-      const aMsg = msg as unknown as AssistantMessage;
+      const aMsg = msg as AssistantMessage;
       // Only finalize the last assistant message (or all, to be safe)
       const m = { ...aMsg, isStreaming: false as const };
       if (m.toolCallProcesses) {
@@ -236,13 +261,9 @@ export function projectSubagentHistory(
     // Get task metadata from stored history
     const taskMetadata = subagentHistoryByTaskId.get(taskId);
 
-    // Store history in ref so it can be used when the user explicitly
-    // opens the subagent card from the main chat view. We do NOT
-    // create the floating card here.
-    if (!rt.subagentHistoryRef.current) {
-      rt.subagentHistoryRef.current = {};
-    }
-    rt.subagentHistoryRef.current[taskId] = {
+    // Stored so it can be used when the user explicitly opens the subagent
+    // card from the main chat view. We do NOT create the floating card here.
+    projected[taskId] = {
       taskId,
       description: taskMetadata?.description || '',
       prompt: taskMetadata?.prompt || taskMetadata?.description || '',
@@ -253,11 +274,14 @@ export function projectSubagentHistory(
       // to 'running' and let /status reconciliation settle it.
       status: taskMetadata?.status || 'running',
       error: taskMetadata?.error,
+      errorType: taskMetadata?.errorType,
       toolCalls: countToolCalls(finalMessages),
       tokenUsage: tempTokenUsage,
       currentTool: '',
       projectedRunStartedMs: taskMetadata?.projectedRunStartedMs,
+      lastActivityMs: taskMetadata?.lastActivityMs,
       ...(workflowRun ? { workflowRun } : {}),
+      ...(taskMetadata?.ownerTaskId ? { ownerTaskId: taskMetadata.ownerTaskId } : {}),
     };
 
     // Seed persistent subagent state refs from history so that
@@ -280,15 +304,19 @@ export function projectSubagentHistory(
   for (const [wfTaskId, run] of workflowRunsByTaskId.entries()) {
     for (const child of run.children) {
       if (!child.childTaskId) continue;
-      const childEntry = rt.subagentHistoryRef.current?.[`task:${child.childTaskId}`];
-      if (!childEntry) continue;
+      const childKey = `task:${child.childTaskId}`;
+      const prior = projected[childKey] ?? rt.subagentHistory.get().entries[childKey];
+      if (!prior) continue;
       const identity = deriveChildIdentity(child, {
-        description: childEntry.description,
-        type: childEntry.type,
+        description: prior.description,
+        type: prior.type,
       });
-      childEntry.description = identity.description;
-      childEntry.type = identity.type;
-      childEntry.ownerTaskId = wfTaskId;
+      const childEntry = {
+        ...prior,
+        description: identity.description,
+        type: identity.type,
+        ownerTaskId: wfTaskId,
+      };
       if (childEntry.status === 'running') {
         const settled = identity.status
           // A settled run with a child never marked done means the child was
@@ -296,6 +324,62 @@ export function projectSubagentHistory(
           || (isWorkflowRunTerminal(run.status) ? 'cancelled' : undefined);
         if (settled) childEntry.status = settled;
       }
+      projected[childKey] = childEntry;
     }
   }
+
+  rt.subagentHistory.putEntries(projected);
+}
+
+/**
+ * Put the runs an older page holds of a task ahead of what its live stream
+ * wrote. Replay leaves a running run to its stream and projects each finished
+ * run whole at the turn that launched it, so every run on an older page came
+ * before anything held for the task. Each run opens an assistant message
+ * numbered by run, so the held ones move up by the runs put ahead of them, and
+ * the stream goes on writing to the message it was writing to.
+ */
+export function prependSubagentRuns(
+  rt: Pick<
+    SubagentRuntime,
+    't' | 'subagentHistory' | 'subagentStateRefsRef' | 'subagentTokenUsageRef' | 'updateSubagentCard'
+  >,
+  taskId: string,
+  runs: SubagentHistoryData,
+): void {
+  const held = rt.subagentStateRefsRef.current[taskId];
+  if (!held) {
+    projectSubagentHistory(rt, new Map([[taskId, runs]]));
+    return;
+  }
+  // The page's runs alone, projected as replay projects any runs.
+  const page = {
+    t: rt.t,
+    subagentHistory: createSubagentHistoryStore(),
+    subagentStateRefsRef: { current: {} as Record<string, TaskRefs> },
+  };
+  projectSubagentHistory(page, new Map([[taskId, runs]]));
+  const front = page.subagentHistory.get().entries[taskId];
+  const shift = page.subagentStateRefsRef.current[taskId].runIndex;
+  const prefix = `subagent-${taskId}-assistant-`;
+  const moved = held.messages.map((m) => {
+    const id = String(m.id);
+    const run = id.startsWith(prefix) ? Number(id.slice(prefix.length)) : NaN;
+    return Number.isInteger(run) ? { ...m, id: `${prefix}${run + shift}` } : m;
+  });
+  held.messages = [...front.messages, ...moved];
+  held.runIndex += shift;
+
+  const prior = rt.subagentHistory.get().entries[taskId];
+  const tokenUsage = accumulateTokenUsage(prior?.tokenUsage ?? ZERO_USAGE, front.tokenUsage);
+  rt.subagentHistory.putEntries({
+    [taskId]: { ...(prior ?? front), messages: held.messages, toolCalls: countToolCalls(held.messages), tokenUsage },
+  });
+  // The live total was seeded from the entry and counts on from there.
+  const live = rt.subagentTokenUsageRef.current[taskId];
+  if (live) rt.subagentTokenUsageRef.current[taskId] = accumulateTokenUsage(live, front.tokenUsage);
+  rt.updateSubagentCard?.(taskId, {
+    messages: held.messages,
+    tokenUsage: rt.subagentTokenUsageRef.current[taskId] ?? tokenUsage,
+  });
 }

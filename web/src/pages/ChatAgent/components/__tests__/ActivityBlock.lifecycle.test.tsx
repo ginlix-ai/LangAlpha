@@ -1,30 +1,18 @@
-/**
- * Live-row lifecycle states + replay parity for ActivityBlock.
- *
- * Live rows: `active` gets the left-rule class hook + shimmer label,
- * `completing` is a neutral dimmed row (no badge), `failed` gets the gray ✕
- * badge with the toolCallFailed a11y label — all in the live zone, no
- * accordion interaction required.
- *
- * Replay parity: with `isStreaming={false}` (history / reconnect replay),
- * completed rows must render WITHOUT the motion.li entrance wrapper —
- * `newlyCompletedIds` is gated on isStreaming, so replayed timelines are
- * animation-free. The motion.li wrapper carries `overflow: hidden` inline
- * style while the plain <li> does not; we assert on that distinction.
- *
- * Strategy mirrors ActivityBlock.failed.test.tsx: render `ActivityBlock`
- * directly with synthesized items and an identity t() mock. All data is
- * neutral placeholder data.
- */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ActivityBlock from '../ActivityBlock';
 
 // ---------------------------------------------------------------------------
-// Mocks — keep the component mountable in jsdom and surface i18n keys.
+// Mocks, keep the component mountable in jsdom and surface i18n keys.
 // ---------------------------------------------------------------------------
+
+// Browser tests own animation frames; these assertions own row identity and disclosure state.
+vi.mock('@/lib/framer', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/framer')>(),
+  AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -49,6 +37,7 @@ vi.mock('../Markdown', () => ({
 
 vi.mock('../charts/InlineArtifactCards', () => ({
   INLINE_ARTIFACT_TOOLS: new Set<string>(),
+  isInlineArtifactReady: () => false,
   InlineStockPriceCard: () => null,
   InlineCompanyOverviewCard: () => null,
   InlineMarketIndicesCard: () => null,
@@ -72,16 +61,18 @@ vi.mock('../charts/InlinePreviewCard', () => ({
 // ---------------------------------------------------------------------------
 
 type ActivityItem = Parameters<typeof ActivityBlock>[0]['items'][number];
+type ToolItem = Extract<ActivityItem, { type: 'tool_call' }>;
 
-function toolItem(liveState: ActivityItem['_liveState'], opts: Partial<ActivityItem> = {}): ActivityItem {
+function toolItem(liveState: ActivityItem['_liveState'], opts: Partial<ToolItem> = {}): ToolItem {
   return {
     type: 'tool_call',
     id: opts.id ?? 'tc-1',
+    toolCallId: opts.id ?? 'tc-1',
     toolName: 'Read',
     toolCall: { args: { file_path: 'work/sample-notes.md' } },
     _liveState: liveState,
     ...opts,
-  } as ActivityItem;
+  };
 }
 
 const SUMMARY_BUTTON_RE = /toolArtifact/i;
@@ -90,7 +81,7 @@ const SUMMARY_BUTTON_RE = /toolArtifact/i;
 // Live-row lifecycle states
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — live-row lifecycle states', () => {
+describe('ActivityBlock, live-row lifecycle states', () => {
   it('renders an active tool row with the state-active left-rule hook and no badge', () => {
     const items = [toolItem('active', { isComplete: false })];
     const { container } = render(<ActivityBlock items={items} isStreaming={true} />);
@@ -98,7 +89,7 @@ describe('ActivityBlock — live-row lifecycle states', () => {
     const row = container.querySelector('.nrow.state-active');
     expect(row).not.toBeNull();
     expect(container.querySelector('.nrow-badge')).toBeNull();
-    // Active rows live in the live zone — no accordion summary yet.
+    // Active rows live in the live zone, no accordion summary yet.
     expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
   });
 
@@ -119,41 +110,71 @@ describe('ActivityBlock — live-row lifecycle states', () => {
     const badge = container.querySelector('.nrow .nrow-badge');
     expect(badge).not.toBeNull();
     expect(badge!.getAttribute('aria-label')).toBe('toolArtifact.a11y.toolCallFailed');
-    // Failed rows stay neutral — no active rule.
+    // Failed rows stay neutral, no active rule.
     expect(container.querySelector('.nrow.state-active')).toBeNull();
   });
 });
 
-// ---------------------------------------------------------------------------
-// Replay parity — no entrance animation on history / reconnect replay
-// ---------------------------------------------------------------------------
+describe('ActivityBlock, unified timeline', () => {
+  const completed = toolItem('completed', { id: 'done', isComplete: true });
+  const reasoning: ActivityItem = {
+    type: 'reasoning', id: 'thought', content: '**Inspecting**\n\nThe evidence is arriving.', _liveState: 'active',
+  };
 
-describe('ActivityBlock — replay parity', () => {
-  it('renders completed rows without the motion.li entrance wrapper when not streaming', () => {
-    const items = [
-      toolItem('completed', { id: 'tc-1', isComplete: true }),
-      toolItem('completed', { id: 'tc-2', isComplete: true }),
-    ];
-    const { container } = render(<ActivityBlock items={items} isStreaming={false} />);
-
-    fireEvent.click(screen.getByRole('button', { name: SUMMARY_BUTTON_RE }));
-
-    const rows = container.querySelectorAll('.timeline > li');
-    expect(rows.length).toBe(2);
-    for (const row of rows) {
-      // motion.li entrance wrapper carries overflow:hidden; plain <li> does not.
-      expect((row as HTMLElement).style.overflow).not.toBe('hidden');
+  it.each([false, true])('honors live reasoning preference %s without a turn fold', (open) => {
+    render(<ActivityBlock items={[reasoning]} isStreaming presentation="inline" liveReasoningOpen={open} />);
+    const thought = screen.getByRole('button', { name: 'Inspecting' });
+    expect(thought).toHaveAttribute('aria-expanded', String(open));
+    if (!open) {
+      expect(screen.queryByTestId('markdown-content')).toBeNull();
+      fireEvent.click(thought);
+      expect(thought).toHaveAttribute('aria-expanded', 'true');
     }
   });
 
-  it('renders newly completed rows WITH the entrance wrapper while streaming (contrast case)', () => {
-    const items = [toolItem('completed', { id: 'tc-1', isComplete: true })];
-    const { container } = render(<ActivityBlock items={items} isStreaming={true} />);
-
+  it('keeps a live reasoning row and its disclosure choice mounted across accordion toggles', () => {
+    const { container } = render(<ActivityBlock items={[completed, reasoning]} isStreaming presentation="folded" liveReasoningOpen />);
+    const row = container.querySelector('[data-activity-state="live"]');
+    const thought = screen.getByRole('button', { name: 'Inspecting' });
+    expect(thought).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(thought);
     fireEvent.click(screen.getByRole('button', { name: SUMMARY_BUTTON_RE }));
+    expect(container.querySelector('[data-activity-state="live"]')).toBe(row);
+    expect(screen.getByRole('button', { name: 'Inspecting' })).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(screen.getByRole('button', { name: SUMMARY_BUTTON_RE }));
+    expect(container.querySelector('[data-activity-state="live"]')).toBe(row);
+  });
 
-    const rows = container.querySelectorAll('.timeline > li');
-    expect(rows.length).toBe(1);
-    expect((rows[0] as HTMLElement).style.overflow).toBe('hidden');
+  it('shows verbose reasoning inside an expanded accordion, then closes it on settlement', async () => {
+    const { container, rerender } = render(<ActivityBlock items={[completed, reasoning]} isStreaming presentation="expanded" liveReasoningOpen />);
+    const row = container.querySelector('[data-activity-state="live"]');
+    expect(screen.getByRole('button', { name: 'Inspecting' })).toHaveAttribute('aria-expanded', 'true');
+    rerender(<ActivityBlock items={[completed, { ...reasoning, _liveState: 'completed' }]} isStreaming={false} presentation="expanded" liveReasoningOpen />);
+    expect(row).toHaveAttribute('data-activity-state', 'settled');
+    expect(screen.getByRole('button', { name: 'Inspecting' })).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => expect(container.querySelector('.titem-reasoning-card')).toBeNull());
+  });
+
+  it('binds an anonymous preparing row to the landed tool without an exit overlay', () => {
+    const { container, rerender } = render(<ActivityBlock items={[]} preparingToolCall={{ calls: [{ pendingKey: '0@1', toolName: 'Read', argsLength: 2 }] }} isStreaming presentation="folded" />);
+    const row = container.querySelector('[data-activity-state="live"]');
+    rerender(<ActivityBlock items={[toolItem('active')]} isStreaming presentation="folded" />);
+    expect(container.querySelectorAll('[data-activity-state="live"]')).toHaveLength(1);
+    expect(container.querySelector('[data-activity-state="live"]')).toBe(row);
+  });
+
+  it('paces newly arriving reasoning phases instead of jumping to the last one', () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<ActivityBlock items={[reasoning]} isStreaming presentation="folded" />);
+      rerender(<ActivityBlock items={[{ ...reasoning, content: reasoning.content + '\n\n**Comparing**\n\nThen compare.\n\n**Drafting**\n\nThen write.' }]} isStreaming presentation="folded" />);
+      expect(screen.queryByText('Comparing')).toBeNull();
+      expect(screen.queryByText('Drafting')).toBeNull();
+      act(() => vi.advanceTimersByTime(700));
+      expect(screen.getByText('Comparing')).toBeInTheDocument();
+      expect(screen.queryByText('Drafting')).toBeNull();
+      act(() => vi.advanceTimersByTime(700));
+      expect(screen.getByText('Drafting')).toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
   });
 });

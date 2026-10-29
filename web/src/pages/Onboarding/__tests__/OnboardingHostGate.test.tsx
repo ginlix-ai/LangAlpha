@@ -35,18 +35,19 @@ describe('OnboardingHostGate', () => {
     await waitFor(() => expect(screen.getByTestId('onboarding-host')).toBeInTheDocument());
   });
 
-  it('mounts the host when the getting-started card is visible', async () => {
+  it('leaves the chunk alone for the getting-started list, which the sidebar draws', () => {
     mockVisible = true;
-    render(<OnboardingHostGate />);
-    await waitFor(() => expect(screen.getByTestId('onboarding-host')).toBeInTheDocument());
+    const { container } = render(<OnboardingHostGate />);
+    expect(container).toBeEmptyDOMElement();
+    expect(hostChunkLoaded).not.toHaveBeenCalled();
   });
 
-  it('latches: stays mounted after the surfaces go quiet', async () => {
-    mockVisible = true;
+  it('latches: stays mounted after the popup closes', async () => {
+    mockPhase = 'pageIntro';
     const { rerender } = render(<OnboardingHostGate />);
     await waitFor(() => expect(screen.getByTestId('onboarding-host')).toBeInTheDocument());
 
-    mockVisible = false;
+    mockPhase = 'idle';
     rerender(<OnboardingHostGate />);
     expect(screen.getByTestId('onboarding-host')).toBeInTheDocument();
   });

@@ -1,9 +1,9 @@
 """No-delta skip for the provenance re-sync choke point.
 
-``_sync_provenance_for_response`` is re-entered on every ``update_sse_events``
-call — including the per-model-call ``context_window`` persistence, whose events
-never carry provenance. It must short-circuit (no extract, no delete-then-insert)
-when the sse_events contain no provenance entry, and still run when they do.
+``_sync_provenance_for_response`` is re-entered by every finalize and lane
+replace, and many of those carry events with no provenance. It must
+short-circuit (no extract, no delete-then-insert) when the events contain no
+provenance entry, and still run when they do.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,7 +27,8 @@ async def test_skips_when_no_provenance_event():
             conversation_response_id="r",
             conversation_thread_id="t",
             turn_index=0,
-            sse_events=events,
+            provenance=events,
+            lanes=(),
         )
     inner.assert_not_awaited()  # no extract + delete-then-insert on context_window
 
@@ -41,7 +42,8 @@ async def test_skips_on_empty_or_none():
                 conversation_response_id="r",
                 conversation_thread_id="t",
                 turn_index=0,
-                sse_events=events,
+                provenance=events,
+                lanes=(),
             )
     inner.assert_not_awaited()
 
@@ -63,6 +65,7 @@ async def test_runs_when_provenance_event_present():
             conversation_response_id="r",
             conversation_thread_id="t",
             turn_index=0,
-            sse_events=events,
+            provenance=events,
+            lanes=(),
         )
     inner.assert_awaited_once()

@@ -1,0 +1,132 @@
+.automations-list-group + .automations-list-group {
+  margin-top: 18px;
+}
+
+.automations-list-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.automations-list-fold {
+  width: 100%;
+  border-radius: 6px;
+  margin-left: -4px;
+  padding-left: 4px;
+  gap: 4px;
+}
+
+.automations-list-fold:hover {
+  color: var(--color-text-secondary);
+}
+
+/* Inside the edge: the list scrolls, and its overflow would clip a ring
+   drawn outside the first and last rows. */
+.automations-list-row:focus-visible,
+.automations-list-fold:focus-visible {
+  outline-offset: -2px;
+}
+
+.automations-list-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-quaternary);
+}
+
+.automations-list-row {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 8px;
+  border-radius: 8px;
+  text-align: left;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+/* Hover is a lighter fill than the selection, and rows keep a hairline apart,
+   so pointing at the row beside the open one never fuses the two into one
+   block. */
+.automations-list-row + .automations-list-row {
+  margin-top: 2px;
+}
+
+.automations-list-row:not([aria-current='true']):hover {
+  background-color: var(--color-bg-subtle);
+}
+
+/* A click fades the selection from one row to the other. */
+.automations-list-row[aria-current='true'] {
+  background-color: var(--color-bg-hover);
+}
+
+/* Stepping with the arrow keys hands the fill to a layer under the row's
+   content instead, one that slides to the next row the way a cursor moves.
+   It stands in for the focus ring too: a ring would jump while the fill is
+   still on its way. */
+.automations-list-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-color: var(--color-bg-hover);
+}
+
+.automations-list[data-nav='keys'] .automations-list-row {
+  transition: none;
+}
+
+.automations-list[data-nav='keys'] .automations-list-row[aria-current='true'] {
+  background-color: transparent;
+}
+
+/* Transparent rather than none, as tokens.css does: forced colors drops the
+   fill and repaints an outline that was drawn, so this is the ring there. */
+.automations-list[data-nav='keys'] .automations-list-row[aria-current='true']:focus-visible {
+  outline-color: transparent;
+}
+
+/* The fill is a shade off the ground, too faint to find the row by, so while
+   it stands in for the ring it carries an edge in the ring's ink. On the
+   layer, so the edge slides with the fill; only on the focused row, since
+   the fill stays behind as the selection once focus moves on. */
+:root:not([data-pointer-focus]) .automations-list[data-nav='keys'] .automations-list-row:focus-visible > .automations-list-highlight {
+  box-shadow: inset 0 0 0 1px var(--color-focus-ring);
+}
+
+.automations-list-glyph {
+  display: inline-flex;
+  width: 14px;
+  justify-content: center;
+  flex-shrink: 0;
+  padding-top: 3px;
+}
+
+.automations-list-name {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automations-list-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automations-list-trailing {
+  flex-shrink: 0;
+  padding-top: 1px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}

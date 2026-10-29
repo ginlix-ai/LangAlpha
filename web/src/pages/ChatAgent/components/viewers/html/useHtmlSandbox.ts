@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useState } from 'react';
 import { resolveThemeVars } from './buildHtmlSrcDoc';
 
 interface UseHtmlSandboxOptions {
@@ -14,6 +14,8 @@ interface UseHtmlSandboxResult {
   height: number | null;
   /** Push current theme vars into the iframe (call after a served iframe loads). */
   pushTheme: () => void;
+  /** Ask the served document to scroll to an element id. */
+  scrollToAnchor: (anchor: string) => void;
 }
 
 /**
@@ -35,6 +37,18 @@ export function useHtmlSandbox({
     // gives the iframe an opaque origin, which can't be named as a targetOrigin.
     win.postMessage({ type: 'widget:themeUpdate', css: resolveThemeVars() }, '*');
   }, [iframeRef]);
+
+  // A second reference to the section the URL already names leaves the iframe's
+  // `src` byte-identical, so the browser navigates nowhere and the click reads
+  // as dead. The served document scrolls on being asked instead.
+  const scrollToAnchor = useCallback(
+    (anchor: string) => {
+      const win = iframeRef.current?.contentWindow;
+      if (!win) return;
+      win.postMessage({ type: 'widget:scrollTo', id: anchor }, '*');
+    },
+    [iframeRef],
+  );
 
   const handleMessage = useCallback(
     (e: MessageEvent) => {
@@ -59,10 +73,9 @@ export function useHtmlSandbox({
   }, [handleMessage]);
 
   // Re-push theme vars whenever the app toggles data-theme.
-  const pushThemeRef = useRef(pushTheme);
-  pushThemeRef.current = pushTheme;
+  const onThemeToggle = useEffectEvent(pushTheme);
   useEffect(() => {
-    const observer = new MutationObserver(() => pushThemeRef.current());
+    const observer = new MutationObserver(() => onThemeToggle());
     observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ['data-theme'],
@@ -70,5 +83,5 @@ export function useHtmlSandbox({
     return () => observer.disconnect();
   }, []);
 
-  return { height, pushTheme };
+  return { height, pushTheme, scrollToAnchor };
 }

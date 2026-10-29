@@ -17,7 +17,6 @@ interface CompanyFinancialsConfig {
 function CompanyFinancialsWidget({ instance }: WidgetRenderProps<CompanyFinancialsConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="financials"
       config={{
         symbol: instance.config.symbol,

@@ -19,11 +19,11 @@ class DocumentErrorBoundary extends React.Component<DocumentErrorBoundaryProps, 
     return { hasError: true };
   }
 
-  componentDidCatch(error: Error, info: React.ErrorInfo) {
+  override componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[DocumentErrorBoundary]', error, info);
   }
 
-  render() {
+  override render() {
     if (this.state.hasError) {
       return this.props.fallback || null;
     }

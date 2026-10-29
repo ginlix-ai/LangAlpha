@@ -29,8 +29,7 @@ async def test_chat_turn_observed_emits_metrics_on_both_paths(
 
     async def _run():
         async with chat_turn_observed(
-            mode="ptc", model="claude-opus", user_id="u1",
-            workspace_id="w1", thread_id="t1",
+            model="claude-opus", user_id="u1", workspace_id="w1", thread_id="t1",
         ) as (_ctx, _span, status):
             if raises:
                 raise RuntimeError("workflow failed")
@@ -55,9 +54,33 @@ async def test_in_flight_balances_on_exception(otel_capture):
 
     with pytest.raises(RuntimeError):
         async with chat_turn_observed(
-            mode="flash", model="m", user_id="u", workspace_id="w", thread_id="t",
+            model="m", user_id="u", workspace_id="w", thread_id="t",
         ):
             raise RuntimeError("boom")
 
     # UpDownCounter sum should be zero: +1 on entry, -1 in finally.
     assert otel_capture.sum_metric("langalpha.chat.turns.in_flight") == 0
+
+
+@pytest.mark.asyncio
+async def test_every_turn_keeps_the_ptc_mode_label(otel_capture):
+    """Callers no longer name a mode; the series a dashboard reads by
+    ``mode`` goes on as ``ptc``."""
+    from src.observability.tracing import chat_turn_observed
+
+    async with chat_turn_observed(
+        model="m", user_id="u", workspace_id="w", thread_id="t",
+    ) as (_ctx, _span, status):
+        status["value"] = "completed"
+
+    modes = {
+        point.attributes["mode"]
+        for rm in otel_capture.metrics().resource_metrics
+        for sm in rm.scope_metrics
+        for metric in sm.metrics
+        if metric.name.startswith("langalpha.chat.turn")
+        for point in metric.data.data_points
+    }
+    assert modes == {"ptc"}
+    (span,) = otel_capture.spans()
+    assert span.attributes["mode"] == "ptc"

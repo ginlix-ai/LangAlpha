@@ -240,12 +240,13 @@ class TestFlattenProviders:
                 f"{model_name} (z-ai) should not have requires_own_key"
             )
 
-        # doubao-anthropic models should NOT have requires_own_key (inherits volcengine env_key)
-        da_models = {k: v for k, v in metadata.items() if v.get("provider") == "doubao-anthropic"}
-        assert da_models, "Expected at least one doubao-anthropic model in manifest"
-        for model_name, entry in da_models.items():
-            assert "requires_own_key" not in entry, (
-                f"{model_name} (doubao-anthropic) should not have requires_own_key"
+        # moonshot-coding models need their own key too: a Kimi coding-plan key
+        # is a separate credential, read from its own env_key
+        mc_models = {k: v for k, v in metadata.items() if v.get("provider") == "moonshot-coding"}
+        assert mc_models, "Expected at least one moonshot-coding model in manifest"
+        for model_name, entry in mc_models.items():
+            assert entry.get("requires_own_key") == "true", (
+                f"{model_name} (moonshot-coding) should have requires_own_key='true'"
             )
 
     def test_get_display_name_prefers_own_over_parent(self):
@@ -272,3 +273,31 @@ class TestFlattenProviders:
         # The parent's display_name should NOT override the child's
         parent = flat["parent-brand"]
         assert parent.get("display_name") == "Parent Brand"
+
+
+class TestModelsUrl:
+    """``models_url`` is where a provider lists its models when that is not
+    under its ``base_url``; it belongs to the base it was declared beside."""
+
+    _GROUPED = {
+        "moonshot": {
+            "sdk": "anthropic",
+            "base_url": "https://api.moonshot.ai/anthropic",
+            "models_url": "https://api.moonshot.ai/v1/models",
+            "variants": {
+                "moonshot-coding": {"base_url": "https://api.kimi.com/coding"},
+                "moonshot-flag": {"display_name": "Same endpoint"},
+            },
+        }
+    }
+
+    def test_variant_that_moves_its_base_does_not_inherit_the_list_url(self):
+        flat = ModelConfig._flatten_providers(self._GROUPED)
+        assert flat["moonshot"]["models_url"] == "https://api.moonshot.ai/v1/models"
+        assert "models_url" not in flat["moonshot-coding"]
+        assert flat["moonshot-flag"]["models_url"] == "https://api.moonshot.ai/v1/models"
+
+    def test_a_list_url_that_is_not_http_is_refused(self):
+        grouped = {"p": {"sdk": "openai", "models_url": "/v1/models"}}
+        with pytest.raises(ValueError, match="models_url"):
+            ModelConfig._flatten_providers(grouped)

@@ -11,19 +11,26 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING
 
 import psycopg
 from fastapi import HTTPException
-from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
+from ptc_agent.core.sandbox.runtime import (
+    SandboxGoneError,
+    SandboxHostUnavailableError,
+    SandboxTransientError,
+)
 
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
+from src.server.services.runs.pending_input import needs_resend, pending_input_stamp
 from .admission_gate import ADMISSION_CONFLICT_CODES, admission_conflict_detail
 
 if TYPE_CHECKING:
+    from ptc_agent.agent.middleware.runtime_context import TurnContext
     from src.server.models.chat import ChatRequest
     from src.server.services.runs.admission import RunScope
 
@@ -39,6 +46,10 @@ def _classify_non_recoverable_error_type(e: Exception) -> str:
     of opaque tracebacks. Defaults to ``"workflow_error"`` for unrecognized
     cases so existing consumers keep working.
     """
+    if isinstance(e, SandboxHostUnavailableError):
+        # Gateways answer this label with "try again", which is the whole
+        # remedy until the host is back or the computer is rebuilt.
+        return "workspace_unavailable"
     if isinstance(e, (ValueError, RuntimeError)):
         msg = str(e)
         if "Workspace" in msg:
@@ -59,6 +70,15 @@ def classify_error(e: Exception) -> dict:
     ``error_type`` is one of ``"connection_error"``, ``"timeout_error"``,
     ``"api_error"``, ``"transient_error"``, or ``None`` for non-recoverable.
     """
+    # A recovering host refuses starts for minutes, longer than the immediate
+    # retry offered here, so the turn ends on the provider's own words asking
+    # the person to retry in a few moments.
+    if isinstance(e, SandboxHostUnavailableError):
+        return {
+            "is_recoverable": False,
+            "is_non_recoverable": False,
+            "error_type": None,
+        }
     # Non-recoverable error types (code bugs, config issues)
     non_recoverable_types = (
         AttributeError,
@@ -147,6 +167,34 @@ def classify_error(e: Exception) -> dict:
     }
 
 
+_FAILURE_FRAME = re.compile(r"^event: (?:retry|error)$", re.MULTILINE)
+
+
+async def end_after_failure_frame(
+    stream: AsyncIterator[str | bytes],
+) -> AsyncIterator[str | bytes]:
+    """A chat turn's HTTP body, ended cleanly once its failure frame is out.
+
+    The turn generator re-raises after ``handle_workflow_error`` yields its
+    ``retry`` or ``error``, since an in-process drainer such as an automation
+    learns the outcome from the exception. Over HTTP the same raise aborts the
+    chunked body, and a proxy may hold an aborted response open, so the client
+    waits on a turn that is already over. The frame said everything the
+    client needs, so the response ends there. Wrap outside the observability
+    layer, which still has to see the failure.
+    """
+    after_failure = False
+    try:
+        async for chunk in stream:
+            text = chunk.decode() if isinstance(chunk, bytes) else chunk
+            after_failure = bool(_FAILURE_FRAME.search(text))
+            yield chunk
+    except Exception:
+        if not after_failure:
+            raise
+        logger.info("[CHAT] Turn stream ended after its failure frame")
+
+
 def _emit_sse_error(handler, payload: dict) -> str:
     """Format an ``error`` SSE frame via *handler* when present, else raw.
 
@@ -156,6 +204,25 @@ def _emit_sse_error(handler, payload: dict) -> str:
     if handler:
         return handler._format_sse_event("error", payload)
     return f"event: error\ndata: {json.dumps(payload)}\n\n"
+
+
+async def _run_named_by_key(request: ChatRequest, thread_id: str):
+    """The run this request's key already reached, as its own turn or as a
+    steer, or None, also when the read fails: the refusal it would replace
+    still stands then."""
+    request_key = getattr(request, "request_key", None)
+    if not request_key:
+        return None
+    from src.server.services.runs.admission import run_named_by_key
+
+    try:
+        return await run_named_by_key(thread_id, request_key)
+    except Exception:
+        logger.warning(
+            "[PTC_CHAT] request_key recheck failed; keeping the refusal",
+            exc_info=True,
+        )
+        return None
 
 
 async def handle_workflow_error(
@@ -169,9 +236,7 @@ async def handle_workflow_error(
     start_time: float,
     request: ChatRequest,
     is_byok: bool,
-    msg_type: str,
-    log_prefix: str,
-    timezone_str: str | None = None,
+    turn_context: TurnContext | None = None,
 ) -> AsyncGenerator[str, None]:
     """Handle a workflow exception: classify, retry-or-fail, finalize, yield SSE events.
 
@@ -179,33 +244,57 @@ async def handle_workflow_error(
     ``error``).  Call it with ``async for event in handle_workflow_error(...): yield event``.
 
     ``scope`` owns the burst lease and the open START row; its
-    ``owned_run_handle`` is the run to finalize — ``None`` when the error
-    fired before START, or after handoff to BTM, whose ``_finalize_run``
-    owns the terminal write (and the durable slot release) from that point.
+    ``owned_run_handle`` is the run to finalize, ``None`` when no START row
+    committed. After handoff to BTM, whose ``_finalize_run`` owns
+    the terminal write (and the durable slot release), this yields nothing.
     ``workspace_id`` accepts ``None`` to guard against the case where the
     error occurred before the workspace was resolved.
-    ``timezone_str`` is the resolved timezone; falls back to ``request.timezone``.
+    ``turn_context`` is None only before START, where nothing is finalized.
+
+    Every ``retry`` and failure ``error`` frame names its ``recovery``:
+    ``retry`` when a failed run is on the ledger for ``/retry`` to chain
+    onto, ``resend`` when none was started, so the client sends its request
+    again.
     """
     from src.server.database.runs.subagent_runs import TaskRunSlotBusyError
+    from src.server.database.workspace import WorkspaceMovingError
     from src.server.services.runs.coordinator import (
         AttemptConflictError,
         DuplicateRequestError,
         RunSlotBusyError,
         RunCoordinator,
         RunOutcome,
+        StaleForkError,
         protected_finalize,
     )
+    from src.server.services.writer_guard import WriterGuardUnavailable
+
+    # The run is the executor's, alive or settled by its own finalize, and
+    # this is the reader failing. A failure frame would end a turn that is
+    # still running; ending the stream bare sends the client to reconnect.
+    if scope.handed_off:
+        logger.warning(
+            f"[PTC_CHAT] Stream reader failed after handoff, leaving the "
+            f"run to its executor: thread_id={thread_id} "
+            f"{type(e).__name__}: {str(e)[:100]}"
+        )
+        return
 
     # Captured before any release below flips ownership — the finalize
     # branches must see the run this scope owned at error time.
     run_handle = scope.owned_run_handle
+    # Only a run this scope still owns is finalized here, and that is a run
+    # the graph never started, so its message is in no checkpoint yet.
+    pending_stamp = pending_input_stamp(request)
+    recovery = (
+        "retry"
+        if run_handle is not None and not needs_resend(pending_stamp)
+        else "resend"
+    )
 
     # Metadata for persistence calls — built from parameters alone, up here so
     # ``_finalize_error`` never closes over a cell assigned below its def.
-    persist_metadata = {
-        "msg_type": msg_type,
-        "is_byok": is_byok,
-    }
+    persist_metadata = {"is_byok": is_byok}
     if workspace_id is not None:
         persist_metadata["workspace_id"] = workspace_id
     # Prefer request.workspace_id when available (PTC sets it on the request)
@@ -213,11 +302,9 @@ async def handle_workflow_error(
         persist_metadata["workspace_id"] = request.workspace_id
     if hasattr(request, "locale") and request.locale:
         persist_metadata["locale"] = request.locale
-    # Use the resolved timezone_str (validated/defaulted) when available,
-    # falling back to the raw request field.
-    _tz = timezone_str or getattr(request, "timezone", None)
-    if _tz:
-        persist_metadata["timezone"] = _tz
+    if turn_context is not None:
+        persist_metadata["timezone"] = turn_context.tool_timezone
+    persist_metadata.update(pending_stamp)
 
     async def _finalize_error(error_msg: str, extra_metadata: dict) -> bool:
         """Terminal-write the open run as error; CRITICAL on failure (row
@@ -235,7 +322,7 @@ async def handle_workflow_error(
         abort the terminal transaction mid-flight."""
         if run_handle is None or run_handle.finalized:
             return False
-        records = token_callback.per_call_records if token_callback else None
+        records = token_callback.get_per_call_records() if token_callback else None
         tools = handler.get_tool_usage() if handler else None
         if not (run_handle.workspace_id and run_handle.user_id):
             records = None
@@ -249,7 +336,6 @@ async def handle_workflow_error(
                         metadata={**persist_metadata, **extra_metadata},
                         errors=[error_msg],
                         execution_time=time.time() - start_time,
-                        sse_events=handler.get_sse_events() if handler else None,
                         per_call_records=records,
                         tool_usage=tools,
                     ),
@@ -258,7 +344,7 @@ async def handle_workflow_error(
             )
         except Exception:
             logger.critical(
-                f"[{log_prefix}] FINALIZE FAILED for run={run_handle.run_id}: "
+                f"[PTC_CHAT] FINALIZE FAILED for run={run_handle.run_id}: "
                 f"row remains in_progress for recovery",
                 exc_info=True,
             )
@@ -266,6 +352,34 @@ async def handle_workflow_error(
         if (result.run or {}).get("status") != "cancelled":
             return False
         return True
+
+    # A refusal before this request's START committed may be its own first
+    # copy, admitted on another worker after this copy's duplicate probe and
+    # now holding the slot, the writer fence or the branch this copy checked,
+    # or steered into the turn that holds them. Its key names that run, so
+    # the copy gets the duplicate answer instead.
+    if run_handle is None and (
+        isinstance(
+            e,
+            (
+                RunSlotBusyError,
+                TaskRunSlotBusyError,
+                AttemptConflictError,
+                StaleForkError,
+                qr_db.QueryConflictError,
+                WriterGuardUnavailable,
+            ),
+        )
+        or (
+            isinstance(e, HTTPException)
+            and e.status_code == 409
+            and isinstance(e.detail, dict)
+            and e.detail.get("code") in ADMISSION_CONFLICT_CODES
+        )
+    ):
+        keyed = await _run_named_by_key(request, thread_id)
+        if keyed is not None:
+            e = DuplicateRequestError(keyed.run, steered=keyed.steered)
 
     # An admission-conflict 409 is a deliberate protocol response (raised
     # in-generator by ``wait_or_steer`` for both the foreground and dispatched
@@ -285,9 +399,9 @@ async def handle_workflow_error(
         and e.detail.get("code") in ADMISSION_CONFLICT_CODES
     ):
         await scope.release_slot()
-        # Normally pre-START (run_handle is None). The flash RuntimeError
-        # fallback can 409 after START, though — release the durable slot so
-        # it doesn't leak until the stale-run sweep.
+        # Normally pre-START (run_handle is None). One that lands after START
+        # releases the durable slot here, so it doesn't leak until the
+        # stale-run sweep.
         if run_handle is not None:
             await RunCoordinator.get_instance().fail_open_run(
                 run_handle, "admission conflict after START", status="cancelled"
@@ -303,6 +417,10 @@ async def handle_workflow_error(
             "error_class": type(e).__name__,
             "code": detail["code"],
         }
+        # The run it cancelled stays the thread's latest attempt, which the
+        # client names on its next edit, so the frame names it too.
+        if run_handle is not None:
+            error_payload["run_id"] = run_handle.run_id
         yield _emit_sse_error(handler, error_payload)
         return
 
@@ -343,6 +461,10 @@ async def handle_workflow_error(
                 run_status=existing.get("status"),
                 run_thread_id=ex_thread,
             )
+            # The run is another message's turn: retrying it would rerun
+            # that message, and adopting it shows this one as its query.
+            if e.steered:
+                error_payload["steered"] = True
         yield _emit_sse_error(handler, error_payload)
         return
 
@@ -352,19 +474,30 @@ async def handle_workflow_error(
     # QueryConflictError is the loser of an unfenced cross-instance race (two
     # servers sharing app tables with the guard disabled): its START rolled
     # back on the differing-content query collision, so it is a protocol 409
-    # like its siblings, never a workflow failure.
+    # like its siblings, never a workflow failure. StaleForkError is the
+    # route's stale_fork refusal arriving late: the branch moved between the
+    # route's check and START, which refused before truncating anything.
+    # WorkspaceMovingError is START meeting a move of the thread's workspace.
     if isinstance(
         e,
         (
             RunSlotBusyError,
             TaskRunSlotBusyError,
             AttemptConflictError,
+            StaleForkError,
             qr_db.QueryConflictError,
+            WorkspaceMovingError,
         ),
     ):
         await scope.release_slot()
         if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError)):
             detail = admission_conflict_detail("running")
+        elif isinstance(e, WorkspaceMovingError):
+            detail = admission_conflict_detail("workspace_moving")
+        elif isinstance(e, StaleForkError):
+            from src.server.handlers.checkpoint_handler import stale_fork_detail
+
+            detail = stale_fork_detail()
         elif isinstance(e, qr_db.QueryConflictError):
             detail = {
                 "code": "turn_conflict",
@@ -391,8 +524,6 @@ async def handle_workflow_error(
 
     # Pinned-session budget/lock refusal (I2): bounded capacity signal, raised
     # by START before anything durable exists — retryable, nothing to finalize.
-    from src.server.services.writer_guard import WriterGuardUnavailable
-
     if isinstance(e, WriterGuardUnavailable):
         await scope.release_slot()
         error_payload = {
@@ -444,18 +575,21 @@ async def handle_workflow_error(
 
     classification = classify_error(e)
     is_recoverable = classification["is_recoverable"]
+    # A START that committed left this run as the thread's latest attempt,
+    # which the client names on its next edit; a refused one left nothing.
+    run_named = {"run_id": run_handle.run_id} if run_handle is not None else {}
     error_type = classification["error_type"]
 
     if is_recoverable:
         # v4: the retry count IS the attempt chain — this run's attempt_no,
         # durable and race-free (the Redis increment_retry_count counter is
-        # gone). Post-handoff calls have no handle; those errors surface via
-        # BTM's finalize, so 1 is only a display fallback here.
+        # gone). No handle means no run was started, and the client's resend
+        # counts its own attempts, so 1 is only a display fallback here.
         retry_count = run_handle.attempt_no if run_handle else 1
 
         if retry_count > MAX_RETRIES:
             logger.error(
-                f"[{log_prefix}] Max retries exceeded ({retry_count}/{MAX_RETRIES}) for "
+                f"[PTC_CHAT] Max retries exceeded ({retry_count}/{MAX_RETRIES}) for "
                 f"thread_id={thread_id}: {type(e).__name__}: {str(e)[:100]}"
             )
 
@@ -475,17 +609,19 @@ async def handle_workflow_error(
                 return  # durable cancel won — no failure surface
 
             error_data = {
-                "message": f"Workflow failed after {MAX_RETRIES} retry attempts",
+                "message": f"Turn failed after {MAX_RETRIES} retry attempts",
                 "error_type": error_type,
                 "error_class": type(e).__name__,
                 "retry_count": retry_count,
                 "max_retries": MAX_RETRIES,
                 "thread_id": thread_id,
+                "recovery": recovery,
+                **run_named,
             }
             yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
         else:
             logger.warning(
-                f"[{log_prefix}] Recoverable error ({error_type}) for thread_id={thread_id} "
+                f"[PTC_CHAT] Recoverable error ({error_type}) for thread_id={thread_id} "
                 f"(retry {retry_count}/{MAX_RETRIES}): "
                 f"{type(e).__name__}: {str(e)[:100]}"
             )
@@ -508,19 +644,21 @@ async def handle_workflow_error(
                 return  # durable cancel won — cancelled, not retryable: no retry SSE
 
             retry_data = {
-                "message": "Temporary error occurred, you can retry or resume the workflow",
+                "message": "Temporary error occurred, you can retry or resume the turn",
                 "thread_id": thread_id,
                 "auto_retry": True,
                 "error_type": error_type,
                 "error_class": type(e).__name__,
                 "retry_count": retry_count,
                 "max_retries": MAX_RETRIES,
+                "recovery": recovery,
+                **run_named,
             }
             yield f"event: retry\ndata: {json.dumps(retry_data)}\n\n"
 
     else:
         # Non-recoverable error
-        logger.exception(f"[{log_prefix.replace('CHAT', 'ERROR')}] thread_id={thread_id}: {e}")
+        logger.exception(f"[PTC_ERROR] thread_id={thread_id}: {e}")
 
         error_type_label = _classify_non_recoverable_error_type(e)
         # error_type/error_class ride the row so replay can reconstruct the
@@ -540,5 +678,7 @@ async def handle_workflow_error(
             "type": "workflow_error",
             "error_type": error_type_label,
             "error_class": type(e).__name__,
+            "recovery": recovery,
+            **run_named,
         }
         yield _emit_sse_error(handler, error_payload)

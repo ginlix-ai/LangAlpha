@@ -6,6 +6,9 @@ socket creation turns that failure mode into a loud error. AF_UNIX stays
 allowed: asyncio's event loop self-pipe is a unix socketpair.
 """
 
+import contextlib
+from pathlib import Path
+
 import pytest
 import pytest_socket
 
@@ -39,3 +42,68 @@ def _reader_pool_follows_cache_client(monkeypatch):
         return getattr(cache, "client", None)
 
     monkeypatch.setattr(stream_pool, "get_stream_reader_client", _reader)
+
+
+@pytest.fixture(autouse=True)
+def _empty_user_skill_bundle(monkeypatch):
+    """Stub the per-turn user-skill bundle to empty for unit tests.
+
+    ``resolve_llm_config`` loads it from Postgres on every turn; unit tests
+    have no pool. Both binding sites are patched: the package attribute the
+    lazy imports resolve, and the defining module's global that
+    ``sandbox_skill_sync_params`` calls. Tests *about* the bundle itself put
+    the real function back — see ``server/services/user_skills/conftest.py``.
+    """
+    from src.server.services import user_skills
+    from src.server.services.user_skills import materialize
+
+    async def _empty(user_id, workspace_id=None):
+        return user_skills.EMPTY_USER_SKILL_BUNDLE
+
+    monkeypatch.setattr(user_skills, "load_user_skill_bundle", _empty)
+    monkeypatch.setattr(materialize, "load_user_skill_bundle", _empty)
+
+
+@pytest.fixture(autouse=True)
+def _no_user_subagents(monkeypatch):
+    """Stub each user's subagent rows, and their plugins' subagents, to none
+    for unit tests.
+
+    ``resolve_llm_config`` reads them from Postgres on every PTC turn, and
+    unit tests have no pool. A user with no rows is also the case whose turn
+    must match a build that never read any.
+    """
+    from src.server.database import plugin_subagents, user_subagents
+
+    async def _none(user_id, *, conn=None):
+        return []
+
+    @contextlib.asynccontextmanager
+    async def _no_snapshot():
+        yield None
+
+    monkeypatch.setattr(user_subagents, "list_user_subagents", _none)
+    monkeypatch.setattr(plugin_subagents, "list_user_plugin_subagents", _none)
+    monkeypatch.setattr(plugin_subagents, "subagents_snapshot", _no_snapshot)
+
+
+@pytest.fixture(scope="session")
+def shipped_skill_md():
+    """Locate a shipped skill's SKILL.md on disk, by name.
+
+    A registry entry's ``skill_md_path`` is where the *agent* reaches the file
+    inside a sandbox, not where this repo keeps it: the shipped skills live in
+    the bundle that declares them, and the sync flattens every source into one
+    directory. Joining that suffix onto the repo root reads as correct and is
+    not, so the lookup asks the bundles instead.
+    """
+    from ptc_agent.config.plugins import bundled_skill_dirs
+
+    def find(name: str) -> Path:
+        for root in bundled_skill_dirs():
+            candidate = root / name / "SKILL.md"
+            if candidate.is_file():
+                return candidate
+        raise AssertionError(f"no bundle ships a {name!r} skill")
+
+    return find

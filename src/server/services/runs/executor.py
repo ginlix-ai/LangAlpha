@@ -30,11 +30,13 @@ from src.config.settings import (
     get_cleanup_interval,
     is_intermediate_storage_enabled,
     get_max_stored_messages_per_agent,
+    get_max_stream_bytes_per_run,
     get_event_storage_backend,
     get_redis_ttl_workflow_events,
     get_shutdown_timeout,
     get_wait_for_persistence_timeout,
 )
+from src.server.contracts.status import COLLECTED_ENDINGS
 from src.server.services.runs import (
     admission,
     finalization,
@@ -42,8 +44,10 @@ from src.server.services.runs import (
     subagent_collection,
     teardown,
 )
-from src.server.services.runs.stream_writer import TransportLostError
+from src.server.services.runs.finalization import FinalizeVerdict
+from src.server.services.runs.teardown import StopTeardown
 from src.server.dependencies.usage_limits import release_burst_slot
+from src.utils.cache.stream_quota import StreamQuota
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +93,19 @@ class LocalRunExecution:
 
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # Attached as an explicit cancel's teardown starts and filled in place by
+    # it; None for a run no explicit cancel tore down.
+    stop_teardown: Optional[StopTeardown] = None
+
     completion_callback: Optional[Callable[["LocalRunExecution"], Coroutine[Any, Any, None]]] = None
 
     persistence_complete: asyncio.Event = field(default_factory=asyncio.Event)
 
     graph: Optional[Any] = None
+
+    # The run's event stream budget, made at its first append. Only the run's
+    # own consume loop charges it, one awaited append at a time.
+    stream_quota: Optional[StreamQuota] = None
 
 
 # Type alias for the key used throughout the manager.
@@ -127,6 +139,7 @@ class LocalRunExecutor:
         self.cleanup_interval = get_cleanup_interval()
         self.enable_storage = is_intermediate_storage_enabled()
         self.max_stored_messages = get_max_stored_messages_per_agent()
+        self.max_stream_bytes = get_max_stream_bytes_per_run()
 
         self.event_storage_backend = get_event_storage_backend()
         self.redis_event_ttl = get_redis_ttl_workflow_events()
@@ -202,6 +215,40 @@ class LocalRunExecutor:
         except Exception:
             logger.warning(
                 f"Workspace activity probe failed for {workspace_id}; "
+                "treating as active",
+                exc_info=True,
+            )
+            return True
+
+    async def has_active_tasks_for_computer(
+        self, computer_id: str, *, workspace_id: str | None = None
+    ) -> bool:
+        """Whether any workspace bound to the computer still has work running.
+
+        What gates tearing a machine down, where ``has_active_tasks_for_workspace``
+        would answer for one project on it. ``workspace_id`` is the project the
+        caller already has in hand, used only for the cheap in-process
+        pre-check; the durable half spans the whole computer either way. Same
+        fail-closed contract: a probe failure counts as active.
+        """
+        if workspace_id is not None:
+            async with self.task_lock:
+                for info in self.executions.values():
+                    if (
+                        info.metadata.get("workspace_id") == workspace_id
+                        and info.status is LocalRunStatus.RUNNING
+                    ):
+                        return True
+        try:
+            from src.server.database.runs import subagent_runs as sr_db
+            from src.server.database.runs import lifecycle as tl_db
+
+            if await tl_db.computer_has_active_run(computer_id):
+                return True
+            return await sr_db.count_open_runs_for_computer(computer_id) > 0
+        except Exception:
+            logger.warning(
+                f"Computer activity probe failed for {computer_id}; "
                 "treating as active",
                 exc_info=True,
             )
@@ -462,8 +509,15 @@ class LocalRunExecutor:
         metadata: Optional[Dict[str, Any]] = None,
         completion_callback: Optional[Callable[["LocalRunExecution"], Coroutine[Any, Any, None]]] = None,
         graph: Optional[Any] = None,
+        on_registered: Optional[Callable[[], None]] = None,
     ) -> LocalRunExecution:
-        """Start a workflow as a background task."""
+        """Start a workflow as a background task.
+
+        The executor owns the run's cleanup from the moment it is registered,
+        and ``on_registered`` runs right then, before this method's first
+        await: a caller cancelled on a later await must not settle the run
+        from its own death path while the workflow is already running.
+        """
         key = (thread_id, run_id)
         async with self.task_lock:
             if key in self.executions:
@@ -497,9 +551,14 @@ class LocalRunExecutor:
                     cancel_event=task_info.cancel_event,
                 )
             )
+            task_info.task.add_done_callback(
+                lambda t, info=task_info: self._drop_finished_task(info, t)
+            )
             task_info.started_at = datetime.now()
 
             self.executions[key] = task_info
+            if on_registered is not None:
+                on_registered()
 
             logger.info(
                 f"[LocalRunExecutor] Started workflow thread_id={thread_id} "
@@ -510,38 +569,10 @@ class LocalRunExecutor:
 
         run_handle = (metadata or {}).get("run_handle")
 
-        # Handoff intent recheck: a /cancel between START and this registration
-        # stamped durable intent on the row but found no LocalRunExecution to signal
-        # (the QUEUED placeholder that used to fill this gap is gone — the
-        # in_progress row committed by priming is the only pre-registration
-        # identity). The row is the authority — re-derive the local signal
-        # from it now that a task exists.
-        if run_handle is not None:
-            from src.server.database.runs import lifecycle as tl_db
-
-            run_row = None
-            try:
-                run_row = await tl_db.get_run(run_handle.run_id)
-            except Exception:
-                logger.warning(
-                    f"[LocalRunExecutor] handoff cancel-intent recheck "
-                    f"failed for {key}",
-                    exc_info=True,
-                )
-            if (
-                run_row
-                and run_row.get("cancel_requested_at")
-                and run_row.get("status") == "in_progress"
-            ):
-                logger.info(
-                    f"[LocalRunExecutor] durable cancel intent found at "
-                    f"handoff for {key}; signalling cancel"
-                )
-                await self.signal_cancel(thread_id, run_id)
-
         # I2: the guard monitor aborts the run on session loss before it can
         # act on a stale view — same force path as a user stop (cooperative
         # event + inner-task cancel), classified by the guard-lost downgrade.
+        # Wired before the first await, so a cancelled caller cannot skip it.
         if (
             started is not None
             and run_handle is not None
@@ -557,6 +588,42 @@ class LocalRunExecutor:
                     info.inner_task.cancel()
 
             run_handle.guard.attach_abort(_abort_on_session_loss)
+
+        # Handoff intent recheck: a /cancel between START and this registration
+        # stamped durable intent on the row but found no LocalRunExecution to signal
+        # (the QUEUED placeholder that used to fill this gap is gone — the
+        # in_progress row committed by priming is the only pre-registration
+        # identity). The row is the authority — re-derive the local signal
+        # from it now that a task exists. Detached: a Stop click also drops
+        # the stream, whose cancellation must not take the Stop down with it.
+        if run_handle is not None:
+            from src.server.database.runs import lifecycle as tl_db
+            from src.server.services.runs.coordinator import protected_finalize
+
+            async def _recheck_cancel_intent() -> None:
+                run_row = None
+                try:
+                    run_row = await tl_db.get_run(run_handle.run_id)
+                except Exception:
+                    logger.warning(
+                        f"[LocalRunExecutor] handoff cancel-intent recheck "
+                        f"failed for {key}",
+                        exc_info=True,
+                    )
+                if (
+                    run_row
+                    and run_row.get("cancel_requested_at")
+                    and run_row.get("status") == "in_progress"
+                ):
+                    logger.info(
+                        f"[LocalRunExecutor] durable cancel intent found at "
+                        f"handoff for {key}; signalling cancel"
+                    )
+                    await self.signal_cancel(thread_id, run_id)
+
+            await protected_finalize(
+                _recheck_cancel_intent(), label=f"handoff-{run_id}"
+            )
         return started
 
     async def _run_workflow(
@@ -578,23 +645,29 @@ class LocalRunExecutor:
         key = (thread_id, run_id)
         try:
             async def consume_workflow(wf_gen):
-                async for event in wf_gen:
-                    if cancel_event.is_set():
-                        with suppress(Exception):
-                            await wf_gen.aclose()
-                        raise asyncio.CancelledError("Explicitly cancelled by user")
+                try:
+                    async for event in wf_gen:
+                        if cancel_event.is_set():
+                            raise asyncio.CancelledError("Explicitly cancelled by user")
 
-                    if self.enable_storage:
-                        try:
-                            await self._buffer_event_redis(thread_id, run_id, event)
-                        except TransportLostError:
-                            # Fatal (I6): stop the graph at this event boundary
-                            # so the failure handler finalizes
+                        if self.enable_storage:
+                            # A TransportLostError is fatal (I6): the close
+                            # below stops the graph at this event boundary, so
+                            # the failure handler finalizes
                             # failed(transport_lost) instead of the run
                             # completing with holes in its archive.
-                            with suppress(Exception):
-                                await wf_gen.aclose()
-                            raise
+                            await self._buffer_event_redis(thread_id, run_id, event)
+                finally:
+                    # Every way out closes the stream before the handlers below
+                    # flush or finalize, a stop cancelling this task mid-write
+                    # included: left open, the graph's model calls and tools
+                    # would run on until the garbage collector reached it. A
+                    # stop landing inside the graph has already unwound it, and
+                    # this is then a no-op.
+                    aclose = getattr(wf_gen, "aclose", None)
+                    if aclose is not None:
+                        with suppress(Exception):
+                            await aclose()
 
             inner_task = asyncio.create_task(consume_workflow(workflow_generator))
 
@@ -625,22 +698,32 @@ class LocalRunExecutor:
         #   except asyncio.CancelledError (consume_workflow):
         #     1. _flush_checkpoint(thread_id)        # if explicit_cancel
         #     2. cancel this run's orphan collectors # no post-stop mutation
-        #     3. cancel_run_tasks(force=True)        # kill this run's subagents
+        #     3. cancel_run_tasks(force=True,        # kill this run's subagents,
+        #          claim_for=run_id)                 #   claiming the settled ones
         #     4. drain killed-subagent events        # bounded (~stop_drain_timeout)
-        #     5. _finalize_run(kind="cancelled")     # persist merged sse_events + run_end frame
+        #     5. _finalize_run(kind="cancelled")     # record provenance + run_end frame,
+        #                                            #   bill the claim if the user stopped it
         #     6. raise
         #
         # Steps 2-4 are teardown_subagents_on_stop's own order, and the kill
         # MUST precede the drain: the drain reads its high-water at drain
         # start, so a pre-kill snapshot misses the frames a task emits between
-        # snapshot and kill. The drain must in turn complete before
-        # _finalize_run, so the merged subagent events are in place before
-        # persistence reads them.
+        # snapshot and kill. The claim rides the kill because the kill evicts
+        # the entries that hold the usage, before anyone knows whose ending
+        # this is. The drain must in turn complete before _finalize_run, so
+        # the merged subagent events are in place before persistence reads
+        # them.
         # =====================================================================
         except asyncio.CancelledError:
+            stop = StopTeardown()
             async with self.task_lock:
                 ti = self.executions.get(key)
                 explicit = bool(ti.explicit_cancel) if ti else False
+                # Attached before the teardown starts: a second cancel can
+                # send the finalize in while the kill is still unwinding, and
+                # the stop bills the claim the kill publishes into it.
+                if ti is not None and explicit:
+                    ti.stop_teardown = stop
 
             try:
                 # NB: suppress(Exception) below catches flush/teardown FAILURES
@@ -667,13 +750,13 @@ class LocalRunExecutor:
                     with suppress(Exception):
                         await asyncio.shield(self._flush_checkpoint(thread_id, run_id))
 
-                    # 2-4. Drain killed-subagent events, cancel orphan
-                    #      collectors, then kill subagents + wipe the registry.
-                    #      Merged events are stashed on metadata so
-                    #      _finalize_run persists them.
+                    # 2-4. Cancel orphan collectors, kill and claim the
+                    #      run's subagents, then drain their events. The
+                    #      result fills ``stop_teardown`` for _finalize_run
+                    #      to archive and, on a user stop, bill.
                     with suppress(Exception):
                         await asyncio.shield(
-                            self._teardown_subagents_on_stop(thread_id, run_id)
+                            self._teardown_subagents_on_stop(thread_id, run_id, stop)
                         )
             finally:
                 # 5. Persist the cancellation. In a ``finally`` + ``shield`` so a
@@ -688,11 +771,22 @@ class LocalRunExecutor:
             raise
 
         except Exception as e:
-            logger.error(
-                f"[LocalRunExecutor] Workflow {key} failed: {e}",
-                exc_info=True
+            from src.server.services.runs.sse_producer import TurnTimeLimitError
+
+            if isinstance(e, TurnTimeLimitError):
+                # Planned, so no traceback: it would only show the producer's
+                # own raise, and read as a crash in the logs.
+                logger.warning(
+                    f"[LocalRunExecutor] Workflow {key} reached its time limit: {e}"
+                )
+            else:
+                logger.error(
+                    f"[LocalRunExecutor] Workflow {key} failed: {e}",
+                    exc_info=True
+                )
+            await self._finalize_run(
+                thread_id, run_id, kind="failed", error=str(e), exc=e
             )
-            await self._finalize_run(thread_id, run_id, kind="failed", error=str(e))
 
     async def _flush_checkpoint(self, thread_id: str, run_id: str) -> None:
         """Resolve the run's graph and flush its checkpoint on user stop."""
@@ -727,22 +821,18 @@ class LocalRunExecutor:
 
         task.add_done_callback(_discard)
 
-    async def _teardown_subagents_on_stop(self, thread_id: str, run_id: str) -> None:
-        """Run the stop teardown, lending it this executor's orphan-collector
-        bucket, then stash the drained events for the finalize to persist."""
-        merged_subagent_events = await teardown.teardown_subagents_on_stop(
+    async def _teardown_subagents_on_stop(
+        self, thread_id: str, run_id: str, stop: StopTeardown
+    ) -> None:
+        """Run the stop teardown into ``stop``, lending it this executor's
+        orphan-collector bucket."""
+        await teardown.teardown_subagents_on_stop(
             thread_id,
             run_id,
+            stop,
             orphan_collectors=self._orphan_collectors.get(thread_id, {}),
             drain=self._drain_killed_subagent_events,
         )
-
-        # Stash merged events for _mark_cancelled to fold into persisted sse_events.
-        if merged_subagent_events:
-            async with self.task_lock:
-                ti = self.executions.get((thread_id, run_id))
-                if ti is not None:
-                    ti.metadata["_stop_subagent_events"] = merged_subagent_events
 
     async def _drain_killed_subagent_events(
         self, thread_id: str, tasks: list
@@ -760,15 +850,20 @@ class LocalRunExecutor:
         """
         key = (thread_id, run_id)
         async with self.task_lock:
-            if key not in self.executions:
-                return
+            info = self.executions.get(key)
+        if info is None:
+            return
 
         if self.event_storage_backend != "redis":
             return  # memory backend: no stream transport to lose
 
+        if info.stream_quota is None:
+            info.stream_quota = StreamQuota(
+                max_events=self.max_stored_messages,
+                max_bytes=self.max_stream_bytes,
+            )
         await stream_writer.buffer_event(
-            thread_id, run_id, event,
-            max_stored_messages=self.max_stored_messages,
+            thread_id, run_id, event, quota=info.stream_quota
         )
 
     async def append_run_end_event(
@@ -782,43 +877,41 @@ class LocalRunExecutor:
         """Write the closing frames to the per-run Stream (I6), exactly once.
 
         Delegates to ``stream_writer.append_run_end_event`` — see there for
-        the SETNX gate and retention-stamp contract.
+        the SETNX gate and retention-stamp contract. A terminal frame also
+        carries the thread's token totals: every caller has committed the
+        finalize, and with it the run's own usage row, so the count holds
+        every call the run recorded, whether or not its stream reported it.
         """
         if self.event_storage_backend != "redis":
             return
+        token_totals = None
+        closing_frames: list[str] = []
+        if outcome is not None:
+            from src.server.database.conversation.usage import (
+                get_thread_token_totals,
+            )
+
+            token_totals = await get_thread_token_totals(thread_id)
+            # Ahead of ``run_end``: a gateway stops reading there, and every
+            # reader of the stream, a reconnect included, then sees it once.
+            returned = await stream_writer.steering_returned_frame(thread_id, run_id)
+            if returned:
+                closing_frames.append(returned)
         await stream_writer.append_run_end_event(
             thread_id, run_id, outcome,
             error_frame=error_frame,
+            token_totals=token_totals,
+            closing_frames=closing_frames,
             redis_event_ttl=self.redis_event_ttl,
             max_stored_messages=self.max_stored_messages,
         )
 
     # ========== Subagent collection ==========
 
-    async def _delete_task_keys_if_owned(
-        self,
-        cache,
-        thread_id: str,
-        task_id: str,
-        response_id: str,
-        task_run_id: Optional[str] = None,
-    ) -> None:
-        await subagent_collection.delete_task_keys_if_owned(
-            cache, thread_id, task_id, response_id, task_run_id=task_run_id
-        )
-
-    async def _replay_owned_task_events(
-        self, thread_id: str, task, response_id: str, out: list[dict]
-    ) -> bool:
-        return await subagent_collection.replay_owned_task_events(
-            thread_id, task, response_id, out
-        )
-
     async def _collect_subagent_results_for_turn(
         self,
         thread_id: str,
         response_id: str,
-        original_chunks: list[dict[str, Any]],
         tasks: list,
         workspace_id: str,
         user_id: str,
@@ -827,51 +920,10 @@ class LocalRunExecutor:
         sandbox=None,
     ) -> None:
         await subagent_collection.collect_subagent_results_for_turn(
-            thread_id, response_id, original_chunks, tasks,
+            thread_id, response_id, tasks,
             workspace_id, user_id, timeout=timeout, is_byok=is_byok,
             sandbox=sandbox,
             track_orphan_collector=self._track_orphan_collector,
-        )
-
-    async def _publish_settled_wake(self, thread_id: str) -> None:
-        await subagent_collection.publish_settled_wake(thread_id)
-
-    async def _await_drain_and_cleanup_tasks(
-        self,
-        tasks: list,
-        thread_id: str,
-        response_id: str,
-        timeout: float | None = None,
-        *,
-        retire_streams: bool = True,
-    ) -> None:
-        await subagent_collection.await_drain_and_cleanup_tasks(
-            tasks, thread_id, response_id, timeout=timeout,
-            retire_streams=retire_streams,
-        )
-
-    async def _collect_orphaned_subagent_results(
-        self,
-        thread_id: str,
-        response_id: str,
-        main_chunks: list[dict[str, Any]],
-        prior_subagent_events: list[dict],
-        tasks: list,
-        workspace_id: str,
-        user_id: str,
-        is_byok: bool = False,
-        sandbox=None,
-    ) -> None:
-        await subagent_collection.collect_orphaned_subagent_results(
-            thread_id=thread_id,
-            response_id=response_id,
-            main_chunks=main_chunks,
-            prior_subagent_events=prior_subagent_events,
-            tasks=tasks,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            is_byok=is_byok,
-            sandbox=sandbox,
         )
 
     # ========== Terminal handlers ==========
@@ -894,6 +946,67 @@ class LocalRunExecutor:
         info.metadata.pop("sandbox", None)
         info.metadata.pop("run_handle", None)
         info.metadata.pop("artifact_hook", None)
+        info.stop_teardown = None
+
+    @staticmethod
+    def _drop_finished_task(info: LocalRunExecution, task: asyncio.Task) -> None:
+        """Let go of the run's tasks once it finishes.
+
+        A task keeps its copied context alive, and with it every request-scoped
+        object that context references. The entry itself stays for the
+        result TTL, so holding the done task would pin all of that for as long.
+        Every reader already treats a missing task as a finished one.
+        """
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            logger.error(
+                f"[LocalRunExecutor] Run task ({info.thread_id}, {info.run_id}) "
+                f"ended with an unhandled error",
+                exc_info=exc,
+            )
+        if info.task is task:
+            info.task = None
+        # The inner task copied the same context; _release_terminal_refs
+        # only drops it when finalize concludes, so a failed finalize kept it.
+        if info.inner_task is not None and info.inner_task.done():
+            info.inner_task = None
+
+    @staticmethod
+    async def _note_credential_refusal(
+        handler, user_id, exc: Optional[BaseException]
+    ) -> None:
+        """Tell the credential store which subscription tokens the turn's model
+        calls had refused (a 401), after the run is settled. A fact about the
+        credentials, not the run, so a lost finalize race does not skip it;
+        best effort, bounded. Every call counts, a fallback's included, since
+        each subscription in the fallback list is held on its own token."""
+        from src.server.services.oauth_health import failed_model_calls, note_token_refusals
+        from src.server.services.runs.stream_errors import find_resilience_trace
+
+        agent_config = getattr(handler, "agent_config", None)
+        # The main client knows its provider where the manifest does not
+        # (a custom model on a subscription).
+        client_meta = getattr(getattr(agent_config, "llm_client", None), "metadata", None)
+        client_meta = client_meta if isinstance(client_meta, dict) else {}
+
+        def provider_of(model):
+            if model and model == client_meta.get("manifest_model"):
+                return client_meta.get("pricing_provider")
+            return None
+
+        try:
+            record = getattr(handler, "record", None)
+            calls = failed_model_calls(
+                find_resilience_trace(exc) if exc is not None else None,
+                record().model_fallbacks if callable(record) else None,
+            )
+            if not calls:
+                return
+            await asyncio.wait_for(note_token_refusals(user_id, calls, provider_of), timeout=5.0)
+        except Exception:
+            logger.warning(
+                "[LocalRunExecutor] noting a refused OAuth token failed",
+                exc_info=True,
+            )
 
     async def _finalize_run(
         self,
@@ -902,6 +1015,7 @@ class LocalRunExecutor:
         *,
         kind: Literal["stream_end", "cancelled", "failed"],
         error: Optional[str] = None,
+        exc: Optional[BaseException] = None,
     ):
         """Resolve the run's outcome in-band and drive the single finalize CAS.
 
@@ -913,8 +1027,6 @@ class LocalRunExecutor:
         transaction carrying usage rows with it, so a persist failure can no
         longer be swallowed into a zombie-ACTIVE turn.
         """
-        from src.server.services.runs.coordinator import RunOutcome
-
         key = (thread_id, run_id)
         async with self.task_lock:
             task_info = self.executions.get(key)
@@ -924,54 +1036,52 @@ class LocalRunExecutor:
             cancelled_by_user = bool(task_info.user_stop)
             completion_callback = task_info.completion_callback
             graph = task_info.graph
+            stop = task_info.stop_teardown
 
         handle = metadata.get("run_handle")
         handler = metadata.get("handler")
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
-        status, phase, interrupt_reason, error = await finalization.classify_outcome(
+        (
+            status,
+            phase,
+            interrupt_reason,
+            pause_message,
+            error,
+        ) = await finalization.classify_outcome(
             kind, handler=handler, graph=graph, thread_id=thread_id, error=error
         )
+        # The stop drain's events the finalize records, copied: a teardown a
+        # second cancel left draining still appends after the CAS, and the
+        # lanes it adds then are archived once their writers settle instead.
+        carried_events = list(stop.events) if stop and status == "cancelled" else []
 
-        (
-            execution_time,
-            per_call_records,
-            tool_usage,
-            sse_events,
-            persist_metadata,
-        ) = await finalization.assemble_finalize_artifacts(
+        outcome = await finalization.assemble_finalize_artifacts(
             key,
             metadata=metadata,
             status=status,
             phase=phase,
+            interrupt_reason=interrupt_reason,
+            pause_message=pause_message,
+            error=error,
             handler=handler,
             cancelled_by_user=cancelled_by_user,
             workspace_id=workspace_id,
             user_id=user_id,
+            stop_events=carried_events,
+            exc=exc,
         )
 
         # ---- the single terminal transition ----
-        # finalize_applied gates every terminal business effect below: losers
+        # verdict.applied gates every terminal business effect below: losers
         # of the finalize race (and failed finalizes) do nothing. The
         # handle-less legacy path keeps its local effects so it can't wedge.
-        finalize_applied = True
-        survivor_status: Optional[str] = None
         if handle is not None:
             # I5: terminal hooks (burst release, report-back dispatch,
             # needs-input wake, watch clear) ride the finalize transaction
             # as durable outbox jobs — finalize_run derives them from the
             # row's START-stamped metadata, so no explicit factory here.
-            outcome = RunOutcome(
-                status=status,
-                interrupt_reason=interrupt_reason,
-                metadata=persist_metadata,
-                errors=[error] if error else None,
-                execution_time=execution_time,
-                sse_events=sse_events,
-                per_call_records=per_call_records,
-                tool_usage=tool_usage,
-            )
             # I2 tail mode: subagent writers that survive the turn checkpoint
             # through the run's pinned session, so its release must wait for
             # them (N(root) drops at finalize either way).
@@ -982,25 +1092,27 @@ class LocalRunExecutor:
                 async def tail_drain() -> None:
                     await self._drain_run_subagent_writers(thread_id, run_id, guard)
 
-            finalize_applied, status, survivor_status = (
-                await finalization.drive_finalize_cas(
-                    key, handle, outcome, tail_drain=tail_drain
-                )
+            verdict = await finalization.drive_finalize_cas(
+                key, handle, outcome, tail_drain=tail_drain
             )
         else:
             logger.error(
                 f"[LocalRunExecutor] no run_handle for {key}; durable "
                 f"finalize skipped (legacy path?)"
             )
+            verdict = FinalizeVerdict(
+                applied=True,
+                status=status,
+                stopped_by_user=status == "cancelled" and cancelled_by_user,
+            )
 
         # ---- local terminal mark (after the CAS: a losing finalize adopts
         # the survivor's status instead of relabeling the winner's). A THROWN
         # finalize (applied=False, no survivor) marks nothing: the row is
-        # still in_progress, so the entry must stay RUNNING — with its
-        # run_handle — for cleanup's dead-handle fail_open path. ----
-        finalize_concluded = finalize_applied or survivor_status is not None
-        if finalize_concluded:
-            local_status = survivor_status or status
+        # still in_progress, so the entry must stay RUNNING, with its
+        # run_handle, for cleanup's dead-handle fail_open path. ----
+        if verdict.concluded:
+            local_status = verdict.survivor_status or verdict.status
             async with self.task_lock:
                 task_info.status = {
                     "cancelled": LocalRunStatus.CANCELLED,
@@ -1011,21 +1123,25 @@ class LocalRunExecutor:
                 if error:
                     task_info.error = error
 
-        if finalize_applied:
+        if verdict.applied:
             await self._apply_post_terminal_effects(
                 thread_id,
                 run_id,
+                verdict,
                 kind=kind,
-                status=status,
+                stop=stop,
+                carried_events=carried_events,
                 task_info=task_info,
                 completion_callback=completion_callback,
-                execution_time=execution_time,
+                execution_time=outcome.execution_time,
                 interrupt_reason=interrupt_reason,
                 error=error,
                 metadata=metadata,
                 workspace_id=workspace_id,
                 user_id=user_id,
             )
+
+        await self._note_credential_refusal(handler, user_id, exc)
 
         if handle is None and user_id:
             # Legacy fallback only: without a durable run row there are no
@@ -1034,15 +1150,10 @@ class LocalRunExecutor:
 
         # A thrown finalize also withholds persistence_complete: the row is
         # not terminal, so waiters must time out rather than read it as done.
-        if finalize_concluded:
+        if verdict.concluded:
             task_info.persistence_complete.set()
             async with self.task_lock:
                 self._release_terminal_refs(thread_id, run_id)
-
-    # Legit tail subagents (deep research) run 15+ min; this only bounds how
-    # long a HUNG writer can pin a budget slot before the teardown discards
-    # the session out from under it.
-    TAIL_DRAIN_TIMEOUT = 1800.0
 
     async def _drain_run_subagent_writers(
         self, thread_id: str, run_id: str, guard
@@ -1064,7 +1175,7 @@ class LocalRunExecutor:
         )
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.TAIL_DRAIN_TIMEOUT
+        deadline = loop.time() + subagent_collection.SUBAGENT_TAIL_TIMEOUT
         while True:
             bg_registry = await BackgroundRegistryStore.get_instance().get_registry(
                 thread_id
@@ -1081,7 +1192,7 @@ class LocalRunExecutor:
                 raise TimeoutError(
                     f"tail drain deadline: {len(writers)} subagent writer(s) "
                     f"still running for run={run_id} after "
-                    f"{self.TAIL_DRAIN_TIMEOUT:.0f}s"
+                    f"{subagent_collection.SUBAGENT_TAIL_TIMEOUT:.0f}s"
                 )
             logger.info(
                 f"[LocalRunExecutor] guard tail-drain awaiting "
@@ -1093,9 +1204,11 @@ class LocalRunExecutor:
         self,
         thread_id: str,
         run_id: str,
+        verdict: FinalizeVerdict,
         *,
         kind: Literal["stream_end", "cancelled", "failed"],
-        status: str,
+        stop: Optional[StopTeardown],
+        carried_events: list[dict],
         task_info,
         completion_callback,
         execution_time,
@@ -1109,7 +1222,20 @@ class LocalRunExecutor:
         again). Isolated: a side-effect failure must not propagate back into
         _run_workflow's failure handler and trigger a second finalize."""
         key = (thread_id, run_id)
+        status = verdict.status
+        collected = kind == "stream_end" and status in COLLECTED_ENDINGS
         try:
+            # A collected run's subagents are claimed, and the settled ones
+            # billed, before its run_end, so the token totals the frame
+            # carries count them. Never raises.
+            turn_subagents = (
+                await subagent_collection.claim_turn_subagents(
+                    thread_id, run_id, metadata, workspace_id, user_id
+                )
+                if collected
+                else []
+            )
+
             # Visible run_end AFTER the commit, carrying the adopted
             # status (I6). Attached consumers yield it and close. Losers
             # of a finalize race skip it — their consumers close via the
@@ -1126,32 +1252,38 @@ class LocalRunExecutor:
                         exc_info=True,
                     )
 
-            # Collection follows the ADOPTED status: only a run that
-            # actually ended completed/interrupted gets a collector. A
-            # terminal error or (adopted) cancel instead kills this run's
-            # still-pending subagents — run-scoped, so prior turns' orphan
-            # collectors and claims survive. No drain: the CAS already
-            # committed this run's sse_events, and a cancelled/errored
-            # run's subagent output is deliberately never billed. (On the
-            # explicit user-stop path the teardown already popped the
-            # whole registry; the scoped call is then a no-op.)
-            if kind == "stream_end" and status in ("completed", "interrupted"):
-                await self._spawn_subagent_collector(
-                    thread_id, run_id, metadata, workspace_id, user_id
+            # The run's subagents end by the ADOPTED status. A run that ended
+            # completed/interrupted gets a collector. Any other ending has
+            # them killed, claimed and archived: a lane the finalize did not
+            # carry (no teardown ran, or its drain withheld the lane while a
+            # writer unwound) is archived once its writers settle. Only a
+            # user stop bills them, finished ones included: the stop is the
+            # user's choice, and the subagents' output may already be in use.
+            # A failure, a timeout or a shutdown is not, so its subagents go
+            # unbilled. The kill is run-scoped, so prior turns' orphan
+            # collectors and claims survive.
+            if collected:
+                self._spawn_subagent_collector(
+                    thread_id, run_id, turn_subagents, metadata,
+                    workspace_id, user_id,
                 )
             elif status in ("error", "cancelled"):
                 try:
-                    from src.server.services.background_registry_store import (
-                        BackgroundRegistryStore,
-                    )
-
-                    await BackgroundRegistryStore.get_instance().cancel_run_tasks(
-                        thread_id, run_id, force=True
+                    await subagent_collection.end_run_subagents(
+                        thread_id,
+                        run_id,
+                        workspace_id,
+                        user_id,
+                        claimed_at_stop=stop.claimed if stop else [],
+                        carried_events=carried_events,
+                        bill=verdict.stopped_by_user,
+                        is_byok=metadata.get("is_byok", False),
+                        sandbox=metadata.get("sandbox"),
                     )
                 except Exception:
                     logger.warning(
                         f"[LocalRunExecutor] run-scoped subagent "
-                        f"cleanup failed for {key}",
+                        f"teardown failed for {key}",
                         exc_info=True,
                     )
         except Exception:
@@ -1161,17 +1293,18 @@ class LocalRunExecutor:
                 exc_info=True,
             )
 
-    async def _spawn_subagent_collector(
+    def _spawn_subagent_collector(
         self,
         thread_id: str,
         run_id: str,
+        tasks: list,
         metadata: dict,
         workspace_id: Optional[str],
         user_id: Optional[str],
     ) -> None:
-        """Claim this run's subagents and collect their events post-terminal."""
-        await subagent_collection.spawn_subagent_collector(
-            thread_id, run_id, metadata, workspace_id, user_id,
+        """Collect the run's claimed subagents' events post-terminal."""
+        subagent_collection.spawn_subagent_collector(
+            thread_id, run_id, tasks, metadata, workspace_id, user_id,
             collect_for_turn=self._collect_subagent_results_for_turn,
         )
 
@@ -1200,35 +1333,6 @@ class LocalRunExecutor:
                 f"thread_id={thread_id} run_id={run_id} after {timeout}s"
             )
             return False
-
-    async def _persist_collected_events(
-        self,
-        main_chunks: list[dict],
-        subagent_events: list[dict],
-        response_id: str,
-        thread_id: str,
-        workspace_id: str,
-        user_id: str,
-        sandbox=None,
-    ) -> bool:
-        return await subagent_collection.persist_collected_events(
-            main_chunks, subagent_events, response_id,
-            thread_id, workspace_id, user_id, sandbox=sandbox,
-        )
-
-    async def _persist_subagent_usage(
-        self,
-        response_id: str,
-        tasks: list,
-        thread_id: str,
-        workspace_id: str,
-        user_id: str,
-        is_byok: bool = False,
-    ) -> None:
-        await subagent_collection.persist_subagent_usage(
-            response_id, tasks, thread_id, workspace_id, user_id,
-            is_byok=is_byok,
-        )
 
     # ---------- status & introspection ----------
 

@@ -1,4 +1,4 @@
-import { NAME_RE, TRANSPORTS, EXPOSURE_MODES } from './mcpSchemas';
+import { NAME_RE, TRANSPORTS, EXPOSURE_MODES, unreserveName } from './mcpSchemas';
 
 /**
  * Client-side parser for the de-facto-standard `mcpServers` JSON blob (Claude
@@ -45,13 +45,19 @@ const TRANSPORT_ALIASES: Record<string, Transport> = {
   sse: 'sse',
 };
 
-/** Coerce an arbitrary server key into a legal MCP name (mirrors backend). */
+/**
+ * Coerce an arbitrary server key into a legal MCP name, exactly as the
+ * backend's `coerce_mcp_name` does. The `u` flag makes the replacement run per
+ * code point the way Python's does: without it an emoji is two UTF-16 units
+ * and becomes `__`, so the preview named a server the import never creates.
+ */
 export function coerceMcpName(raw: string): { name: string | null; renamed: boolean } {
   if (!raw || typeof raw !== 'string') return { name: null, renamed: false };
-  let cand = raw.replace(/[^0-9A-Za-z_]/g, '_');
+  let cand = raw.replace(/[^0-9A-Za-z_]/gu, '_');
   if (/^[0-9]/.test(cand)) cand = `_${cand}`;
   cand = cand.slice(0, 64);
   if (!cand || !NAME_RE.test(cand)) return { name: null, renamed: false };
+  cand = unreserveName(cand);
   return { name: cand, renamed: cand !== raw };
 }
 
@@ -134,23 +140,51 @@ function normalizeEntry(rawName: string, body: unknown): ParsedImportServer {
   };
 }
 
+// The three shapes a config can be written in, read once so the parse below and
+// `mapImportServers` can never disagree about which object is which server.
+const SERVERS_MAP_KEYS = ['mcpServers', 'mcp_servers', 'servers'];
+const SELF_NAMING_FIELDS = ['command', 'url', 'type', 'transport', 'args', 'headers', 'env'];
+
+function selfNaming(obj: Record<string, unknown>): boolean {
+  return typeof obj.name === 'string' && SELF_NAMING_FIELDS.some((k) => k in obj);
+}
+
 /** Find the `{ name: def }` map inside a parsed config object. */
 function unwrapServersMap(payload: unknown): Record<string, unknown> {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
   const obj = payload as Record<string, unknown>;
-  for (const key of ['mcpServers', 'mcp_servers', 'servers']) {
+  for (const key of SERVERS_MAP_KEYS) {
     const inner = obj[key];
     if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
       return inner as Record<string, unknown>;
     }
   }
-  if (
-    typeof obj.name === 'string' &&
-    ['command', 'url', 'type', 'transport', 'args', 'headers', 'env'].some((k) => k in obj)
-  ) {
-    return { [obj.name]: obj };
-  }
+  if (selfNaming(obj)) return { [obj.name as string]: obj };
   return obj;
+}
+
+/**
+ * A copy of the payload with `fn` applied to each raw server definition, left
+ * in the shape the config was written in. The caller edits one server's values
+ * without having to know which of the three shapes it is looking at, and the
+ * payload keeps every field this parser does not model.
+ */
+export function mapImportServers(
+  payload: unknown,
+  fn: (rawName: string, def: unknown) => unknown,
+): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const obj = payload as Record<string, unknown>;
+  const mapEach = (map: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(map).map(([k, v]) => [k, fn(k, v)]));
+  for (const key of SERVERS_MAP_KEYS) {
+    const inner = obj[key];
+    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+      return { ...obj, [key]: mapEach(inner as Record<string, unknown>) };
+    }
+  }
+  if (selfNaming(obj)) return fn(obj.name as string, obj);
+  return mapEach(obj);
 }
 
 /** Normalize an already-parsed JSON object into server entries. */

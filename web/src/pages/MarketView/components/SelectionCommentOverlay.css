@@ -36,11 +36,6 @@
   filter: brightness(1.08);
 }
 
-.selection-pin:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
-}
-
 /* The pin embedded in the composer is a static marker, not a button. */
 .selection-pin--composer {
   position: static;
@@ -75,7 +70,6 @@
 .selection-composer-input {
   appearance: none;
   border: none;
-  outline: none;
   background: transparent;
   width: 190px;
   max-width: 40vw;
@@ -106,11 +100,6 @@
   filter: brightness(1.08);
 }
 
-.selection-composer-send:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
-}
-
 .selection-composer-cancel {
   flex-shrink: 0;
   display: inline-flex;
@@ -129,9 +118,4 @@
 .selection-composer-cancel:hover {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
-}
-
-.selection-composer-cancel:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
 }

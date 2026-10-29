@@ -11,7 +11,9 @@
  * Neutral placeholder model names only — no production data.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { createTestQueryClient, renderWithProviders } from '@/test/utils';
+import { queryKeys } from '@/lib/queryKeys';
 import React from 'react';
 
 vi.mock('react-i18next', () => ({
@@ -31,18 +33,24 @@ vi.mock('@/components/ui/animated-text', () => ({
   useAnimatedText: (text: string) => text,
 }));
 
-import TextMessageContent from '../TextMessageContent';
+import { TurnErrorCard } from '../TextMessageContent';
 import type { StructuredError } from '@/utils/rateLimitError';
 
+// The pills print a model's authored name from the cached catalog the composer
+// loaded; seed it the way that load would.
+function seededClient() {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(queryKeys.models.all, {
+    model_metadata: {
+      'model-alpha': { display_name: 'Alpha' },
+      'model-beta': { display_name: 'Beta' },
+    },
+  });
+  return queryClient;
+}
+
 function renderErr(structured: StructuredError) {
-  return render(
-    <TextMessageContent
-      content={structured.message}
-      isStreaming={false}
-      hasError={true}
-      structuredError={structured}
-    />,
-  );
+  return renderWithProviders(<TurnErrorCard err={structured} />, { queryClient: seededClient() });
 }
 
 describe('StructuredErrorDisplay — model-aware headline + "Also tried"', () => {
@@ -53,7 +61,7 @@ describe('StructuredErrorDisplay — model-aware headline + "Also tried"', () =>
       statusCode: 500,
       model: 'model-alpha',
     });
-    expect(screen.getByText('chat.errorUpstreamHeadlineModelStatus:model-alpha:500')).toBeInTheDocument();
+    expect(screen.getByText('chat.errorUpstreamHeadlineModelStatus:Alpha:500')).toBeInTheDocument();
   });
 
   it('renders a model-aware headline without status when statusCode is absent', () => {
@@ -62,7 +70,7 @@ describe('StructuredErrorDisplay — model-aware headline + "Also tried"', () =>
       kind: 'upstream',
       model: 'model-alpha',
     });
-    expect(screen.getByText('chat.errorUpstreamHeadlineModel:model-alpha')).toBeInTheDocument();
+    expect(screen.getByText('chat.errorUpstreamHeadlineModel:Alpha')).toBeInTheDocument();
   });
 
   it('falls back to the generic provider headline when no model is attributed', () => {
@@ -87,7 +95,7 @@ describe('StructuredErrorDisplay — model-aware headline + "Also tried"', () =>
 
     expect(screen.getByText('chat.errorAttemptedModels')).toBeInTheDocument();
     // The non-primary model is listed; its error rides a title tooltip.
-    const beta = screen.getByText('model-beta');
+    const beta = screen.getByText('Beta');
     expect(beta).toHaveAttribute('title', 'timed out');
     // The primary is filtered out of the "Also tried" list, so its error text
     // is not exposed as a tooltip anywhere.

@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.config.core import DaytonaConfig, PlatformSecretDefinition
+from ptc_agent.config.core import (
+    DaytonaConfig,
+    PlatformSecretDefinition,
+    SandboxConfig,
+)
 from ptc_agent.core.sandbox.platform_secrets import (
     PlatformSecretConfigurationError,
     PlatformSecretReconciliationError,
@@ -21,7 +25,7 @@ class _StatusError(Exception):
 
 def _resolved_secret():
     config = SimpleNamespace(
-        sandbox=SimpleNamespace(
+        sandbox=SandboxConfig(
             provider="daytona",
             daytona=DaytonaConfig(api_key="daytona-key", secret_namespace="prod"),
             platform_secrets=(
@@ -137,7 +141,7 @@ async def test_retryable_failure_retries_three_attempts():
     provider = _provider(client)
 
     with patch(
-        "ptc_agent.core.sandbox.providers.daytona_secrets.asyncio.sleep",
+        "ptc_agent.core.sandbox.platform_secrets.asyncio.sleep",
         AsyncMock(),
     ):
         await provider.reconcile_platform_secrets(_resolved_secret())
@@ -169,7 +173,7 @@ async def test_retry_exhaustion_is_sanitized_and_bounded():
 
     with (
         patch(
-            "ptc_agent.core.sandbox.providers.daytona_secrets.asyncio.sleep",
+            "ptc_agent.core.sandbox.platform_secrets.asyncio.sleep",
             AsyncMock(),
         ),
         pytest.raises(PlatformSecretReconciliationError) as exc_info,
@@ -208,7 +212,7 @@ async def test_status_less_transient_is_retried():
     provider = _provider(client)
 
     with patch(
-        "ptc_agent.core.sandbox.providers.daytona_secrets.asyncio.sleep",
+        "ptc_agent.core.sandbox.platform_secrets.asyncio.sleep",
         AsyncMock(),
     ):
         await provider.reconcile_platform_secrets(_resolved_secret())
@@ -284,13 +288,35 @@ def test_exception_status_supports_both_sdk_error_shapes():
         DaytonaSecretReconciler,
     )
 
-    assert DaytonaSecretReconciler._exception_status(_StatusError(409)) == 409
+    reconciler = DaytonaSecretReconciler(MagicMock())
+    assert reconciler._status(_StatusError(409)) == 409
     assert (
-        DaytonaSecretReconciler._exception_status(
+        reconciler._status(
             SimpleNamespace(status_code=503)  # type: ignore[arg-type]
         )
         == 503
     )
+
+
+@pytest.mark.asyncio
+async def test_incomplete_secret_metadata_fails_with_its_own_reason():
+    # Our own error already names the cause; re-wrapping it as a provider
+    # failure with status=unknown hid it, and retrying it changes nothing.
+    client = MagicMock()
+    client.secret.list = AsyncMock(
+        return_value=SimpleNamespace(items=[], next_cursor=None)
+    )
+    client.secret.create = AsyncMock(
+        return_value=SimpleNamespace(id="secret-id", placeholder="not-a-marker")
+    )
+    provider = _provider(client)
+
+    with pytest.raises(
+        PlatformSecretReconciliationError, match="incomplete platform Secret metadata"
+    ):
+        await provider.reconcile_platform_secrets(_resolved_secret())
+
+    client.secret.create.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -313,7 +339,7 @@ async def test_create_forwards_secret_bindings():
 
 @pytest.mark.asyncio
 async def test_runtime_wraps_update_env_and_update_secrets():
-    from ptc_agent.core.sandbox.providers.daytona import DaytonaRuntime
+    from ptc_agent.core.sandbox.providers.daytona_runtime import DaytonaRuntime
 
     sdk_sandbox = MagicMock(id="sandbox-id")
     sdk_sandbox.update_env = AsyncMock()

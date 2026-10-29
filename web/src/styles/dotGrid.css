@@ -1,0 +1,13 @@
+/* ============================================
+   Dotted ground
+   ============================================
+
+   The one recipe for a dotted surface, reserved for empty states (DESIGN.md):
+   the Plugins EmptyState and the Automations card while it lists nothing.
+   `--color-dot-grid` is kept barely visible on purpose (see tokens.css). Set
+   `background-color` for the ground behind the dots. */
+.dot-grid {
+  background-image: radial-gradient(circle at center, var(--color-dot-grid) 0.75px, transparent 0.75px);
+  background-size: 18px 18px;
+  background-position: 0 0;
+}

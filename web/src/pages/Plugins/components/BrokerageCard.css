@@ -1,0 +1,198 @@
+/* The brokerage card, wherever it is drawn: the Brokerages tab and the
+   welcome flow's first screen. Kept with the card rather than the page, so the
+   card reads the same outside it. */
+/* A broker per card: there are only a handful, and each is read in full
+   before connecting. Two side by side once the column fits them. */
+.broker-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 16px;
+}
+.broker-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: var(--color-bg-card);
+  transition: border-color var(--motion-quick) var(--ease-out);
+}
+.broker-card:hover,
+.broker-card:focus-within { border-color: var(--color-border-muted); }
+.broker-card-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.broker-card-mark {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--color-bg-elevated);
+}
+.broker-card-mark > * { width: 100%; height: 100%; border-radius: 0; }
+/* A hairline over the art, so a dark mark keeps its edge on a dark card. */
+.broker-card-mark::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--color-border-subtle);
+  pointer-events: none;
+}
+.broker-card-id { flex: 1; min-width: 0; }
+.broker-card-open {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+.broker-card-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 20px;
+}
+/* The name opens the broker's page from anywhere on the card. */
+.broker-card-open::after { content: ''; position: absolute; inset: 0; border-radius: 12px; }
+.broker-card-open:focus-visible { outline: none; }
+.broker-card-open:focus-visible::after { box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+.broker-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.broker-card-meta > * + *::before { content: '·'; margin-right: 6px; color: var(--color-text-quaternary); }
+.broker-card-meta a { position: relative; z-index: 1; color: inherit; }
+.broker-card-meta a:hover { color: var(--color-text-primary); text-decoration: underline; text-underline-offset: 2px; }
+/* What a working connection may do, then the menu. The menu is always drawn:
+   one found only by hovering is one a touch screen and a first visit miss. */
+.broker-card-end {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  min-height: 28px;
+  color: var(--color-text-secondary);
+}
+.broker-card-menu { display: flex; color: var(--color-text-tertiary); }
+.broker-card-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+.broker-card-state.is-quiet { color: var(--color-text-quaternary); }
+.broker-card-end .brokerage-grant { font-size: 0.75rem; }
+.broker-card-desc {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+.broker-card.is-off .broker-card-head > :first-child { opacity: 0.45; }
+.broker-card.is-off .broker-card-open { color: var(--color-text-secondary); font-weight: 500; }
+.broker-card.is-off .broker-card-desc,
+.broker-card.is-off .broker-caps { opacity: 0.6; }
+
+/* Where it trades, what the agent could reach, and the order steps in ladder
+   order. The labels share one column so the three read as a table. */
+.broker-caps { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+.broker-caps-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+.broker-caps-row dt {
+  font-size: 0.71875rem;
+  font-weight: 500;
+  line-height: 24px;
+  color: var(--color-text-tertiary);
+}
+.broker-caps-row dd { margin: 0; min-width: 0; }
+.broker-caps-text { font-size: 0.8125rem; line-height: 24px; color: var(--color-text-secondary); }
+.broker-caps-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.broker-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+.broker-cap-glyph { width: 12px; height: 12px; flex-shrink: 0; }
+.broker-cap.is-money { color: var(--color-text-primary); }
+.broker-cap.is-declined {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-border-subtle);
+  color: var(--color-text-quaternary);
+}
+.broker-cap.is-live { color: var(--color-warning); }
+.broker-caps-step { width: 12px; height: 12px; color: var(--color-text-quaternary); }
+.broker-caps-note {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+/* With no step to sit under, the sentence takes the row's line itself. */
+.broker-caps-note.is-alone { margin: 0; font-size: 0.8125rem; line-height: 24px; color: var(--color-text-secondary); }
+/* What connecting costs, then the button across the card's whole width: the
+   same shape on every card, and level across a row however much each says
+   above it. */
+.broker-card-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  margin-top: auto;
+}
+.broker-card-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.broker-card-notes a { position: relative; z-index: 1; }
+.broker-card-action {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  color: var(--color-text-secondary);
+}
+.broker-card-action > button { flex: 1; justify-content: center; height: 36px; }
+@media (max-width: 767px) {
+  .broker-cards { grid-template-columns: minmax(0, 1fr); }
+  .broker-card { padding: 16px; }
+  .broker-card-action > button { height: 40px; }
+  .broker-caps-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .broker-caps-row dt { line-height: 1.4; }
+}
+.brokerage-menu-hint { font-size: 0.6875rem; color: var(--color-text-tertiary); }
+.brokerage-grant {
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--color-text-tertiary);
+}
+.brokerage-grant.is-live { color: var(--color-text-secondary); }

@@ -13,11 +13,15 @@ without importing server modules).
 import json
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ptc_agent.agent.middleware.background_subagent.registry import TaskRunRejected
+from ptc_agent.config.agent import SubagentModel
 
+from src.server.contracts.run_times import epoch_ms
 from src.server.contracts.status import REPORT_BACK_STATUSES
+from src.server.database import replay_facts as facts_db
 from src.server.database.runs import subagent_runs as sr_db
 
 logger = logging.getLogger(__name__)
@@ -31,6 +35,48 @@ def v2_stream_key(thread_id: str, task_run_id: str) -> str:
     nothing resets or re-incarnates a key readers may hold cursors into.
     """
     return f"subagent:stream:{thread_id}:{task_run_id}"
+
+
+def _run_end_payload(outcome: str, finalized_at: Optional[datetime]) -> Dict[str, Any]:
+    """``run_end``'s payload: the outcome, and when the CAS settled the run
+    (``finished``, epoch ms), so a live card ends its run where the ledger
+    did rather than whenever the frame reached it."""
+    payload: Dict[str, Any] = {"outcome": outcome}
+    if finalized_at is not None:
+        payload["finished"] = epoch_ms(finalized_at)
+    return payload
+
+
+def _refresh_launching_turn(thread_id: Any, parent_run_id: Any) -> None:
+    """Re-project the turn that launched a run, whose stored replay was keyed
+    on the run as it was. A run with no parent launched no turn."""
+    if not parent_run_id:
+        return
+    try:
+        from src.server.services.history.replay.refresh import (
+            schedule_replay_refresh,
+        )
+
+        schedule_replay_refresh(str(thread_id), str(parent_run_id))
+    except Exception:
+        pass
+
+
+async def record_lane_images(
+    thread_id: str, response_id: str, task_id: str, images: Dict[str, str]
+) -> None:
+    """Record a lane's captured images on the runs the turn launched for it,
+    then re-project that turn, whose stored lines were keyed on the facts
+    before these.
+
+    Raises on a failed write: once the archive retires the lane's capture
+    stream, this map is the only record of where its images went.
+    """
+    recorded = await facts_db.append_lane_images(
+        thread_id, response_id, task_id, images
+    )
+    if recorded:
+        _refresh_launching_turn(thread_id, response_id)
 
 
 class SubagentRunCoordinator:
@@ -50,9 +96,12 @@ class SubagentRunCoordinator:
         subagent_type: str = "general-purpose",
         parent_run_id: Optional[str] = None,
         launch_tool_call_id: Optional[str] = None,
+        model: Optional[SubagentModel] = None,
     ) -> str:
         """Bear the run row (in_progress) and open its v2 stream; returns the
-        new task_run_id.
+        new task_run_id. ``model`` is the model the run will use, given only
+        when it is not its launcher's; the row and ``lane_open`` both carry
+        it, so a live card and a replayed one agree.
 
         Called under the task's namespace guard, BEFORE the writer spawns.
         Any constraint conflict raises TaskRunRejected — the spawn/resume
@@ -87,6 +136,7 @@ class SubagentRunCoordinator:
                 launch_tool_call_id=launch_tool_call_id,
                 predecessor_run_id=predecessor_run_id,
                 start_checkpoint_id=start_checkpoint_id,
+                model=model,
             )
         except sr_db.DuplicateLaunchError as e:
             raise TaskRunRejected(
@@ -119,6 +169,7 @@ class SubagentRunCoordinator:
                     "launch_tool_call_id": launch_tool_call_id,
                     "description": description,
                     "subagent_type": subagent_type,
+                    **({"model": model} if model else {}),
                 },
                 required=True,
             )
@@ -208,6 +259,16 @@ class SubagentRunCoordinator:
         final_checkpoint_id = (
             await self._read_task_checkpoint_tip(task_id) if task_id else None
         )
+        if task_id:
+            # Ahead of the settle in the CAS, which would take a row this
+            # run held, and whose message it checkpointed, as unread.
+            from src.server.services.report_back.steer import (
+                confirm_checkpointed_task_holds,
+            )
+
+            await confirm_checkpointed_task_holds(
+                self.thread_id, task_id, task_run_id
+            )
         result = await sr_db.finalize_task_run_idempotent(
             task_run_id=task_run_id,
             status=status,
@@ -216,12 +277,33 @@ class SubagentRunCoordinator:
         )
         if result["applied"]:
             run = result["run"]
+            # In the background, not awaited: the export may still be running,
+            # or folded into one already under way, when the report-back wakes
+            # the parent, so the transcript it reads for this task can lag the
+            # run's last word.
+            try:
+                from src.server.services.transcripts import schedule_thread_export
+
+                schedule_thread_export(self.thread_id)
+            except Exception:
+                pass
+            # The last writer of an archived thread's scratchpad may be this
+            # task, outliving the turn that dispatched it.
+            try:
+                from src.server.services.workspace_manager import prune_if_archived_soon
+
+                prune_if_archived_soon(self.thread_id)
+            except Exception:
+                pass
+            # The launching turn's replay could not be stored while this run
+            # still wrote; now it can.
+            _refresh_launching_turn(self.thread_id, run.get("parent_run_id"))
             if not defer_run_end:
                 await self._append_v2_frame(
                     task_run_id,
                     lane=f"task:{run['task_id']}",
                     frame_type="run_end",
-                    payload={"outcome": run["status"]},
+                    payload=_run_end_payload(run["status"], run.get("finalized_at")),
                     terminal=True,
                 )
             if run["status"] in REPORT_BACK_STATUSES and run.get("parent_run_id"):
@@ -237,12 +319,18 @@ class SubagentRunCoordinator:
         return result
 
     async def append_run_end(
-        self, task_run_id: str, *, task_id: str, outcome: str
+        self,
+        task_run_id: str,
+        *,
+        task_id: str,
+        outcome: str,
+        finalized_at: datetime,
     ) -> None:
         """Cursor-bearing terminal frame for the wrapper's deferred path —
-        appended after the steering sweep so steering_returned frames
-        precede it and nothing follows it. Idempotent by last-frame
-        inspection, so it is safe to race a recovery finalizer."""
+        appended after the run's steering_returned frames so they precede it
+        and nothing follows it. Idempotent by last-frame
+        inspection, so it is safe to race a recovery finalizer.
+        ``finalized_at`` is the settling row's, from the CAS."""
         try:
             from src.utils.cache.redis_cache import get_cache_client
 
@@ -266,7 +354,7 @@ class SubagentRunCoordinator:
             task_run_id,
             lane=f"task:{task_id}",
             frame_type="run_end",
-            payload={"outcome": outcome},
+            payload=_run_end_payload(outcome, finalized_at),
             terminal=True,
         )
 

@@ -38,6 +38,8 @@ from typing_extensions import Self
 from ._version import __version__
 from .data._profiles import _PROFILES
 
+from src.llms.attachment_payload import is_text_block
+
 DEFAULT_API_BASE = "https://api.z.ai/api/paas/v4"
 """z.ai (international) OpenAI-compatible endpoint for GLM models."""
 
@@ -400,20 +402,21 @@ class ChatZai(BaseChatOpenAI):
 
 
 def _normalize_message_content(messages: list[dict]) -> None:
-    """Coerce list-form ``tool``/``assistant`` content to strings, in place.
+    """Flatten all-text ``tool``/``assistant`` content to a string, in place.
 
-    The OpenAI-compatible GLM endpoint expects string content on ``tool`` and
-    ``assistant`` messages, not the structured-block list form.
+    A ``tool`` message carrying an attachment keeps its block list: GLM's
+    multimodal models read an ``image_url`` or ``file`` block in that position,
+    and serialising one to JSON hands the model a wall of base64 as prose. A
+    text-only model rejects the block outright (error 1210), which is the
+    honest outcome; modality gating upstream is what keeps it from getting
+    there.
     """
     for message in messages:
         if message.get("role") == "tool" and isinstance(message.get("content"), list):
-            parts = [
-                block.get("text", "")
-                if isinstance(block, dict) and block.get("type") == "text"
-                else json.dumps(block, ensure_ascii=False)
-                for block in message["content"]
-            ]
-            message["content"] = "".join(parts)
+            blocks = message["content"]
+            if not all(is_text_block(block) for block in blocks):
+                continue
+            message["content"] = "".join(block.get("text", "") for block in blocks)
         elif message.get("role") == "assistant" and isinstance(
             message.get("content"), list
         ):

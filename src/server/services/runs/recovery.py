@@ -5,10 +5,11 @@ root) advisory lock is acquirable, and an owner holds that lock from before
 START to after finalize — classifies them exactly as the owner would have
 (durable cancel intent → cancelled; a durable run-matching ``__interrupt__``
 at the checkpoint tip → interrupted; anything else → error worker_lost),
-salvages the run's Redis stream into the sse_events archive, and finalizes
-through the same CAS as every other path. Concurrent scanners on sibling
-workers are safe without leadership: the lock probe serializes them per run
-and the CAS is single-winner regardless.
+keeps what its Redis stream holds for what its checkpoints saved (the saved
+tool calls' provenance, the saved messages' reasoning durations), and
+finalizes through the same CAS as every other path. Concurrent scanners on
+sibling workers are safe without leadership: the lock probe serializes them
+per run and the CAS is single-winner regardless.
 
 Runs periodically only when the WriterGuard fence is active. Without the
 fence there is no liveness oracle, so scanning is startup-only (this
@@ -19,22 +20,38 @@ import asyncio
 import json
 import logging
 import random
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config.settings import get_recovery_scan_interval
+from src.server.database.runs import credit_ledger
+from src.server.database.runs import subagent_repair
 from src.server.database.runs import subagent_runs as sr_db
 from src.server.database.runs import lifecycle as tl_db
 
 logger = logging.getLogger(__name__)
 
 # Salvage reads at most this many stream entries; a run that produced more
-# archives a truncated prefix (recovery_quality says so) rather than letting
-# one huge dead run stall the scan.
+# keeps a truncated prefix's provenance (recovery_quality says so) rather than
+# letting one huge dead run stall the scan.
 SALVAGE_MAX_EVENTS = 5000
 
 # Graceful-stop grace period: a scan pass in flight gets this long to finish
 # its current run's commit-to-emission section before being cancelled.
 STOP_GRACE = 30.0
+
+
+# A healthy stop settles within admission's teardown wait (the checkpoint
+# flush timeout plus a margin, seconds). A run still fenced this long after
+# its stop request has a wedged owner, and every new turn on its thread gets
+# a 409 until it settles: worth a warning, where a live turn's skip is not.
+STUCK_STOP_AFTER = timedelta(minutes=2)
+
+
+# Scans between billing-settle sweeps. The sweep's own grace window is 30
+# minutes, so anything short of that is timely; this keeps an idle fleet from
+# issuing two table-wide UPDATEs per worker every scan interval.
+_SETTLE_SWEEP_EVERY_N_SCANS = 10
 
 
 class RecoveryScanner:
@@ -43,6 +60,8 @@ class RecoveryScanner:
     def __init__(self) -> None:
         self._loop_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+        self._sweep_tick = 0
+        self._warned_stuck: set[str] = set()
 
     @classmethod
     def get_instance(cls) -> "RecoveryScanner":
@@ -142,6 +161,15 @@ class RecoveryScanner:
         # conditional on there being open runs to recover.
         await self.heal_task_chains()
 
+        # Same reasoning for billing settle: a terminal row whose settle stamp
+        # never landed sits unnoticed precisely when nothing is running. But
+        # it is two unbounded UPDATEs over both hot run tables, fired by every
+        # worker, and its grace window is 30 minutes — so every scan is far
+        # more often than the work can possibly warrant.
+        self._sweep_tick += 1
+        if self._sweep_tick % _SETTLE_SWEEP_EVERY_N_SCANS == 1:
+            await self.settle_abandoned_usage()
+
         if not open_runs and not open_task_runs:
             return 0
 
@@ -178,6 +206,7 @@ class RecoveryScanner:
         from src.server.services import writer_guard as wg
 
         recovered = 0
+        self._warned_stuck &= {str(r["conversation_response_id"]) for r in open_runs}
         for run in open_runs:
             if self._stop_event.is_set():
                 # Shutting down: current run finished cleanly; leave the
@@ -200,10 +229,7 @@ class RecoveryScanner:
                     )
                     continue
                 if not acquired:
-                    logger.debug(
-                        f"[RecoveryScanner] run {run_id} fenced by a live "
-                        "owner; skipping"
-                    )
+                    self._note_fenced(run, run_id, thread_id)
                     continue
             inner = asyncio.ensure_future(
                 self._recover_run(run, run_id, thread_id)
@@ -235,6 +261,24 @@ class RecoveryScanner:
                     except Exception:
                         pass
         return recovered
+
+    def _note_fenced(self, run: Dict[str, Any], run_id: str, thread_id: str) -> None:
+        requested = run.get("cancel_requested_at")
+        if (
+            requested is None
+            or run_id in self._warned_stuck
+            or datetime.now(timezone.utc) - requested < STUCK_STOP_AFTER
+        ):
+            logger.debug(
+                f"[RecoveryScanner] run {run_id} fenced by a live owner; skipping"
+            )
+            return
+        self._warned_stuck.add(run_id)
+        logger.warning(
+            f"[RecoveryScanner] run {run_id} (thread={thread_id}) is still "
+            f"fenced {datetime.now(timezone.utc) - requested} after its stop "
+            f"request; skipping it as live, and its thread refuses new turns"
+        )
 
     async def _scan_task_runs(
         self, open_task_runs: List[Dict[str, Any]], lock_conn
@@ -354,10 +398,10 @@ class RecoveryScanner:
     async def _recover_run(
         self, run: Dict[str, Any], run_id: str, thread_id: str
     ) -> bool:
-        status, interrupt_reason, errors, checkpoint_id = await self._classify(
-            run, run_id, thread_id
+        status, interrupt_reason, errors, newest, stamped = (
+            await self._classify(run, run_id, thread_id)
         )
-        sse_events, quality = await self._salvage_stream(thread_id, run_id)
+        record, quality = await self._salvage(thread_id, run_id, status)
 
         from src.server.services.runs.coordinator import RunCoordinator, RunOutcome
 
@@ -372,16 +416,23 @@ class RecoveryScanner:
             RunOutcome(
                 status=status,
                 interrupt_reason=interrupt_reason,
-                metadata={"recovery": "scanner", "recovery_quality": quality},
+                metadata={
+                    "recovery": "scanner",
+                    "recovery_quality": quality,
+                    **stamped,
+                },
                 errors=errors,
-                sse_events=sse_events,
+                # The stream is the only record of what the dead run fetched,
+                # how long it thought, and which fallbacks it streamed.
+                record=record,
             ),
-            checkpoint_id=checkpoint_id,
+            newest=newest,
             error_frame={
                 "thread_id": thread_id,
                 "content": "the worker running this turn was lost",
                 "error_type": "worker_lost",
                 "error": "worker_lost",
+                "error_kind": "internal",
             },
         )
         if result.applied:
@@ -396,19 +447,29 @@ class RecoveryScanner:
 
     async def _classify(
         self, run: Dict[str, Any], run_id: str, thread_id: str
-    ) -> Tuple[str, Optional[str], Optional[List[str]], Optional[str]]:
-        """(status, interrupt_reason, errors, checkpoint_id) for a dead run.
+    ) -> Tuple[
+        str,
+        Optional[str],
+        Optional[List[str]],
+        Optional[tl_db.NewestCheckpoint],
+        Dict[str, Any],
+    ]:
+        """(status, interrupt_reason, errors, newest, metadata) for a dead
+        run, ``newest`` being the thread's newest checkpoint, which the
+        finalize commits only when this run wrote it.
 
         `interrupted` demands a pending ``__interrupt__`` on a checkpoint
         CREATED BY this run (CheckpointMetadata.run_id, stamped from the
         workflow's graph_config) — a predecessor's stale pending interrupt
         must not lend false resumability to a run that died pre-graph (I8).
         """
-        tip_id: Optional[str] = None
+        newest: Optional[tl_db.NewestCheckpoint] = None
+        newest_read = False
         tip_matches = False
         pending_interrupts: List[Any] = []
         try:
             from src.server.app import setup
+            from src.server.utils.checkpoint_helpers import newest_checkpoint
 
             saver = setup.checkpointer
             cp = (
@@ -421,13 +482,15 @@ class RecoveryScanner:
             if cp is not None:
                 tip_matches = (cp.metadata or {}).get("run_id") == run_id
                 if tip_matches:
-                    tip_id = cp.config["configurable"].get("checkpoint_id")
                     for _task, channel, value in cp.pending_writes or ():
                         if channel != "__interrupt__":
                             continue
                         pending_interrupts.extend(
                             value if isinstance(value, list) else [value]
                         )
+            if saver:
+                newest = await newest_checkpoint(saver, thread_id)
+            newest_read = True
         except Exception:
             logger.error(
                 f"[RecoveryScanner] checkpoint read failed for {thread_id}; "
@@ -435,49 +498,170 @@ class RecoveryScanner:
                 exc_info=True,
             )
 
+        # With no handle, the input stamp comes from the row START wrote, and
+        # as on the owner's path a failed read decides nothing. A stopped run
+        # carries it as a failed one does.
+        from src.server.services.runs.pending_input import (
+            read_untaken_input,
+            untaken_input_stamp,
+        )
+
+        stamp = (
+            untaken_input_stamp(read_untaken_input(run), run_id, newest)
+            if newest_read
+            else {}
+        )
+
         if run.get("cancel_requested_at"):
             # The CAS adopts cancelled from the durable intent regardless;
             # requesting it just keeps the log honest.
-            return "cancelled", None, None, tip_id
+            return "cancelled", None, None, newest, stamp
 
         if pending_interrupts:
             from src.server.contracts.status import (
-                classify_interrupt_reason,
+                INTERRUPT_REASON_CREDIT_PAUSE,
+                classify_interrupts,
             )
 
-            return (
-                "interrupted",
-                classify_interrupt_reason(pending_interrupts),
-                None,
-                tip_id,
+            reason, pause_message = classify_interrupts(pending_interrupts)
+            # Stamped as the owner's finalize stamps it, so settling the
+            # run's automation reads it off the run's row either way.
+            stamped = (
+                {"credit_pause_message": pause_message}
+                if reason == INTERRUPT_REASON_CREDIT_PAUSE
+                else {}
             )
+            return "interrupted", reason, None, newest, stamped
 
         return (
             "error",
             None,
             ["worker_lost: no live executor holds this run's writer fence"],
-            tip_id,
+            newest,
+            stamp,
         )
 
     # --------------------------------------------------------------- salvage
 
-    async def _salvage_stream(
-        self, thread_id: str, run_id: str
-    ) -> Tuple[Optional[List[Dict[str, Any]]], str]:
-        """Parse the run's Redis stream into the persisted sse_events shape.
+    async def _salvage(
+        self, thread_id: str, run_id: str, status: str
+    ) -> Tuple[Any, str]:
+        """What the dead run streamed that its checkpoints do not keep, and
+        how much of its stream was read: the provenance of the tool calls
+        they saved, how long the main agent thought over the messages they
+        saved, the main agent's fallback notices, and the error frame a
+        failed run sent.
 
-        Best-effort archive (I7): the dead run's events would otherwise
-        evaporate at stream TTL. Uses the same accumulator as live
-        persistence so chunk merging matches owner-persisted turns.
+        A run that stopped or failed may have streamed past its last save.
+        The turn it leaves never shows the calls of that step, so their
+        sources are dropped, but its notices are kept as the finalize keeps
+        them: each frame names its ui record, and replay adds those no saved
+        step holds. A frame that names none, from an older server, is left to
+        the checkpoint. A failed checkpoint read keeps every source, as the
+        finalize does, and no durations, which only a saved message can be
+        keyed by.
         """
+        from src.server.database.runs.lifecycle import ProducerRecord
+        from src.server.services.history.committed import (
+            UNSAVED_RESULT_ENDINGS,
+            saved_provenance,
+            saved_tool_calls,
+        )
+        from src.server.services.history.reader import CheckpointHistoryReader
+        from src.server.services.runs.reasoning_facts import saved_durations
+        from src.server.services.runs.sse_producer import (
+            fallback_from_frame,
+            kept_error_frame,
+        )
+
+        frames, quality = await self._read_stream(thread_id, run_id)
+        if not frames:
+            logger.info(
+                f"[RecoveryScanner] no stream to salvage for run {run_id} "
+                f"({quality}); nothing recorded"
+            )
+            return ProducerRecord(provenance=[]), quality
+        provenance = [
+            {"event": "provenance", "data": data}
+            for event_type, data in frames
+            if event_type == "provenance"
+        ]
+        # Only a stopped or failed run can end on a step that saved nothing.
+        fallbacks = (
+            [
+                record
+                for event_type, data in frames
+                if event_type == "model_fallback"
+                and (record := fallback_from_frame(data)) is not None
+            ]
+            if status in UNSAVED_RESULT_ENDINGS
+            else []
+        )
+        error_frame = (
+            next(
+                (
+                    kept
+                    for event_type, data in reversed(frames)
+                    if event_type == "error"
+                    and (kept := kept_error_frame(data)) is not None
+                ),
+                None,
+            )
+            if status == "error"
+            else None
+        )
         try:
-            from src.server.services.runs.sse_producer import StreamEventAccumulator
+            state = await CheckpointHistoryReader.get_instance().aget_run_state(
+                thread_id, run_id
+            )
+        except Exception:
+            logger.error(
+                f"[RecoveryScanner] checkpoint read failed for run {run_id}; "
+                f"its provenance is recorded unchecked",
+                exc_info=True,
+            )
+            return (
+                ProducerRecord(
+                    provenance=provenance,
+                    model_fallbacks=fallbacks,
+                    error_frame=error_frame,
+                ),
+                quality,
+            )
+        messages = (state.values or {}).get("messages") or () if state else ()
+
+        kept = (
+            saved_provenance(provenance, saved_tool_calls(messages))
+            if status in UNSAVED_RESULT_ENDINGS
+            else provenance
+        )
+        if len(kept) < len(provenance):
+            logger.info(
+                f"[RecoveryScanner] run {run_id}: kept {len(kept)} of "
+                f"{len(provenance)} provenance entries, the rest from tool "
+                f"calls it never saved"
+            )
+        return (
+            ProducerRecord(
+                provenance=kept,
+                reasoning_ms=saved_durations(frames, messages),
+                model_fallbacks=fallbacks,
+                error_frame=error_frame,
+            ),
+            quality,
+        )
+
+    async def _read_stream(
+        self, thread_id: str, run_id: str
+    ) -> Tuple[List[Tuple[str, Dict[str, Any]]], str]:
+        """The run's parsed Redis stream frames, and its salvage quality."""
+        try:
             from src.server.services.runs.stream_writer import stream_key
             from src.utils.cache.redis_cache import get_cache_client
 
             cache = get_cache_client()
             if not (cache.enabled and cache.client):
-                return None, "redis_unavailable"
+                return [], "redis_unavailable"
             # +1 proves truncation instead of inferring it from an exact
             # SALVAGE_MAX_EVENTS-length stream.
             entries = await cache.client.xrange(
@@ -488,36 +672,33 @@ class RecoveryScanner:
                 f"[RecoveryScanner] stream salvage read failed for {run_id}",
                 exc_info=True,
             )
-            return None, "redis_unavailable"
+            return [], "redis_unavailable"
 
         if not entries:
-            return None, "empty_stream"
+            return [], "empty_stream"
         truncated = len(entries) > SALVAGE_MAX_EVENTS
         if truncated:
             entries = entries[:SALVAGE_MAX_EVENTS]
 
-        acc = StreamEventAccumulator()
-        parsed = 0
+        frames = []
         for _entry_id, fields in entries:
             wire = fields.get(b"event") or fields.get("event")
             frame = self._parse_wire_frame(wire)
             if frame is not None:
-                acc.add(frame[0], frame[1])
-                parsed += 1
-        events = acc.get_events()
-        if not events:
-            return None, "unparseable_stream"
+                frames.append(frame)
+        if not frames:
+            return [], "unparseable_stream"
         if truncated:
             quality = "salvaged_truncated"
-        elif parsed != len(entries):
+        elif len(frames) != len(entries):
             quality = "salvaged_partial"
         else:
             quality = "salvaged"
         logger.info(
-            f"[RecoveryScanner] salvaged {parsed}/{len(entries)} stream "
+            f"[RecoveryScanner] read {len(frames)}/{len(entries)} stream "
             f"entries for run {run_id}"
         )
-        return events, quality
+        return frames, quality
 
     @staticmethod
     def _parse_wire_frame(wire: Any) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -572,7 +753,7 @@ class RecoveryScanner:
         every cycle costs nothing on a healthy ledger.
         """
         try:
-            healed = await sr_db.repair_dangling_task_chains()
+            healed = await subagent_repair.repair_dangling_task_chains()
             if healed["rewound"] or healed["deleted"]:
                 logger.warning(
                     f"[RecoveryScanner] healed task chains: "
@@ -582,3 +763,33 @@ class RecoveryScanner:
         except Exception:
             logger.error("[RecoveryScanner] task chain heal failed", exc_info=True)
             return {"rewound": 0, "deleted": 0}
+
+    async def settle_abandoned_usage(self) -> Dict[str, int]:
+        """Degraded billing settle for terminal rows no settle path will reach.
+
+        The normal settles are transactional (the finalize CAS for response
+        rows, the collector txn for task runs whatever status they finalized
+        on); what lands here is the leftovers — a completed child whose
+        parent died before collecting, or a row finalized by pre-gate code
+        during a rolling deploy. Settling stamps the row out of the in-flight
+        aggregate while leaving the heartbeated value in place as the last
+        durable observation of what the run spent; without this, a dead run's
+        heartbeat would count against its user forever. The grace interval
+        gives a live collector first claim on its transactional settle; both
+        updates are idempotent, so concurrent workers sweeping is harmless.
+        """
+        settled = {"responses": 0, "task_runs": 0}
+        try:
+            settled["responses"] = await credit_ledger.settle_abandoned("run")
+            settled["task_runs"] = await credit_ledger.settle_abandoned("task")
+            if settled["responses"] or settled["task_runs"]:
+                logger.warning(
+                    f"[RecoveryScanner] degraded-settled abandoned usage: "
+                    f"responses={settled['responses']} "
+                    f"task_runs={settled['task_runs']}"
+                )
+        except Exception:
+            logger.error(
+                "[RecoveryScanner] abandoned usage settle failed", exc_info=True
+            )
+        return settled

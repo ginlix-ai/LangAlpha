@@ -1,0 +1,6583 @@
+{
+ "claude-fable-5-1": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "claude-fable-5-1",
+   "pricing_model_id": "claude-fable-5-1",
+   "pricing_provider": "anthropic",
+   "provider_route": "anthropic",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-fable-5-1",
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "claude-fable-5-1-oauth": {
+  "client": "ChatAnthropicOAuth",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-fable-5-1-oauth",
+   "pricing_model_id": "claude-fable-5-1",
+   "pricing_provider": "claude-oauth",
+   "provider_route": "claude-oauth",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-fable-5-1",
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true,
+    "system": [
+     {
+      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+      "type": "text"
+     },
+     {
+      "text": "You are a lock probe.",
+      "type": "text"
+     }
+    ],
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "claude-haiku-5-5": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "claude-haiku-5-5",
+   "pricing_model_id": "claude-haiku-5-5",
+   "pricing_provider": "anthropic",
+   "provider_route": "anthropic",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-haiku-5-5",
+    "output_config": {
+     "effort": "medium"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "claude-haiku-5-5-oauth": {
+  "client": "ChatAnthropicOAuth",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-haiku-5-5-oauth",
+   "pricing_model_id": "claude-haiku-5-5",
+   "pricing_provider": "claude-oauth",
+   "provider_route": "claude-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-haiku-5-5",
+    "output_config": {
+     "effort": "medium"
+    },
+    "stream": true,
+    "system": [
+     {
+      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+      "type": "text"
+     },
+     {
+      "text": "You are a lock probe.",
+      "type": "text"
+     }
+    ],
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "claude-opus-5-5": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "claude-opus-5-5",
+   "pricing_model_id": "claude-opus-5-5",
+   "pricing_provider": "anthropic",
+   "provider_route": "anthropic",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-opus-5-5",
+    "output_config": {
+     "effort": "medium"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "claude-opus-5-5-oauth": {
+  "client": "ChatAnthropicOAuth",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-opus-5-5-oauth",
+   "pricing_model_id": "claude-opus-5-5",
+   "pricing_provider": "claude-oauth",
+   "provider_route": "claude-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-opus-5-5",
+    "output_config": {
+     "effort": "medium"
+    },
+    "stream": true,
+    "system": [
+     {
+      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+      "type": "text"
+     },
+     {
+      "text": "You are a lock probe.",
+      "type": "text"
+     }
+    ],
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "claude-sonnet-5-5": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "claude-sonnet-5-5",
+   "pricing_model_id": "claude-sonnet-5-5",
+   "pricing_provider": "anthropic",
+   "provider_route": "anthropic",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-sonnet-5-5",
+    "output_config": {
+     "effort": "medium"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "claude-sonnet-5-5-oauth": {
+  "client": "ChatAnthropicOAuth",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "claude-sonnet-5-5-oauth",
+   "pricing_model_id": "claude-sonnet-5-5",
+   "pricing_provider": "claude-oauth",
+   "provider_route": "claude-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "claude-sonnet-5-5",
+    "output_config": {
+     "effort": "medium"
+    },
+    "stream": true,
+    "system": [
+     {
+      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+      "type": "text"
+     },
+     {
+      "text": "You are a lock probe.",
+      "type": "text"
+     }
+    ],
+    "thinking": {
+     "block_binding": {
+      "prefix_mismatch_behavior": "drop_block"
+     },
+     "display": "summarized",
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,thinking-binding-controls-2026-08-01,mid-conversation-system-clear-at-2026-08-21,compact-2026-09-04",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.anthropic.com",
+    "x-app": "cli"
+   },
+   "method": "POST",
+   "url": "https://api.anthropic.com/v1/messages"
+  }
+ },
+ "deepseek-flash": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "deepseek-flash",
+   "pricing_model_id": "deepseek-flash",
+   "pricing_provider": "deepseek",
+   "provider_route": "deepseek",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 384000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "deepseek-flash",
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "thinking": {
+     "type": "enabled"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.deepseek.com"
+   },
+   "method": "POST",
+   "url": "https://api.deepseek.com/anthropic/v1/messages"
+  }
+ },
+ "gemini-3.1-flash-lite": {
+  "client": "ChatGoogleGenerativeAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gemini-3.1-flash-lite",
+   "pricing_model_id": "gemini-3.1-flash-lite-preview",
+   "pricing_provider": "gemini",
+   "provider_route": "gemini",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "contents": [
+     {
+      "parts": [
+       {
+        "text": "Look up AAPL."
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "generationConfig": {
+     "candidateCount": 1,
+     "thinkingConfig": {
+      "include_thoughts": true,
+      "thinking_level": "MEDIUM"
+     }
+    },
+    "safetySettings": [],
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "You are a lock probe."
+      }
+     ]
+    },
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "description": "Look up a symbol.",
+        "name": "lock_probe",
+        "parameters": {
+         "properties": {
+          "symbol": {
+           "type": "STRING"
+          }
+         },
+         "required": [
+          "symbol"
+         ],
+         "type": "OBJECT"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "headers": {
+    "content-type": "application/json",
+    "x-server-timeout": "600"
+   },
+   "method": "POST",
+   "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent"
+  }
+ },
+ "gemini-3.8-flash": {
+  "client": "ChatGoogleGenerativeAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gemini-3.8-flash",
+   "pricing_model_id": "gemini-3.8-flash",
+   "pricing_provider": "gemini",
+   "provider_route": "gemini",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "contents": [
+     {
+      "parts": [
+       {
+        "text": "Look up AAPL."
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "generationConfig": {
+     "candidateCount": 1,
+     "thinkingConfig": {
+      "include_thoughts": true,
+      "thinking_level": "MEDIUM"
+     }
+    },
+    "safetySettings": [],
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "You are a lock probe."
+      }
+     ]
+    },
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "description": "Look up a symbol.",
+        "name": "lock_probe",
+        "parameters": {
+         "properties": {
+          "symbol": {
+           "type": "STRING"
+          }
+         },
+         "required": [
+          "symbol"
+         ],
+         "type": "OBJECT"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "headers": {
+    "content-type": "application/json",
+    "x-server-timeout": "600"
+   },
+   "method": "POST",
+   "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+  }
+ },
+ "gemini-4-argon": {
+  "client": "ChatGoogleGenerativeAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gemini-4-argon",
+   "pricing_model_id": "gemini-4-argon",
+   "pricing_provider": "gemini",
+   "provider_route": "gemini",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "contents": [
+     {
+      "parts": [
+       {
+        "text": "Look up AAPL."
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "generationConfig": {
+     "candidateCount": 1,
+     "thinkingConfig": {
+      "include_thoughts": true,
+      "thinking_level": "MEDIUM"
+     }
+    },
+    "safetySettings": [],
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "You are a lock probe."
+      }
+     ]
+    },
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "description": "Look up a symbol.",
+        "name": "lock_probe",
+        "parameters": {
+         "properties": {
+          "symbol": {
+           "type": "STRING"
+          }
+         },
+         "required": [
+          "symbol"
+         ],
+         "type": "OBJECT"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "headers": {
+    "content-type": "application/json",
+    "x-server-timeout": "600"
+   },
+   "method": "POST",
+   "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent"
+  }
+ },
+ "glm-5.2": {
+  "client": "ChatZai",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "glm-5.2",
+   "pricing_model_id": "glm-5.2",
+   "pricing_provider": "z-ai",
+   "provider_route": "z-ai",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "glm-5.2",
+    "reasoning_effort": "high",
+    "stream": false,
+    "thinking": {
+     "clear_thinking": false,
+     "type": "enabled"
+    },
+    "tools": [
+     {
+      "function": {
+       "description": "Look up a symbol.",
+       "name": "lock_probe",
+       "parameters": {
+        "properties": {
+         "symbol": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "symbol"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.z.ai"
+   },
+   "method": "POST",
+   "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  }
+ },
+ "glm-5.2-cn": {
+  "client": "ChatZai",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "glm-5.2-cn",
+   "pricing_model_id": "glm-5.2",
+   "pricing_provider": "z-ai-cn",
+   "provider_route": "z-ai-cn",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "glm-5.2",
+    "reasoning_effort": "high",
+    "stream": false,
+    "thinking": {
+     "clear_thinking": false,
+     "type": "enabled"
+    },
+    "tools": [
+     {
+      "function": {
+       "description": "Look up a symbol.",
+       "name": "lock_probe",
+       "parameters": {
+        "properties": {
+         "symbol": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "symbol"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "open.bigmodel.cn"
+   },
+   "method": "POST",
+   "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  }
+ },
+ "glm-5.3": {
+  "client": "ChatZai",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "glm-5.3",
+   "pricing_model_id": "glm-5.3",
+   "pricing_provider": "z-ai",
+   "provider_route": "z-ai",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "glm-5.3",
+    "reasoning_effort": "high",
+    "stream": false,
+    "thinking": {
+     "clear_thinking": false,
+     "type": "enabled"
+    },
+    "tools": [
+     {
+      "function": {
+       "description": "Look up a symbol.",
+       "name": "lock_probe",
+       "parameters": {
+        "properties": {
+         "symbol": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "symbol"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.z.ai"
+   },
+   "method": "POST",
+   "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  }
+ },
+ "glm-5.3-cn": {
+  "client": "ChatZai",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "glm-5.3-cn",
+   "pricing_model_id": "glm-5.3",
+   "pricing_provider": "z-ai-cn",
+   "provider_route": "z-ai-cn",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "glm-5.3",
+    "reasoning_effort": "high",
+    "stream": false,
+    "thinking": {
+     "clear_thinking": false,
+     "type": "enabled"
+    },
+    "tools": [
+     {
+      "function": {
+       "description": "Look up a symbol.",
+       "name": "lock_probe",
+       "parameters": {
+        "properties": {
+         "symbol": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "symbol"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "open.bigmodel.cn"
+   },
+   "method": "POST",
+   "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  }
+ },
+ "glm-5.3-flash": {
+  "client": "ChatZai",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "glm-5.3-flash",
+   "pricing_model_id": "glm-5.3-flash",
+   "pricing_provider": "z-ai",
+   "provider_route": "z-ai",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "glm-5.3-flash",
+    "reasoning_effort": "high",
+    "stream": false,
+    "thinking": {
+     "clear_thinking": false,
+     "type": "enabled"
+    },
+    "tools": [
+     {
+      "function": {
+       "description": "Look up a symbol.",
+       "name": "lock_probe",
+       "parameters": {
+        "properties": {
+         "symbol": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "symbol"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.z.ai"
+   },
+   "method": "POST",
+   "url": "https://api.z.ai/api/paas/v4/chat/completions"
+  }
+ },
+ "glm-5.3-flash-cn": {
+  "client": "ChatZai",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "glm-5.3-flash-cn",
+   "pricing_model_id": "glm-5.3-flash",
+   "pricing_provider": "z-ai-cn",
+   "provider_route": "z-ai-cn",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "glm-5.3-flash",
+    "reasoning_effort": "high",
+    "stream": false,
+    "thinking": {
+     "clear_thinking": false,
+     "type": "enabled"
+    },
+    "tools": [
+     {
+      "function": {
+       "description": "Look up a symbol.",
+       "name": "lock_probe",
+       "parameters": {
+        "properties": {
+         "symbol": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "symbol"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "open.bigmodel.cn"
+   },
+   "method": "POST",
+   "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  }
+ },
+ "gpt-5.3-codex-spark-oauth": {
+  "client": "ChatCodexOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "gpt-5.3-codex-spark-oauth",
+   "pricing_model_id": "gpt-5.3-codex-spark",
+   "pricing_provider": "codex-oauth",
+   "provider_route": "codex-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "instructions": "You are a lock probe.",
+    "model": "gpt-5.3-codex-spark",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": true,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "chatgpt.com",
+    "originator": "codex_cli_rs"
+   },
+   "method": "POST",
+   "url": "https://chatgpt.com/backend-api/codex/responses"
+  }
+ },
+ "gpt-6-astra": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gpt-6-astra",
+   "pricing_model_id": "gpt-6-astra",
+   "pricing_provider": "openai",
+   "provider_route": "openai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "gpt-6-astra",
+    "prompt_cache_options": {
+     "mode": "implicit"
+    },
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.openai.com"
+   },
+   "method": "POST",
+   "url": "https://api.openai.com/v1/responses"
+  }
+ },
+ "gpt-6-astra-oauth": {
+  "client": "ChatCodexOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "gpt-6-astra-oauth",
+   "pricing_model_id": "gpt-6-astra",
+   "pricing_provider": "codex-oauth",
+   "provider_route": "codex-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "instructions": "You are a lock probe.",
+    "model": "gpt-6-astra",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": true,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "chatgpt.com",
+    "originator": "codex_cli_rs"
+   },
+   "method": "POST",
+   "url": "https://chatgpt.com/backend-api/codex/responses"
+  }
+ },
+ "gpt-6-luna": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gpt-6-luna",
+   "pricing_model_id": "gpt-6-luna",
+   "pricing_provider": "openai",
+   "provider_route": "openai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "gpt-6-luna",
+    "prompt_cache_options": {
+     "mode": "implicit"
+    },
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.openai.com"
+   },
+   "method": "POST",
+   "url": "https://api.openai.com/v1/responses"
+  }
+ },
+ "gpt-6-luna-oauth": {
+  "client": "ChatCodexOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "gpt-6-luna-oauth",
+   "pricing_model_id": "gpt-6-luna",
+   "pricing_provider": "codex-oauth",
+   "provider_route": "codex-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "instructions": "You are a lock probe.",
+    "model": "gpt-6-luna",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": true,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "chatgpt.com",
+    "originator": "codex_cli_rs"
+   },
+   "method": "POST",
+   "url": "https://chatgpt.com/backend-api/codex/responses"
+  }
+ },
+ "gpt-6.1-sol": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gpt-6.1-sol",
+   "pricing_model_id": "gpt-6.1-sol",
+   "pricing_provider": "openai",
+   "provider_route": "openai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "gpt-6.1-sol",
+    "prompt_cache_options": {
+     "mode": "implicit"
+    },
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.openai.com"
+   },
+   "method": "POST",
+   "url": "https://api.openai.com/v1/responses"
+  }
+ },
+ "gpt-6.1-sol-oauth": {
+  "client": "ChatCodexOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "gpt-6.1-sol-oauth",
+   "pricing_model_id": "gpt-6.1-sol",
+   "pricing_provider": "codex-oauth",
+   "provider_route": "codex-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "instructions": "You are a lock probe.",
+    "model": "gpt-6.1-sol",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": true,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "chatgpt.com",
+    "originator": "codex_cli_rs"
+   },
+   "method": "POST",
+   "url": "https://chatgpt.com/backend-api/codex/responses"
+  }
+ },
+ "gpt-6.1-terra": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "gpt-6.1-terra",
+   "pricing_model_id": "gpt-6.1-terra",
+   "pricing_provider": "openai",
+   "provider_route": "openai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "gpt-6.1-terra",
+    "prompt_cache_options": {
+     "mode": "implicit"
+    },
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.openai.com"
+   },
+   "method": "POST",
+   "url": "https://api.openai.com/v1/responses"
+  }
+ },
+ "gpt-6.1-terra-oauth": {
+  "client": "ChatCodexOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "gpt-6.1-terra-oauth",
+   "pricing_model_id": "gpt-6.1-terra",
+   "pricing_provider": "codex-oauth",
+   "provider_route": "codex-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "instructions": "You are a lock probe.",
+    "model": "gpt-6.1-terra",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": true,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "chatgpt.com",
+    "originator": "codex_cli_rs"
+   },
+   "method": "POST",
+   "url": "https://chatgpt.com/backend-api/codex/responses"
+  }
+ },
+ "grok-4.3": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "grok-4.3",
+   "pricing_model_id": "grok-4.3",
+   "pricing_provider": "xai",
+   "provider_route": "xai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.3",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-4.3-oauth": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "grok-4.3-oauth",
+   "pricing_model_id": "grok-4.3",
+   "pricing_provider": "grok-oauth",
+   "provider_route": "grok-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.3",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-4.5": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "grok-4.5",
+   "pricing_model_id": "grok-4.5",
+   "pricing_provider": "xai",
+   "provider_route": "xai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.5",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-4.5-oauth": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "grok-4.5-oauth",
+   "pricing_model_id": "grok-4.5",
+   "pricing_provider": "grok-oauth",
+   "provider_route": "grok-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.5",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-4.6": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "grok-4.6",
+   "pricing_model_id": "grok-4.6",
+   "pricing_provider": "xai",
+   "provider_route": "xai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.6",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-4.6-oauth": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "grok-4.6-oauth",
+   "pricing_model_id": "grok-4.6",
+   "pricing_provider": "grok-oauth",
+   "provider_route": "grok-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.6",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-4.7": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "grok-4.7",
+   "pricing_model_id": "grok-4.7",
+   "pricing_provider": "xai",
+   "provider_route": "xai",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.7",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-4.7-oauth": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "grok-4.7-oauth",
+   "pricing_model_id": "grok-4.7",
+   "pricing_provider": "grok-oauth",
+   "provider_route": "grok-oauth",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-4.7",
+    "reasoning": {
+     "effort": "medium",
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-build": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "grok-build",
+   "pricing_model_id": "grok-build-0.1",
+   "pricing_provider": "xai",
+   "provider_route": "xai"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-build-0.1",
+    "reasoning": {
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "grok-build-oauth": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "oauth",
+   "manifest_model": "grok-build-oauth",
+   "pricing_model_id": "grok-build-0.1",
+   "pricing_provider": "grok-oauth",
+   "provider_route": "grok-oauth"
+  },
+  "request": {
+   "body": {
+    "include": [
+     "reasoning.encrypted_content"
+    ],
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "grok-build-0.1",
+    "reasoning": {
+     "summary": "auto"
+    },
+    "store": false,
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.x.ai"
+   },
+   "method": "POST",
+   "url": "https://api.x.ai/v1/responses"
+  }
+ },
+ "kimi-k3-coding": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "kimi-k3-coding",
+   "pricing_model_id": "k3",
+   "pricing_provider": "moonshot-coding",
+   "provider_route": "moonshot-coding",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "k3",
+    "reasoning": {
+     "effort": "high",
+     "summary": "auto"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.kimi.ai"
+   },
+   "method": "POST",
+   "url": "https://api.kimi.ai/coding/v1/responses"
+  }
+ },
+ "kimi-k3.1-pro": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "kimi-k3.1-pro",
+   "pricing_model_id": "kimi-k3.1-pro",
+   "pricing_provider": "moonshot",
+   "provider_route": "moonshot",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 32000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "kimi-k3.1-pro",
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.moonshot.ai"
+   },
+   "method": "POST",
+   "url": "https://api.moonshot.ai/anthropic/v1/messages"
+  }
+ },
+ "kimi-k3.1-pro-coding": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "kimi-k3.1-pro-coding",
+   "pricing_model_id": "k3.1-pro",
+   "pricing_provider": "moonshot-coding",
+   "provider_route": "moonshot-coding",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "k3.1-pro",
+    "reasoning": {
+     "effort": "high",
+     "summary": "auto"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.kimi.ai"
+   },
+   "method": "POST",
+   "url": "https://api.kimi.ai/coding/v1/responses"
+  }
+ },
+ "kimi-k3.1-pro-highspeed": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "kimi-k3.1-pro-highspeed",
+   "pricing_model_id": "kimi-k3.1-pro-highspeed",
+   "pricing_provider": "moonshot",
+   "provider_route": "moonshot",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 32000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "kimi-k3.1-pro-highspeed",
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.moonshot.ai"
+   },
+   "method": "POST",
+   "url": "https://api.moonshot.ai/anthropic/v1/messages"
+  }
+ },
+ "kimi-k3.1-pro-highspeed-coding": {
+  "client": "ChatOpenAI",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "kimi-k3.1-pro-highspeed-coding",
+   "pricing_model_id": "k3.1-pro-highspeed",
+   "pricing_provider": "moonshot-coding",
+   "provider_route": "moonshot-coding",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "k3.1-pro-highspeed",
+    "reasoning": {
+     "effort": "high",
+     "summary": "auto"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.kimi.ai"
+   },
+   "method": "POST",
+   "url": "https://api.kimi.ai/coding/v1/responses"
+  }
+ },
+ "minimax-m3": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "minimax-m3",
+   "pricing_model_id": "MiniMax-M3",
+   "pricing_provider": "minimax",
+   "provider_route": "minimax",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "MiniMax-M3",
+    "stream": true,
+    "system": "You are a lock probe.",
+    "thinking": {
+     "type": "adaptive"
+    },
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.minimax.io"
+   },
+   "method": "POST",
+   "url": "https://api.minimax.io/anthropic/v1/messages"
+  }
+ },
+ "minimax-m3.1-flash": {
+  "client": "ChatAnthropic",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "minimax-m3.1-flash",
+   "pricing_model_id": "MiniMax-M3.1-Flash",
+   "pricing_provider": "minimax",
+   "provider_route": "minimax",
+   "reasoning_effort": "high"
+  },
+  "request": {
+   "body": {
+    "max_tokens": 128000,
+    "messages": [
+     {
+      "content": "Look up AAPL.",
+      "role": "user"
+     }
+    ],
+    "model": "MiniMax-M3.1-Flash",
+    "output_config": {
+     "effort": "high"
+    },
+    "stream": true,
+    "system": "You are a lock probe.",
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "input_schema": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "name": "lock_probe"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "anthropic-version": "2023-06-01",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "api.minimax.io"
+   },
+   "method": "POST",
+   "url": "https://api.minimax.io/anthropic/v1/messages"
+  }
+ },
+ "qwen3.7-plus": {
+  "client": "ChatDashScope",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "qwen3.7-plus",
+   "pricing_model_id": "qwen3.7-plus",
+   "pricing_provider": "dashscope",
+   "provider_route": "dashscope",
+   "reasoning_effort": "xhigh"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "qwen3.7-plus",
+    "reasoning": {
+     "effort": "xhigh"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "dashscope.aliyuncs.com",
+    "x-dashscope-session-cache": "enabled"
+   },
+   "method": "POST",
+   "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+  }
+ },
+ "qwen3.7-plus-intl": {
+  "client": "ChatDashScope",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "qwen3.7-plus-intl",
+   "pricing_model_id": "qwen3.7-plus",
+   "pricing_provider": "dashscope-intl",
+   "provider_route": "dashscope-intl",
+   "reasoning_effort": "xhigh"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "qwen3.7-plus",
+    "reasoning": {
+     "effort": "xhigh"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "dashscope-intl.aliyuncs.com",
+    "x-dashscope-session-cache": "enabled"
+   },
+   "method": "POST",
+   "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses"
+  }
+ },
+ "qwen3.8-flash": {
+  "client": "ChatDashScope",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "qwen3.8-flash",
+   "pricing_model_id": "qwen3.8-flash",
+   "pricing_provider": "dashscope",
+   "provider_route": "dashscope",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "qwen3.8-flash",
+    "reasoning": {
+     "effort": "medium"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "dashscope.aliyuncs.com",
+    "x-dashscope-session-cache": "enabled"
+   },
+   "method": "POST",
+   "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+  }
+ },
+ "qwen3.8-flash-intl": {
+  "client": "ChatDashScope",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "b2d382df779912b65839f5b9b29a567ac7014415796d2cc07335c84ed704e23c",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "qwen3.8-flash-intl",
+   "pricing_model_id": "qwen3.8-flash",
+   "pricing_provider": "dashscope-intl",
+   "provider_route": "dashscope-intl",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "qwen3.8-flash",
+    "reasoning": {
+     "effort": "medium"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "dashscope-intl.aliyuncs.com",
+    "x-dashscope-session-cache": "enabled"
+   },
+   "method": "POST",
+   "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses"
+  }
+ },
+ "qwen3.8-max": {
+  "client": "ChatDashScope",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "qwen3.8-max",
+   "pricing_model_id": "qwen3.8-max",
+   "pricing_provider": "dashscope",
+   "provider_route": "dashscope",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "qwen3.8-max",
+    "reasoning": {
+     "effort": "medium"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "dashscope.aliyuncs.com",
+    "x-dashscope-session-cache": "enabled"
+   },
+   "method": "POST",
+   "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+  }
+ },
+ "qwen3.8-max-intl": {
+  "client": "ChatDashScope",
+  "graph_build": {
+   "middleware": [
+    "FrozenPromptMiddleware",
+    "TimeUpToolStopMiddleware",
+    "LargeResultEvictionMiddleware",
+    "SubAgentMiddleware",
+    "WakeupQuietGuardMiddleware",
+    "CreditGateMiddleware",
+    "RepeatCallGuardMiddleware",
+    "ToolArgumentParsingMiddleware",
+    "ComputerArgumentGuardMiddleware",
+    "ProtectedPathMiddleware",
+    "CodeValidationMiddleware",
+    "ToolErrorHandlingMiddleware",
+    "LeakDetectionMiddleware",
+    "ToolResultNormalizationMiddleware",
+    "FileOperationMiddleware",
+    "ProvenanceMiddleware",
+    "SkillsMiddleware",
+    "SteeringMiddleware",
+    "BackgroundSubagentMiddleware",
+    "AskUserMiddleware",
+    "StreamHeartbeatMiddleware",
+    "CompactionMiddleware",
+    "ModelResilienceMiddleware",
+    "MultimodalStripMiddleware",
+    "MultimodalMiddleware",
+    "AnthropicPromptCachingMiddleware",
+    "SystemPromptCacheMiddleware",
+    "ToolSurfaceMiddleware",
+    "EmptyToolCallRetryMiddleware",
+    "PatchToolCallsMiddleware",
+    "TurnContextMiddleware",
+    "BaselineContextMiddleware",
+    "NotesOffMiddleware",
+    "RowCarrierMiddleware",
+    "SystemPinMiddleware",
+    "ReasoningCompatibilityMiddleware"
+   ],
+   "model_is_the_client": true,
+   "state_schema": "MainAgentState",
+   "system_prompt_sha256": "2d9ab72041b31b4988c135110fb38f00abacda9d6046a0f13deda54f26043569",
+   "tools": [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ExecuteCode",
+    "GetPreviewUrl",
+    "Glob",
+    "Grep",
+    "Read",
+    "RunWorkflow",
+    "ShowWidget",
+    "TaskOutput",
+    "ThreadStatus",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "draw_chart_annotation",
+    "get_company_overview",
+    "get_daily_prices",
+    "get_market_overview",
+    "get_options_chain",
+    "get_quote",
+    "get_sec_filing",
+    "manage_chart_annotations",
+    "schedule_wakeup",
+    "screen_stocks"
+   ]
+  },
+  "metadata": {
+   "billing_type": "byok",
+   "manifest_model": "qwen3.8-max-intl",
+   "pricing_model_id": "qwen3.8-max",
+   "pricing_provider": "dashscope-intl",
+   "provider_route": "dashscope-intl",
+   "reasoning_effort": "medium"
+  },
+  "request": {
+   "body": {
+    "input": [
+     {
+      "content": "You are a lock probe.",
+      "role": "system",
+      "type": "message"
+     },
+     {
+      "content": "Look up AAPL.",
+      "role": "user",
+      "type": "message"
+     }
+    ],
+    "model": "qwen3.8-max",
+    "reasoning": {
+     "effort": "medium"
+    },
+    "stream": false,
+    "tools": [
+     {
+      "description": "Look up a symbol.",
+      "name": "lock_probe",
+      "parameters": {
+       "properties": {
+        "symbol": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "symbol"
+       ],
+       "type": "object"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "headers": {
+    "accept": "application/json",
+    "connection": "keep-alive",
+    "content-type": "application/json",
+    "host": "dashscope-intl.aliyuncs.com",
+    "x-dashscope-session-cache": "enabled"
+   },
+   "method": "POST",
+   "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses"
+  }
+ }
+}

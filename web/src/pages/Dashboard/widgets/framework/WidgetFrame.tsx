@@ -1,10 +1,18 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useEffectEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { GripVertical, Settings, MoreVertical, X, Copy, Paperclip } from 'lucide-react';
 import type { WidgetDefinition, WidgetInstance } from '../types';
 import { getWidgetContextSnapshot, useHasWidgetContextExporter } from './contextSnapshot';
+import { WidgetCardSlots } from './widgetCardSlots';
+import { MARGIN_Y, ROW_HEIGHT } from './gridConstants';
 import { ContextBus } from '@/lib/contextBus';
 import { useToast } from '@/components/ui/use-toast';
+import { cn } from '@/lib/utils';
+import { useCardNarrow } from '@/pages/ChatAgent/components/charts/termContext';
+// The chat's card stylesheets, so the dashboard's cards are the same cards and
+// the Card style setting (data-card-style on <html>) restyles both alike.
+import '@/pages/ChatAgent/components/charts/termCard.css';
+import '@/pages/ChatAgent/components/charts/termCardStyles.css';
 import './WidgetFrame.css';
 
 interface WidgetFrameProps {
@@ -16,7 +24,7 @@ interface WidgetFrameProps {
   onOpenSettings: (id: string) => void;
   /**
    * When the widget opts in to `fitToContent`, the frame measures its own
-   * chrome (header + body padding) plus the child content height and reports
+   * chrome (the card around the body) plus the child content height and reports
    * the total required cell height here. The grid converts to row count.
    */
   onFitHeight?: (totalPx: number) => void;
@@ -36,10 +44,25 @@ export function WidgetFrame({
   const { t } = useTranslation();
   const { toast } = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const headerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLSpanElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+  // The edge's sub and meta spans, which the widget fills through a portal.
+  const [subSlot, setSubSlot] = useState<HTMLSpanElement | null>(null);
+  const [metaSlot, setMetaSlot] = useState<HTMLSpanElement | null>(null);
+  // A fit widget with a ceiling (a list that can run long) stops growing at
+  // its tallest cell; past it the body scrolls instead of clipping. The grid
+  // clamps the cell to the same height, and the phone stack, which sets no
+  // height, takes it as the card's max-height.
+  const fitMaxPx =
+    definition.fitToContent && definition.maxSize
+      ? definition.maxSize.h * ROW_HEIGHT + (definition.maxSize.h - 1) * MARGIN_Y
+      : undefined;
+  const [fitCapped, setFitCapped] = useState(false);
+  const narrow = useCardNarrow();
+  const bare = definition.frame === 'bare' && !editMode;
+  const untitled = definition.frame === 'untitled' && !editMode;
 
   const exporterRegistered = useHasWidgetContextExporter(instance.id);
   // TradingView widgets render cross-origin iframes — neither pixels nor DOM
@@ -79,14 +102,12 @@ export function WidgetFrame({
     });
   };
 
-  // Keep the latest onFitHeight in a ref so the ResizeObserver effect doesn't
-  // tear down / reconnect (and fire a synchronous report) on every parent
-  // render. Parent passes an inline arrow (new identity each render); without
-  // the ref, two fit-to-content widgets can ping-pong parent re-renders.
-  const onFitHeightRef = useRef(onFitHeight);
-  useEffect(() => {
-    onFitHeightRef.current = onFitHeight;
-  }, [onFitHeight]);
+  // Read the latest onFitHeight through an effect event so the ResizeObserver
+  // effect doesn't tear down / reconnect (and fire a synchronous report) on
+  // every parent render. Parent passes an inline arrow (new identity each
+  // render); as a dep, two fit-to-content widgets can ping-pong parent
+  // re-renders.
+  const reportFitHeight = useEffectEvent((totalPx: number) => onFitHeight?.(totalPx));
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -99,15 +120,17 @@ export function WidgetFrame({
     return () => document.removeEventListener('mousedown', handler);
   }, [menuOpen]);
 
-  // fit-to-content: report inner content + visible chrome (header) + body
-  // padding so the RGL cell hugs the inner card with consistent padding on
-  // all four sides. Chrome/padding values come from live DOM so the edit/view
-  // mode difference (header hidden + zero padding in view, full chrome + 12px
-  // padding in edit) is picked up automatically.
+  // fit-to-content: report what the cell must hold, the content plus every
+  // bit of chrome around it (the card's padding, its title when the style
+  // sets the title inside, any body padding), so the cell hugs the card.
+  // The chrome is read off the live DOM as the card's height less the body's:
+  // the body takes whatever the card leaves it, so this holds in every card
+  // style and in edit mode alike. The body is observed as well as the content
+  // because a style switch (a CSS attribute on <html>) moves the title in or
+  // out of the card without resizing the content; the body is what changes.
   //
-  // Timing: some fit widgets animate their own height (e.g. AIDailyBriefCard
-  // uses AnimatePresence to animate height 0→auto over ~300ms when the
-  // "earlier insights" drawer opens). We split growth vs. shrink:
+  // Timing: some fit widgets animate their own height (the brief's earlier
+  // insights fold open). We split growth vs. shrink:
   //   - Growth commits immediately on every ResizeObserver tick. The cell
   //     tracks the content in lockstep, so no overflow (and therefore no
   //     scrollbar) can appear during expansion. RGL's height CSS transition
@@ -121,8 +144,8 @@ export function WidgetFrame({
     if (!definition.fitToContent) return;
     const inner = innerRef.current;
     const body = bodyRef.current;
-    const header = headerRef.current;
-    if (!inner || !body) return;
+    const card = cardRef.current;
+    if (!inner || !body || !card) return;
 
     const DEBOUNCE_MS = 120;
     let lastReported = -1;
@@ -133,15 +156,15 @@ export function WidgetFrame({
     const measure = () => {
       const bs = window.getComputedStyle(body);
       const padV = (parseFloat(bs.paddingTop) || 0) + (parseFloat(bs.paddingBottom) || 0);
-      const headerH = header && header.offsetParent !== null ? header.offsetHeight : 0;
-      return inner.offsetHeight + padV + headerH;
+      const chrome = card.offsetHeight - body.offsetHeight;
+      return inner.offsetHeight + padV + chrome;
     };
 
     const flush = () => {
       debounceTimer = null;
       if (pending !== lastReported) {
         lastReported = pending;
-        onFitHeightRef.current?.(pending);
+        reportFitHeight(pending);
       }
     };
 
@@ -152,11 +175,30 @@ export function WidgetFrame({
       }
       lastReported = total;
       pending = total;
-      onFitHeightRef.current?.(total);
+      reportFitHeight(total);
     };
 
+    // The hold lifting need not change the content's size, so while one is
+    // up the subtree is watched for it. Only then: a fit widget that streams
+    // (the conversation) would otherwise measure on every commit.
+    let holdWatch: MutationObserver | null = null;
+
     const report = () => {
+      // A placeholder (a skeleton marked `data-fit-hold`) says nothing about
+      // the loaded content's height: the cell keeps its saved height, which is
+      // the content's from last time, rather than shrinking to the skeleton
+      // and growing back when the data lands, moving every cell below twice.
+      if (inner.querySelector('[data-fit-hold]')) {
+        if (!holdWatch) {
+          holdWatch = new MutationObserver(report);
+          holdWatch.observe(inner, { subtree: true, childList: true, attributeFilter: ['data-fit-hold'] });
+        }
+        return;
+      }
+      holdWatch?.disconnect();
+      holdWatch = null;
       const total = measure();
+      if (fitMaxPx !== undefined) setFitCapped(total > fitMaxPx);
       if (total === lastReported) return;
       pending = total;
       if (!didInitial) {
@@ -175,112 +217,127 @@ export function WidgetFrame({
     report();
     const ro = new ResizeObserver(report);
     ro.observe(inner);
+    ro.observe(body);
     return () => {
       ro.disconnect();
+      holdWatch?.disconnect();
       if (debounceTimer !== null) window.clearTimeout(debounceTimer);
     };
-  }, [definition, editMode]);
+  }, [definition, editMode, fitMaxPx]);
 
   const hasSettings = !!definition.settingsComponent;
 
-  // In edit mode the whole frame is the drag handle — users can grab anywhere
-  // on the card to rearrange, not just the grip icon. The action buttons
-  // (header actions div + its menu children) carry `widget-drag-cancel` so
-  // clicking them doesn't initiate a drag. RGL's 3px drag threshold keeps
-  // clicks-inside-widget-content working for the same reason — a click under
-  // 3px of movement stays a click.
-  const classes = [
-    'widget-frame',
-    editMode ? 'widget-frame--edit' : '',
-    editMode ? 'widget-drag-handle' : '',
-    definition.fitToContent ? 'widget-frame--fit' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  // The "+ to context" button is always rendered (CSS controls visibility by
-  // mode: hover-revealed in view mode on hover-capable devices, always visible
-  // on touch). Other action buttons (settings, menu) only appear in edit mode.
-  // All actions carry `widget-drag-cancel` so they don't initiate drag.
+  // In edit mode the whole frame is the drag handle: users can grab anywhere
+  // on the card to rearrange, not just the grip. The action buttons carry
+  // `widget-drag-cancel` so clicking them doesn't initiate a drag. RGL's 3px
+  // drag threshold keeps clicks inside widget content working for the same
+  // reason: a click under 3px of movement stays a click.
+  //
+  // The card is the chat's term card: its title set into the top edge (inside
+  // it, in the Quiet style), the widget's sub and meta beside and opposite it.
+  // The actions follow the title rather than the meta, so the paperclip that
+  // a hover reveals takes room nothing else is using and the meta never moves.
   return (
-    <div className={classes} data-widget-type={instance.type}>
-      <div ref={headerRef} className="widget-frame__header">
-        {editMode && (
-          <div
-            className="widget-drag-handle widget-frame__drag"
-            aria-label={t('dashboard.widgets.frame.drag')}
-          >
-            <GripVertical size={14} />
-          </div>
-        )}
-        <div className="widget-frame__title">{t(definition.titleKey)}</div>
-        <div className="widget-frame__actions widget-drag-cancel">
-          {editMode && hasSettings && (
-            <button
-              type="button"
-              className="widget-frame__icon-btn"
-              onClick={() => onOpenSettings(instance.id)}
-              aria-label={t('dashboard.widgets.frame.settings')}
-              title={t('dashboard.widgets.frame.settingsTitle')}
-            >
-              <Settings size={14} />
-            </button>
-          )}
-          <button
-            type="button"
-            className={`widget-frame__icon-btn widget-frame__add-btn ${editMode ? '' : 'widget-frame__add-btn--view'}`}
-            onClick={handleAddToContext}
-            disabled={attachDisabled}
-            aria-label={attachTooltip}
-            title={attachTooltip}
-          >
-            <Paperclip size={13} />
-          </button>
+    <div
+      className={cn(
+        'widget-frame',
+        editMode && 'widget-frame--edit widget-drag-handle',
+        definition.fitToContent && 'widget-frame--fit',
+      )}
+      data-widget-type={instance.type}
+      data-fit-capped={fitCapped ? '' : undefined}
+      style={fitMaxPx !== undefined ? ({ '--widget-fit-max': `${fitMaxPx}px` } as React.CSSProperties) : undefined}
+    >
+      <section
+        ref={cardRef}
+        className="term-card widget-card"
+        data-size={narrow ? 'sm' : undefined}
+        data-bare={bare ? '' : undefined}
+        data-untitled={untitled ? '' : undefined}
+      >
+        <header className="term-card-head" data-keep="title">
           {editMode && (
-            <div className="widget-frame__menu-wrap" ref={menuRef}>
+            <span className="widget-card__grip" aria-label={t('dashboard.widgets.frame.drag')}>
+              <GripVertical size={12} />
+            </span>
+          )}
+          <span className="term-card-title">
+            <span className="term-bracket" aria-hidden="true">[</span>
+            <span className="term-card-title-text">{t(definition.cardTitleKey ?? definition.titleKey)}</span>
+            <span className="term-bracket" aria-hidden="true">]</span>
+          </span>
+          <span ref={setSubSlot} className="term-card-sub" />
+          <span className="widget-card__actions widget-drag-cancel">
+            {editMode && hasSettings && (
               <button
                 type="button"
-                className="widget-frame__icon-btn"
-                onClick={() => setMenuOpen((p) => !p)}
-                aria-label={t('dashboard.widgets.frame.menu')}
+                className="widget-card__icon-btn"
+                onClick={() => onOpenSettings(instance.id)}
+                aria-label={t('dashboard.widgets.frame.settings')}
+                title={t('dashboard.widgets.frame.settingsTitle')}
               >
-                <MoreVertical size={14} />
+                <Settings size={12} />
               </button>
-              {menuOpen && (
-                <div className="widget-frame__menu">
-                  {!definition.singleton && (
+            )}
+            <button
+              type="button"
+              className={cn('widget-card__icon-btn widget-card__attach', !editMode && 'widget-card__attach--view')}
+              onClick={handleAddToContext}
+              disabled={attachDisabled}
+              aria-label={attachTooltip}
+              title={attachTooltip}
+            >
+              <Paperclip size={12} />
+            </button>
+            {editMode && (
+              <span className="widget-card__menu-wrap" ref={menuRef}>
+                <button
+                  type="button"
+                  className="widget-card__icon-btn"
+                  onClick={() => setMenuOpen((p) => !p)}
+                  aria-label={t('dashboard.widgets.frame.menu')}
+                >
+                  <MoreVertical size={12} />
+                </button>
+                {menuOpen && (
+                  <div className="widget-card__menu">
+                    {!definition.singleton && (
+                      <button
+                        type="button"
+                        className="widget-card__menu-item"
+                        onClick={() => {
+                          onDuplicate(instance.id);
+                          setMenuOpen(false);
+                        }}
+                      >
+                        <Copy size={12} /> {t('dashboard.widgets.frame.duplicate')}
+                      </button>
+                    )}
                     <button
                       type="button"
-                      className="widget-frame__menu-item"
+                      className="widget-card__menu-item widget-card__menu-item--danger"
                       onClick={() => {
-                        onDuplicate(instance.id);
+                        onRemove(instance.id);
                         setMenuOpen(false);
                       }}
                     >
-                      <Copy size={12} /> {t('dashboard.widgets.frame.duplicate')}
+                      <X size={12} /> {t('dashboard.widgets.frame.remove')}
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    className="widget-frame__menu-item widget-frame__menu-item--danger"
-                    onClick={() => {
-                      onRemove(instance.id);
-                      setMenuOpen(false);
-                    }}
-                  >
-                    <X size={12} /> {t('dashboard.widgets.frame.remove')}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+                  </div>
+                )}
+              </span>
+            )}
+          </span>
+          <span ref={setMetaSlot} className="term-card-meta" />
+        </header>
+        <div ref={bodyRef} className="widget-card__body">
+          <div ref={innerRef} className={definition.fitToContent ? undefined : 'h-full'}>
+            <WidgetCardSlots sub={subSlot} meta={metaSlot}>
+              {children}
+            </WidgetCardSlots>
+          </div>
         </div>
-      </div>
-      <div ref={bodyRef} className="widget-frame__body">
-        <div ref={innerRef} className={definition.fitToContent ? undefined : 'h-full'}>
-          {children}
-        </div>
-      </div>
+      </section>
     </div>
   );
 }

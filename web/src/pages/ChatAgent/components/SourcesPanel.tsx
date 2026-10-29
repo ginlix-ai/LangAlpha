@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
@@ -23,11 +23,15 @@ import {
 } from '@/components/ui/dialog';
 import { provenanceDisplayKey, countDedupedSources, type ProvenanceRecord } from '@/types/chat';
 import type { ProvenanceSourceType } from '@/types/sse';
+import { formatBytes, formatTimestamp } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
 import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import { workspaceRelativePath } from '@/pages/ChatAgent/utils/agentPaths';
+import { useWorkspaceFolders } from '@/pages/ChatAgent/contexts/WorkspaceContext';
 import { isTaskAgentId } from '@/pages/ChatAgent/utils/agentId';
 import { Favicon } from './Favicon';
 import './SourcesPanel.css';
+import { deckHeight, deckPeekLayers, deckSlot, useDeckCollapse, type DeckGeometry } from '@/components/ui/cardDeck';
 
 /** Source types that carry a URL/domain and render a {@link Favicon}. */
 const URL_SOURCE_TYPES = new Set<ProvenanceSourceType>(['web_search', 'web_fetch', 'sec_filing']);
@@ -47,29 +51,32 @@ const GROUP_ORDER: ProvenanceSourceType[] = [
   'memory_read',
 ];
 
-/** Deck geometry — spacing/fan motion kept in step with the widget-context deck
- *  (the chat-input snapshot deck). MAX_PEEK_LAYERS is intentionally shallower
- *  here: provenance decks can hold many results, so a collapsed deck only hints
- *  "there's more behind" with a couple of peek cards rather than a deep stack. */
-const CARD_HEIGHT = 52;
-const CARD_GAP = 6;
-const PEEK_STEP = 6;
-const MAX_PEEK_LAYERS = 2;
+/** Shallower than the widget-context deck on purpose: a provenance deck can
+ *  hold many results, so collapsed it only hints "there's more behind" with a
+ *  couple of peek cards rather than a deep stack. */
+const GEOMETRY: DeckGeometry = {
+  cardHeight: 52,
+  cardGap: 6,
+  peekStep: 6,
+  maxPeekLayers: 2,
+  peekScaleStep: 0.03,
+  minPeekScale: 0.85,
+};
 
 /** Shared card chrome (visuals only — positioning/height is set per use). Every
  *  card is filled with `--color-bg-card` so a leaf card and the front of a
  *  stack read alike. */
 const CARD_CHROME =
-  'flex items-center gap-2.5 rounded-lg border px-2.5 text-left outline-none cursor-pointer ' +
-  'border-[var(--color-border-muted)] bg-[var(--color-bg-card)] ' +
-  'hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] ' +
-  'focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]';
+  'flex items-center gap-2.5 rounded-lg border px-2.5 text-left outline-hidden cursor-pointer ' +
+  'border-(--color-border-muted) bg-(--color-bg-card) ' +
+  'hover:border-(--color-border-default) hover:bg-(--color-bg-elevated) ' +
+  'focus-visible:ring-2 focus-visible:ring-ring';
 
 const TERTIARY = { color: 'var(--color-text-tertiary)' as const };
 
 /** Lucide icon for non-URL source types. */
 function NonUrlIcon({ type, size = 14 }: { type: ProvenanceSourceType; size?: number }): React.ReactElement {
-  const cls = 'flex-shrink-0';
+  const cls = 'shrink-0';
   const props = { width: size, height: size, className: cls, style: TERTIARY };
   switch (type) {
     case 'file_read':
@@ -102,7 +109,7 @@ function SourceThumb({
   const inner = size <= 28 ? 14 : Math.round(size * 0.5);
   return (
     <span
-      className="flex flex-shrink-0 items-center justify-center rounded-md"
+      className="flex shrink-0 items-center justify-center rounded-md"
       style={{ width: size, height: size, background: 'var(--color-bg-subtle)' }}
     >
       {isUrl ? (
@@ -139,20 +146,6 @@ function urlPath(url: string): string {
 function shortSha(sha?: string): string {
   if (!sha) return '';
   return sha.length > 12 ? sha.slice(0, 12) : sha;
-}
-
-function formatSize(bytes?: number): string {
-  if (bytes == null) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatTimestamp(ts?: string): string {
-  if (!ts) return '';
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return ts;
-  return d.toLocaleString();
 }
 
 /** "mcp_tool" → "Mcp Tool": humanize an unmapped enum for the i18n fallback. */
@@ -336,13 +329,13 @@ function distinctByContent(
 
 /** The display title for a row/record: title, then identifier, then a localized
  *  fallback. */
-function recordTitle(t: TFunction, record: ProvenanceRecord): string {
+function recordTitle(t: TFunction, record: ProvenanceRecord, root?: string | null): string {
   // File-ish sources carry an absolute sandbox path (e.g. /home/workspace/x.md)
   // as their identifier and no title. Show it workspace-relative — the same
   // normalization the path router uses when the row is clicked — while the DB
   // keeps the full path.
   if (FILE_SOURCE_TYPES.has(record.source_type) && !record.title && record.identifier) {
-    const rel = workspaceRelativePath(record.identifier);
+    const rel = workspaceRelativePath(record.identifier, root);
     return rel || t('chat.sources.workspaceRoot');
   }
   return record.title || record.identifier || t('chat.sources.unknownSource');
@@ -401,7 +394,7 @@ export default function SourcesPanel({
   const groups = useMemo<SourceGroup[]>(() => buildGroups(activeRecords), [activeRecords]);
 
   const scopeSwitch = showScopeSwitch ? (
-    <div className="flex-shrink-0 px-3 pt-3">
+    <div className="shrink-0 px-3 pt-3">
       <AnimatedTabs
         tabs={[
           { id: 'turn', label: `${t('chat.sources.scope.turn')} (${turnCount})` },
@@ -445,12 +438,12 @@ export default function SourcesPanel({
                 onClick={() => toggleGroup(group.type)}
                 aria-expanded={!collapsed}
                 aria-label={`${groupLabel} — ${t(collapsed ? 'chat.sources.expand' : 'chat.sources.collapse')}`}
-                className="mb-1.5 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-[var(--color-bg-subtle)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="mb-1.5 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left outline-hidden transition-colors hover:bg-(--color-bg-subtle) focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {collapsed ? (
-                  <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" style={TERTIARY} />
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0" style={TERTIARY} />
                 ) : (
-                  <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" style={TERTIARY} />
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" style={TERTIARY} />
                 )}
                 <span
                   className="text-xs font-semibold uppercase tracking-wide"
@@ -524,7 +517,7 @@ function SourceCardBody({
       </span>
       {subagent && (
         <span
-          className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
+          className="inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
           style={{ backgroundColor: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
         >
           {t('chat.sources.subagent')}
@@ -539,7 +532,7 @@ function SourceCardBody({
 function ViewChevron(): React.ReactElement {
   return (
     <ChevronRight
-      className="h-4 w-4 flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-50"
+      className="h-4 w-4 shrink-0 opacity-0 transition-opacity group-hover:opacity-50"
       style={TERTIARY}
     />
   );
@@ -563,12 +556,13 @@ function SourceRow({
   onOpenRecord: (record: ProvenanceRecord) => void;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const root = useWorkspaceFolders()?.rootDir;
   const { record, records } = row;
   const isWebSearch = record.source_type === 'web_search';
   const isWebFetch = record.source_type === 'web_fetch';
   // List decks dedup by URL; entity decks dedup by content hash (see distinctByContent).
   const distinct = distinctByContent(records, isWebSearch || isWebFetch);
-  const title = recordTitle(t, record);
+  const title = recordTitle(t, record, root);
 
   if (distinct.length <= 1) {
     const kind = kindLabel(t, record.detail);
@@ -593,7 +587,7 @@ function SourceRow({
         onClick={() => onOpenRecord(record)}
         aria-label={`${title} — ${t('chat.sources.viewDetails')}`}
         className={`group relative ${CARD_CHROME}`}
-        style={{ height: CARD_HEIGHT, boxShadow: '0 1px 2px rgba(20, 20, 23, 0.05)' }}
+        style={{ height: GEOMETRY.cardHeight, boxShadow: '0 1px 2px rgba(20, 20, 23, 0.05)' }}
       >
         <SourceCardBody
           record={record}
@@ -663,20 +657,23 @@ function SourceDeck({
   onOpenRecord: (record: ProvenanceRecord) => void;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const root = useWorkspaceFolders()?.rootDir;
   // A "list" deck (query/domain) labels each card by its own page; an entity
   // deck shares the front label across cards and subtitles by data-kind.
   const isEntity = variant === 'entity';
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useDeckCollapse({
+    open: fanned,
+    onCollapse,
+    // An opened detail view portals out of the deck; its clicks are still the
+    // deck's own.
+    ignoreWithin: '[role="dialog"]',
+  });
   const n = records.length;
-  const peekLayers = Math.min(n - 1, MAX_PEEK_LAYERS);
-  const stackHeight = fanned
-    ? n * (CARD_HEIGHT + CARD_GAP) - CARD_GAP
-    : CARD_HEIGHT + peekLayers * PEEK_STEP;
   // Collapsed, only render the front + a capped number of peek cards so a big
   // deck doesn't stack arbitrarily deep (the true count stays on the front
   // badge). Fanned, render every card. Capping the rendered set — not just the
   // stack height — keeps the deepest peek card flush with the stack's bottom.
-  const visible = fanned ? records : records.slice(0, peekLayers + 1);
+  const visible = fanned ? records : records.slice(0, deckPeekLayers(n, GEOMETRY) + 1);
   // The collapsed front card's count noun tracks the grouping (sources /
   // results / pages). It's deck-level — depends only on variant — so compute
   // it once here rather than per card in the map below.
@@ -687,51 +684,16 @@ function SourceDeck({
         ? 'chat.sources.pageCount'
         : 'chat.sources.sourceCount';
 
-  // Outside-click / Escape collapse while fanned, deferred one frame so the
-  // click that fanned the deck can't immediately re-collapse it. Clicks inside
-  // a Radix dialog (an opened detail view) are carved out.
-  useEffect(() => {
-    if (!fanned) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest && target.closest('[role="dialog"]')) return;
-      if (!document.body.contains(target)) return;
-      if (rootRef.current && rootRef.current.contains(target)) return;
-      onCollapse();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCollapse();
-    };
-    let attached = false;
-    const raf = requestAnimationFrame(() => {
-      document.addEventListener('mousedown', onDown);
-      document.addEventListener('keydown', onKey);
-      attached = true;
-    });
-    return () => {
-      cancelAnimationFrame(raf);
-      if (attached) {
-        document.removeEventListener('mousedown', onDown);
-        document.removeEventListener('keydown', onKey);
-      }
-    };
-  }, [fanned, onCollapse]);
-
   return (
     <div
       ref={rootRef}
       className="source-deck-stack"
       data-testid="source-stack"
       data-fanned={fanned}
-      style={{ height: stackHeight }}
+      style={{ height: deckHeight(n, fanned, GEOMETRY) }}
     >
       {visible.map((r, i) => {
-        const top = fanned ? i * (CARD_HEIGHT + CARD_GAP) : 0;
-        const peekY = fanned ? 0 : i * PEEK_STEP;
-        const peekScale = fanned ? 1 : Math.max(1 - i * 0.03, 0.85);
-        const peekOpacity = fanned ? 1 : i === 0 ? 1 : Math.max(0.85 - (i - 1) * 0.2, 0.25);
-        const interactive = fanned || i === 0;
+        const { style, interactive } = deckSlot(i, n, fanned, GEOMETRY);
         const isTop = i === 0;
         const collapsedFront = !fanned && isTop;
         const kind = kindLabel(t, r.detail);
@@ -740,9 +702,9 @@ function SourceDeck({
         // domain is already on the front).
         const cardTitle =
           variant === 'query'
-            ? recordTitle(t, r)
+            ? recordTitle(t, r, root)
             : variant === 'domain'
-              ? urlPath(r.identifier) || recordTitle(t, r)
+              ? urlPath(r.identifier) || recordTitle(t, r, root)
               : frontLabel;
         // Per-card subtitle (fanned): entity → full args / data-kind; query →
         // the result's domain; domain → the args (minus the redundant `url`), so
@@ -764,7 +726,7 @@ function SourceDeck({
             : `${frontLabel}${kind ? ` · ${kind}` : ''} — ${t('chat.sources.viewDetails')}`;
         const trailing =
           !fanned && isTop ? (
-            <span className="inline-flex flex-shrink-0 items-center gap-1">
+            <span className="inline-flex shrink-0 items-center gap-1">
               <span
                 className="inline-flex items-center justify-center rounded-full px-1 text-[0.625rem] font-medium"
                 style={{
@@ -792,12 +754,8 @@ function SourceDeck({
             onClick={() => (fanned ? onOpenRecord(r) : onToggleFan())}
             className={`group source-deck-card absolute left-0 right-0 ${CARD_CHROME}`}
             style={{
-              top,
-              height: CARD_HEIGHT,
-              transform: `translateY(${peekY}px) scale(${peekScale})`,
-              opacity: peekOpacity,
-              zIndex: n - i,
-              pointerEvents: interactive ? 'auto' : 'none',
+              height: GEOMETRY.cardHeight,
+              ...style,
               boxShadow: fanned
                 ? '0 4px 12px rgba(20, 20, 23, 0.06), 0 1px 2px rgba(20, 20, 23, 0.04)'
                 : isTop
@@ -857,10 +815,11 @@ function SourceDetailDialog({
   onOpenFile?: (path: string, workspaceId?: string) => void;
 }): React.ReactElement {
   const { t } = useTranslation();
+  const root = useWorkspaceFolders()?.rootDir;
   const open = record !== null;
   const isUrl = record ? URL_SOURCE_TYPES.has(record.source_type) : false;
   const isFile = record ? FILE_SOURCE_TYPES.has(record.source_type) : false;
-  const title = record ? recordTitle(t, record) : '';
+  const title = record ? recordTitle(t, record, root) : '';
   const typeLabel = record
     ? t(`chat.sources.groups.${record.source_type}`, { defaultValue: humanizeType(record.source_type) })
     : '';
@@ -894,7 +853,7 @@ function SourceDetailDialog({
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent
-        className="max-w-lg [&>*]:min-w-0"
+        className="max-w-lg *:min-w-0"
         style={{
           backgroundColor: 'var(--color-bg-elevated)',
           borderColor: 'var(--color-border-default)',
@@ -913,7 +872,7 @@ function SourceDetailDialog({
                 </span>
                 {record && isTaskAgentId(record.agent) && (
                   <span
-                    className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
+                    className="inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium"
                     style={{ backgroundColor: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
                   >
                     {t('chat.sources.subagent')}
@@ -939,7 +898,7 @@ function SourceDetailDialog({
           <button
             type="button"
             onClick={handleOpen}
-            className="group inline-flex w-fit items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium outline-none transition-all hover:gap-2 focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="group inline-flex w-fit items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium outline-hidden transition-all hover:gap-2 focus-visible:ring-2 focus-visible:ring-ring"
             style={{
               backgroundColor: 'var(--color-bg-elevated)',
               borderColor: 'var(--color-border-elevated)',
@@ -964,18 +923,19 @@ function SourceDetailDialog({
  *  owned by the dialog header, so it isn't repeated here. */
 function FingerprintRows({ record }: { record: ProvenanceRecord }): React.ReactElement {
   const { t } = useTranslation();
+  const locale = useLocale();
   const meta: { label: string; value: string; mono?: boolean; icon?: React.ReactNode }[] = [];
   if (record.provider) meta.push({ label: t('chat.sources.fingerprint.provider'), value: record.provider });
   if (record.agent) meta.push({ label: t('chat.sources.fingerprint.agent'), value: record.agent, mono: true });
-  if (record.timestamp) meta.push({ label: t('chat.sources.fingerprint.timestamp'), value: formatTimestamp(record.timestamp) });
+  if (record.timestamp) meta.push({ label: t('chat.sources.fingerprint.timestamp'), value: formatTimestamp(record.timestamp, locale) });
   if (record.result_sha256)
     meta.push({
       label: t('chat.sources.fingerprint.checksum'),
       value: shortSha(record.result_sha256),
       mono: true,
-      icon: <Fingerprint className="h-3 w-3 flex-shrink-0" style={TERTIARY} />,
+      icon: <Fingerprint className="h-3 w-3 shrink-0" style={TERTIARY} />,
     });
-  if (record.result_size != null) meta.push({ label: t('chat.sources.fingerprint.size'), value: formatSize(record.result_size), mono: true });
+  if (record.result_size != null) meta.push({ label: t('chat.sources.fingerprint.size'), value: formatBytes(record.result_size, locale), mono: true });
 
   const argEntries = record.args ? Object.entries(record.args) : [];
 
@@ -992,7 +952,7 @@ function FingerprintRows({ record }: { record: ProvenanceRecord }): React.ReactE
               className="flex items-center justify-between gap-3 px-3 py-2 text-xs"
               style={i > 0 ? { borderTop: '1px solid var(--color-border-muted)' } : undefined}
             >
-              <span className="flex-shrink-0" style={TERTIARY}>
+              <span className="shrink-0" style={TERTIARY}>
                 {r.label}
               </span>
               <span
@@ -1015,14 +975,14 @@ function FingerprintRows({ record }: { record: ProvenanceRecord }): React.ReactE
               const isRedacted = value === REDACTED;
               return (
                 <div key={key} className="flex items-baseline justify-between gap-3 text-xs">
-                  <dt className="flex-shrink-0 font-mono" style={TERTIARY}>
+                  <dt className="shrink-0 font-mono" style={TERTIARY}>
                     {key}
                   </dt>
                   <dd
-                    className="flex min-w-0 items-center gap-1 break-words text-right font-mono"
+                    className="flex min-w-0 items-center gap-1 wrap-break-word text-right font-mono"
                     style={{ color: isRedacted ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)' }}
                   >
-                    {isRedacted && <Lock className="h-2.5 w-2.5 flex-shrink-0" aria-hidden />}
+                    {isRedacted && <Lock className="h-2.5 w-2.5 shrink-0" aria-hidden />}
                     {argValueText(value)}
                   </dd>
                 </div>
@@ -1035,7 +995,7 @@ function FingerprintRows({ record }: { record: ProvenanceRecord }): React.ReactE
         <section>
           <SectionLabel>{t('chat.sources.fingerprint.snippet')}</SectionLabel>
           <div
-            className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-lg px-3 py-2.5 font-mono text-xs leading-relaxed"
+            className="max-h-64 overflow-y-auto whitespace-pre-wrap wrap-break-word rounded-lg px-3 py-2.5 font-mono text-xs leading-relaxed"
             style={{
               color: 'var(--color-text-secondary)',
               background: 'var(--color-bg-code)',

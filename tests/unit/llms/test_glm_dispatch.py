@@ -3,7 +3,8 @@ manifest parameter plumb-through, and profile overrides."""
 
 import copy
 
-from src.llms.llm import LLM, ModelConfig, _profile_overrides_from_config
+from src.llms.llm import LLM, ModelConfig, create_llm_from_custom
+from src.llms.model_spec import profile_overrides
 from src.llms.vendor.langchain_zai import ChatZai
 
 
@@ -79,8 +80,32 @@ class TestGlmProfileOverlay:
         assert client.profile["max_output_tokens"] == model_info["parameters"]["max_tokens"]
 
 
+class TestProfileOverlayEverySdk:
+    """Every client carries its entry's window, not ChatZai's alone: most SDKs'
+    own tables lack most models, and compaction sizes its input to the window."""
+
+    def test_every_declared_window_reaches_its_client(self):
+        config = LLM.get_model_config()
+        for name, info in config.llm_config.items():
+            if isinstance(info.get("context"), int):
+                client = LLM(name, api_key="test-key").get_llm()
+                assert client.profile["max_input_tokens"] == info["context"], name
+
+    def test_a_custom_entry_declares_its_own_window(self):
+        client = create_llm_from_custom(
+            {
+                "name": "my-gateway",
+                "model_id": "my-gateway-1",
+                "provider": "openai",
+                "context": 64000,
+            },
+            api_key="test-key",
+        )
+        assert client.profile["max_input_tokens"] == 64000
+
+
 class TestProfileOverridesFromConfig:
-    """_profile_overrides_from_config maps models.json fields onto ModelProfile keys."""
+    """profile_overrides maps models.json fields onto ModelProfile keys."""
 
     def test_maps_context_parameters_and_modalities(self):
         """context → max_input_tokens, parameters.max_tokens → max_output_tokens, modality flags."""
@@ -90,7 +115,7 @@ class TestProfileOverridesFromConfig:
             "input_modalities": ["text", "image"],
         }
 
-        overrides = _profile_overrides_from_config(model_info)
+        overrides = profile_overrides(model_info)
 
         assert overrides["max_input_tokens"] == 200000
         assert overrides["max_output_tokens"] == 64000
@@ -101,7 +126,7 @@ class TestProfileOverridesFromConfig:
 
     def test_missing_fields_produce_no_overrides(self):
         """An entry with none of the mapped fields yields an empty override dict."""
-        assert _profile_overrides_from_config({}) == {}
+        assert profile_overrides({}) == {}
 
 
 class TestManifestIsolation:

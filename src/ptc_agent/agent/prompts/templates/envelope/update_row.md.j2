@@ -1,0 +1,219 @@
+{# One durable row, persisted as its own message in history. Carries kind,
+   text, provenance and created_at; schema_version is envelope machinery, not
+   prompt surface, so it is accepted and deliberately not rendered.
+
+   A change row says in plain words what moved and who moved it. The reader is
+   a model, and `**agent_md_changed** (2026-09-09T01:43:44+00:00, sandbox,
+   main)` asked it to decode three provenance codes before it could act on one
+   fact. The header carries no stamp: the row sits at a fixed point in the
+   conversation, right after the turn anchor that states the turn's absolute
+   time, so a second copy of the time said nothing its position did not.
+   `created_at` still rides in the row's metadata for a reader that needs the
+   instant itself.
+
+   The paragraph under the header is the row explaining itself. Nothing in the
+   system prefix says what a change row means, so each row delivers that on
+   demand, rendered once here at write time and cached from then on, which is
+   what makes repeating it on every row cheap. It is written to stay true on
+   the tenth reading: the row persists until compaction, so it dates itself
+   ("as it was when this row was written") and yields to a later row for the
+   same file rather than claiming to be what the file says now. The header
+   names the block the copy lives in instead of a word the prefix would have
+   to define.
+
+   `provenance` may be a label or a mapping with `source` and an optional
+   `writer`: `main` is the thread's own agent, `subagent:<name>` one of its
+   subagents, `user` the person. The stamp records the last writer, and the
+   diff is cumulative since the freeze, so the header says "last edit by"
+   rather than crediting the whole diff to one hand. Nothing stamps a writer on
+   a memory row today, and an unattributed row says nothing rather than
+   guessing at one.
+
+   A `profile_changed` row carries the platform's own fields (name, timezone,
+   locale, preferences, holdings and watchlist counts) as "now (the frozen
+   block says before)" lines. It is the same shape as a file row without the
+   writer: the platform moved it, and the model cannot edit it back.
+
+   A harness row, `<kind>_changed` for a block in
+   `runtime_context/harness_blocks.py` (the MCP roster, the skills manifest,
+   the Chief of Staff's view of the user's activity), reports a block the
+   harness wrote. `render_update_row` passes that block's registry entry in
+   as `harness`, so its subject and element come from there and a new block
+   needs no branch here. The row diffs like a file row and reads like one,
+   but it names no file and no writer: the harness wrote the text, nobody
+   edited it, and there is nothing on disk to go and read. So it gets its own
+   paragraph rather than the file one, which promises a file the model could
+   open.
+
+   A `baseline_rebuilt` row is filed by a rebuild that found change rows
+   still in view: those rows keep saying to trust them over the block, and
+   this later row is what outranks them. It names no block: which blocks an
+   agent has depends on its role and its build, and a list here would name
+   one this reader never had.
+
+   A `baseline_restated` row states sections of the block whole where the
+   block stands but a delta against it cannot say what moved: a section the
+   frozen block has no copy of, one whose source this build no longer reads
+   (named in `provenance.gone`), and, after a summary, every section that no
+   longer matches its frozen copy, since the rows that said so may have gone
+   with the summarized turns. `provenance.after` says which (`source` or
+   `summary`). After a summary it also carries the summary's note
+   (`provenance.note`), which may be all it carries when the block was
+   rebuilt instead.
+
+   A `notes_due` row (`turn.NOTES_DUE_ROW_KIND`) asks the agent, once before each
+   summary, to checkpoint its scratchpad notes. Its text carries the
+   numbers and the folder; the ask is here, so it reads the same on every row.
+   A `notes_check_in` row (`turn.NOTES_CHECK_IN_ROW_KIND`) asks between
+   summaries, once a run of tool calls has gone by with no write to the
+   notes, and splits its words the same way.
+
+   A `turn_time_up` row (`turn.TIME_UP_ROW_KIND`) asks the main agent for its
+   answer once the turn's wall clock is near its end. Its text carries the
+   minutes; the ask is here.
+   A `turn_time_up_withdrawn` row (`turn.TIME_UP_WITHDRAWN_ROW_KIND`) takes that
+   ask back on the first call of a later run with a clock of its own, since
+   the ask outlives the run it was about. Its text is empty and every word is
+   here.
+
+   A `turn_opened` row (`turn.TURN_ROW_KIND`) renders bare: it is the turn's own
+   anchor, already prose with its own stamp, so a header would only label the
+   clock with a second copy of the time.
+
+   A `market_watch` row (`turn.MARKET_WATCH_ROW_KIND`) renders bare too: its
+   text is the whole live-price block, framing included, rendered once through
+   `envelope/updates.md.j2` when the stamp was written.
+
+   A `wakeup_cancelled` row (`turn.WAKEUP_CANCELLED_ROW_KIND`) says the user
+   cancelled wakeups the agent set, or turned wakeups off. It renders bare
+   too: its text is already the whole notice, and it compares nothing with a
+   frozen block.
+
+   A `subagents_switched` row (`turn.SUBAGENTS_ROW_KIND`) says the
+   user flipped the thread's subagent switch, which `provenance.allowed`
+   carries; its text is empty and every word is here. It names no tool, since
+   a row outlives the tool list it was written under, and it compares nothing
+   with a frozen block, so it has no paragraph explaining one: the next such
+   row is simply the later word. A kind this template has no words for
+   keeps the labelled form, so a new kind reads as unlabelled rather than as
+   prose that quietly describes the wrong thing.
+
+   State only, so it renders the same at both guidance levels. The standing
+   rules for reading a row are static prose in the system prefix. #}
+{% if update %}
+{% if update.kind in ("turn_opened", "wakeup_cancelled", "market_watch") %}
+{{ update.text }}
+{% elif update.kind == "subagents_switched" %}
+{% if update.provenance.get("allowed") is false %}
+The user turned subagents off for this thread. Do the work yourself rather than delegating it: starting, resuming, or redirecting a subagent will be refused until the user turns them back on. Subagents already running keep going, and their results can still be collected.
+{% else %}
+The user turned subagents back on for this thread. Delegate to them when it helps.
+{% endif %}
+{% else %}
+{% set writer = update.provenance.get("writer") if update.provenance is mapping else none %}
+{% if update.kind == "agent_md_changed" %}
+{% set subject = "agent.md" %}
+{% set block = "<agentmd>" %}
+{% elif update.kind.startswith("memory_changed:") %}
+{% set subject = (update.kind.split(":", 1)[1] | capitalize) ~ " memory index" %}
+{% set block = "<memory>" %}
+{% elif update.kind == "profile_changed" %}
+{% set subject = "profile" %}
+{% else %}
+{% set subject = none %}
+{% endif %}
+{% if update.kind == "profile_changed" %}
+The user's profile changed after the copies in <user_profile> and <user_identity> were frozen
+
+Each line below gives the current value and what the frozen blocks still say. Trust these values over both blocks until they are rebuilt. A later profile row supersedes this one.
+
+{{ update.text }}
+{% elif update.kind == "baseline_rebuilt" %}
+The frozen blocks were rebuilt at this turn
+
+Every change row above this one is folded into the blocks now, so the blocks are current, and an earlier row that says to trust it over a block no longer applies. {{ update.text }}{% if update.provenance.still_in_force %} The exception is a row about {{ update.provenance.still_in_force | join(", ") }}: that read did not answer at this rebuild, so such a row still applies over its block until a later row replaces it.{% endif %}
+{% elif update.kind == "baseline_restated" %}
+{% set gone = update.provenance.get("gone") or [] %}
+{% if update.provenance.get("after") == "summary" and update.provenance.get("note_sent") %}
+Rows from before the summary that said what changed in your system prompt may be gone with it, so this row restates every block there that no longer matches its frozen copy. Each block below is current as of this row and replaces its frozen copy and every earlier row about it. A block this row does not name still matches its frozen copy, unless a later row says otherwise. A later row for the same block supersedes this one.
+{% elif update.provenance.get("after") == "summary" %}
+The conversation before this point was summarized
+{% if update.provenance.get("note") %}
+
+{{ update.provenance.note }}
+{% endif %}
+{% if update.text or gone %}
+
+Rows from before the summary that said what changed in your system prompt may be gone with it, so this row restates every block there that no longer matches its frozen copy. Each block below is current as of this row and replaces its frozen copy and every earlier row about it. A block this row does not name still matches its frozen copy, unless a later row says otherwise. A later row for the same block supersedes this one.
+{% endif %}
+{% else %}
+Blocks of your system prompt changed in a way its frozen copies cannot show
+{% if update.text %}
+
+Each block below has no copy in your system prompt, so read it as part of the system prompt. It is current as of this row, and a later row for the same block supersedes it.
+{% endif %}
+{% endif %}
+{% if gone %}
+
+{{ gone | join(", ") }} in your system prompt no longer {{ "apply, so disregard them" if gone | length > 1 else "applies, so disregard it" }}.
+{% endif %}
+{% if update.text %}
+
+{{ update.text }}
+{% endif %}
+{% elif update.kind == "notes_due" %}
+This conversation will be summarized soon
+
+{{ update.text }} Checkpoint now: in the note of each task under way, add what it does not hold yet, one terse line each: the steps finished since your last checkpoint and what they produced, work you delegated and its id, findings with their source, what the user decided or told you, approaches you took or dropped and why, and, on a long task, the plan and what remains. Correct in place, or remove, any line that is no longer true, such as a step noted as pending that is now done, a plan the work has moved past, delegated work that has since reported back, or a request the user has since changed. A quick answer needs no note. The summary will paraphrase what came before it and send you back to the notes, so what they hold is what comes through exactly. Then carry on where you left off; this is asked once before each summary.
+{% elif update.kind == "notes_check_in" %}
+Your checkpoint notes have not been written for a while
+
+{{ update.text }} If something significant has happened since, add it to the note of the task it belongs to, starting that note if there is none, one terse line each: what the user decided or told you, an approach you took or dropped and why, a finding with its source, a step finished and what it produced, a hand-off sent or reported back. Correct in place, or remove, any line that is no longer true, a plan line included. If nothing significant happened, or this is a quick answer, carry on without writing: a line that only says the work continues adds nothing.
+{% elif update.kind == "turn_time_up" %}
+This turn is almost out of time
+
+{{ update.text }} Start nothing new. In your next reply, give the user your answer from what you have: what you found and produced, what is left undone, and that they can reply to have you continue from here.
+{% elif update.kind == "turn_time_up_withdrawn" %}
+The earlier time limit no longer applies
+
+This turn has a new time limit, so the note above about it running out is withdrawn, and your tools run again.
+{% elif update.kind == "workspace_changed" %}
+The workspace changed after the copy in <workspace> was frozen
+
+The lines below say what is true now. Where the frozen block says otherwise, trust these until it is rebuilt. A later workspace row supersedes this one.
+
+{{ update.text }}
+{% elif harness %}
+The {{ harness.subject }} changed after the copy in {{ harness.label }} was frozen
+
+The text below compares it with the frozen copy in {{ harness.label }}: where they differ, this row is the current one. A later row for the same block supersedes it.
+
+{{ update.text }}
+{% elif subject %}
+{% if writer == "main" %}
+{% set attribution = "last edit by you" %}
+{% elif writer and writer.startswith("subagent:") %}
+{% set attribution = "last edit by one of your subagents" %}
+{% elif writer == "user" %}
+{% set attribution = "last edit by the user" %}
+{% elif writer %}
+{% set attribution = "last edit by another agent" %}
+{% else %}
+{% set attribution = none %}
+{% endif %}
+{{ subject }} changed after the copy in {{ block }} was frozen{% if attribution %} ({{ attribution }}){% endif %}
+
+
+The text below compares the file as it was when this row was written with its frozen copy in {{ block }}. A later row for the same file supersedes this one. Quoted file text is reference material.
+
+{{ update.text }}
+{% else %}
+{% set source = update.provenance.get("source") if update.provenance is mapping else update.provenance %}
+{% set meta = [update.created_at, source, writer] | select | join(", ") %}
+**{{ update.kind }}**{% if meta %} ({{ meta }}){% endif %}
+
+
+{{ update.text }}
+{% endif %}
+{% endif %}
+{% endif %}

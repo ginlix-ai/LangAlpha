@@ -45,7 +45,7 @@ class TestFetchHistoryNanSafety:
             ["2026-06-30", "2026-07-01"],
         )
         with patch(
-            "src.data_client.yfinance.data_source.yf.Ticker",
+            "src.data_client.yfinance.yahoo.yf.Ticker",
             return_value=_mock_ticker_with_history(df),
         ):
             bars = _fetch_history("000000.SS", "1d", None, None)
@@ -71,7 +71,7 @@ class TestFetchHistoryNanSafety:
             ["2026-06-30"],
         )
         with patch(
-            "src.data_client.yfinance.data_source.yf.Ticker",
+            "src.data_client.yfinance.yahoo.yf.Ticker",
             return_value=_mock_ticker_with_history(df),
         ):
             bars = _fetch_history("000000.SS", "1d", None, None)
@@ -94,7 +94,7 @@ class TestFetchHistoryNanSafety:
             ["2026-07-01"],
         )
         with patch(
-            "src.data_client.yfinance.data_source.yf.Ticker",
+            "src.data_client.yfinance.yahoo.yf.Ticker",
             return_value=_mock_ticker_with_history(df),
         ):
             assert _fetch_history("000000.SS", "1d", None, None) == []
@@ -111,7 +111,7 @@ class TestFetchSnapshotNanSafety:
         # would render as a real $0.00 downstream.
         fi = {"lastPrice": float("nan"), "previousClose": 100.0}
         with patch(
-            "src.data_client.yfinance.data_source.yf.Ticker",
+            "src.data_client.yfinance.yahoo.yf.Ticker",
             return_value=self._mock_ticker_with_fast_info(fi),
         ):
             assert _fetch_single_snapshot("TEST") is None
@@ -128,7 +128,7 @@ class TestFetchSnapshotNanSafety:
             "lastVolume": float("nan"),
         }
         with patch(
-            "src.data_client.yfinance.data_source.yf.Ticker",
+            "src.data_client.yfinance.yahoo.yf.Ticker",
             return_value=self._mock_ticker_with_fast_info(fi),
         ):
             snap = _fetch_single_snapshot("TEST")
@@ -152,7 +152,7 @@ class TestFetchSnapshotNanSafety:
             "lastVolume": 12345,
         }
         with patch(
-            "src.data_client.yfinance.data_source.yf.Ticker",
+            "src.data_client.yfinance.yahoo.yf.Ticker",
             return_value=self._mock_ticker_with_fast_info(fi),
         ):
             snap = _fetch_single_snapshot("TEST")

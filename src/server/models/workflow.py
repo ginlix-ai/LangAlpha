@@ -5,9 +5,13 @@ This module provides Pydantic models for retrieving and displaying
 historical workflow states from LangGraph checkpoints.
 """
 
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
+
+from src.llms.reasoning import ReasoningLevel
+from src.server.models.additional_context import AdditionalContext
+from src.server.models.chat import RequestKey
 
 
 def serialize_message(message: Any) -> Dict[str, Any]:
@@ -410,15 +414,26 @@ class TurnCheckpointInfo(BaseModel):
     Each turn boundary is identified by the `source=input` checkpoint that LangGraph
     creates when a user message is injected into the graph state.
     """
-    turn_index: int = Field(..., description="0-based turn index")
+    turn_index: int = Field(
+        ...,
+        description="The turn's persisted turn_index, the one its replayed "
+        "messages carry. Not its position in this list: a turn whose run "
+        "never checkpointed has no entry, and the turns after it keep "
+        "their own numbers. Such turns past the last checkpointed one share "
+        "a last entry whose checkpoints are both the branch tip, or the empty "
+        "fork root on a thread with no checkpoint.",
+    )
     edit_checkpoint_id: Optional[str] = Field(
         None,
         description="Checkpoint ID before the user message was added. "
-        "Fork from here to edit/replace this user message.",
+        "Fork from here to edit/replace this user message. The thread's first "
+        "message forks from the empty fork root. None for a resume, which "
+        "has no message of its own.",
     )
     regenerate_checkpoint_id: str = Field(
         ...,
-        description="Checkpoint ID with user message present but before AI response. "
+        description="Checkpoint ID with the user message (or, for a turn that "
+        "resumed from a question, its answer) present but before AI response. "
         "Fork from here to regenerate the AI response.",
     )
 
@@ -446,7 +461,9 @@ class RetryRequest(BaseModel):
     workspace_id: str = Field(..., description="Workspace ID (required for graph building)")
     checkpoint_id: Optional[str] = Field(
         None,
-        description="Specific checkpoint ID to retry from. If not provided, auto-detects the last checkpoint.",
+        description="Specific checkpoint ID to retry from. If not provided, "
+        "auto-detects the last checkpoint. A failed message that runs again "
+        "keeps the checkpoint it was sent against.",
     )
     run_id: Optional[str] = Field(
         None,
@@ -454,15 +471,21 @@ class RetryRequest(BaseModel):
         "attempt; a stale id is rejected (409) instead of silently retrying "
         "a different run.",
     )
-    request_key: Optional[str] = Field(
+    request_key: Optional[RequestKey] = Field(
         None,
         description="Client-generated UUID for idempotent delivery; reuse "
         "across retransmits of the same retry.",
     )
     llm_model: Optional[str] = Field(
         None,
-        description="Model override for the retry attempt (the chat input's "
-        "current selection); None = per-user default.",
+        description="Model for the retry attempt (the chat input's current "
+        "selection). Omitted, the thread's llm_model, else the account default; "
+        "a named model is stored on the thread as a send's is.",
     )
-    reasoning_effort: Optional[Literal["low", "medium", "high", "xhigh"]] = Field(None)
+    reasoning_effort: Optional[ReasoningLevel] = Field(None)
     fast_mode: Optional[bool] = Field(None)
+    additional_context: Optional[List[AdditionalContext]] = Field(
+        None,
+        description="The failed send's additional context, when its message "
+        "never reached the agent and so runs again. A replay ignores it.",
+    )

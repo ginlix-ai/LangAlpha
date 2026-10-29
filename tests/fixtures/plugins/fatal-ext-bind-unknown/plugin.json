@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "bind-unknown",
+  "extensions": {
+    "ai.langalpha": {
+      "secrets": [
+        {
+          "name": "K",
+          "label": "K",
+          "bind": [
+            {
+              "server": "ghost",
+              "env": "K"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

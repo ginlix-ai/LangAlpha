@@ -50,14 +50,6 @@ def session_state_with_auto_approve():
 
 
 @pytest.fixture
-def session_state_with_plan_mode():
-    """Create a SessionState instance with plan mode enabled."""
-    from ptc_cli.core.state import SessionState
-
-    return SessionState(plan_mode=True)
-
-
-@pytest.fixture
 def session_state_no_persist():
     """Create a SessionState instance with persistence disabled."""
     from ptc_cli.core.state import SessionState
@@ -72,7 +64,6 @@ def mock_session_state():
     state.thread_id = "test-thread-id"
     state.reset_thread = Mock(return_value="new-thread-id")
     state.auto_approve = False
-    state.plan_mode = False
     return state
 
 

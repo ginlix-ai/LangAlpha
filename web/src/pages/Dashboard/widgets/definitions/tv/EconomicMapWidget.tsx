@@ -27,7 +27,6 @@ interface EconomicMapConfig {
 function EconomicMapWidget({ instance }: WidgetRenderProps<EconomicMapConfig>) {
   return (
     <TradingViewWebComponent
-      card
       element="tv-economic-map"
       config={{
         region: instance.config.region,

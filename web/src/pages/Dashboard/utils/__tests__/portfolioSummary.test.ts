@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
   formatPortfolioMoney,
@@ -72,7 +73,7 @@ describe('portfolioSummary', () => {
       createPortfolioRow({ symbol: '0700.HK', price: 80, currency: 'HKD', marketValue: 800, average_cost: 70, quantity: 10 }),
     ]);
 
-    expect(formatPortfolioNavMarkdownLine(summaries)).toBe(
+    expect(formatPortfolioNavMarkdownLine(summaries, 'en-US')).toBe(
       [
         '**NAV (USD)** USD 120.00 (cost USD 100.00, P/L +USD 20.00 / +20.00%)',
         '**NAV (HKD)** HKD 800.00 (cost HKD 700.00, P/L +HKD 100.00 / +14.29%)',
@@ -85,7 +86,7 @@ describe('portfolioSummary', () => {
       createPortfolioRow({ symbol: 'BONUS', price: 15, currency: 'USD', marketValue: 150, average_cost: 0, quantity: 10 }),
     ]);
 
-    expect(formatPortfolioNavMarkdownLine(summaries)).toBe('**NAV (USD)** USD 150.00');
+    expect(formatPortfolioNavMarkdownLine(summaries, 'en-US')).toBe('**NAV (USD)** USD 150.00');
   });
 
   it('formats negative P/L in NAV markdown with negative signs', () => {
@@ -93,7 +94,7 @@ describe('portfolioSummary', () => {
       createPortfolioRow({ symbol: 'LOSS', price: 8, currency: 'USD', marketValue: 80, average_cost: 10, quantity: 10 }),
     ]);
 
-    expect(formatPortfolioNavMarkdownLine(summaries)).toBe(
+    expect(formatPortfolioNavMarkdownLine(summaries, 'en-US')).toBe(
       '**NAV (USD)** USD 80.00 (cost USD 100.00, P/L -USD 20.00 / -20.00%)',
     );
   });
@@ -103,7 +104,7 @@ describe('portfolioSummary', () => {
       createPortfolioRow({ symbol: 'EMPTY', price: 0, currency: 'USD', marketValue: 0, average_cost: 0, quantity: 0 }),
     ]);
 
-    expect(formatPortfolioNavMarkdownLine(summaries)).toBe('');
+    expect(formatPortfolioNavMarkdownLine(summaries, 'en-US')).toBe('');
   });
 
   it('excludes unavailable quotes from currency NAV and cost basis', () => {

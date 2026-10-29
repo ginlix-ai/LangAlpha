@@ -6,28 +6,48 @@ handles timeouts. Keepalives are emitted by the SSE consumer (stream_from_log).
 """
 
 import asyncio
-import copy
 import json
 import logging
-import re
-from datetime import datetime
-from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple, cast
+import time
+from typing import Any, AsyncGenerator, Dict, List, Mapping, Optional, Set, Tuple, cast
 
 import json_repair
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langgraph.types import Overwrite
+
+from ptc_agent.agent.middleware.image_capture import collect_sandbox_paths
+
+from ptc_agent.agent.middleware.runtime_context.turn import (
+    TURN_DEADLINE_KEY,
+    TURN_TIME_LIMIT_KEY,
+)
 
 from src.server.utils.content_normalizer import (
     normalize_text_content,
     is_thinking_status_signal,
 )
 from src.server.utils.pg_sanitize import finite_json_dumps
+from src.server.contracts.status import classify_interrupts
+from src.server.database.provenance import MAIN_PROVENANCE_LANE
+from src.server.database.runs.lifecycle import ProducerRecord
+from src.server.services.runs.credit_usage import build_credit_usage_data
+from src.server.services.runs.reasoning_facts import ReasoningDurations
+from src.server.services.runs.stream_errors import error_event_data
+from src.tools.wakeups.models import WakeupArtifact
+from src.tools.wakeups.quiet import quiet_result
+from src.server.utils.text_phase import TextPhaseTracker
+from src.utils.concurrency import aclose_within
+from src.utils.stream_coalescing import (
+    HEARTBEAT_EVENT_TYPE,
+    DeltaCoalescer,
+    StreamFrame,
+    delta_piece,
+)
 from src.llms.content_utils import extract_reasoning_summary_index
-from src.utils.tracking import ExecutionTracker
 from src.config.settings import (
     get_workflow_timeout,
     is_sse_event_log_enabled,
-    get_merged_chunk_max_bytes,
 )
 from opentelemetry.trace import Status, StatusCode
 from src.observability.tracing import tracer as _otel_tracer
@@ -41,9 +61,20 @@ logger = logging.getLogger(__name__)
 sse_logger = logging.getLogger("sse_events")
 
 WORKFLOW_TIMEOUT = get_workflow_timeout()  # seconds
-SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 
-MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = get_merged_chunk_max_bytes()
+# 30s: enough for model calls and tools to cancel, and short of the two minutes
+# a tool's cleanup can retry against a sick sandbox while the finalize waits.
+GRAPH_CLOSE_TIMEOUT_S = 30.0
+
+
+class TurnTimeLimitError(asyncio.TimeoutError):
+    """The turn reached its wall clock. Its own error frame has gone out by the
+    time this is raised, so the generic one is not sent after it: that one
+    reads as an internal failure, which the client shows as a banner in place
+    of the turn and its answer."""
+
+
+SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 
 DEFAULT_TOKEN_THRESHOLD = 120000
 
@@ -62,38 +93,6 @@ def resolve_token_threshold(agent_config=None) -> int:
     if cfg is None:
         return DEFAULT_TOKEN_THRESHOLD
     return cfg.compaction.token_threshold
-
-
-def build_credit_usage_data(
-    thread_id: str,
-    token_usage: dict,
-    total_credits: float,
-    timestamp: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Aggregate per-model usage into the ``credit_usage`` wire payload.
-
-    Intentionally omits USD costs and model names (hidden from the client).
-    Shared by the live handler and table-sourced replay so both wires carry
-    the same shape.
-    """
-    total_input_tokens = 0
-    total_output_tokens = 0
-    total_tokens = 0
-    for usage in (token_usage or {}).get("by_model", {}).values():
-        total_input_tokens += usage.get("input_tokens", 0)
-        total_output_tokens += usage.get("output_tokens", 0)
-        total_tokens += usage.get("total_tokens", 0)
-
-    return {
-        "thread_id": thread_id,
-        "tokens": {
-            "input_tokens": total_input_tokens,
-            "output_tokens": total_output_tokens,
-            "total_tokens": total_tokens,
-        },
-        "total_credits": round(total_credits, 2),
-        "timestamp": timestamp or datetime.now().isoformat(),
-    }
 
 
 def _parse_tool_args(
@@ -136,218 +135,56 @@ def _parse_tool_args(
     return None, err_repr, err_window
 
 
-# ---------------------------------------------------------------------------
-# Stream error classification
-# ---------------------------------------------------------------------------
-#
-# Chat-stream failures fall into two buckets and the user-facing remedy is
-# different for each:
-#
-#   - ``upstream``  — the LLM provider we called returned an error (their
-#                     server 500'd, the key is rejected, rate-limited, etc).
-#                     User should check their key / plan / provider status.
-#   - ``internal``  — our own pipeline failed (middleware bug, our DB, a
-#                     schema mismatch in the payload we built). User can't
-#                     do anything; we should log loudly and show a generic
-#                     retry message.
-#
-# Classification is a module-prefix check with exception-chain walking — any
-# exception in the chain sourced from a known provider SDK flips the whole
-# failure to ``upstream``.
-
-# Provider SDK and LangChain-wrapper module prefixes. Any exception in the
-# cause chain whose ``__module__`` matches one of these flips the whole
-# failure to ``upstream``. Keep in sync with the SDKs wired up in
-# ``src/llms/llm.py`` — missing a prefix means the user sees "our service
-# failed" for what's really a provider error.
-#
-# ``httpx`` is in this list as a last-resort catch: a bare httpx exception
-# that reaches the stream error handler has almost always come from the
-# LangChain call path (SDKs raise via httpx). If our own service calls
-# (credit checks, workspace manager) ever start raising bare httpx errors to
-# the stream path we should wrap them in a distinct exception type before
-# they bubble; classification is a UI hint, not a diagnostic source of truth.
-_UPSTREAM_MODULE_PREFIXES: tuple[str, ...] = (
-    # Raw provider SDKs
-    "anthropic",
-    "openai",
-    "google.api_core",
-    "google.genai",
-    "google.generativeai",
-    "cohere",
-    "httpx",
-    # LangChain wrappers — their exceptions may not chain through the raw SDK
-    # when the wrapper normalizes errors, so match them directly.
-    "langchain_openai",
-    "langchain_anthropic",
-    "langchain_deepseek",
-    "langchain_qwq",
-    "langchain_google_genai",
-    "langchain_google_vertexai",
-    "langchain_mistralai",
-    "langchain_together",
-    "langchain_groq",
-    "groq",
-)
-
-_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
+def _fallback_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """A model_fallback ui record as its response row keeps it. Metadata is
+    cut to the anchor replay reads, since the rest is run context the row
+    has no use for, and the error is scrubbed before it is stored."""
+    props = dict(record.get("props") or {})
+    if isinstance(props.get("error"), str):
+        props["error"] = _sanitize_error_text(props["error"])
+    after = (record.get("metadata") or {}).get("after_message_id")
+    return {
+        "type": "ui",
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "props": props,
+        "metadata": {"after_message_id": after} if after else {},
+    }
 
 
-def _parse_status_from_message(text: str) -> Optional[int]:
-    match = _STATUS_CODE_RE.search(text)
-    return int(match.group(1)) if match else None
+def fallback_from_frame(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The record a main-lane model_fallback frame names, as
+    ``_fallback_record`` keeps it, so recovery keeps a dead run's notices as
+    its finalize would. None for a frame that names none, another lane's or
+    an older server's, whose notice replay could not tell from a saved one."""
+    from src.server.services.history.projector import MODEL_FALLBACK_FIELDS
+
+    if data.get("agent") != "main" or not data.get("fallback_id"):
+        return None
+    return _fallback_record(
+        {
+            "id": data["fallback_id"],
+            "name": "model_fallback",
+            "props": {
+                key: data[key]
+                for key in (*MODEL_FALLBACK_FIELDS, "error")
+                if key in data
+            },
+            "metadata": {"after_message_id": data.get("after_message_id")},
+        }
+    )
 
 
-def find_resilience_trace(exc: BaseException) -> Optional[Dict[str, Any]]:
-    """Find the attempt trace attached by ``ModelResilienceMiddleware``.
+def kept_error_frame(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A main-lane ``error`` frame as its response row keeps it, so a reload
+    shows the failure as the live stream did: the row alone lacks the model,
+    the hints and the live wording. None for a subagent's, whose failure
+    belongs to its card."""
+    from src.server.services.history.replay.lanes import MAIN_LANE, agent_lane
 
-    The middleware sets ``__model_resilience__`` (see ``RESILIENCE_TRACE_ATTR``
-    in ``src/ptc_agent/agent/middleware/model_resilience.py``) on the primary
-    model's exception before re-raising it. Walks the cause chain defensively
-    in case a wrapper exception ends up on top.
-    """
-    seen: set[int] = set()
-    current: Optional[BaseException] = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        trace = getattr(current, "__model_resilience__", None)
-        if isinstance(trace, dict):
-            return trace
-        current = current.__cause__ or current.__context__
-    return None
-
-
-def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
-    """Classify a chat-stream exception as ``upstream`` or ``internal``.
-
-    Walks ``__cause__`` / ``__context__`` so a wrapped provider error (e.g.
-    a LangChain exception caused by ``anthropic.InternalServerError``) is
-    still recognized as upstream. Returns a dict with ``kind``,
-    ``status_code`` (when carried on the exception or parseable from its
-    message), and ``provider_module`` (the matched SDK prefix, or None).
-    """
-    seen: set[int] = set()
-    current: Optional[BaseException] = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        module = getattr(type(current), "__module__", "") or ""
-        for prefix in _UPSTREAM_MODULE_PREFIXES:
-            if module == prefix or module.startswith(prefix + "."):
-                status = getattr(current, "status_code", None)
-                if not isinstance(status, int):
-                    status = _parse_status_from_message(str(current))
-                return {
-                    "kind": "upstream",
-                    "status_code": status if isinstance(status, int) else None,
-                    "provider_module": prefix,
-                }
-        current = current.__cause__ or current.__context__
-
-    return {"kind": "internal", "status_code": None, "provider_module": None}
-
-
-class StreamEventAccumulator:
-    """Accumulates and merges token-level SSE events for persistence."""
-
-    def __init__(self, max_merged_bytes: int = MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT):
-        self._max_merged_bytes = max_merged_bytes
-        self._events: List[Dict[str, Any]] = []
-
-    def get_events(self) -> List[Dict[str, Any]]:
-        return copy.deepcopy(self._events)
-
-    def add(self, event_type: str, data: Dict[str, Any]) -> None:
-        if not isinstance(data, dict):
-            return
-
-        incoming = copy.deepcopy(data)
-
-        if not self._events:
-            self._events.append({"event": event_type, "data": incoming})
-            return
-
-        prev = self._events[-1]
-        if prev.get("event") != event_type:
-            self._events.append({"event": event_type, "data": incoming})
-            return
-
-        if event_type == "message_chunk" and self._try_merge_message_chunk(prev, incoming):
-            return
-
-        if event_type == "tool_call_chunks" and self._try_merge_tool_call_chunks(prev, incoming):
-            return
-
-        self._events.append({"event": event_type, "data": incoming})
-
-    def _try_merge_message_chunk(self, prev_event: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
-        prev_data = prev_event.get("data")
-        if not isinstance(prev_data, dict):
-            return False
-
-        if incoming.get("content_type") == "reasoning_signal":
-            return False
-        if prev_data.get("content_type") == "reasoning_signal":
-            return False
-
-        merge_keys = ("thread_id", "agent", "id", "role", "content_type")
-        if any(prev_data.get(k) != incoming.get(k) for k in merge_keys):
-            return False
-
-        prev_content = prev_data.get("content") or ""
-        incoming_content = incoming.get("content") or ""
-        incoming_finish = incoming.get("finish_reason")
-
-        if incoming_content:
-            if len(prev_content.encode("utf-8")) + len(incoming_content.encode("utf-8")) > self._max_merged_bytes:
-                return False
-            prev_data["content"] = f"{prev_content}{incoming_content}"
-
-        if incoming_finish is not None:
-            prev_data["finish_reason"] = incoming_finish
-
-        return bool(incoming_content) or (incoming_finish is not None)
-
-    def _try_merge_tool_call_chunks(self, prev_event: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
-        prev_data = prev_event.get("data")
-        if not isinstance(prev_data, dict):
-            return False
-
-        merge_keys = ("thread_id", "agent", "id")
-        if any(prev_data.get(k) != incoming.get(k) for k in merge_keys):
-            return False
-
-        prev_chunks = prev_data.get("tool_call_chunks")
-        incoming_chunks = incoming.get("tool_call_chunks")
-        if not (isinstance(prev_chunks, list) and isinstance(incoming_chunks, list)):
-            return False
-        if len(prev_chunks) != 1 or len(incoming_chunks) != 1:
-            return False
-
-        prev_chunk = prev_chunks[0]
-        incoming_chunk = incoming_chunks[0]
-        if not (isinstance(prev_chunk, dict) and isinstance(incoming_chunk, dict)):
-            return False
-
-        prev_call_id = prev_chunk.get("id")
-        incoming_call_id = incoming_chunk.get("id")
-        if prev_call_id is not None or incoming_call_id is not None:
-            if prev_call_id != incoming_call_id:
-                return False
-        else:
-            if prev_chunk.get("index") != incoming_chunk.get("index"):
-                return False
-
-        prev_args = prev_chunk.get("args") or ""
-        incoming_args = incoming_chunk.get("args") or ""
-        if not isinstance(prev_args, str) or not isinstance(incoming_args, str):
-            return False
-
-        if incoming_args:
-            if len(prev_args.encode("utf-8")) + len(incoming_args.encode("utf-8")) > self._max_merged_bytes:
-                return False
-            prev_chunk["args"] = f"{prev_args}{incoming_args}"
-
-        return bool(incoming_args)
+    if agent_lane(data.get("agent")) != MAIN_LANE:
+        return None
+    return {key: value for key, value in data.items() if key != "thread_id"}
 
 
 class RunSSEProducer:
@@ -360,8 +197,10 @@ class RunSSEProducer:
         token_callback: Optional[Any] = None,
         tool_tracker: Optional[Any] = None,
         workflow_timeout: Optional[int] = None,
-        merged_stream_chunk_max_bytes: int = MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT,
         agent_config: Optional[Any] = None,
+        *,
+        turn_index: Optional[int] = None,
+        announced: Optional[Mapping[str, Any]] = None,
     ):
         """Initialize the workflow stream handler.
 
@@ -374,9 +213,23 @@ class RunSSEProducer:
         steering / demotion off it. Constructing a handler without a
         ``run_id`` would silently strip that frame and leave the client
         racing on reconnect.
+
+        ``announced`` rides the same frame on a notification turn (the
+        query row's ``turn_kinds.ANNOUNCED_KEYS``): a client that attaches to
+        the run live has no user message to label and never reads the query
+        row, so it draws the report's or the notices' row from this.
+
+        ``turn_index`` is the turn admission gave the run, announced on the
+        same frame: a view that missed turns added elsewhere cannot count its
+        way to it, and replay already names every turn by this value.
         """
         self.thread_id = thread_id
         self.run_id = run_id
+        self.announced = dict(announced or {})
+        # How a wake turn ended quietly, for the finalize to record; reset
+        # if the main agent speaks again after it.
+        self.quiet: Optional[WakeupArtifact] = None
+        self.turn_index = turn_index
         self.token_callback = token_callback
         self.tool_tracker = tool_tracker
         self.workflow_timeout = workflow_timeout or WORKFLOW_TIMEOUT
@@ -390,11 +243,36 @@ class RunSSEProducer:
 
         # Track reasoning status per agent for lifecycle management
         self.reasoning_active: Set[str] = set()
+        # Monotonic clock at each agent's open reasoning block, so its closing
+        # signal can carry how long the model thought.
+        self._reasoning_started_at: Dict[str, float] = {}
+        # How long the main agent thought, for replay.
+        self._reasoning = ReasoningDurations()
+        # The main agent's provenance records as emitted, for the finalize to
+        # write.
+        self.provenance_events: List[Dict[str, Any]] = []
+        # The main agent's model_fallback ui records as emitted: a step that
+        # fails or is stopped after one never commits it.
+        self._model_fallbacks: List[Dict[str, Any]] = []
+        # The last error frame the main agent's stream sent, for the finalize
+        # of a failed run to keep.
+        self._error_frame: Optional[Dict[str, Any]] = None
+        # The sandbox image paths each message the main graph saved still
+        # names, by message id: a later write of the message replaces its
+        # entry.
+        self._saved_image_paths: Dict[str, Set[str]] = {}
 
         # Track reasoning block index per agent to detect block transitions
         # When index changes (e.g., 0→1), a separator (\n\n) is needed between blocks
         self._reasoning_block_index: dict[str, int] = {}
         self._reasoning_separator_pending: Set[str] = set()
+        # Whitespace-only reasoning deltas seen before an agent's reasoning
+        # section opened, held with their message id until visible reasoning
+        # follows.
+        self._reasoning_whitespace_held: dict[str, tuple[str, str]] = {}
+
+        # The OpenAI Responses `phase` of streamed text, per agent and message.
+        self._text_phase = TextPhaseTracker()
 
         # Track function_call state for Response API (per agent)
         # Response API sends name/call_id only in first chunk, need to persist across chunks
@@ -403,20 +281,11 @@ class RunSSEProducer:
 
         # Track tool_use state for Anthropic (per agent)
         # Anthropic sends name/id in initial tool_use, then streams args via input_json_delta
-        # Key: (agent_name, index), Value: {name, id, args_accumulated}
+        # Key: (agent_name, index), Value: {name, id, message_id, args_accumulated}
         self.anthropic_tool_call_state: dict = {}
 
         # Event sequence numbering for reconnection support
         self.event_sequence: int = 0
-
-        # Accumulate merged streaming chunks for persistence
-        self._stream_event_accumulator = StreamEventAccumulator(
-            max_merged_bytes=merged_stream_chunk_max_bytes
-        )
-
-        # Track steering messages injected mid-workflow (for query backfill)
-        self.injected_steerings: list[dict] = []
-        self.on_steering_delivered: Optional[Any] = None
 
         self.event_counter: Optional[Any] = None
 
@@ -455,18 +324,8 @@ class RunSSEProducer:
         # resume from is the I8 lie).
         self.interrupt_verified: Optional[bool] = None
         self.interrupt_reason: Optional[str] = None
-
-        # ---- Stop reconciliation state (decision T3-A) -------------------
-        # Open artifacts whose last-emitted status was not terminal. Keyed by
-        # artifact_id → the last artifact event payload. Closed out on stop.
-        self._open_artifacts: dict[str, dict] = {}
-        # Per-message id of the most recent open assistant message that has not
-        # yet emitted a finish_reason — used to synthesize a "stopped" close.
-        # Maps agent → message_id of the in-flight message.
-        self._open_message_ids: dict[str, str] = {}
-        # Idempotency guard: once stop reconciliation has run, re-entry / a
-        # second stop must not append synthetic closes again.
-        self._stop_finalized: bool = False
+        # A credit pause's denial, which the finalize stamps on the row.
+        self.pause_message: Optional[str] = None
 
     def _open_compaction_window(self, ns_key: tuple) -> None:
         """Track a newly-opened compaction window. The FIRST window on this
@@ -503,21 +362,63 @@ class RunSSEProducer:
         graph: Any,
         input_state: Any,
         config: dict,
+        *,
+        settled_results: list[ToolMessage] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream workflow execution events as SSE-formatted strings.
 
         Keepalives are emitted by the SSE consumer (``stream_from_log``) on
         XREAD BLOCK timeout, not by the producer — the workflow no longer
-        needs to interleave them with graph output.
+        needs to interleave them with graph output. ``settled_results`` are
+        tool results the turn wrote to the thread before the graph ran, so the
+        graph never emits them; they go out as the turn's first results.
+
+        Frames pass through the coalescer and are numbered as they leave it,
+        so joined deltas keep the ids contiguous. A close that cannot yield
+        (stop, cancel, a transport quota) loses at most the held delta from
+        the live stream; replay projects the turn from its checkpoint.
+
+        A frame is serialized where it is built, so one that cannot be fails
+        inside the body's own handling: an error frame and a failed run, or a
+        warning where the frame is optional (credit usage).
         """
+        frames = self._stream_frames(
+            graph, input_state, config, settled_results=settled_results
+        )
+        coalescer = DeltaCoalescer()
+        try:
+            async for frame in frames:
+                ready = coalescer.poll() if frame is None else coalescer.offer(frame)
+                for out in ready:
+                    yield self._number_sse_event(out)
+            for out in coalescer.drain():
+                yield self._number_sse_event(out)
+        finally:
+            # Close the body here rather than leave it to garbage collection:
+            # its finally releases the compaction admission window.
+            await frames.aclose()
+
+    async def _stream_frames(
+        self,
+        graph: Any,
+        input_state: Any,
+        config: dict,
+        *,
+        settled_results: list[ToolMessage] | None = None,
+    ) -> AsyncGenerator[StreamFrame | None, None]:
+        """The body of ``stream_workflow``: yields built frames, plus a None
+        per graph event so a held delta's window is checked even when the
+        event emits nothing."""
         import time
+
+        from src.server.services.history.projector import MODEL_FALLBACK_FIELDS
 
         # Track start time for timeout
         workflow_start_time = time.time()
         timeout_warning_sent = False
         timeout_warning_threshold = 0.9  # Send warning at 90% of timeout
 
-        # Set tool tracking ContextVar (like ExecutionTracker pattern)
+        # Set tool tracking ContextVar
         # This must be done BEFORE graph.astream() so nodes inherit the ContextVar
         if self.tool_tracker:
             from src.tools.decorators import _tool_usage_context
@@ -528,16 +429,38 @@ class RunSSEProducer:
             "chat.turn.stream",
             attributes={"thread_id_hash": (self.thread_id or "")[:16]},
         )
+        graph_stream = None
         try:
             # First event of every stream: ``metadata`` payload announcing
             # the canonical run_id for this turn. Mirrors the
             # langgraph_sdk SSE protocol so frontend reconnect/demotion
             # logic can latch onto the authoritative identity immediately.
-            yield self._format_sse_event(
-                "metadata",
-                {"thread_id": self.thread_id, "run_id": self.run_id},
-                accumulate=False,
-            )
+            metadata: Dict[str, Any] = {
+                "thread_id": self.thread_id,
+                "run_id": self.run_id,
+            }
+            if self.turn_index is not None:
+                metadata["turn_index"] = self.turn_index
+            metadata.update(self.announced)
+            yield self._build_sse_event("metadata", metadata)
+
+            for result in settled_results or ():
+                async for event in self._process_message_chunk(
+                    result, "tools", {"langgraph_node": "tools"}
+                ):
+                    yield event
+
+            # The agent reads when this stop lands, so it can answer before it
+            # rather than be cut off by it.
+            if self.workflow_timeout > 0:
+                config = {
+                    **config,
+                    "configurable": {
+                        **(config.get("configurable") or {}),
+                        TURN_DEADLINE_KEY: workflow_start_time + self.workflow_timeout,
+                        TURN_TIME_LIMIT_KEY: self.workflow_timeout,
+                    },
+                }
 
             # Create graph stream. durability="sync" awaits each checkpoint
             # put before the next step — necessary but NOT sufficient for
@@ -553,17 +476,10 @@ class RunSSEProducer:
             )
 
             async for graph_event in graph_stream:
+                yield None
+
                 # Unpack graph event data
                 agent_from_stream, stream_mode, event_data = graph_event
-
-                # Exclusive lane ownership: frames originating inside a
-                # background task's namespace belong to the per-task channel
-                # (spool → task SSE / mux) — the main stream must not
-                # re-deliver them. The two copies carry incomparable ids, so
-                # clients cannot dedup; double delivery rendered every live
-                # task transcript twice and archived the copies into the
-                # turn's stream.
-                task_lane = self._resolve_task_lane(agent_from_stream)
 
                 # Check for timeout (if configured)
                 if self.workflow_timeout > 0:
@@ -572,11 +488,11 @@ class RunSSEProducer:
                     # Send warning at 90% of timeout
                     if not timeout_warning_sent and elapsed_time >= (self.workflow_timeout * timeout_warning_threshold):
                         timeout_warning_sent = True
-                        warning_event = self._format_sse_event(
+                        warning_event = self._build_sse_event(
                             "warning",
                             {
                                 "thread_id": self.thread_id,
-                                "message": f"Workflow approaching timeout ({int(elapsed_time)}s / {self.workflow_timeout}s)",
+                                "message": f"Turn approaching timeout ({int(elapsed_time)}s / {self.workflow_timeout}s)",
                                 "type": "timeout_warning",
                                 "elapsed_seconds": int(elapsed_time),
                                 "timeout_seconds": self.workflow_timeout,
@@ -590,24 +506,33 @@ class RunSSEProducer:
 
                     # Hard timeout
                     if elapsed_time >= self.workflow_timeout:
-                        timeout_error = self._format_sse_event(
+                        timeout_error = self._build_sse_event(
                             "error",
                             {
                                 "thread_id": self.thread_id,
-                                "error": f"Workflow timeout after {int(elapsed_time)} seconds",
+                                "error": f"Turn timed out after {int(elapsed_time)} seconds",
                                 "type": "timeout_error",
                                 "elapsed_seconds": int(elapsed_time),
                                 "timeout_seconds": self.workflow_timeout,
                             }
                         )
+                        self._error_frame = kept_error_frame(timeout_error.data)
                         yield timeout_error
                         logger.error(
                             f"[TIMEOUT_ERROR] thread_id={self.thread_id} "
                             f"exceeded timeout of {self.workflow_timeout}s"
                         )
-                        raise asyncio.TimeoutError(
+                        raise TurnTimeLimitError(
                             f"Workflow exceeded timeout of {self.workflow_timeout} seconds"
                         )
+
+                # A beat only wakes the coalescer and the timeout check.
+                if (
+                    stream_mode == "custom"
+                    and isinstance(event_data, dict)
+                    and event_data.get("type") == HEARTBEAT_EVENT_TYPE
+                ):
+                    continue
 
                 # Log raw stream data for debugging
                 logger.debug(
@@ -619,19 +544,6 @@ class RunSSEProducer:
                 # inline — exposure waits for the durability barrier after
                 # the stream drains (I8).
                 if isinstance(event_data, dict) and "__interrupt__" in event_data:
-                    if task_lane:
-                        # A task-namespace interrupt must never enter root
-                        # lifecycle: saw_interrupt classifies the TURN's
-                        # outcome, and exposing it as a main interrupt would
-                        # advertise a resume the root checkpoint can't honor.
-                        # Task HITL is unsupported (descoped) — surface
-                        # loudly; the task settles via its own error path.
-                        logger.error(
-                            f"[TASK_INTERRUPT] Unsupported interrupt from "
-                            f"{task_lane} on thread_id={self.thread_id} — "
-                            f"suppressed from root lifecycle"
-                        )
-                        continue
                     self.saw_interrupt = True
                     self._pending_interrupts.append(event_data)
                     continue  # Skip further processing for interrupt events
@@ -653,13 +565,14 @@ class RunSSEProducer:
                             # Forward all relevant fields from middleware payload
                             for key in ("action", "signal", "input_tokens", "output_tokens",
                                         "total_tokens", "summary_length", "summary_text",
-                                        "original_message_count",
-                                        "truncated_count", "error",
-                                        "kind", "offloaded_args", "offloaded_reads"):
+                                        "original_message_count", "source",
+                                        "summary_tokens", "truncated_count", "error",
+                                        "kind", "offloaded_args", "offloaded_reads",
+                                        "threshold"):
                                 if key in event_data:
                                     cw_data[key] = event_data[key]
                             if event_data.get("action") == "token_usage":
-                                cw_data["threshold"] = self._resolve_token_threshold()
+                                cw_data.setdefault("threshold", self._resolve_token_threshold())
 
                             action = event_data.get("action", "")
                             signal = event_data.get("signal", "")
@@ -676,73 +589,73 @@ class RunSSEProducer:
                                 elif signal in ("complete", "error"):
                                     self._close_compaction_window(ns_key)
 
-                            # Task-lane copies are delivered by the per-task
-                            # channel (forwarder whitelist) — only the window
-                            # bookkeeping above runs for them here.
-                            if task_lane:
-                                continue
                             logger.debug(
                                 f"[CONTEXT_WINDOW] Emitting {action}/{signal} "
                                 f"(thread_id={self.thread_id})"
                             )
-                            yield self._format_sse_event("context_window", cw_data)
+                            yield self._build_sse_event("context_window", cw_data)
                             continue
 
                         # Handle provenance records (data the agent accessed).
                         # The middleware emits agent=None on purpose; resolve it
-                        # here from the LangGraph namespace so subagent records
-                        # get task:{id} attribution. All other fields pass
-                        # through flat to match the frontend's ProvenanceEvent.
+                        # here from the LangGraph namespace. All other fields
+                        # pass through flat to match the frontend's
+                        # ProvenanceEvent.
                         if event_type == "provenance":
-                            # Task-lane copies are delivered by the per-task
-                            # channel (forwarder whitelist).
-                            if task_lane:
-                                continue
                             prov_data = self._resolve_provenance_event(
                                 event_data, agent_from_stream
                             )
-                            yield self._format_sse_event("provenance", prov_data)
+                            self.provenance_events.append(
+                                {
+                                    "event": "provenance",
+                                    "data": dict(prov_data),
+                                    "ts": time.time(),
+                                }
+                            )
+                            yield self._build_sse_event("provenance", prov_data)
                             continue
 
                         # Handle steering delivery signal
                         if event_type == "steering_delivered":
-                            yield self._format_sse_event("steering_delivered", {
+                            yield self._build_sse_event("steering_delivered", {
                                 "thread_id": self.thread_id,
                                 "count": event_data.get("count", 0),
                                 "messages": event_data.get("messages", []),
                                 "timestamp": event_data.get("timestamp"),
                             })
-                            # Track injected messages for later query backfill
-                            if self.on_steering_delivered:
-                                try:
-                                    await self.on_steering_delivered(
-                                        event_data.get("messages", [])
-                                    )
-                                except Exception:
-                                    pass
                             continue
 
                         # ``model_fallback`` arrives as a langgraph ui record
                         # (push_ui_message dual-writes the custom stream + the
                         # checkpointed ui channel); unwrap to the legacy wire
                         # shape so the resilience branch below handles it.
+                        fallback_ref: Dict[str, Any] = {}
                         if (
                             event_type == "ui"
                             and event_data.get("name") == "model_fallback"
                         ):
+                            if not agent_from_stream:
+                                kept = _fallback_record(event_data)
+                                self._model_fallbacks.append(kept)
+                                # Names the record, so recovery can keep a
+                                # notice whose step died with the worker.
+                                fallback_ref = {
+                                    "fallback_id": kept["id"],
+                                    **kept["metadata"],
+                                }
                             event_type = "model_fallback"
                             event_data = event_data.get("props") or {}
 
                         # Handle model resilience progress (retry / fallback).
-                        # ``model_retry`` is transient — live + reconnect only
-                        # (accumulate=False, like ``metadata``); ``model_fallback``
-                        # is persisted so the transcript note survives replay.
+                        # ``model_retry`` is live + reconnect only; replay shows
+                        # ``model_fallback`` from its checkpointed ui record.
                         if event_type in ("model_retry", "model_fallback"):
                             # Same attribution contract as provenance events
-                            # (`agent` is "main" | "task:{id}"): the main agent
-                            # streams with an empty namespace and the middleware
-                            # payload has no langgraph_node, so pin "main"
-                            # instead of _extract_agent_name's "agent" fallback.
+                            # (a detached subagent's never reach this producer):
+                            # the main agent streams with an empty namespace and
+                            # the middleware payload has no langgraph_node, so
+                            # pin "main" instead of _extract_agent_name's
+                            # "agent" fallback.
                             resilience_data: Dict[str, Any] = {
                                 "thread_id": self.thread_id,
                                 "agent": self._extract_agent_name(
@@ -756,26 +669,19 @@ class RunSSEProducer:
                                 "attempt",
                                 "max_retries",
                                 "delay_seconds",
-                                "from_model",
-                                "to_model",
-                                "from_is_primary",
-                                "status_code",
-                                "attempts_on_from",
+                                *MODEL_FALLBACK_FIELDS,
                             ):
                                 if key in event_data:
                                     resilience_data[key] = event_data[key]
-                            # Middleware error strings bypass format_error_event's
+                            # Middleware error strings bypass _build_error_event's
                             # scrubbing — sanitize here or BYOK URL userinfo leaks.
                             error_text = event_data.get("error")
                             if isinstance(error_text, str):
                                 resilience_data["error"] = _sanitize_error_text(
                                     error_text
                                 )
-                            yield self._format_sse_event(
-                                event_type,
-                                resilience_data,
-                                accumulate=(event_type == "model_fallback"),
-                            )
+                            resilience_data.update(fallback_ref)
+                            yield self._build_sse_event(event_type, resilience_data)
                             continue
 
                         # Official langgraph.graph.ui messages (push_ui_message
@@ -783,12 +689,7 @@ class RunSSEProducer:
                         # Map onto the existing artifact SSE event so the wire
                         # contract is unchanged.
                         if event_type == "ui":
-                            # Lane ownership beats last-segment resolution: a
-                            # multi-segment task namespace whose leaf UUID was
-                            # never registered must still attribute task:{id}.
-                            ui_agent = task_lane or self._extract_agent_name(
-                                agent_from_stream, {}
-                            )
+                            ui_agent = self._extract_agent_name(agent_from_stream, {})
                             ui_artifact_event = {
                                 "artifact_type": event_data.get("name"),
                                 "artifact_id": event_data.get("id"),
@@ -797,17 +698,16 @@ class RunSSEProducer:
                                 "status": None,
                                 "payload": event_data.get("props", {}),
                             }
-                            self._track_artifact_state(ui_artifact_event)
-                            yield self._format_sse_event("artifact", ui_artifact_event)
+                            yield self._build_sse_event("artifact", ui_artifact_event)
                             continue
 
                         # Live market-watch stamp notification. Transient like
-                        # ``metadata``/``model_retry`` (accumulate=False): the
-                        # durable watchlist re-seeds the chip on replay via
-                        # GET /{thread}/market-watch, so this must not persist —
-                        # see tests/.../history/test_event_ledger.py LIVE_ONLY.
+                        # ``metadata``/``model_retry``: the durable watchlist
+                        # re-seeds the chip on replay via
+                        # GET /{thread}/market-watch (see
+                        # tests/.../history/test_event_ledger.py LIVE_ONLY).
                         if event_type == "market_watch_update":
-                            yield self._format_sse_event(
+                            yield self._build_sse_event(
                                 "market_watch_update",
                                 {
                                     "thread_id": self.thread_id,
@@ -815,7 +715,6 @@ class RunSSEProducer:
                                     "content": event_data.get("content", ""),
                                     "timestamp": event_data.get("timestamp"),
                                 },
-                                accumulate=False,
                             )
                             continue
 
@@ -824,18 +723,7 @@ class RunSSEProducer:
                         artifact_type = event_data.get("artifact_type")
                         if artifact_type:
                             extracted_agent_name = self._extract_agent_name(agent_from_stream, {})
-
-                            # Lane ownership is not the emitter's to claim: a
-                            # payload-supplied agent (TodoWriteMiddleware
-                            # hardcodes "ptc") from inside a task namespace
-                            # would evade the client's task routing and the
-                            # collector's task:* scrub — a subagent's TodoWrite
-                            # would overwrite the root todo list and archive as
-                            # parent output. The namespace decides the lane;
-                            # the payload's agent applies only on main.
-                            agent_name = task_lane or (
-                                event_data.get("agent") or extracted_agent_name
-                            )
+                            agent_name = event_data.get("agent") or extracted_agent_name
                             payload = event_data.get("payload", {})
 
                             # Build artifact event with proper structure
@@ -852,25 +740,21 @@ class RunSSEProducer:
                                 f"[ARTIFACT_CUSTOM] Emitting {artifact_type} artifact "
                                 f"(agent={agent_name}, status={artifact_event.get('status')})"
                             )
-                            self._track_artifact_state(artifact_event)
-                            yield self._format_sse_event("artifact", artifact_event)
+                            yield self._build_sse_event("artifact", artifact_event)
                     continue
 
                 # State updates (stream_mode="updates") carry no SSE payloads of
                 # their own — the mode stays subscribed because interrupts
-                # arrive through it (handled above via "__interrupt__").
+                # arrive through it (handled above via "__interrupt__"). A
+                # main-graph node's update names the message it committed.
                 if stream_mode == "updates":
+                    if not agent_from_stream and isinstance(event_data, dict):
+                        self._reasoning.node_updated(event_data)
+                        self._note_saved_images(event_data)
                     continue
 
                 # Process message chunks (stream_mode="messages")
                 if stream_mode != "messages":
-                    continue
-
-                # Task content (text/reasoning/tool frames) is owned by the
-                # per-task channel; it also stays out of the main turn's
-                # ExecutionTracker — task messages live in the task's own
-                # checkpoint namespace, not the turn transcript.
-                if task_lane:
                     continue
 
                 message_chunk, message_metadata = cast(
@@ -908,14 +792,17 @@ class RunSSEProducer:
                             f"[RAW_REASONING] agent={agent_name} reasoning_content={reasoning_raw}"
                         )
 
-                # Track message for persistence (if tracking is active)
-                # Only track complete messages (AIMessage, ToolMessage), not chunks.
-                # Compaction chunks are internal — don't persist them as turns.
-                if isinstance(message_chunk, (AIMessage, ToolMessage)) and not is_compaction_chunk:
-                    ExecutionTracker.update_context(
-                        agent_name=agent_name,
-                        messages=message_chunk
-                    )
+                node = (message_metadata or {}).get("langgraph_node")
+                if (
+                    not agent_from_stream
+                    and not is_compaction_chunk
+                    and node != "tools"
+                    and isinstance(message_chunk, (AIMessage, AIMessageChunk))
+                    and message_chunk.id
+                ):
+                    self._reasoning.saw_root_chunk(str(node), message_chunk.id)
+                if not agent_from_stream and not is_compaction_chunk:
+                    self._note_quiet(message_chunk, node)
 
                 # Process the message chunk
                 async for event in self._process_message_chunk(
@@ -933,7 +820,11 @@ class RunSSEProducer:
             if self._pending_interrupts:
                 self.interrupt_verified = await self._verify_interrupt_durable(graph)
                 if self.interrupt_verified:
-                    self.interrupt_reason = self._derive_interrupt_reason()
+                    self.interrupt_reason, self.pause_message = classify_interrupts(
+                        intr
+                        for pending in self._pending_interrupts
+                        for intr in pending.get("__interrupt__", ())
+                    )
                     for pending in self._pending_interrupts:
                         interrupt_event = self._handle_interrupt(pending)
                         if interrupt_event:
@@ -944,7 +835,7 @@ class RunSSEProducer:
                         f"thread_id={self.thread_id} run_id={self.run_id} — "
                         f"suppressing interrupt SSE; turn will finalize failed"
                     )
-                    yield self.format_error_event(
+                    yield self._build_error_event(
                         "The assistant paused for input but the pause could not be "
                         "saved. Please retry this message.",
                     )
@@ -953,22 +844,15 @@ class RunSSEProducer:
             try:
                 from src.server.services.persistence.usage import UsagePersistenceService
 
-                # Get token tracking from callback (already stored in self.token_callback)
                 per_call_records = None
                 if self.token_callback:
-                    per_call_records = self.token_callback.per_call_records
+                    per_call_records = self.token_callback.get_per_call_records()
 
                 # Get tool usage (non-destructive read, can be called multiple times)
                 tool_usage = self.get_tool_usage()
 
                 # Calculate credits if we have usage data
                 if per_call_records or tool_usage:
-                    # Calculate token usage for display
-                    token_usage = {}
-                    if per_call_records:
-                        from src.utils.tracking import calculate_cost_from_per_call_records
-                        token_usage = calculate_cost_from_per_call_records(per_call_records)
-
                     # Calculate total credits using same logic as persistence
                     credit_service = UsagePersistenceService(
                         thread_id=self.thread_id,
@@ -976,8 +860,12 @@ class RunSSEProducer:
                         user_id="temp"
                     )
 
+                    # One pricing pass, reused for the display payload. The
+                    # authoritative pass runs again at finalize (coordinator's
+                    # usage writer) against whatever records exist by then.
+                    token_usage = {}
                     if per_call_records:
-                        await credit_service.track_llm_usage(per_call_records)
+                        token_usage = await credit_service.track_llm_usage(per_call_records)
 
                     if tool_usage:
                         credit_service.record_tool_usage_batch(tool_usage)
@@ -985,7 +873,7 @@ class RunSSEProducer:
                     total_credits = credit_service.get_total_credits()
 
                     # Emit credit_usage event
-                    yield self._format_credit_usage_event(
+                    yield self._build_credit_usage_event(
                         thread_id=self.thread_id,
                         token_usage=token_usage,
                         total_credits=total_credits
@@ -1007,10 +895,18 @@ class RunSSEProducer:
             # Don't yield error event - this is expected behavior
             raise
         except Exception as e:
-            logger.exception(f"Error in stream generator for thread_id={self.thread_id}: {e}")
+            if isinstance(e, TurnTimeLimitError):
+                # A planned stop the [TIMEOUT_ERROR] line has already named;
+                # its traceback is only this generator's own raise.
+                logger.warning(
+                    f"Turn stopped at its time limit for thread_id={self.thread_id}: {e}"
+                )
+            else:
+                logger.exception(f"Error in stream generator for thread_id={self.thread_id}: {e}")
             _stream_span.record_exception(e)
             _stream_span.set_status(Status(StatusCode.ERROR))
-            yield self.format_error_event(str(e), exc=e)
+            if not isinstance(e, TurnTimeLimitError):
+                yield self._build_error_event(str(e), exc=e)
             raise  # Re-raise so the run executor finalizes as failed
         finally:
             # Safety net: if the stream ends (timeout / error / CancelledError /
@@ -1035,6 +931,22 @@ class RunSSEProducer:
             if timeout_warning_sent:
                 _stream_span.set_attribute("timeout_warning", True)
             _stream_span.end()
+            # Leaving the loop does not close the graph's stream, and until it
+            # closes, the model calls and tools in flight keep running. Left to
+            # the garbage collector, a turn stopped at its time limit ran on
+            # past its finalize, and a model call finishing then was spent with
+            # no usage recorded. Closing it here cancels and awaits them before
+            # the run's ending reaches the executor, within a bound, since
+            # LangGraph waits on its cancelled tasks without one. Last, so a
+            # cancel landing mid-close skips nothing above.
+            await aclose_within(
+                graph_stream,
+                GRAPH_CLOSE_TIMEOUT_S,
+                label=(
+                    f"the graph stream for thread_id={self.thread_id} "
+                    f"run_id={self.run_id}"
+                ),
+            )
 
     async def _verify_interrupt_durable(self, graph) -> bool:
         """True iff the checkpoint tip carries a pending __interrupt__ matching
@@ -1084,18 +996,8 @@ class RunSSEProducer:
             )
             return False
 
-    def _derive_interrupt_reason(self) -> str:
-        """Classify the buffered interrupt: user question vs plan review."""
-        from src.server.contracts.status import classify_interrupt_reason
-
-        return classify_interrupt_reason(
-            intr
-            for event_data in self._pending_interrupts
-            for intr in event_data.get("__interrupt__", ())
-        )
-
-    def _handle_interrupt(self, event_data: dict) -> Optional[str]:
-        """Format an ``__interrupt__`` event as an SSE string."""
+    def _handle_interrupt(self, event_data: dict) -> Optional[StreamFrame]:
+        """Build the ``interrupt`` frame for an ``__interrupt__`` event."""
         interrupt_obj = event_data["__interrupt__"][0]
 
         # Log interrupt trigger
@@ -1121,11 +1023,13 @@ class RunSSEProducer:
             # Value is a string description (plan description)
             action_requests = [{"description": interrupt_value}]
 
-        return self._format_sse_event(
+        kind = interrupt_value.get("kind") if isinstance(interrupt_value, dict) else None
+        return self._build_sse_event(
             "interrupt",
             {
                 "thread_id": self.thread_id,
                 "interrupt_id": interrupt_obj.id,
+                **({"kind": kind} if isinstance(kind, str) else {}),
                 "action_requests": action_requests,
                 "role": "assistant",
                 "finish_reason": "interrupt",
@@ -1137,54 +1041,45 @@ class RunSSEProducer:
     ) -> dict:
         """Strip the internal ``type`` and resolve agent attribution.
 
-        Subagent records resolve to ``task:{id}`` from the namespace. The main
-        agent streams with an empty namespace (and the event carries no
+        The main agent streams with an empty namespace (and the event carries no
         ``langgraph_node``), so it is pinned to ``"main"`` rather than the
         ``_extract_agent_name`` fallback, honoring the contract that ``agent`` is
-        ``"main"`` | ``"task:{id}"``.
+        ``"main"`` | ``"task:{id}"``. A subagent's records ride its own task
+        stream, where the forwarder stamps ``task:{id}``.
         """
         if namespace_tuple:
             agent = self._extract_agent_name(namespace_tuple, event_data)
         else:
-            agent = "main"
+            agent = MAIN_PROVENANCE_LANE
         prov_data = {
             key: value for key, value in event_data.items() if key != "type"
         }
         prov_data["agent"] = agent
         return prov_data
 
-    def _resolve_task_lane(self, namespace_tuple: tuple) -> Optional[str]:
-        """Lane owner for a graph event: ``task:{id}`` when any namespace
-        segment belongs to a background task, else None (main lane).
+    def _note_quiet(self, message: BaseMessage, node: Any) -> None:
+        """Keep the main agent's quiet ending, as the finalize records it.
 
-        Every background subagent runs under a literal ``task:{id}``
-        checkpoint namespace stamped at invocation, so the segment needs no
-        registration and frames from the very first model call classify
-        correctly. Any-segment matching (not just the tail) catches
-        multi-segment task namespaces (e.g. per-call model nodes).
+        The quiet guard ends the run on that result, so it stands only while
+        nothing follows it: a model call after it (a background task's report
+        re-invoking the agent) means the turn spoke after all.
         """
-        if not namespace_tuple:
-            return None
-        for element in namespace_tuple:
-            raw = str(element)
-            if raw.startswith("task:"):
-                return raw
-        return None
+        if isinstance(message, ToolMessage):
+            if (found := quiet_result(message)) is not None:
+                self.quiet = found
+        elif isinstance(message, (AIMessage, AIMessageChunk)) and node != "tools":
+            self.quiet = None
 
     def _extract_agent_name(self, namespace_tuple: tuple, message_metadata: dict) -> str:
         """Return the agent identifier for an event.
 
         Priority:
-        1. any ``task:{id}`` segment in `namespace_tuple` (the checkpoint
-           namespace every background subagent runs under)
-        2. `namespace_tuple[-1]` (verbatim)
-        3. `checkpoint_ns` (verbatim)
-        4. `langgraph_node`
+        1. `namespace_tuple[-1]` (verbatim)
+        2. `checkpoint_ns` (verbatim)
+        3. `langgraph_node`
         """
         if namespace_tuple:
-            return self._resolve_task_lane(namespace_tuple) or str(
-                namespace_tuple[-1]
-            )
+            return str(namespace_tuple[-1])
 
         checkpoint_ns = message_metadata.get("checkpoint_ns")
         if checkpoint_ns:
@@ -1199,8 +1094,8 @@ class RunSSEProducer:
         message_metadata: dict[str, Any] | None = None,
         *,
         is_compaction: bool = False,
-    ) -> AsyncGenerator[str, None]:
-        """Process a single message chunk and yield SSE events.
+    ) -> AsyncGenerator[StreamFrame, None]:
+        """Process a single message chunk and yield its built frames.
 
         When ``is_compaction`` is True, text / reasoning / finish events are
         emitted as ``compaction_chunk`` instead of ``message_chunk`` so the UI
@@ -1227,14 +1122,14 @@ class RunSSEProducer:
                 if status_info.get("status") == "completed":
                     # Reasoning completed - emit completion signal
                     if agent_name in self.reasoning_active:
-                        yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
+                        yield self._build_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                         self.reasoning_active.discard(agent_name)
                     self._reasoning_block_index.pop(agent_name, None)
                     self._reasoning_separator_pending.discard(agent_name)
                 else:
                     # Reasoning started - emit start signal
                     if agent_name not in self.reasoning_active:
-                        yield self._format_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
+                        yield self._build_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
                         self.reasoning_active.add(agent_name)
             return  # Don't process status signals as regular content
 
@@ -1251,14 +1146,14 @@ class RunSSEProducer:
                     if reasoning_status.get("status") == "completed":
                         # Reasoning completed - emit completion signal if agent was actively streaming
                         if agent_name in self.reasoning_active:
-                            yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
+                            yield self._build_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                             self.reasoning_active.discard(agent_name)
                         self._reasoning_block_index.pop(agent_name, None)
                         self._reasoning_separator_pending.discard(agent_name)
                     else:
                         # Reasoning started - emit start signal
                         if agent_name not in self.reasoning_active:
-                            yield self._format_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
+                            yield self._build_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
                             self.reasoning_active.add(agent_name)
                 return  # Don't process status signals as regular content
 
@@ -1320,22 +1215,27 @@ class RunSSEProducer:
                             f"args_length={len(arguments)} persisted={bool(persisted_state)}"
                         )
 
-                        yield self._format_sse_event("tool_call_chunks", event_stream_message)
+                        yield self._build_sse_event("tool_call_chunks", event_stream_message)
                         return  # Don't process function_call as regular content
 
                     # Claude (Anthropic): type=tool_use (initial metadata)
                     # Anthropic sends tool name/id in initial tool_use chunk, then streams args via input_json_delta
                     elif item.get('type') == 'tool_use':
                         index = item.get("index", 0)
-                        state_key = (agent_name, index)
 
-                        # Initialize state for this tool call
-                        if state_key not in self.anthropic_tool_call_state:
-                            self.anthropic_tool_call_state[state_key] = {
-                                "name": item.get("name"),
-                                "id": item.get("id"),
-                                "args_accumulated": ""
-                            }
+                        # A tool_use block always opens a new call, and block
+                        # indexes restart at 0 on every model call. An entry
+                        # already at this index is an earlier call that never
+                        # went out (a stream that died mid-arguments and was
+                        # retried here): kept, it would lend this call its
+                        # name, id and arguments. Its entries at other indexes
+                        # go at this message's finish.
+                        self.anthropic_tool_call_state[(agent_name, index)] = {
+                            "name": item.get("name"),
+                            "id": item.get("id"),
+                            "message_id": message_id,
+                            "args_accumulated": "",
+                        }
 
                         logger.debug(
                             f"[TOOL_USE_METADATA] agent={agent_name} name={item.get('name')} "
@@ -1352,12 +1252,16 @@ class RunSSEProducer:
                         index = item.get("index", 0)
 
                         # Accumulate for completion handler
-                        state_key = (agent_name, index)
-                        if state_key in self.anthropic_tool_call_state:
-                            self.anthropic_tool_call_state[state_key]["args_accumulated"] += partial_json
+                        state = self.anthropic_tool_call_state.get((agent_name, index), {})
+                        if state:
+                            state["args_accumulated"] += partial_json
 
+                        # Named on every chunk, as the Response API route is:
+                        # the client hides and labels a preparing call by name.
                         tool_call_chunk = {
+                            "name": state.get("name"),
                             "args": partial_json,
+                            "id": state.get("id"),
                             "index": index,
                             "type": "tool_call_chunk"
                         }
@@ -1371,11 +1275,11 @@ class RunSSEProducer:
                         }
 
                         logger.debug(
-                            f"[INPUT_JSON_DELTA_EXTRACTED] agent={agent_name} "
-                            f"partial_json_length={len(partial_json)} accumulated={len(self.anthropic_tool_call_state.get(state_key, {}).get('args_accumulated', ''))}"
+                            f"[INPUT_JSON_DELTA_EXTRACTED] agent={agent_name} name={state.get('name')} "
+                            f"partial_json_length={len(partial_json)} accumulated={len(state.get('args_accumulated', ''))}"
                         )
 
-                        yield self._format_sse_event("tool_call_chunks", event_stream_message)
+                        yield self._build_sse_event("tool_call_chunks", event_stream_message)
                         return  # Don't process input_json_delta as regular content
 
         # Detect reasoning summary_text index transitions before normalization
@@ -1386,6 +1290,10 @@ class RunSSEProducer:
             self._reasoning_block_index[agent_name] = reasoning_idx
             if prev_idx is not None and reasoning_idx != prev_idx:
                 self._reasoning_separator_pending.add(agent_name)
+
+        # Resolve before normalization: the frame that announces the phase has
+        # empty text and is dropped below, so the table must be filled first.
+        text_phase = self._text_phase.resolve(agent_name, message_id, message_chunk.content)
 
         # Normalize main content - extract text and get content type
         text_content, content_type = normalize_text_content(message_chunk.content)
@@ -1402,6 +1310,22 @@ class RunSSEProducer:
                     text_content = reasoning_text
                 # Override content type to reasoning since we have reasoning content
                 content_type = "reasoning"
+
+        is_inner_llm_chunk = is_tool_node and isinstance(message_chunk, (AIMessage, AIMessageChunk))
+
+        # Whitespace alone never opens a reasoning section (the client would
+        # render an empty thought), but it is still text: hold it until visible
+        # reasoning follows, and drop it if the reply turns to text instead.
+        if text_content and not is_inner_llm_chunk:
+            held_id, held = self._reasoning_whitespace_held.pop(agent_name, ("", ""))
+            if content_type == "reasoning":
+                # A stream that fails mid-way sends no finish frame, so its held
+                # whitespace must not lead the retry's reasoning.
+                if held_id == message_id:
+                    text_content = held + text_content
+                if agent_name not in self.reasoning_active and not text_content.strip():
+                    self._reasoning_whitespace_held[agent_name] = (message_id, text_content)
+                    text_content = None
 
         # Prepend separator when transitioning between reasoning blocks
         if text_content and content_type == "reasoning" and agent_name in self._reasoning_separator_pending:
@@ -1423,25 +1347,26 @@ class RunSSEProducer:
         # result and leak the extraction model's reasoning to the user.
         # ToolMessages themselves carry the tool's actual return value and
         # MUST flow through (their content becomes ``tool_call_result``).
-        is_inner_llm_chunk = is_tool_node and isinstance(message_chunk, (AIMessage, AIMessageChunk))
         if text_content and content_type and not is_inner_llm_chunk:
             # Check if we need to emit reasoning completion signal
             if content_type != "reasoning" and agent_name in self.reasoning_active:
                 # Reasoning completed, emit completion signal before this content
-                yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
+                yield self._build_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                 self.reasoning_active.discard(agent_name)
                 self._reasoning_block_index.pop(agent_name, None)
                 self._reasoning_separator_pending.discard(agent_name)
 
             event_stream_message["content"] = text_content
             event_stream_message["content_type"] = content_type  # "text" or "reasoning"
+            if content_type == "text" and text_phase:
+                event_stream_message["phase"] = text_phase
 
             # Handle reasoning content lifecycle
             if content_type == "reasoning":
                 # Emit start signal if this is the first reasoning content
                 # This handles providers that send content directly without status signal
                 if agent_name not in self.reasoning_active:
-                    yield self._format_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
+                    yield self._build_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
                     self.reasoning_active.add(agent_name)
 
         # Handle finish_reason/stop_reason - emit reasoning completion if needed
@@ -1461,6 +1386,19 @@ class RunSSEProducer:
         # Normalize finish_reason to standard values for consistent handling
         original_finish_reason = finish_reason
         if finish_reason:
+            # A finish speaks for its own message's calls. A Claude entry
+            # another message left in this lane is a call whose stream died
+            # mid-arguments before a retry or a fallback, to any provider,
+            # streamed here: kept, it would go out as a call that never runs
+            # and turn a plain answer's finish into tool_calls. Every chunk of
+            # one Claude call carries the same message id.
+            for stale_key in [
+                key
+                for key, state in self.anthropic_tool_call_state.items()
+                if key[0] == agent_name and state.get("message_id") != message_id
+            ]:
+                del self.anthropic_tool_call_state[stale_key]
+
             # Check if we have tool call state for this agent to disambiguate "completed"
             has_response_api_tool_state = any(
                 key[0] == agent_name and state.get("args_accumulated") and state.get("name")
@@ -1500,9 +1438,12 @@ class RunSSEProducer:
                 f"response_metadata={message_chunk.response_metadata}"
             )
 
+            self._text_phase.finish(agent_name)
+            self._reasoning_whitespace_held.pop(agent_name, None)
+
             # If finishing while reasoning is active, emit completion signal
             if agent_name in self.reasoning_active:
-                yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
+                yield self._build_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                 self.reasoning_active.discard(agent_name)
                 self._reasoning_block_index.pop(agent_name, None)
                 self._reasoning_separator_pending.discard(agent_name)
@@ -1578,7 +1519,7 @@ class RunSSEProducer:
                             f"id={tool_call_id}"
                         )
 
-                        yield self._format_sse_event("tool_calls", tool_calls_message)
+                        yield self._build_sse_event("tool_calls", tool_calls_message)
 
                         # Clear state after emitting from the appropriate state dictionary
                         if provider_type == "response_api":
@@ -1592,8 +1533,6 @@ class RunSSEProducer:
                         )
 
             event_stream_message["finish_reason"] = finish_reason
-            # Message reached a terminal finish — no longer an open structure.
-            self._open_message_ids.pop(agent_name, None)
         else:
             # Log when response_metadata exists but no finish reason is found
             # This helps debug cases where completion signals might be missing
@@ -1607,6 +1546,13 @@ class RunSSEProducer:
         if isinstance(message_chunk, ToolMessage):
             # Tool Message - Return the result of the tool call
             event_stream_message["tool_call_id"] = message_chunk.tool_call_id
+
+            # The whole status travels, not just the failing one. An explicit
+            # success is what stops a client from reading prose that merely
+            # looks like a failure.
+            tool_status = getattr(message_chunk, "status", None)
+            if tool_status:
+                event_stream_message["status"] = tool_status
 
             # Check for artifact (native LangChain pattern for metadata)
             # Artifact contains complete metadata (URLs, favicons, images) for frontend
@@ -1624,7 +1570,7 @@ class RunSSEProducer:
                 # No top-level status: a live task artifact can't know its
                 # task's outcome — the client derives status from the task
                 # lifecycle, replay stamps payload.status from liveness truth.
-                yield self._format_sse_event("artifact", {
+                yield self._build_sse_event("artifact", {
                     "artifact_type": "task",
                     "artifact_id": f"task:{task_artifact['task_id']}",
                     "agent": "main",
@@ -1633,7 +1579,7 @@ class RunSSEProducer:
                     "tool_call_id": message_chunk.tool_call_id,
                 })
 
-            yield self._format_sse_event("tool_call_result", event_stream_message)
+            yield self._build_sse_event("tool_call_result", event_stream_message)
 
         elif isinstance(message_chunk, (AIMessageChunk, AIMessage)):
             # AI Message - Raw message tokens (AIMessageChunk during streaming)
@@ -1659,13 +1605,13 @@ class RunSSEProducer:
                     event_stream_message["tool_calls"] = filtered_tool_calls
                     # Don't include tool_call_chunks in complete tool_calls event
                     # This makes behavior consistent with Response API and Anthropic
-                    yield self._format_sse_event("tool_calls", event_stream_message)
+                    yield self._build_sse_event("tool_calls", event_stream_message)
                     # Note: file_operation events are now emitted via custom events from middleware
 
             # Emit tool_call_chunks event for client consumption (if present)
             elif is_chunk and message_chunk.tool_call_chunks:
                 event_stream_message["tool_call_chunks"] = message_chunk.tool_call_chunks
-                yield self._format_sse_event("tool_call_chunks", event_stream_message)
+                yield self._build_sse_event("tool_call_chunks", event_stream_message)
 
             else:
                 # AI Message - Raw message tokens
@@ -1678,31 +1624,7 @@ class RunSSEProducer:
                 if has_content:
                     if is_chunk and event_stream_message.get("content"):
                         self._streamed_content_ids.add(message_id)
-                    # Track an open assistant message (content but no terminal
-                    # finish_reason) so a stop can synthesize its close.
-                    if (
-                        event_stream_message.get("content")
-                        and not event_stream_message.get("finish_reason")
-                        and content_type != "reasoning_signal"
-                    ):
-                        self._open_message_ids[agent_name] = message_id
-                    yield self._format_sse_event(chunk_event_type, event_stream_message)
-
-    def _track_artifact_state(self, artifact_event: dict) -> None:
-        """Track open/closed artifact state for stop reconciliation.
-
-        An artifact is "open" until it emits a terminal status. Keyed by
-        artifact_id so a later terminal status closes the same entry.
-        """
-        artifact_id = artifact_event.get("artifact_id")
-        if not artifact_id:
-            return
-        status = (artifact_event.get("status") or "").lower()
-        terminal = {"completed", "complete", "error", "failed", "cancelled", "stopped"}
-        if status in terminal:
-            self._open_artifacts.pop(artifact_id, None)
-        else:
-            self._open_artifacts[artifact_id] = copy.deepcopy(artifact_event)
+                    yield self._build_sse_event(chunk_event_type, event_stream_message)
 
     def _filter_tool_calls(self, tool_calls: list) -> list:
         """Remove tool calls with empty names or already-seen IDs."""
@@ -1736,62 +1658,107 @@ class RunSSEProducer:
         """
         return extract_reasoning_summary_index(content)
 
-    def _format_reasoning_signal(
+    def _build_reasoning_signal(
         self,
         agent_name: str,
         message_id: str,
         signal_type: str,
         *,
         is_compaction: bool = False,
-    ) -> str:
-        """Format a reasoning lifecycle signal event."""
+    ) -> StreamFrame:
+        """Build a reasoning lifecycle signal frame.
+
+        A ``complete`` carries ``elapsed_ms`` since the matching ``start``; a
+        close with no recorded open (a stop that synthesizes one) carries none.
+        """
         event_type = "compaction_chunk" if is_compaction else "message_chunk"
-        return self._format_sse_event(
-            event_type,
-            {
-                "thread_id": self.thread_id,
-                "agent": agent_name,
-                "id": message_id,
-                "role": "assistant",
-                "content": signal_type,
-                "content_type": "reasoning_signal",
-            },
+        data: Dict[str, Any] = {
+            "thread_id": self.thread_id,
+            "agent": agent_name,
+            "id": message_id,
+            "role": "assistant",
+            "content": signal_type,
+            "content_type": "reasoning_signal",
+        }
+        if signal_type == "start":
+            self._reasoning_started_at[agent_name] = time.monotonic()
+        elif signal_type == "complete":
+            started = self._reasoning_started_at.pop(agent_name, None)
+            if started is not None:
+                data["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+                if not is_compaction:
+                    self._reasoning.closed(message_id, data["elapsed_ms"])
+        return self._build_sse_event(event_type, data)
+
+    def _note_saved_images(self, update: dict) -> None:
+        for output in update.values():
+            if not isinstance(output, dict):
+                continue
+            messages = output.get("messages")
+            if isinstance(messages, Overwrite):
+                continue  # the window trim, restating earlier turns' messages
+            if not isinstance(messages, (list, tuple)):
+                messages = [messages]
+            for message in messages:
+                if isinstance(message, AIMessage) and message.id:
+                    self._saved_image_paths[message.id] = collect_sandbox_paths(
+                        [message]
+                    )
+
+    @property
+    def saved_image_paths(self) -> Set[str]:
+        """The sandbox images the main agent's saved messages name, which
+        the model-time capture left as paths."""
+        return set().union(*self._saved_image_paths.values())
+
+    def record(self, stop_events: Optional[List[Dict[str, Any]]] = None) -> ProducerRecord:
+        """What the finalize stores beside the status that the checkpoint
+        does not keep. ``stop_events`` are the lanes a stop drained, whose
+        provenance reaches the row only through this finalize."""
+        return ProducerRecord(
+            provenance=self.provenance_events
+            + [
+                e
+                for e in stop_events or ()
+                if isinstance(e, dict) and e.get("event") == "provenance"
+            ],
+            reasoning_ms=self._reasoning.as_facts(),
+            model_fallbacks=list(self._model_fallbacks),
+            error_frame=self._error_frame,
         )
 
-    def _format_sse_event(self, event_type: str, data: dict[str, Any], *, accumulate: bool = True) -> str:
-        """
-        Format data as SSE (Server-Sent Events) string with sequence numbering.
+    def _format_sse_event(self, event_type: str, data: dict[str, Any]) -> str:
+        """Build and number one frame in a single step, for callers outside
+        the stream (``stream_workflow`` numbers through its coalescer)."""
+        return self._number_sse_event(self._build_sse_event(event_type, data))
 
-        Args:
-            event_type: Type of SSE event
-            data: Event data dictionary
-            accumulate: Whether to add to the stream event accumulator for persistence.
-                        Set to False for old subagent events that belong to a previous
-                        response and should not be persisted with the current one.
-
-        Returns:
-            SSE-formatted string (id: seq\\nevent: type\\ndata: json\\n\\n)
-        """
+    def _build_sse_event(self, event_type: str, data: dict[str, Any]) -> StreamFrame:
+        """Build a frame, before numbering."""
         # Remove empty content to reduce payload size
         if data.get("content") == "":
             data.pop("content")
 
-        # Accumulate merged events for persistence (never break streaming)
-        if accumulate:
-            try:
-                self._stream_event_accumulator.add(event_type, data)
-            except Exception as e:
-                logger.debug(f"[RunSSEProducer] Failed to accumulate stream event: {e}")
+        frame = StreamFrame(event_type, data)
+        if delta_piece(frame) is not None:
+            return frame  # serialized as it goes out, joined or not
+        # NaN/Inf floats from upstream data would serialize as bare `NaN`
+        # tokens (invalid JSON) and make the browser drop the whole frame.
+        return frame._replace(encoded=finite_json_dumps(data, ensure_ascii=False))
+
+    def _number_sse_event(self, frame: StreamFrame) -> str:
+        """Number a built frame and serialize it as ``id/event/data``."""
+        event_type = frame.event
+        # Only a delta arrives unencoded, and one built from strings cannot
+        # fail. Serialized before numbering, so a frame that fails spends no id.
+        json_data = frame.encoded
+        if json_data is None:
+            json_data = finite_json_dumps(frame.data, ensure_ascii=False)
 
         # Increment sequence number for this event
         if self.event_counter is not None:
             self.event_sequence = self.event_counter.next()
         else:
             self.event_sequence += 1
-
-        # NaN/Inf floats from upstream data would serialize as bare `NaN`
-        # tokens (invalid JSON) and make the browser drop the whole frame.
-        json_data = finite_json_dumps(data, ensure_ascii=False)
 
         # Include sequence ID for reconnection support
         # Format: id: sequence_number\nevent: type\ndata: json\n\n
@@ -1803,208 +1770,37 @@ class RunSSEProducer:
 
         return result
 
-    def format_error_event(
+    def _build_error_event(
         self,
         error_message: str,
         *,
         exc: Optional[BaseException] = None,
-    ) -> str:
-        """Format an error event as SSE string.
+    ) -> StreamFrame:
+        """Build an error frame; ``exc`` enables the classification
+        ``error_event_data`` describes."""
+        frame = self._build_sse_event(
+            "error",
+            error_event_data(
+                self.thread_id,
+                error_message,
+                exc=exc,
+                credential_source=getattr(self.agent_config, "credential_source", None),
+            ),
+        )
+        self._error_frame = kept_error_frame(frame.data)
+        return frame
 
-        When ``exc`` is passed the event carries ``error_kind`` (``upstream``
-        or ``internal``), ``status_code`` (when available), and ``hints`` for
-        the frontend to render user-actionable guidance. The legacy ``error``
-        and ``message`` fields stay so older clients keep working.
-
-        Args:
-            error_message: Raw error text (usually ``str(exc)``).
-            exc: The exception itself — enables classification. Optional to
-                keep the legacy signature working for paths that only have
-                a prebuilt message.
-
-        Returns:
-            SSE-formatted error event.
-        """
-        data: Dict[str, Any] = {
-            "thread_id": self.thread_id,
-            "error": _sanitize_error_text(error_message),
-            "message": "An error occurred during processing",
-        }
-        if exc is not None:
-            info = classify_stream_exception(exc)
-            trace = find_resilience_trace(exc)
-            if trace is not None and info["kind"] == "internal":
-                # The trace proves the failure happened inside a model call.
-                # A generic wrapper exception (no recognizable SDK module in
-                # the chain) must not demote it to "internal" — the frontend
-                # routes internal errors to a generic banner that drops the
-                # model / attempted-models context.
-                primary_status: Any = None
-                attempted_raw = trace.get("attempted_models")
-                if (
-                    isinstance(attempted_raw, list)
-                    and attempted_raw
-                    and isinstance(attempted_raw[0], dict)
-                ):
-                    primary_status = attempted_raw[0].get("status_code")
-                info = {
-                    "kind": "upstream",
-                    "status_code": primary_status
-                    if isinstance(primary_status, int)
-                    else None,
-                    "provider_module": None,
-                }
-            data["error_kind"] = info["kind"]
-            if info["status_code"] is not None:
-                data["status_code"] = info["status_code"]
-            if info["provider_module"]:
-                data["provider_module"] = info["provider_module"]
-            if info["kind"] == "upstream":
-                # Order matters — frontend renders the hints as a list, so the
-                # most relevant hint for this status goes first. 5xx/429 are
-                # provider outages, not the user's credentials; showing
-                # "check your API key" first on a 503 is misleading.
-                status = info.get("status_code")
-                if status in (401, 403):
-                    data["hints"] = [
-                        "api_key",
-                        "model_access",
-                        "try_another_model",
-                    ]
-                elif status == 404:
-                    data["hints"] = ["model_access", "try_another_model"]
-                elif status == 429 or (isinstance(status, int) and status >= 500):
-                    data["hints"] = ["provider_status", "try_another_model"]
-                else:
-                    # No status (network error) — could be anything; show all.
-                    data["hints"] = [
-                        "api_key",
-                        "model_access",
-                        "provider_status",
-                        "try_another_model",
-                    ]
-            if trace is not None:
-                primary_model = trace.get("model")
-                if isinstance(primary_model, str) and primary_model:
-                    data["model"] = primary_model
-                attempted = trace.get("attempted_models")
-                if isinstance(attempted, list):
-                    data["attempted_models"] = [
-                        {
-                            "model": entry.get("model"),
-                            "error": _sanitize_error_text(
-                                str(entry.get("error") or "")
-                            ),
-                            "status_code": entry.get("status_code"),
-                            "attempts": entry.get("attempts"),
-                        }
-                        for entry in attempted
-                        if isinstance(entry, dict)
-                    ]
-        return self._format_sse_event("error", data)
-
-    def _format_credit_usage_event(
+    def _build_credit_usage_event(
         self,
         thread_id: str,
         token_usage: dict,
         total_credits: float
-    ) -> str:
-        """Format a credit_usage SSE event with aggregated token counts and total credits."""
-        return self._format_sse_event(
+    ) -> StreamFrame:
+        """Build a credit_usage frame with aggregated token counts and total credits."""
+        return self._build_sse_event(
             "credit_usage",
             build_credit_usage_data(thread_id, token_usage, total_credits),
         )
-
-    def get_sse_events(self) -> Optional[List[Dict[str, Any]]]:
-        """Return merged SSE events for persistence."""
-        events = self._stream_event_accumulator.get_events()
-        return events or None
-
-    def finalize_stopped_events(self) -> Optional[List[Dict[str, Any]]]:
-        """Close all open streaming structures at a user-stop point (decision T3-A).
-
-        A mid-step stop leaves the persisted ``sse_events`` with open blocks: a
-        reasoning block stuck "thinking", a tool call frozen mid-arguments, an
-        artifact mid-progress, a message without a finish_reason. Append
-        synthetic close events so replay renders the partial fragment marked
-        "stopped" instead of a live-looking zombie.
-
-        Idempotent: a per-handler ``_stop_finalized`` marker makes a second call
-        (double-stop / handler re-entry) a no-op. Returns the reconciled merged
-        events (same shape as ``get_sse_events``).
-        """
-        if self._stop_finalized:
-            return self.get_sse_events()
-        self._stop_finalized = True
-
-        try:
-            # 1. Close every open reasoning block.
-            for agent_name in list(self.reasoning_active):
-                msg_id = self._open_message_ids.get(agent_name) or f"{agent_name}:stopped"
-                self._format_reasoning_signal(agent_name, msg_id, "complete")
-            self.reasoning_active.clear()
-
-            # 2. Close any in-flight tool-call streaming state with a terminal
-            #    "stopped" close. Cover both Response API and Anthropic states.
-            #    An agent uses one LLM format per call, but a mid-turn provider
-            #    fallback can leave state in both dicts — dedup by agent so the
-            #    stop emits exactly one tool-call close per agent, not two.
-            closed_tool_agents: set = set()
-            for state_key in list(self.function_call_state.keys()) + list(
-                self.anthropic_tool_call_state.keys()
-            ):
-                agent_name = state_key[0]
-                if agent_name in closed_tool_agents:
-                    continue
-                closed_tool_agents.add(agent_name)
-                # The `id` here is the open *message* id, not the tool-call id —
-                # intentional. The frontend ignores both `id` and `finish_reason`
-                # on a tool_call_chunks event (handleToolCallChunks only iterates
-                # the `tool_call_chunks` array, absent here → no-op). The preparing
-                # shimmer actually clears off the step-4 message_chunk
-                # finish_reason:"stopped" below (matched by message id). This close
-                # event just keeps the persisted transcript internally consistent.
-                self._format_sse_event(
-                    "tool_call_chunks",
-                    {
-                        "thread_id": self.thread_id,
-                        "agent": agent_name,
-                        "id": self._open_message_ids.get(agent_name)
-                        or f"{agent_name}:stopped",
-                        "role": "assistant",
-                        "finish_reason": "stopped",
-                    },
-                )
-            self.function_call_state.clear()
-            self.anthropic_tool_call_state.clear()
-
-            # 3. Close any open artifacts with a terminal "stopped" status.
-            for artifact_id, artifact_event in list(self._open_artifacts.items()):
-                closed = copy.deepcopy(artifact_event)
-                closed["status"] = "stopped"
-                self._format_sse_event("artifact", closed)
-            self._open_artifacts.clear()
-
-            # 4. Close every open assistant message with finish_reason "stopped".
-            for agent_name, msg_id in list(self._open_message_ids.items()):
-                self._format_sse_event(
-                    "message_chunk",
-                    {
-                        "thread_id": self.thread_id,
-                        "agent": agent_name,
-                        "id": msg_id,
-                        "role": "assistant",
-                        "finish_reason": "stopped",
-                    },
-                )
-            self._open_message_ids.clear()
-        except Exception as e:
-            logger.warning(
-                f"[RunSSEProducer] finalize_stopped_events failed: {e}",
-                exc_info=True,
-            )
-
-        return self.get_sse_events()
 
     def _resolve_token_threshold(self) -> int:
         return resolve_token_threshold(self.agent_config)

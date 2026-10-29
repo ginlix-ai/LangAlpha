@@ -30,6 +30,8 @@ from src.tools.web.providers._shared import (
     poll_until_terminal,
     report_or_empty,
     request_json,
+    search_failed,
+    search_refusal,
 )
 from src.tools.web.types import (
     FetchRequest,
@@ -468,12 +470,18 @@ def build_web_search_tool(
             end_date: End date for results (YYYY-MM-DD format).
                 Takes priority over time_range.
             topic: Search topic - 'general' (default), 'news', or 'finance'
+
+        Returns:
+            Ranked results as titles, snippets and URLs — not full page text.
         """
         try:
-            # Validate date formats
             validate_date_format(start_date)
             validate_date_format(end_date)
+        except ValueError as e:
+            # A malformed date is the agent's mistake, not a failed search.
+            return search_refusal(e, query)
 
+        try:
             # Prioritization logic: dates > LLM time_range > default_time_range
             effective_time_range = None
             effective_start_date = None
@@ -535,7 +543,6 @@ def build_web_search_tool(
 
         except Exception as e:  # broad: the Tavily SDK raises its own hierarchy
             logger.error(f"Tavily search failed: {e}", exc_info=True)
-            error_message = f"Search failed: {str(e)}"
-            return error_message, {"error": str(e), "query": query}
+            return search_failed(e, query)
 
     return web_search

@@ -1,7 +1,24 @@
-"""Timezone utilities for label extraction and formatting."""
+"""Timezone utilities: parsing a zone name, and label extraction and formatting."""
 
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+def zone_or_none(name: Optional[str]) -> Optional[ZoneInfo]:
+    """The zone an IANA name names, or None when it names none.
+
+    Zone names arrive unvalidated from profiles, requests and stored rows, and
+    ``ZoneInfo`` refuses a bad one three ways: an unknown name, a malformed key
+    (empty, absolute, ``..``) as ValueError, and a directory or overlong name
+    as OSError. Each caller decides its own fallback from None.
+    """
+    if not name or not isinstance(name, str):
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
 
 
 def get_timezone_label(dt: Optional[datetime]) -> str:

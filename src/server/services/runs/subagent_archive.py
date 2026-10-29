@@ -1,21 +1,26 @@
-"""Read side of a subagent's captured-event archive.
+"""A subagent's captured-event archive: read back from Redis, recorded on the turn.
 
 The per-task capture stream is written by the agent-side spill and read back
-here once, post-terminal, to rebuild the subagent's history. Separated from
-the collection lifecycle because it is the one piece with its own failure
-contract: an archive that cannot be read to the end must be refused whole,
-never served as a prefix.
+here once, post-terminal; what the turn keeps of it is each lane's provenance
+and the images its text references. Separated from the collection lifecycle
+because both halves carry their own failure contract: an archive that cannot
+be read to the end is refused whole, never served as a prefix, and the
+capture streams stay the only copy until every lane replayed from them has
+been recorded.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator
 
 from ptc_agent.agent.middleware.background_subagent.redis_stream import (
     task_stream_key,
 )
+from src.server.database.conversation.responses import replace_lane_provenance
 from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
@@ -132,3 +137,164 @@ async def iter_subagent_events_full(
                 "redis_write_failed": bool(getattr(task, "redis_write_failed", False)),
             },
         )
+
+
+def record_to_persist_event(record: dict, thread_id: str) -> dict:
+    """Convert a captured-event record to persistence shape ``{event, data}``,
+    with the ``ts`` it went out at, which a provenance row keeps."""
+    data = dict(record.get("data") or {})
+    data["thread_id"] = thread_id
+    event = {"event": record.get("event"), "data": data}
+    if record.get("ts") is not None:
+        event["ts"] = record["ts"]
+    return event
+
+
+async def persist_collected_events(
+    events: list[dict],
+    response_id: str,
+    thread_id: str,
+    workspace_id: str,
+    sandbox=None,
+) -> bool:
+    """Record the lanes ``events`` hold on the turn: where their images were
+    captured to, and their provenance for the tool calls each task's
+    checkpoints saved.
+
+    Returns True once both landed; callers must not retire the Redis capture
+    streams on False, since they are the only remaining source of either.
+    """
+    images: dict[str, dict[str, str]] = {}
+    if sandbox:
+        try:
+            images = await _capture_lane_images(
+                events, sandbox, thread_id, workspace_id
+            )
+        except Exception:
+            logger.warning(
+                "[IMAGE_CAPTURE] Hook B failed", exc_info=True,
+            )
+
+    lanes = _task_lanes(events)
+    if not lanes:
+        return True
+    from src.server.services.history.committed import saved_lane_provenance
+    from src.server.services.subagent_run_coordinator import record_lane_images
+
+    # One bounded retry: a transiently failed write must not cost the lanes
+    # their images or provenance. Images merge into the runs' facts and
+    # provenance replaces each lane's rows whole, so a repeat never
+    # duplicates them. A failed checkpoint read is no failure here: that
+    # lane's sources are written unchecked. Provenance goes first, so images
+    # that keep failing still leave the lanes their sources.
+    for attempt in (1, 2):
+        try:
+            # A subagent that failed streamed what it fetched in its last
+            # step, which its transcript never shows.
+            provenance = await saved_lane_provenance(
+                thread_id, events, log_tag="[SubagentCollector]"
+            )
+            if not await replace_lane_provenance(response_id, provenance, lanes):
+                raise RuntimeError(f"no response row for {response_id}")
+            for task_id, lane_images in images.items():
+                await record_lane_images(
+                    thread_id, response_id, task_id, lane_images
+                )
+            logger.info(
+                f"[SubagentCollector] Recorded {len(provenance)} provenance "
+                f"entries for {len(lanes)} lanes, response_id={response_id}"
+            )
+            return True
+        except Exception as e:
+            if attempt == 1:
+                await asyncio.sleep(2.0)
+                continue
+            logger.error(
+                f"[SubagentCollector] Failed to record lanes for "
+                f"response_id={response_id}: {e}",
+                exc_info=True,
+            )
+    return False
+
+
+def _task_lanes(events: list[dict]) -> dict[str, str]:
+    """Each ``task:{id}`` lane the events name, to its task id."""
+    lanes: dict[str, str] = {}
+    for event in events:
+        data = event.get("data")
+        agent = data.get("agent") if isinstance(data, dict) else None
+        if isinstance(agent, str) and agent.startswith("task:"):
+            lanes[agent] = agent.removeprefix("task:")
+    return lanes
+
+
+async def _capture_lane_images(
+    events: list[dict],
+    sandbox,
+    thread_id: str,
+    workspace_id: str,
+) -> dict[str, dict[str, str]]:
+    """Hook B: capture the images the lanes reference; each lane's
+    path-to-URL map, by task id, for the runs the turn launched for it.
+
+    Not on the turn's response row with the main lane's map: these lanes
+    settle after that row did.
+    """
+    from src.server.services.persistence.image_capture import (
+        capture_images,
+        sandbox_image_paths,
+    )
+
+    by_task: dict[str, list[dict]] = {}
+    for event in events:
+        data = event.get("data")
+        agent = data.get("agent") if isinstance(data, dict) else None
+        if isinstance(agent, str) and agent.startswith("task:"):
+            by_task.setdefault(agent.removeprefix("task:"), []).append(event)
+    paths = {task_id: sandbox_image_paths(lane) for task_id, lane in by_task.items()}
+    path_to_url = await capture_images(
+        set().union(*paths.values()),
+        sandbox,
+        thread_id=thread_id,
+        workspace_id=workspace_id,
+    )
+    out: dict[str, dict[str, str]] = {}
+    for task_id, lane_paths in paths.items():
+        images = {p: path_to_url[p] for p in lane_paths if p in path_to_url}
+        if images:
+            out[task_id] = images
+    return out
+
+
+@dataclass
+class ArchiveBuffer:
+    """One collection's archive writes: the events not yet landed, and
+    whether a replay was withheld.
+
+    Each task's events arrive in one batch and a write replaces its agents'
+    rows whole, so a landed batch is never sent again and a failed one rides
+    the next write. A withheld replay never entered the buffer, which leaves
+    the capture streams the only copy of that task whatever later writes do.
+    """
+
+    response_id: str
+    thread_id: str
+    workspace_id: str
+    user_id: str
+    sandbox: Any
+    unwritten: list[dict] = field(default_factory=list)
+    withheld: bool = False
+
+    async def flush(self) -> None:
+        """Write the unwritten events, and forget them once they land."""
+        if self.unwritten and await persist_collected_events(
+            self.unwritten, self.response_id, self.thread_id,
+            self.workspace_id, sandbox=self.sandbox,
+        ):
+            self.unwritten.clear()
+
+    @property
+    def complete(self) -> bool:
+        """Every event replayed from the capture streams has landed, so the
+        streams can be retired."""
+        return not self.withheld and not self.unwritten

@@ -13,12 +13,15 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 import redis.exceptions as redis_exceptions
 import structlog
 
 if TYPE_CHECKING:
+    from src.utils.cache.stream_quota import StreamQuota
+
     from .registry import BackgroundTask
 
 logger = structlog.get_logger(__name__)
@@ -219,19 +222,20 @@ def _classify_v2_write_failure(
     return "fatal"
 
 
-async def spill_task_record(
-    thread_id: str, task: "BackgroundTask", record: dict[str, Any]
+async def spill_task_records(
+    thread_id: str, task: "BackgroundTask", records: list[dict[str, Any]]
 ) -> None:
-    """Best-effort spill of one captured record to the per-task Stream.
+    """Best-effort spill of captured records, in order, to the per-task Stream.
 
-    Writes a single XADD entry with two fields: ``b"event"`` (pre-rendered SSE
-    wire string, consumed live by SSE clients) and ``b"record"`` (JSON record,
-    consumed post-turn by ``iter_subagent_events_full`` via XRANGE). The v1
-    append runs the shared fenced-retry policy; only an exhausted budget flips
-    ``task.redis_write_failed`` (sticky circuit-break), silently logged — never
-    raised. Returns silently when the circuit-break is set, no thread_id was
-    configured (test fixtures), the spill flag is off, or the cache client is
-    unavailable.
+    Each record is a single XADD entry with two fields: ``b"event"``
+    (pre-rendered SSE wire string, consumed live by SSE clients) and
+    ``b"record"`` (JSON record, consumed post-turn by
+    ``iter_subagent_events_full`` via XRANGE). The v1 append runs the shared
+    fenced-retry policy; only an exhausted budget flips
+    ``task.redis_write_failed`` (sticky circuit-break), silently logged —
+    never raised. Returns silently when the circuit-break is set, no
+    thread_id was configured (test fixtures), the spill flag is off, or the
+    cache client is unavailable.
     """
     if task.redis_write_failed:
         return
@@ -243,6 +247,7 @@ async def spill_task_record(
     try:
         from src.config.settings import (
             get_max_stored_messages_per_agent,
+            get_max_stream_bytes_per_run,
             is_subagent_event_redis_spill_enabled,
         )
     except Exception:
@@ -260,6 +265,7 @@ async def spill_task_record(
             StreamAppendError,
             stream_append_with_retry,
         )
+        from src.utils.cache.stream_quota import StreamQuota
 
         cache = get_cache_client()
     except Exception as exc:
@@ -276,9 +282,66 @@ async def spill_task_record(
     if not getattr(cache, "enabled", False):
         return
 
-    # Records are JSON-serialized ``{"seq", "event", "data", "agent_id", "ts"}`` dicts.
     stream_key = task_stream_key(thread_id, task.task_id)
+    if task.stream_quota is None:
+        try:
+            task.stream_quota = StreamQuota(
+                max_events=get_max_stored_messages_per_agent(),
+                max_bytes=get_max_stream_bytes_per_run(),
+            )
+        except Exception as exc:
+            task.redis_write_failed = True
+            logger.warning(
+                "subagent_event_spill_failed",
+                phase="quota_settings",
+                tool_call_id=task.tool_call_id,
+                task_id=task.task_id,
+                error=str(exc),
+            )
+            return
 
+    # Serialize spills per task. The registry-wide lock is released
+    # before this call so multiple tasks can spill in parallel; the
+    # per-task lock guarantees that for any two appends to the SAME
+    # task, the second's pipeline cannot start until the first's
+    # pipeline has acked at Redis. Without this, two appends that
+    # acquired distinct seq numbers can race to the server via
+    # different pool connections and land out of order. A batch holds
+    # the lock across all its records: they carry consecutive seqs, and
+    # releasing it between them would let another appender's later seq
+    # land first, which the id fence then rejects.
+    async with task.redis_spill_lock:
+        for record in records:
+            if task.redis_write_failed:
+                return
+            await _spill_one_locked(
+                cache,
+                thread_id,
+                task,
+                record,
+                stream_key,
+                append=stream_append_with_retry,
+                append_exc=StreamAppendError,
+                quota=task.stream_quota,
+            )
+
+
+async def _spill_one_locked(
+    cache: Any,
+    thread_id: str,
+    task: "BackgroundTask",
+    record: dict[str, Any],
+    stream_key: str,
+    *,
+    append: Callable[..., Awaitable[Any]],
+    append_exc: type[Exception],
+    quota: StreamQuota,
+) -> None:
+    """Append one record to the task's streams; the caller holds
+    ``task.redis_spill_lock``. ``append`` and ``append_exc`` are
+    ``stream_append``'s fenced append and the error it raises when the frame
+    could not be placed. Every failure opens the circuit."""
+    # Records are JSON-serialized ``{"seq", "event", "data", "agent_id", "ts"}`` dicts.
     try:
         payload = json.dumps(record, ensure_ascii=False, default=str)
     except Exception as exc:
@@ -321,156 +384,175 @@ async def spill_task_record(
         )
         return
 
-    # Serialize spills per task. The registry-wide lock is released
-    # before this call so multiple tasks can spill in parallel; the
-    # per-task lock guarantees that for any two appends to the SAME
-    # task, the second's pipeline cannot start until the first's
-    # pipeline has acked at Redis. Without this, two appends that
-    # acquired distinct seq numbers can race to the server via
-    # different pool connections and land out of order.
+    # A record lands up to three times (the v1 wire frame and record, and the
+    # v2 payload), and the quota bounds what Redis holds, so it is charged
+    # before any write: a record that would break it never lands.
+    record_bytes = len(payload.encode("utf-8"))
+    breach = quota.charge(
+        seq,
+        len(stream_payload.encode("utf-8"))
+        + record_bytes * (2 if task.task_run_id else 1),
+        label=stream_key,
+    )
+    if breach is not None:
+        # Quota breach tears the transport by contract: opening the circuit
+        # here (instead of trimming FIFO) makes the abort loop + terminal
+        # escalation finalize error(transport_lost), so a replay with a
+        # silent hole is never served.
+        task.redis_write_failed = True
+        logger.warning(
+            "subagent_event_spill_failed",
+            phase="quota" if breach == "events" else "byte_quota",
+            tool_call_id=task.tool_call_id,
+            task_id=task.task_id,
+            seq=record.get("seq"),
+            max_events=quota.max_events,
+            stream_bytes=quota.bytes,
+            max_bytes=quota.max_bytes,
+        )
+        return
+
     try:
-        quota = get_max_stored_messages_per_agent()
-        async with task.redis_spill_lock:
-            # XADD carries both the pre-rendered SSE wire string
-            # (``b"event"``, consumed live by ``stream_subagent_from_log``)
-            # and the JSON record (``b"record"``, consumed post-turn by
-            # ``iter_subagent_events_full`` via XRANGE). Active streams
-            # carry no TTL (retention contract — the attach-grace TTL is
-            # stamped at terminal by ``stamp_terminal_retention``), and
-            # MAXLEN is a 2x backstop: the quota check below opens the
-            # circuit before FIFO trim could touch the head.
-            # Same fenced-append policy as the root lane, including the
-            # retry on pool exhaustion this path used to lack: an exhausted
-            # pool tore the subagent run outright, which is the failure this
-            # whole subsystem exists to survive.
-            success = False
-            append_error: str | None = None
-            try:
-                await stream_append_with_retry(
-                    cache,
-                    stream_key,
-                    event_id=seq,
-                    max_size=quota * 2,
-                    stream_event=stream_payload,
-                    stream_record=payload,
-                    label=f"task:{task.task_id}",
-                )
-                success = True
-            except StreamAppendError as exc:
-                append_error = str(exc)
-            # v2 dual-write (STREAM_CONTRACT_V2.md): the immutable
-            # per-run stream, keyed by ledger identity. Same lock hold so
-            # per-run frame order matches append order; seq is the XADD
-            # id (Redis-side). Contract-grade: a hole in the canonical
-            # per-run stream opens the circuit like a v1 failure — the
-            # run tears as error(transport_lost) rather than a reader
-            # ever being served a stream with a silent gap.
-            if success and task.task_run_id:
-                v2_key = run_stream_key(thread_id, task.task_run_id)
-                # No per-write TTL: the immutable per-run stream is
-                # active until terminal, when stamp_terminal_retention
-                # applies the attach-grace TTL.
-                v2_fields = {
-                    b"run_id": task.task_run_id.encode(),
-                    b"lane": f"task:{task.task_id}".encode(),
-                    b"type": (record.get("event") or "message_chunk").encode(),
-                    b"payload": payload.encode("utf-8"),
-                }
-                for attempt in (1, 2):
-                    try:
-                        await asyncio.wait_for(
-                            # Same 2x MAXLEN backstop as the v1 leg: the quota
-                            # circuit below tears the run before FIFO trim
-                            # could touch the head (STREAM_CONTRACT_V2.md).
-                            cache.client.xadd(
-                                v2_key,
-                                v2_fields,
-                                maxlen=quota * 2,
-                                approximate=True,
-                            ),
-                            timeout=_SPILL_TIMEOUT_SECONDS,
+        # XADD carries both the pre-rendered SSE wire string
+        # (``b"event"``, consumed live by ``stream_subagent_from_log``)
+        # and the JSON record (``b"record"``, consumed post-turn by
+        # ``iter_subagent_events_full`` via XRANGE). Active streams
+        # carry no TTL (retention contract — the attach-grace TTL is
+        # stamped at terminal by ``stamp_terminal_retention``), and
+        # MAXLEN is a 2x backstop: the quota check above opens the
+        # circuit before FIFO trim could touch the head.
+        # Same fenced-append policy as the root lane, including the
+        # retry on pool exhaustion this path used to lack: an exhausted
+        # pool tore the subagent run outright, which is the failure this
+        # whole subsystem exists to survive.
+        success = False
+        append_error: str | None = None
+        try:
+            await append(
+                cache,
+                stream_key,
+                event_id=seq,
+                max_size=quota.maxlen,
+                stream_event=stream_payload,
+                stream_record=payload,
+                label=f"task:{task.task_id}",
+            )
+            success = True
+        except append_exc as exc:
+            append_error = str(exc)
+        # v2 dual-write (STREAM_CONTRACT_V2.md): the immutable
+        # per-run stream, keyed by ledger identity. Same lock hold so
+        # per-run frame order matches append order; seq is the XADD
+        # id (Redis-side). Contract-grade: a hole in the canonical
+        # per-run stream opens the circuit like a v1 failure — the
+        # run tears as error(transport_lost) rather than a reader
+        # ever being served a stream with a silent gap.
+        if success and task.task_run_id:
+            v2_key = run_stream_key(thread_id, task.task_run_id)
+            # No per-write TTL: the immutable per-run stream is
+            # active until terminal, when stamp_terminal_retention
+            # applies the attach-grace TTL.
+            v2_fields = {
+                b"run_id": task.task_run_id.encode(),
+                b"lane": f"task:{task.task_id}".encode(),
+                b"type": (record.get("event") or "message_chunk").encode(),
+                b"payload": payload.encode("utf-8"),
+            }
+            for attempt in (1, 2):
+                try:
+                    await asyncio.wait_for(
+                        # Same 2x MAXLEN backstop as the v1 leg: the quota
+                        # circuit above tears the run before FIFO trim
+                        # could touch the head (STREAM_CONTRACT_V2.md).
+                        cache.client.xadd(
+                            v2_key,
+                            v2_fields,
+                            maxlen=quota.maxlen,
+                            approximate=True,
+                        ),
+                        timeout=_SPILL_TIMEOUT_SECONDS,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    if (
+                        await _stream_tail_seq(cache, v2_key, b"payload")
+                        == seq
+                    ):
+                        logger.info(
+                            "subagent_event_spill_recovered",
+                            phase="v2_timeout_landed",
+                            tool_call_id=task.tool_call_id,
+                            task_id=task.task_id,
+                            task_run_id=task.task_run_id,
+                            seq=seq,
                         )
                         break
-                    except asyncio.TimeoutError:
-                        if (
+                    if attempt == 1:
+                        logger.warning(
+                            "subagent_event_spill_retry",
+                            phase="v2_timeout",
+                            tool_call_id=task.tool_call_id,
+                            task_id=task.task_id,
+                            task_run_id=task.task_run_id,
+                            seq=seq,
+                            timeout_seconds=_SPILL_TIMEOUT_SECONDS,
+                        )
+                        continue
+                    task.redis_write_failed = True
+                    logger.warning(
+                        "subagent_event_spill_failed",
+                        phase="v2_pipeline",
+                        tool_call_id=task.tool_call_id,
+                        task_id=task.task_id,
+                        task_run_id=task.task_run_id,
+                        seq=record.get("seq"),
+                    )
+                    break
+                except Exception as exc:
+                    # An auto-id write cannot be REPLAYED blind, but that
+                    # is no reason not to CLASSIFY it: most failures
+                    # reachable here are pre-send and unambiguous, and
+                    # tearing the run on one of those throws away a
+                    # subagent's finished work. Same policy as the timeout
+                    # branch above, split by what the server can have seen.
+                    verdict = _classify_v2_write_failure(exc)
+                    if verdict != "fatal":
+                        if verdict == "ambiguous" and (
                             await _stream_tail_seq(cache, v2_key, b"payload")
                             == seq
                         ):
                             logger.info(
                                 "subagent_event_spill_recovered",
-                                phase="v2_timeout_landed",
+                                phase="v2_error_landed",
                                 tool_call_id=task.tool_call_id,
                                 task_id=task.task_id,
                                 task_run_id=task.task_run_id,
                                 seq=seq,
+                                error=str(exc),
                             )
                             break
                         if attempt == 1:
                             logger.warning(
                                 "subagent_event_spill_retry",
-                                phase="v2_timeout",
+                                phase=f"v2_{verdict}",
                                 tool_call_id=task.tool_call_id,
                                 task_id=task.task_id,
                                 task_run_id=task.task_run_id,
                                 seq=seq,
-                                timeout_seconds=_SPILL_TIMEOUT_SECONDS,
+                                error=str(exc),
                             )
                             continue
-                        task.redis_write_failed = True
-                        logger.warning(
-                            "subagent_event_spill_failed",
-                            phase="v2_pipeline",
-                            tool_call_id=task.tool_call_id,
-                            task_id=task.task_id,
-                            task_run_id=task.task_run_id,
-                            seq=record.get("seq"),
-                        )
-                        break
-                    except Exception as exc:
-                        # An auto-id write cannot be REPLAYED blind, but that
-                        # is no reason not to CLASSIFY it: most failures
-                        # reachable here are pre-send and unambiguous, and
-                        # tearing the run on one of those throws away a
-                        # subagent's finished work. Same policy as the timeout
-                        # branch above, split by what the server can have seen.
-                        verdict = _classify_v2_write_failure(exc)
-                        if verdict != "fatal":
-                            if verdict == "ambiguous" and (
-                                await _stream_tail_seq(cache, v2_key, b"payload")
-                                == seq
-                            ):
-                                logger.info(
-                                    "subagent_event_spill_recovered",
-                                    phase="v2_error_landed",
-                                    tool_call_id=task.tool_call_id,
-                                    task_id=task.task_id,
-                                    task_run_id=task.task_run_id,
-                                    seq=seq,
-                                    error=str(exc),
-                                )
-                                break
-                            if attempt == 1:
-                                logger.warning(
-                                    "subagent_event_spill_retry",
-                                    phase=f"v2_{verdict}",
-                                    tool_call_id=task.tool_call_id,
-                                    task_id=task.task_id,
-                                    task_run_id=task.task_run_id,
-                                    seq=seq,
-                                    error=str(exc),
-                                )
-                                continue
-                        task.redis_write_failed = True
-                        logger.warning(
-                            "subagent_event_spill_failed",
-                            phase="v2_pipeline",
-                            tool_call_id=task.tool_call_id,
-                            task_id=task.task_id,
-                            task_run_id=task.task_run_id,
-                            seq=record.get("seq"),
-                            error=str(exc),
-                        )
-                        break
+                    task.redis_write_failed = True
+                    logger.warning(
+                        "subagent_event_spill_failed",
+                        phase="v2_pipeline",
+                        tool_call_id=task.tool_call_id,
+                        task_id=task.task_id,
+                        task_run_id=task.task_run_id,
+                        seq=record.get("seq"),
+                        error=str(exc),
+                    )
+                    break
         if not success:
             task.redis_write_failed = True
             logger.warning(
@@ -481,20 +563,7 @@ async def spill_task_record(
                 seq=record.get("seq"),
                 error=append_error,
             )
-        elif seq > quota:
-            # Quota breach tears the transport by contract: opening the
-            # circuit here (instead of trimming FIFO) makes the abort
-            # loop + terminal escalation finalize error(transport_lost),
-            # so a replay with a silent hole is never served.
-            task.redis_write_failed = True
-            logger.warning(
-                "subagent_event_spill_failed",
-                phase="quota",
-                tool_call_id=task.tool_call_id,
-                task_id=task.task_id,
-                seq=record.get("seq"),
-                quota=quota,
-            )
+            return
     except asyncio.TimeoutError:
         task.redis_write_failed = True
         logger.warning(
@@ -640,39 +709,6 @@ async def append_task_sentinel(thread_id: str, task: "BackgroundTask") -> None:
             task_id=task.task_id,
             error=str(exc),
         )
-
-
-def steering_queue_key(tool_call_id: str, task_run_id: str | None = None) -> str:
-    """Redis list a subagent drains for follow-up steering input.
-
-    Run-scoped when the execution's ledger identity is known — a queued
-    message can then never be consumed by a later resume of the same task;
-    the run-end sweep returns whatever its own run left unconsumed. The
-    task-lifetime key is the pre-ledger fallback (legacy semantics: next
-    writer drains it).
-    """
-    if task_run_id:
-        return f"subagent:steering:{tool_call_id}:{task_run_id}"
-    return f"subagent:steering:{tool_call_id}"
-
-
-def parse_steering_payload(raw: Any) -> dict[str, Any] | None:
-    """Normalize a raw steering-queue entry to ``{content,
-    expected_task_run_id, input_id}``. Legacy entries are bare JSON strings
-    (no fence, no id); unparseable entries return None."""
-    try:
-        data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    if isinstance(data, str):
-        return {"content": data, "expected_task_run_id": None, "input_id": None}
-    if isinstance(data, dict) and data.get("content"):
-        return {
-            "content": str(data["content"]),
-            "expected_task_run_id": data.get("expected_task_run_id") or None,
-            "input_id": data.get("input_id") or None,
-        }
-    return None
 
 
 async def read_task_meta(thread_id: str, task_id: str) -> dict[str, str] | None:

@@ -3,7 +3,7 @@
 With auth enabled (HOST_MODE != "oss") and ``INTERNAL_SERVICE_TOKEN`` unset,
 the /messages endpoint rejects ``X-Dispatch: background`` with 403. Both
 internal dispatch call sites preflight the token and fail loud before any side
-effect (HITL prompt, workspace creation, cap reservation, HTTP). In oss mode
+effect (HITL prompt, cap reservation, HTTP). In oss mode
 with no token the endpoint trusts the self-dispatch, so the guard must not
 fire.
 """
@@ -11,30 +11,41 @@ fire.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services.report_back.flash import executor as rb_executor
-from src.tools.secretary.tools import ptc_agent
+from src.server.services.report_back.handoff import executor as rb_executor
+from src.tools.secretary.chief_of_staff import delegate_to_analyst
 
 USER_ID = "user-1"
-FLASH_THREAD_ID = "flash-thread-1"
+DISPATCHER_THREAD_ID = "cos-thread-1"
 PTC_THREAD_ID = "ptc-thread-1"
+WORKSPACE_ID = "22222222-2222-2222-2222-222222222222"
 
 _ORIGIN = {
     "user_id": USER_ID,
-    "flash_workspace_id": "ws-flash",
+    "home_workspace_id": "ws-cos",
     "ptc_workspace_id": "ws-ptc",
 }
 
 
+def _owed() -> rb_executor.OwedAnalystReport:
+    return rb_executor.OwedAnalystReport(
+        origin=_ORIGIN,
+        dispatcher_thread_id=DISPATCHER_THREAD_ID,
+        ptc_thread_id=PTC_THREAD_ID,
+        final_status="completed",
+    )
+
+
 def _tool_call(args: dict, call_id: str = "call_test") -> dict:
-    return {"name": "ptc_agent", "args": args, "id": call_id, "type": "tool_call"}
+    # ``state`` is what the graph injects; nothing here was approved in advance.
+    return {"name": "delegate_to_analyst", "args": {**args, "state": {}}, "id": call_id, "type": "tool_call"}
 
 
 def _config() -> dict:
-    return {"configurable": {"user_id": USER_ID, "thread_id": FLASH_THREAD_ID}}
+    return {"configurable": {"user_id": USER_ID, "thread_id": DISPATCHER_THREAD_ID}}
 
 
 def _payload(result) -> dict:
@@ -85,25 +96,26 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_ptc_agent_aborts_when_service_token_unset(monkeypatch):
-    """ptc_agent must fail loud (no HITL, no workspace, no HTTP) when the
-    token is unset: the endpoint would reject the dispatch with 403."""
+async def test_a_hand_off_aborts_when_service_token_unset(monkeypatch):
+    """A hand-off must fail loud (no HITL, no workspace read, no HTTP) when
+    the token is unset: the endpoint would reject the dispatch with 403."""
     monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
     _unset_token(monkeypatch)
 
     # If any of these run, the guard failed to short-circuit early enough.
     with patch(
-        "src.tools.secretary.tools._hitl_confirm",
+        "src.tools.secretary.dispatch.hitl_confirm",
         side_effect=AssertionError("HITL must not be reached"),
     ), patch(
         "aiohttp.ClientSession",
         MagicMock(side_effect=AssertionError("dispatch HTTP must not run")),
     ), patch(
-        "src.server.services.workspace_manager.WorkspaceManager.get_instance",
-        MagicMock(side_effect=AssertionError("workspace must not be created")),
+        "src.server.database.workspace.get_workspace",
+        AsyncMock(side_effect=AssertionError("workspace must not be read")),
     ):
-        result = await ptc_agent.ainvoke(
-            _tool_call({"question": "analyze this"}), config=_config()
+        result = await delegate_to_analyst.ainvoke(
+            _tool_call({"question": "analyze this", "workspace_id": WORKSPACE_ID}),
+            config=_config(),
         )
 
     payload = _payload(result)
@@ -112,19 +124,20 @@ async def test_ptc_agent_aborts_when_service_token_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ptc_agent_blank_service_token_is_treated_as_unset(monkeypatch):
+async def test_a_blank_service_token_is_treated_as_unset(monkeypatch):
     """A whitespace-only token is not a real secret -> still aborts."""
     monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
     monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "   ")
     with patch(
-        "src.tools.secretary.tools._hitl_confirm",
+        "src.tools.secretary.dispatch.hitl_confirm",
         side_effect=AssertionError("HITL must not be reached"),
     ), patch(
         "aiohttp.ClientSession",
         MagicMock(side_effect=AssertionError("dispatch HTTP must not run")),
     ):
-        result = await ptc_agent.ainvoke(
-            _tool_call({"question": "analyze this"}), config=_config()
+        result = await delegate_to_analyst.ainvoke(
+            _tool_call({"question": "analyze this", "workspace_id": WORKSPACE_ID}),
+            config=_config(),
         )
 
     assert _payload(result)["error"] == "internal_service_token_missing"
@@ -141,9 +154,7 @@ async def test_report_back_drops_when_service_token_unset(monkeypatch):
         "aiohttp.ClientSession",
         MagicMock(side_effect=AssertionError("report-back HTTP must not run")),
     ):
-        status, run_id = await rb_executor._post_report_back(
-            cache, FLASH_THREAD_ID, PTC_THREAD_ID, _ORIGIN
-        )
+        status, run_id = await rb_executor._post_report_back(cache, _owed())
 
     assert status == "drop"
     assert run_id is None
@@ -155,20 +166,24 @@ async def test_report_back_drops_when_service_token_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ptc_agent_oss_mode_proceeds_without_token(monkeypatch):
+async def test_a_hand_off_in_oss_mode_proceeds_without_token(monkeypatch):
     """The flow must reach the HITL confirm (declined here to stop it)."""
     monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
     _unset_token(monkeypatch)
 
     with patch(
-        "src.tools.secretary.tools._hitl_confirm", return_value=(False, {})
+        "src.server.database.workspace.get_workspace",
+        AsyncMock(return_value={"user_id": USER_ID, "name": "Semis"}),
+    ), patch(
+        "src.tools.secretary.dispatch.hitl_confirm", return_value=(False, {})
     ) as hitl:
-        result = await ptc_agent.ainvoke(
-            _tool_call({"question": "analyze this"}), config=_config()
+        result = await delegate_to_analyst.ainvoke(
+            _tool_call({"question": "analyze this", "workspace_id": WORKSPACE_ID}),
+            config=_config(),
         )
 
     hitl.assert_called_once()
-    assert result.update["messages"][0].content == "User declined PTC agent dispatch."
+    assert result.update["messages"][0].content.startswith("User declined the hand-off.")
 
 
 @pytest.mark.asyncio
@@ -178,12 +193,7 @@ async def test_report_back_oss_mode_posts_without_token(monkeypatch):
 
     session = _FakeSession(_FakeResp(200, {"run_id": "rid-1"}))
     with patch("aiohttp.ClientSession", MagicMock(return_value=session)):
-        outcome = await rb_executor._post_report_back(
-            cache=None,
-            flash_thread_id=FLASH_THREAD_ID,
-            ptc_thread_id=PTC_THREAD_ID,
-            origin=_ORIGIN,
-        )
+        outcome = await rb_executor._post_report_back(None, _owed())
 
     assert outcome == ("dispatched", "rid-1")
     assert session.post_calls == 1

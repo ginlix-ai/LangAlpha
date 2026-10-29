@@ -9,7 +9,6 @@ Covers:
 - LLMConfig fields and defaults
 - SubagentConfig / SubagentsConfig
 - SkillsConfig path resolution
-- FlashConfig defaults
 """
 
 import os
@@ -20,7 +19,6 @@ import pytest
 
 from ptc_agent.config.agent import (
     AgentConfig,
-    FlashConfig,
     LLMConfig,
     LLMDefinition,
     SkillsConfig,
@@ -68,7 +66,7 @@ class TestLLMConfig:
     def test_defaults(self):
         cfg = LLMConfig(name="gpt-4o")
         assert cfg.name == "gpt-4o"
-        assert cfg.flash is None
+        assert cfg.background is None
         assert cfg.compaction is None
         assert cfg.fetch is None
         assert cfg.fallback is None
@@ -76,12 +74,12 @@ class TestLLMConfig:
     def test_all_fields(self):
         cfg = LLMConfig(
             name="claude-sonnet-4-5",
-            flash="claude-haiku-4-5",
+            background="claude-haiku-4-5",
             compaction="claude-haiku-4-5",
             fetch="claude-haiku-4-5",
             fallback=["gpt-4o", "gpt-4o-mini"],
         )
-        assert cfg.flash == "claude-haiku-4-5"
+        assert cfg.background == "claude-haiku-4-5"
         assert cfg.fallback == ["gpt-4o", "gpt-4o-mini"]
 
 
@@ -217,21 +215,41 @@ class TestAgentConfigToCoreConfig:
     def test_preserves_all_sections(self):
         config = _minimal_config()
         core = config.to_core_config()
-        assert core.security is config.security
-        assert core.logging is config.logging
-        assert core.filesystem is config.filesystem
+        assert core.sandbox == config.sandbox
+        assert core.security == config.security
+        assert core.logging == config.logging
+        assert core.filesystem == config.filesystem
 
-    def test_mcp_is_a_deep_copy_not_shared(self):
-        """Each CoreConfig owns its MCPConfig so per-workspace edits can't bleed."""
+    def test_every_section_is_a_deep_copy_not_shared(self):
+        """Each CoreConfig owns its sections so per-workspace edits can't bleed."""
         config = _minimal_config()
         core = config.to_core_config()
+        assert core.sandbox is not config.sandbox
+        assert core.sandbox.daytona is not config.sandbox.daytona
         assert core.mcp is not config.mcp
-        assert core.mcp == config.mcp
+        assert core.security is not config.security
+        assert core.logging is not config.logging
+        assert core.filesystem is not config.filesystem
         # Mutating the per-workspace copy leaves the source AgentConfig untouched.
         core.mcp.servers.append(
-            MCPServerConfig(name="injected", source="workspace")
+            MCPServerConfig(name="injected", source="user")
         )
         assert config.mcp.servers == []
+
+    def test_sandbox_edits_do_not_leak_between_workspaces(self):
+        """The shared-reference bug: two workspaces, one SandboxConfig object."""
+        config = _minimal_config()
+        first = config.to_core_config()
+        second = config.to_core_config()
+
+        first.sandbox.daytona.default_tier = "max"
+        first.sandbox.daytona.auto_stop_interval = 0
+        first.filesystem.working_directory = "/home/workspace/projects/one"
+
+        assert second.sandbox.daytona.default_tier == "standard"
+        assert second.sandbox.daytona.auto_stop_interval == 3600
+        assert second.filesystem.working_directory == "/home/workspace"
+        assert config.sandbox.daytona.default_tier == "standard"
 
 
 # ---------------------------------------------------------------------------
@@ -299,21 +317,23 @@ class TestAgentConfigGetLlmClient:
 class TestSubagentConfig:
     def test_defaults(self):
         cfg = SubagentConfig(description="Test agent")
-        assert cfg.mode == "ptc"
         assert cfg.model is None
         assert cfg.tools == ["execute_code", "filesystem"]
-        assert cfg.max_iterations == 15
 
     def test_custom_fields(self):
         cfg = SubagentConfig(
             description="Research",
-            mode="flash",
             model="claude-haiku-4-5",
             tools=["web_search"],
-            max_iterations=5,
         )
-        assert cfg.mode == "flash"
         assert cfg.model == "claude-haiku-4-5"
+        assert cfg.tools == ["web_search"]
+
+    def test_effort_is_a_level_of_the_vocabulary(self):
+        # An unknown word would reach no model while the pane showed it.
+        assert SubagentConfig(description="Deep", reasoning_effort="max").reasoning_effort == "max"
+        with pytest.raises(ValueError, match="reasoning_effort"):
+            SubagentConfig(description="Deep", reasoning_effort="ultra")
 
 
 class TestSubagentsConfig:
@@ -321,6 +341,13 @@ class TestSubagentsConfig:
         cfg = SubagentsConfig()
         assert cfg.enabled == ["general-purpose"]
         assert cfg.definitions == {}
+
+    def test_a_new_subagent_needs_a_description_on_every_path(self):
+        # A built-in brings its own; a new name built in code, not just from
+        # YAML, is refused without one, since the parent delegates by it.
+        assert SubagentsConfig(definitions={"research": SubagentConfig(model="m")})
+        with pytest.raises(ValueError, match="'macro'.*needs a description"):
+            SubagentsConfig(definitions={"macro": SubagentConfig(model="m")})
 
 
 # ---------------------------------------------------------------------------
@@ -333,30 +360,25 @@ class TestSkillsConfig:
         cfg = SkillsConfig()
         assert cfg.enabled is True
         assert cfg.user_skills_dir == "~/.ptc-agent/skills"
-        assert cfg.project_skills_dir == "skills"
 
-    def test_local_skill_dirs_with_sandbox(self):
+    def test_local_skill_dirs(self):
+        # Bundles are patched away for this package (see conftest), so what is
+        # left is the operator's own directory and nothing else.
         cfg = SkillsConfig()
-        cwd = Path("/test/project")
-        dirs = cfg.local_skill_dirs_with_sandbox(cwd=cwd)
-        assert len(dirs) == 2
-        # User dir first (lower priority), project dir second (higher priority)
-        user_dir, user_sandbox = dirs[0]
-        project_dir, project_sandbox = dirs[1]
-        assert "ptc-agent/skills" in user_dir
-        assert "/test/project/skills" in project_dir
-        assert user_sandbox == "/home/workspace/.agents/skills"
+        dirs = cfg.local_skill_dirs()
+        assert len(dirs) == 1
+        assert "ptc-agent/skills" in dirs[0]
 
-
-# ---------------------------------------------------------------------------
-# FlashConfig
-# ---------------------------------------------------------------------------
-
-
-class TestFlashConfig:
-    def test_defaults(self):
-        cfg = FlashConfig()
-        assert cfg.enabled is True
+    def test_the_sources_do_not_depend_on_the_working_directory(
+        self, monkeypatch, tmp_path
+    ):
+        # The shipped skills live in the bundle that declares them, so nothing
+        # resolves against cwd any more; a server started from anywhere has to
+        # see the same set.
+        cfg = SkillsConfig()
+        before = cfg.local_skill_dirs()
+        monkeypatch.chdir(tmp_path)
+        assert cfg.local_skill_dirs() == before
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +409,8 @@ class TestCompactionConfig:
         cfg = CompactionConfig()
         assert cfg.enabled is True
         assert cfg.token_threshold == 120000
-        assert cfg.keep_messages == 5
-        assert cfg.truncate_args_trigger_messages is None
+        assert cfg.keep_tokens == 20_000
+        assert cfg.truncate_args_idle_minutes is None
         assert cfg.truncate_args_keep_messages == 20
         assert cfg.truncate_args_max_length == 2000
 
@@ -396,13 +418,13 @@ class TestCompactionConfig:
         cfg = CompactionConfig(
             enabled=False,
             token_threshold=80000,
-            keep_messages=3,
-            truncate_args_trigger_messages=15,
+            keep_tokens=3,
+            truncate_args_idle_minutes=None,
         )
         assert cfg.enabled is False
         assert cfg.token_threshold == 80000
-        assert cfg.keep_messages == 3
-        assert cfg.truncate_args_trigger_messages == 15
+        assert cfg.keep_tokens == 3
+        assert cfg.truncate_args_idle_minutes is None
 
 
 # ---------------------------------------------------------------------------

@@ -29,13 +29,12 @@ from ptc_agent.config.core import (
     SecurityConfig,
 )
 from ptc_agent.core.sandbox.runtime import (
-    CodeRunResult,
     ExecResult,
     RuntimeState,
     SandboxGoneError,
-    SandboxProvider,
     SandboxRuntime,
 )
+from tests.unit.core.sandbox.fake_provider import fake_provider
 
 
 def _make_config(**overrides) -> CoreConfig:
@@ -60,7 +59,6 @@ def mock_runtime():
     runtime.upload_files = AsyncMock()
     runtime.download_file = AsyncMock(return_value=b"data")
     runtime.list_files = AsyncMock(return_value=[{"name": "file.txt", "is_dir": False}])
-    runtime.code_run = AsyncMock(return_value=CodeRunResult("result", "", 0, []))
     runtime.get_state = AsyncMock(return_value=RuntimeState.RUNNING)
     runtime.start = AsyncMock()
     runtime.stop = AsyncMock()
@@ -70,7 +68,7 @@ def mock_runtime():
 
 @pytest.fixture
 def mock_provider(mock_runtime):
-    provider = AsyncMock(spec=SandboxProvider)
+    provider = fake_provider()
     provider.create = AsyncMock(return_value=mock_runtime)
     provider.get = AsyncMock(return_value=mock_runtime)
     provider.close = AsyncMock()
@@ -94,35 +92,6 @@ class TestPTCSandboxDelegation:
 
         await sandbox.execute_bash_command("ls -la")
         mock_runtime.exec.assert_called()
-
-    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
-    @pytest.mark.asyncio
-    async def test_execute_bash_injects_mcp_trace_env_and_harvests(
-        self, mock_create_provider, mock_provider, mock_runtime
-    ):
-        # A python script run via Bash must record the same MCP provenance
-        # ExecuteCode does: the foreground command carries an MCP_TRACE_FILE env +
-        # the wrapper PYTHONPATH, and the harvested trace is returned for the
-        # provenance middleware. (Closes the bash provenance bypass.)
-        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
-
-        mock_create_provider.return_value = mock_provider
-        mock_runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
-        sandbox = PTCSandbox(config=_make_config())
-        sandbox.runtime = mock_runtime
-
-        trace = [{"server": "marketdata", "tool": "quote", "result_sha256": "a" * 64}]
-        with patch.object(
-            sandbox, "_collect_mcp_trace", AsyncMock(return_value=trace)
-        ) as collect:
-            result = await sandbox.execute_bash_command("python analysis.py")
-
-        exec_cmds = [c.args[0] for c in mock_runtime.exec.call_args_list if c.args]
-        main_cmd = next(c for c in exec_cmds if "python analysis.py" in c)
-        assert "export MCP_TRACE_FILE=" in main_cmd
-        assert "export PYTHONPATH=" in main_cmd
-        collect.assert_awaited_once()
-        assert result["mcp_trace"] == trace
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
@@ -151,6 +120,71 @@ class TestPTCSandboxDelegation:
 
         await sandbox.adownload_file_bytes("/test/file.txt")
         mock_runtime.download_file.assert_called()
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_a_capped_download_starts_over_after_a_transient_failure(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        """Nothing has left before the download ends, so a reset mid-file is
+        retried from the start, as the whole-file download is."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        mock_provider.is_transient_error = MagicMock(
+            side_effect=lambda e: isinstance(e, ConnectionResetError)
+        )
+        attempts = []
+
+        async def stream(path):
+            attempts.append(path)
+            yield b"%PDF-1.7 "
+            if len(attempts) == 1:
+                raise ConnectionResetError("connection reset")
+            yield b"rest"
+
+        mock_runtime.download_file_stream = stream
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            data = await sandbox.adownload_file_bytes_capped("/w/r.pdf", lambda head: 1024)
+
+        assert data == b"%PDF-1.7 rest"
+        assert attempts == ["/w/r.pdf", "/w/r.pdf"]
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_a_capped_download_stops_at_the_cap_and_holds_a_download_slot(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        from ptc_agent.core.sandbox.files import FileOverCap
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+        free = []
+        closed = []
+
+        async def stream(path):
+            try:
+                while True:
+                    free.append(sandbox._download_semaphore._value)
+                    yield b"x" * 512
+            finally:
+                closed.append(path)
+
+        mock_runtime.download_file_stream = stream
+
+        with pytest.raises(FileOverCap) as raised:
+            await sandbox.adownload_file_bytes_capped("/w/big.png", lambda head: 1024)
+
+        assert raised.value.limit == 1024
+        assert closed == ["/w/big.png"]
+        # One slot taken while it read, given back after.
+        assert set(free) == {3}
+        assert sandbox._download_semaphore._value == 4
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
@@ -210,139 +244,172 @@ class TestPTCSandboxDelegation:
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
-    async def test_unrecoverable_archive_uses_secure_replacement_path(
+    async def test_archived_sandbox_is_restored_not_replaced(
         self, mock_create_provider, mock_provider, mock_runtime
     ):
+        """Daytona reports recoverable=False on every healthy sandbox, archived included."""
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
         mock_create_provider.return_value = mock_provider
         mock_runtime.get_state.return_value = RuntimeState.ARCHIVED
         mock_runtime.get_metadata.return_value = {"recoverable": False}
+        mock_runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
         sandbox = PTCSandbox(config=_make_config())
 
-        with pytest.raises(SandboxGoneError, match="no longer recoverable"):
-            await sandbox.reconnect("archived-sandbox")
+        await sandbox.reconnect("archived-sandbox")
 
-        mock_runtime.start.assert_not_awaited()
+        mock_runtime.start.assert_awaited_once()
 
-
-class TestBackgroundBashTrace:
-    """The background-bash provenance bypass closure (BashOutput is the only
-    result-bearing path for a backgrounded command, so the MCP trace must be
-    injected at launch and harvested on the status read that sees completion)."""
-
-    def _sandbox(self, mock_create_provider, mock_provider, mock_runtime):
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_archiving_sandbox_waits_for_the_archive_then_restores(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        """A start mid-archive can land after the container is gone and strand the sandbox."""
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
         mock_create_provider.return_value = mock_provider
-        sandbox = PTCSandbox(config=_make_config())
-        sandbox.runtime = mock_runtime
-        return sandbox
+        states = iter(
+            [RuntimeState.ARCHIVING, RuntimeState.ARCHIVING, RuntimeState.ARCHIVED]
+        )
+        reads = []
 
-    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
-    @pytest.mark.asyncio
-    async def test_launch_injects_trace_env_and_records_path(
-        self, mock_create_provider, mock_provider, mock_runtime
-    ):
-        from ptc_agent.core.sandbox.runtime import SessionCommandResult
+        async def get_state():
+            state = next(states)
+            reads.append(state)
+            return state
 
-        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
+        async def start(**kwargs):
+            assert reads[-1] is RuntimeState.ARCHIVED
+
+        mock_runtime.get_state = AsyncMock(side_effect=get_state)
+        mock_runtime.start = AsyncMock(side_effect=start)
         mock_runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
-        mock_runtime.create_session = AsyncMock()
-        mock_runtime.session_execute = AsyncMock(
-            return_value=SessionCommandResult(
-                cmd_id="cmd-xyz", exit_code=None, stdout="", stderr=""
-            )
-        )
+        observed = MagicMock()
+        sandbox = PTCSandbox(config=_make_config())
 
-        result = await sandbox.execute_bash_command(
-            "python long_job.py", background=True
-        )
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await sandbox.reconnect("archiving-sandbox", on_state_observed=observed)
 
-        # The executed bg command carries the MCP trace env (so a backgrounded
-        # python script importing the wrappers records its calls) ...
-        bg_cmd = mock_runtime.session_execute.call_args.args[1]
-        assert "export MCP_TRACE_FILE=" in bg_cmd
-        assert "export PYTHONPATH=" in bg_cmd
-        assert "python long_job.py" in bg_cmd
-        # ... and the trace path is tracked under the returned cmd_id for harvest.
-        assert "cmd-xyz" in result["stdout"]
-        assert sandbox._bg_trace_paths.get("cmd-xyz", "").endswith(".jsonl")
+        assert len(reads) == 3
+        mock_runtime.start.assert_awaited_once()
+        assert mock_runtime.start.await_args.kwargs["timeout"] == 300
+        observed.assert_called_once_with("archived")
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
-    async def test_status_harvests_trace_once_on_completion(
+    async def test_sandbox_still_archiving_is_transient_and_never_started(
         self, mock_create_provider, mock_provider, mock_runtime
     ):
-        from ptc_agent.core.sandbox.runtime import SessionCommandResult
+        """Still archiving is a sandbox that exists, so a retry and never a replacement."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+        from ptc_agent.core.sandbox.runtime import SandboxTransientError
 
-        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
-        sandbox._bg_sessions["cmd-1"] = "bg-bash_0001"
-        sandbox._bg_trace_paths["cmd-1"] = "/home/workspace/.system/trace/t.jsonl"
-        mock_runtime.session_command_logs = AsyncMock(
-            return_value=SessionCommandResult(
-                cmd_id="cmd-1", exit_code=0, stdout="done", stderr=""
-            )
+        mock_create_provider.return_value = mock_provider
+        mock_runtime.get_state = AsyncMock(return_value=RuntimeState.ARCHIVING)
+        sandbox = PTCSandbox(config=_make_config())
+        clock = [0.0]
+
+        async def sleep(seconds):
+            clock[0] += seconds + 1  # each poll also pays a provider read
+
+        with (
+            patch("asyncio.sleep", new=AsyncMock(side_effect=sleep)),
+            patch(
+                "ptc_agent.core.sandbox.reconnect.time.monotonic",
+                side_effect=lambda: clock[0],
+            ),
+        ):
+            with pytest.raises(SandboxTransientError) as excinfo:
+                await sandbox.reconnect("archiving-sandbox")
+
+        assert not isinstance(excinfo.value, SandboxGoneError)
+        assert "being archived" in str(excinfo.value)
+        assert clock[0] <= 47  # the wait is bounded by time, not poll count
+        mock_runtime.start.assert_not_awaited()
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_archive_cancelled_mid_wait_starts_the_stopped_sandbox(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        """A cancelled archive ends stopped, which is safe to start."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        mock_runtime.get_state = AsyncMock(
+            side_effect=[RuntimeState.ARCHIVING, RuntimeState.STOPPED]
         )
-        trace = [{"server": "marketdata", "tool": "quote", "result_sha256": "a" * 64}]
-        with patch.object(
-            sandbox, "_collect_mcp_trace", AsyncMock(return_value=trace)
-        ) as collect:
-            result = await sandbox.get_background_command_status("cmd-1")
+        mock_runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
+        sandbox = PTCSandbox(config=_make_config())
 
-        collect.assert_awaited_once()
-        assert result["mcp_trace"] == trace
-        # Trace path is consumed so a second status read can't re-emit it.
-        assert "cmd-1" not in sandbox._bg_trace_paths
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await sandbox.reconnect("archiving-sandbox")
+
+        mock_runtime.start.assert_awaited_once()
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
-    async def test_status_while_running_does_not_harvest(
+    async def test_archive_cancelled_into_running_is_used_as_is(
         self, mock_create_provider, mock_provider, mock_runtime
     ):
-        from ptc_agent.core.sandbox.runtime import SessionCommandResult
+        """Something else started it mid-wait: usable, so no retry and no start."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
-        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
-        sandbox._bg_sessions["cmd-1"] = "bg-bash_0001"
-        sandbox._bg_trace_paths["cmd-1"] = "/home/workspace/.system/trace/t.jsonl"
-        mock_runtime.session_command_logs = AsyncMock(
-            return_value=SessionCommandResult(
-                cmd_id="cmd-1", exit_code=None, stdout="...", stderr=""
-            )
+        mock_create_provider.return_value = mock_provider
+        mock_runtime.get_state = AsyncMock(
+            side_effect=[RuntimeState.ARCHIVING, RuntimeState.RUNNING]
         )
-        with patch.object(
-            sandbox, "_collect_mcp_trace", AsyncMock(return_value=[])
-        ) as collect:
-            result = await sandbox.get_background_command_status("cmd-1")
+        mock_runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
+        sandbox = PTCSandbox(config=_make_config())
 
-        collect.assert_not_awaited()
-        assert result["mcp_trace"] == []
-        # Still running → trace path retained for the eventual completion read.
-        assert "cmd-1" in sandbox._bg_trace_paths
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await sandbox.reconnect("archiving-sandbox")
+
+        mock_runtime.start.assert_not_awaited()
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
-    async def test_status_unknown_cmd_returns_empty_trace(
+    async def test_errored_sandbox_the_provider_cannot_recover_is_gone(
         self, mock_create_provider, mock_provider, mock_runtime
     ):
-        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
-        result = await sandbox.get_background_command_status("nope")
-        assert result["mcp_trace"] == []
+        """Gone survives a transient-looking reason, and cleanup keeps the sandbox."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        mock_provider.is_transient_error = MagicMock(
+            side_effect=lambda e: "timed out" in str(e)
+        )
+        mock_runtime.get_state.return_value = RuntimeState.ERROR
+        mock_runtime.recover_from_error = AsyncMock(
+            side_effect=SandboxGoneError("errored-sandbox", "container start timed out")
+        )
+        sandbox = PTCSandbox(config=_make_config())
+
+        with pytest.raises(SandboxGoneError):
+            await sandbox.reconnect("errored-sandbox")
+
+        mock_runtime.recover_from_error.assert_awaited_once()
+        mock_runtime.start.assert_not_awaited()
+        assert sandbox.runtime is mock_runtime
+        await sandbox.cleanup()
+        mock_runtime.delete.assert_not_awaited()
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
-    async def test_stop_drops_trace_mapping(
+    async def test_cleanup_deletes_once_a_reconnect_completes(
         self, mock_create_provider, mock_provider, mock_runtime
     ):
-        sandbox = self._sandbox(mock_create_provider, mock_provider, mock_runtime)
-        sandbox._bg_sessions["cmd-1"] = "bg-bash_0001"
-        sandbox._bg_trace_paths["cmd-1"] = "/home/workspace/.system/trace/t.jsonl"
-        mock_runtime.delete_session = AsyncMock()
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
-        stopped = await sandbox.stop_background_command("cmd-1")
-        assert stopped is True
-        # A stopped command yields no output, so nothing to attest — drop the map.
-        assert "cmd-1" not in sandbox._bg_trace_paths
+        mock_create_provider.return_value = mock_provider
+        mock_runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
+        sandbox = PTCSandbox(config=_make_config())
+
+        await sandbox.reconnect("running-sandbox")
+        await sandbox.cleanup()
+
+        mock_runtime.delete.assert_awaited_once()
 
 
 class TestEgressRelayCredentialPush:

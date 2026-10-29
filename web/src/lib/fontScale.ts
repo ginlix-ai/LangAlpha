@@ -6,7 +6,7 @@
  * Not a context: the initial stamp has to happen pre-paint or every rem-sized
  * box reflows once, so index.html's inline script owns it. Nothing re-renders
  * on a change — the CSS variable does all the work — leaving a single writer
- * and a single reader (Settings › UserInfoTab).
+ * and a single reader (Settings › Appearance).
  */
 
 export const FONT_SCALES = [0.9, 0.95, 1, 1.05, 1.1] as const;

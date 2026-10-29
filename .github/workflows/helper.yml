@@ -1,0 +1,74 @@
+name: Helper
+
+# The machine helper (helper/). Its tests hold it to what the backend's SSH
+# provider expects of a machine, so they run on every system it ships for: Linux
+# and a Mac of each architecture. The Mac binary is built unsigned; signing and
+# notarizing take a Developer ID, which scripts/build-macos.sh applies when
+# HELPER_SIGN_IDENTITY names one.
+
+on:
+  push:
+    paths: [helper/**, .github/workflows/helper.yml]
+  pull_request:
+    paths: [helper/**, .github/workflows/helper.yml]
+  workflow_dispatch:
+
+concurrency:
+  group: helper-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: helper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            helper/target
+          key: helper-${{ matrix.runner }}-${{ hashFiles('helper/Cargo.lock', 'helper/rust-toolchain.toml') }}
+      # The version rust-toolchain.toml names, with clippy and rustfmt.
+      - run: rustup toolchain install
+      # The SFTP test needs the system's sftp-server, which every Mac has and
+      # a Linux machine has only with OpenSSH's server package.
+      - if: runner.os == 'Linux'
+        run: |
+          [ -x /usr/lib/openssh/sftp-server ] || {
+            sudo apt-get update -q && sudo apt-get install -yq openssh-sftp-server
+          }
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  mac-binary:
+    needs: test
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: helper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            helper/target
+          key: helper-mac-binary-${{ hashFiles('helper/Cargo.lock', 'helper/rust-toolchain.toml') }}
+      - run: rustup toolchain install
+      - run: scripts/build-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: langalpha-helper-macos-universal
+          path: helper/target/universal-apple-darwin/release/langalpha-helper
+          if-no-files-found: error

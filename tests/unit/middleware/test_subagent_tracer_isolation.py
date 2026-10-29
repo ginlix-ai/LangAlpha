@@ -41,7 +41,7 @@ async def test_parent_callbacks_as_callback_manager_does_not_crash(monkeypatch):
 
     seen_configs: list[dict] = []
 
-    async def fake_astream(state, config, stream_mode=None):
+    async def fake_astream(state, config, stream_mode=None, durability=None):
         seen_configs.append(config)
         # When stream_mode is a list, langgraph yields (mode, data) tuples.
         yield ("values", {"messages": [MagicMock(text="ok")]})
@@ -110,7 +110,7 @@ async def test_subagent_does_not_inherit_parent_token_tracker(monkeypatch):
 
     seen_configs: list[dict] = []
 
-    async def fake_astream(state, config, stream_mode=None):
+    async def fake_astream(state, config, stream_mode=None, durability=None):
         seen_configs.append(config)
         # When stream_mode is a list, langgraph yields (mode, data) tuples.
         yield ("values", {"messages": [MagicMock(text="ok")]})
@@ -172,12 +172,14 @@ async def test_subagent_uses_astream_with_values_messages_and_custom_modes(
 
     seen_stream_modes: list[Any] = []
 
-    async def fake_astream(state, config, stream_mode=None):
+    from langchain_core.messages import AIMessage
+
+    async def fake_astream(state, config, stream_mode=None, durability=None):
         seen_stream_modes.append(stream_mode)
         # Multi-mode list → langgraph yields (mode, data) tuples.
-        yield ("values", {"messages": [MagicMock(text="step-1")]})
-        yield ("values", {"messages": [MagicMock(text="step-2")]})
-        yield ("values", {"messages": [MagicMock(text="final")], "extra": "carried"})
+        yield ("values", {"messages": [AIMessage(content="step-1")]})
+        yield ("values", {"messages": [AIMessage(content="step-2")]})
+        yield ("values", {"messages": [AIMessage(content="final")], "extra": "carried"})
 
     fake_subagent = MagicMock()
     fake_subagent.astream = fake_astream

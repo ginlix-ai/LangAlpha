@@ -19,12 +19,12 @@ from typing import Annotated, Any, List, Optional
 
 from langchain_core.tools import StructuredTool
 
-from src.config.core import find_config_file, load_yaml_config
 from src.llms import LLM, format_llm_content, make_api_call, maybe_disable_streaming
 from src.tools.web.inhouse.sitemap import get_sitemap_summary
 from src.tools.decorators import log_io
 from src.tools.web.router import FetchRouter
-from src.observability import stamp_run
+from src.observability import stamp_run, stamp_tool_provider
+from src.tools.web.providers._shared import empty_content_error, mark_web_outcome
 from src.tools.web.types import (
     FetchAttempt,
     FetchRequest,
@@ -192,15 +192,15 @@ def reset_fetch_service() -> None:
 
 def _get_extraction_model() -> str:
     """Get the configured extraction model.
-    Priority: context override (user pref) > agent_config.yaml llm.fetch > llm.flash > llm.name.
+    Priority: context override (user pref) > agent_config.yaml llm.fetch > llm.background > llm.name.
     """
     override = fetch_model_override.get()
     if override:
         return override
-    path = find_config_file("agent_config.yaml")
-    config = load_yaml_config(str(path)) if path else {}
-    llm = config.get("llm", {})
-    return llm.get("fetch") or llm.get("flash") or llm.get("name", "")
+    from src.config.tool_settings import _get_agent_config_dict
+
+    llm = _get_agent_config_dict().get("llm") or {}
+    return llm.get("fetch") or llm.get("background") or llm.get("name", "")
 
 
 def _with_sitemap_suggestions(message: str, sitemap_summary: str) -> str:
@@ -285,7 +285,6 @@ async def _extract_with_llm(
             llm=llm,
             system_prompt=EXTRACTION_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            disable_tracing=True,
         ),
         timeout=EXTRACTION_TIMEOUT,
     )
@@ -311,7 +310,7 @@ async def web_fetch(
     Args:
         url: The URL to fetch content from
         prompt: The prompt to run on the fetched content
-        model: LLM model to use for extraction (default: from agent_config.yaml llm.flash)
+        model: LLM model to use for extraction (default: from agent_config.yaml llm.fetch, else llm.background)
         use_cache: Whether to use Redis cache (default: True)
         include_sitemap: Include site structure for URL suggestions (default: True)
 
@@ -369,6 +368,12 @@ async def web_fetch(
             if result.error is not None:
                 kind = result.error.type.value
                 artifact["error"] = kind
+                # A failed URL's error came from the last provider to try it;
+                # the response names a provider only when one succeeded.
+                mark_web_outcome(
+                    result.error,
+                    response.attempts[-1].provider if response.attempts else None,
+                )
                 return _with_sitemap_suggestions(
                     f"[{kind}] Failed to fetch {url}: {result.error.message}",
                     await _sitemap(),
@@ -385,6 +390,7 @@ async def web_fetch(
             markdown = result.markdown
             if not markdown or len(markdown.strip()) < 50:
                 artifact["error"] = "empty"
+                mark_web_outcome(empty_content_error())
                 sitemap_summary = await _sitemap()
                 if sitemap_summary:
                     return _with_sitemap_suggestions(
@@ -408,13 +414,14 @@ async def web_fetch(
         logger.error(f"Failed to process {url}. Error: {repr(e)}")
         short_error = str(e).split('\n')[0][:100]
         artifact["error"] = "exception"
+        mark_web_outcome(e)
         return f"Failed to process {url}: {short_error}", artifact
 
 
 # Create async tool using StructuredTool.from_function with coroutine
 async def _web_fetch_tool_impl(
-    url: Annotated[str, "The URL to fetch content from"],
-    prompt: Annotated[str, "The prompt to run on the fetched content"],
+    url: Annotated[str, "A fully-formed URL. HTTP is upgraded to HTTPS automatically."],
+    prompt: Annotated[str, "What information to extract from the page."],
 ) -> tuple[str, dict]:
     """Delegate to web_fetch(); the agent-facing contract is ``description``.
 
@@ -431,6 +438,7 @@ async def _web_fetch_tool_impl(
         fetch_source=artifact.get("source"),
         fetch_error=artifact.get("error"),
     )
+    stamp_tool_provider(provider)
     return content, artifact
 
 
@@ -441,28 +449,17 @@ web_fetch_tool = StructuredTool.from_function(
     coroutine=_decorated_impl,
     name="WebFetch",
     response_format="content_and_artifact",
-    description="""Fetches content from a specified URL and processes it using an AI model.
+    description="""Fetches a URL and answers a question about its content using a small, fast model.
 
-Takes a URL and a prompt as input. Fetches the URL content, converts to
-markdown, then processes the content with the prompt using a small,
-fast model. Returns the model's response about the content.
+Handles regular web pages (tiered fetching with anti-bot bypass), PDFs,
+YouTube transcripts and X/Twitter posts. Run several in parallel when you
+need more than one page.
 
-Supports multiple content types with dedicated extractors:
-- Regular web pages: tiered HTML fetching with anti-bot bypass
-- URL-based PDF files: text extraction (no LLM needed for parsing)
-- YouTube videos: transcript extraction with timestamps
-- X/Twitter posts: tweet text, media, and engagement stats
+Returns:
+    The model's answer to your prompt, not the raw page. Long content is
+    summarised, and when the answer is not on the page you get alternative
+    URLs from the site's sitemap instead.
 
-
-Usage notes:
-- Run multiple in parallel if needed
-- The URL must be a fully-formed valid URL
-- HTTP URLs will be automatically upgraded to HTTPS
-- The prompt should describe what information you want to extract from the page
-- Results may be summarized if the content is very large
-- If the requested information is not found, the tool will suggest alternative
-  URLs from the site's sitemap that might contain the information
-- When a URL redirects to a different host, the tool will inform you and
-  provide the redirect URL. You should then make a new request with the
-  redirect URL to fetch the content.""",
+A URL that redirects to a different host returns the redirect URL rather than
+content; call again with that URL.""",
 )

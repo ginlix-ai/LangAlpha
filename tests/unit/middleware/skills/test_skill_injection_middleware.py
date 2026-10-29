@@ -13,7 +13,7 @@ what gets returned) independently of build_skill_content's own logic.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ptc_agent.agent.middleware.skills.content import (
     SkillPrefixResult,
@@ -38,7 +38,7 @@ def _config(skill_contexts=None, skill_dirs=None):
 
 @pytest.mark.asyncio
 async def test_fresh_skill_returns_body_and_loaded_skills():
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     hm = HumanMessage(content="annotate the chart", id="u1")
     state = {"messages": [hm], "loaded_skills": []}
     config = _config(
@@ -58,7 +58,7 @@ async def test_fresh_skill_returns_body_and_loaded_skills():
     ):
         out = await mw.abefore_agent(state, MagicMock(), config=config)
 
-    # Filesystem discovery still runs (empty for flash) alongside injection.
+    # Filesystem discovery still runs (empty without a backend) alongside injection.
     assert out["discovered_skills"] == []
     assert out["loaded_skills"] == ["chart-annotation"]
 
@@ -79,7 +79,6 @@ async def test_fresh_skill_returns_body_and_loaded_skills():
     assert [s.name for s in skills_arg] == ["chart-annotation"]
     assert skills_arg[0].instruction == "AAPL:1d"
     assert bsc.call_args.kwargs["skill_dirs"] == ["/skills"]
-    assert bsc.call_args.kwargs["mode"] == "flash"
     assert bsc.call_args.kwargs["already_loaded"] == set()
     # The last human message's id is threaded through so the marker can bind to it.
     assert bsc.call_args.kwargs["message_id"] == "u1"
@@ -89,7 +88,7 @@ async def test_fresh_skill_returns_body_and_loaded_skills():
 async def test_already_loaded_skips_loaded_skills_keeps_instruction():
     """When the body is deduped (no fresh names), the instruction still rides on
     the message but ``loaded_skills`` is not returned (tools already persist)."""
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     hm = HumanMessage(content="annotate", id="u1")
     state = {"messages": [hm], "loaded_skills": ["chart-annotation"]}
     config = _config(
@@ -112,7 +111,7 @@ async def test_already_loaded_skips_loaded_skills_keeps_instruction():
 
 @pytest.mark.asyncio
 async def test_no_skill_contexts_is_noop_injection():
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     state = {"messages": [HumanMessage(content="hi", id="u1")]}
 
     with patch(f"{MW}.build_skill_content") as bsc:
@@ -124,7 +123,7 @@ async def test_no_skill_contexts_is_noop_injection():
 
 @pytest.mark.asyncio
 async def test_config_none_is_noop_injection():
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     state = {"messages": [HumanMessage(content="hi", id="u1")]}
 
     with patch(f"{MW}.build_skill_content") as bsc:
@@ -136,7 +135,7 @@ async def test_config_none_is_noop_injection():
 
 @pytest.mark.asyncio
 async def test_build_returns_none_injects_nothing():
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     state = {"messages": [HumanMessage(content="hi", id="u1")], "loaded_skills": []}
     config = _config(skill_contexts=[{"name": "chart-annotation"}])
 
@@ -153,7 +152,7 @@ async def test_build_returns_none_injects_nothing():
 async def test_last_message_not_human_still_returns_loaded_skills():
     """Defense path: if the last message isn't a user turn, the body can't attach
     but the skill's tools must still load via ``loaded_skills``."""
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     state = {"messages": [AIMessage(content="assistant", id="a1")], "loaded_skills": []}
     config = _config(skill_contexts=[{"name": "chart-annotation"}])
     result_obj = SkillPrefixResult(content="BODY", loaded_skill_names=["chart-annotation"])
@@ -171,7 +170,7 @@ async def test_last_message_not_human_still_returns_loaded_skills():
 @pytest.mark.asyncio
 async def test_blank_skill_names_are_dropped():
     """A skill_contexts entry with no name doesn't reach build_skill_content."""
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     state = {"messages": [HumanMessage(content="hi", id="u1")], "loaded_skills": []}
     config = _config(skill_contexts=[{"name": "", "instruction": "x"}])
 
@@ -192,7 +191,7 @@ async def test_injected_body_survives_patch_tool_calls_rewrite():
 
     ``SkillsMiddleware.abefore_agent`` appends a skill body (+ ``mid``-bound marker) to
     the last human message in place. deepagents' ``PatchToolCallsMiddleware.before_agent``
-    is the one other ``before_agent`` hook in both the PTC and Flash stacks; it runs
+    is the one other ``before_agent`` hook in the agent stack; it runs
     AFTER Skills and rewrites the whole ``messages`` list to patch dangling tool calls.
     This pins that the rewrite preserves the augmented human message verbatim — same id,
     body + marker intact — so injection is never dropped or mis-targeted. If a future
@@ -200,7 +199,7 @@ async def test_injected_body_survives_patch_tool_calls_rewrite():
     """
     from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     hm = HumanMessage(content="annotate the chart", id="h1")
     state = {"messages": [hm], "loaded_skills": []}
     config = _config(
@@ -211,7 +210,7 @@ async def test_injected_body_survives_patch_tool_calls_rewrite():
     # Exercise the real append path. The fake body carries the real mid-bound marker
     # for whatever message_id Skills threads through (the last human's id), so this also
     # proves _inject_requested_skills binds the marker to h1 — not a hardcoded constant.
-    def _fake_build(skills, *, skill_dirs, mode, already_loaded, message_id):
+    def _fake_build(skills, *, skill_dirs, already_loaded, message_id, registry=None):
         block = f"{loaded_skill_marker('chart-annotation', message_id)}\nBODY\n</loaded-skill>"
         return SkillPrefixResult(
             content=f"{block}\n\n[Instruction: AAPL:1d]",
@@ -300,6 +299,81 @@ def test_runnable_callable_injects_config_into_abefore_agent():
     """
     from langgraph._internal._runnable import RunnableCallable
 
-    mw = SkillsMiddleware(mode="flash")
+    mw = SkillsMiddleware()
     rc = RunnableCallable(None, mw.abefore_agent)
     assert "config" in rc.func_accepts
+
+
+def test_an_empty_registry_is_not_a_missing_one():
+    """A build whose gates and user disables removed every skill passes ``{}``.
+    Truthiness would read that as "nothing supplied" and hand back the global
+    registry, re-exposing exactly what the build just subtracted.
+    """
+    assert SkillsMiddleware(skill_registry={}).skill_registry == {}
+    assert SkillsMiddleware().skill_registry != {}
+
+
+@pytest.mark.asyncio
+async def test_discovery_does_not_readvertise_a_disabled_skill():
+    """A disabled user-tier skill is in neither the effective registry nor the
+    platform catalog, so only the ctor's ``disabled_skills`` set stops its
+    still-on-disk directory from returning as a user-installed skill.
+    """
+    mw = SkillsMiddleware(
+        skill_registry={},
+        backend=MagicMock(),
+        sources=["/workspace/.agents/skills"],
+        disabled_skills=frozenset({"my-disabled-skill"}),
+    )
+    on_disk = [
+        {"name": "my-disabled-skill", "description": "stale on disk"},
+        {"name": "genuinely-user-installed", "description": "keep"},
+    ]
+
+    async def _fake_discover(backend, source, known):
+        return on_disk
+
+    state = {"messages": [HumanMessage(content="hi", id="u1")], "loaded_skills": []}
+    with patch(f"{MW}.adiscover_skills", _fake_discover):
+        out = await mw.abefore_agent(state, MagicMock(), config=_config())
+
+    names = {s["name"] for s in out["discovered_skills"]}
+    assert names == {"genuinely-user-installed"}
+
+
+class TestManifestInjection:
+    """``inject_manifest`` decides whether the manifest rides the system message.
+
+    The main stack freezes it into the runtime-context baseline instead, so
+    its copy must leave the system message alone; a subagent has no baseline
+    and keeps the per-call append.
+    """
+
+    class _Request:
+        """Minimal stand-in for ModelRequest as ``_filter_tools`` consumes it."""
+
+        def __init__(self, system_message):
+            self.tools = []
+            self.state = {}
+            self.system_message = system_message
+
+        def override(self, **kwargs):
+            new = TestManifestInjection._Request(self.system_message)
+            for key, value in kwargs.items():
+                setattr(new, key, value)
+            return new
+
+    def test_the_default_appends_the_manifest(self):
+        mw = SkillsMiddleware()
+        out = mw._filter_tools(self._Request(SystemMessage(content="Static prompt.")))
+        blocks = out.system_message.content
+        assert blocks[0]["text"] == "Static prompt."
+        assert "Available Skills" in blocks[-1]["text"]
+
+    def test_a_baseline_stack_leaves_the_system_message_alone(self):
+        mw = SkillsMiddleware(inject_manifest=False)
+        request = self._Request(SystemMessage(content="Static prompt."))
+        out = mw._filter_tools(request)
+        assert out.system_message is request.system_message
+        # The manifest is still available to whoever freezes it.
+        assert "Available Skills" in mw.build_manifest({})

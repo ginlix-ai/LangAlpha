@@ -2,58 +2,27 @@ import { useMemo } from 'react';
 import { getPreset, type PresetId } from '../../presets';
 import type { RGLItem, WidgetInstance } from '../../types';
 
-/* Colors lifted from the HTML mockup's SVG sprites */
+/* The page's own tokens, so a thumbnail reads as the dashboard it lays out
+   (cards outlined on the page's ground) in either theme. SVG takes a custom
+   property in a presentation attribute, so the ink follows a theme switch
+   with no re-render. */
 const C = {
-  paper: '#FDFBF6',
-  paperHi: '#FFFBF0',
-  bg: '#F3EEE8',
-  line: '#E6DFD2',
-  gain: '#7A9A67',
-  gainStrong: '#0E7A4B',
-  loss: '#B3362F',
-  ink: '#17150F',
-  inkSoft: '#47423A',
-  inkMute: '#8A8377',
-  accent: '#0F3D2E',
-  accentSoft: '#DBE8DF',
-  highlight: '#F7D76A',
-  tape: '#EEE8DC',
-  watchBg: '#F4EEE0',
-  luxGold: '#C9A97B',
-};
-
-interface CellVisuals {
-  bg: string;
-  stroke?: string;
-}
-
-const TYPE_VISUALS: Record<string, CellVisuals> = {
-  'markets.overview': { bg: C.tape },
-  'markets.miniChartGrid': { bg: C.paper, stroke: C.line },
-  'chart.symbol': { bg: C.paper, stroke: C.line },
-  'insight.brief': { bg: C.paperHi, stroke: C.line },
-  'news.feed': { bg: C.tape },
-  'calendar.earnings': { bg: C.paper, stroke: C.line },
-  'portfolio.holdings': { bg: C.paper, stroke: C.line },
-  'watchlist.list': { bg: C.watchBg, stroke: C.line },
-  'personal.portfolioWatchlist': { bg: C.watchBg, stroke: C.line },
-  'agent.conversation': { bg: C.highlight, stroke: C.line },
-  'workspace.picker': { bg: C.accentSoft },
-  'threads.recent': { bg: C.paper, stroke: C.line },
-  'automations.list': { bg: C.paper, stroke: C.line },
-  // TradingView embeds — same palette as their native siblings so thumbnails
-  // read as variations on the same canvas. Glyphs fall through to the default
-  // empty state which is fine; the cell bg + size still communicate layout.
-  'tv.ticker-tape': { bg: C.tape },
-  'tv.stock-heatmap': { bg: C.accentSoft, stroke: C.line },
-  'tv.crypto-heatmap': { bg: C.accentSoft, stroke: C.line },
-  'tv.forex-heatmap': { bg: C.accentSoft, stroke: C.line },
-  'tv.economic-events': { bg: C.paper, stroke: C.line },
-  'tv.technicals': { bg: C.paperHi, stroke: C.line },
-  'tv.movers': { bg: C.paperHi, stroke: C.line },
-  'tv.symbol-spotlight': { bg: C.paper, stroke: C.line },
-  'tv.company-profile': { bg: C.paper, stroke: C.line },
-  'tv.company-financials': { bg: C.paper, stroke: C.line },
+  paper: 'var(--color-bg-page)',
+  paperHi: 'var(--color-bg-page)',
+  bg: 'var(--color-bg-page)',
+  line: 'var(--color-term-edge)',
+  gain: 'var(--color-profit)',
+  gainStrong: 'var(--color-profit)',
+  loss: 'var(--color-loss)',
+  ink: 'var(--color-term-text-secondary)',
+  inkSoft: 'var(--color-term-text-tertiary)',
+  inkMute: 'var(--color-term-text-tertiary)',
+  accent: 'var(--color-term-text-secondary)',
+  accentSoft: 'var(--color-term-rule)',
+  highlight: 'var(--color-term-rule)',
+  tape: 'var(--color-bg-page)',
+  watchBg: 'var(--color-bg-page)',
+  luxGold: 'var(--color-term-text-tertiary)',
 };
 
 interface GlyphProps {
@@ -669,7 +638,6 @@ function PresetLayoutThumbnail({ widgets, layouts }: LayoutProps) {
       {layouts.map((l) => {
         const widget = widgetsById.get(l.i);
         if (!widget) return null;
-        const visuals = TYPE_VISUALS[widget.type] ?? { bg: C.paper, stroke: C.line };
         const rx = PAD + l.x * colW + 1;
         const ry = PAD + l.y * rowH + 1;
         const rw = l.w * colW - 2;
@@ -681,10 +649,10 @@ function PresetLayoutThumbnail({ widgets, layouts }: LayoutProps) {
               y={ry}
               width={rw}
               height={rh}
-              rx={3}
-              fill={visuals.bg}
-              stroke={visuals.stroke ?? 'none'}
-              strokeWidth={visuals.stroke ? 1 : 0}
+              rx={4}
+              fill={C.paper}
+              stroke={C.line}
+              strokeWidth={1}
             />
             <WidgetGlyph
               type={widget.type}

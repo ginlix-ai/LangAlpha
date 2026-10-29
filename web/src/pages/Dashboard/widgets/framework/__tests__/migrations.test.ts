@@ -4,9 +4,13 @@ import { DASHBOARD_PREFS_VERSION } from '../../types';
 // Side-effect: load every widget definition so getWidget() returns schemas
 // inside `sanitizeConfig`. Without this, the registry is empty and schemas
 // silently no-op (the production app reaches the registry transitively via
-// Dashboard → DashboardCustom; tests have to do it explicitly).
+// Dashboard; tests have to do it explicitly).
 import '../../index';
 import { getWidget, listWidgets } from '../WidgetRegistry';
+
+/** A stored record already on the current version, so only sanitizing applies. */
+const migrate = (fields: Record<string, unknown>) =>
+  migrateDashboardPrefs({ version: DASHBOARD_PREFS_VERSION, ...fields });
 
 describe('migrateDashboardPrefs', () => {
   it('returns null for null / undefined / non-object input', () => {
@@ -17,56 +21,74 @@ describe('migrateDashboardPrefs', () => {
   });
 
   it('renames legacy agent.input widget type to agent.conversation', () => {
-    const out = migrateDashboardPrefs({
+    const out = migrate({
       widgets: [{ id: 'a', type: 'agent.input', config: {} }],
     });
     expect(out?.widgets[0].type).toBe('agent.conversation');
   });
 
   it('leaves non-legacy widget types untouched', () => {
-    const out = migrateDashboardPrefs({
+    const out = migrate({
       widgets: [{ id: 'a', type: 'news.feed', config: {} }],
     });
     expect(out?.widgets[0].type).toBe('news.feed');
   });
 
   it('coerces non-array widgets to []', () => {
-    const out = migrateDashboardPrefs({ widgets: 'not an array' as unknown });
+    const out = migrate({ widgets: 'not an array' as unknown });
     expect(out?.widgets).toEqual([]);
   });
 
   it('coerces array layouts to {}', () => {
-    const out = migrateDashboardPrefs({ layouts: [] as unknown });
+    const out = migrate({ layouts: [] as unknown });
     expect(out?.layouts).toEqual({});
   });
 
   it('preserves valid layouts as-is', () => {
     const layouts = { lg: [{ i: 'a', x: 0, y: 0, w: 4, h: 4 }] };
-    const out = migrateDashboardPrefs({ layouts });
+    const out = migrate({ layouts });
     expect(out?.layouts).toEqual(layouts);
   });
 
-  it("defaults unknown mode to 'classic'", () => {
-    expect(migrateDashboardPrefs({ mode: 'bogus' as unknown })?.mode).toBe('classic');
-    expect(migrateDashboardPrefs({})?.mode).toBe('classic');
-  });
+  describe('versions', () => {
+    const widgets = [{ id: 'a', type: 'news.feed', config: {} }];
+    const layouts = { lg: [{ i: 'a', x: 0, y: 0, w: 4, h: 4 }] };
 
-  it("honors explicit 'custom' mode", () => {
-    expect(migrateDashboardPrefs({ mode: 'custom' })?.mode).toBe('custom');
-  });
+    it('reads a v1 Classic record as no saved layout, even with widgets in it', () => {
+      expect(migrateDashboardPrefs({ version: 1, mode: 'classic', widgets, layouts })).toBeNull();
+    });
 
-  it('always stamps the current version', () => {
-    const out = migrateDashboardPrefs({ version: 0 as unknown, widgets: [] });
-    expect(out?.version).toBe(DASHBOARD_PREFS_VERSION);
+    it('reads a record with no version and no custom mode as no saved layout', () => {
+      expect(migrateDashboardPrefs({})).toBeNull();
+      expect(migrateDashboardPrefs({ widgets, layouts })).toBeNull();
+      expect(migrateDashboardPrefs({ version: 1, widgets })).toBeNull();
+    });
+
+    it('moves a v1 Custom record to v2, keeping its widgets and dropping mode', () => {
+      const out = migrateDashboardPrefs({ version: 1, mode: 'custom', widgets, layouts });
+      expect(out).not.toBeNull();
+      expect(out?.version).toBe(DASHBOARD_PREFS_VERSION);
+      expect(out?.widgets).toEqual(widgets);
+      expect(out?.layouts).toEqual(layouts);
+      expect(out).not.toHaveProperty('mode');
+    });
+
+    it('passes a v2 record through', () => {
+      const history = [{ widgets: [], layouts: {} }];
+      const out = migrateDashboardPrefs({
+        version: DASHBOARD_PREFS_VERSION, widgets, layouts, lastBreakpoint: 'md', history,
+      });
+      expect(out).toEqual({ version: DASHBOARD_PREFS_VERSION, widgets, layouts, lastBreakpoint: 'md', history });
+    });
   });
 
   it('drops malformed history', () => {
-    expect(migrateDashboardPrefs({ history: 'nope' as unknown })?.history).toBeUndefined();
+    expect(migrate({ history: 'nope' as unknown })?.history).toBeUndefined();
   });
 
   it('preserves a valid history array', () => {
     const history = [{ widgets: [], layouts: {} }];
-    expect(migrateDashboardPrefs({ history })?.history).toEqual(history);
+    expect(migrate({ history })?.history).toEqual(history);
   });
 
   // ---------------------------------------------------------------------------
@@ -75,13 +97,13 @@ describe('migrateDashboardPrefs', () => {
   describe('layouts per-breakpoint shape filter', () => {
     it('keeps real RGL arrays as-is', () => {
       const layouts = { lg: [{ i: 'a', x: 0, y: 0, w: 4, h: 4 }] };
-      expect(migrateDashboardPrefs({ layouts })?.layouts).toEqual(layouts);
+      expect(migrate({ layouts })?.layouts).toEqual(layouts);
     });
 
     it('drops breakpoints whose value is an object instead of an array', () => {
       // Without the per-bp guard this passed straight through and crashed
       // reconcileLayouts (it `.filter()`s each breakpoint).
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         layouts: { lg: { foo: 'bar' }, md: [{ i: 'a', x: 0, y: 0, w: 4, h: 4 }] },
       });
       expect(out?.layouts.lg).toBeUndefined();
@@ -89,7 +111,7 @@ describe('migrateDashboardPrefs', () => {
     });
 
     it('drops breakpoints whose value is a primitive', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         layouts: { lg: 'garbage', md: 42, sm: null },
       });
       expect(out?.layouts).toEqual({});
@@ -101,7 +123,7 @@ describe('migrateDashboardPrefs', () => {
   // ---------------------------------------------------------------------------
   describe('widget instance shape filter', () => {
     it('drops null entries', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [null, { id: 'a', type: 'news.feed', config: {} }],
       });
       expect(out?.widgets.length).toBe(1);
@@ -109,14 +131,14 @@ describe('migrateDashboardPrefs', () => {
     });
 
     it('drops string / number entries', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: ['garbage', 42, { id: 'a', type: 'news.feed', config: {} }],
       });
       expect(out?.widgets.length).toBe(1);
     });
 
     it('drops entries missing an id', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [{ type: 'news.feed', config: {} }, { id: 'b', type: 'news.feed', config: {} }],
       });
       expect(out?.widgets.length).toBe(1);
@@ -124,7 +146,7 @@ describe('migrateDashboardPrefs', () => {
     });
 
     it('drops entries missing a type or config', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [
           { id: 'a', type: 'news.feed' /* no config */ },
           { id: 'b', /* no type */ config: {} },
@@ -143,14 +165,14 @@ describe('migrateDashboardPrefs', () => {
   describe('sanitizeConfig (Zod-driven)', () => {
     it('passes a valid config through unchanged', () => {
       const cfg = { symbols: ['NASDAQ:NVDA'], displayMode: 'compact' as const };
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [{ id: 'a', type: 'tv.ticker-tape', config: cfg }],
       });
       expect(out?.widgets[0].config).toMatchObject(cfg);
     });
 
     it('coerces an unknown enum value via .catch()', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [
           {
             id: 'a',
@@ -159,21 +181,22 @@ describe('migrateDashboardPrefs', () => {
           },
         ],
       });
-      expect((out?.widgets[0].config as { displayMode?: string }).displayMode).toBe('adaptive');
+      // The kept symbol is what proves the field-level catch ran: the
+      // whole-config fallback also yields 'adaptive', but with no symbols.
+      expect(out?.widgets[0].config).toEqual({ symbols: ['NASDAQ:NVDA'], displayMode: 'adaptive' });
     });
 
-    it('coerces bad field values to schema defaults via per-field .catch()', () => {
-      // Input is a non-empty object with one bogus enum (displayMode: 42) and
-      // a missing array (symbols). Per-field .catch('adaptive') and .catch([])
-      // recover the values on the SUCCESS branch — the result matches
-      // defaultConfig because the catch defaults happen to equal it. This
-      // exercises field-level recovery, not the top-level fallback (covered
-      // in the next test).
-      const out = migrateDashboardPrefs({
-        widgets: [{ id: 'a', type: 'tv.ticker-tape', config: { displayMode: 42 } }],
+    // Each bad field sits beside a good one that differs from defaultConfig,
+    // because the catch defaults equal defaultConfig: a config that recovered
+    // field by field and one that fell back wholesale look the same otherwise.
+    it.each([
+      ['displayMode', { symbols: ['NASDAQ:NVDA'], displayMode: 42 }, { symbols: ['NASDAQ:NVDA'], displayMode: 'adaptive' }],
+      ['symbols', { displayMode: 'compact' }, { symbols: [], displayMode: 'compact' }],
+    ])('recovers a bad %s value via its own .catch() and keeps the other field', (_field, config, expected) => {
+      const out = migrate({
+        widgets: [{ id: 'a', type: 'tv.ticker-tape', config }],
       });
-      const def = getWidget('tv.ticker-tape')?.defaultConfig as object;
-      expect(out?.widgets[0].config).toMatchObject(def);
+      expect(out?.widgets[0].config).toEqual(expected);
     });
 
     it('falls back to defaultConfig when top-level config shape is unparseable', () => {
@@ -181,7 +204,7 @@ describe('migrateDashboardPrefs', () => {
       // !== null) but z.object().safeParse([]) fails at the top level — no
       // per-field .catch() can recover it. Sanitize must fall back to
       // defaultConfig wholesale.
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [{ id: 'a', type: 'tv.ticker-tape', config: [] as unknown as Record<string, unknown> }],
       });
       const def = getWidget('tv.ticker-tape')?.defaultConfig as object;
@@ -195,7 +218,7 @@ describe('migrateDashboardPrefs', () => {
       // for; sanitize should pass it through after the rename pass.
       // (This widget will fail the rename map, then sanitize sees no def and
       // returns the widget as-is.)
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [{ id: 'a', type: 'made-up.no-schema', config: { freeform: true } }],
       });
       expect(out?.widgets[0].config).toEqual({ freeform: true });
@@ -203,7 +226,7 @@ describe('migrateDashboardPrefs', () => {
 
     it('rename happens BEFORE sanitize (legacy type uses new schema)', () => {
       // agent.input → agent.conversation. ConversationConfigSchema accepts {}.
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [{ id: 'a', type: 'agent.input', config: {} }],
       });
       expect(out?.widgets[0].type).toBe('agent.conversation');
@@ -213,7 +236,7 @@ describe('migrateDashboardPrefs', () => {
       // Regression: per-element `.catch(default)` produced duplicates of the
       // catch default for every bad entry — `[bad, bad, AAPL]` became
       // `[SPY, SPY, AAPL]`. Now we drop bad entries instead.
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [
           {
             id: 'a',
@@ -230,7 +253,7 @@ describe('migrateDashboardPrefs', () => {
     });
 
     it('dedupes symbol arrays across the transform', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [
           {
             id: 'a',
@@ -244,7 +267,7 @@ describe('migrateDashboardPrefs', () => {
     });
 
     it('forex currencies fall back to the full default list when all entries are bad', () => {
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [
           {
             id: 'a',
@@ -264,7 +287,7 @@ describe('migrateDashboardPrefs', () => {
       // Regression: the original regex omitted `_` and silently rewrote
       // CME_MINI:ES1! and FX_IDC:EURUSD to the schema's catch default,
       // wiping out user-configured futures/FX symbols on every prefs load.
-      const out = migrateDashboardPrefs({
+      const out = migrate({
         widgets: [
           {
             id: 'a',

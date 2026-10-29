@@ -25,7 +25,7 @@ export function ToolsTab({ stats, refreshing, refreshResult, onRefresh }: ToolsT
                 className="flex items-center gap-2.5 py-2 px-3 rounded text-sm"
                 style={{ backgroundColor: 'var(--color-bg-card)' }}
               >
-                <Server className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                <Server className="h-4 w-4 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
                 <span style={{ color: 'var(--color-text-primary)' }}>{name}</span>
               </div>
             ))}
@@ -50,7 +50,7 @@ export function ToolsTab({ stats, refreshing, refreshResult, onRefresh }: ToolsT
                 className="flex items-start gap-2.5 py-2 px-3 rounded text-sm"
                 style={{ backgroundColor: 'var(--color-bg-card)' }}
               >
-                <BookOpen className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-accent-primary)' }} />
+                <BookOpen className="h-4 w-4 shrink-0 mt-0.5" style={{ color: 'var(--color-accent-primary)' }} />
                 <div className="min-w-0">
                   <span style={{ color: 'var(--color-text-primary)' }}>{skill.name}</span>
                   {skill.description && (

@@ -1,7 +1,7 @@
 """Locks for the v2-native per-task SSE reader (Phase 7 port).
 
 The wire contract is v1-identical: content frames render exactly the string
-``spill_task_record`` pre-rendered onto the v1 leg; control frames never
+``spill_task_records`` pre-rendered onto the v1 leg; control frames never
 surface; ``run_end`` closes; the seq cursor resumes exclusively.
 """
 
@@ -23,7 +23,7 @@ _MOD = "src.server.handlers.chat.task_run_sse_reader"
 
 
 def _v1_prerender(record: dict, thread_id: str, task_id: str) -> str:
-    """The exact rendering spill_task_record wrote to the v1 leg."""
+    """The exact rendering spill_task_records wrote to the v1 leg."""
     seq = int(record.get("seq") or 0)
     data = {
         **(record.get("data") or {}),

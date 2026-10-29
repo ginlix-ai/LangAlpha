@@ -34,6 +34,11 @@ class TestCleanValue:
         cleaned = clean_value({"a": [float("nan"), 1.0], "b": float("inf")})
         assert cleaned == {"a": [None, 1.0], "b": None}
 
+    def test_time_zone_becomes_its_name(self):
+        # Yahoo's market status carries one, which no JSON encoder takes.
+        edt = datetime.timezone(datetime.timedelta(hours=-4), "EDT")
+        assert clean_value({"tz": edt}) == {"tz": "EDT"}
+
 
 class TestFormatDatetime:
     def test_date_only_and_with_time(self):

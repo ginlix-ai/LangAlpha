@@ -3,12 +3,13 @@
  * All backend endpoints used by the Dashboard page
  */
 import { api } from '@/api/client';
+import i18n from '@/i18n';
 import { utcMsToETDate, utcMsToETTime } from '@/lib/utils';
 import { normalizeIndexKey } from '@/lib/marketUtils';
-import { snapshotToStockPrice } from '@/lib/quotes/quoteAdapters';
+import { snapshotRowSpellings, snapshotToStockPrice } from '@/lib/quotes/quoteAdapters';
 import { getSnapshotIndexes, getSnapshotStocks } from '@/lib/quotes/snapshotApi';
 import type { SnapshotEntry, SnapshotResponse } from '@/lib/quotes/snapshotApi';
-import type { IndexData, SparklinePoint } from '@/types/market';
+import type { IndexData, SparklinePoint, StockPrice } from '@/types/market';
 import * as portfolioApi from './portfolio';
 import * as watchlistApi from './watchlist';
 import * as watchlistItemsApi from './watchlistItems';
@@ -27,18 +28,6 @@ interface IntradayPoint {
   high?: number;
   low?: number;
   volume?: number;
-}
-
-interface StockPrice {
-  symbol: string;
-  price: number;
-  change: number;
-  changePercent: number;
-  isPositive: boolean;
-  quoteAvailable?: boolean;
-  previousClose?: number | null;
-  earlyTradingChangePercent?: number | null;
-  lateTradingChangePercent?: number | null;
 }
 
 interface IndicesResult {
@@ -159,17 +148,6 @@ export async function getIndex(symbol: string, _opts: Record<string, unknown> = 
   }
 }
 
-/** Minimal snapshot shape buildIndexData reads — satisfied by both the local
- *  SnapshotEntry and the quote layer's QuoteRow (whose price is nullable). */
-interface IndexSnapshotLike {
-  symbol?: string;
-  name?: string;
-  price?: number | null;
-  change?: number | null;
-  change_percent?: number | null;
-  previous_close?: number | null;
-}
-
 /**
  * Build one IndexData card from a raw index snapshot + its sparkline.
  * Index prices are never legitimately 0; a zero/negative price means a partial
@@ -178,7 +156,7 @@ interface IndexSnapshotLike {
  */
 export function buildIndexData(
   norm: string,
-  snap: IndexSnapshotLike | undefined,
+  snap: SnapshotEntry | undefined,
   sparklineData: SparklinePoint[] = [],
   asOfDate?: string,
 ): IndexData {
@@ -225,7 +203,8 @@ export async function getIndices(symbols: string[] = INDEX_SYMBOLS, _opts: Recor
   const asOfMap: Record<string, string | undefined> = Object.fromEntries(sparklineResults.map((r) => [r.symbol, r.asOfDate]));
   const snapshotList: SnapshotEntry[] = snapshots?.snapshots || snapshots?.results || snapshots?.data || [];
   const snapshotMap: Record<string, SnapshotEntry> = Array.isArray(snapshotList)
-    ? Object.fromEntries(snapshotList.map((s: SnapshotEntry) => [normalizeIndexSymbol(s.symbol), s]))
+    ? Object.fromEntries(snapshotList.flatMap((s: SnapshotEntry) =>
+        snapshotRowSpellings(s).map((k) => [normalizeIndexSymbol(k), s])))
     : {};
 
   let failedCount = 0;
@@ -289,9 +268,7 @@ export async function uploadAvatar(file: File): Promise<{ avatar_url: string }> 
   const formData = new FormData();
   formData.append('file', file);
 
-  const { data } = await api.post('/api/v1/users/me/avatar', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
+  const { data } = await api.post('/api/v1/users/me/avatar', formData);
   return data; // { avatar_url: "https://..." }
 }
 
@@ -375,7 +352,8 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
     const snapshots = await getSnapshotStocks(list);
     const snapList: SnapshotEntry[] = snapshots?.snapshots || snapshots?.results || snapshots?.data || [];
     const snapMap: Record<string, SnapshotEntry> = Array.isArray(snapList)
-      ? Object.fromEntries(snapList.map((s: SnapshotEntry) => [String(s.symbol).toUpperCase(), s]))
+      ? Object.fromEntries(snapList.flatMap((s: SnapshotEntry) =>
+          snapshotRowSpellings(s).map((k) => [String(k).toUpperCase(), s])))
       : {};
 
     // snapshotToStockPrice is the byte-for-byte equivalent of the old inline
@@ -402,96 +380,15 @@ export const addPortfolioHolding = portfolioApi.addPortfolioHolding;
 
 export { getAvailableModels, getUserApiKeys, updateUserApiKeys, deleteUserApiKey } from '@/api/model';
 
-// --- OAuth (Connected Accounts) ---
-
-/**
- * Start Codex device code flow — returns { user_code, verification_url, interval }.
- * POST /api/v1/oauth/codex/device/initiate
- */
-export async function initiateCodexDevice(): Promise<Record<string, unknown>> {
-  const { data } = await api.post('/api/v1/oauth/codex/device/initiate');
-  return data;
-}
-
-/**
- * Poll for device authorization approval.
- * POST /api/v1/oauth/codex/device/poll
- * @returns {Promise<Object>} { pending: true } or { success: true, email, plan_type, account_id }
- */
-export async function pollCodexDevice(): Promise<Record<string, unknown>> {
-  const { data } = await api.post('/api/v1/oauth/codex/device/poll');
-  return data;
-}
-
-/**
- * Check Codex OAuth connection status.
- * GET /api/v1/oauth/codex/status
- * Returns { connected, account_id, email, plan_type }
- */
-export async function getCodexOAuthStatus(): Promise<{ connected: boolean; account_id: string | null; email: string | null; plan_type: string | null }> {
-  try {
-    const { data } = await api.get('/api/v1/oauth/codex/status');
-    return data;
-  } catch {
-    return { connected: false, account_id: null, email: null, plan_type: null };
-  }
-}
-
-/**
- * Disconnect Codex OAuth — delete stored tokens.
- * DELETE /api/v1/oauth/codex
- */
-export async function disconnectCodexOAuth(): Promise<Record<string, unknown>> {
-  const { data } = await api.delete('/api/v1/oauth/codex');
-  return data;
-}
-
-// --- Claude OAuth (PKCE Authorization Code Flow) ---
-
-/**
- * Initiate Claude OAuth — returns { authorize_url }.
- * POST /api/v1/oauth/claude/initiate
- */
-export async function initiateClaudeOAuth(): Promise<Record<string, unknown>> {
-  const { data } = await api.post('/api/v1/oauth/claude/initiate');
-  return data;
-}
-
-/**
- * Submit Claude OAuth callback — exchange code#state for tokens.
- * POST /api/v1/oauth/claude/callback
- * @param {string} callbackInput - Full URL, code#state, or code=X&state=Y
- * @returns {Promise<Object>} { success: true }
- */
-export async function submitClaudeCallback(callbackInput: string): Promise<Record<string, unknown>> {
-  const { data } = await api.post('/api/v1/oauth/claude/callback', { callback_input: callbackInput });
-  return data;
-}
-
-/**
- * Check Claude OAuth connection status.
- * GET /api/v1/oauth/claude/status
- * Returns { connected, account_id, email, plan_type }
- */
-export async function getClaudeOAuthStatus(): Promise<{ connected: boolean; account_id: string | null; email: string | null; plan_type: string | null }> {
-  try {
-    const { data } = await api.get('/api/v1/oauth/claude/status');
-    return data;
-  } catch {
-    return { connected: false, account_id: null, email: null, plan_type: null };
-  }
-}
-
-/**
- * Disconnect Claude OAuth — delete stored tokens.
- * DELETE /api/v1/oauth/claude
- */
-export async function disconnectClaudeOAuth(): Promise<Record<string, unknown>> {
-  const { data } = await api.delete('/api/v1/oauth/claude');
-  return data;
-}
-
 // --- News feed ---
+
+/**
+ * The server gates the CN feed on `users.locale`, else Accept-Language, and the
+ * client decides eligibility on `users.locale`, else the active UI language,
+ * which a cookie can set apart from the browser's. Sending that language keeps
+ * the two answers the same, for the feed and for an article link from it.
+ */
+const newsHeaders = () => ({ 'Accept-Language': i18n.language });
 
 /**
  * Fetch news articles from the native news endpoint.
@@ -506,7 +403,7 @@ export async function getNews({ tickers, limit = 20, cursor, provider }: NewsPar
     if (limit) params.limit = limit;
     if (cursor) params.cursor = cursor;
     if (provider) params.provider = provider;
-    const { data } = await api.get('/api/v1/news', { params });
+    const { data } = await api.get('/api/v1/news', { params, headers: newsHeaders() });
     return data || { results: [], count: 0, next_cursor: null };
   } catch (e: unknown) {
     const err = e as { message?: string };
@@ -522,7 +419,9 @@ export async function getNews({ tickers, limit = 20, cursor, provider }: NewsPar
  * GET /api/v1/news/:articleId
  */
 export async function getNewsArticle(articleId: string): Promise<Record<string, unknown>> {
-  const { data } = await api.get(`/api/v1/news/${encodeURIComponent(articleId)}`);
+  const { data } = await api.get(`/api/v1/news/${encodeURIComponent(articleId)}`, {
+    headers: newsHeaders(),
+  });
   return data;
 }
 

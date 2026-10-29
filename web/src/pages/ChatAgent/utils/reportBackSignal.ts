@@ -27,14 +27,27 @@ export const shouldArmReportBack = (s: ReportBackSignal): boolean =>
   s === 'pending' || s === 'unknown';
 
 /**
- * Arm-on-status predicate, shared by the load path and the watch's reactivation
- * path so the two can't drift. Live tail subagents arm too: their report-backs
- * haven't materialized yet, so pendingness alone under-reports (producer-undecided).
- * Typed structurally to keep this module dependency-free.
+ * Whether a status read leaves a report owed, which the tray names. Live tail
+ * subagents count: their report-backs haven't materialized yet, so pendingness
+ * alone under-reports (producer-undecided). Typed structurally to keep this
+ * module dependency-free.
  */
-export const shouldArmForStatus = (status: {
+export const reportOwedForStatus = (status: {
   pending_report_back?: boolean | null;
   active_tasks?: string[] | null;
 }): boolean =>
   shouldArmReportBack(decodeReportBackSignal(status.pending_report_back)) ||
   (status.active_tasks?.length ?? 0) > 0;
+
+/**
+ * Arm-on-status predicate, shared by the load path and the watch's reactivation
+ * path so the two can't drift: a report owed, or a background command still
+ * running, whose end can start a turn of its own for the watch to attach. A
+ * running command owes nothing the tray names, since its own row is there.
+ */
+export const shouldArmForStatus = (status: {
+  pending_report_back?: boolean | null;
+  active_tasks?: string[] | null;
+  active_commands?: string[] | null;
+}): boolean =>
+  reportOwedForStatus(status) || (status.active_commands?.length ?? 0) > 0;

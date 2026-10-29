@@ -1,6 +1,6 @@
 """LangChain tools for drawing and managing chart annotations.
 
-These tools belong to the ``chart-annotation`` skill. A chart instance is
+The ``chart-annotation`` skill is their usage guide. A chart instance is
 identified by ``chart_id = "{SYMBOL}:{timeframe}"`` and scoped to the agent's
 workspace; drawing again with the same symbol + timeframe edits that chart.
 Annotations persist in Postgres (durable, no TTL).
@@ -166,7 +166,13 @@ async def draw_chart_annotation(
     config: RunnableConfig,
     timeframe: Timeframe = "1day",
 ) -> tuple[str, dict]:
-    """Draw on the user's stock chart.
+    """Draw a level, trendline, zone or dated event onto a stock's interactive
+    price chart. On the web and market_view surfaces the user sees it live on
+    MarketView, or as a chart card in the chat that opens the full chart, so
+    there draw it instead of plotting a chart yourself. Other surfaces (a
+    messaging channel, an automation's output) show neither: state the levels
+    in your reply, and render an image if the user needs a picture. Not for a
+    chart that must live in a report or file; render that with code.
 
     Pick the variant that matches the intent:
 
@@ -228,7 +234,7 @@ async def draw_chart_annotation(
     # set is the chart instance's full current annotations so the inline-card
     # artifact renders the cumulative chart, not just this one shape.
     try:
-        all_items = await add_and_list_annotations(
+        all_items, read_at_us = await add_and_list_annotations(
             workspace_id, chart_id, symbol_upper, timeframe, stored
         )
     except Exception:
@@ -265,6 +271,9 @@ async def draw_chart_annotation(
         "workspace_id": workspace_id,
         "annotation_id": annotation_id,
         "annotations": all_items,
+        # Orders this draw's snapshot against the turn's other draws, for the
+        # chat card that shows the latest.
+        "read_at_us": read_at_us,
     }
     return _summarize(stored), result_artifact
 

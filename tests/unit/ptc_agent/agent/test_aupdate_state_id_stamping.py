@@ -1,13 +1,12 @@
-"""`aupdate_state` injection must pre-stamp message ids (compaction Bug A).
+"""`aupdate_state` writes give their messages stable ids (compaction Bug A).
 
-Unlike the normal Pregel write path (covered by
-`test_delta_channel_determinism.py`), `graph.aupdate_state` does NOT run
-langgraph's `ensure_message_ids`. A message injected id-less via `aupdate_state`
-(orchestrator notifications / steering triggers) therefore persists with
-`id=None` under `messages_delta_reducer`, and a later full-list re-write appends
-it again as a duplicate. `ptc_agent.agent.state.ensure_message_ids`, applied at
-the injection boundary, closes the hole — the injected message carries a stable
-id, reconstructs deterministically, and dedups on re-write.
+The orchestrator's notifications and the steering triggers reach the thread
+through `graph.aupdate_state`. Through langgraph 1.2.14 that path skipped
+`ensure_message_ids`, so an id-less injection persisted with `id=None` under
+`messages_delta_reducer` and a later full-list re-write appended it again.
+langgraph 1.2.15 stamps update writes as the loop's `put_writes` does; the
+`ptc_agent.agent.state.ensure_message_ids` the injectors call does the same
+ahead of it.
 """
 
 from __future__ import annotations
@@ -41,13 +40,7 @@ def _full_rewrite(graph, config) -> None:
     graph.update_state(config, {"messages": msgs}, as_node="noop")
 
 
-def test_aupdate_state_does_not_stamp_idless_injection():
-    """Baseline: an id-less `aupdate_state` injection persists with `id=None`.
-
-    This is the hole the fix closes. If a langgraph bump starts stamping here,
-    this assertion flips and `ensure_message_ids` becomes a redundant no-op
-    (still harmless) — a deliberate canary on that behaviour.
-    """
+def test_aupdate_state_stamps_an_idless_injection():
     graph = _build_graph(InMemorySaver())
     config = {"configurable": {"thread_id": "idless-inject"}}
 
@@ -55,26 +48,22 @@ def test_aupdate_state_does_not_stamp_idless_injection():
         config, {"messages": [HumanMessage(content="hi")]}, as_node="noop"
     )
 
-    assert _ids(graph, config) == [None]
+    ids = _ids(graph, config)
+    assert len(ids) == 1 and ids[0] is not None
+    assert _ids(graph, config) == ids  # deterministic across reconstruction
 
 
-def test_unstamped_injection_duplicates_on_full_rewrite():
-    """The concrete harm: an id-less injection duplicates on a full-list re-write."""
+def test_idless_injection_dedups_on_full_rewrite():
     graph = _build_graph(InMemorySaver())
     config = {"configurable": {"thread_id": "idless-dup"}}
 
     graph.update_state(
         config, {"messages": [HumanMessage(content="hi")]}, as_node="noop"
     )
-    before = len(graph.get_state(config).values["messages"])
+    ids = _ids(graph, config)
 
     _full_rewrite(graph, config)
-    after = len(graph.get_state(config).values["messages"])
-
-    assert before == 1 and after == 2, (
-        "id-less injection must duplicate on full-list re-write (the bug the "
-        "injection-time stamp + flush exclusion fix together close)"
-    )
+    assert _ids(graph, config) == ids, "an injected message must not duplicate"
 
 
 def test_stamped_injection_is_stable_and_dedups_on_rewrite():

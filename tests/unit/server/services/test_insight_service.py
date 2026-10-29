@@ -12,14 +12,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.server.database.market_insight import SystemInsightClaim
 from src.server.services.insight_service import (
     DEFAULT_MAX_SYMBOLS,
     ET,
     InsightAlreadyGeneratingError,
+    IN_FLIGHT_SLACK,
+    STALENESS_WINDOWS,
     InsightService,
     _extract_json_string,
     _extract_structured_output,
     _llm_extract_fallback,
+    _research,
 )
 
 
@@ -232,7 +236,7 @@ class TestLLMExtractFallback:
         call_kwargs = mock_instance.complete.call_args.kwargs
         assert call_kwargs["user_id"] == "usr-x"
         assert call_kwargs["response_schema"] is InsightOutputSchema
-        assert call_kwargs["mode"] == "flash"
+        assert call_kwargs["slot"] == "background"
         assert result == _valid_output()
 
     @pytest.mark.asyncio
@@ -258,7 +262,7 @@ class TestLLMExtractFallback:
 
         call_kwargs = mock_instance.complete.call_args.kwargs
         assert call_kwargs["user_id"] is None
-        assert call_kwargs["mode"] == "flash"
+        assert call_kwargs["slot"] == "background"
         assert result == _valid_output()
 
     @pytest.mark.asyncio
@@ -299,7 +303,7 @@ class TestGenerateForUser:
 
     @pytest.mark.asyncio
     @patch("src.server.services.insight_service.insight_db")
-    @patch("src.server.services.insight_service._run_flash_agent", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
     async def test_user_with_watchlist_and_portfolio(self, mock_agent, mock_db):
         """Personalized prompt includes symbols and holdings."""
         user_id = "user-123"
@@ -326,7 +330,7 @@ class TestGenerateForUser:
 
     @pytest.mark.asyncio
     @patch("src.server.services.insight_service.insight_db")
-    @patch("src.server.services.insight_service._run_flash_agent", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
     async def test_empty_watchlist_falls_back_to_generic(self, mock_agent, mock_db):
         """Empty watchlist/portfolio falls back to generic market_update prompt."""
         user_id = "user-456"
@@ -418,7 +422,7 @@ class TestGenerateForUser:
 
     @pytest.mark.asyncio
     @patch("src.server.services.insight_service.insight_db")
-    @patch("src.server.services.insight_service._run_flash_agent", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
     async def test_generate_returns_immediately(self, mock_agent, mock_db):
         """generate_for_user returns the generating row without waiting."""
         row = {"market_insight_id": "ins-async", "created_at": datetime.now(timezone.utc), "status": "generating"}
@@ -439,7 +443,7 @@ class TestGenerateForUser:
 
     @pytest.mark.asyncio
     @patch("src.server.services.insight_service.insight_db")
-    @patch("src.server.services.insight_service._run_flash_agent", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
     async def test_background_timeout_marks_failed(self, mock_agent, mock_db):
         """Background task marks DB row as failed on timeout."""
         mock_db.fail_market_insight = AsyncMock()
@@ -460,7 +464,7 @@ class TestGenerateForUser:
 
     @pytest.mark.asyncio
     @patch("src.server.services.insight_service.insight_db")
-    @patch("src.server.services.insight_service._run_flash_agent", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
     async def test_background_extraction_failure_marks_failed(self, mock_agent, mock_db):
         """Background task marks DB row as failed when extraction fails."""
         mock_db.fail_market_insight = AsyncMock()
@@ -482,6 +486,38 @@ class TestGenerateForUser:
 # ---------------------------------------------------------------------------
 # _build_user_context
 # ---------------------------------------------------------------------------
+
+class TestResearch:
+    @pytest.mark.asyncio
+    async def test_web_fetch_extracts_with_the_users_fetch_model_for_that_run_only(self):
+        """A brief's WebFetch runs on the user's fetch model and client, as a
+        chat turn's does, and the scheduler's next brief starts without them."""
+        from langchain_core.messages import AIMessage
+
+        from src.tools.web import fetch
+
+        seen = {}
+
+        class Graph:
+            async def ainvoke(self, state, config):
+                seen["model"] = fetch._get_extraction_model()
+                seen["client"] = fetch.fetch_llm_client_override.get()
+                return {"messages": [AIMessage(content="brief")]}
+
+        client = object()
+        resolved = MagicMock()
+        resolved.llm.fetch_name = "user-fetch-model"
+        resolved.subsidiary_llm_clients = {"fetch": client}
+
+        with patch("src.server.app.setup.agent_config", MagicMock()), \
+             patch("src.server.services.llm.config.resolve_llm_config", AsyncMock(return_value=resolved)), \
+             patch("ptc_agent.agent.insight_graph.build_insight_graph", return_value=Graph()):
+            assert await _research("prompt", user_id="user-1", insight_type="personalized") == "brief"
+
+        assert seen == {"model": "user-fetch-model", "client": client}
+        assert fetch.fetch_model_override.get() is None
+        assert fetch.fetch_llm_client_override.get() is None
+
 
 class TestBuildUserContext:
     """Test InsightService._build_user_context."""
@@ -583,39 +619,6 @@ class TestSchedule:
         assert "market_update" not in types
         assert len(jobs) == 2
 
-    @pytest.mark.asyncio
-    @patch("src.server.services.insight_service.insight_db")
-    async def test_is_duplicate_detects_stale(self, mock_db):
-        """Recent insight within staleness window is detected as duplicate."""
-        svc = InsightService()
-        # Completed 10 minutes ago -- within the 4-hour pre_market window
-        mock_db.get_latest_completed_at = AsyncMock(
-            return_value=datetime.now(timezone.utc) - timedelta(minutes=10)
-        )
-
-        assert await svc._is_duplicate("pre_market") is True
-
-    @pytest.mark.asyncio
-    @patch("src.server.services.insight_service.insight_db")
-    async def test_is_duplicate_allows_old(self, mock_db):
-        """Insight older than the staleness window is NOT a duplicate."""
-        svc = InsightService()
-        # Completed 5 hours ago -- outside the 4-hour pre_market window
-        mock_db.get_latest_completed_at = AsyncMock(
-            return_value=datetime.now(timezone.utc) - timedelta(hours=5)
-        )
-
-        assert await svc._is_duplicate("pre_market") is False
-
-    @pytest.mark.asyncio
-    @patch("src.server.services.insight_service.insight_db")
-    async def test_is_duplicate_none_means_no_duplicate(self, mock_db):
-        """No previous insight means not a duplicate."""
-        svc = InsightService()
-        mock_db.get_latest_completed_at = AsyncMock(return_value=None)
-
-        assert await svc._is_duplicate("market_update") is False
-
     def test_next_job_wraps_to_tomorrow(self):
         """When no jobs remain today, _next_job returns first job tomorrow."""
         svc = InsightService()
@@ -639,86 +642,49 @@ class TestSchedule:
 
 
 class TestCatchupIfNeeded:
-    """Test catch-up generates an insight when no recent one exists."""
+    """Catch-up runs the job type for the hour, if today's schedule has it."""
 
-    @pytest.mark.asyncio
-    async def test_catchup_generates_when_no_recent(self):
+    async def _catchup_at(self, now_et, **gen_kwargs):
         svc = InsightService()
-
         with (
-            patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
-            patch.object(svc, "_generate_insight", new_callable=AsyncMock) as mock_gen,
+            patch("src.server.services.insight_service.datetime") as mock_dt,
+            patch.object(
+                svc, "_generate_insight", new_callable=AsyncMock, **gen_kwargs
+            ) as mock_gen,
         ):
+            mock_dt.now.return_value = now_et
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            mock_dt.combine = datetime.combine
             await svc._catchup_if_needed()
-            mock_gen.assert_called_once()
-            call_args = mock_gen.call_args
-            assert call_args[0][0] in ("pre_market", "market_update", "post_market")
-
-    @pytest.mark.asyncio
-    async def test_catchup_skips_when_recent_exists(self):
-        svc = InsightService()
-
-        with (
-            patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=True),
-            patch.object(svc, "_generate_insight", new_callable=AsyncMock) as mock_gen,
-        ):
-            await svc._catchup_if_needed()
-            mock_gen.assert_not_called()
+        return mock_gen
 
     @pytest.mark.asyncio
     async def test_catchup_failure_is_nonfatal(self):
-        svc = InsightService()
-
-        with patch.object(
-            svc, "_is_duplicate", new_callable=AsyncMock, side_effect=Exception("DB down")
-        ):
-            # Should not raise — catch-up failure is non-fatal
-            await svc._catchup_if_needed()
+        friday = datetime(2025, 3, 14, 14, 0, tzinfo=ET)
+        # Should not raise: catch-up failure is non-fatal
+        mock_gen = await self._catchup_at(friday, side_effect=Exception("DB down"))
+        mock_gen.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_catchup_picks_pre_market_before_10(self):
-        svc = InsightService()
-        morning = datetime(2025, 3, 15, 8, 0, tzinfo=ET)
-
-        with (
-            patch("src.server.services.insight_service.datetime") as mock_dt,
-            patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
-            patch.object(svc, "_generate_insight", new_callable=AsyncMock) as mock_gen,
-        ):
-            mock_dt.now.return_value = morning
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            await svc._catchup_if_needed()
-            assert mock_gen.call_args[0][0] == "pre_market"
+        mock_gen = await self._catchup_at(datetime(2025, 3, 14, 8, 0, tzinfo=ET))
+        assert mock_gen.call_args[0][0] == "pre_market"
 
     @pytest.mark.asyncio
     async def test_catchup_picks_market_update_midday(self):
-        svc = InsightService()
-        midday = datetime(2025, 3, 15, 14, 0, tzinfo=ET)
-
-        with (
-            patch("src.server.services.insight_service.datetime") as mock_dt,
-            patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
-            patch.object(svc, "_generate_insight", new_callable=AsyncMock) as mock_gen,
-        ):
-            mock_dt.now.return_value = midday
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            await svc._catchup_if_needed()
-            assert mock_gen.call_args[0][0] == "market_update"
+        mock_gen = await self._catchup_at(datetime(2025, 3, 14, 14, 0, tzinfo=ET))
+        assert mock_gen.call_args[0][0] == "market_update"
 
     @pytest.mark.asyncio
     async def test_catchup_picks_post_market_evening(self):
-        svc = InsightService()
-        evening = datetime(2025, 3, 15, 21, 0, tzinfo=ET)
+        mock_gen = await self._catchup_at(datetime(2025, 3, 15, 21, 0, tzinfo=ET))
+        assert mock_gen.call_args[0][0] == "post_market"
 
-        with (
-            patch("src.server.services.insight_service.datetime") as mock_dt,
-            patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
-            patch.object(svc, "_generate_insight", new_callable=AsyncMock) as mock_gen,
-        ):
-            mock_dt.now.return_value = evening
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
-            await svc._catchup_if_needed()
-            assert mock_gen.call_args[0][0] == "post_market"
+    @pytest.mark.asyncio
+    async def test_catchup_skips_market_update_on_a_weekend(self):
+        """A Saturday afternoon restart runs nothing: the weekend has no hourly update."""
+        mock_gen = await self._catchup_at(datetime(2025, 3, 15, 14, 0, tzinfo=ET))
+        mock_gen.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -735,15 +701,17 @@ class TestGenerateInsight:
         InsightService._instance = None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.insight_service._run_flash_agent", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
     @patch("src.server.services.insight_service.insight_db")
     async def test_timeout_marks_row_failed(self, mock_db, mock_agent):
-        """A hung flash agent triggers timeout and marks the DB row as failed."""
+        """A hung research run triggers timeout and marks the DB row as failed."""
         svc = InsightService()
         svc._generation_timeout = 0.1  # 100ms timeout
 
-        mock_db.create_market_insight = AsyncMock(
-            return_value={"market_insight_id": "test-id", "status": "generating"}
+        mock_db.claim_system_insight = AsyncMock(
+            return_value=SystemInsightClaim(
+                row={"market_insight_id": "test-id", "status": "generating"}
+            )
         )
         mock_db.fail_market_insight = AsyncMock()
 
@@ -760,6 +728,94 @@ class TestGenerateInsight:
         call_args = mock_db.fail_market_insight.call_args
         assert call_args[0][0] == "test-id"
         assert "Timeout" in call_args[0][1]
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service.insight_db")
+    async def test_claims_with_the_type_window_and_the_generation_bound(
+        self, mock_db, mock_agent
+    ):
+        svc = InsightService()
+        svc._generation_timeout = 600
+        mock_db.claim_system_insight = AsyncMock(
+            return_value=SystemInsightClaim(holder_id="other")
+        )
+
+        await svc._generate_insight("post_market", datetime(2025, 3, 14, 20, 30, tzinfo=ET))
+
+        call = mock_db.claim_system_insight.call_args
+        assert call.args == ("post_market",)
+        assert call.kwargs["fresh_within"] == STALENESS_WINDOWS["post_market"]
+        assert call.kwargs["in_flight_within"] == timedelta(seconds=600) + IN_FLIGHT_SLACK
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service.insight_db")
+    async def test_a_fresh_completed_insight_runs_nothing(self, mock_db, mock_agent):
+        svc = InsightService()
+        mock_db.claim_system_insight = AsyncMock(
+            return_value=SystemInsightClaim(holder_id="other")
+        )
+
+        await svc._generate_insight("market_update", datetime(2025, 3, 14, 14, 0, tzinfo=ET))
+
+        mock_db.claim_system_insight.assert_awaited_once()
+        mock_db.get_market_insight.assert_not_called()
+        mock_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("outcome", "runs"),
+        [
+            (SystemInsightClaim(holder_id="winner"), 0),
+            (SystemInsightClaim(row={"market_insight_id": "takeover"}), 1),
+            (SystemInsightClaim(holder_id="other", holder_in_flight=True), 0),
+        ],
+        ids=["holder-completes", "holder-fails-or-expires", "another-worker-takes-over"],
+    )
+    @patch("src.server.services.insight_service.HOLDER_POLL_SECONDS", 0)
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service.insight_db")
+    async def test_losing_to_a_run_in_flight_claims_until_it_ends(
+        self, mock_db, mock_agent, outcome, runs
+    ):
+        """The worker that lost runs only if its own later claim succeeds."""
+        svc = InsightService()
+        in_flight = SystemInsightClaim(holder_id="winner", holder_in_flight=True)
+        mock_db.claim_system_insight = AsyncMock(side_effect=[in_flight, in_flight, outcome])
+        mock_db.complete_market_insight = AsyncMock()
+        mock_agent.return_value = "{}"
+        svc._extract_with_fallback = AsyncMock(
+            return_value={"headline": "h", "summary": "s", "news_items": [], "topics": []}
+        )
+
+        await svc._generate_insight("market_update", datetime(2025, 3, 14, 14, 0, tzinfo=ET))
+
+        assert mock_db.claim_system_insight.await_count == 3
+        assert mock_agent.await_count == runs
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.insight_service._research", new_callable=AsyncMock)
+    @patch("src.server.services.insight_service.insight_db")
+    async def test_a_slow_extraction_times_out_with_the_research(self, mock_db, mock_agent):
+        """The timeout bounds the whole run, so it cannot outlive its claim's hold."""
+        svc = InsightService()
+        svc._generation_timeout = 0.1
+        mock_db.claim_system_insight = AsyncMock(
+            return_value=SystemInsightClaim(row={"market_insight_id": "test-id"})
+        )
+        mock_db.fail_market_insight = AsyncMock()
+        mock_agent.return_value = "not json"
+
+        async def slow_extract(raw_text, user_id):
+            await asyncio.sleep(999)
+
+        svc._extract_with_fallback = slow_extract
+
+        await svc._generate_insight("market_update", datetime(2025, 3, 14, 14, 0, tzinfo=ET))
+
+        mock_db.complete_market_insight.assert_not_called()
+        assert "Timeout" in mock_db.fail_market_insight.call_args[0][1]
 
 
 # ---------------------------------------------------------------------------

@@ -16,9 +16,10 @@ class TestResourceCleanup:
         sid = runtime.id
         await runtime.delete()
 
-        if provider_name == "daytona":
-            # Daytona SDK's get() may return a stale reference after deletion.
-            # Verify the sandbox is at least in a non-running state.
+        if provider_name in ("daytona", "ssh"):
+            # Daytona SDK's get() may return a stale reference after deletion,
+            # and an ssh get() never connects, so a machine it forgot reads as
+            # not running rather than missing.
             retrieved = await sandbox_provider.get(sid)
             state = await retrieved.get_state()
             assert state.value != "running", f"Deleted sandbox still running: {state}"

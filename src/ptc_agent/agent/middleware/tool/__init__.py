@@ -8,6 +8,7 @@ This module contains middleware classes that handle tool input/output processing
 
 from .argument_parsing import ToolArgumentParsingMiddleware
 from .code_validation import CodeValidationMiddleware
+from .computer_guard import ComputerArgumentGuardMiddleware
 from .empty_call_retry import EmptyToolCallRetryMiddleware
 from .error_handling import (
     ToolErrorHandlingMiddleware,
@@ -19,6 +20,7 @@ from .result_normalization import ToolResultNormalizationMiddleware
 
 __all__ = [
     "CodeValidationMiddleware",
+    "ComputerArgumentGuardMiddleware",
     "EmptyToolCallRetryMiddleware",
     "LeakDetectionMiddleware",
     "ProtectedPathMiddleware",

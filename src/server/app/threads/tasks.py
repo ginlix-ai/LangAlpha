@@ -35,13 +35,31 @@ async def get_subagent_task_status(
     thread reload — the same ledger truth replay stamps at load time.
     """
     await auth_api.require_thread_owner(thread_id, x_user_id)
-    from src.server.services.history.task_status import resolve_task_details
+    from src.server.services.history.task_status import (
+        resolve_task_details,
+        run_telemetry,
+    )
 
     details = await resolve_task_details(thread_id, [task_id])
     detail = details.get(task_id)
     if detail is None:
         return {"task_id": task_id, "status": None, "error": None}
-    return {"task_id": task_id, "status": detail["status"], "error": detail.get("error")}
+    run = run_telemetry(detail) or {}
+    return {
+        "task_id": task_id,
+        "status": detail["status"],
+        "error": detail.get("error"),
+        "last_activity_ms": detail.get("last_activity_ms"),
+        # The latest run and its bounds, so a stale card's timeline settles
+        # with it; a client keys run facts by the id. Null for a task from
+        # before the ledger.
+        "run_id": detail.get("latest_run_id"),
+        "started_ms": run.get("started_ms"),
+        "finished_ms": run.get("finished_ms"),
+        # Absent, not null, for a run on its launcher's model: the field is
+        # only ever news.
+        **({"model": run["model"]} if run.get("model") else {}),
+    }
 
 
 @router.get("/{thread_id}/tasks/{task_id}/history")
@@ -60,7 +78,7 @@ async def get_subagent_task_history(
     transcript belongs to its live stream).
     """
     await auth_api.require_thread_owner(thread_id, x_user_id)
-    from src.server.services.history.replay.task_lane import (
+    from src.server.services.history.replay.run_lane import (
         project_task_transcript,
     )
 
@@ -131,4 +149,5 @@ async def send_subagent_message(
         task_id=task_id,
         content=request.content,
         user_id=x_user_id,
+        input_id=request.input_id,
     )

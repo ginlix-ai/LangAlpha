@@ -1,192 +1,13 @@
 """
-Tests for src/server/services/runs/sse_producer.py
-
-Covers:
-- StreamEventAccumulator: accumulation, merging, max buffer size
-- RunSSEProducer: SSE event formatting, keepalive, error events
+Tests for the run SSE producer (src/server/services/runs/sse_producer.py) and
+its error classification (stream_errors.py).
 """
 
 import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# StreamEventAccumulator
-# ---------------------------------------------------------------------------
-
-
-class TestStreamEventAccumulator:
-    """Tests for the StreamEventAccumulator class."""
-
-    def _make_accumulator(self, max_bytes=16 * 1024):
-        from src.server.services.runs.sse_producer import StreamEventAccumulator
-
-        return StreamEventAccumulator(max_merged_bytes=max_bytes)
-
-    # -- basic add / get --
-
-    def test_add_first_event_stores_it(self):
-        acc = self._make_accumulator()
-        acc.add("message_chunk", {"content": "hello", "thread_id": "t1"})
-        events = acc.get_events()
-        assert len(events) == 1
-        assert events[0]["event"] == "message_chunk"
-        assert events[0]["data"]["content"] == "hello"
-
-    def test_add_non_dict_data_is_ignored(self):
-        acc = self._make_accumulator()
-        acc.add("message_chunk", "not a dict")  # type: ignore[arg-type]
-        assert acc.get_events() == []
-
-    def test_different_event_types_are_not_merged(self):
-        acc = self._make_accumulator()
-        acc.add("message_chunk", {"content": "a", "thread_id": "t1"})
-        acc.add("tool_calls", {"tool_calls": []})
-        events = acc.get_events()
-        assert len(events) == 2
-        assert events[0]["event"] == "message_chunk"
-        assert events[1]["event"] == "tool_calls"
-
-    # -- message_chunk merging --
-
-    def test_merge_consecutive_message_chunks(self):
-        acc = self._make_accumulator()
-        base = {
-            "thread_id": "t1",
-            "agent": "main",
-            "id": "msg-1",
-            "role": "assistant",
-            "content_type": "text",
-        }
-        acc.add("message_chunk", {**base, "content": "Hello"})
-        acc.add("message_chunk", {**base, "content": " world"})
-        events = acc.get_events()
-        assert len(events) == 1
-        assert events[0]["data"]["content"] == "Hello world"
-
-    def test_no_merge_when_content_type_is_reasoning_signal(self):
-        acc = self._make_accumulator()
-        base = {
-            "thread_id": "t1",
-            "agent": "main",
-            "id": "msg-1",
-            "role": "assistant",
-        }
-        acc.add("message_chunk", {**base, "content": "first", "content_type": "text"})
-        acc.add(
-            "message_chunk",
-            {**base, "content": "start", "content_type": "reasoning_signal"},
-        )
-        events = acc.get_events()
-        assert len(events) == 2
-
-    def test_no_merge_when_merge_keys_differ(self):
-        acc = self._make_accumulator()
-        base = {
-            "thread_id": "t1",
-            "id": "msg-1",
-            "role": "assistant",
-            "content_type": "text",
-        }
-        acc.add("message_chunk", {**base, "agent": "main", "content": "a"})
-        acc.add("message_chunk", {**base, "agent": "task:abc", "content": "b"})
-        events = acc.get_events()
-        assert len(events) == 2
-
-    def test_merge_respects_max_bytes(self):
-        acc = self._make_accumulator(max_bytes=10)
-        base = {
-            "thread_id": "t1",
-            "agent": "main",
-            "id": "msg-1",
-            "role": "assistant",
-            "content_type": "text",
-        }
-        acc.add("message_chunk", {**base, "content": "12345"})
-        # Adding 6 more bytes exceeds 10, so should not merge
-        acc.add("message_chunk", {**base, "content": "678901"})
-        events = acc.get_events()
-        assert len(events) == 2
-
-    def test_merge_propagates_finish_reason(self):
-        acc = self._make_accumulator()
-        base = {
-            "thread_id": "t1",
-            "agent": "main",
-            "id": "msg-1",
-            "role": "assistant",
-            "content_type": "text",
-        }
-        acc.add("message_chunk", {**base, "content": "Hello"})
-        acc.add("message_chunk", {**base, "content": "", "finish_reason": "stop"})
-        events = acc.get_events()
-        assert len(events) == 1
-        assert events[0]["data"]["finish_reason"] == "stop"
-
-    # -- tool_call_chunks merging --
-
-    def test_merge_consecutive_tool_call_chunks(self):
-        acc = self._make_accumulator()
-        base = {"thread_id": "t1", "agent": "main", "id": "msg-1"}
-        acc.add(
-            "tool_call_chunks",
-            {
-                **base,
-                "tool_call_chunks": [{"id": "call-1", "args": '{"ke', "index": 0}],
-            },
-        )
-        acc.add(
-            "tool_call_chunks",
-            {
-                **base,
-                "tool_call_chunks": [{"id": "call-1", "args": 'y": "val"}', "index": 0}],
-            },
-        )
-        events = acc.get_events()
-        assert len(events) == 1
-        merged_args = events[0]["data"]["tool_call_chunks"][0]["args"]
-        assert merged_args == '{"key": "val"}'
-
-    def test_tool_call_chunks_no_merge_different_ids(self):
-        acc = self._make_accumulator()
-        base = {"thread_id": "t1", "agent": "main", "id": "msg-1"}
-        acc.add(
-            "tool_call_chunks",
-            {**base, "tool_call_chunks": [{"id": "call-1", "args": "a", "index": 0}]},
-        )
-        acc.add(
-            "tool_call_chunks",
-            {**base, "tool_call_chunks": [{"id": "call-2", "args": "b", "index": 1}]},
-        )
-        events = acc.get_events()
-        assert len(events) == 2
-
-    def test_tool_call_chunks_no_merge_when_exceeds_max_bytes(self):
-        acc = self._make_accumulator(max_bytes=5)
-        base = {"thread_id": "t1", "agent": "main", "id": "msg-1"}
-        acc.add(
-            "tool_call_chunks",
-            {**base, "tool_call_chunks": [{"id": "call-1", "args": "abc", "index": 0}]},
-        )
-        acc.add(
-            "tool_call_chunks",
-            {**base, "tool_call_chunks": [{"id": "call-1", "args": "defgh", "index": 0}]},
-        )
-        events = acc.get_events()
-        assert len(events) == 2
-
-    # -- get_events returns deep copy --
-
-    def test_get_events_returns_deep_copy(self):
-        acc = self._make_accumulator()
-        acc.add("message_chunk", {"content": "hello"})
-        events1 = acc.get_events()
-        events1[0]["data"]["content"] = "mutated"
-        events2 = acc.get_events()
-        assert events2[0]["data"]["content"] == "hello"
-
 
 # ---------------------------------------------------------------------------
 # RunSSEProducer — SSE formatting helpers
@@ -196,10 +17,17 @@ class TestStreamEventAccumulator:
 class TestRunSSEProducerFormatting:
     """Tests for RunSSEProducer SSE formatting methods."""
 
-    def _make_handler(self, thread_id="test-thread"):
+    def _make_handler(self, thread_id="test-thread", credential_source=None):
+        from types import SimpleNamespace
+
         from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return RunSSEProducer(thread_id=thread_id, run_id="r-test")
+        config = (
+            SimpleNamespace(credential_source=credential_source)
+            if credential_source is not None
+            else None
+        )
+        return RunSSEProducer(thread_id=thread_id, run_id="r-test", agent_config=config)
 
     def test_format_sse_event_basic(self):
         handler = self._make_handler()
@@ -245,26 +73,11 @@ class TestRunSSEProducerFormatting:
         assert parsed["artifact"]["close"] is None
         assert parsed["artifact"]["series"] == [1.0, None]
 
-    def test_format_sse_event_accumulates_by_default(self):
-        handler = self._make_handler()
-        handler._format_sse_event("message_chunk", {"content": "hello"})
-        events = handler.get_sse_events()
-        assert events is not None
-        assert len(events) == 1
-
-    def test_format_sse_event_skip_accumulate(self):
-        handler = self._make_handler()
-        handler._format_sse_event(
-            "message_chunk", {"content": "skip"}, accumulate=False
-        )
-        events = handler.get_sse_events()
-        assert events is None  # No events accumulated
-
-    def test_format_error_event(self):
+    def test_build_error_event(self):
         handler = self._make_handler(thread_id="err-thread")
-        result = handler.format_error_event("Something went wrong")
-        assert "event: error\n" in result
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        frame = handler._build_error_event("Something went wrong")
+        assert frame.event == "error"
+        parsed = frame.data
         assert parsed["thread_id"] == "err-thread"
         assert parsed["error"] == "Something went wrong"
         assert "message" in parsed
@@ -272,7 +85,7 @@ class TestRunSSEProducerFormatting:
         assert "error_kind" not in parsed
         assert "hints" not in parsed
 
-    def test_format_error_event_with_upstream_exc(self):
+    def test_build_error_event_with_upstream_exc(self):
         """Upstream 5xx exceptions classify as upstream with provider-outage hints."""
         from anthropic import InternalServerError
 
@@ -284,39 +97,43 @@ class TestRunSSEProducerFormatting:
         Exception.__init__(exc, "Error code: 500 - {'error': {'message': 'Internal service error'}}")
 
         handler = self._make_handler(thread_id="err-thread")
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["status_code"] == 500
         assert parsed["provider_module"] == "anthropic"
         # 5xx is a provider outage — don't suggest checking the API key.
         assert parsed["hints"] == ["provider_status", "try_another_model"]
 
-    def test_format_error_event_upstream_401_auth_hints(self):
+    def test_build_error_event_upstream_401_auth_hints(self, monkeypatch):
         """401 upstream surfaces credential-oriented hints first."""
         from anthropic import AuthenticationError
+
+        # Pinned: these hints only survive when the reader owns the key, and
+        # letting .env decide that silently is how a test passes for the wrong
+        # reason.
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
 
         exc = AuthenticationError.__new__(AuthenticationError)
         exc.status_code = 401
         Exception.__init__(exc, "invalid x-api-key")
 
         handler = self._make_handler(thread_id="err-thread")
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["status_code"] == 401
         assert parsed["hints"] == ["api_key", "model_access", "try_another_model"]
 
-    def test_format_error_event_upstream_no_status_falls_back(self):
+    def test_build_error_event_upstream_no_status_falls_back(self, monkeypatch):
         """Unknown status (network error) shows all hints."""
         from anthropic import APIConnectionError
+
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
 
         exc = APIConnectionError.__new__(APIConnectionError)
         Exception.__init__(exc, "Connection reset by peer")
 
         handler = self._make_handler(thread_id="err-thread")
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["hints"] == [
             "api_key",
@@ -325,16 +142,95 @@ class TestRunSSEProducerFormatting:
             "try_another_model",
         ]
 
-    def test_format_error_event_with_internal_exc(self):
+    @staticmethod
+    def _upstream(status):
+        """An anthropic SDK error carrying ``status``, the way the SDK raises it."""
+        from anthropic import APIStatusError
+
+        exc = APIStatusError.__new__(APIStatusError)
+        exc.status_code = status
+        Exception.__init__(exc, f"Error code: {status}")
+        return exc
+
+    def _hints(self, exc, credential_source=None):
+        handler = self._make_handler(
+            thread_id="err-thread", credential_source=credential_source
+        )
+        return handler._build_error_event(str(exc), exc=exc).data["hints"]
+
+    @pytest.mark.parametrize("status", [400, 405, 413, 422])
+    def test_request_refused_offers_only_a_model_switch(self, monkeypatch, status):
+        """A refused request is neither a bad credential nor a provider outage.
+
+        These used to fall through to the no-status branch and claim all four
+        hints, so an image the model could not accept was reported as a possible
+        API-key problem and a possible provider incident at the same time.
+        """
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
+        assert self._hints(self._upstream(status)) == ["try_another_model"]
+
+    def test_platform_billed_turn_drops_credential_hints(self, monkeypatch):
+        """The user holds no key on a platform-billed turn, so do not name one."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        assert self._hints(self._upstream(401), credential_source="platform") == [
+            "try_another_model"
+        ]
+        # 5xx never named a credential, so it is unchanged.
+        assert self._hints(self._upstream(503), credential_source="platform") == [
+            "provider_status",
+            "try_another_model",
+        ]
+
+    def test_user_owned_credential_keeps_its_hints(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        assert self._hints(self._upstream(401), credential_source="byok") == [
+            "api_key",
+            "model_access",
+            "try_another_model",
+        ]
+
+    @pytest.mark.parametrize("host_mode", ["platform", "oss"])
+    def test_subscription_401_asks_for_a_reconnect_not_a_key(self, monkeypatch, host_mode):
+        """A subscription has no key; its 401 is the sign-in, renewed by reconnecting."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", host_mode)
+        assert self._hints(self._upstream(401), credential_source="oauth") == [
+            "reconnect_account",
+            "model_access",
+            "try_another_model",
+        ]
+        assert self._hints(self._upstream(403), credential_source="oauth") == [
+            "model_access",
+            "try_another_model",
+        ]
+
+    def test_oss_platform_source_is_still_the_operators_own_key(self, monkeypatch):
+        """``platform`` means opposite things in the two host modes.
+
+        In OSS it is the key in the operator's own .env and the operator is the
+        user, so the credential hints are the actionable ones. Reading
+        ``credential_source`` without the host mode gets this backwards.
+        """
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
+        assert self._hints(self._upstream(401), credential_source="platform") == [
+            "api_key",
+            "model_access",
+            "try_another_model",
+        ]
+
+    def test_unknown_credential_fails_closed_on_the_hosted_service(self, monkeypatch):
+        """No agent_config: a wrong credential hint is worse than a missing one."""
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        assert self._hints(self._upstream(401)) == ["try_another_model"]
+
+    def test_build_error_event_with_internal_exc(self):
         """Bare Exception from our code is classified as internal, no hints."""
         exc = RuntimeError("workspace state corrupted")
         handler = self._make_handler(thread_id="err-thread")
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "internal"
         assert "hints" not in parsed
 
-    def test_format_error_event_upstream_wrapped_by_internal(self):
+    def test_build_error_event_upstream_wrapped_by_internal(self):
         """Upstream error wrapped in our own exception still classifies as upstream."""
         from anthropic import APIConnectionError
 
@@ -349,14 +245,13 @@ class TestRunSSEProducerFormatting:
             exc = e
 
         handler = self._make_handler()
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "upstream"
         assert parsed["provider_module"] == "anthropic"
 
     def test_classify_stream_exception_parses_status_from_message(self):
         """When status_code isn't on the exception, parse it from the message."""
-        from src.server.services.runs.sse_producer import classify_stream_exception
+        from src.server.services.runs.stream_errors import classify_stream_exception
         import httpx
 
         exc = httpx.HTTPError("got HTTP 429 from upstream, backing off")
@@ -364,6 +259,16 @@ class TestRunSSEProducerFormatting:
         assert info["kind"] == "upstream"
         assert info["status_code"] == 429
         assert info["provider_module"] == "httpx"
+
+    def test_classify_stream_exception_reads_no_status_from_a_timeout(self):
+        """A stall's chunk count is not an HTTP status."""
+        from langchain_openai.chat_models._client_utils import StreamChunkTimeoutError
+
+        from src.server.services.runs.stream_errors import classify_stream_exception
+
+        info = classify_stream_exception(StreamChunkTimeoutError(120.0, chunks_received=413))
+        assert info["kind"] == "upstream"
+        assert info["status_code"] is None
 
     def test_format_credit_usage_event(self):
         handler = self._make_handler(thread_id="credit-thread")
@@ -381,10 +286,12 @@ class TestRunSSEProducerFormatting:
                 },
             }
         }
-        result = handler._format_credit_usage_event(
-            thread_id="credit-thread",
-            token_usage=token_usage,
-            total_credits=1.5,
+        result = handler._number_sse_event(
+            handler._build_credit_usage_event(
+                thread_id="credit-thread",
+                token_usage=token_usage,
+                total_credits=1.5,
+            )
         )
         assert "event: credit_usage\n" in result
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
@@ -396,7 +303,9 @@ class TestRunSSEProducerFormatting:
 
     def test_format_reasoning_signal(self):
         handler = self._make_handler()
-        result = handler._format_reasoning_signal("main", "msg-1", "start")
+        result = handler._number_sse_event(
+            handler._build_reasoning_signal("main", "msg-1", "start")
+        )
         assert "event: message_chunk\n" in result
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert parsed["content"] == "start"
@@ -492,8 +401,9 @@ class TestInterruptHandling:
         interrupt = MagicMock()
         interrupt.id = "int-1"
         interrupt.value = {"action_requests": [{"description": "Run analysis?"}]}
-        result = handler._handle_interrupt({"__interrupt__": [interrupt]})
-        assert result is not None
+        frame = handler._handle_interrupt({"__interrupt__": [interrupt]})
+        assert frame is not None
+        result = handler._number_sse_event(frame)
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert parsed["interrupt_id"] == "int-1"
         assert parsed["action_requests"] == [{"description": "Run analysis?"}]
@@ -504,7 +414,9 @@ class TestInterruptHandling:
         interrupt = MagicMock()
         interrupt.id = "int-2"
         interrupt.value = "Should I proceed with plan?"
-        result = handler._handle_interrupt({"__interrupt__": [interrupt]})
+        result = handler._number_sse_event(
+            handler._handle_interrupt({"__interrupt__": [interrupt]})
+        )
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert parsed["action_requests"] == [
             {"description": "Should I proceed with plan?"}
@@ -515,7 +427,9 @@ class TestInterruptHandling:
         interrupt = MagicMock()
         interrupt.id = "int-3"
         interrupt.value = [{"description": "step 1"}, {"description": "step 2"}]
-        result = handler._handle_interrupt({"__interrupt__": [interrupt]})
+        result = handler._number_sse_event(
+            handler._handle_interrupt({"__interrupt__": [interrupt]})
+        )
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert len(parsed["action_requests"]) == 2
 
@@ -654,27 +568,6 @@ class TestProvenanceEvent:
         # no nested data envelope
         assert "data" not in parsed
 
-    def test_provenance_event_resolves_subagent_attribution(self):
-        """A task-namespace event yields task:{id} attribution from the
-        checkpoint namespace stamped at invocation — no registration."""
-        handler = self._make_handler()
-        event_data = {
-            "type": "provenance",
-            "record_id": "rec-002",
-            "source_type": "file_read",
-            "identifier": "work/notes.md",
-            "timestamp": "2024-01-01T00:00:00Z",
-            "agent": None,
-        }
-        event_line, parsed = self._dispatch(
-            handler, event_data, agent_from_stream=("task:sub42", "tools:ns-uuid-1")
-        )
-
-        assert event_line == "event: provenance"
-        assert parsed["agent"] == "task:sub42"
-        assert parsed["source_type"] == "file_read"
-        assert parsed["identifier"] == "work/notes.md"
-
 
 # ---------------------------------------------------------------------------
 # RunSSEProducer — event_counter integration
@@ -720,7 +613,14 @@ class TestToolNodeInnerLLMSuppression:
         )
 
     async def _drain(self, agen):
-        return [ev async for ev in agen]
+        # Frames come out unnumbered; the stream numbers them after coalescing.
+        return [self._number(ev) async for ev in agen]
+
+    @staticmethod
+    def _number(frame):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id="t-n", run_id="r-n")._number_sse_event(frame)
 
     def test_tool_node_reasoning_suppressed(self):
         handler = self._handler()
@@ -844,6 +744,37 @@ class TestToolNodeInnerLLMSuppression:
             for e in events
         ), f"tool_call_result event missing content; events={events!r}"
 
+    def test_tool_message_status_rides_the_live_result(self):
+        """The live path carries the ToolMessage status whatever it holds.
+
+        A direct MCP tool whose successful output opens with "Refused:" reads
+        as a refusal to every prose heuristic, so a client that saw no status
+        would render a success as a failure.
+        """
+        from langchain_core.messages import ToolMessage
+        handler = self._handler()
+        ok = ToolMessage(content="Refused: 7 applications", tool_call_id="c3")
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(ok, "tools", {"langgraph_node": "tools"})
+        ))
+        assert any(
+            "tool_call_result" in e
+            and '"tool_call_id": "c3"' in e
+            and '"status": "success"' in e
+            for e in events
+        ), f"tool_call_result event missing success status; events={events!r}"
+
+        failed = ToolMessage(content="Refused: not permitted", tool_call_id="c4", status="error")
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(failed, "tools", {"langgraph_node": "tools"})
+        ))
+        assert any(
+            "tool_call_result" in e
+            and '"tool_call_id": "c4"' in e
+            and '"status": "error"' in e
+            for e in events
+        ), f"tool_call_result event missing error status; events={events!r}"
+
     def test_missing_metadata_defaults_to_emit(self):
         """If metadata is None or omits langgraph_node, the chunk is treated
         as user-facing (not a tool-internal call)."""
@@ -920,14 +851,18 @@ class TestCompactionChunkRouting:
 
     def test_reasoning_signal_routes_to_compaction_when_flagged(self):
         handler = self._handler()
-        evt = handler._format_reasoning_signal(
-            "agent", "msg-1", "start", is_compaction=True
+        evt = handler._number_sse_event(
+            handler._build_reasoning_signal(
+                "agent", "msg-1", "start", is_compaction=True
+            )
         )
         assert "event: compaction_chunk\n" in evt
 
     def test_reasoning_signal_stays_on_message_chunk_by_default(self):
         handler = self._handler()
-        evt = handler._format_reasoning_signal("agent", "msg-1", "start")
+        evt = handler._number_sse_event(
+            handler._build_reasoning_signal("agent", "msg-1", "start")
+        )
         assert "event: message_chunk\n" in evt
 
     @pytest.mark.asyncio
@@ -938,7 +873,7 @@ class TestCompactionChunkRouting:
         chunk = AIMessageChunk(content="summary text", id="s-1")
 
         events = [
-            e
+            handler._number_sse_event(e)
             async for e in handler._process_message_chunk(
                 chunk, "agent", is_compaction=True
             )
@@ -954,7 +889,8 @@ class TestCompactionChunkRouting:
         chunk = AIMessageChunk(content="hello", id="m-1")
 
         events = [
-            e async for e in handler._process_message_chunk(chunk, "agent")
+            handler._number_sse_event(e)
+            async for e in handler._process_message_chunk(chunk, "agent")
         ]
         assert any("event: message_chunk\n" in e for e in events)
         assert not any("event: compaction_chunk\n" in e for e in events)
@@ -977,155 +913,109 @@ class TestCompactionChunkRouting:
 
 
 # ---------------------------------------------------------------------------
-# Stop-point reconciliation (decision 1b / T3-A): finalize_stopped_events
+# OpenAI Responses `phase` passthrough
 # ---------------------------------------------------------------------------
 
 
-class TestFinalizeStoppedEvents:
-    """A user stop must close every open streaming structure so replay shows
-    partial fragments marked 'stopped' instead of live-looking zombies."""
+class TestTextPhasePassthrough:
+    """`phase` rides the text event when known and is omitted when it isn't."""
 
-    def _handler(self, thread_id="t-stop"):
+    def _handler(self):
         from src.server.services.runs.sse_producer import RunSSEProducer
+        return RunSSEProducer(thread_id="t-phase", run_id="r-phase")
 
-        return RunSSEProducer(thread_id=thread_id, run_id="r-stop")
+    def _chunk(self, content, metadata=None):
+        from langchain_core.messages import AIMessageChunk
+        chunk = AIMessageChunk(content=content, id="msg-1")
+        chunk.response_metadata = metadata or {}
+        return chunk
 
-    def _events(self, handler):
-        return handler.get_sse_events() or []
-
-    def test_mid_reasoning_gets_reasoning_complete(self):
-        handler = self._handler()
-        # Simulate an open reasoning block on the main agent.
-        handler.reasoning_active.add("agent")
-        handler._open_message_ids["agent"] = "msg-1"
-
-        out = handler.finalize_stopped_events()
-
-        # A reasoning_signal:"complete" was appended for the open block.
-        assert any(
-            e["event"] in ("message_chunk", "compaction_chunk")
-            and e["data"].get("content_type") == "reasoning_signal"
-            and e["data"].get("content") == "complete"
-            for e in out
-        )
-        # Reasoning state cleared.
-        assert not handler.reasoning_active
-
-    def test_mid_tool_args_gets_terminal_close(self):
-        handler = self._handler()
-        # Simulate an in-flight Anthropic tool-call stream.
-        handler.anthropic_tool_call_state[("agent", 0)] = {
-            "name": "execute_code",
-            "id": "call-1",
-            "args_accumulated": '{"code": "import pa',
-        }
-        handler._open_message_ids["agent"] = "msg-tool"
-
-        out = handler.finalize_stopped_events()
-
-        assert any(
-            e["event"] == "tool_call_chunks"
-            and e["data"].get("finish_reason") == "stopped"
-            for e in out
-        )
-        assert not handler.anthropic_tool_call_state
-
-    def test_same_agent_in_both_tool_states_closes_once(self):
-        """A mid-turn provider fallback can leave the same agent in both the
-        Response-API and Anthropic tool-call dicts; the stop must emit exactly
-        one tool-call close for that agent, not two."""
-        handler = self._handler()
-        handler.function_call_state[("agent", 0)] = {"name": "execute_code", "id": "c1"}
-        handler.anthropic_tool_call_state[("agent", 1)] = {"name": "execute_code", "id": "c2"}
-        handler._open_message_ids["agent"] = "msg-tool"
-
-        out = handler.finalize_stopped_events()
-
-        tool_closes = [
-            e
-            for e in out
-            if e["event"] == "tool_call_chunks"
-            and e["data"].get("agent") == "agent"
-            and e["data"].get("finish_reason") == "stopped"
+    def _text_payloads(self, events):
+        return [
+            json.loads(e.split("data: ", 1)[1])
+            for e in events
+            if "event: message_chunk\n" in e and '"content_type": "text"' in e
         ]
-        assert len(tool_closes) == 1
-        assert not handler.function_call_state
-        assert not handler.anthropic_tool_call_state
 
-    def test_mid_artifact_gets_stopped_status(self):
-        handler = self._handler()
-        # Simulate an in-progress artifact.
-        handler._open_artifacts["art-1"] = {
-            "artifact_type": "chart",
-            "artifact_id": "art-1",
-            "agent": "agent",
-            "status": "in_progress",
-            "payload": {},
-        }
-
-        out = handler.finalize_stopped_events()
-
-        assert any(
-            e["event"] == "artifact"
-            and e["data"].get("artifact_id") == "art-1"
-            and e["data"].get("status") == "stopped"
-            for e in out
-        )
-        assert not handler._open_artifacts
-
-    def test_open_message_gets_finish_reason_stopped(self):
-        handler = self._handler()
-        handler._open_message_ids["agent"] = "msg-open"
-
-        out = handler.finalize_stopped_events()
-
-        assert any(
-            e["event"] == "message_chunk"
-            and e["data"].get("id") == "msg-open"
-            and e["data"].get("finish_reason") == "stopped"
-            for e in out
-        )
-        assert not handler._open_message_ids
-
-    def test_clean_boundary_appends_no_synthetic_events(self):
-        """Negative case: nothing open ⇒ no synthetic close events."""
-        handler = self._handler()
-        # A clean, already-closed message with a terminal finish_reason.
-        handler._format_sse_event(
-            "message_chunk",
-            {
-                "thread_id": "t-stop",
-                "agent": "agent",
-                "id": "msg-done",
-                "role": "assistant",
-                "content": "done.",
-                "finish_reason": "stop",
-            },
-        )
-        before = self._events(handler)
-
-        out = handler.finalize_stopped_events()
-
-        # No new events were appended.
-        assert len(out) == len(before)
-        assert not any(
-            e["data"].get("finish_reason") == "stopped" for e in out
+    def _drain(self, handler, chunk):
+        return asyncio.run(
+            self._collect(handler, handler._process_message_chunk(chunk, "agent"))
         )
 
-    def test_idempotent_double_stop_no_duplicate_closes(self):
-        """The stop-finalized marker prevents duplicate synthetic closes on a
-        second stop / handler re-entry."""
+    async def _collect(self, handler, agen):
+        return [handler._number_sse_event(e) async for e in agen]
+
+    def test_streaming_deltas_inherit_the_announced_phase(self):
+        # output_item.added announces the phase in an empty text block, then
+        # every delta carries only its index.
         handler = self._handler()
-        handler.reasoning_active.add("agent")
-        handler._open_message_ids["agent"] = "msg-1"
+        assert self._drain(handler, self._chunk(
+            [{"type": "text", "text": "", "phase": "commentary", "index": 0}]
+        )) == []
 
-        first = handler.finalize_stopped_events()
-        first_len = len(first)
+        payloads = self._text_payloads(self._drain(handler, self._chunk(
+            [{"type": "text", "text": "hold on", "index": 0}]
+        )))
+        assert len(payloads) == 1
+        assert payloads[0]["content"] == "hold on"
+        assert payloads[0]["phase"] == "commentary"
 
-        second = handler.finalize_stopped_events()
+    def test_unknown_index_omits_the_key(self):
+        handler = self._handler()
+        payloads = self._text_payloads(self._drain(handler, self._chunk(
+            [{"type": "text", "text": "plain", "index": 3}]
+        )))
+        assert len(payloads) == 1
+        assert "phase" not in payloads[0]
 
-        assert len(second) == first_len
-        assert handler._stop_finalized is True
+    def test_non_stream_block_carries_phase_directly(self):
+        handler = self._handler()
+        payloads = self._text_payloads(self._drain(handler, self._chunk(
+            [{"type": "text", "text": "the answer", "phase": "final_answer"}]
+        )))
+        assert len(payloads) == 1
+        assert payloads[0]["phase"] == "final_answer"
+
+    def test_disagreeing_blocks_omit_the_key(self):
+        handler = self._handler()
+        payloads = self._text_payloads(self._drain(handler, self._chunk([
+            {"type": "text", "text": "a", "phase": "commentary"},
+            {"type": "text", "text": "b", "phase": "final_answer"},
+        ])))
+        assert len(payloads) == 1
+        assert "phase" not in payloads[0]
+
+    def test_a_phaseless_block_beside_a_phased_one_omits_the_key(self):
+        # Live and replay share one rule: a block with no phase is its own
+        # answer, so the chunk has no single phase to carry.
+        handler = self._handler()
+        payloads = self._text_payloads(self._drain(handler, self._chunk([
+            {"type": "text", "text": "a", "phase": "commentary"},
+            {"type": "text", "text": "b"},
+        ])))
+        assert len(payloads) == 1
+        assert "phase" not in payloads[0]
+
+    def test_plain_string_content_omits_the_key(self):
+        handler = self._handler()
+        payloads = self._text_payloads(self._drain(handler, self._chunk("hello")))
+        assert len(payloads) == 1
+        assert "phase" not in payloads[0]
+
+    def test_finish_clears_the_index_table(self):
+        # Indices restart with the next message, so index 0 must not keep
+        # resolving to the finished message's phase.
+        handler = self._handler()
+        self._drain(handler, self._chunk(
+            [{"type": "text", "text": "", "phase": "commentary", "index": 0}]
+        ))
+        self._drain(handler, self._chunk("", metadata={"finish_reason": "stop"}))
+
+        payloads = self._text_payloads(self._drain(handler, self._chunk(
+            [{"type": "text", "text": "next turn", "index": 0}]
+        )))
+        assert len(payloads) == 1
+        assert "phase" not in payloads[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1255,6 +1145,123 @@ class TestCompactionWindowGuard:
         assert handler._compaction_active is True
 
 
+class _InFlightGraph:
+    """LangGraph stand-in with a model call in flight while it streams.
+
+    Its stream cancels and awaits the call on close, as LangGraph's does, and
+    the call finishing uncancelled is what would land a usage record after
+    the run's finalize had already read the tracker. With ``release`` set, the
+    call's cancellation waits on it under a shield, as a tool's cleanup does.
+    """
+
+    def __init__(self, release: asyncio.Event | None = None):
+        self.call: asyncio.Task | None = None
+        self.closed = False
+        self.release = release
+
+    def astream(
+        self, _input_state, config=None, stream_mode=None, subgraphs=None,
+        durability=None,
+    ):
+        async def _call():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                if self.release is not None:
+                    await asyncio.shield(self.release.wait())
+                raise
+
+        async def _gen():
+            self.call = asyncio.ensure_future(_call())
+            try:
+                while True:
+                    yield ((), "custom", {"type": "context_window", "action": "offload"})
+                    await asyncio.sleep(0.01)
+            finally:
+                self.call.cancel()
+                await asyncio.gather(self.call, return_exceptions=True)
+                self.closed = True
+
+        return _gen()
+
+
+def _orchestrated(graph):
+    """The PTC shape: the real orchestrator around the graph."""
+    from ptc_agent.agent.middleware.background_subagent.orchestrator import (
+        BackgroundSubagentOrchestrator,
+    )
+
+    return BackgroundSubagentOrchestrator(graph, MagicMock())
+
+
+_SHAPES = pytest.mark.parametrize(
+    "shape", [lambda g: g, _orchestrated], ids=["bare graph", "orchestrated"]
+)
+
+
+class TestGraphStreamClosedOnExit:
+    """Every way out of the producer cancels the graph's work in flight
+    before its caller, the executor about to finalize, regains control, with
+    the orchestrator between them as in a PTC turn."""
+
+    def _make_handler(self, **kwargs):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        return RunSSEProducer(thread_id="t-close", run_id="r-close", **kwargs)
+
+    @_SHAPES
+    @pytest.mark.asyncio
+    async def test_time_limit_cancels_the_call_in_flight(self, shape):
+        from src.server.services.runs.sse_producer import TurnTimeLimitError
+
+        graph = _InFlightGraph()
+        handler = self._make_handler(workflow_timeout=0.05)
+        with pytest.raises(TurnTimeLimitError):
+            async for _ in handler.stream_workflow(shape(graph), {}, {"configurable": {}}):
+                pass
+        assert graph.closed
+        assert graph.call.cancelled()
+
+    @_SHAPES
+    @pytest.mark.asyncio
+    async def test_consumer_close_cancels_the_call_in_flight(self, shape):
+        graph = _InFlightGraph()
+        frames = self._make_handler().stream_workflow(
+            shape(graph), {}, {"configurable": {}}
+        )
+        await anext(frames)  # metadata
+        await anext(frames)
+        # The executor's response to a lost transport.
+        await frames.aclose()
+        assert graph.closed
+        assert graph.call.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_a_close_that_hangs_is_left_running_past_its_bound(
+        self, monkeypatch
+    ):
+        from src.server.services.runs import sse_producer
+        from src.server.services.runs.sse_producer import TurnTimeLimitError
+
+        monkeypatch.setattr(sse_producer, "GRAPH_CLOSE_TIMEOUT_S", 0.05)
+        release = asyncio.Event()
+        graph = _InFlightGraph(release)
+        handler = self._make_handler(workflow_timeout=0.05)
+        with pytest.raises(TurnTimeLimitError):
+            async for _ in handler.stream_workflow(
+                _orchestrated(graph), {}, {"configurable": {}}
+            ):
+                pass
+        # The run's ending reached its caller with the close still going.
+        assert not graph.closed
+        release.set()
+        for _ in range(100):
+            if graph.closed:
+                break
+            await asyncio.sleep(0.01)
+        assert graph.closed and graph.call.cancelled()
+
+
 # ---------------------------------------------------------------------------
 # Model resilience events (model_retry / model_fallback + error trace)
 # ---------------------------------------------------------------------------
@@ -1300,7 +1307,7 @@ class TestModelResilienceEvents:
         return None
 
     @pytest.mark.asyncio
-    async def test_model_retry_emitted_but_not_persisted(self):
+    async def test_model_retry_emitted(self):
         handler = self._make_handler()
         chunks = await self._collect(
             handler,
@@ -1328,12 +1335,9 @@ class TestModelResilienceEvents:
         # Main-stream events pin "main" (empty namespace + no langgraph_node
         # in the middleware payload would otherwise hit the "agent" fallback).
         assert data["agent"] == "main"
-        # Transient: never persisted to the SSE event log
-        persisted = handler.get_sse_events() or []
-        assert "model_retry" not in [e["event"] for e in persisted]
 
     @pytest.mark.asyncio
-    async def test_model_fallback_emitted_and_persisted(self):
+    async def test_model_fallback_emitted(self):
         handler = self._make_handler()
         chunks = await self._collect(
             handler,
@@ -1356,9 +1360,6 @@ class TestModelResilienceEvents:
         assert data["from_is_primary"] is True
         assert data["attempts_on_from"] == 1
         assert data["agent"] == "main"
-        # Persisted so the transcript note survives history replay
-        persisted = handler.get_sse_events() or []
-        assert "model_fallback" in [e["event"] for e in persisted]
 
     @pytest.mark.asyncio
     async def test_model_fallback_ui_record_unwraps_to_legacy_shape(self):
@@ -1392,8 +1393,32 @@ class TestModelResilienceEvents:
         assert "secret" not in data["error"]
         # No artifact event leaks from the generic ui passthrough
         assert self._find_event(chunks, "artifact") is None
-        persisted = handler.get_sse_events() or []
-        assert "model_fallback" in [e["event"] for e in persisted]
+
+    @pytest.mark.asyncio
+    async def test_a_main_lane_fallback_names_its_ui_record(self):
+        # Recovery rebuilds the record from the frame when the worker dies
+        # before the step that pushed it saves.
+        record = {
+            "type": "ui",
+            "id": "ui-abc123",
+            "name": "model_fallback",
+            "props": {"from_model": "primary-model", "to_model": "fallback-a"},
+            "metadata": {"merge": False, "tags": ["t"], "after_message_id": "m-1"},
+        }
+
+        main = self._find_event(
+            await self._collect(self._make_handler(), [record]), "model_fallback"
+        )
+        task = self._find_event(
+            await self._collect(
+                self._make_handler(), [record], namespace=("task-ns-uuid",)
+            ),
+            "model_fallback",
+        )
+
+        assert (main["fallback_id"], main["after_message_id"]) == ("ui-abc123", "m-1")
+        assert "tags" not in main
+        assert not {"fallback_id", "after_message_id"} & task.keys()
 
     @pytest.mark.asyncio
     async def test_subagent_namespace_attributed(self):
@@ -1421,7 +1446,7 @@ class TestModelResilienceEvents:
         assert data["agent"] == "task-ns-uuid"
 
 
-class TestFormatErrorEventResilienceTrace:
+class TestErrorEventResilienceTrace:
     def _make_handler(self):
         from src.server.services.runs.sse_producer import RunSSEProducer
 
@@ -1451,8 +1476,7 @@ class TestFormatErrorEventResilienceTrace:
         exc = RuntimeError("Error calling model 'primary-model'")
         exc.__model_resilience__ = self._trace()
         handler = self._make_handler()
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["model"] == "primary-model"
         attempted = parsed["attempted_models"]
         assert [a["model"] for a in attempted] == ["primary-model", "fallback-a"]
@@ -1471,41 +1495,39 @@ class TestFormatErrorEventResilienceTrace:
         except RuntimeError as outer:
             exc = outer
         handler = self._make_handler()
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["model"] == "primary-model"
 
     def test_no_trace_no_new_fields(self):
         exc = RuntimeError("plain failure")
         handler = self._make_handler()
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert "model" not in parsed
         assert "attempted_models" not in parsed
         assert parsed["error_kind"] == "internal"
 
-    def test_generic_exception_with_trace_classifies_upstream(self):
+    def test_generic_exception_with_trace_classifies_upstream(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
         # A generic (non-SDK) exception carrying the trace is still a
         # model-call failure — it must not fall into the internal-error
         # banner path, which drops the model/attempted-models context.
         exc = RuntimeError("Error calling model 'primary-model'")
         exc.__model_resilience__ = self._trace()
         handler = self._make_handler()
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "upstream"
         # Status comes from the primary attempt record; 404 drives the hints.
         assert parsed["status_code"] == 404
         assert parsed["hints"] == ["model_access", "try_another_model"]
 
-    def test_generic_exception_with_trace_but_no_status(self):
+    def test_generic_exception_with_trace_but_no_status(self, monkeypatch):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "oss")
         trace = self._trace()
         trace["attempted_models"][0]["status_code"] = None
         exc = RuntimeError("model call blew up without a status")
         exc.__model_resilience__ = trace
         handler = self._make_handler()
-        result = handler.format_error_event(str(exc), exc=exc)
-        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        parsed = handler._build_error_event(str(exc), exc=exc).data
         assert parsed["error_kind"] == "upstream"
         assert "status_code" not in parsed
         assert parsed["hints"] == [
@@ -1514,6 +1536,48 @@ class TestFormatErrorEventResilienceTrace:
             "provider_status",
             "try_another_model",
         ]
+
+
+class _SlowGraph:
+    """A graph whose stream outlasts a tiny wall clock."""
+
+    def astream(self, _input_state, config=None, **_kwargs):
+        async def _gen():
+            while True:
+                yield ((), "custom", {"type": "context_window", "action": "offload"})
+                await asyncio.sleep(0.01)
+
+        return _gen()
+
+
+class TestTimeLimitStop:
+    @pytest.mark.asyncio
+    async def test_stop_sends_its_own_frame_and_logs_no_traceback(self, caplog):
+        """The wall clock is a planned stop: one ``timeout_error`` frame, and a
+        warning rather than a traceback that reads as a crash."""
+        from src.server.services.runs.sse_producer import (
+            RunSSEProducer,
+            TurnTimeLimitError,
+        )
+
+        handler = RunSSEProducer(
+            thread_id="t-limit", run_id="r-limit", workflow_timeout=0.05
+        )
+        frames = []
+        with caplog.at_level("WARNING", logger="src.server.services.runs.sse_producer"):
+            with pytest.raises(TurnTimeLimitError):
+                async for frame in handler.stream_workflow(
+                    _SlowGraph(), {}, {"configurable": {}}
+                ):
+                    frames.append(frame)
+        errors = [f for f in frames if "event: error" in f]
+        assert len(errors) == 1 and '"timeout_error"' in errors[0]
+        producer_records = [
+            r for r in caplog.records
+            if r.name == "src.server.services.runs.sse_producer"
+        ]
+        assert any("time limit" in r.getMessage() for r in producer_records)
+        assert not any(r.exc_info for r in producer_records)
 
 
 class TestSanitizeErrorText:
@@ -1582,15 +1646,14 @@ class _MultiModeGraph:
         return _gen()
 
 
-class TestTaskLaneOwnership:
-    """Exclusive lane ownership: task-namespace frames never ride the main
-    stream (their canonical copies live in the per-task channel), and a
-    task-namespace interrupt never enters root lifecycle."""
+class TestInterruptBuffering:
+    """A main-stream interrupt is buffered for the durability barrier, never
+    emitted inline."""
 
     def _make_handler(self):
         from src.server.services.runs.sse_producer import RunSSEProducer
 
-        return RunSSEProducer(thread_id="lane-thread", run_id="r-lane")
+        return RunSSEProducer(thread_id="int-thread", run_id="r-test")
 
     async def _collect(self, handler, events):
         return [
@@ -1600,57 +1663,8 @@ class TestTaskLaneOwnership:
             )
         ]
 
-    def test_resolve_task_lane_literal_namespace_needs_no_registration(self):
-        handler = self._make_handler()
-        assert (
-            handler._resolve_task_lane(("task:e88Ssw", "model:abc"))
-            == "task:e88Ssw"
-        )
-
-    def test_resolve_task_lane_main_namespaces_stay_main(self):
-        handler = self._make_handler()
-        assert handler._resolve_task_lane(()) is None
-        assert handler._resolve_task_lane(("model:uuid-a",)) is None
-        assert handler._resolve_task_lane(("tools:uuid-b", "model:uuid-c")) is None
-
     @pytest.mark.asyncio
-    async def test_task_message_frames_suppressed_from_main(self):
-        from langchain_core.messages import AIMessageChunk
-
-        handler = self._make_handler()
-        events = [
-            (
-                ("task:e88Ssw",),
-                "messages",
-                (AIMessageChunk(content="task text", id="m-task"), {}),
-            ),
-            (
-                ("model:uuid-main",),
-                "messages",
-                (AIMessageChunk(content="main text", id="m-main"), {}),
-            ),
-        ]
-        chunks = await self._collect(handler, events)
-        joined = "".join(chunks)
-        assert "main text" in joined
-        assert "task text" not in joined
-        persisted = handler.get_sse_events() or []
-        assert not any(
-            "task text" in json.dumps(e.get("data", {})) for e in persisted
-        )
-
-    @pytest.mark.asyncio
-    async def test_task_interrupt_never_enters_root_lifecycle(self):
-        handler = self._make_handler()
-        events = [
-            (("task:e88Ssw",), "updates", {"__interrupt__": [object()]}),
-        ]
-        await self._collect(handler, events)
-        assert handler.saw_interrupt is False
-        assert handler._pending_interrupts == []
-
-    @pytest.mark.asyncio
-    async def test_main_interrupt_still_buffers(self):
+    async def test_main_interrupt_buffers(self):
         handler = self._make_handler()
 
         async def _no_verify(_graph):
@@ -1662,50 +1676,183 @@ class TestTaskLaneOwnership:
         assert handler.saw_interrupt is True
         assert len(handler._pending_interrupts) == 1
 
-    @pytest.mark.asyncio
-    async def test_task_context_window_and_provenance_suppressed(self):
-        handler = self._make_handler()
-        events = [
-            (
-                ("task:e88Ssw",),
-                "custom",
-                {"type": "context_window", "action": "token_usage",
-                 "input_tokens": 10, "total_tokens": 10},
-            ),
-            (
-                ("task:e88Ssw",),
-                "custom",
-                {"type": "provenance", "source": "web", "result_sha256": "x"},
-            ),
-            (
-                (),
-                "custom",
-                {"type": "context_window", "action": "token_usage",
-                 "input_tokens": 5, "total_tokens": 5},
-            ),
-        ]
-        chunks = await self._collect(handler, events)
-        cw = [c for c in chunks if "event: context_window\n" in c]
-        assert len(cw) == 1  # only the main-lane copy
-        assert '"agent": "main"' in cw[0] or '"agent": "agent"' in cw[0]
-        assert not any("event: provenance\n" in c for c in chunks)
+
+def _asking_graph(asks_on: set[int]):
+    """A checkpointed graph whose one node asks the user a question on the
+    passes numbered in ``asks_on`` and answers on the others."""
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.graph import START, MessagesState, StateGraph
+    from langgraph.types import interrupt
+
+    passes = 0
+
+    def agent(_state):
+        nonlocal passes
+        passes += 1
+        if passes in asks_on:
+            interrupt(
+                {
+                    "action_requests": [
+                        {
+                            "type": "ask_user_question",
+                            "question": f"Which filing, take {passes}?",
+                            "options": ["10-K", "10-Q"],
+                        }
+                    ]
+                }
+            )
+        return {"messages": [AIMessage(content="Done.")]}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", agent)
+    builder.add_edge(START, "agent")
+    return builder.compile(checkpointer=InMemorySaver())
+
+
+def _payloads(frames, event_type):
+    return [
+        json.loads(frame.split("data: ", 1)[1])
+        for frame in frames
+        if f"event: {event_type}\n" in frame
+    ]
+
+
+class TestSupersededInterrupt:
+    """A steer waiting when the agent stops on a question re-invokes it, and
+    the re-invocation supersedes the question: the checkpoint no longer holds
+    it, so neither replay nor a resume can see it. The live stream carries the
+    pause the checkpoint holds and nothing else."""
+
+    async def _steered_past_a_question(self, asks_on):
+        from ptc_agent.agent.middleware.background_subagent.orchestrator import (
+            BackgroundSubagentOrchestrator,
+        )
+        from src.server.services.runs.sse_producer import RunSSEProducer
+
+        graph = _asking_graph(asks_on)
+        middleware = MagicMock()
+        middleware.registry.has_pending_tasks.return_value = False
+        middleware.registry._tasks = {}
+        steers = iter([["user"]])
+
+        async def _checker():
+            return next(steers, [])
+
+        handler = RunSSEProducer(thread_id="t-steer", run_id="r-steer")
+        config = {"configurable": {"thread_id": "t-steer"}}
+        with patch(
+            "ptc_agent.agent.middleware.background_subagent.utils.build_message_checker",
+            new=AsyncMock(return_value=_checker),
+        ):
+            frames = [
+                frame
+                async for frame in handler.stream_workflow(
+                    BackgroundSubagentOrchestrator(graph, middleware),
+                    {"messages": [("user", "Pull the filing.")]},
+                    config,
+                )
+            ]
+        pending = [intr.id for intr in (await graph.aget_state(config)).interrupts]
+        return handler, frames, pending
 
     @pytest.mark.asyncio
-    async def test_task_summarize_window_bookkeeping_still_runs(self):
-        # Suppressed from the wire, but the compaction admission window must
-        # still open for task namespaces (the stream-end finally closes it).
-        handler = self._make_handler()
-        runner = MagicMock()
-        runner.open_auto_compaction_window.return_value = True
-        events = [
-            (
-                ("task:e88Ssw",),
-                "custom",
-                {"type": "context_window", "action": "summarize",
-                 "signal": "start"},
-            ),
+    async def test_only_the_question_asked_again_is_streamed(self):
+        _handler, frames, pending = await self._steered_past_a_question({1, 2})
+
+        assert len(pending) == 1
+        streamed = [p["interrupt_id"] for p in _payloads(frames, "interrupt")]
+        assert streamed == pending
+
+    @pytest.mark.asyncio
+    async def test_a_question_not_asked_again_ends_the_turn_completed(self):
+        from src.server.services.runs.finalization import classify_outcome
+
+        handler, frames, pending = await self._steered_past_a_question({1})
+
+        assert pending == []
+        assert _payloads(frames, "interrupt") == []
+        assert _payloads(frames, "error") == []
+        status, *_ = await classify_outcome(
+            "stream_end", handler=handler, graph=None, thread_id="t-steer", error=None
+        )
+        assert status == "completed"
+
+
+class TestReasoningWhitespaceDeltas:
+    """DeepSeek (Anthropic-compatible route) streams the space before a number
+    as its own thinking token: ``" "`` then ``"9"``. The SSE text must carry
+    those spaces so the stream matches the checkpoint, while whitespace alone
+    still never opens a reasoning section the client would render empty."""
+
+    def _handler(self):
+        from src.server.services.runs.sse_producer import RunSSEProducer
+        return RunSSEProducer(thread_id="t-ws", run_id="r-test")
+
+    def _thinking(self, text, msg_id="msg-1"):
+        from langchain_core.messages import AIMessageChunk
+        return AIMessageChunk(
+            content=[{"type": "thinking", "thinking": text, "index": 0}],
+            id=msg_id,
+            response_metadata={},
+        )
+
+    def _text(self, text):
+        from langchain_core.messages import AIMessageChunk
+        return AIMessageChunk(
+            content=[{"type": "text", "text": text, "index": 1}],
+            id="msg-1",
+            response_metadata={},
+        )
+
+    def _timeline(self, handler, chunks):
+        async def run():
+            out = []
+            for chunk in chunks:
+                async for frame in handler._process_message_chunk(
+                    chunk, "model:main", {"langgraph_node": "model"}
+                ):
+                    data = frame.data
+                    out.append((data.get("content_type"), data.get("content")))
+            return out
+
+        return asyncio.run(run())
+
+    def test_leading_space_digit_deltas_round_trip(self):
+        deltas = ["Today", " is", " October", " ", "9", ",", " ", "202", "6", "."]
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(d) for d in deltas] + [self._text("Done")]
+        )
+        reasoning = "".join(c for t, c in timeline if t == "reasoning")
+        assert reasoning == "Today is October 9, 2026."
+        assert timeline[0] == ("reasoning_signal", "start")
+
+    def test_whitespace_alone_does_not_open_reasoning(self):
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(" "), self._thinking("\n"), self._text("Hi")]
+        )
+        assert timeline == [("text", "Hi")]
+
+    def test_held_whitespace_prefixes_first_visible_reasoning(self):
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(" "), self._thinking("9 apples")]
+        )
+        assert timeline == [
+            ("reasoning_signal", "start"),
+            ("reasoning", " 9 apples"),
         ]
-        with patch(TestCompactionWindowGuard.RUNNER, return_value=runner):
-            chunks = await self._collect(handler, events)
-        runner.open_auto_compaction_window.assert_called_once_with("lane-thread")
-        assert not any("event: context_window\n" in c for c in chunks)
+
+    def test_held_whitespace_stays_with_its_message(self):
+        # A stream that fails mid-way sends no finish frame, and its retry is a
+        # new message that must not inherit the held whitespace.
+        handler = self._handler()
+        timeline = self._timeline(
+            handler, [self._thinking(" "), self._thinking("Let me check", "msg-2")]
+        )
+        assert timeline == [
+            ("reasoning_signal", "start"),
+            ("reasoning", "Let me check"),
+        ]

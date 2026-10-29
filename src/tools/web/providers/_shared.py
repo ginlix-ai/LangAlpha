@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tupl
 
 import httpx
 
+from src.observability import mark_tool_failed, mark_tool_unavailable
 from src.tools.web.types import (
     FetchResponse,
     FetchResult,
@@ -44,10 +45,10 @@ def http_status_error(
 ) -> WebError:
     """Map a provider-API HTTP failure to the taxonomy.
 
-    401/403 mean our key was rejected, 402 that the provider account's
-    budget is exhausted, 429 rate limiting; anything else is a generic
-    provider error. ``overrides`` adds provider quirks (e.g. firecrawl
-    408 -> timeout).
+    401 means our key was rejected, 403 that or a site the provider refuses,
+    402 that the provider account's budget is exhausted, 429 rate limiting;
+    anything else is a generic provider error. ``overrides`` adds provider
+    quirks (e.g. firecrawl 408 -> timeout).
 
     Always ``retryable``: this is a whole-call failure against the
     *provider's* endpoint (our key/account/quota), not a verdict on the
@@ -55,17 +56,32 @@ def http_status_error(
     key therefore degrades to the fallbacks instead of failing the fetch.
     Per-URL forbidden/paywall statuses are built elsewhere and stay terminal.
     """
+    provider_fault = None
     if overrides and status in overrides:
         etype = overrides[status]
     elif status in (401, 403):
         etype = WebErrorType.FORBIDDEN
+        # A 401 is our key, so the provider's side. A 403 can be the provider
+        # refusing one site (Firecrawl's blocklist), which must not open the
+        # breaker every other URL shares.
+        if status == 401:
+            provider_fault = True
     elif status == 402:
         etype = WebErrorType.BUDGET_EXCEEDED
+        # Our account at the provider ran dry: someone has to top it up, and
+        # every URL fails the same way until then, so the breaker counts it.
+        provider_fault = True
     elif status == 429:
         etype = WebErrorType.RATE_LIMITED
     else:
         etype = WebErrorType.PROVIDER_ERROR
-    return WebError(type=etype, message=clip_error(body), http_status=status, retryable=True)
+    return WebError(
+        type=etype,
+        message=clip_error(body),
+        http_status=status,
+        retryable=True,
+        provider_fault=provider_fault,
+    )
 
 
 def transport_error(e: httpx.HTTPError) -> WebError:
@@ -83,6 +99,62 @@ def error_from_httpx(
     if isinstance(e, httpx.HTTPStatusError):
         return http_status_error(e.response.status_code, e.response.text, status_overrides)
     return transport_error(e)
+
+
+def _as_web_error(error: WebError | BaseException) -> Optional[WebError]:
+    if isinstance(error, WebToolError):
+        return error.error
+    return error if isinstance(error, WebError) else None
+
+
+def mark_web_outcome(
+    error: WebError | BaseException,
+    provider: Optional[str] = None,
+    *,
+    provider_side: bool = False,
+) -> None:
+    """Record a failed web call as the provider's failure or the target's refusal.
+
+    Decided by the error's own ``provider_side``. A timeout is the target's
+    there: a slow page and a slow provider look the same from here, so it
+    goes as the breaker treats it. The ``provider_side`` argument is for a
+    call the target plays no part in, where any failure is the provider's. An
+    exception that is not a web error is our own pipeline failing.
+    """
+    web_error = _as_web_error(error)
+    if web_error is None:
+        mark_tool_failed(error, provider)
+    elif provider_side or web_error.provider_side:
+        mark_tool_failed(web_error.type.value, provider)
+    else:
+        mark_tool_unavailable(web_error.type.value, provider)
+
+
+def search_refusal(error: BaseException, query: str) -> Tuple[str, Dict[str, Any]]:
+    """The text and artifact a WebSearch returns in place of results."""
+    return f"Search failed: {error}", {"error": str(error), "query": query}
+
+
+def search_failed(
+    error: BaseException, query: str, *, quote_http_body: bool = False
+) -> Tuple[str, Dict[str, Any]]:
+    """Mark a failed WebSearch and return its refusal.
+
+    Search has no target site to blame, so a failure is the provider's (a
+    rejected key and a timeout included) or ours. ``quote_http_body`` keeps
+    the status-and-body refusal the raw-httpx tools return for an HTTP error.
+    """
+    mark_web_outcome(
+        error_from_httpx(error) if isinstance(error, httpx.HTTPError) else error,
+        provider_side=True,
+    )
+    if quote_http_body and isinstance(error, httpx.HTTPStatusError):
+        response = error.response
+        status = response.status_code if response is not None else "unknown"
+        body = response.text if response is not None else "no response body"
+        message = f"Search failed (HTTP {status}): {body}"
+        return message, {"error": message, "query": query}
+    return search_refusal(error, query)
 
 
 def missing_key_error(message: str) -> WebError:

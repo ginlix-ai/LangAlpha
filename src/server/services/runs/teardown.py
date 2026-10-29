@@ -1,24 +1,46 @@
 """Stop-teardown pipeline for a user-stopped run.
 
 Owns the deterministic sequence a user stop triggers: flush the LangGraph
-checkpoint, cancel the stopped run's orphan collectors, kill its subagents,
-and drain their captured events for the finalize to persist. Executor-local
-state (the task table, the orphan-collector registry) stays in
-``LocalRunExecutor`` and is lent in via arguments.
+checkpoint, cancel the stopped run's orphan collectors, kill and claim its
+subagents, and drain their captured events for the finalize to record.
+Executor-local state (the task table, the orphan-collector registry) stays
+in ``LocalRunExecutor`` and is lent in via arguments.
 """
 
 import asyncio
 import logging
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from src.config.settings import (
     get_checkpoint_flush_timeout,
     get_stop_drain_timeout,
 )
-from src.server.services.runs import subagent_collection
+from src.server.services.runs.subagent_archive import (
+    SubagentArchiveReadError,
+    iter_subagent_events_full,
+    record_to_persist_event,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StopTeardown:
+    """What a stop teardown hands its run's finalize, filled in place.
+
+    ``events`` are the killed subagents' drained events, whose provenance the
+    finalize records if the run ends cancelled. ``claimed`` are the settled subagents the kill claimed
+    before evicting them with their usage: the teardown runs before anyone
+    knows whether the user or the system ended the run, and only the finalize
+    decides whether that usage is billed. The run holds this before the
+    teardown starts, because a second cancel can start the finalize while the
+    kill is still unwinding, and the claim must still reach the bill.
+    """
+
+    events: list[dict] = field(default_factory=list)
+    claimed: list = field(default_factory=list)
 
 
 async def flush_checkpoint(graph: Any, thread_id: str) -> None:
@@ -67,25 +89,24 @@ async def flush_checkpoint(graph: Any, thread_id: str) -> None:
 async def teardown_subagents_on_stop(
     thread_id: str,
     run_id: str,
+    stop: StopTeardown,
     *,
     orphan_collectors: dict[asyncio.Task, str],
     drain: Callable[[str, list], Awaitable[list[dict]]],
-) -> list[dict]:
-    """Single-owner subagent teardown on a user stop — scoped to the
-    stopped run.
+) -> None:
+    """Single-owner subagent teardown on a stop, scoped to the stopped run.
 
-    Order (decision 1A, amended): list this run's tasks → cancel this
-    run's orphan collectors → cancel_run_tasks(force) → drain killed-
-    subagent events (bounded) → return the merged events for the caller
-    to stash for the finalize to persist. The kill MUST precede the
-    drain: the drain's high-water is read at drain start, so a pre-kill
-    snapshot misses frames the task emits between snapshot and kill —
-    output the live stream already delivered. The task list is
-    snapshotted first because cancel_run_tasks drops the registry
-    entries; the drain reads only the held task objects and their Redis
-    streams. Everything is keyed by ``spawned_run_id``: a prior turn's
-    orphan collector persists to ITS OWN response, so stopping the
-    current run must neither kill it nor archive its tasks' events here.
+    Order (decision 1A, amended): list this run's tasks, cancel this run's
+    orphan collectors, kill and claim its subagents
+    (``cancel_run_tasks(force, claim_for=run_id)``), then drain the killed
+    subagents' events (bounded). The kill MUST precede the drain: the
+    drain's high-water is read at drain start, so a pre-kill snapshot misses
+    frames the task emits between snapshot and kill, which the live stream
+    already delivered. The task list is snapshotted first because the kill
+    drops the registry entries; the drain reads only the held task objects
+    and their Redis streams. Everything is keyed by ``spawned_run_id``: a
+    prior turn's orphan collector persists to ITS OWN response, so stopping
+    the current run must neither kill it nor archive its tasks' events here.
     """
     from src.server.services.background_registry_store import BackgroundRegistryStore
 
@@ -118,21 +139,27 @@ async def teardown_subagents_on_stop(
         for collector in collectors:
             orphan_collectors.pop(collector, None)
 
-    # --- 4. Kill this run's subagents; the registry and prior-turn tasks
-    # survive for their own collectors. cancel_run_tasks awaits the
+    # --- 4. Kill and claim this run's subagents; the registry and prior-turn
+    # tasks survive for their own collectors. cancel_run_tasks awaits the
     # unwinding writers (bounded), so the captured streams are final
-    # before the drain reads its high-water. ---
+    # before the drain reads its high-water. The claim is published with no
+    # await after the kill's lock section, so a later kill that reads it once
+    # it returns finds each task either here or in its own claim. ---
     with suppress(Exception):
-        await registry_store.cancel_run_tasks(thread_id, run_id, force=True)
+        killed = await registry_store.cancel_run_tasks(
+            thread_id, run_id, force=True, claim_for=run_id
+        )
+        stop.claimed.extend(killed.claimed)
 
     # --- 5. Drain killed-subagent events (best-effort, hard timeout) ---
-    merged_subagent_events: list[dict] = []
     drain_timeout = get_stop_drain_timeout()
     if tasks:
         try:
-            merged_subagent_events = await asyncio.wait_for(
-                drain(thread_id, tasks),
-                timeout=drain_timeout,
+            stop.events.extend(
+                await asyncio.wait_for(
+                    drain(thread_id, tasks),
+                    timeout=drain_timeout,
+                )
             )
         except asyncio.TimeoutError:
             logger.warning(
@@ -146,129 +173,87 @@ async def teardown_subagents_on_stop(
                 f"thread_id={thread_id}: {exc}"
             )
 
-    return merged_subagent_events
-
 
 async def drain_killed_subagent_events(
     thread_id: str, tasks: list
 ) -> list[dict]:
     """Best-effort bounded snapshot of a killed run's subagent events.
 
-    Reads each task's Redis capture stream via ``iter_subagent_events_full``
-    and appends a synthetic "stopped" close per task. Runs AFTER the kill
-    (ordering at the teardown call site) so the high-water read at drain
-    start covers everything the tasks ever emitted; the passed task
-    objects are held by the caller — the registry entries are already
-    gone. The caller bounds it with ``asyncio.wait_for``. Starts no new
-    agent work — it only reads and closes.
+    Runs AFTER the kill (ordering at the teardown call site) so the
+    high-water read at drain start covers everything the tasks ever
+    emitted; the passed task objects are held by the caller — the registry
+    entries are already gone. The caller bounds it with
+    ``asyncio.wait_for``. Starts no new agent work — it only reads and
+    closes. A lane withheld here is archived after the finalize, once its
+    writers settle (``subagent_collection.end_run_subagents``).
     """
     merged: list[dict] = []
     for task in tasks:
-        expected = getattr(task, "captured_event_count", 0)
-        if expected <= 0:
-            continue
-        # A writer still unwinding can append past this drain's snapshot:
-        # the terminal steering sweep runs in the writer's teardown and
-        # is exempt from the seal, so only a settled writer guarantees
-        # the count is final. Withhold the task otherwise — its stream
-        # keeps the terminal-retention TTL and the lane rebuilds per
-        # read; the guard drain is the backstop for a writer that never
-        # dies.
-        if any(
-            w is not None and not w.done()
-            for w in (
-                getattr(task, "asyncio_task", None),
-                getattr(task, "handler_task", None),
-            )
-        ):
-            logger.warning(
-                f"[StopTeardown] Writers still unwinding for task "
-                f"{getattr(task, 'task_id', '?')}; withholding snapshot"
-            )
-            continue
-        # Track reasoning blocks left open at the kill point so we can close
-        # them, mirroring the main agent's finalize_stopped_events. Keyed by
-        # the subagent's own (agent, message id) so the synthetic close
-        # matches the unpaired start exactly.
-        open_reasoning: dict[tuple[str, str], None] = {}
-        task_events: list[dict] = []
-        run_id = getattr(task, "spawned_run_id", None)
-        # Always the stamped arm in practice: step 2's snapshot admits only
-        # spawned_run_id == run_id tasks and run_id is a non-empty uuid, so
-        # agreement with the collector's epoch rule comes from that upstream
-        # filter, not from re-deriving the rule here. The collector's
-        # unstamped arm serves cross-worker hydrated shells — a population
-        # the filter excludes; the (None,) arm is defensive only.
-        allowed = (run_id,) if run_id else (None,)
-        eligible = 0
-        try:
-            async for record in subagent_collection.iter_subagent_events_full(
-                thread_id, task
-            ):
-                if record.get("run") not in allowed:
-                    continue  # another round's record (cross-worker resume)
-                eligible += 1
-                enriched = subagent_collection.record_to_persist_event(
-                    record, thread_id
-                )
-                task_events.append(enriched)
-                data = enriched.get("data") or {}
-                if data.get("content_type") == "reasoning_signal":
-                    rk = (data.get("agent", ""), data.get("id", ""))
-                    if data.get("content") == "start":
-                        open_reasoning[rk] = None
-                    elif data.get("content") == "complete":
-                        open_reasoning.pop(rk, None)
-        except subagent_collection.SubagentArchiveReadError as exc:
-            logger.warning(
-                f"[StopTeardown] Archive read failed for task "
-                f"{getattr(task, 'task_id', '?')}; withholding snapshot: {exc}"
-            )
-            continue
-        if eligible != expected:
-            # Mismatch against this round's attempted appends (XRANGE
-            # failure reads as zero rows; a torn spill leaves a prefix;
-            # foreign-epoch records never count): append none of it. A
-            # transcript-class row is the replay cache gate's archive
-            # evidence — a partial snapshot would clear the gate and
-            # cache the loss. The lane stays uncacheable
-            # (rebuild-per-read) and the capture stream keeps its
-            # terminal-retention TTL as the last complete-able copy.
-            logger.warning(
-                f"[StopTeardown] Incomplete recovery for task "
-                f"{getattr(task, 'task_id', '?')} (recovered={eligible}, "
-                f"expected={expected}); withholding snapshot"
-            )
-            continue
-        merged.extend(task_events)
-        # Close any reasoning block still open when the subagent was killed,
-        # else replay renders the card stuck "thinking" indefinitely.
-        for r_agent, r_id in open_reasoning:
-            merged.append(
-                {
-                    "event": "message_chunk",
-                    "data": {
-                        "thread_id": thread_id,
-                        "agent": r_agent,
-                        "id": r_id,
-                        "role": "assistant",
-                        "content": "complete",
-                        "content_type": "reasoning_signal",
-                    },
-                }
-            )
-        # Mark the killed subagent's stream "stopped" for replay.
-        agent_id = f"task:{getattr(task, 'task_id', '')}"
-        merged.append(
-            {
-                "event": "message_chunk",
-                "data": {
-                    "thread_id": thread_id,
-                    "agent": agent_id,
-                    "id": f"{agent_id}:stopped",
-                    "role": "assistant",
-                    "finish_reason": "stopped",
-                },
-            }
-        )
+        merged.extend(await killed_lane(thread_id, task))
     return merged
+
+
+async def killed_lane(
+    thread_id: str, task, *, owner: str | None = None
+) -> list[dict]:
+    """A killed subagent's captured events, or ``[]``.
+
+    Reads the task's Redis capture stream via ``iter_subagent_events_full``.
+    ``owner`` fences the read against a resume the way the collector's replay
+    is fenced: a task whose claim leaves ``owner`` mid-read belongs to the
+    resuming run's archive.
+    """
+    if owner is not None and task.collector_response_id != owner:
+        return []
+    expected = getattr(task, "captured_event_count", 0)
+    if expected <= 0:
+        return []
+    # A writer still unwinding can append past this snapshot: the terminal
+    # steering sweep runs in the writer's teardown and is exempt from the
+    # seal, so only a settled writer guarantees the count is final.
+    # Withhold the task otherwise — its stream keeps the terminal-retention
+    # TTL and the lane rebuilds per read until it is archived.
+    if task.live_writers:
+        logger.warning(
+            f"[StopTeardown] Writers still unwinding for task "
+            f"{getattr(task, 'task_id', '?')}; withholding snapshot"
+        )
+        return []
+    task_events: list[dict] = []
+    run_id = getattr(task, "spawned_run_id", None)
+    # Always the stamped arm in practice: both callers take only
+    # spawned_run_id == run_id tasks and run_id is a non-empty uuid, so
+    # agreement with the collector's epoch rule comes from that upstream
+    # filter, not from re-deriving the rule here. The collector's
+    # unstamped arm serves cross-worker hydrated shells — a population
+    # the filter excludes; the (None,) arm is defensive only.
+    allowed = (run_id,) if run_id else (None,)
+    eligible = 0
+    try:
+        async for record in iter_subagent_events_full(thread_id, task):
+            if owner is not None and task.collector_response_id != owner:
+                return []  # resumed mid-read: the resume owns the archive
+            if record.get("run") not in allowed:
+                continue  # another round's record (cross-worker resume)
+            eligible += 1
+            task_events.append(record_to_persist_event(record, thread_id))
+    except SubagentArchiveReadError as exc:
+        logger.warning(
+            f"[StopTeardown] Archive read failed for task "
+            f"{getattr(task, 'task_id', '?')}; withholding snapshot: {exc}"
+        )
+        return []
+    if eligible != expected:
+        # Mismatch against this round's attempted appends (XRANGE
+        # failure reads as zero rows; a torn spill leaves a prefix;
+        # foreign-epoch records never count): append none of it. A
+        # partial snapshot would record part of the lane as all of it;
+        # the capture stream keeps its terminal-retention TTL as the last
+        # complete-able copy.
+        logger.warning(
+            f"[StopTeardown] Incomplete recovery for task "
+            f"{getattr(task, 'task_id', '?')} (recovered={eligible}, "
+            f"expected={expected}); withholding snapshot"
+        )
+        return []
+    return task_events

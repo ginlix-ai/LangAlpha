@@ -5,7 +5,7 @@ Covers:
 - HITL response serialization (serialize_hitl_response_map, summarize_hitl_response_map)
 - _append_to_last_user_message helper
 
-Error classification (classify_error) is tested in test_request_prep.py.
+Error classification (classify_error) is tested in chat/test_error_handling.py.
 LLM config resolution is tested in test_resolve_llm_config.py.
 """
 

@@ -2,6 +2,7 @@
  * Shared market utilities used across Dashboard and MarketView.
  */
 import { api } from '@/api/client';
+import { displaySpelling } from '@/lib/bars/exchanges';
 
 interface MarketStatusData {
   market?: string;
@@ -43,9 +44,22 @@ interface ExtendedHoursInfo {
   regularClose: number | null;
 }
 
+/** One row of `GET /api/v1/market-data/search/stocks`. */
+export interface StockSearchHit {
+  symbol: string;
+  name?: string;
+  // CN/HK listings carry both spellings; `name` stays the single-name fallback
+  // so callers that do not resolve a dual name are unaffected.
+  nameLocal?: string;
+  nameEn?: string;
+  exchangeShortName?: string;
+  stockExchange?: string;
+  currency?: string;
+}
+
 interface StockSearchResult {
   query: string;
-  results: unknown[];
+  results: StockSearchHit[];
   count: number;
 }
 
@@ -136,7 +150,32 @@ export function getExtendedHoursInfo(
  * Search for stocks by keyword (symbol or company name).
  * GET /api/v1/market-data/search/stocks
  */
-export async function searchStocks(query: string, limit = 50): Promise<StockSearchResult> {
+/**
+ * A ticker typed straight in, when the search has nothing better to offer.
+ * Wide enough for the instrument forms the data providers take besides
+ * equities: `EURUSD=X`, `ES=F`, `X:BTCUSD`, `I:SPX`.
+ */
+const TICKER_RE = /^[A-Za-z0-9.^=:-]{1,16}$/;
+
+/** Every symbol field hands over the same shape: the display spelling
+ *  (trimmed, uppercase, `.SH` for Shanghai), never blank. */
+export function normalizeSymbolInput(raw: string): string | null {
+  const sym = displaySpelling(raw);
+  return sym ? sym : null;
+}
+
+/** The typed text as a ticker in its display spelling, or null when it reads as a company name.
+ *  Tested after the fold, so a code typed through a Chinese IME (`６００５１９。ＳＨ`) reads as one. */
+export function readTypedTicker(raw: string): string | null {
+  const sym = displaySpelling(raw);
+  return TICKER_RE.test(sym) ? sym : null;
+}
+
+export async function searchStocks(
+  query: string,
+  limit = 50,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<StockSearchResult> {
   if (!query || !query.trim()) {
     return { query: '', results: [], count: 0 };
   }
@@ -144,10 +183,12 @@ export async function searchStocks(query: string, limit = 50): Promise<StockSear
     const params = new URLSearchParams();
     params.append('query', query.trim());
     params.append('limit', String(Math.min(Math.max(1, limit), 100)));
-    const { data } = await api.get('/api/v1/market-data/search/stocks', { params });
+    const { data } = await api.get('/api/v1/market-data/search/stocks', { params, signal });
     return data || { query: query.trim(), results: [], count: 0 };
   } catch (e: unknown) {
-    const err = e as { response?: { status?: number; data?: unknown }; message?: string };
+    const err = e as { name?: string; response?: { status?: number; data?: unknown }; message?: string };
+    // An aborted search is the caller moving on, not a failure to report.
+    if (err?.name === 'CanceledError' || err?.name === 'AbortError') throw e;
     console.error('Search stocks failed:', err?.response?.status, err?.response?.data, err?.message);
     return { query: query.trim(), results: [], count: 0 };
   }

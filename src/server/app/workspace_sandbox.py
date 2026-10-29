@@ -13,10 +13,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import posixpath
 import re
 import shlex
 import time
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -24,20 +26,47 @@ from fastapi import APIRouter, HTTPException, Path as PathParam, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from src.server.utils.api import CurrentUserId, require_workspace_owner
+from src.server.database.share_codes import share_url
+from src.server.database.share_links import ensure_app_link
+from src.server.utils.api import CurrentUserId
 from src.server.database.workspace import (
     get_preview_command,
-    get_workspace as db_get_workspace,
+    get_workspace_dir_name as db_get_workspace_dir_name,
 )
+from src.server.database.workspace_folders import is_top_level, workspace_folder_in_use
+from src.server.app.workspace_files._shared import work_dir_for
+from src.server.services.workspace_files import (
+    held_workspace_row,
+    owned_workspace_on_computer,
+)
+from src.server.services.workspace_layout import WorkspaceLayoutUnavailable
+from src.server.utils.error_sanitization import sandbox_failure_http
 from src.server.services.workspace_manager import WorkspaceManager
+from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT, WorkspaceLayout
 from ptc_agent.core.sandbox import PTCSandbox
-from src.utils.cache.redis_cache import get_cache_client
+from ptc_agent.core.sandbox.preview_probe import head_preview
+from ptc_agent.core.sandbox.runtime import (
+    RuntimeState,
+    SandboxTransientError,
+)
+from src.server.services.preview_capabilities import (
+    PreviewProxyNotConfigured,
+    PreviewProxyUnavailable,
+)
+from src.server.services.preview_links import (
+    SIGNED_URL_LIFETIME,
+    UNSET,
+    delete_cached_signed_url,
+    delete_preview_owner,
+    get_preview_owner,
+    preview_launch_lease,
+    resolve_preview,
+    set_preview_owner,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Workspace Sandbox"])
-
-_SIGNED_URL_TTL = 3000  # 50 min (signed URLs expire in 1h)
 
 # Provider-native synonyms for "up and usable", canonicalized for the wire.
 # get_metadata() is provider-specific by contract, so daytona reports "started"
@@ -54,8 +83,8 @@ def _configured_provider() -> str | None:
     defeat the disk-quota branch this value exists to drive.
 
     Reads ``config.sandbox`` directly rather than via ``to_core_config()``, which
-    deep-copies the MCP config to hand each workspace its own — wasted work here,
-    since it passes ``sandbox`` straight through.
+    deep-copies every section to hand each workspace its own. That is wasted work
+    for a single field that reads the same in the copy and in the original.
     """
     try:
         config = WorkspaceManager.get_instance().config
@@ -64,6 +93,23 @@ def _configured_provider() -> str | None:
     except Exception as e:
         logger.debug(f"Could not resolve the configured sandbox provider: {e}")
         return None
+
+
+async def _provider_kind(workspace_id: str) -> str | None:
+    """Which provider this workspace's machine runs on.
+
+    The computer row carries the kind it was created with, so one deployment can
+    serve more than one backend and the reported provider has to come from the
+    machine. A workspace with no computer row reports the deployment's.
+    """
+    try:
+        manager = WorkspaceManager.get_instance()
+        kind = await manager.provider_kind_for_workspace(workspace_id)
+        if kind:
+            return kind
+    except Exception as e:
+        logger.debug(f"Could not resolve the machine's sandbox provider: {e}")
+    return _configured_provider()
 
 
 def _display_state(state: Any) -> str | None:
@@ -94,62 +140,6 @@ def _offline_display_state(state: Any, row_status: str | None) -> str | None:
     return display
 
 
-def _preview_cache_key(sandbox_id: str, port: int) -> str:
-    """Redis key for cached signed preview URL."""
-    return f"preview:signed_url:{sandbox_id}:{port}"
-
-
-async def _get_cached_signed_url(sandbox_id: str, port: int) -> str | None:
-    """Get cached signed URL from Redis."""
-    cache = get_cache_client()
-    return await cache.get(_preview_cache_key(sandbox_id, port))
-
-
-async def _set_cached_signed_url(
-    sandbox_id: str, port: int, url: str, *, expires_in: int | None = None,
-) -> None:
-    """Cache a signed URL in Redis with TTL.
-
-    Args:
-        expires_in: Actual signed URL expiry in seconds. When provided the
-            cache TTL is set to ``expires_in - 600`` (10 min safety margin),
-            clamped to [60, _SIGNED_URL_TTL]. Falls back to _SIGNED_URL_TTL.
-    """
-    if expires_in is not None:
-        ttl = max(60, min(expires_in - 600, _SIGNED_URL_TTL))
-    else:
-        ttl = _SIGNED_URL_TTL
-    cache = get_cache_client()
-    await cache.set(_preview_cache_key(sandbox_id, port), url, ttl=ttl)
-
-
-async def _delete_cached_signed_url(sandbox_id: str, port: int) -> None:
-    """Delete a cached signed URL from Redis."""
-    cache = get_cache_client()
-    await cache.delete(_preview_cache_key(sandbox_id, port))
-
-
-async def _is_preview_live_confirmed(sandbox_id: str, port: int) -> bool:
-    """Check if the preview was recently confirmed live (avoids repeated HEAD probes)."""
-    cache = get_cache_client()
-    return await cache.get(f"preview:live:{sandbox_id}:{port}") is not None
-
-
-async def _set_preview_live_confirmed(sandbox_id: str, port: int, *, ttl: int = 10) -> None:
-    """Mark preview as confirmed live for a short window."""
-    cache = get_cache_client()
-    await cache.set(f"preview:live:{sandbox_id}:{port}", "1", ttl=ttl)
-
-
-async def _check_signed_url_healthy(signed_url: str) -> bool:
-    """HEAD-check the actual signed URL the iframe would load."""
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.head(signed_url, follow_redirects=True)
-            return 200 <= resp.status_code < 400
-    except Exception:
-        return False
-
 # Regex for validating package names (allows version specifiers)
 _PACKAGE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+([<>=!~]+.*)?$")
 
@@ -160,20 +150,16 @@ _PACKAGE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+([<>=!~]+.*)?$")
 
 
 async def _get_sandbox(workspace_id: str, user_id: str) -> Any:
-    """Validate workspace ownership, reject flash workspaces, and return the sandbox."""
-    workspace = await db_get_workspace(workspace_id)
-    require_workspace_owner(workspace, user_id=user_id)
-
-    if workspace.get("status") == "flash":
-        raise HTTPException(
-            status_code=400, detail="Flash workspaces do not have a sandbox"
-        )
+    """Validate the workspace and return its sandbox, starting the computer if stopped."""
+    await owned_workspace_on_computer(workspace_id, user_id)
 
     manager = WorkspaceManager.get_instance()
     try:
         session = await manager.get_session_for_workspace(workspace_id, user_id=user_id)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Sandbox not ready: {e}") from None
+        # The raw text quotes provider URLs and sandbox ids; it stays in the log.
+        logger.warning(f"Sandbox for workspace {workspace_id} not ready: {e}")
+        raise sandbox_failure_http(e) from None
 
     sandbox = getattr(session, "sandbox", None)
     if sandbox is None:
@@ -202,7 +188,7 @@ class DiskOverview(BaseModel):
 
 
 class DirectorySize(BaseModel):
-    path: str  # e.g. "results/"
+    path: str  # e.g. "work/"
     size: str  # e.g. "1.2G"
 
 
@@ -274,7 +260,9 @@ def _parse_df_output(stdout: str) -> DiskOverview | None:
     )
 
 
-def _parse_du_output(stdout: str, work_dir: str = "/home/workspace") -> list[DirectorySize]:
+def _parse_du_output(
+    stdout: str, work_dir: str = DEFAULT_SANDBOX_ROOT
+) -> list[DirectorySize]:
     """Parse `du -sh <work_dir>/*/` output into directory sizes."""
     work_dir_prefix = work_dir.rstrip("/") + "/"
     results: list[DirectorySize] = []
@@ -353,13 +341,7 @@ async def get_sandbox_stats(
     For stopped/archived workspaces: returns metadata only (state, resources, intervals)
     from Daytona API without starting the sandbox.
     """
-    workspace = await db_get_workspace(workspace_id)
-    require_workspace_owner(workspace, user_id=x_user_id)
-
-    if workspace.get("status") == "flash":
-        raise HTTPException(
-            status_code=400, detail="Flash workspaces do not have a sandbox"
-        )
+    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
 
     if workspace.get("status") == "running":
         return await _get_full_sandbox_stats(workspace_id, x_user_id, workspace)
@@ -373,28 +355,27 @@ async def _get_offline_sandbox_stats(
 ) -> SandboxStatsResponse:
     """Get sandbox metadata for stopped/archived workspaces via Daytona API (no start)."""
     sandbox_id = workspace.get("sandbox_id")
+    provider_kind = await _provider_kind(workspace_id)
     if not sandbox_id:
         return SandboxStatsResponse(
             workspace_id=workspace_id,
             state=workspace.get("status", "unknown"),
-            provider=_configured_provider(),
+            provider=provider_kind,
             created_at=str(workspace.get("created_at", "")),
             resources=SandboxResources(),
         )
 
-    from ptc_agent.core.sandbox.providers import create_provider
-
     manager = WorkspaceManager.get_instance()
     provider = None
     try:
-        provider = create_provider(manager.config.to_core_config())
+        provider = await manager.provider_for_workspace(workspace_id)
         runtime = await provider.get(sandbox_id)
         meta = await runtime.get_metadata()
         return SandboxStatsResponse(
             workspace_id=workspace_id,
             sandbox_id=sandbox_id,
             state=_offline_display_state(meta.get("state"), workspace.get("status")),
-            provider=_configured_provider(),
+            provider=provider_kind,
             created_at=str(meta["created_at"]) if meta.get("created_at") else None,
             auto_stop_interval=meta.get("auto_stop_interval"),
             resources=SandboxResources(
@@ -410,7 +391,7 @@ async def _get_offline_sandbox_stats(
             workspace_id=workspace_id,
             sandbox_id=sandbox_id,
             state=workspace.get("status", "unknown"),
-            provider=_configured_provider(),
+            provider=provider_kind,
             created_at=str(workspace.get("created_at", "")),
             resources=SandboxResources(),
         )
@@ -426,6 +407,9 @@ async def _get_full_sandbox_stats(
 ) -> SandboxStatsResponse:
     """Get full sandbox stats for running workspaces (disk, packages, MCP, skills)."""
     session, sandbox = await _get_sandbox(workspace_id, x_user_id)
+    view = WorkspaceManager.get_instance().tool_view(session, workspace_id)
+    mcp_servers = list(view.mcp_registry.connectors) if view.mcp_registry else []
+    provider_kind = await _provider_kind(workspace_id)
 
     # --- 1. Static properties from the runtime metadata ---
     resources = SandboxResources()
@@ -493,13 +477,19 @@ async def _get_full_sandbox_stats(
 
     async def _get_skills():
         try:
-            # Read SKILL.md frontmatter from each skill directory
-            cmd = (
-                f"for d in {work_dir}/.agents/skills/*/; do "
-                '  [ -f "$d/SKILL.md" ] && echo "=== $(basename "$d") ===" && head -5 "$d/SKILL.md"; '
-                "done 2>/dev/null || true"
-            )
-            result = await sandbox.execute_bash_command(cmd, timeout=10)
+            # A settle on any worker moves only a folder it can hold, so the
+            # folder read under the hold is the one listed; mid-move, none is.
+            async with workspace_folder_in_use(workspace_id):
+                dir_name = await db_get_workspace_dir_name(workspace_id)
+                if dir_name and not is_top_level(dir_name):
+                    return []
+                # Read SKILL.md frontmatter from each skill directory
+                cmd = (
+                    f"for d in {shlex.quote(WorkspaceLayout(work_dir, dir_name).skills)}/*/; do "
+                    '  [ -f "$d/SKILL.md" ] && echo "=== $(basename "$d") ===" && head -5 "$d/SKILL.md"; '
+                    "done 2>/dev/null || true"
+                )
+                result = await sandbox.execute_bash_command(cmd, timeout=10)
             if result.get("success"):
                 return _parse_skills_frontmatter(result.get("stdout", ""))
         except Exception as e:
@@ -513,22 +503,13 @@ async def _get_full_sandbox_stats(
         _get_skills(),
     )
 
-    # --- 3. MCP servers ---
-    mcp_servers: list[str] = []
-    try:
-        registry = getattr(session, "mcp_registry", None)
-        if registry is not None:
-            mcp_servers = list(registry.connectors.keys())
-    except Exception:
-        pass
-
     default_packages = list(PTCSandbox.DEFAULT_DEPENDENCIES)
 
     return SandboxStatsResponse(
         workspace_id=workspace_id,
         sandbox_id=sandbox_id,
         state=state,
-        provider=_configured_provider(),
+        provider=provider_kind,
         created_at=created_at,
         auto_stop_interval=auto_stop_interval,
         resources=resources,
@@ -586,7 +567,7 @@ class PreviewUrlRequest(BaseModel):
     port: int = Field(..., ge=3000, le=9999)
     command: str | None = None
     force: bool = False
-    expires_in: int = Field(default=3600, ge=60, le=86400)
+    expires_in: int = Field(default=SIGNED_URL_LIFETIME, ge=60, le=86400)
 
 
 class PreviewUrlResponse(BaseModel):
@@ -595,71 +576,93 @@ class PreviewUrlResponse(BaseModel):
     expires_in: int
 
 
-_UNSET = object()
+def _preview_work_dir(workspace: dict[str, Any]) -> str:
+    try:
+        return work_dir_for(workspace)
+    except WorkspaceLayoutUnavailable as e:
+        raise HTTPException(
+            status_code=503, detail="Workspace files are not available"
+        ) from e
 
 
-async def _resolve_preview(
-    sandbox: Any,
+async def owner_preview_url(
     workspace_id: str,
+    user_id: str,
     port: int,
     *,
-    command: str | None | object = _UNSET,
+    command: str | None | object = UNSET,
     force: bool = False,
-    expires_in: int = 3600,
+    expires_in: int = SIGNED_URL_LIFETIME,
 ) -> str:
-    """Core preview URL resolution — shared by the POST and redirect endpoints.
+    """A signed URL for the owner's own preview, as an HTTP answer.
 
-    When a *command* is available (supplied by the caller or read from the
-    workspace ``artifacts`` column), ``start_and_get_preview_url`` is called.
-    This is the same code path as clicking the artifact: it health-checks
-    the port, restarts the server if it's down, polls for readiness, and
-    returns a fresh signed URL.
-
-    Falls back to a plain ``get_preview_url`` only when no command is known.
-
-    Pass ``command=None`` to indicate "already looked up, no command stored"
-    (skips the DB lookup).  Omit the argument (or pass ``_UNSET``) to have
-    this function look it up from the database.
+    The one acquisition path for an authenticated caller: the preview panel
+    and the ``/a/`` page both come through here, so a stopped sandbox is
+    started for the owner and for nobody else. Ownership, the unbound-Home
+    refusal and every failure status live here rather than in each route.
     """
-    # Resolve command: explicit arg → DB lookup (only when caller didn't provide)
-    cmd = command
-    if cmd is _UNSET:
-        cmd = await get_preview_command(workspace_id, port)
-
-    if cmd:
-        # Short-lived cache (60s) when a command is stored — covers burst
-        # asset requests (CSS/JS/images) without risking long-lived stale URLs.
-        if not force:
-            cached_url = await _get_cached_signed_url(sandbox.sandbox_id, port)
-            if cached_url:
-                if await _is_preview_live_confirmed(sandbox.sandbox_id, port) \
-                        or await _check_signed_url_healthy(cached_url):
-                    await _set_preview_live_confirmed(sandbox.sandbox_id, port, ttl=10)
-                    return cached_url
-
-        preview_info = await sandbox.start_and_get_preview_url(
-            cmd, port, expires_in=expires_in,
+    _session, sandbox = await _get_sandbox(workspace_id, user_id)
+    try:
+        # The server starts in the folder, which a settle on any worker would
+        # otherwise move between the read and the launch.
+        async with held_workspace_row(workspace_id) as workspace:
+            return await resolve_preview(
+                sandbox, workspace_id, port,
+                command=command, force=force, expires_in=expires_in,
+                work_dir=_preview_work_dir(workspace),
+            )
+    except HTTPException:
+        raise
+    except NotImplementedError:
+        raise HTTPException(
+            status_code=501,
+            detail="Preview URLs are not supported by the current sandbox provider",
+        ) from None
+    except PreviewProxyNotConfigured:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Previews on this computer need the preview proxy, which this "
+                "deployment has not configured."
+            ),
+        ) from None
+    except PreviewProxyUnavailable:
+        logger.warning(
+            "Preview proxy unavailable for workspace %s port %d", workspace_id, port
         )
-        await _set_cached_signed_url(
-            sandbox.sandbox_id, port, preview_info.url, expires_in=60,
+        raise HTTPException(
+            status_code=503, detail="Previews are unavailable. Try again shortly."
+        ) from None
+    except Exception:
+        logger.exception(
+            "Failed to get preview URL for workspace %s port %d", workspace_id, port
         )
-        return preview_info.url
+        raise HTTPException(status_code=500, detail="Failed to get preview URL") from None
 
-    # No command known — try signed-URL cache, then generate fresh.
-    if not force:
-        cached_url = await _get_cached_signed_url(sandbox.sandbox_id, port)
-        if cached_url:
-            if await _is_preview_live_confirmed(sandbox.sandbox_id, port) \
-                    or await _check_signed_url_healthy(cached_url):
-                await _set_preview_live_confirmed(sandbox.sandbox_id, port, ttl=10)
-                return cached_url
 
-    await _delete_cached_signed_url(sandbox.sandbox_id, port)
-    preview_info = await sandbox.get_preview_url(port, expires_in=expires_in)
-    await _set_cached_signed_url(
-        sandbox.sandbox_id, port, preview_info.url, expires_in=expires_in,
-    )
-    return preview_info.url
+def with_preview_path(signed_url: str, path: str | None) -> str:
+    """The signed URL opened at a page inside the preview rather than its index.
+
+    A page's own query is appended after the signed one, never spliced ahead
+    of it: the provider's parameters are what admit the request. The web's
+    ``appendPathSuffix`` composes the owner's panel the same way.
+    """
+    if not path:
+        return signed_url
+    rest, _, fragment = path.partition("#")
+    pathname, _, query = rest.partition("?")
+    normalized = posixpath.normpath("/" + pathname.lstrip("/"))
+    if ".." in normalized.split("/"):
+        return signed_url
+    parts = urlsplit(signed_url)
+    if normalized != "/":
+        parts = parts._replace(path=parts.path.rstrip("/") + normalized)
+    if query:
+        page_query = urlencode(parse_qsl(query, keep_blank_values=True))
+        parts = parts._replace(query="&".join(filter(None, (parts.query, page_query))))
+    if fragment:
+        parts = parts._replace(fragment=fragment)
+    return urlunsplit(parts)
 
 
 @router.post("/{workspace_id}/sandbox/preview-url")
@@ -672,29 +675,12 @@ async def get_sandbox_preview_url(
 
     If command is provided, starts the server process in background before generating the URL.
     """
-    _session, sandbox = await _get_sandbox(workspace_id, x_user_id)
-
-    try:
-        url = await _resolve_preview(
-            sandbox, workspace_id, body.port,
-            command=body.command if body.command else _UNSET,
-            force=body.force, expires_in=body.expires_in,
-        )
-        return PreviewUrlResponse(url=url, port=body.port, expires_in=body.expires_in)
-    except HTTPException:
-        raise
-    except NotImplementedError:
-        raise HTTPException(
-            status_code=501,
-            detail="Preview URLs are not supported by the current sandbox provider",
-        ) from None
-    except Exception:
-        logger.exception(
-            "Failed to get preview URL for workspace %s port %d",
-            workspace_id,
-            body.port,
-        )
-        raise HTTPException(status_code=500, detail="Failed to get preview URL") from None
+    url = await owner_preview_url(
+        workspace_id, x_user_id, body.port,
+        command=body.command if body.command else UNSET,
+        force=body.force, expires_in=body.expires_in,
+    )
+    return PreviewUrlResponse(url=url, port=body.port, expires_in=body.expires_in)
 
 
 class PreviewHealthRequest(BaseModel):
@@ -714,20 +700,30 @@ async def check_preview_health(
 ) -> PreviewHealthResponse:
     """Check if a preview service is still reachable on the given port.
 
-    Uses the sandbox's standard preview link (cached) to avoid repeated
-    provider API calls on the 2-minute polling interval.
+    Never starts the computer: an open card polls every 2 minutes, so a check
+    that started it would undo every stop. A stopped computer answers 503,
+    which the card shows as stopped. Uses the sandbox's standard preview link
+    (cached) to avoid repeated provider API calls on the polling interval.
     """
-    _session, sandbox = await _get_sandbox(workspace_id, x_user_id)
+    await owned_workspace_on_computer(workspace_id, x_user_id)
+    stopped = HTTPException(status_code=503, detail="Computer is stopped")
+    manager = WorkspaceManager.get_instance()
+    try:
+        session = await manager.get_session_if_running(workspace_id, user_id=x_user_id)
+    except Exception as e:
+        logger.warning(f"Preview health could not reach workspace {workspace_id}: {e}")
+        raise sandbox_failure_http(e) from None
+    sandbox = getattr(session, "sandbox", None)
+    if sandbox is None or sandbox.runtime is None:
+        raise stopped
 
     checked_at = int(time.time())
     reachable = False
     try:
-        preview_link = await sandbox.get_preview_link(body.port)
+        preview_link = await sandbox.get_preview_link(body.port, wake=False)
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.head(
-                preview_link.url,
-                headers=preview_link.auth_headers,
-                follow_redirects=True,
+            resp = await head_preview(
+                client, preview_link.url, preview_link.auth_headers
             )
             reachable = 200 <= resp.status_code < 400
     except NotImplementedError:
@@ -739,7 +735,27 @@ async def check_preview_health(
 
     # Invalidate cached signed URL when server is down so next resolve gets a fresh one
     if not reachable:
-        await _delete_cached_signed_url(sandbox.sandbox_id, body.port)
+        await delete_cached_signed_url(sandbox.sandbox_id, body.port)
+
+    # On the runtime itself: the sandbox's own call path reconnects, which
+    # would start a computer that stopped on its idle timer. A live preview
+    # is activity on both clocks, the same path proxied traffic takes.
+    runtime = sandbox.runtime
+    try:
+        if reachable:
+            if not await manager.keep_sandbox_alive(
+                workspace_id, sandbox.sandbox_id, runtime=runtime
+            ):
+                raise stopped
+        elif await runtime.refresh_state() is not RuntimeState.RUNNING:
+            raise stopped
+    except HTTPException:
+        raise
+    except SandboxTransientError:
+        raise stopped from None
+    except Exception:
+        # A state read that fails leaves the reachability answer as it is.
+        logger.debug("Preview health state read failed", exc_info=True)
 
     return PreviewHealthResponse(reachable=reachable, checked_at=checked_at)
 
@@ -762,118 +778,67 @@ async def restart_preview_server(
 ) -> PreviewRestartResponse:
     """Restart a preview server process in the workspace sandbox."""
     _session, sandbox = await _get_sandbox(workspace_id, x_user_id)
-
-    try:
-        await sandbox.start_preview_server(body.command, body.port)
-        return PreviewRestartResponse(success=True)
-    except Exception:
-        logger.exception(
-            "Failed to restart preview server for workspace %s", workspace_id,
-        )
-        raise HTTPException(status_code=500, detail="Failed to restart preview server") from None
+    # The server starts in the folder, which a settle on any worker would
+    # otherwise move between the read and the launch.
+    async with held_workspace_row(workspace_id) as workspace:
+        work_dir = _preview_work_dir(workspace)
+        try:
+            async with preview_launch_lease(sandbox.sandbox_id, body.port):
+                owner = await get_preview_owner(sandbox.sandbox_id, body.port)
+                if owner not in (None, workspace_id):
+                    if await sandbox._is_preview_reachable(body.port):
+                        raise RuntimeError(
+                            f"Port {body.port} is already in use on this computer. "
+                            "Choose another port."
+                        )
+                    await delete_preview_owner(sandbox.sandbox_id, body.port)
+                await set_preview_owner(sandbox.sandbox_id, body.port, workspace_id)
+                try:
+                    await sandbox.start_preview_server(
+                        f"cd {shlex.quote(work_dir)} && {body.command}",
+                        body.port,
+                        owner=workspace_id,
+                    )
+                except BaseException:
+                    await delete_preview_owner(sandbox.sandbox_id, body.port)
+                    raise
+            return PreviewRestartResponse(success=True)
+        except Exception:
+            logger.exception(
+                "Failed to restart preview server for workspace %s", workspace_id,
+            )
+            raise HTTPException(status_code=500, detail="Failed to restart preview server") from None
 
 
 # ---------------------------------------------------------------------------
-# Unauthenticated preview redirect
+# Legacy preview redirect
 # ---------------------------------------------------------------------------
 
 preview_redirect_router = APIRouter(prefix="/api/v1", tags=["Preview Redirect"])
 
 
-async def _preview_redirect(workspace_id: str, port: int, path: str = "") -> Response:
-    """Shared logic for preview redirect with optional path suffix.
-
-    Performs a lightweight DB check first — only proceeds if the workspace
-    is already running.  Unlike the authenticated POST endpoint, the
-    unauthenticated redirect does NOT start stopped sandboxes (to prevent
-    denial-of-wallet via cheap GET requests).
-    """
-    # Lightweight DB check — don't start stopped sandboxes from this
-    # unauthenticated endpoint (workspace UUID is the only credential).
-    # Return uniform 404 for both missing and non-running workspaces to
-    # avoid leaking workspace existence via status-code differences.
-    try:
-        workspace = await db_get_workspace(workspace_id)
-    except Exception:
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable") from None
-    if not workspace or workspace.get("status") != "running":
-        raise HTTPException(status_code=404, detail="Preview not available")
-
-    # Extract preview command from the already-fetched workspace to avoid a
-    # second DB query inside _resolve_preview.
-    artifacts = workspace.get("artifacts") or {}
-    preview_cmd = (artifacts.get("preview_servers") or {}).get(str(port))
-
-    async def _resolve() -> Response:
-        manager = WorkspaceManager.get_instance()
-        try:
-            session = await manager.get_session_for_workspace(
-                workspace_id, user_id=workspace.get("user_id")
-            )
-        except Exception:
-            raise HTTPException(status_code=503, detail="Sandbox not ready") from None
-
-        sandbox = getattr(session, "sandbox", None)
-        if sandbox is None:
-            raise HTTPException(status_code=503, detail="Sandbox not available")
-
-        try:
-            signed_url = await _resolve_preview(sandbox, workspace_id, port, command=preview_cmd)
-        except NotImplementedError:
-            raise HTTPException(
-                status_code=501,
-                detail="Preview URLs are not supported by the current sandbox provider",
-            ) from None
-        except Exception:
-            logger.exception("Failed to get preview URL for workspace %s port %d", workspace_id, port)
-            raise HTTPException(status_code=500, detail="Failed to get preview URL") from None
-
-        if path:
-            import posixpath
-            from urllib.parse import urlsplit, urlunsplit
-
-            if ".." in path.split("/"):
-                raise HTTPException(status_code=400, detail="Invalid path")
-            normalized = posixpath.normpath("/" + path)
-
-            parts = urlsplit(signed_url)
-            new_path = parts.path.rstrip("/") + normalized
-            signed_url = urlunsplit(parts._replace(path=new_path))
-
-        response = RedirectResponse(url=signed_url, status_code=302)
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-        return response
-
-    try:
-        return await asyncio.wait_for(_resolve(), timeout=20)
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=504, detail="Preview URL resolution timed out"
-        ) from None
-
-
 @preview_redirect_router.get("/preview/{workspace_id}/{port}")
-async def preview_redirect_by_workspace(
-    workspace_id: str,
-    port: int = PathParam(ge=3000, le=9999),
-) -> Response:
-    """Stable preview URL — deterministic for a given workspace+port.
-
-    Resolves to a cached signed URL via 302 redirect.
-    The workspace UUID (128-bit) acts as the access credential.
-    """
-    return await _preview_redirect(workspace_id, port)
-
-
 @preview_redirect_router.get("/preview/{workspace_id}/{port}/{path:path}")
-async def preview_redirect_by_workspace_with_path(
+async def preview_redirect(
     workspace_id: str,
     port: int = PathParam(ge=3000, le=9999),
     path: str = "",
 ) -> Response:
-    """Stable preview URL with path suffix — for serving non-index files.
+    """Send an old preview URL, path suffix or not, on to the app's ``/a/`` link.
 
-    E.g. /api/v1/preview/{workspace_id}/8080/timeline.html
-    Appends the path to the signed Daytona URL before redirecting.
+    Nothing here touches a session or the sandbox. The old route resolved the
+    signed URL itself, which made a bare workspace UUID a credential and,
+    on a stale ``running`` row, woke a sandbox that had auto-stopped (#378).
+    The ``/a/`` page does the resolving, for the signed-in owner only. An old
+    URL's suffix rides along as ``?path=`` rather than onto the link: two old
+    URLs for one port can name different pages, and anyone holding the UUID
+    can make this request. No server on that port answers the same 404 as an
+    unknown workspace, so the route confirms neither.
     """
-    return await _preview_redirect(workspace_id, port, path)
+    if not await get_preview_command(workspace_id, port):
+        raise HTTPException(status_code=404, detail="Preview not available")
+    link = await ensure_app_link(workspace_id, port)
+    entry = posixpath.normpath("/" + path).lstrip("/") if path else None
+    response = RedirectResponse(url=share_url(link.code, entry), status_code=302)
+    response.headers["Cache-Control"] = "no-store"
+    return response

@@ -51,7 +51,7 @@ async def authenticate_websocket(websocket: WebSocket) -> str:
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="Missing auth token")
 
     try:
-        auth_info = _decode_token(token)
+        auth_info = await _decode_token(token)
         return auth_info.user_id
     except Exception as exc:
         logger.warning("WS auth failed: %s", exc)

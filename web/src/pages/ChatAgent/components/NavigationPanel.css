@@ -1,18 +1,5 @@
 /* NavigationPanel Styles */
 
-@keyframes gentle-pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.6;
-  }
-}
-
-.nav-panel-agent-pulse {
-  animation: gentle-pulse 2s ease-in-out infinite;
-}
-
 .nav-panel {
   background: var(--color-bg-page);
   border-right: 1px solid var(--color-border-muted);
@@ -22,15 +9,21 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 4px 10px;
   cursor: pointer;
   border-radius: 6px;
   margin: 1px 6px;
-  transition: background-color 0.15s ease;
-  min-height: 32px;
+  transition: background-color var(--motion-quick) var(--ease-out);
+  min-height: 28px;
 }
 
 .nav-panel-row:hover {
+  background-color: var(--color-border-muted);
+}
+
+/* The row a right-click menu is open for keeps its hover tint: the menu is
+   modal, so the pointer no longer hovers anything beneath it. */
+.nav-panel-row.is-menu-open {
   background-color: var(--color-border-muted);
 }
 
@@ -66,7 +59,7 @@
   padding-right: 6px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--motion-quick) var(--ease-out);
   background:
     linear-gradient(to right, transparent, var(--color-border-muted) 20px),
     linear-gradient(to right, transparent, var(--color-bg-page) 20px);
@@ -76,9 +69,23 @@
   border-radius: 0 8px 8px 0;
 }
 
-.nav-panel-row:hover .nav-panel-row-actions {
+/* Keyboard focus and an open menu keep the actions up too: the menu is
+   portaled, so hovering it ends the row's :hover, and a keyboard user is never
+   hovering. Focus counts only when a key placed it (lib/inputModality.ts): the
+   workspace row is itself a tab stop, as is every action button, so a click
+   lands focus in the row and would hold the actions up after the pointer left. */
+.nav-panel-row:hover .nav-panel-row-actions,
+:root:not([data-pointer-focus]) .nav-panel-row:focus-within .nav-panel-row-actions,
+.nav-panel-row:has([data-state='open']) .nav-panel-row-actions {
   opacity: 1;
   pointer-events: auto;
+}
+
+@media (hover: none), (any-pointer: coarse) {
+  .nav-panel-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* Agent group — visually nested under thread with a left guide line.
@@ -101,7 +108,7 @@
   cursor: pointer;
   border-radius: 4px;
   margin: 1px 0;
-  transition: background-color 0.15s ease;
+  transition: background-color var(--motion-quick) var(--ease-out);
   min-height: 26px;
 }
 
@@ -160,7 +167,7 @@
 /* Dismiss buttons (minimize + fold) */
 .nav-panel-dismiss-btn {
   opacity: 0.4;
-  transition: opacity 0.15s ease, background-color 0.15s ease;
+  transition: opacity var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 
 @media (hover: hover) {

@@ -15,6 +15,7 @@ from typing import Any
 from psycopg.rows import dict_row
 
 from src.server.database.pool import get_db_connection
+from src.server.models.user import normalize_symbol
 from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
@@ -37,13 +38,24 @@ _UPSERT_SQL = """
     DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
 """
 
+# ``read_at_us`` dates the read in the same statement, so it orders snapshots:
+# parallel draws commit in any order, and a set's size or members can't say
+# which read came last once something else removed rows in between.
 _CHART_SELECT_SQL = """
-    SELECT payload
+    SELECT payload,
+           (extract(epoch FROM statement_timestamp()) * 1000000)::bigint AS read_at_us
     FROM chart_annotations
     WHERE workspace_id = %s AND chart_id = %s
     ORDER BY created_at
     LIMIT %s
 """
+
+
+def _stored(symbol: str, annotation: dict[str, Any]) -> dict[str, Any]:
+    """The payload as stored: it repeats the symbol, so in the column's spelling."""
+    if "symbol" not in annotation:
+        return annotation
+    return {**annotation, "symbol": normalize_symbol(symbol)}
 
 
 def _upsert_params(
@@ -57,10 +69,10 @@ def _upsert_params(
     return (
         strip_pg_nul_str(workspace_id),
         strip_pg_nul_str(chart_id),
-        strip_pg_nul_str(symbol.upper()),
+        strip_pg_nul_str(normalize_symbol(symbol)),
         strip_pg_nul_str(timeframe),
         strip_pg_nul_str(annotation["annotation_id"]),
-        SafeJson(annotation),
+        SafeJson(_stored(symbol, annotation)),
     )
 
 
@@ -77,8 +89,9 @@ def _warn_if_capped(row_count: int, workspace_id: str, chart_id: str) -> None:
 
 
 def make_chart_id(symbol: str, timeframe: str) -> str:
-    """Disclosed instance key: ``{SYMBOL}:{timeframe}`` (uppercased ticker)."""
-    return f"{symbol.strip().upper()}:{timeframe.strip()}"
+    """Disclosed instance key: ``{SYMBOL}:{timeframe}``, the ticker in the one
+    spelling rows store, so ``600519.SS`` and ``600519.SH`` are one chart."""
+    return f"{normalize_symbol(symbol)}:{timeframe.strip()}"
 
 
 async def add_annotation(
@@ -119,8 +132,9 @@ async def add_and_list_annotations(
     symbol: str,
     timeframe: str,
     annotation: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Upsert one annotation and return the instance's full set, oldest first.
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Upsert one annotation; return the instance's full set, oldest first,
+    and when that set was read (epoch microseconds, None if not read back).
 
     Write and read share one pooled connection (autocommit, so the read sees the
     just-written row) — one checkout per draw instead of two. Raises on the write
@@ -143,9 +157,10 @@ async def add_and_list_annotations(
                 rows = await cur.fetchall()
         except Exception:
             logger.exception("[chart_annotation] read-back after upsert failed")
-            return [annotation]
+            return [_stored(symbol, annotation)], None
     _warn_if_capped(len(rows), workspace_id, chart_id)
-    return [row["payload"] for row in rows]
+    read_at_us = rows[0]["read_at_us"] if rows else None
+    return [row["payload"] for row in rows], read_at_us
 
 
 async def list_charts(
@@ -162,7 +177,7 @@ async def list_charts(
     params: list[Any] = [workspace_id]
     if symbol:
         clauses.append("symbol = %s")
-        params.append(symbol.upper())
+        params.append(normalize_symbol(symbol))
     if timeframe:
         clauses.append("timeframe = %s")
         params.append(timeframe)

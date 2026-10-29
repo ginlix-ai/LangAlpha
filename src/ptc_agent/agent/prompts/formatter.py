@@ -4,14 +4,18 @@ These functions generate dynamic content based on runtime data
 and are kept in Python rather than templates.
 """
 
-import structlog
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from typing import Any
+
+import structlog
 
 from ptc_agent.core.mcp_sanitize import (
     is_untrusted_server,
     sanitize_tool_name,
     sanitize_tool_text,
 )
+from ptc_agent.core.paths import LEGACY_ROOT_TOOLS_DIR, SandboxLayout, WorkspaceLayout
 
 logger = structlog.get_logger(__name__)
 
@@ -22,7 +26,7 @@ TOOL_SUMMARY_TEMPLATE = """
 
 TOOL_ITEM_TEMPLATE = "  - {tool_name}({parameters}) -> {return_type}: {description}"
 
-# Hard caps for untrusted (source 'workspace' or 'user') server-level text
+# Hard caps for untrusted (source 'user') server-level text
 # rendered into the prompt. Match the API write-time caps so a user can't
 # balloon the prompt.
 WORKSPACE_DESCRIPTION_MAX_LEN = 512
@@ -34,6 +38,43 @@ WORKSPACE_INSTRUCTION_MAX_LEN = 1024
 # capped (their detailed listing renders unchanged).
 WORKSPACE_DETAILED_MAX_TOOLS = 25
 WORKSPACE_DETAILED_MAX_CHARS = 8000
+
+
+def workspace_path_vars(
+    layout: WorkspaceLayout | None, *, root: str, legacy_layout: bool = False
+) -> dict[str, Any]:
+    """Template vars for the canonical path table, read off the layout classes.
+
+    The table is the one prompt surface that has to stay exact, so it
+    transcribes ``paths.py`` rather than spelling the names a second time.
+    ``layout`` is None wherever a build has no workspace folder bound, and the
+    workspace is then the computer root, which is what a single-workspace
+    computer looks like anyway.
+    """
+    layout = layout if layout is not None else WorkspaceLayout(root)
+    return {
+        "computer_root": layout.root,
+        "working_directory": layout.workspace,
+        # Transcripts and the computer's thread index exist only for a
+        # workspace with its own folder beside its siblings.
+        "workspace_folder": bool(layout.dir_name),
+        "legacy_layout": legacy_layout,
+        "legacy_root": root,
+        "legacy_tools_docs": LEGACY_ROOT_TOOLS_DIR + "/docs",
+        "workspace_paths": {
+            "agent_md": WorkspaceLayout.AGENT_MD_FILE,
+            "data": WorkspaceLayout.DATA_DIR,
+            "skills": WorkspaceLayout.SKILLS_DIR,
+            "memory": WorkspaceLayout.MEMORY_DIR,
+            "scratchpad": WorkspaceLayout.SCRATCHPAD_DIR,
+            # A pattern, not a path: the thread's own folder rides the baseline.
+            "scratchpad_notes": WorkspaceLayout.scratchpad_subdir(
+                "<thread>", WorkspaceLayout.SCRATCHPAD_NOTE_DIR
+            ),
+            "tools_docs": SandboxLayout.TOOLS_DOCS_DIR,
+            "user": SandboxLayout.USER_DIR,
+        },
+    }
 
 
 def _is_workspace_source(config: Any) -> bool:
@@ -194,12 +235,9 @@ def _format_tool_summary_per_server(
     if not lines:
         return "\nNo MCP servers configured."
 
-    summary = "\n".join(lines)
-
-    # Brief reminder to check docs for signatures
-    note = "\n\n**Note**: Check `tools/docs/{server_name}/{tool_name}.md` for exact function signatures before use."
-
-    return f"{summary}{note}"
+    # The read-the-doc-first rule is stated once by the component that renders
+    # this summary, so it is not repeated per server here.
+    return "\n".join(lines)
 
 
 def _server_header_lines(server_name: str, config: Any) -> list:
@@ -238,10 +276,10 @@ def _format_server_brief(server_name: str, tools: list, config: Any) -> list:
     tools_word = "tool" if tool_count == 1 else "tools"
 
     lines = _server_header_lines(server_name, config)
-    lines.append(f"  - Module: tools/{server_name}.py")
+    # Module path, import form and docs path are all derivable from the server
+    # name, so the component states the convention once instead of three lines
+    # per server.
     lines.append(f"  - Tools: {tool_count} {tools_word} available")
-    lines.append(f"  - Import: from tools.{server_name} import <tool_name>")
-    lines.append(f"  - Documentation: tools/docs/{server_name}/*.md")
 
     return lines
 
@@ -258,7 +296,6 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
         List of formatted lines
     """
     lines = _server_header_lines(server_name, config)
-    lines.append(f"  Module: tools/{server_name}.py")
     lines.append("  Available tools:")
 
     workspace = _is_workspace_source(config)
@@ -274,11 +311,15 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
                 param_strs = []
                 for pname, pinfo in params.items():
                     safe_name = _safe_param_name(pname, workspace=workspace)
-                    safe_type = _safe_param_text(pinfo.get("type", "any"), workspace=workspace)
+                    safe_type = _safe_param_text(
+                        pinfo.get("type", "any"), workspace=workspace
+                    )
                     if pinfo.get("required", False):
                         param_strs.append(f"{safe_name}: {safe_type}")
                     else:
-                        safe_default = _safe_param_text(pinfo.get("default", "None"), workspace=workspace)
+                        safe_default = _safe_param_text(
+                            pinfo.get("default", "None"), workspace=workspace
+                        )
                         param_strs.append(f"{safe_name}: {safe_type} = {safe_default}")
                 tool_line += ", ".join(param_strs)
 
@@ -286,11 +327,15 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
 
         # Add return type
         if tool.get("return_type"):
-            tool_line += f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+            tool_line += (
+                f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+            )
 
         # Add description
         if tool.get("description"):
-            tool_line += f": {_safe_param_text(tool['description'], workspace=workspace)}"
+            tool_line += (
+                f": {_safe_param_text(tool['description'], workspace=workspace)}"
+            )
 
         lines.append(tool_line)
 
@@ -331,20 +376,19 @@ def _format_tool_summary_brief(
         if config and config.instruction:
             lines.append(f"  Instructions: {config.instruction}")
 
-        lines.append(f"  - Module: tools/{server_name}.py")
+        lines.append(f"  - Module: {WorkspaceLayout.TOOLS_DIR}/{server_name}.py")
         lines.append(f"  - Tools: {tool_count} {tools_word} available")
         lines.append(f"  - Import: from tools.{server_name} import <tool_name>")
-        lines.append(f"  - Documentation: tools/docs/{server_name}/*.md")
+        lines.append(
+            f"  - Documentation: {SandboxLayout.TOOLS_DOCS_DIR}/{server_name}/*.md"
+        )
 
     if not lines:
         return "\nNo MCP servers configured."
 
-    summary = "\n".join(lines)
-
-    # Brief reminder to check docs for signatures
-    note = "\n\n**Note**: Check `tools/docs/{server_name}/{tool_name}.md` for exact function signatures before use."
-
-    return f"{summary}{note}"
+    # The read-the-doc-first rule is stated once by the component that renders
+    # this summary, so it is not repeated per server here.
+    return "\n".join(lines)
 
 
 def _format_tool_summary_detailed(
@@ -376,7 +420,7 @@ def _format_tool_summary_detailed(
         if config and config.instruction:
             lines.append(f"  Instructions: {config.instruction}")
 
-        lines.append(f"  Module: tools/{server_name}.py")
+        lines.append(f"  Module: {WorkspaceLayout.TOOLS_DIR}/{server_name}.py")
         lines.append("  Available tools:")
 
         workspace = _is_workspace_source(config)
@@ -392,23 +436,33 @@ def _format_tool_summary_detailed(
                     param_strs = []
                     for pname, pinfo in params.items():
                         safe_name = _safe_param_name(pname, workspace=workspace)
-                        safe_type = _safe_param_text(pinfo.get("type", "any"), workspace=workspace)
+                        safe_type = _safe_param_text(
+                            pinfo.get("type", "any"), workspace=workspace
+                        )
                         if pinfo.get("required", False):
                             param_strs.append(f"{safe_name}: {safe_type}")
                         else:
-                            safe_default = _safe_param_text(pinfo.get("default", "None"), workspace=workspace)
-                            param_strs.append(f"{safe_name}: {safe_type} = {safe_default}")
+                            safe_default = _safe_param_text(
+                                pinfo.get("default", "None"), workspace=workspace
+                            )
+                            param_strs.append(
+                                f"{safe_name}: {safe_type} = {safe_default}"
+                            )
                     tool_line += ", ".join(param_strs)
 
             tool_line += ")"
 
             # Add return type
             if tool.get("return_type"):
-                tool_line += f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+                tool_line += (
+                    f" -> {_safe_param_text(tool['return_type'], workspace=workspace)}"
+                )
 
             # Add description
             if tool.get("description"):
-                tool_line += f": {_safe_param_text(tool['description'], workspace=workspace)}"
+                tool_line += (
+                    f": {_safe_param_text(tool['description'], workspace=workspace)}"
+                )
 
             lines.append(tool_line)
 
@@ -418,29 +472,26 @@ def _format_tool_summary_detailed(
     return "\n".join(lines)
 
 
-def build_tool_summary_from_registry(
-    mcp_registry: Any,
-    *,
-    mode: str = "full",
-) -> str:
-    """Build a formatted MCP tool summary from a registry instance.
+@dataclass(frozen=True)
+class RegistryTools:
+    """One read of an MCP registry: its tools per server and its server configs.
 
-    Shared by PTCAgent and SubagentCompiler to avoid duplicating
-    the registry-to-string conversion logic.
-
-    Args:
-        mcp_registry: MCP registry instance (or None/falsy).
-        mode: Tool exposure mode ("summary", "detailed", or "full").
-
-    Returns:
-        Formatted tool summary string, or "" on failure.
+    A build that formats the registry once per subagent reads it once and
+    filters this, rather than asking the registry again for each.
     """
+
+    tools_by_server: dict[str, list[dict]]
+    server_configs: dict[str, Any]
+
+
+def read_registry_tools(mcp_registry: Any) -> RegistryTools | None:
+    """The registry's tools and enabled server configs, or None when it has none."""
     if not mcp_registry:
-        return ""
+        return None
     try:
         tools_by_server = mcp_registry.get_all_tools()
         if not tools_by_server:
-            return ""
+            return None
         tools_dict = {
             server_name: [tool.to_dict() for tool in tools]
             for server_name, tools in tools_by_server.items()
@@ -450,10 +501,67 @@ def build_tool_summary_from_registry(
             server_configs = {
                 s.name: s for s in mcp_registry.config.mcp.servers if s.enabled
             }
-        return format_tool_summary(tools_dict, mode=mode, server_configs=server_configs)
+        return RegistryTools(tools_dict, server_configs)
+    except Exception:
+        logger.warning("failed to build MCP tool summary", exc_info=True)
+        return None
+
+
+def format_registry_tools(
+    tools: RegistryTools,
+    *,
+    mode: str = "full",
+    servers: Collection[str] | None = None,
+    preferred: Sequence[str] = (),
+) -> str:
+    """Format one read of a registry as an MCP tool summary.
+
+    Args:
+        tools: The registry as ``read_registry_tools`` read it.
+        mode: Tool exposure mode ("summary", "detailed", or "full").
+        servers: Only these servers are listed; None lists every one.
+        preferred: Servers listed first, under a line saying to reach for
+            them first. A name not listed otherwise is skipped.
+
+    Returns:
+        Formatted tool summary string, or "" on failure.
+    """
+    try:
+        tools_dict = tools.tools_by_server
+        if servers is not None:
+            tools_dict = {n: t for n, t in tools_dict.items() if n in servers}
+        lead = [n for n in dict.fromkeys(preferred) if n in tools_dict]
+        if lead:
+            tools_dict = {
+                **{n: tools_dict[n] for n in lead},
+                **{n: t for n, t in tools_dict.items() if n not in lead},
+            }
+        summary = format_tool_summary(
+            tools_dict, mode=mode, server_configs=tools.server_configs
+        )
+        if lead:
+            summary = (
+                f"\nPrefer these servers: {', '.join(lead)}. Use another only when "
+                f"these don't cover what you need.\n{summary}"
+            )
+        return summary
     except Exception:
         logger.warning("failed to build MCP tool summary", exc_info=True)
         return ""
+
+
+def build_tool_summary_from_registry(mcp_registry: Any, *, mode: str = "full") -> str:
+    """Build a formatted MCP tool summary from a registry instance.
+
+    Args:
+        mcp_registry: MCP registry instance (or None/falsy).
+        mode: Tool exposure mode ("summary", "detailed", or "full").
+
+    Returns:
+        Formatted tool summary string, or "" on failure.
+    """
+    tools = read_registry_tools(mcp_registry)
+    return format_registry_tools(tools, mode=mode) if tools is not None else ""
 
 
 def format_subagent_summary(subagents: list[dict]) -> str:

@@ -15,7 +15,7 @@
   align-items: center;
   border-right: 1px solid hsl(var(--sidebar-border));
   z-index: 1000;
-  transition: width 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: width var(--motion-fold) var(--ease-out);
 }
 
 /* Mode-switch choreography: the aside persists (width transitions) while each
@@ -38,9 +38,9 @@
    never `none` — permanently turning each child into a containing block for
    fixed-position descendants (it re-anchored the workspace-drag DragOverlay in
    .sidebar-tree, drifting the chip by the tree's viewport offset). Backwards
-   still covers the 0.06s delay, and the end state equals the natural style. */
+   still covers the delay, and the end state equals the natural style. */
 .sidebar > * {
-  animation: sidebar-content-in 0.18s ease 0.06s backwards;
+  animation: sidebar-content-in var(--motion-quick) var(--ease-out) var(--motion-stagger) backwards;
 }
 
 /* Rail content settles leftward (panel shrank), panel content rightward. */
@@ -78,7 +78,7 @@
   right: 3px;
   width: 2px;
   background: transparent;
-  transition: background-color 0.15s ease;
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
 .sidebar-resize-handle:hover::after,
@@ -97,6 +97,72 @@ body.sidebar-resizing .sidebar,
 body.sidebar-resizing .app-main,
 body.sidebar-resizing .sidebar-tracking {
   transition: none !important;
+}
+
+/* Desktop shell on macOS: reserves the strip the traffic lights float over, and
+   carries the window drag itself. It has to be a real element, since app-region
+   is unreliable on pseudo-elements, and it lives in the sidebar alone so the
+   main column keeps its full height.
+
+   Gated on `html.desktop-mac` like every other chrome rule (chrome.css,
+   App.css, the #window-drag block in index.html) rather than on a JS condition
+   in the sidebar. The class is stamped once before the bundle runs and cannot
+   change, so a React branch on it was a second mechanism for a decision that
+   already had one. Off the desktop shell this collapses to nothing and the
+   sidebar lays out exactly as before. */
+.sidebar-window-drag {
+  display: none;
+}
+
+html.desktop-mac .sidebar-window-drag {
+  display: block;
+  height: 38px;
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+}
+
+/* Desktop shell: the expanded panel's header row moves up into the 38px titlebar
+   row, to the right of the window buttons, and carries the toggle and back and
+   forward only. The brand stays in the collapsed rail. */
+/* The macOS window buttons float over the rail and reach ~73px, so the desktop
+   shell keeps a rail that clears them; everywhere else it hugs its icons. */
+html.desktop-mac {
+  --sidebar-rail-width: 76px;
+}
+
+html.desktop-mac .sidebar--panel .sidebar-panel-header {
+  position: relative;
+  margin-top: -38px;
+  height: 38px;
+  padding: 0 10px 0 84px;
+  box-sizing: border-box;
+}
+html.desktop-mac .sidebar--panel .sidebar-collapse-btn { order: 1; }
+html.desktop-mac .sidebar--panel .sidebar-history { order: 2; }
+html.desktop-mac .sidebar--panel .sidebar-brand {
+  display: none;
+}
+/* Breathing room between the titlebar row and the first item. */
+html.desktop-mac .sidebar--panel .sidebar-panel-nav {
+  margin-top: 6px;
+}
+
+.sidebar-history {
+  display: none;
+}
+
+html.desktop-mac .sidebar-history {
+  display: flex;
+  gap: 2px;
+}
+
+.sidebar-history .sidebar-collapse-btn:disabled:hover {
+  background: transparent;
+}
+
+.sidebar-history .sidebar-collapse-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .sidebar-panel-header {
@@ -140,7 +206,7 @@ body.sidebar-resizing .sidebar-tracking {
   color: var(--color-icon-muted);
   cursor: pointer;
   opacity: 0.7;
-  transition: opacity 0.15s ease, background-color 0.15s ease;
+  transition: opacity var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
   flex-shrink: 0;
 }
 
@@ -168,7 +234,7 @@ body.sidebar-resizing .sidebar-tracking {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 7px 9px;
+  padding: 5px 9px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -177,7 +243,7 @@ body.sidebar-resizing .sidebar-tracking {
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
 
 .sidebar-panel-item:hover {
@@ -229,7 +295,7 @@ body.sidebar-resizing .sidebar-tracking {
   text-transform: uppercase;
   color: var(--color-text-quaternary);
   cursor: pointer;
-  transition: color 0.15s ease;
+  transition: color var(--motion-quick) var(--ease-out);
 }
 
 .sidebar-section-title:hover {
@@ -241,7 +307,7 @@ body.sidebar-resizing .sidebar-tracking {
   align-items: center;
   gap: 2px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--motion-quick) var(--ease-out);
 }
 
 .sidebar-section-header:hover .sidebar-section-actions,
@@ -286,22 +352,31 @@ body.sidebar-resizing .sidebar-tracking {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 5px 8px;
   border: none;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
 .sidebar-account-row:hover {
   background: hsl(var(--sidebar-hover));
 }
 
+/* Inset, unlike the collapsed avatar's: the row is already full-bleed against
+   the panel, so an outset ring lands in the gutter and reads as a second border
+   on the sidebar itself. Drawn inside its own radius it stays a ring on one
+   control. */
+.sidebar-account-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-focus-ring);
+}
+
 .sidebar-account-row-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
   background: var(--color-accent-soft);
   color: var(--color-accent-light);
   display: flex;
@@ -332,6 +407,13 @@ body.sidebar-resizing .sidebar-tracking {
   background: var(--color-accent-soft);
   color: var(--color-accent-light);
   flex-shrink: 0;
+  /* Bounded because the text is a backend value, not one of ours: the plan's
+     display name is free-form, and unbounded next to a shrinkable name this
+     pill wins the row and squeezes the account down to nothing. */
+  max-width: 7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-logo {
@@ -352,21 +434,24 @@ body.sidebar-resizing .sidebar-tracking {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 0 14px;
+  padding: 0 12px;
 }
 
 .sidebar-nav-item {
   position: relative;
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
   border: none;
   background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition:
+    background-color var(--motion-quick) var(--ease-out),
+    color var(--motion-quick) var(--ease-out),
+    scale var(--motion-press) var(--ease-out);
   color: hsl(var(--sidebar-icon));
 }
 
@@ -374,19 +459,22 @@ body.sidebar-resizing .sidebar-tracking {
   background: hsl(var(--sidebar-hover));
 }
 
-.sidebar-nav-item:active {
-  transform: scale(0.94);
+@media (prefers-reduced-motion: no-preference) {
+  .sidebar-nav-item:active {
+    scale: var(--press-scale);
+  }
 }
 
 .sidebar-nav-item.active {
   color: hsl(var(--sidebar-icon-selected));
 }
 
-/* Accent bar hugging the rail edge (-14px = .sidebar-nav horizontal padding) */
+/* Accent bar hugging the rail edge: the item is centred in the rail, so its
+   offset from the edge is half of what the rail has left over. */
 .sidebar-nav-item.active::before {
   content: '';
   position: absolute;
-  left: -14px;
+  left: calc((40px - var(--sidebar-width)) / 2);
   top: 50%;
   transform: translateY(-50%);
   width: 3px;
@@ -417,7 +505,7 @@ body.sidebar-resizing .sidebar-tracking {
   position: relative;
   width: 32px;
   height: 32px;
-  border-radius: 999px;
+  border-radius: var(--radius);
   border: 1px solid transparent;
   background: var(--color-accent-soft);
   color: var(--color-accent-light);
@@ -425,30 +513,9 @@ body.sidebar-resizing .sidebar-tracking {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  overflow: visible;
-  padding: 0;
-  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.sidebar-account-plan-flair {
-  position: absolute;
-  bottom: -4px;
-  right: -6px;
-  font-size: 0.5625rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: 999px;
-  background: var(--color-accent-primary);
-  color: var(--color-text-on-accent, #ffffff);
-  border: 2px solid hsl(var(--sidebar-bg));
-  max-width: 56px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  pointer-events: none;
+  padding: 0;
+  transition: border-color var(--motion-quick) var(--ease-out), transform var(--motion-quick) var(--ease-out), box-shadow var(--motion-quick) var(--ease-out);
 }
 
 .sidebar-account-trigger:hover {
@@ -457,7 +524,7 @@ body.sidebar-resizing .sidebar-tracking {
 
 .sidebar-account-trigger:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--color-accent-overlay);
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
 }
 
 .sidebar-account-trigger[data-active='true'] {
@@ -468,7 +535,6 @@ body.sidebar-resizing .sidebar-tracking {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: 999px;
 }
 
 .sidebar-account-initials {

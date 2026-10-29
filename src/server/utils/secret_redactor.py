@@ -30,7 +30,6 @@ class SecretRedactor:
     """Resolves secret values from MCP config and provides redaction methods."""
 
     def __init__(self) -> None:
-        from src.config.settings import get_nested_config
         from src.config.tool_settings import _get_agent_config_dict
 
         secrets: dict[str, str] = {}
@@ -51,13 +50,6 @@ class SecretRedactor:
                 elif isinstance(value, str) and len(value) >= 8:
                     secrets[key] = value
 
-        # GITHUB_TOKEN — injected separately by _build_sandbox_env_vars
-        if get_nested_config("github.enabled", False):
-            token_env = get_nested_config("github.token_env", "GITHUB_BOT_TOKEN")
-            gh_token = os.environ.get(token_env)
-            if gh_token and len(gh_token) >= 8:
-                secrets["GITHUB_TOKEN"] = gh_token
-
         # Sort by value length descending so longer matches replace first
         self._secrets = sorted(secrets.items(), key=lambda kv: len(kv[1]), reverse=True)
 
@@ -75,7 +67,7 @@ class SecretRedactor:
 
         Args:
             text: Content to scan.
-            vault_secrets: A workspace's effective vault secrets ({name: value}).
+            vault_secrets: The owner's vault secrets ({name: value}).
                 Merged into the scan alongside global MCP secrets.
         """
         for name, value in self._secrets:
@@ -121,34 +113,41 @@ def get_redactor() -> SecretRedactor:
     return _instance
 
 
-async def get_vault_secrets_for_redaction(workspace_id: str) -> dict[str, str]:
-    """The workspace's redactable secret set: effective vault secrets
-    (user ∪ workspace) plus credential-looking inline connector literals.
+async def get_vault_secrets_for_redaction(user_id: str) -> dict[str, str]:
+    """The owner's redactable secret set: their whole vault plus
+    credential-looking inline connector literals.
+
+    Takes the owner the caller already resolved instead of re-reading the
+    workspace: a workspace deleted mid-request names no owner, and reading that
+    as "no secrets" would serve the file unredacted. The whole vault counts,
+    since every workspace of the user can read every secret.
 
     Always reads the DB, never a live session's cached copy: that cache is
     process-local and written once at upload, so a rotation handled by another
     worker leaves this process holding the RETIRED value, which would scrub the
     dead secret and pass the live one through in cleartext. A failed read
-    propagates: an empty dict means the workspace has no secrets, never "the
-    lookup failed" — callers serve file bytes on this answer, one of them on a
-    route whose only credential is the workspace UUID.
+    propagates: an empty dict means the owner has no secrets, never "the
+    lookup failed". Callers serve file bytes on this answer, some of them on
+    routes whose only credential is the URL.
     """
-    from src.server.database.vault_secrets import get_effective_secrets
+    from src.server.database.user_vault_secrets import get_user_secrets_decrypted
 
-    literals = await _connector_secret_literals(workspace_id)
-    vault = await get_effective_secrets(workspace_id)
+    if not user_id:
+        raise ValueError("Redacting a workspace file needs its owner")
+    literals = await _connector_secret_literals(str(user_id))
+    vault = await get_user_secrets_decrypted(str(user_id))
     return {**literals, **vault}
 
 
-async def _connector_secret_literals(workspace_id: str) -> dict[str, str]:
-    """Inline env/header/arg literals from the workspace's connectors that
-    read as credentials.
+async def _connector_secret_literals(user_id: str) -> dict[str, str]:
+    """Inline env/header/arg literals from the user's plugins that read as
+    credentials.
 
     The sanctioned home for these values is a ``${vault:NAME}`` ref, but the
     API accepts plain literals too, and a literal the platform delivers into
     every inheriting workspace deserves the same scrubbing a vault value gets.
-    Collection is over-broad on rows (both tiers, disabled included — a
-    credential on a disabled row is still a credential) and narrow on values:
+    Collection is over-broad on rows (disabled included, as a credential on a
+    disabled row is still a credential) and narrow on values:
     ``looks_like_secret`` keeps ordinary config (``application/json``,
     ``LOG_LEVEL=ERROR``) from being redacted out of served files.
     """
@@ -157,18 +156,17 @@ async def _connector_secret_literals(workspace_id: str) -> dict[str, str]:
         iter_arg_credentials,
         looks_like_secret,
     )
-    from src.server.database.mcp_servers import (
-        list_catalog_servers,
-        list_workspace_servers,
-    )
-    from src.server.database.workspace import get_workspace
+    from src.server.database.mcp_servers import list_catalog_servers
 
     def _collect(server: str, mapping, out: dict[str, str]) -> None:
         for key, value in (mapping or {}).items():
             if not isinstance(value, str) or key in _NON_SECRET_KEYS:
                 continue
-            if VAULT_REF_RE.fullmatch(value):
-                continue  # resolves to a vault value the scan already covers
+            # A value carrying a ref resolves to a vault value the scan already
+            # covers, and the text around it is a template (``Bearer ``), not
+            # a credential; ``search`` is the verdict vault extraction reaches.
+            if VAULT_REF_RE.search(value):
+                continue
             if len(value) < 8 or not looks_like_secret(key, value):
                 continue
             out[f"mcp:{server}:{key}"] = value
@@ -178,29 +176,10 @@ async def _connector_secret_literals(workspace_id: str) -> dict[str, str]:
             if len(value) >= 8:
                 out[f"mcp:{server}:{key}"] = value
 
-    entries: list[tuple[str, object, object, object]] = []
-    for row in await list_workspace_servers(workspace_id):
-        config = row.get("config") or {}
-        entries.append(
-            (
-                row.get("name") or "",
-                config.get("env"),
-                config.get("headers"),
-                config.get("args"),
-            )
-        )
-    workspace = await get_workspace(workspace_id)
-    user_id = (workspace or {}).get("user_id")
-    if user_id:
-        for row in await list_catalog_servers(str(user_id)):
-            entries.append(
-                (
-                    row.get("name") or "",
-                    row.get("env"),
-                    row.get("headers"),
-                    row.get("args"),
-                )
-            )
+    entries = [
+        (row.get("name") or "", row.get("env"), row.get("headers"), row.get("args"))
+        for row in await list_catalog_servers(user_id)
+    ]
 
     literals: dict[str, str] = {}
     for server, env, headers, args in entries:

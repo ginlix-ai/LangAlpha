@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 
 import pytest
 
@@ -38,17 +39,16 @@ class TestDataPersistenceAcrossCycles:
         content = await sandbox_runtime.download_file(f"{wd}/persist.txt")
         assert content == b"persistent data"
 
-    async def test_code_run_output_files_persist(self, sandbox_runtime, timed):
+    async def test_python_output_files_persist(self, sandbox_runtime, timed):
         wd = await sandbox_runtime.fetch_working_dir()
-        await sandbox_runtime.code_run(
-            f"with open('{wd}/code_file.txt', 'w') as f: f.write('from code_run')"
-        )
+        code = f"with open('{wd}/code_file.txt', 'w') as f: f.write('from python')"
+        await sandbox_runtime.exec(f"python3 -c {shlex.quote(code)}")
 
         async with timed("persistence", "stop_start_code_persist"):
             await _stop_start(sandbox_runtime)
 
         content = await sandbox_runtime.download_file(f"{wd}/code_file.txt")
-        assert content == b"from code_run"
+        assert content == b"from python"
 
     async def test_multiple_stop_start_cycles(self, sandbox_runtime, timed):
         wd = await sandbox_runtime.fetch_working_dir()

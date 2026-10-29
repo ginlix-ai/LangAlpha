@@ -53,6 +53,10 @@ T = TypeVar("T")
 # attribute directly (``tracing._HASH_IDS = False``).
 _HASH_IDS: bool = os.environ.get("OBSERVABILITY_HASH_IDS", "true").lower() != "false"
 
+# Every chat turn runs the full agent now. The label stays, so a dashboard or
+# alert that filters or groups on it keeps its series.
+_TURN_MODE = "ptc"
+
 
 def hash_id(value: Any) -> str:
     """Hash an identifier for span attribute use.
@@ -107,7 +111,6 @@ async def attached(ctx: Any) -> AsyncIterator[None]:
 @asynccontextmanager
 async def chat_turn_observed(
     *,
-    mode: str,
     model: str,
     user_id: Any,
     workspace_id: Any,
@@ -123,7 +126,7 @@ async def chat_turn_observed(
     Counter + duration + in-flight always emit on exit, including on failure, to avoid SLO bias.
     """
     attrs = {
-        "mode": mode,
+        "mode": _TURN_MODE,
         "model": model or "",
         "msg_type": msg_type,
         "user_id": hash_id(user_id),
@@ -132,7 +135,7 @@ async def chat_turn_observed(
     }
     span = tracer.start_span("chat.turn", attributes=attrs)
     ctx = trace.set_span_in_context(span)
-    safe_add(chat_turns_in_flight, 1, {"mode": mode})
+    safe_add(chat_turns_in_flight, 1, {"mode": _TURN_MODE})
     start = time.monotonic()
     status: dict[str, str] = {"value": "error"}
     try:
@@ -143,9 +146,9 @@ async def chat_turn_observed(
         raise
     finally:
         duration_ms = (time.monotonic() - start) * 1000.0
-        safe_add(chat_turns_counter, 1, {"mode": mode, "status": status["value"], "model": model or ""})
-        safe_record(chat_turn_duration_ms, duration_ms, {"mode": mode, "status": status["value"]})
-        safe_add(chat_turns_in_flight, -1, {"mode": mode})
+        safe_add(chat_turns_counter, 1, {"mode": _TURN_MODE, "status": status["value"], "model": model or ""})
+        safe_record(chat_turn_duration_ms, duration_ms, {"mode": _TURN_MODE, "status": status["value"]})
+        safe_add(chat_turns_in_flight, -1, {"mode": _TURN_MODE})
         span.end()
 
 
@@ -190,7 +193,6 @@ def create_task_with_context(
 async def observe_chat_stream(
     gen: AsyncIterator[bytes | str],
     *,
-    mode: str,
     model: str,
     user_id: Any,
     workspace_id: Any,
@@ -204,7 +206,6 @@ async def observe_chat_stream(
     ``interrupted``; clean exhaustion is classified as ``completed``.
     """
     async with chat_turn_observed(
-        mode=mode,
         model=model,
         user_id=user_id,
         workspace_id=workspace_id,
@@ -224,7 +225,7 @@ async def observe_chat_stream(
                         safe_record(
                             hot_path_first_chunk_duration_ms,
                             (time.monotonic() - ttfb_start) * 1000.0,
-                            {"mode": mode},
+                            {"mode": _TURN_MODE},
                         )
                         ttfb_recorded = True
                 yield chunk
@@ -238,7 +239,6 @@ async def observe_chat_stream(
 async def observe_background_chat_turn(
     coro: Coroutine[Any, Any, bool],
     *,
-    mode: str,
     model: str,
     user_id: Any,
     workspace_id: Any,
@@ -252,7 +252,6 @@ async def observe_background_chat_turn(
     emitted inside the drain inherit the dispatched turn's trace.
     """
     async with chat_turn_observed(
-        mode=mode,
         model=model,
         user_id=user_id,
         workspace_id=workspace_id,

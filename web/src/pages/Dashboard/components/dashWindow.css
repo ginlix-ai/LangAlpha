@@ -1,0 +1,538 @@
+/* The dashboard's windows (an article, a brief, the presets, the gallery) in
+   the cards' language: the page's ground, the cards' frames inside it, the
+   detail panel's size (data-scale="panel"). The cards cut their titles in the
+   window's own fill, so every card in one takes that fill as its ground. */
+
+.dash-window {
+  --dash-ground: var(--color-bg-page);
+  color: var(--color-term-text);
+}
+.dash-window .term-card {
+  --term-ground: var(--dash-ground);
+}
+.dash-window--sheet {
+  --dash-ground: var(--color-bg-card);
+}
+.dash-window--dialog {
+  position: relative;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--dash-ground);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.22);
+}
+
+/* ── The head: a meta line over the title ── */
+
+.dash-window-top {
+  padding: 20px 24px 6px;
+}
+.dash-window--sheet .dash-window-top {
+  padding: 4px 0 6px;
+}
+.dash-window-meta {
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  column-gap: 12px;
+}
+.dash-window-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.dash-window-chip {
+  cursor: pointer;
+  text-decoration: none;
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+.dash-window-chip:hover {
+  color: var(--color-term-text);
+}
+.dash-window-chip:focus-visible,
+.dash-window-x:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.dash-window-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 2px;
+  border-radius: 6px;
+  color: var(--color-term-text-secondary);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.dash-window-x:hover {
+  background-color: var(--color-bg-hover);
+  color: var(--color-term-text);
+}
+.dash-window-title {
+  margin: 12px 0 6px;
+  font-family: var(--font-content);
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--color-term-text);
+}
+.dash-window--sheet .dash-window-title {
+  font-size: 1.125rem;
+}
+
+/* ── The body: a reading column and a side column, one column when narrow ── */
+
+.dash-window-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  align-items: start;
+  gap: 16px;
+  padding: 12px 24px 24px;
+}
+.dash-window-grid--one {
+  grid-template-columns: minmax(0, 1fr);
+}
+.dash-window--sheet .dash-window-grid {
+  padding: 12px 0 8px;
+}
+@media (max-width: 767px) {
+  .dash-window-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Under the reading column the picture is an aside, not a banner. */
+  .dash-window-thumb {
+    width: min(100%, 240px);
+  }
+}
+.dash-window-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Prose read at length, in the reply's face in every card style. */
+.dash-window-prose {
+  margin: 0;
+  font-family: var(--font-content);
+  font-size: 0.875rem;
+  line-height: 1.65;
+  font-variant-numeric: normal;
+  color: var(--color-term-text);
+}
+.dash-window-impact td.term-fill {
+  white-space: normal;
+  line-height: 1.5;
+}
+.dash-window-impact td {
+  vertical-align: top;
+}
+.dash-window-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dash-window-thumb {
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid var(--color-term-edge);
+  border-radius: 8px;
+}
+.dash-window-thumb > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Loading, or nothing to show: said in the middle, the close still at hand. */
+.dash-window-state {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 12rem;
+  padding: 24px;
+  font-family: var(--font-content);
+  color: var(--color-term-text-secondary);
+}
+.dash-window-state > .dash-window-x {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}
+
+/* ── The brief's parts: numbered stories, the sources it read ── */
+
+.dash-window-stories {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dash-window-stories > li + li {
+  padding-top: 14px;
+  border-top: 1px dashed var(--color-term-edge);
+}
+.dash-window-story-title {
+  min-width: 0;
+  font-family: var(--font-content);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-term-text);
+}
+.dash-window-prose--sub {
+  margin-top: 4px;
+  color: var(--color-term-text-secondary);
+}
+.dash-window-topic {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.dash-window-sources {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dash-window-sources a {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 0;
+  color: var(--color-term-text);
+  text-decoration: none;
+}
+.dash-window-sources li + li a {
+  border-top: 1px dashed var(--color-term-edge);
+}
+.dash-window-sources a > .term-fill {
+  overflow: hidden;
+  font-family: var(--font-content);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-window-sources a:hover > .term-fill {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dash-window-sources a:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.dash-window-more {
+  margin-top: 6px;
+}
+
+/* ── A window on the Radix dialog (the presets, the gallery) ── */
+
+.dash-window--radix {
+  background-color: var(--dash-ground);
+  border-color: var(--color-border-default);
+}
+@media (min-width: 768px) {
+  .dash-window--radix {
+    border-radius: 12px;
+  }
+}
+
+/* ── The presets: one card per layout ── */
+
+.dash-presets-head .dash-window-title {
+  margin: 10px 0 4px;
+}
+.dash-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding-top: 8px;
+}
+@media (max-width: 767px) {
+  .dash-presets-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.dash-preset > div {
+  margin-top: 12px;
+}
+.dash-preset-thumb {
+  padding: 8px;
+  border: 1px dashed var(--color-term-edge);
+  border-radius: 6px;
+}
+.dash-preset-foot {
+  font-size: 0.71875rem;
+}
+.dash-preset-use {
+  color: var(--color-term-text);
+  opacity: 0;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+.dash-preset:hover .dash-preset-use,
+.dash-preset:focus-within .dash-preset-use {
+  opacity: 1;
+}
+
+/* ── The widget gallery: a quiet category list, a tile per widget ── */
+
+.dash-gallery {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.dash-gallery-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 20px 16px;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border-muted);
+}
+.dash-gallery-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  text-transform: var(--term-case, none);
+}
+.dash-gallery-h {
+  font-family: var(--font-content);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-term-text);
+}
+.dash-gallery-search {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-bg-input);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-term-text);
+  transition: border-color var(--motion-quick) var(--ease-out);
+}
+.dash-gallery-search::placeholder {
+  color: var(--color-term-text-tertiary);
+}
+.dash-gallery-search:focus {
+  outline: none;
+  border-color: var(--color-border-strong);
+}
+.dash-gallery-cats {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+.dash-gallery-cat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  font-family: var(--font-content);
+  font-size: 0.9375rem;
+  text-align: left;
+  color: var(--color-term-text-secondary);
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.dash-gallery-cat:hover,
+.dash-gallery-cat[aria-current='true'] {
+  color: var(--color-term-text);
+}
+.dash-gallery-cat[aria-current='true'] {
+  font-weight: 600;
+}
+.dash-gallery-cat > .term-t3 {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.dash-gallery-cat:focus-visible,
+.dash-gallery-tile:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+.dash-gallery-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.dash-gallery-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 20px 22px 12px;
+  font-size: 0.8125rem;
+}
+.dash-gallery-title {
+  font-family: var(--font-content);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-term-text);
+  white-space: nowrap;
+}
+.dash-gallery-blurb {
+  min-width: 0;
+  font-family: var(--font-content);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-gallery-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 22px 16px;
+}
+.dash-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 14px;
+}
+.dash-gallery-section + .dash-gallery-section {
+  margin-top: 22px;
+}
+.dash-gallery-section > .term-line {
+  margin-bottom: 10px;
+}
+.dash-gallery-empty {
+  grid-column: 1 / -1;
+  padding: 48px 0;
+  text-align: center;
+  font-family: var(--font-content);
+}
+
+/* A tile is a card drawn on a button: its whole face selects, the edge says
+   which one is picked. */
+.dash-gallery-tile {
+  /* A button centers what it holds; a tile stretched to its row's height
+     keeps its text at the top. */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.dash-gallery-tile:not(:disabled):hover::before {
+  border-color: var(--color-term-edge-hover);
+}
+.dash-gallery-tile[aria-pressed='true']::before {
+  border-color: var(--color-term-text);
+  border-width: 1.5px;
+}
+.dash-gallery-tile:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.dash-gallery-tile > .term-card-head > .term-card-title {
+  font-family: var(--font-content);
+  font-weight: 600;
+}
+.dash-gallery-desc {
+  display: block;
+  margin: 0 0 8px;
+  font-family: var(--font-content);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-term-text-secondary);
+}
+.dash-gallery-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dash-gallery-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--color-border-muted);
+  font-size: 0.8125rem;
+}
+.dash-gallery-foot .term-t3 {
+  font-family: var(--font-content);
+}
+.dash-gallery-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  vertical-align: middle;
+}
+.dash-gallery-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.dash-gallery-btn:hover:not(:disabled) {
+  background-color: var(--color-bg-hover);
+}
+.dash-gallery-btn--primary {
+  border-color: transparent;
+  background: var(--color-text-primary);
+  color: var(--color-bg-page);
+}
+.dash-gallery-btn--primary:hover:not(:disabled) {
+  background: var(--color-text-primary);
+  opacity: 0.88;
+}
+.dash-gallery-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.dash-gallery-btn:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+@media (max-width: 767px) {
+  .dash-gallery {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .dash-gallery-nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-muted);
+    overflow: visible;
+  }
+  .dash-gallery-cats {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: 14px;
+  }
+  .dash-gallery-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dash-gallery-blurb,
+  .dash-gallery-foot > .term-t3 {
+    display: none;
+  }
+}

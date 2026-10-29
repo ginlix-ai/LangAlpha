@@ -1,45 +1,44 @@
 """
 Subagent Steering Middleware.
 
-Checks Redis for follow-up steering messages sent by the orchestrator to running
-subagents. Injected into subagent middleware stacks so that the main agent
-can send additional instructions to a running subagent via
-``Task(task_id="...", description="...")``.
-
-Modeled on the main ``SteeringMiddleware`` but uses the per-run steering queue
-(``steering_queue_key``): messages are fenced to the execution they were
-accepted for, so a later resume of the same task can never consume them. The
-legacy task-lifetime key is still drained for pre-ledger producers.
+Takes in the messages sent into a running background task (the user's, and
+the main agent's ``Task(action="update")``) before the subagent's next LLM
+call. They wait in the server's steer outbox on the task's chain, accepted
+only for the run they were sent to; this run holds them and the model call
+that reads them confirms them. What the run never reads is settled when it
+ends, in the same transaction (``report_back.task_steer``).
 """
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+)
 
 from ptc_agent.agent.middleware.background_subagent.middleware import current_background_tool_call_id
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
-from ptc_agent.agent.middleware.background_subagent.redis_stream import (
-    parse_steering_payload,
-    steering_queue_key,
-)
+from ptc_agent.agent.transcript.steer_text import sender_runs, steer_text
 
 logger = logging.getLogger(__name__)
 
+# The steering message's record of the rows its task run holds, which the
+# model call that reads them confirms.
+_HELD_JOBS = "held_jobs"
+
 
 class SubagentSteeringMiddleware(AgentMiddleware):
-    """Checks Redis for follow-up steering messages for a running subagent.
-
-    When the main agent calls ``Task(task_id="...", description="...")`` on a
-    running subagent, the ``BackgroundSubagentMiddleware`` pushes the message
-    to Redis.  This middleware picks it up before the subagent's next LLM call
-    and injects it as a ``HumanMessage``.
+    """Takes in the messages sent into this task's run, before each LLM call.
 
     Placement: first item in ``subagent_middleware`` list so the follow-up
     is visible before any other middleware runs.
@@ -52,129 +51,105 @@ class SubagentSteeringMiddleware(AgentMiddleware):
     async def abefore_model(
         self, state: AgentState, runtime: Runtime
     ) -> dict[str, Any] | None:
-        """Check Redis for pending follow-up steering and inject before model call."""
+        """Hold the run's waiting messages and inject them before the model call."""
         try:
             tool_call_id = current_background_tool_call_id.get()
-            if not tool_call_id:
+            if not tool_call_id or self.registry is None:
                 return None
-
-            from src.utils.cache.redis_cache import get_cache_client
-
-            cache = get_cache_client()
-            if not cache.enabled or not cache.client:
-                return None
-
-            # Delivery-time identity: the registry task IS this writer's
-            # execution — its task_run_id names the run these messages may
-            # be delivered to.
-            task = (
-                self.registry._tasks.get(tool_call_id) if self.registry else None
-            )
-            own_run_id = getattr(task, "task_run_id", None)
-
-            # Drain the run-scoped queue plus the legacy task-lifetime key
-            # (pre-ledger producers), atomically per key.
-            keys = [steering_queue_key(tool_call_id)]
-            if own_run_id:
-                keys.insert(0, steering_queue_key(tool_call_id, own_run_id))
-            pipe = cache.client.pipeline()
-            for key in keys:
-                pipe.lrange(key, 0, -1)
-                pipe.delete(key)
-            results = await pipe.execute()
-            raw_messages = [
-                raw for i in range(0, len(results), 2) for raw in results[i] or []
-            ]
-            if not raw_messages:
-                return None
-
-            # Fence check: a payload stamped for a different run was accepted
-            # against an execution that no longer exists — return it rather
-            # than delivering instructions to a run that never agreed to them.
-            parsed: list[dict[str, Any]] = []
-            returned: list[dict[str, Any]] = []
-            for raw in raw_messages:
-                payload = parse_steering_payload(raw)
-                if payload is None:
-                    logger.warning(
-                        "[SubagentSteering] Failed to parse steering message"
-                    )
-                    continue
-                expected = payload["expected_task_run_id"]
-                if expected and own_run_id and expected != own_run_id:
-                    returned.append(payload)
-                else:
-                    parsed.append(payload)
-
+            task = self.registry._tasks.get(tool_call_id)
             task_id = getattr(task, "task_id", None)
-            agent_id = f"task:{task_id}" if task_id else f"subagent:{tool_call_id}"
-            ts = time.time()
-            if returned and self.registry:
-                for payload in returned:
-                    await self._capture(
-                        tool_call_id,
-                        {
-                            "event": "steering_returned",
-                            "data": {
-                                "agent": agent_id,
-                                "content": payload["content"],
-                                "input_id": payload["input_id"],
-                                "reason": "run_mismatch",
-                            },
-                            "ts": ts,
-                        },
-                    )
-
-            if not parsed:
+            task_run_id = getattr(task, "task_run_id", None)
+            take = getattr(self.registry.report_inbox, "take_task", None)
+            if not task_id or not task_run_id or take is None:
                 return None
 
-            contents = [p["content"] for p in parsed]
-            input_ids = [p["input_id"] for p in parsed if p["input_id"]]
+            taken = await take(self.registry.thread_id or "", task_id, task_run_id)
+            if not taken:
+                return None
+
+            contents = [t["content"] for t in taken]
             content = "\n".join(contents) if len(contents) > 1 else contents[0]
+            # The user's instructions and the main agent's follow-ups join into
+            # one text, so the delivery names each entry: a client settles its
+            # own instruction by id, and labels each by who sent it.
+            delivered = {
+                "content": content,
+                "count": len(taken),
+                "input_ids": [t["input_id"] for t in taken if t.get("input_id")],
+                "entries": [_delivered_entry(t) for t in taken],
+            }
             # Stamp the delivered payload so checkpoint-sourced replay can
             # re-emit steering_delivered without the captured SSE stream.
             human_msg = HumanMessage(
-                content=f"[Follow-up Instructions from Orchestrator]\n{content}",
+                content=steer_text(
+                    sender_runs((t.get("sender") or "user", t["content"]) for t in taken)
+                ),
                 additional_kwargs={
                     "lc_source": "steering",
-                    "steering_delivered": {
-                        "content": content,
-                        "count": len(parsed),
-                        "input_ids": input_ids,
+                    "steering_delivered": delivered,
+                    _HELD_JOBS: {
+                        "task_run_id": task_run_id,
+                        "job_ids": [t["job_id"] for t in taken],
                     },
                 },
             )
 
             logger.info(
-                f"[SubagentSteering] Injecting {len(parsed)} follow-up message(s) "
-                f"for tool_call_id={tool_call_id}"
+                f"[SubagentSteering] Injecting {len(taken)} follow-up message(s) "
+                f"for task {task_id}"
             )
 
-            # Capture for history replay so it appears when loading
-            # subagent conversation from stored events
-            if self.registry:
-                await self._capture(
+            # Captured for the task's stream, which replay of the subagent
+            # conversation reads.
+            try:
+                await self.registry.append_captured_event(
                     tool_call_id,
                     {
                         "event": "steering_delivered",
-                        "data": {
-                            "agent": agent_id,
-                            "content": content,
-                            "count": len(parsed),
-                            "input_ids": input_ids,
-                        },
-                        "ts": ts,
+                        "data": {"agent": f"task:{task_id}", **delivered},
+                        "ts": time.time(),
                     },
                 )
+            except Exception:
+                pass
 
             return {"messages": [human_msg]}
 
         except Exception as e:
-            logger.error(f"[SubagentSteering] Error checking steering queue: {e}")
+            logger.error(f"[SubagentSteering] Error taking steering messages: {e}")
             return None
 
-    async def _capture(self, tool_call_id: str, event: dict[str, Any]) -> None:
-        try:
-            await self.registry.append_captured_event(tool_call_id, event)
-        except Exception:
-            pass
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        await self._confirm(request.state)
+        return await handler(request)
+
+    async def _confirm(self, state: Any) -> None:
+        """Close the rows injected since the last model response: the step
+        that injected them is checkpointed before this one starts. That
+        includes the rows a resume handed this run, on the message it opens
+        with. A retry confirms again, which closes nothing twice."""
+        confirm = getattr(
+            getattr(self.registry, "report_inbox", None), "confirm_task", None
+        )
+        if confirm is None:
+            return
+        for message in reversed((state or {}).get("messages") or []):
+            if isinstance(message, AIMessage):
+                return
+            held = (getattr(message, "additional_kwargs", None) or {}).get(_HELD_JOBS)
+            if held and held.get("task_run_id") and held.get("job_ids"):
+                try:
+                    await confirm(held["task_run_id"], list(held["job_ids"]))
+                except Exception as e:
+                    logger.warning(f"[SubagentSteering] Confirm failed: {e}")
+
+
+def _delivered_entry(taken: dict[str, Any]) -> dict[str, Any]:
+    entry = {"input_id": taken.get("input_id"), "content": taken["content"]}
+    if taken.get("sender"):
+        entry["sender"] = taken["sender"]
+    return entry

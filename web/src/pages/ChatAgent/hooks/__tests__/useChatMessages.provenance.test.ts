@@ -90,9 +90,7 @@ describe('useChatMessages — provenance dispatch (live + history)', () => {
         _msg: string,
         _ws: string,
         _tid: string | null,
-        _hist: unknown[],
-        _plan: boolean,
-        onEvent: OnEvent,
+        { onEvent }: { onEvent: OnEvent },
       ) => {
         onEvent({ event: 'thread_id', thread_id: 'thread-prov-live' });
         // Two web_search records sharing one tool_call_id (distinct URLs).
@@ -136,7 +134,7 @@ describe('useChatMessages — provenance dispatch (live + history)', () => {
     await act(async () => {});
 
     await act(async () => {
-      await result.current.handleSendMessage('research example', false);
+      await result.current.handleSendMessage('research example');
     });
 
     await waitFor(() => {

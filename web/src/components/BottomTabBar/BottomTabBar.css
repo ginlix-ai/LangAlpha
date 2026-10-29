@@ -34,15 +34,16 @@
   background: transparent;
   cursor: pointer;
   border-radius: 16px;
-  transition: color 0.2s ease;
+  transition: color var(--motion-quick) var(--ease-out), scale var(--motion-press) var(--ease-out);
   color: var(--color-text-tertiary);
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
 
-.bottom-tab-item:active {
-  transform: scale(0.92);
-  transition: transform 0s;
+@media (prefers-reduced-motion: no-preference) {
+  .bottom-tab-item:active {
+    scale: var(--press-scale);
+  }
 }
 
 /* Same split as the rail: the glyph darkening carries selection, the accent only

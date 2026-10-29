@@ -1,6 +1,14 @@
 """Shared asyncio helpers for background-task lifecycle."""
 
 import asyncio
+import logging
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Closes in flight, held only so the loop cannot collect one left running past
+# its bound; nothing reads it.
+_closing: set[asyncio.Task] = set()
 
 
 async def cancel_and_join(task: asyncio.Task) -> None:
@@ -23,3 +31,36 @@ async def cancel_and_join(task: asyncio.Task) -> None:
             raise
     except Exception:
         pass
+
+
+async def aclose_within(stream: Any, timeout: float, *, label: str) -> None:
+    """Close an async iterator, waiting at most ``timeout`` for its cleanup.
+
+    The close runs as its own task so a cleanup that will not finish (LangGraph
+    awaits its cancelled node tasks with no bound, and a tool's shielded cleanup
+    can retry for minutes) is left running past the bound instead of holding the
+    caller. A cancel of the caller leaves it running too. Failures are logged,
+    never raised: the caller is already on its way out.
+    """
+    aclose = getattr(stream, "aclose", None)
+    if aclose is None:
+        return
+
+    async def _close() -> None:
+        await aclose()
+
+    task = asyncio.create_task(_close(), name=f"aclose-{label}")
+    _closing.add(task)
+
+    def _reap(t: asyncio.Task) -> None:
+        _closing.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.warning(f"closing {label} failed", exc_info=t.exception())
+
+    task.add_done_callback(_reap)
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        logger.warning(
+            f"closing {label} is still running after {timeout:g}s; "
+            f"leaving it to finish on its own"
+        )

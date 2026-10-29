@@ -8,7 +8,11 @@ from typing import Any
 
 import structlog
 
-from ptc_agent.core.sandbox.runtime import SandboxTransientError
+from ptc_agent.core.sandbox.runtime import (
+    SandboxGoneError,
+    SandboxHostUnavailableError,
+    SandboxTransientError,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -26,6 +30,7 @@ async def async_retry_with_backoff(
     retry_policy: RetryPolicy,
     is_transient: Callable[[Exception], bool],
     on_transient: Callable[[], Awaitable[None]] | None = None,
+    rebind: Callable[[Callable[..., Any]], Callable[..., Any]] | None = None,
     retries: int = 5,
     initial_delay_s: float = 0.25,
     total_timeout: float = 120.0,
@@ -40,6 +45,9 @@ async def async_retry_with_backoff(
         is_transient: Predicate — return True if the exception is transient.
         on_transient: Optional async callback invoked once after the first
             transient error (e.g. to trigger a reconnect).
+        rebind: Optional hook applied to *func* after ``on_transient`` runs. A
+            reconnect can replace the object *func* was bound to, leaving the
+            remaining attempts pointed at a dead receiver; the hook re-resolves it.
         retries: Maximum number of attempts.
         initial_delay_s: Backoff seed (doubles each attempt).
         total_timeout: Hard wall-clock deadline in seconds.
@@ -49,6 +57,12 @@ async def async_retry_with_backoff(
         The return value of *func* on success.
 
     Raises:
+        SandboxGoneError: When *func* or the reconnect callback determines the
+            sandbox no longer exists — propagated so the caller can recover rather
+            than burning every remaining attempt against a sandbox that is not there.
+        SandboxHostUnavailableError: When the reconnect callback finds the
+            sandbox's host not answering, which no attempt within this budget
+            outlasts.
         SandboxTransientError: When retries or timeout are exhausted, or when
             an UNSAFE policy encounters a transient error.
     """
@@ -65,7 +79,9 @@ async def async_retry_with_backoff(
         try:
             return await func(*args, **kwargs)
         except Exception as e:
-            if not is_transient(e):
+            # Gone is a verdict, whatever words its reason carries; the
+            # transient check scans messages for "timed out" and the like.
+            if isinstance(e, SandboxGoneError) or not is_transient(e):
                 raise
 
             # Fire the on_transient callback at most once.
@@ -73,11 +89,23 @@ async def async_retry_with_backoff(
                 try:
                     await on_transient()
                     on_transient_called = True
+                except (SandboxGoneError, SandboxHostUnavailableError):
+                    # The reconnect proved the sandbox is gone, or that its host
+                    # does not answer: a verdict, not a callback failure.
+                    # Swallowing it costs four more doomed attempts, each paying
+                    # a reconnect's connect timeout again, and hands the caller
+                    # a generic transient in place of the reason, so the
+                    # recovery path that recreates a gone sandbox never runs and
+                    # the person is never told the machine is unreachable.
+                    raise
                 except Exception as cb_err:
                     logger.debug(
                         "on_transient callback failed",
                         error=str(cb_err),
                     )
+                else:
+                    if rebind is not None:
+                        func = rebind(func)
 
             if retry_policy == RetryPolicy.UNSAFE:
                 message = (

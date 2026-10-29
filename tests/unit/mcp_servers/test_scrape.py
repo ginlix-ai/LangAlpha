@@ -15,7 +15,7 @@ import asyncio
 
 import pytest
 
-from mcp_servers import scrape_mcp_server as srv
+from plugins.alternative_data import scrape_mcp_server as srv
 from mcp_servers._browser import url_block_reason
 
 
@@ -125,6 +125,40 @@ async def test_hung_fetch_is_bounded_and_returns_fetch_failed(monkeypatch):
     assert result["error"] == "fetch_failed", result
     assert "timed out" in result["detail"]
     assert result["url"] == "https://example.com"
+
+
+async def _launch_failing_with(monkeypatch, message):
+    async def fail(*a, **kw):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(srv, "_fetch_html", fail)
+    return await srv._scrape_one("https://example.com", "browser", "text", 5, False)
+
+
+@pytest.mark.asyncio
+async def test_a_user_machine_with_no_browser_is_reworded(monkeypatch):
+    """The launcher a user's machine has in place of Playwright's Chromium
+    reaches the agent as the reworded cause."""
+    from ptc_agent.core.sandbox.providers._ssh_bootstrap import NO_OWN_BROWSER
+
+    result = await _launch_failing_with(
+        monkeypatch, f"BrowserType.launch: Target closed\n[pid=1][err] {NO_OWN_BROWSER}"
+    )
+
+    assert result["error"] == "fetch_failed"
+    assert result["detail"] == srv._NO_BROWSER_DETAIL
+
+
+@pytest.mark.asyncio
+async def test_playwrights_missing_browser_is_passed_on_as_given(monkeypatch):
+    """A hosted sandbox can say this too, where the reworded cause, about the
+    user's own computer, would be wrong."""
+    message = "BrowserType.launch: Executable doesn't exist at /x/chrome"
+
+    result = await _launch_failing_with(monkeypatch, message)
+
+    assert result["error"] == "fetch_failed"
+    assert result["detail"].startswith(f"RuntimeError: {message}")
 
 
 @pytest.mark.asyncio

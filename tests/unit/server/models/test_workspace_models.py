@@ -39,7 +39,7 @@ class TestWorkspaceStatus:
             "stopped",
             "error",
             "deleted",
-            "flash",
+            "unbound",
         }
         actual = {s.value for s in WorkspaceStatus}
         assert actual == expected
@@ -134,6 +134,7 @@ class TestWorkspaceResponse:
             user_id="user-456",
             name="Test",
             status="running",
+            is_home=False,
             created_at=now,
             updated_at=now,
         )
@@ -198,6 +199,7 @@ class TestWorkspaceListResponse:
             user_id="u-1",
             name="W",
             status="running",
+            is_home=False,
             created_at=now,
             updated_at=now,
         )

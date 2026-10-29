@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useUser } from './useUser';
-import { getLocaleCookie, isSupported, setLocaleCookie } from '../lib/locale';
+import { getLocaleCookie, isSupported, setLocaleCookie, switchLocale } from '../lib/locale';
 
 /**
  * Seed the locale from the user's DB value on first load — but only when there's
@@ -21,7 +21,7 @@ export function useSyncUserLocale() {
     if (!isSupported(stored)) return;
     synced.current = true; // latch even if no-op, so a later refetch can't trigger sync
     if (getLocaleCookie()) return; // browser cookie wins; already applied at init
-    if (i18n.language !== stored) i18n.changeLanguage(stored);
+    if (i18n.language !== stored) void switchLocale(i18n, stored);
     setLocaleCookie(stored);
   }, [user?.locale, i18n]);
 }

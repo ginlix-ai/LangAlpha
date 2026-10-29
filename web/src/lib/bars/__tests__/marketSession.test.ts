@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { deriveMarketSession, getExtendedHoursType } from '../marketSession';
 import type { MarketSession, MarketSessionInputs } from '../marketSession';

@@ -7,6 +7,9 @@ scheduled automations (cron and one-time triggers).
 Endpoints (/api/v1/automations):
 - POST   /automations                              - Create automation
 - GET    /automations                              - List automations
+- GET    /automations/executions                   - Run feed across automations
+- GET    /automations/delivery-options             - Chats an automation's runs can reach
+- PUT    /automations/delivery-default             - Set a workspace's default chat
 - GET    /automations/{automation_id}              - Get automation
 - PATCH  /automations/{automation_id}              - Update automation
 - DELETE /automations/{automation_id}              - Delete automation
@@ -14,24 +17,42 @@ Endpoints (/api/v1/automations):
 - POST   /automations/{automation_id}/pause        - Pause
 - POST   /automations/{automation_id}/resume       - Resume
 - GET    /automations/{automation_id}/executions    - Execution history
+- POST   /automations/{automation_id}/executions/{execution_id}/skip
+                                                   - Skip a waiting run
+- POST   /automations/{automation_id}/executions/{execution_id}/dismiss
+                                                   - Dismiss a failed run
 """
 
 import logging
+from typing import Any, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
 
 from src.server.database import automation as auto_db
-from src.server.handlers import automation_handler as handler
+from src.server.database import automation_executions as exec_db
+from src.server.database.home_workspace import is_home_row
+from src.server.database.workspace import get_workspace
+from src.server.services.automations import lifecycle as handler
+from src.server.services.automations import delivery
 from src.server.models.automation import (
     AutomationCreate,
-    AutomationExecutionResponse,
-    AutomationExecutionsListResponse,
     AutomationResponse,
+    AutomationRunResponse,
+    AutomationRunsListResponse,
     AutomationsListResponse,
     AutomationUpdate,
+    DeliveryDefaultUpdate,
+    ExecutionStatus,
 )
-from src.server.utils.api import CurrentUserId, handle_api_exceptions, raise_not_found
+from src.server.utils.api import (
+    CurrentUserId,
+    handle_api_exceptions,
+    raise_not_found,
+    require_workspace_owner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +71,10 @@ async def create_automation(
     user_id: CurrentUserId,
 ):
     """Create a new scheduled automation."""
-    automation = await handler.create_automation(
-        user_id=user_id,
-        data=request.model_dump(exclude_none=True),
-    )
+    try:
+        automation = await handler.create_automation(user_id=user_id, data=request)
+    except handler.DeliveryRefused as e:
+        return _delivery_refused(e)
     return AutomationResponse.model_validate(automation)
 
 
@@ -65,7 +86,7 @@ async def list_automations(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List automations for the current user."""
+    """List automations for the current user, each with its newest execution."""
     automations, total = await auto_db.list_automations(
         user_id, status=status, limit=limit, offset=offset,
     )
@@ -75,14 +96,115 @@ async def list_automations(
     )
 
 
+# Declared before /automations/{automation_id}, which would otherwise capture
+# "executions" as an id.
+@router.get("/automations/executions", response_model=AutomationRunsListResponse)
+@handle_api_exceptions("list automation runs", logger)
+async def list_automation_runs(
+    user_id: CurrentUserId,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    thread_id: Optional[UUID] = Query(None),
+    status: Optional[ExecutionStatus] = Query(None),
+):
+    """List executions across all of the current user's automations."""
+    return await _runs_page(
+        user_id,
+        thread_id=str(thread_id) if thread_id else None,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# =============================================================================
+# Delivery through the messaging service
+# =============================================================================
+
+
+def _delivery_refused(e: handler.DeliveryRefused) -> JSONResponse:
+    """A write refused for its delivery: the 409 it has always been, with the
+    sentence in ``detail`` and each entry's reason in ``problems``."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": str(e),
+            "problems": [{"entry": entry, "message": why} for entry, why in e.refusals],
+        },
+    )
+
+
+def _unavailable(detail: str) -> HTTPException:
+    return HTTPException(status_code=503, detail=detail)
+
+
+async def _delivery_workspace(user_id: str, workspace_id: Optional[UUID]) -> Optional[str]:
+    """The workspace whose default chat an entry naming only an app follows,
+    once the user is checked as its owner. None without one, and for Home,
+    which is none of the user's workspaces: its runs deliver as a run with no
+    workspace does."""
+    if workspace_id is None:
+        return None
+    workspace = await get_workspace(str(workspace_id))
+    require_workspace_owner(workspace, user_id=user_id)
+    return None if is_home_row(workspace) else str(workspace_id)
+
+
+# Declared before /automations/{automation_id}, which would otherwise capture
+# the path as an id.
+@router.get("/automations/delivery-options")
+@handle_api_exceptions("list delivery options", logger)
+async def get_delivery_options(
+    user_id: CurrentUserId,
+    workspace_id: Optional[UUID] = Query(None),
+) -> dict[str, Any]:
+    """The chats each linked app offers an automation's runs, and the one an
+    entry naming only the app reaches. Asked with the automation's workspace,
+    or with none for one that has none. ``workspace_id`` is the workspace the
+    answer was made for: null without one and for Home, which has no default
+    chat. ``enabled`` is false, with no apps, on a server with no messaging
+    service."""
+    workspace = await _delivery_workspace(user_id, workspace_id)
+    try:
+        return await delivery.options(user_id, workspace)
+    except delivery.Unavailable as e:
+        raise _unavailable(str(e))
+
+
+@router.put("/automations/delivery-default")
+@handle_api_exceptions("set delivery default", logger)
+async def set_delivery_default(
+    request: DeliveryDefaultUpdate,
+    user_id: CurrentUserId,
+):
+    """Set the chat on one app that a workspace's automations deliver to when
+    an entry names only the app, or clear it with a null address. Answers
+    the chat as saved. Home has none to set."""
+    workspace = await _delivery_workspace(user_id, request.workspace_id)
+    try:
+        return await delivery.set_default(
+            user_id, workspace, request.platform, request.address
+        )
+    except delivery.Refused as e:
+        return JSONResponse(
+            status_code=400, content={"detail": str(e), "problems": e.problems}
+        )
+    except delivery.NoService as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except delivery.Busy as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except delivery.Unavailable as e:
+        raise _unavailable(str(e))
+
+
 @router.get("/automations/{automation_id}", response_model=AutomationResponse)
 @handle_api_exceptions("get automation", logger)
 async def get_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Get a specific automation."""
-    automation = await auto_db.get_automation(automation_id, user_id)
+    automation = await auto_db.get_automation(str(automation_id), user_id)
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)
@@ -91,16 +213,26 @@ async def get_automation(
 @router.patch("/automations/{automation_id}", response_model=AutomationResponse)
 @handle_api_exceptions("update automation", logger, conflict_on_value_error=True)
 async def update_automation(
-    automation_id: str,
+    automation_id: UUID,
     request: AutomationUpdate,
     user_id: CurrentUserId,
 ):
     """Partial update of an automation."""
-    automation = await handler.update_automation(
-        automation_id=automation_id,
-        user_id=user_id,
-        data=request.model_dump(exclude_none=True),
-    )
+    try:
+        automation = await handler.update_automation(
+            automation_id=str(automation_id),
+            user_id=user_id,
+            fields=request.model_dump(exclude_none=True),
+        )
+    except handler.DeliveryRefused as e:
+        return _delivery_refused(e)
+    except ValidationError as e:
+        # The body parsed, then failed against the stored kind of trigger:
+        # a 422 shaped like the one FastAPI answers a bad body with.
+        raise HTTPException(
+            status_code=422,
+            detail=e.errors(include_url=False, include_context=False, include_input=False),
+        )
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)
@@ -109,11 +241,11 @@ async def update_automation(
 @router.delete("/automations/{automation_id}", status_code=204)
 @handle_api_exceptions("delete automation", logger)
 async def delete_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Delete an automation (cascade deletes executions)."""
-    deleted = await auto_db.delete_automation(automation_id, user_id)
+    deleted = await auto_db.delete_automation(str(automation_id), user_id)
     if not deleted:
         raise_not_found("Automation")
     return Response(status_code=204)
@@ -127,22 +259,22 @@ async def delete_automation(
 @router.post("/automations/{automation_id}/trigger")
 @handle_api_exceptions("trigger automation", logger, conflict_on_value_error=True)
 async def trigger_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Manually trigger an automation immediately (doesn't affect next_run_at)."""
-    result = await handler.trigger_automation(automation_id, user_id)
+    result = await handler.trigger_automation(str(automation_id), user_id)
     return result
 
 
 @router.post("/automations/{automation_id}/pause", response_model=AutomationResponse)
 @handle_api_exceptions("pause automation", logger, conflict_on_value_error=True)
 async def pause_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Pause an active automation."""
-    automation = await handler.pause_automation(automation_id, user_id)
+    automation = await handler.pause_automation(str(automation_id), user_id)
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)
@@ -151,11 +283,46 @@ async def pause_automation(
 @router.post("/automations/{automation_id}/resume", response_model=AutomationResponse)
 @handle_api_exceptions("resume automation", logger, conflict_on_value_error=True)
 async def resume_automation(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
 ):
     """Resume a paused or disabled automation."""
-    automation = await handler.resume_automation(automation_id, user_id)
+    automation = await handler.resume_automation(str(automation_id), user_id)
+    if not automation:
+        raise_not_found("Automation")
+    return AutomationResponse.model_validate(automation)
+
+
+@router.post("/automations/{automation_id}/executions/{execution_id}/skip")
+@handle_api_exceptions("skip execution", logger, conflict_on_value_error=True)
+async def skip_execution(
+    automation_id: UUID,
+    execution_id: UUID,
+    user_id: CurrentUserId,
+):
+    """Skip a run that is waiting for its thread's current turn to end."""
+    result = await handler.skip_execution(
+        str(automation_id), str(execution_id), user_id
+    )
+    if result is None:
+        raise_not_found("Automation")
+    return result
+
+
+@router.post(
+    "/automations/{automation_id}/executions/{execution_id}/dismiss",
+    response_model=AutomationResponse,
+)
+@handle_api_exceptions("dismiss execution", logger, conflict_on_value_error=True)
+async def dismiss_execution(
+    automation_id: UUID,
+    execution_id: UUID,
+    user_id: CurrentUserId,
+):
+    """Take a failed run out of Needs attention until another run fails."""
+    automation = await handler.dismiss_execution(
+        str(automation_id), str(execution_id), user_id
+    )
     if not automation:
         raise_not_found("Automation")
     return AutomationResponse.model_validate(automation)
@@ -168,22 +335,25 @@ async def resume_automation(
 
 @router.get(
     "/automations/{automation_id}/executions",
-    response_model=AutomationExecutionsListResponse,
+    response_model=AutomationRunsListResponse,
 )
 @handle_api_exceptions("list executions", logger)
 async def list_executions(
-    automation_id: str,
+    automation_id: UUID,
     user_id: CurrentUserId,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
     """List execution history for an automation."""
-    executions, total = await auto_db.list_executions(
-        automation_id, user_id, limit=limit, offset=offset,
+    return await _runs_page(
+        user_id, automation_id=str(automation_id), limit=limit, offset=offset,
     )
-    return AutomationExecutionsListResponse(
-        executions=[
-            AutomationExecutionResponse.model_validate(e) for e in executions
-        ],
-        total=total,
+
+
+async def _runs_page(user_id: str, **filters) -> AutomationRunsListResponse:
+    """The feed and one automation's history: one query, one page shape."""
+    executions, has_more = await exec_db.list_executions(user_id, **filters)
+    return AutomationRunsListResponse(
+        executions=[AutomationRunResponse.model_validate(e) for e in executions],
+        has_more=has_more,
     )

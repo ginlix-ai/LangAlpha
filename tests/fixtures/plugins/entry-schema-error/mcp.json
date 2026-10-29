@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "no-url": {
+      "type": "streamable-http"
+    },
+    "dup-headers": {
+      "type": "streamable-http",
+      "url": "https://d.example.com/mcp",
+      "headers": {
+        "X-Token": "a",
+        "x-token": "b"
+      }
+    },
+    "good": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "good-mcp"
+      ]
+    }
+  }
+}

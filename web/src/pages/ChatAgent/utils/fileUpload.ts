@@ -1,10 +1,6 @@
+import { selectionPriceBounds } from './selectionBounds';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import type { ChartSelection } from '@/pages/MarketView/stores/chartSelectionStore';
-
-export const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-export const ACCEPTED_PDF_TYPES = ['application/pdf'];
-export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-export const MAX_FILES = 5;
 
 export interface Attachment {
   file: File;
@@ -16,11 +12,6 @@ export interface AttachmentContext {
   type: string;
   data: string;
   description: string;
-}
-
-export interface FileValidationResult {
-  valid: boolean;
-  error?: string;
 }
 
 export function readFileAsDataUrl(file: File): Promise<string> {
@@ -138,7 +129,7 @@ interface ChartSelectionImageItem {
 
 /** Caption for a region's cropped screenshot — the structured item holds the exact values. */
 export function describeSelectionImage(sel: ChartSelection): string {
-  const range = `$${sel.priceLow}–$${sel.priceHigh}`;
+  const range = selectionPriceBounds(sel, 'en-US');
   const span = sel.timeStart && sel.timeEnd ? `, ${sel.timeStart} → ${sel.timeEnd}` : '';
   return `Cropped chart image of ${sel.symbol} ${sel.timeframe} (price ${range}${span})`;
 }
@@ -191,22 +182,4 @@ export function chartSelectionToContext(
     out.push({ type: 'image', data: sel.croppedImage, description: describeSelectionImage(sel) });
   }
   return out;
-}
-
-/**
- * Validate a file for upload.
- * When flashOnly is true, only images and PDFs are accepted (Flash mode).
- * Otherwise any file type is accepted (PTC mode).
- */
-export function validateFile(file: File, flashOnly = false): FileValidationResult {
-  if (flashOnly) {
-    const allAccepted = [...ACCEPTED_IMAGE_TYPES, ...ACCEPTED_PDF_TYPES];
-    if (!allAccepted.includes(file.type)) {
-      return { valid: false, error: `Unsupported file type: ${file.type || 'unknown'}` };
-    }
-  }
-  if (file.size > MAX_FILE_SIZE) {
-    return { valid: false, error: `File too large: ${file.name} (max 10MB)` };
-  }
-  return { valid: true };
 }

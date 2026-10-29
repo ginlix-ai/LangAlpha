@@ -1,0 +1,307 @@
+/* The Connectors section and the connector detail page: only what the shared
+   surface vocabulary (surface/surface.css) does not already say. */
+
+/* Single-connector plugin groups share one band of the grid's columns, so a
+   plugin with one connector does not take a full-width header of its own. */
+.connector-minis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  column-gap: 20px;
+  row-gap: 30px;
+  margin: 0 -10px;
+}
+.connector-minis > .surface-section { margin-top: 0; padding: 0 10px; min-width: 0; }
+.connector-groups > * + * { margin-top: 30px; }
+.connector-groups > .surface-section + .surface-section { margin-top: 30px; }
+
+.connector-line-code {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-quaternary);
+}
+.connector-menu-hint {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+.connector-quiet {
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+}
+.connector-quiet button {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.connector-quiet button:hover { color: var(--color-text-primary); }
+.connector-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 18px; }
+
+/* The remove question floats at the bottom of the scroll port while the list
+   runs past it, so it is in view wherever the menu that asked it was. */
+.connector-confirm {
+  position: sticky;
+  bottom: 16px;
+  z-index: 5;
+  margin-top: 24px;
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+}
+
+/* Detail page */
+.connector-onoff {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 10px 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  font-size: 0.78125rem;
+  color: var(--color-text-secondary);
+}
+.connector-onoff.is-blocked { color: var(--color-text-quaternary); }
+.connector-onoff.is-blocked [role='switch'] { opacity: 0.45; cursor: not-allowed; }
+.connector-head-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.connector-head-link:hover { color: var(--color-text-primary); }
+/* On a narrow head "Part of" and the plugin's name wrap as whole words rather
+   than the flex item squeezing its text into a column. */
+.connector-head-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 4px; min-width: 0; }
+.connector-head-link { white-space: nowrap; }
+.connector-head-sep { color: var(--color-text-quaternary); }
+
+.connector-empty-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+}
+.connector-empty-box svg { color: var(--color-text-quaternary); flex-shrink: 0; }
+.connector-prose {
+  max-width: 720px;
+  margin: 0;
+  font-family: var(--font-content);
+  font-size: 0.84375rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: pre-line;
+}
+.connector-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 0.78125rem;
+  color: var(--color-text-secondary);
+}
+.connector-aside-note {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-text-quaternary);
+}
+.connector-mono { font-family: var(--font-mono); font-size: 0.71875rem; }
+
+.connector-btn {
+  height: 30px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.78125rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.connector-btn:hover { background: var(--color-bg-hover); }
+.connector-btn:disabled { opacity: 0.5; cursor: default; }
+.connector-btn.is-primary {
+  border-color: transparent;
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+}
+.connector-btn.is-primary:hover { opacity: 0.9; }
+.connector-btn.is-danger { color: var(--color-loss); }
+.connector-btn.is-full { width: 100%; }
+.connector-verbs-row { display: flex; gap: 8px; }
+.connector-verbs-row > .connector-btn { flex: 1; }
+
+/* Connect held for a reason the line beside it gives: still focusable, so the
+   reason is reachable, but it does not look pressable. */
+.connect-cell-action[aria-disabled='true'] { opacity: 0.5; cursor: not-allowed; }
+.connect-cell-action[aria-disabled='true']:hover { background: transparent; }
+
+/* The same question in the detail's narrow side column: the sentence takes
+   the full width and the two answers sit under it. */
+.connector-confirm-aside > [role='group'] { flex-wrap: wrap; }
+.connector-confirm-aside > [role='group'] > :first-child { flex-basis: 100%; }
+.connector-confirm-aside > [role='group'] > :last-child { margin-left: auto; }
+
+/* A server's tools (ToolRow): a row per tool, opened in place for what it
+   takes and returns. The rows bleed 10px past the column so their hover
+   reaches the edge while the names stay on the section title's line. */
+.tool-rows { display: flex; flex-direction: column; margin: -4px -10px 0; }
+.tool-row + .tool-row { border-top: 1px solid var(--color-border-subtle); }
+.tool-row-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0 10px;
+  border-radius: 6px;
+}
+.tool-row-head:has(> button.tool-row-toggle:hover) { background: var(--color-bg-subtle); }
+.tool-row-check { display: inline-flex; padding-top: 14px; }
+.tool-row-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 11px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.tool-row-toggle.is-static { cursor: default; }
+.tool-row-toggle:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); border-radius: 4px; }
+.tool-row-chevron {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  color: var(--color-text-quaternary);
+  transition: transform var(--motion-quick) var(--ease-out);
+}
+.tool-row.is-open .tool-row-chevron { transform: rotate(90deg); }
+.tool-row-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.tool-row-name {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+.tool-row-summary {
+  font-family: var(--font-content);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-row.is-open .tool-row-summary { white-space: normal; color: var(--color-text-secondary); }
+.tool-row-control { flex-shrink: 0; padding-top: 9px; }
+
+.tool-doc { padding: 0 10px 18px 32px; max-width: 860px; }
+.tool-row.has-check .tool-doc { padding-left: 56px; }
+.tool-doc-prose {
+  margin: 0 0 10px;
+  font-family: var(--font-content);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: pre-line;
+}
+.tool-doc-block + .tool-doc-block, .tool-doc-prose + .tool-doc-block { margin-top: 14px; }
+.tool-doc-label {
+  margin-bottom: 6px;
+  font-size: 0.71875rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+}
+/* One column of names for every row, as wide as the longest up to a cap:
+   a subgrid where the floor has it, a fixed column where it does not. */
+.tool-params {
+  display: grid;
+  grid-template-columns: fit-content(200px) minmax(0, 1fr);
+  margin: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+}
+.tool-param {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 140px minmax(0, 1fr);
+  grid-template-columns: subgrid;
+  column-gap: 20px;
+  padding: 9px 12px;
+}
+.tool-param + .tool-param { border-top: 1px solid var(--color-border-subtle); }
+.tool-param dt code {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 20px;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+.tool-param dd { margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.tool-param-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 20px;
+  color: var(--color-text-quaternary);
+}
+.tool-param-meta .is-required { color: var(--color-text-secondary); }
+.tool-param-meta code { color: var(--color-text-tertiary); }
+.tool-param-desc {
+  font-family: var(--font-content);
+  font-size: 0.78125rem;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.tool-param-choices { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 2px; }
+.tool-param-choices code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-bg-tag);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+.tool-doc-returns {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.65;
+  color: var(--color-text-tertiary);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .tool-params { grid-template-columns: minmax(0, 1fr); }
+  .tool-param { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
+  .tool-doc, .tool-row.has-check .tool-doc { padding-left: 10px; }
+}

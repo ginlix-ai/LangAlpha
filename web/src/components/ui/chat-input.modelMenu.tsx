@@ -1,33 +1,54 @@
-import { useState, type RefObject } from 'react';
-import {
-  Brain, Check, ChevronDown, ChevronRight, CircleHelp, Flame, Rocket, Sparkles, Zap,
-} from 'lucide-react';
+import { useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Check, ChevronDown, Info, Rocket } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
+import { Header, Menu, MenuItem, MenuSection, type Selection } from 'react-aria-components';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './tooltip';
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
-} from './dropdown-menu';
-import { useIsMobile } from '@/hooks/useIsMobile';
+  ComposerPopover, MENU_ROW, MENU_SECTION, useFocusCheckedRow,
+} from './chat-input.composerPopover';
 import { getModelDisplayName } from './chat-input.helpers';
-import { derivePrimaryModels } from './chat-input.models';
+import { ModelPicker } from './chat-input.modelPicker';
+import { EFFORT_LABELS, hasTuningMenu, tuningMenuLevels } from '@/lib/modelTuning';
+import type { ModelMetadataEntry, TaskCost } from '@/hooks/useFilteredModels';
+import type { ModelGroup } from '@/lib/modelGroups';
+import type { Payer } from '@/lib/modelPayer';
+import { MarkedModelName } from '@/components/model/ModelMark';
+import { NameTag } from '@/components/model/PayerBadge';
+import { TaskCostFigure } from '@/components/model/TaskCost';
+import { costsRelativeTo } from '@/lib/taskCost';
+import { cn } from '@/lib/utils';
 
-/** Pill geometry for the model trigger — shared with the measure chip so the
- *  fold budget can never drift from what actually renders. */
-const TRIGGER_CLASS = 'inline-flex min-w-0 items-center gap-1 rounded-full py-1.5 px-2.5 text-[0.8125rem] font-medium border border-transparent whitespace-nowrap';
+type ModelMetadata = Record<string, ModelMetadataEntry>;
 
-function TriggerBody({
-  selectedModel, fastMode, isCodexModel, accent,
-}: {
-  selectedModel: string | null;
-  fastMode: boolean;
-  isCodexModel: boolean;
+/** Pill geometry for the model and effort triggers, shared with the measure
+ *  chips so the fold budget can never drift from what actually renders. */
+const TRIGGER_CLASS = 'inline-flex min-w-0 items-center gap-1 rounded-lg py-1.5 px-2.5 text-[0.8125rem] font-medium border border-transparent whitespace-nowrap';
+
+function ModelTriggerBody({ selectedModel, metadata }: { selectedModel: string | null; metadata?: ModelMetadata }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <MarkedModelName
+        provider={selectedModel ? metadata?.[selectedModel]?.provider : undefined}
+        name={getModelDisplayName(selectedModel, metadata) || t('chat.modelSelector.fallbackName')}
+        nameClassName="min-w-0 max-w-[120px] truncate"
+        short
+      />
+      <ChevronDown className="h-3 w-3 flex-none" />
+    </>
+  );
+}
+
+function EffortTriggerBody({ effortLabel, fast, accent }: {
+  effortLabel: string | null;
+  fast: boolean;
   accent?: boolean;
 }) {
   return (
     <>
-      <span className="min-w-0 max-w-[120px] truncate">{getModelDisplayName(selectedModel) || 'Model'}</span>
-      {fastMode && isCodexModel && (
+      {effortLabel && <span className="flex-none">{effortLabel}</span>}
+      {fast && (
         <Rocket className="h-3 w-3 flex-none" style={accent ? { color: 'var(--color-accent-light)' } : undefined} />
       )}
       <ChevronDown className="h-3 w-3 flex-none" />
@@ -35,261 +56,347 @@ function TriggerBody({
   );
 }
 
-/** Measure-row twin of the model trigger: same geometry, no interactivity. */
-export function ModelTriggerMeasure(props: {
+/** Measure-row twin of the model and effort triggers: same geometry, no
+ *  interactivity. The effort chip is left out where the composer hides it. */
+export function ModelTriggerMeasure({ selectedModel, metadata, effortLabel, fast, showEffort }: {
   selectedModel: string | null;
-  fastMode: boolean;
-  isCodexModel: boolean;
+  metadata?: ModelMetadata;
+  effortLabel: string | null;
+  fast: boolean;
+  showEffort: boolean;
 }) {
-  return <button type="button" tabIndex={-1} className={TRIGGER_CLASS}><TriggerBody {...props} /></button>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <button type="button" tabIndex={-1} className={TRIGGER_CLASS}>
+        <ModelTriggerBody selectedModel={selectedModel} metadata={metadata} />
+      </button>
+      {showEffort && (
+        <button type="button" tabIndex={-1} className={TRIGGER_CLASS}>
+          <EffortTriggerBody effortLabel={effortLabel} fast={fast} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** A pill in the composer's toolbar. `data-pill` names it for tests, which
+ *  should not lean on its translated title. */
+function Pill({ pill, buttonRef, open, popup, onPress, title, disabled, children }: {
+  pill: 'model' | 'effort';
+  buttonRef?: RefObject<HTMLButtonElement | null>;
+  open?: boolean;
+  /** What it opens; none for a pill that goes somewhere instead. */
+  popup?: 'dialog' | 'menu';
+  onPress: () => void;
+  title?: string;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      data-pill={pill}
+      className={cn('model-selector-trigger', TRIGGER_CLASS, 'cursor-pointer transition-colors disabled:cursor-progress')}
+      onClick={(e) => { e.stopPropagation(); onPress(); }}
+      disabled={disabled}
+      title={title}
+      aria-haspopup={popup}
+      aria-expanded={popup ? open : undefined}
+      data-state={popup ? (open ? 'open' : 'closed') : undefined}
+    >
+      {children}
+    </button>
+  );
 }
 
 /**
- * Model selector: current + thread models, per-model reasoning effort and
- * Codex fast mode, then quick-access models (desktop flyout / mobile inline)
- * and the settings escape hatch. Renders nothing when there is nothing to pick
- * and no stars to manage.
+ * The model pill and the picker it opens. With nothing to pick and nothing
+ * selected, no model is set up yet, and the pill becomes the way to set one
+ * up rather than leaving a composer with no hint of why it cannot send.
  */
 export function ChatInputModelMenu({
-  selectedModel,
-  onSelectModel,
-  threadModels,
-  validModelNames,
-  moreModelsItems,
-  hasStarredModels,
-  reasoningEffort,
-  onReasoningEffortChange,
-  fastMode,
-  onFastModeChange,
-  isCodexModel,
-  supportsXhigh,
-  dropdownDirection,
-  containerRef,
+  selectedModel, metadata, payers, groups, favorites, recent, onToggleFavorite, onSelectModel,
+  needsSignIn, dropdownDirection, container, draftRef, disabled = false,
 }: {
   selectedModel: string | null;
+  /** Supplies authored display names; a model without one gets a derived name. */
+  metadata?: ModelMetadata;
+  /** Who pays for a turn on each model, tagged beside its name. */
+  payers: Record<string, Payer>;
+  groups: ModelGroup[];
+  favorites: string[];
+  /** This thread's models and the current one that are not favorites. */
+  recent: string[];
+  onToggleFavorite: (model: string, favorite: boolean) => void;
   onSelectModel: (model: string) => void;
-  threadModels: string[];
-  /** Gates thread history — a model can be revoked after a turn used it. */
-  validModelNames: Set<string>;
-  moreModelsItems: string[];
-  hasStarredModels: boolean;
-  reasoningEffort: string | null;
-  onReasoningEffortChange: (effort: string | null) => void;
-  fastMode: boolean;
-  onFastModeChange: (fast: boolean) => void;
-  isCodexModel: boolean;
-  supportsXhigh: boolean;
+  needsSignIn: (model: string) => boolean;
   dropdownDirection: 'up' | 'down';
-  /** Mobile portals into the composer so the menu can't escape the sheet. */
-  containerRef: RefObject<HTMLElement | null>;
+  /** Mobile portals into the composer so the picker can't escape the sheet. */
+  container: HTMLElement | null;
+  draftRef?: RefObject<HTMLElement | null>;
+  /** Until the model list arrives every model reads as reachable, and a pick
+   *  is saved on the thread, so an unreachable one would become the model
+   *  every later turn of that thread asks for. */
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [showMoreModels, setShowMoreModels] = useState(false);
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const toSettings = () => navigate('/settings?tab=model');
 
-  // Show if there's anything to pick (quick-access list or current selection),
-  // or if the user has stars to manage even when they all filter out (keeps
-  // the settings link reachable).
-  if (moreModelsItems.length === 0 && !hasStarredModels && !selectedModel) return null;
-
-  const primaryModels = derivePrimaryModels({ selectedModel, threadModels, validModelNames });
+  if (groups.length === 0 && !selectedModel) {
+    if (disabled) return null;
+    return (
+      <Pill pill="model" onPress={toSettings}>
+        <span style={{ color: 'var(--color-text-secondary)' }}>{t('chat.modelSelector.setUpModel')}</span>
+      </Pill>
+    );
+  }
 
   return (
-    <DropdownMenu modal={false} open={menuOpen} onOpenChange={(open) => { setMenuOpen(open); if (!open) setShowMoreModels(false); }}>
-      <DropdownMenuTrigger asChild>
-        <button
-          className={`model-selector-trigger ${TRIGGER_CLASS} cursor-pointer transition-colors outline-none`}
-          onClick={(e) => e.stopPropagation()}
-          type="button"
-          title="Select model"
-        >
-          <TriggerBody selectedModel={selectedModel} fastMode={fastMode} isCodexModel={isCodexModel} accent />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        side={dropdownDirection === 'down' ? 'bottom' : 'top'}
-        className="w-60"
-        container={isMobile ? containerRef.current : undefined}
-        data-click-outside-ignore
-        onClick={(e) => e.stopPropagation()}
-        style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-muted)' }}
+    <>
+      <Pill
+        pill="model"
+        buttonRef={triggerRef}
+        open={open}
+        popup="dialog"
+        onPress={() => setOpen((v) => !v)}
+        title={t('chat.modelSelector.select')}
+        disabled={disabled}
       >
-        {/* Thread models */}
-        {primaryModels.map((m) => (
-          <DropdownMenuItem
-            key={m}
-            onSelect={() => onSelectModel(m)}
-            className="text-[0.8125rem] justify-between"
-            style={{ color: 'var(--color-text-primary)' }}
+        <ModelTriggerBody selectedModel={selectedModel} metadata={metadata} />
+      </Pill>
+      <ModelPicker
+        triggerRef={triggerRef}
+        isOpen={open}
+        onOpenChange={setOpen}
+        direction={dropdownDirection}
+        container={container}
+        draftRef={draftRef}
+        selectedModel={selectedModel}
+        metadata={metadata}
+        payers={payers}
+        groups={groups}
+        favorites={favorites}
+        recent={recent}
+        onToggleFavorite={onToggleFavorite}
+        onPick={onSelectModel}
+        needsSignIn={needsSignIn}
+        onManage={toSettings}
+      />
+    </>
+  );
+}
+
+/** Section keys, kept apart since one menu holds both lists. */
+const EFFORT = 'effort:';
+const SPEED = 'speed:';
+
+interface EffortMenuProps {
+  /** Already-translated effective level, or null when the model has no ladder. */
+  effortLabel: string | null;
+  /** The level the composer shows and a send runs; null names none. */
+  reasoningEffort: string | null;
+  /** What Settings gives this model: its profile, else the account default,
+   *  else the manifest default. Carries the "Default" tag, and picking it
+   *  names null, so the thread follows Settings rather than pinning the same
+   *  value. */
+  defaultEffort: string | null;
+  /** Exactly the levels this model honors, weakest first. */
+  reasoningEfforts: string[];
+  onReasoningEffortChange: (effort: string | null) => void;
+  /** Null while the thread's own value is not known, which checks neither. */
+  fastMode: boolean | null;
+  onFastModeChange: (fast: boolean) => void;
+  isCodexModel: boolean;
+  dropdownDirection: 'up' | 'down';
+  /** The composer, which a phone portals the menu into. */
+  container: HTMLElement | null;
+  /** The model's task cost at each level, shown as a multiple of its cost
+   *  at the default level. */
+  taskCost?: Record<string, TaskCost>;
+  disabled?: boolean;
+}
+
+/**
+ * Reasoning effort and, on a Codex model, speed: the model's tuning, set
+ * apart from the choice of model. Renders nothing for a model with neither.
+ *
+ * A pill and panel like the model picker beside it, so the two read as one
+ * toolbar, holding a react-aria menu. A pick never closes it: an effort is a
+ * setting, not a send.
+ */
+export function ChatInputEffortMenu(props: EffortMenuProps) {
+  if (!hasTuningMenu(props.reasoningEfforts, props.isCodexModel)) return null;
+  return <EffortMenu {...props} />;
+}
+
+/** Holds the open state, so a model with nothing to tune drops it with the
+ *  pill, and the next model's menu starts shut rather than springing open. */
+function EffortMenu(props: EffortMenuProps) {
+  const { effortLabel, fastMode, isCodexModel, dropdownDirection, container, disabled = false } = props;
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  return (
+    <>
+      <Pill
+        pill="effort"
+        buttonRef={triggerRef}
+        open={open}
+        popup="menu"
+        onPress={() => setOpen((v) => !v)}
+        title={t('chat.modelSelector.reasoningEffort')}
+        disabled={disabled}
+      >
+        <EffortTriggerBody effortLabel={effortLabel} fast={fastMode === true && isCodexModel} accent />
+      </Pill>
+      <ComposerPopover
+        triggerRef={triggerRef}
+        isOpen={open}
+        onOpenChange={setOpen}
+        direction={dropdownDirection}
+        align="end"
+        container={container}
+        label={t('chat.modelSelector.reasoningEffort')}
+        className="w-60"
+      >
+        <EffortList {...props} />
+      </ComposerPopover>
+    </>
+  );
+}
+
+function EffortList({
+  reasoningEffort, defaultEffort, reasoningEfforts, onReasoningEffortChange,
+  fastMode, onFastModeChange, isCodexModel, taskCost,
+}: EffortMenuProps) {
+  const { t } = useTranslation();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const noteId = useId();
+  useFocusCheckedRow(menuRef);
+
+  const levels = tuningMenuLevels(reasoningEfforts);
+  // The level marked "Default" is 1x, so the figures compare this model's
+  // levels and nothing else.
+  const costs = costsRelativeTo(taskCost, defaultEffort);
+  const showCosts = levels.some((level) => costs[level]);
+
+  // Picking the level Settings gives clears the thread's own instead of
+  // pinning today's default as a permanent choice. An action, not a selection
+  // change: a thread pinned to the level that has since become the default
+  // shows it checked, and picking a checked row changes no selection.
+  const onEffort = (level: string) => onReasoningEffortChange(level === defaultEffort ? null : level);
+  const onSpeed = (keys: Selection) => {
+    const [key] = keys === 'all' ? [] : [...keys];
+    if (key !== undefined) onFastModeChange(key === `${SPEED}fast`);
+  };
+
+  return (
+    <>
+      <Menu
+        ref={menuRef}
+        aria-label={t('chat.modelSelector.reasoningEffort')}
+        // What the figures mean. The tooltip says it under a pointer, but a
+        // menu's arrow keys reach only its rows, so the menu carries it too.
+        aria-describedby={showCosts ? noteId : undefined}
+        autoFocus
+        className="p-1 outline-hidden"
+      >
+        {levels.length > 0 && (
+          <MenuSection
+            selectionMode="single"
+            disallowEmptySelection
+            selectedKeys={reasoningEffort ? [`${EFFORT}${reasoningEffort}`] : []}
+            className={MENU_SECTION}
           >
-            <span>{getModelDisplayName(m)}</span>
-            {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator style={{ backgroundColor: 'var(--color-border-muted)' }} />
-        {/* Reasoning effort (custom control — not a menu item, won't close on click) */}
-        <div className="model-effort-section">
-          <span className="model-effort-label">{t('chat.modelSelector.reasoningEffort')}</span>
-          <div className="model-effort-toggle">
-            {([
-              ['low', Zap, t('chat.modelSelector.effortLow')],
-              ['medium', Brain, t('chat.modelSelector.effortMedium')],
-              ['high', Flame, t('chat.modelSelector.effortHigh')],
-              ...(supportsXhigh ? [['xhigh', Sparkles, t('chat.modelSelector.effortXhigh')]] as const : []),
-            ] as const).map(([level, Icon, label]) => (
-              <button
+            <Header className={cn(SECTION_HEADER, 'flex justify-between gap-2')}>
+              {t('chat.modelSelector.reasoningEffort')}
+              {/* Over the figures, which end a check's width from the edge. */}
+              {showCosts && (
+                <TooltipProvider delayDuration={300}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="mr-6 inline-flex cursor-help items-center gap-1">
+                        {t('chat.modelSelector.taskCostHeader')}
+                        <Info aria-hidden className="h-3 w-3" />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-56">{t('chat.modelSelector.taskCostNote')}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </Header>
+            {levels.map((level) => (
+              <SettingOption
                 key={level}
-                className={`model-effort-btn ${level === reasoningEffort ? 'active' : ''}`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onReasoningEffortChange(level === reasoningEffort ? null : level);
-                }}
-                title={label}
-              >
-                <Icon className="h-3.5 w-3.5" />
-              </button>
+                id={`${EFFORT}${level}`}
+                label={t(EFFORT_LABELS[level])}
+                tag={level === defaultEffort ? t('chat.modelSelector.defaultBadge') : undefined}
+                cost={costs[level]}
+                onAction={() => onEffort(level)}
+              />
             ))}
-          </div>
-        </div>
-        {/* Fast mode (Codex only — custom control, won't close on click) */}
+          </MenuSection>
+        )}
+        {/* Speed (Codex only: priority service tier) */}
         {isCodexModel && (
-          <div className="model-effort-section">
-            <span className="model-effort-label">
-              <Rocket className="h-3.5 w-3.5" style={{ marginRight: 4, verticalAlign: '-2px', display: 'inline' }} />
-              {t('chat.modelSelector.fastMode')}
-              <span className="fast-mode-help-wrap">
-                <CircleHelp className="fast-mode-help-icon" />
-                <span className="fast-mode-help-tooltip">{t('chat.modelSelector.fastModeHelpLine1')}<br />{t('chat.modelSelector.fastModeHelpLine2')}</span>
-              </span>
+          <MenuSection
+            selectionMode="single"
+            disallowEmptySelection
+            selectedKeys={fastMode === null ? [] : [`${SPEED}${fastMode ? 'fast' : 'standard'}`]}
+            onSelectionChange={onSpeed}
+            className={MENU_SECTION}
+          >
+            <Header className={SECTION_HEADER}>{t('chat.modelSelector.speed')}</Header>
+            <SettingOption id={`${SPEED}standard`} label={t('chat.modelSelector.speedStandard')} />
+            <SettingOption
+              id={`${SPEED}fast`}
+              label={t('chat.modelSelector.speedFast')}
+              hint={t('chat.modelSelector.speedFastHint')}
+            />
+          </MenuSection>
+        )}
+      </Menu>
+      {/* Hidden, yet still the menu's description. */}
+      {showCosts && <span id={noteId} hidden>{t('chat.modelSelector.taskCostNote')}</span>}
+    </>
+  );
+}
+
+// The model picker's tab header.
+const SECTION_HEADER = 'px-2 pb-1 pt-1.5 text-xs text-(--color-text-tertiary)';
+
+/** One word in the effort menu, in the model picker's row. */
+function SettingOption({ id, label, tag, hint, cost, onAction }: {
+  id: string;
+  label: string;
+  tag?: string;
+  hint?: string;
+  cost?: TaskCost;
+  onAction?: () => void;
+}) {
+  return (
+    <MenuItem id={id} textValue={label} onAction={onAction} className={MENU_ROW}>
+      {({ isSelected }) => (
+        <>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="flex items-center gap-2">
+              {label}
+              {tag && <NameTag>{tag}</NameTag>}
             </span>
-            <button
-              className={`fast-mode-switch ${fastMode ? 'active' : ''}`}
-              onMouseDown={(e) => { e.preventDefault(); onFastModeChange(!fastMode); }}
-              title={t('chat.modelSelector.fastModeDesc')}
-              role="switch"
-              aria-checked={fastMode}
-            >
-              <span className="fast-mode-switch-thumb" />
-            </button>
-          </div>
-        )}
-        <DropdownMenuSeparator style={{ backgroundColor: 'var(--color-border-muted)' }} />
-        {/* More models — desktop: sub-menu flyout, mobile: inline toggle with onMouseDown (same pattern as effort buttons) */}
-        {isMobile ? (
-          <>
-            {/* Toggle trigger — onMouseDown fires after pointerup on mobile, avoiding Radix's pointer sequence race */}
-            <div
-              className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer rounded-sm transition-colors hover:bg-accent/15"
-              style={{ color: 'var(--color-text-tertiary)' }}
-              role="menuitem"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setShowMoreModels((v) => !v);
-              }}
-            >
-              <span>{t('chat.modelSelector.moreModels')}</span>
-              <ChevronRight className={`h-3.5 w-3.5 transition-transform ${showMoreModels ? 'rotate-90' : ''}`} />
-            </div>
-            {/* Model items — plain divs (not DropdownMenuItems) to avoid Collection registration changes */}
-            <div className={showMoreModels ? '' : 'hidden'}>
-              {moreModelsItems.length > 0 ? (
-                moreModelsItems.map((m) => (
-                  <div
-                    key={m}
-                    className="relative flex w-full cursor-default select-none items-center justify-between rounded-sm px-3 py-2 pl-6 text-[0.8125rem] outline-none transition-colors hover:bg-accent/15"
-                    style={{ color: 'var(--color-text-primary)' }}
-                    role="menuitem"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      onSelectModel(m);
-                      setMenuOpen(false);
-                    }}
-                  >
-                    <span>{getModelDisplayName(m)}</span>
-                    {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                  </div>
-                ))
-              ) : (
-                <div
-                  className="relative flex w-full cursor-default select-none items-center rounded-sm px-3 py-2 pl-6 text-xs outline-none transition-colors hover:bg-accent/15"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                  role="menuitem"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    navigate('/settings?tab=model');
-                    setMenuOpen(false);
-                  }}
-                >
-                  {t('chat.modelSelector.configureModels')}
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger
-              className="text-xs justify-between"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            >
-              <span className="flex-1">{t('chat.modelSelector.moreModels')}</span>
-              <ChevronRight className="h-3.5 w-3.5" />
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent
-              className="w-60"
-              data-click-outside-ignore
-              collisionPadding={{ top: 8, right: 8, bottom: 60, left: 8 }}
-              style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-muted)' }}
-            >
-              {moreModelsItems.length > 0 ? (
-                moreModelsItems.map((m) => (
-                  <DropdownMenuItem
-                    key={m}
-                    onSelect={() => onSelectModel(m)}
-                    className="text-[0.8125rem] justify-between"
-                    style={{ color: 'var(--color-text-primary)' }}
-                  >
-                    <span>{getModelDisplayName(m)}</span>
-                    {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                  </DropdownMenuItem>
-                ))
-              ) : (
-                <DropdownMenuItem
-                  onSelect={() => navigate('/settings?tab=model')}
-                  className="text-xs"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  {t('chat.modelSelector.configureModels')}
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        )}
-        {isMobile ? (
-          <div
-            className="relative flex w-full cursor-default select-none items-center rounded-sm px-3 py-2 text-xs outline-none transition-colors hover:bg-accent/15"
-            style={{ color: 'var(--color-text-tertiary)' }}
-            role="menuitem"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              navigate('/settings?tab=model');
-              setMenuOpen(false);
-            }}
-          >
-            {t('chat.modelSelector.manageModels')}
-          </div>
-        ) : (
-          <DropdownMenuItem
-            onSelect={() => navigate('/settings?tab=model')}
-            className="text-xs"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          >
-            {t('chat.modelSelector.manageModels')}
-          </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+            {hint && <span className="text-[0.6875rem] leading-snug text-(--color-text-tertiary)">{hint}</span>}
+          </span>
+          <TaskCostFigure cost={cost ?? null} />
+          <Check
+            aria-hidden
+            className={cn('h-4 w-4 flex-none text-(--color-accent-primary)', !isSelected && 'invisible')}
+          />
+        </>
+      )}
+    </MenuItem>
   );
 }

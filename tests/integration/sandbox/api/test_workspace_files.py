@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from .conftest import TEST_WS_ID
+from .conftest import TEST_PROJECT, TEST_WS_ID
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -30,7 +30,7 @@ class TestListFiles:
 
         # Seed a file into the sandbox
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/results/test.txt", b"hello"
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/results/test.txt", b"hello"
         )
 
         resp = await client.get(BASE, params={"path": ".", "wait_for_sandbox": "true"})
@@ -69,7 +69,7 @@ class TestReadFile:
 
         content = "hello world"
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/hello.txt", content.encode()
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/hello.txt", content.encode()
         )
 
         resp = await client.get(f"{BASE}/read", params={"path": "data/hello.txt"})
@@ -85,7 +85,7 @@ class TestReadFile:
         lines = [f"line {i}" for i in range(20)]
         text = "\n".join(lines)
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/multiline.txt", text.encode()
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/multiline.txt", text.encode()
         )
 
         resp = await client.get(
@@ -103,7 +103,7 @@ class TestReadFile:
 
         # Upload a fake PNG (just needs the extension to trigger binary check)
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/image.png", b"\x89PNG fake data"
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/image.png", b"\x89PNG fake data"
         )
 
         resp = await client.get(f"{BASE}/read", params={"path": "data/image.png"})
@@ -139,7 +139,7 @@ class TestWriteFile:
         assert body["path"] == "data/new.txt"
 
         # Verify the file landed in the sandbox
-        actual = await sandbox.aread_file_text(f"{sandbox._work_dir}/data/new.txt")
+        actual = await sandbox.aread_file_text(f"{sandbox.workspace(TEST_PROJECT).workspace}/data/new.txt")
         assert actual == "written via API"
 
 
@@ -154,7 +154,7 @@ class TestDownloadFile:
 
         payload = b"download me"
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/results/dl.txt", payload
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/results/dl.txt", payload
         )
 
         resp = await client.get(
@@ -167,7 +167,7 @@ class TestDownloadFile:
         client, sandbox = files_client
 
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/results/chart.png", b"\x89PNG fake"
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/results/chart.png", b"\x89PNG fake"
         )
 
         resp = await client.get(
@@ -181,7 +181,7 @@ class TestDownloadFile:
         client, sandbox = files_client
 
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/results/pic.png", b"\x89PNG etag test"
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/results/pic.png", b"\x89PNG etag test"
         )
 
         # First request -- get the ETag
@@ -223,7 +223,7 @@ class TestUploadFile:
 
         # Verify file in sandbox
         actual = await sandbox.adownload_file_bytes(
-            f"{sandbox._work_dir}/data/uploaded.txt"
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/uploaded.txt"
         )
         assert actual == file_content
 
@@ -238,7 +238,7 @@ class TestDeleteFiles:
         client, sandbox = files_client
 
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/del.txt", b"delete me"
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/del.txt", b"delete me"
         )
 
         resp = await client.request(
@@ -252,12 +252,14 @@ class TestDeleteFiles:
         assert "data/del.txt" in body["deleted"]
 
     async def test_delete_system_path_rejected(self, files_client):
-        client, _sandbox = files_client
+        client, sandbox = files_client
+        protected_file = f"{sandbox.workspace(TEST_PROJECT).workspace}/.agents/tools/module.py"
+        await sandbox.runtime.upload_file(b"protected", protected_file)
 
         resp = await client.request(
             "DELETE",
             BASE,
-            json={"paths": ["tools/module.py"]},
+            json={"paths": [".agents/tools/module.py"]},
         )
         assert resp.status_code == 200
 
@@ -265,3 +267,4 @@ class TestDeleteFiles:
         assert body["deleted"] == []
         assert len(body["errors"]) == 1
         assert "system" in body["errors"][0]["detail"].lower()
+        assert await sandbox.adownload_file_bytes(protected_file) == b"protected"

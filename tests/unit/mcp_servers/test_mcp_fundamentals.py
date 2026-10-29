@@ -8,7 +8,7 @@ import pytest
 
 from .conftest import assert_error, assert_ok_envelope
 
-_MOD = "mcp_servers.fundamentals_mcp_server"
+_MOD = "plugins.langalpha_market_data.fundamentals_mcp_server"
 
 
 def _make_fmp_client() -> AsyncMock:
@@ -40,7 +40,7 @@ def _make_fmp_client() -> AsyncMock:
 class TestGetFinancialStatements:
     @pytest.mark.asyncio
     async def test_income_only(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -56,7 +56,7 @@ class TestGetFinancialStatements:
 
     @pytest.mark.asyncio
     async def test_balance_only(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -67,7 +67,7 @@ class TestGetFinancialStatements:
 
     @pytest.mark.asyncio
     async def test_cash_only(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -77,7 +77,7 @@ class TestGetFinancialStatements:
 
     @pytest.mark.asyncio
     async def test_all_statements(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -92,22 +92,34 @@ class TestGetFinancialStatements:
 
     @pytest.mark.asyncio
     async def test_canonical_symbol_echo(self):
-        """Echoed symbol is the canonical display spelling; upstream gets input."""
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        """Echoed and forwarded in the display spelling, whatever was typed."""
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_financial_statements("aapl", statement_type="income")
 
         assert_ok_envelope(result, symbol="AAPL")
-        # Upstream receives the raw input spelling; pin only the symbol arg,
-        # not the default period/limit.
+        # The FMP client respells the suffix itself (.SH -> .SS); pin only the
+        # symbol arg, not the default period/limit.
         client.get_income_statement.assert_awaited_once()
-        assert client.get_income_statement.await_args.args[0] == "aapl"
+        assert client.get_income_statement.await_args.args[0] == "AAPL"
+
+    @pytest.mark.asyncio
+    async def test_canonical_instrument_key_reaches_fmp_as_a_ticker(self):
+        """FMP cannot read ``AAPL.XNAS``; it gets the ticker the key names."""
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_technical_indicator("AAPL.XNAS", indicator="rsi")
+
+        assert_ok_envelope(result, symbol="AAPL")
+        assert client.get_technical_indicator.await_args.args[0] == "AAPL"
 
     @pytest.mark.asyncio
     async def test_all_quarterly_empty_note(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
         client.get_income_statement = AsyncMock(return_value=[])
@@ -117,16 +129,12 @@ class TestGetFinancialStatements:
             result = await get_financial_statements("AAPL", period="quarter")
 
         assert result["statement_type"] == "all"
-        assert result["count"] == {
-            "income_statement": 0,
-            "balance_sheet": 0,
-            "cash_flow": 0,
-        }
+        assert result["count"] == 0
         assert "quarterly" in result["note"].lower()
 
     @pytest.mark.asyncio
     async def test_fmp_init_error(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         with patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
             result = await get_financial_statements("AAPL")
@@ -137,7 +145,7 @@ class TestGetFinancialStatements:
 
     @pytest.mark.asyncio
     async def test_api_error(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         client = _make_fmp_client()
         client.get_income_statement = AsyncMock(side_effect=Exception("timeout at https://fmp?apikey=SECRET"))
@@ -157,7 +165,7 @@ class TestGetFinancialStatements:
 class TestGetFinancialRatios:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_ratios
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_ratios
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -172,7 +180,7 @@ class TestGetFinancialRatios:
 
     @pytest.mark.asyncio
     async def test_quarterly(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_ratios
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_ratios
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -183,7 +191,7 @@ class TestGetFinancialRatios:
 
     @pytest.mark.asyncio
     async def test_quarterly_empty_note(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_ratios
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_ratios
 
         client = _make_fmp_client()
         client.get_key_metrics = AsyncMock(return_value=[])
@@ -191,7 +199,7 @@ class TestGetFinancialRatios:
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_financial_ratios("AAPL", period="quarter")
 
-        assert result["count"] == {"key_metrics": 0, "ratios": 0}
+        assert result["count"] == 0
         assert "Try period='annual'" in result["note"]
 
 
@@ -202,7 +210,7 @@ class TestGetFinancialRatios:
 class TestGetGrowthMetrics:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_growth_metrics
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_growth_metrics
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -213,6 +221,33 @@ class TestGetGrowthMetrics:
         assert "financial_growth" in result["data"]
         assert "income_statement_growth" in result["data"]
         assert isinstance(result["count"], int)
+        assert "note" not in result
+
+    @pytest.mark.asyncio
+    async def test_quarterly_empty_note(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_growth_metrics
+
+        client = _make_fmp_client()
+        client.get_financial_growth = AsyncMock(return_value=[])
+        client.get_income_statement_growth = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_growth_metrics("AAPL", period="quarter")
+
+        assert result["count"] == 0
+        assert "Try period='annual'" in result["note"]
+
+    @pytest.mark.asyncio
+    async def test_annual_empty_has_no_note(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_growth_metrics
+
+        client = _make_fmp_client()
+        client.get_financial_growth = AsyncMock(return_value=[])
+        client.get_income_statement_growth = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_growth_metrics("AAPL", period="annual")
+
+        assert result["count"] == 0
+        assert "note" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +257,7 @@ class TestGetGrowthMetrics:
 class TestGetHistoricalValuation:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_historical_valuation
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_historical_valuation
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -245,7 +280,7 @@ class TestGetHistoricalValuation:
 class TestGetInsiderTrades:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_insider_trades
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_insider_trades
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -259,7 +294,7 @@ class TestGetInsiderTrades:
 
     @pytest.mark.asyncio
     async def test_custom_limit(self):
-        from mcp_servers.fundamentals_mcp_server import get_insider_trades
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_insider_trades
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -275,7 +310,7 @@ class TestGetInsiderTrades:
 class TestGetDividendsAndSplits:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_dividends_and_splits
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_dividends_and_splits
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -295,7 +330,7 @@ class TestGetDividendsAndSplits:
 class TestGetSharesFloat:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_shares_float
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_shares_float
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -313,7 +348,7 @@ class TestGetSharesFloat:
 class TestGetKeyExecutives:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_key_executives
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_key_executives
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -331,7 +366,7 @@ class TestGetKeyExecutives:
 class TestGetTechnicalIndicator:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.fundamentals_mcp_server import get_technical_indicator
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -347,8 +382,39 @@ class TestGetTechnicalIndicator:
         )
 
     @pytest.mark.asyncio
+    async def test_caret_index_reaches_fmp_with_its_caret(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await get_technical_indicator("^GSPC", indicator="rsi")
+
+        assert client.get_technical_indicator.await_args.args[0] == "^GSPC"
+
+    @pytest.mark.asyncio
+    async def test_canonical_index_key_reaches_fmp_with_its_caret(self):
+        """The display spelling ``SPX`` is not one FMP reads."""
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await get_technical_indicator("SPX.INDEX", indicator="rsi")
+
+        assert client.get_technical_indicator.await_args.args[0] == "^GSPC"
+
+    @pytest.mark.asyncio
+    async def test_ticker_colliding_with_an_index_alias_stays_the_company(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            await get_technical_indicator("COMP", indicator="rsi")
+
+        assert client.get_technical_indicator.await_args.args[0] == "COMP"
+
+    @pytest.mark.asyncio
     async def test_custom_params(self):
-        from mcp_servers.fundamentals_mcp_server import get_technical_indicator
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -357,3 +423,35 @@ class TestGetTechnicalIndicator:
         assert result["indicator"] == "ema"
         assert result["period"] == 50
         assert result["timeframe"] == "1hour"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeframe", ["2day", "1d", "1h", "1HOUR", "1week", ""])
+    async def test_unknown_timeframe_is_refused_before_fmp(self, timeframe):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_technical_indicator("AAPL", indicator="rsi", timeframe=timeframe)
+
+        # The hosted tool's envelope, word for word.
+        assert result == {
+            "error": "invalid_argument",
+            "detail": (
+                "timeframe must be one of 1min, 5min, 15min, 30min, 1hour, 4hour, 1day, "
+                f"not {timeframe!r}"
+            ),
+            "symbol": "AAPL",
+        }
+        client.get_technical_indicator.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("timeframe", ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"])
+    async def test_every_bar_size_reaches_fmp(self, timeframe):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_technical_indicator("AAPL", indicator="rsi", timeframe=timeframe)
+
+        assert result["timeframe"] == timeframe
+        assert client.get_technical_indicator.await_args.kwargs["timeframe"] == timeframe

@@ -4,11 +4,10 @@
  * Backend emits two kinds of stream errors:
  *   - `upstream` — LLM provider failed. Render inline on the failed turn so
  *     the user sees it next to the turn they sent. Banner cleared.
- *   - `internal` — our pipeline failed. Drop the optimistic assistant bubble
- *     (matches the 429 pattern) and surface the error in a banner.
- *
- * Regression guard: the empty-bubble-under-a-banner anti-pattern that looks
- * broken in the UI must not re-emerge for internal errors.
+ *   - `internal` — our pipeline failed. Surface the error in a banner and
+ *     keep the assistant bubble in state (edit/regenerate count bubbles to
+ *     find turn_index): failed with its content if it streamed any, else
+ *     settled without `error` so the render-time orphan skip hides it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
@@ -42,7 +41,9 @@ vi.mock('../../session/history/historyHandlers', async (importOriginal) =>
 vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
 import { sendChatMessageStream } from '../../utils/api';
+import { handleTextContent } from '../../session/stream/mainEventHandlers';
 import { useChatMessages } from '../useChatMessages';
+import { isOrphanAssistantMessage } from '../../components/messageList/contentProjection';
 
 const mockSendStream = sendChatMessageStream as Mock;
 
@@ -56,9 +57,7 @@ function mockStreamWithEvents(events: Array<Record<string, unknown>>) {
       _msg: string,
       _ws: string,
       _tid: string | null,
-      _hist: unknown[],
-      _plan: boolean,
-      onEvent: (e: Record<string, unknown>) => void,
+      { onEvent }: { onEvent: (e: Record<string, unknown>) => void },
     ) => {
       for (const e of events) onEvent(e);
       return { disconnected: false };
@@ -71,7 +70,7 @@ describe('useChatMessages — SSE error routing by error_kind', () => {
     vi.clearAllMocks();
   });
 
-  it('internal error drops the optimistic assistant bubble and sets the banner', async () => {
+  it('internal error on an empty bubble keeps it, unflagged and orphan-skipped, with the banner', async () => {
     mockStreamWithEvents([
       {
         event: 'error',
@@ -83,21 +82,110 @@ describe('useChatMessages — SSE error routing by error_kind', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     await act(async () => {
-      await result.current.handleSendMessage('hello', false);
+      await result.current.handleSendMessage('hello');
     });
 
     await waitFor(() => {
-      // Only the user's message remains; no assistant bubble.
-      expect(result.current.messages.some((m) => m.role === 'assistant')).toBe(false);
+      const assistants = result.current.messages.filter((m) => m.role === 'assistant');
+      expect(assistants).toHaveLength(1);
+      const bubble = assistants[0] as unknown as Parameters<typeof isOrphanAssistantMessage>[0];
+      expect(bubble.isStreaming).toBe(false);
+      expect(bubble.error).toBeFalsy();
+      expect(isOrphanAssistantMessage(bubble)).toBe(true);
       expect(result.current.messages.some((m) => m.role === 'user')).toBe(true);
     });
 
+    // The headline alone, as a reload shows it: never the frame's exception text.
+    expect(result.current.messageError).toEqual({ message: '', kind: 'internal' });
+  });
+
+  it('internal error after streamed content keeps the bubble and its content, marked failed', async () => {
+    let seen: string | undefined;
+    mockSendStream.mockImplementation(
+      async (
+        _msg: string,
+        _ws: string,
+        _tid: string | null,
+        { onEvent }: { onEvent: (e: Record<string, unknown>) => void },
+      ) => {
+        // Seed streamed content on the live bubble, as the (stubbed) text
+        // handler would, then fail the turn the way a stream quota stop does.
+        const handler = handleTextContent as Mock;
+        handler.mockImplementation(({ assistantMessageId, setMessages }: {
+          assistantMessageId: string;
+          setMessages: (u: (prev: Record<string, unknown>[]) => Record<string, unknown>[]) => void;
+        }) => {
+          seen = assistantMessageId;
+          setMessages((prev) => prev.map((m) => (m.id === assistantMessageId
+            ? { ...m, content: 'partial analysis', contentSegments: [{ type: 'text', content: 'partial analysis', order: 1 }] }
+            : m)));
+        });
+        onEvent({ event: 'message_chunk', content: 'partial analysis', content_type: 'text', role: 'assistant' });
+        onEvent({ event: 'error', error: 'transport_lost: stream quota exceeded', error_kind: 'internal' });
+        return { disconnected: false };
+      },
+    );
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    await act(async () => {
+      await result.current.handleSendMessage('hello');
+    });
+
+    await waitFor(() => {
+      const assistants = result.current.messages.filter((m) => m.role === 'assistant') as unknown as
+        Array<{ id: string; content?: string; error?: boolean; isStreaming?: boolean }>;
+      expect(assistants).toHaveLength(1);
+      expect(assistants[0].id).toBe(seen);
+      expect(assistants[0].content).toBe('partial analysis');
+      expect(assistants[0].error).toBe(true);
+      expect(assistants[0].isStreaming).toBe(false);
+      // The banner reports it, so the bubble carries no card of its own.
+      expect((assistants[0] as { structuredError?: unknown }).structuredError).toBeUndefined();
+    });
+
     const err = result.current.messageError;
-    expect(err).toBeTruthy();
-    if (typeof err === 'object' && err && 'message' in err) {
-      expect(err.message).toContain('DB pool closed');
-      expect(err.kind).toBe('internal');
-    }
+    expect(typeof err === 'object' && err && 'kind' in err ? err.kind : null).toBe('internal');
+  });
+
+  it('a run that ends failed without an error frame settles as an internal failure', async () => {
+    mockSendStream.mockImplementation(
+      async (
+        _msg: string,
+        _ws: string,
+        _tid: string | null,
+        { onEvent }: { onEvent: (e: Record<string, unknown>) => void },
+      ) => {
+        (handleTextContent as Mock).mockImplementation(({ assistantMessageId, setMessages }: {
+          assistantMessageId: string;
+          setMessages: (u: (prev: Record<string, unknown>[]) => Record<string, unknown>[]) => void;
+        }) => {
+          setMessages((prev) => prev.map((m) => (m.id === assistantMessageId
+            ? { ...m, content: 'partial analysis', contentSegments: [{ type: 'text', content: 'partial analysis', order: 1 }] }
+            : m)));
+        });
+        onEvent({ event: 'message_chunk', content: 'partial analysis', content_type: 'text', role: 'assistant' });
+        // A stream quota stop: the server cannot write the failure into the
+        // stream it ran out of, so the outcome is all the client hears.
+        onEvent({ event: 'run_end', run_id: 'run-1', outcome: 'error' });
+        return { disconnected: false };
+      },
+    );
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    await act(async () => {
+      await result.current.handleSendMessage('hello');
+    });
+
+    await waitFor(() => {
+      const assistants = result.current.messages.filter((m) => m.role === 'assistant') as unknown as
+        Array<{ content?: string; error?: boolean; isStreaming?: boolean; structuredError?: unknown }>;
+      expect(assistants).toHaveLength(1);
+      expect(assistants[0]).toMatchObject({ content: 'partial analysis', error: true, isStreaming: false });
+      expect(assistants[0].structuredError).toBeUndefined();
+    });
+    expect(result.current.messageError).toEqual({ message: '', kind: 'internal' });
   });
 
   it('upstream error keeps the assistant bubble with structuredError + clears banner', async () => {
@@ -114,7 +202,7 @@ describe('useChatMessages — SSE error routing by error_kind', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     await act(async () => {
-      await result.current.handleSendMessage('hello', false);
+      await result.current.handleSendMessage('hello');
     });
 
     await waitFor(() => {
@@ -143,7 +231,7 @@ describe('useChatMessages — SSE error routing by error_kind', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     await act(async () => {
-      await result.current.handleSendMessage('hello', false);
+      await result.current.handleSendMessage('hello');
     });
 
     await waitFor(() => {
@@ -151,8 +239,8 @@ describe('useChatMessages — SSE error routing by error_kind', () => {
         | { error?: boolean; structuredError?: unknown }
         | undefined;
       expect(assistant?.error).toBe(true);
-      // No structuredError since backend didn't classify.
-      expect(assistant?.structuredError).toBeUndefined();
+      // Unclassified: the failure rides apart from the reply, with no kind.
+      expect(assistant?.structuredError).toEqual({ message: 'Something broke' });
     });
   });
 });

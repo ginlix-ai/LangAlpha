@@ -14,8 +14,9 @@ import type { WidgetRenderProps } from '../types';
 
 type MarketsOverviewConfig = { indices?: string[] };
 
-// Below this cell width the 5-tile desktop grid wraps to ≥3 rows and looks
-// worse than the mobile swipe stack, so switch to the compact variant.
+// The tiles share one row, five across. Below this width a tile is too narrow
+// to keep its name beside its symbol in the edge, and the swipe stack reads
+// better.
 const COMPACT_WIDTH_PX = 640;
 
 function MarketsOverviewWidget({ instance }: WidgetRenderProps<MarketsOverviewConfig>) {
@@ -74,6 +75,7 @@ function MarketsOverviewWidget({ instance }: WidgetRenderProps<MarketsOverviewCo
         indices={dashboard.indices}
         loading={dashboard.indicesLoading}
         forceMobile={compact}
+        singleRow
       />
     </div>
   );
@@ -88,9 +90,14 @@ registerWidget<MarketsOverviewConfig>({
   component: MarketsOverviewWidget,
   defaultConfig: {},
   configSchema: MarketsOverviewConfigSchema,
-  defaultSize: { w: 12, h: 11 },
-  minSize: { w: 3, h: 11 },
-  maxSize: { w: 12, h: 11 },
+  // The tiles are their own cards, so the frame draws none around them, and
+  // the cell takes the tiles' height. maxSize.h clears edit mode, where the
+  // frame's card goes around them.
+  frame: 'bare',
+  fitToContent: true,
+  defaultSize: { w: 12, h: 6 },
+  minSize: { w: 3, h: 4 },
+  maxSize: { w: 12, h: 12 },
   singleton: true,
 });
 

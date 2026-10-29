@@ -35,9 +35,30 @@ MAX_ATTEMPTS = 5
 MAX_CONCURRENT_JOBS = 10
 # task_report_back jobs hold their slot through an entire PTC notification
 # turn (sandbox bringup + a full agent run — tens of minutes); cap their
-# share so a burst of tail completions can't starve flash report-backs and
+# share so a burst of tail completions can't starve hand-off report-backs and
 # cheap wakes. Excluded types stay unclaimed but still head their chains.
 TASK_RB_INFLIGHT_QUOTA = 3
+# command_report_back jobs hold their slot through a whole notification turn
+# too, and one deploy restarting many computers can end many commands at
+# once, so they get the same share.
+COMMAND_RB_INFLIGHT_QUOTA = 3
+# market_target jobs ride out admission refusals holding their slot, and each
+# thread's notices are their own chain, so one market-wide move (or a session
+# close, which every target on the venue warns ahead of) makes a job due on
+# every watching thread at once. Cap their share too, or a burst of wakes
+# refused for credit or rate could pin every slot and stall steers and
+# report-backs for everyone. A claim never asks for more jobs than the room
+# left under any quota, so a burst cannot overshoot one in a single batch.
+MARKET_TARGET_INFLIGHT_QUOTA = 3
+# A wakeup's notice rides out refusals the same way, and a market-wide move
+# fires every price wakeup on the venue together, so it gets the same share.
+WAKEUP_INFLIGHT_QUOTA = 3
+_INFLIGHT_QUOTAS = {
+    "task_report_back": TASK_RB_INFLIGHT_QUOTA,
+    "command_report_back": COMMAND_RB_INFLIGHT_QUOTA,
+    "market_target": MARKET_TARGET_INFLIGHT_QUOTA,
+    "wakeup": WAKEUP_INFLIGHT_QUOTA,
+}
 # How long shutdown waits for the loop, and then for its in-flight jobs.
 STOP_GRACE = 10.0
 # Terminal-row retention: far beyond every read-back window (done-recents
@@ -45,6 +66,11 @@ STOP_GRACE = 10.0
 RETENTION_SECONDS = 7 * 24 * 3600.0
 PURGE_INTERVAL = 3600.0
 PURGE_BATCH = 5000
+# How often the drainer closes alerts (a price target's or a wakeup's notice)
+# no turn will take in, and how often it revives dead ones. Neither is urgent; a revive waits out a
+# cool-down anyway (``outbox.revive_dead_alerts``), and reads terminal rows.
+ALERT_CLOSE_INTERVAL = 60.0
+ALERT_REVIVE_INTERVAL = 600.0
 
 
 # ---------------------------------------------------------------------------
@@ -73,20 +99,23 @@ async def _exec_burst_release(job: Dict[str, Any]) -> None:
 _EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {
     "burst_release": _exec_burst_release,
 }
-# Optional per-type post-ack followups: run best-effort AFTER a successful
-# fenced ack (e.g. a "reconcile now" wake whose whole point is that the row
-# is no longer open). A failure never un-acks the job.
-_ACK_FOLLOWUPS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {}
-# One-shot startup sweeps (e.g. legacy-state migration). The drainer runs
-# every registered sweep as a BARRIER before its first claim.
-_STARTUP_SWEEPS: list[Callable[[], Awaitable[None]]] = []
+# Optional per-type followups once a row stops being open: run best-effort
+# AFTER a successful fenced ack, or once the row is parked dead (e.g. a
+# "reconcile now" wake whose whole point is that the row is no longer open).
+# A failure never un-acks the job.
+_CLOSE_FOLLOWUPS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {}
+# Best-effort followups for a row its type settles itself at the attempts
+# ceiling rather than parking it dead (a steer, ``outbox._exhaust_steers``;
+# an alert, ``outbox._exhaust_alerts``).
+_EXHAUST_FOLLOWUPS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {}
 
 
 def register_hook_executor(
     hook_type: str,
     executor: Callable[[Dict[str, Any]], Awaitable[None]],
     *,
-    on_acked: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    on_closed: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    on_exhausted: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
 ) -> None:
     """Bind a hook_type to its executor. Idempotent for the same function;
     a different executor for a registered type is a wiring bug — raise."""
@@ -97,13 +126,10 @@ def register_hook_executor(
             f"{existing.__qualname__}; refusing {executor.__qualname__}"
         )
     _EXECUTORS[hook_type] = executor
-    if on_acked is not None:
-        _ACK_FOLLOWUPS[hook_type] = on_acked
-
-
-def register_startup_sweep(sweep: Callable[[], Awaitable[None]]) -> None:
-    if sweep not in _STARTUP_SWEEPS:
-        _STARTUP_SWEEPS.append(sweep)
+    if on_closed is not None:
+        _CLOSE_FOLLOWUPS[hook_type] = on_closed
+    if on_exhausted is not None:
+        _EXHAUST_FOLLOWUPS[hook_type] = on_exhausted
 
 
 # Dead-letter compensation (a dead report_back's watch_clear) is inserted
@@ -145,6 +171,8 @@ class HookOutboxDrainer:
         # task -> hook_type, so per-type quotas can count in-flight work.
         self._inflight: Dict[asyncio.Task, str] = {}
         self._next_purge = 0.0
+        self._next_alert_revive = 0.0
+        self._next_alert_close = 0.0
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -196,28 +224,7 @@ class HookOutboxDrainer:
         self._nudge.set()
 
     async def _loop(self) -> None:
-        legacy_swept = False
         while not self._stopping.is_set():
-            if not legacy_swept:
-                try:
-                    for sweep in _STARTUP_SWEEPS:
-                        await sweep()
-                    legacy_swept = True
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    # The sweep is a BARRIER: claiming before unmigrated rows
-                    # are rekeyed would run them outside their real chain, and
-                    # a claimed row can no longer be rekeyed. Idempotent, so
-                    # back off and retry until it lands.
-                    logger.error(
-                        "[HookOutbox] legacy FIFO migration failed; deferring "
-                        "claims until it succeeds",
-                        exc_info=True,
-                    )
-                    await self._wait_for_nudge()
-                    continue
-
             # Dead-park expired claims that already burned max_attempts leases
             # (crashed owners never nack); their chains unwedge here. The
             # watch_clear compensation rides the same statement.
@@ -225,11 +232,15 @@ class HookOutboxDrainer:
                 for parked in await outbox_db.park_exhausted_jobs(
                     max_attempts=MAX_ATTEMPTS
                 ):
+                    if parked.get("status") != "dead":
+                        await self._exhausted(parked)
+                        continue
                     logger.error(
                         f"[HookOutbox] parked exhausted job="
                         f"{parked.get('hook_outbox_id')} "
                         f"type={parked.get('hook_type')} as dead"
                     )
+                    await self._close_followup(parked)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -250,6 +261,47 @@ class HookOutboxDrainer:
                 raise
             except Exception:
                 logger.error("[HookOutbox] revive sweep failed", exc_info=True)
+
+            # An alert out of attempts waits for its thread's next turn
+            # instead of going dead. One an older build dead-lettered is
+            # made due again, at most twice, while its notice is owed, as is
+            # a command's report, a type an older build cannot run; one no
+            # turn will take in (not owed, or its thread archived or its
+            # workspace deleted) is closed rather than left pending for good.
+            if time.monotonic() >= self._next_alert_revive:
+                self._next_alert_revive = time.monotonic() + ALERT_REVIVE_INTERVAL
+                try:
+                    for revived in await outbox_db.revive_dead_alerts():
+                        logger.warning(
+                            f"[HookOutbox] revived dead alert job="
+                            f"{revived.get('hook_outbox_id')} "
+                            f"key={revived.get('ordering_key')} for another "
+                            f"wake"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "[HookOutbox] alert revive sweep failed",
+                        exc_info=True,
+                    )
+            if time.monotonic() >= self._next_alert_close:
+                self._next_alert_close = time.monotonic() + ALERT_CLOSE_INTERVAL
+                try:
+                    for closed in await outbox_db.close_unowed_waiting_alerts():
+                        logger.info(
+                            f"[HookOutbox] closed notice job="
+                            f"{closed.get('hook_outbox_id')} "
+                            f"key={closed.get('ordering_key')}: no turn will "
+                            f"take it in"
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "[HookOutbox] alert close sweep failed",
+                        exc_info=True,
+                    )
 
             # Retention: purge terminal rows past every read-back window so
             # the table (and the sweeps above) stays flat on a long-lived
@@ -283,17 +335,18 @@ class HookOutboxDrainer:
             free = MAX_CONCURRENT_JOBS - len(self._inflight)
             jobs = []
             if free > 0:
-                task_rb_inflight = sum(
-                    1 for ht in self._inflight.values() if ht == "task_report_back"
-                )
-                excluded = (
-                    ["task_report_back"]
-                    if task_rb_inflight >= TASK_RB_INFLIGHT_QUOTA
-                    else None
+                running = list(self._inflight.values())
+                room = {
+                    hook_type: quota - running.count(hook_type)
+                    for hook_type, quota in _INFLIGHT_QUOTAS.items()
+                }
+                excluded = [t for t, left in room.items() if left <= 0] or None
+                batch = min(
+                    CLAIM_BATCH, free, *(left for left in room.values() if left > 0)
                 )
                 try:
                     jobs = await outbox_db.claim_outbox_jobs(
-                        limit=min(CLAIM_BATCH, free),
+                        limit=batch,
                         lease_seconds=LEASE_SECONDS,
                         max_attempts=MAX_ATTEMPTS,
                         excluded_hook_types=excluded,
@@ -313,7 +366,7 @@ class HookOutboxDrainer:
                         lambda t: self._inflight.pop(t, None)
                     )
 
-                if len(jobs) >= free:
+                if len(jobs) >= batch:
                     continue  # claimed to capacity; more are likely due right now
 
             await self._wait_for_nudge()
@@ -356,15 +409,19 @@ class HookOutboxDrainer:
                 new_status = await outbox_db.nack_outbox_job(
                     job_id, attempts=attempts, max_attempts=MAX_ATTEMPTS
                 )
-                if new_status == "dead":
-                    # A dead report_back's watch_clear compensation was
-                    # inserted atomically by the nack statement itself.
-                    logger.error(
-                        f"[HookOutbox] job={job_id} type={hook_type} dead "
-                        f"after {attempts} attempts"
-                    )
             except Exception:
                 logger.error(f"[HookOutbox] nack failed for {job_id}", exc_info=True)
+                return
+            if new_status == "exhausted":
+                await self._exhausted(job)
+            elif new_status == "dead":
+                # A dead report_back's watch_clear compensation was
+                # inserted atomically by the nack statement itself.
+                logger.error(
+                    f"[HookOutbox] job={job_id} type={hook_type} dead "
+                    f"after {attempts} attempts"
+                )
+                await self._close_followup(job)
             return
         try:
             await outbox_db.ack_outbox_job(job_id, attempts=attempts)
@@ -374,15 +431,39 @@ class HookOutboxDrainer:
             # the row is still open, so the thread legitimately reads pending.
             logger.warning(f"[HookOutbox] ack failed for {job_id}", exc_info=True)
             return
-        followup = _ACK_FOLLOWUPS.get(hook_type)
-        if followup is not None:
-            # Best-effort: the effect is acked; a dropped followup degrades
-            # to the type's own backstop (e.g. a status-poll recycle).
-            try:
-                await followup(job)
-            except Exception:
-                logger.debug(
-                    f"[HookOutbox] post-ack followup failed for {job_id} "
-                    f"type={hook_type}",
-                    exc_info=True,
-                )
+        await self._close_followup(job)
+
+    async def _exhausted(self, job: Dict[str, Any]) -> None:
+        """A row out of attempts that its type settled rather than letting it
+        go dead: worth a warning, not a dead letter, and no close followup."""
+        logger.warning(
+            f"[HookOutbox] job={job.get('hook_outbox_id')} "
+            f"type={job.get('hook_type')} out of attempts after "
+            f"{job.get('attempts')}; settled by its type"
+        )
+        followup = _EXHAUST_FOLLOWUPS.get(job.get("hook_type") or "")
+        if followup is None:
+            return
+        try:
+            await followup(job)
+        except Exception:
+            logger.debug(
+                f"[HookOutbox] exhaust followup failed for "
+                f"{job.get('hook_outbox_id')} type={job.get('hook_type')}",
+                exc_info=True,
+            )
+
+    async def _close_followup(self, job: Dict[str, Any]) -> None:
+        followup = _CLOSE_FOLLOWUPS.get(job.get("hook_type") or "")
+        if followup is None:
+            return
+        # Best-effort: the row is already closed; a dropped followup degrades
+        # to the type's own backstop (e.g. a watch recycle).
+        try:
+            await followup(job)
+        except Exception:
+            logger.debug(
+                f"[HookOutbox] close followup failed for "
+                f"{job.get('hook_outbox_id')} type={job.get('hook_type')}",
+                exc_info=True,
+            )

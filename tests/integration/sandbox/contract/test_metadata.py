@@ -1,4 +1,4 @@
-"""Contract tests for SandboxRuntime metadata and capabilities."""
+"""Contract tests for SandboxRuntime metadata and optional abilities."""
 
 from __future__ import annotations
 
@@ -9,15 +9,16 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 @pytest.mark.asyncio(loop_scope="class")
 class TestRuntimeMetadata:
-    """SandboxRuntime.capabilities, get_metadata(), working_dir, fetch_working_dir."""
+    """SandboxRuntime ability flags, get_metadata(), working_dir, fetch_working_dir."""
 
-    async def test_capabilities_set(self, shared_runtime, timed):
-        async with timed("metadata", "capabilities"):
-            caps = shared_runtime.capabilities
-        assert isinstance(caps, set)
-        assert "exec" in caps
-        assert "code_run" in caps
-        assert "file_io" in caps
+    async def test_optional_abilities_are_flags(self, shared_runtime, timed):
+        async with timed("metadata", "abilities"):
+            flags = (
+                shared_runtime.updates_env,
+                shared_runtime.archives,
+                shared_runtime.autostops,
+            )
+        assert all(isinstance(flag, bool) for flag in flags)
 
     async def test_get_metadata(self, shared_runtime, timed):
         async with timed("metadata", "get_metadata"):

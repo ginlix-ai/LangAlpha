@@ -1,619 +1,542 @@
-"""Assemble checkpoint-sourced replay items for the replay endpoint.
+"""Assemble a thread's replay for the replay endpoint.
 
-Produces the same ``{"event": type, "data": dict}`` items as the stored
-``sse_events`` path, sourcing the transcript from checkpoints (via
-``CheckpointHistoryReader`` + the pure projector) and merging the
-non-derivable remainder from persisted events:
+Produces the live wire's ``{"event": type, "data": dict}`` stream, sourcing
+the transcript from checkpoints (via ``CheckpointHistoryReader`` + the pure
+projector) and the non-derivable remainder from table rows:
 
 - ``steering_delivered`` and ``context_window`` (token_usage, summarize,
   offload) are projected from checkpoint state — steering payloads and
   summarize fields are stamped into message ``additional_kwargs`` at emit
   time, token usage comes from ``usage_metadata``, offload counts and the
-  summarize event from private-state deltas. While the sse dual-write is on,
-  a turn with stored events replays those verbatim instead (richer historical
-  payloads, exact mid-turn positions).
+  summarize event from private-state deltas.
 - ``provenance`` / ``credit_usage`` are table-sourced (provenance_records /
   conversation_usages rows, written at persist time); answered ``interrupt``
   cards project from the resume boundary's ``__interrupt__`` pending writes;
-  the terminal ``error`` event reconstructs from the response row (both replay
-  paths — it is yielded live *after* the persist snapshot, so stored events
-  never contain it). While the sse dual-write is on, a turn with stored events
-  replays the stored copies instead.
-- ``html_widget`` artifacts prefer the stored event when present — the live
-  event inlines resolved data files that are deliberately kept out of the
-  checkpointer.
-- Sandbox image paths in projected text resolve through ``image_capture``
-  ui records; a turn whose images cannot be resolved falls back to its stored
-  events wholesale (turn-level granularity keeps ordering coherent).
+  the terminal ``error`` event replays the frame the live stream sent, kept
+  in the response row's replay facts (or placed by a legacy turn's facts),
+  with the row's kind stamped on it, and is rebuilt from the row when
+  neither holds one.
+- Sandbox image paths in projected text resolve through the replay facts of
+  the run that wrote them (the turn's response row, a subagent run's row),
+  and through ``image_capture`` ui records for a turn settled before its row
+  held them.
+- What only the live stream measured or returned (reasoning durations, a
+  subagent run's returned steering) comes from the run's replay facts
+  (``facts``).
+- A turn settled while its live stream was archived carries what only that
+  archive kept in its row's legacy facts (``legacy``): widget data files,
+  evicted results, signal rows in their streamed positions, image URLs.
 
-Package layout: this root orchestrates; items builds table-sourced events,
-stored_merge anchors persisted payloads, task_lane + segment_claim project
-background-task namespaces, widgets inlines offloaded payloads on the way out.
+A settled turn is projected once: its slice (what the turn added to the
+checkpoint) and its projected lines are stored with its response row, and a
+read streams the lines while their key still matches the inputs. Only a turn
+whose key moved is projected again, from its stored slice when the branch
+still agrees with it, and from checkpoints otherwise.
+
+A turn that cannot be projected replays as a stub (its user message, the
+stream its row archived if it kept one, and its closing rows) on the read
+paths that ask for it, so one bad turn costs only itself. A stub of a turn
+that answered and archived nothing closes on an error frame
+(``stubs.unavailable_item``), never as a turn the assistant silently left
+unanswered.
+
+Package layout:
+
+- this root pairs checkpoint turns with persisted ones, pages them, and
+  serves the stored lines whose key still matches;
+- ``cold`` projects and stores the rest, a batch at a time;
+- ``turn`` projects one turn: ``items`` builds its table-sourced events,
+  ``run_lane`` its background-task runs, ``legacy`` applies its legacy
+  facts, and ``facts`` applies what runs recorded on their rows;
+- ``lines`` holds the stored wire format, and ``widgets`` inlines offloaded
+  payloads on the way out;
+- ``keys`` decides whether stored lines still stand, ``stubs`` is what a
+  turn that cannot be projected replays as, ``refresh`` projects turns as
+  they settle, and ``errors`` says why a read gives up.
+
+Only the modules that decide what lines hold are digested into the lines
+key (``keys.projection_sources``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
-
-from ptc_agent.agent.middleware.image_capture import (
-    IMAGE_MD_RE,
-    is_sandbox_image_path,
-)
-from src.server.services.runs.sse_producer import resolve_token_threshold
-from src.server.services.history import projection_cache
-from src.server.services.history import projector
+from src.server.database import conversation as conversation_db
+from src.server.database.conversation import turn_slices as slices_db
+from src.server.database.conversation.replay_rows import ThreadRows
+from src.server.database.pool import DATABASE_UNAVAILABLE
+from src.server.services.history import slices
 from src.server.services.history import task_status
-from src.server.services.history.projector import (
-    history_events_to_sse,
-    messages_to_history_events,
+from src.server.services.history.reader import (
+    CheckpointHistoryReader,
+    TurnAnchor,
+    pair_turns,
 )
-from src.server.services.history.reader import CheckpointHistoryReader
-from src.server.utils.checkpoint_helpers import CheckpointBranchTipNotFound
+from src.server.services.history.replay import cold
 from src.server.services.history.replay import items
-from src.server.services.history.replay import stored_merge
-from src.server.services.history.replay import task_lane
+from src.server.services.history.replay import lines as replay_lines
 from src.server.services.history.replay import widgets
+from src.server.services.history.replay.errors import (
+    CheckpointReplayUnavailable,
+    ClaimsPassNeeded,
+)
+from src.server.services.history.replay.keys import lines_epoch, lines_key
+from src.server.services.history.replay.lines import Line, line_of
+from src.server.services.history.replay.stubs import stub_lines
+from src.server.services.history.replay.turn import Inputs, group_queries
+from src.server.utils.checkpoint_helpers import CheckpointBranchTipNotFound
+
+__all__ = [
+    "CheckpointReplayUnavailable",
+    "ClaimsPassNeeded",
+    "ReplayPage",
+    "build_replay_page",
+    "ThreadRows",
+    "finish_lines",
+    "lines_epoch",
+    "load_thread_inputs",
+    "pair_anchors",
+    "project_turns",
+    "read_replay_page",
+    "stub_page",
+    "unserved_turns",
+]
 
 logger = logging.getLogger(__name__)
 
 
-class CheckpointReplayUnavailable(Exception):
-    """Checkpoint history cannot faithfully cover this thread's replay."""
+@dataclass
+class ReplayPage:
+    lines: list[Line]
+    # The oldest turn in this page; the next page asks for turns before it.
+    first_turn_index: Any | None
+    has_more: bool
 
 
-IMAGE_CAPTURE_UI_NAME = "image_capture"
+async def load_thread_inputs(thread_id: str) -> tuple[ThreadRows, str] | None:
+    """A thread's replay rows and the commit pointer to read its branch
+    from, or None when the thread is unknown or never committed a turn."""
+    rows = await conversation_db.get_replay_thread_data(thread_id)
+    if rows is None:
+        return None
+    tip = rows.thread.get("latest_checkpoint_id")
+    return (rows, tip) if tip else None
 
 
-async def build_checkpoint_replay_items(
-    thread_id: str,
-    queries: list[dict[str, Any]],
-    responses_by_turn: dict[Any, dict[str, Any]],
-    branch_tip_checkpoint_id: str | None = None,
-    last_n_turns: int | None = None,
-    usages: list[dict[str, Any]] | None = None,
-    provenance: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Build the replay item list from checkpoints.
-
-    With ``last_n_turns`` set, only the most recent N turns are materialized
-    (windowed initial load — latency bounded by the window, not thread length);
-    otherwise the full thread is built.
+async def build_replay_page(
+    rows: ThreadRows,
+    branch_tip_checkpoint_id: str,
+    *,
+    before_turn: Any | None = None,
+    limit: int | None = None,
+    turn_fallback: bool = False,
+) -> ReplayPage:
+    """Replay lines for one page of the thread: with ``limit``, the newest N
+    checkpointed turns before ``before_turn`` (all of them without it), plus
+    the persisted turns with no committed boundary among them.
 
     Turns pair to persisted query rows by stamped ``turn_index`` metadata
-    (ordinal-anchored for pre-stamping threads); a persisted turn with no
-    committed boundary — the in-flight active turn — replays as its
-    user_message stub only. Raises ``CheckpointReplayUnavailable`` when
+    (the next persisted turn for a resume or a pre-stamping thread, see
+    ``pair_turns``); a persisted turn with no committed boundary (the
+    in-flight active turn) replays as its stub. Raises ``CheckpointReplayUnavailable`` when
     coverage cannot be established (missing checkpoints, inconsistent
-    pairing) — the endpoint's ``auto`` mode falls back to stored events on
-    that signal. Steered threads replay natively (the steering message is
-    checkpointed mid-slice); legacy steering-*backfilled* turns have a
-    completed response with no boundary, so pairing raises and they stay on
-    the sse path.
+    pairing); the endpoint's ``auto`` mode falls back to stubs on that
+    signal. Steered threads replay natively (the steering message is
+    checkpointed mid-slice). A completed turn with no boundary (a legacy
+    steering-*backfilled* turn) raises too, unless ``turn_fallback``, which
+    replays that turn alone as its stub.
 
-    Settled turns serve from the per-turn projection cache when every entry
-    is present (no state materialization); any miss rebuilds from checkpoints
-    and backfills the cache. Widget ``data_ref`` resolution always runs on
-    the way out — entries store the unresolved ref.
+    Lines are wire-ready but not final: task cards and offloaded widget data
+    are stamped on the way out (``finish_lines``). ``turn_fallback``: see
+    ``cold.project_stale``.
     """
     reader = CheckpointHistoryReader.get_instance()
-    turn_indexes = sorted(
-        {
-            q.get("turn_index")
-            for q in queries
-            if isinstance(q, dict) and q.get("turn_index") is not None
-        }
+    branch = await _branch(reader, rows, branch_tip_checkpoint_id)
+    if branch is None:
+        raise CheckpointReplayUnavailable("no checkpoint turns found")
+    inputs, anchored, tip_id = branch
+    page, has_more = _select_page(anchored, inputs, before_turn, limit)
+    for turn_index, anchor in page:
+        # A completed turn persists its boundary, so checkpoints cannot cover
+        # one without it. The pairing that placed every other turn held, so
+        # under ``turn_fallback`` only that turn is a stub.
+        response = inputs.responses_by_turn.get(turn_index) or {}
+        if anchor is None and response.get("status") == "completed" and not turn_fallback:
+            raise CheckpointReplayUnavailable(
+                f"persisted turn {turn_index} completed but has no checkpoint boundary"
+            )
+
+    lines = _turn_lines(
+        reader,
+        inputs,
+        anchored,
+        [(ti, a) for ti, a in page if a is not None],
+        cold.Policy(turn_fallback=turn_fallback),
     )
-    queries_by_turn: dict[Any, list[dict[str, Any]]] = {}
-    for q in queries:
-        if isinstance(q, dict):
-            queries_by_turn.setdefault(q.get("turn_index"), []).append(q)
-
-    # Both paths key the projection cache on these rows, so index once.
-    usage_by_response = items._usage_rows_by_response(usages)
-    provenance_by_response = items._rows_by_response(provenance, many=True)
-
-    out: list[dict[str, Any]] | None = None
-    if projection_cache.cache_active():
-        out = await _assemble_from_cache(
-            reader,
-            thread_id,
-            queries_by_turn,
-            responses_by_turn,
-            turn_indexes,
-            branch_tip_checkpoint_id,
-            last_n_turns,
-            usage_by_response,
-            provenance_by_response,
+    tip_interrupts: list[dict[str, Any]] = []
+    if before_turn is None:
+        # The newest page ends with the tip's pending interrupts, a checkpoint
+        # read the lines never wait on. Both settle before either error is
+        # raised, the lines' first, so a failed page leaves no read behind.
+        results = await asyncio.gather(
+            lines,
+            reader.aget_tip_interrupts(rows.thread_id, tip_id),
+            return_exceptions=True,
         )
-    if out is None:
-        out = await _build_and_backfill(
-            reader,
-            thread_id,
-            queries_by_turn,
-            responses_by_turn,
-            turn_indexes,
-            branch_tip_checkpoint_id,
-            last_n_turns,
-            usage_by_response,
-            provenance_by_response,
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        lines_by_turn, tip_interrupts = results
+    else:
+        lines_by_turn = await lines
+    stubs, lost = await stub_lines(
+        rows.thread_id,
+        [turn_index for turn_index, anchor in page if anchor is None],
+        inputs.queries_by_turn,
+        inputs.responses_by_turn,
+        rows.open_runs,
+    )
+    if lost:
+        logger.error(
+            "[REPLAY] turns %s of %s have no checkpoint boundary and archived "
+            "no stream; they replay without their answer",
+            lost,
+            rows.thread_id,
         )
-    await widgets._resolve_widget_data_refs(out)
-    return out
+    out: list[Line] = []
+    for turn_index, anchor in page:
+        out.extend(stubs[turn_index] if anchor is None else lines_by_turn[turn_index])
+    for interrupt in tip_interrupts:
+        out.append(line_of(items._interrupt_item(rows.thread_id, interrupt)))
+    return ReplayPage(
+        lines=out,
+        first_turn_index=page[0][0] if page else None,
+        has_more=has_more,
+    )
 
 
-def _turn_fingerprint(
-    response: dict[str, Any] | None,
-    usage_by_response: dict[str, Any],
-    provenance_by_response: dict[str, Any],
-) -> str:
-    """Cache-key fingerprint for one turn's table-sourced replay inputs.
+async def read_replay_page(
+    rows: ThreadRows,
+    *,
+    source: Literal["auto", "checkpoint"] = "auto",
+    before_turn: Any | None = None,
+    limit: int | None = None,
+) -> tuple[ReplayPage, str]:
+    """The page a thread replays as, and its source (``checkpoint`` or ``stub``).
 
-    Degrades to a constant on failure rather than propagating: the cache is
-    an optimization, so an unhashable row must cost a rebuild, never the
-    replay itself. Reads and writes agree on the fallback, and tails are
-    unique per turn, so it cannot collide across turns.
+    One assembly for every reader that shows a thread, so the owner and a
+    share viewer see the same turns. ``auto`` projects from checkpoints and
+    replays only a turn that cannot be projected as its stub; the whole page
+    goes to stubs only when the thread's turns cannot be paired at all.
+    ``checkpoint`` raises ``CheckpointReplayUnavailable`` rather than fall
+    back.
     """
-    response_id = str(response.get("conversation_response_id")) if response else None
+    cause: BaseException | None = None
     try:
-        return projection_cache.turn_fingerprint(
-            response,
-            provenance_by_response.get(response_id) or [],
-            usage_by_response.get(response_id),
+        if rows.thread.get("latest_checkpoint_id") is None:
+            # The commit pointer (stamped at turn persist) is the only tip
+            # checkpoint replay may read: without it the reader would walk
+            # the newest checkpoint, which mid-run is uncommitted state.
+            raise CheckpointReplayUnavailable(
+                "thread has no committed checkpoint pointer"
+            )
+        page = await build_replay_page(
+            rows,
+            rows.thread.get("latest_checkpoint_id"),
+            before_turn=before_turn,
+            limit=limit,
+            turn_fallback=source == "auto",
         )
-    except Exception:
+        return page, "checkpoint"
+    except DATABASE_UNAVAILABLE:
+        # A database that is busy or unreachable, either pool, is not a thread
+        # checkpoints cannot cover: stubs would show every answer missing, so
+        # the reader is told to retry instead.
+        raise
+    except CheckpointReplayUnavailable as e:
+        if source == "checkpoint":
+            raise
+        cause = e
+        logger.info(
+            "[REPLAY] Checkpoint replay unavailable for %s, falling back to stubs: %s",
+            rows.thread_id,
+            e,
+        )
+    except Exception as e:
+        if source == "checkpoint":
+            raise
+        cause = e
         logger.warning(
-            f"[REPLAY] turn fingerprint failed for response={response_id}",
+            "[REPLAY] Checkpoint replay failed for %s, falling back to stubs",
+            rows.thread_id,
             exc_info=True,
         )
-        return "unfingerprinted"
+    return await stub_page(rows, before_turn, limit, cause=cause), "stub"
 
 
-async def _assemble_from_cache(
-    reader: CheckpointHistoryReader,
-    thread_id: str,
-    queries_by_turn: dict[Any, list[dict[str, Any]]],
-    responses_by_turn: dict[Any, dict[str, Any]],
-    turn_indexes: list[Any],
-    branch_tip_checkpoint_id: str | None,
-    last_n_turns: int | None,
-    usage_by_response: dict[str, Any],
-    provenance_by_response: dict[str, Any],
-) -> list[dict[str, Any]] | None:
-    """Concatenate cached per-turn entries — a light boundary walk plus one
-    raw tip read, no state materialization. Returns None on any miss (the
-    caller rebuilds and backfills). Pairing guards raise the same
-    ``CheckpointReplayUnavailable`` signals as the full build."""
-    try:
-        anchors, tip_id = await reader.aget_turn_anchors(
-            thread_id, branch_tip_checkpoint_id
-        )
-    except CheckpointBranchTipNotFound as e:
-        raise CheckpointReplayUnavailable(str(e)) from e
-    if not anchors or tip_id is None or any(
-        a.tail_checkpoint_id is None for a in anchors
-    ):
-        return None
-    if last_n_turns is not None:
-        anchors = anchors[-max(1, min(last_n_turns, len(anchors))) :]
+async def stub_page(
+    rows: ThreadRows,
+    before_turn: Any | None = None,
+    limit: int | None = None,
+    *,
+    cause: BaseException | None = None,
+) -> ReplayPage:
+    """A page of stubs (``stubs.stub_lines``), over the same window the
+    checkpoint path pages by, counted in persisted turns.
 
-    pairs = _pair_turns_to_queries(
-        anchors, turn_indexes, responses_by_turn, windowed=last_n_turns is not None
+    Turns that answered and archived nothing are logged as an error with
+    ``cause``, the failure that sent the read here: a thread whose turns
+    cannot pair is logged only at info, as older threads legitimately are."""
+    queries_by_turn = group_queries(rows.queries)
+    turns = sorted(
+        ti
+        for ti in queries_by_turn
+        if ti is not None and (before_turn is None or ti < before_turn)
     )
-    cached = await projection_cache.get_cached_turns(
-        thread_id,
+    page_turns = turns[-limit:] if limit is not None else turns
+    lines, lost = await stub_lines(
+        rows.thread_id,
+        page_turns,
+        queries_by_turn,
+        rows.responses_by_turn,
+        rows.open_runs,
+    )
+    if lost:
+        logger.error(
+            "[REPLAY] %s replays as stubs, and turns %s archived no stream; "
+            "they replay without their answer",
+            rows.thread_id,
+            lost,
+            exc_info=cause,
+        )
+    return ReplayPage(
+        lines=[line for ti in page_turns for line in lines[ti]],
+        first_turn_index=page_turns[0] if page_turns else None,
+        has_more=len(page_turns) < len(turns),
+    )
+
+
+async def finish_lines(
+    thread_id: str, lines: list[Line], *, status_only: bool = False
+) -> None:
+    """Stamp what only read time knows onto flagged lines, in place: a task
+    card's status from current liveness, a widget's offloaded data. Every
+    other line streams as stored. ``status_only`` leaves a failed task's
+    reason off, as ``stamp_task_artifact_data`` does for a share viewer."""
+    flagged = [i for i, line in enumerate(lines) if line.flags]
+    if not flagged:
+        return
+    decoded = [lines[i].item() for i in flagged]
+    await widgets._resolve_widget_data_refs(
         [
-            (
-                a.tail_checkpoint_id,
-                _turn_fingerprint(
-                    responses_by_turn.get(ti),
-                    usage_by_response,
-                    provenance_by_response,
-                ),
-            )
-            for ti, a in pairs
-            if a is not None
-        ],
-    )
-    if any(v is None for v in cached.values()):
-        return None
-
-    out: list[dict[str, Any]] = []
-    for turn_index, anchor in pairs:
-        if anchor is None:
-            out.extend(
-                items._stub_turn_items(
-                    thread_id, turn_index, queries_by_turn, responses_by_turn
-                )
-            )
-        else:
-            out.extend(cached[anchor.tail_checkpoint_id])
-    for interrupt in await reader.aget_tip_interrupts(thread_id, tip_id):
-        out.append(items._interrupt_item(thread_id, interrupt))
-    return out
-
-
-async def _build_and_backfill(
-    reader: CheckpointHistoryReader,
-    thread_id: str,
-    queries_by_turn: dict[Any, list[dict[str, Any]]],
-    responses_by_turn: dict[Any, dict[str, Any]],
-    turn_indexes: list[Any],
-    branch_tip_checkpoint_id: str | None,
-    last_n_turns: int | None,
-    usage_by_response: dict[str, Any],
-    provenance_by_response: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Materialize checkpoint state and project every requested turn, storing
-    each settled turn's finished segment in the projection cache."""
-    try:
-        if last_n_turns is not None:
-            history = await reader.aget_recent_history(
-                thread_id, last_n_turns, branch_tip_checkpoint_id
-            )
-        else:
-            history = await reader.aget_thread_history(
-                thread_id, branch_tip_checkpoint_id
-            )
-    except CheckpointBranchTipNotFound as e:
-        raise CheckpointReplayUnavailable(str(e)) from e
-
-    if not history.turns:
-        raise CheckpointReplayUnavailable("no checkpoint turns found")
-    pairs = _pair_turns_to_queries(
-        history.turns,
-        turn_indexes,
-        responses_by_turn,
-        windowed=last_n_turns is not None,
-    )
-
-    out: list[dict[str, Any]] = []
-    lane = task_lane.TaskLaneProjector(thread_id, windowed=last_n_turns is not None)
-    await lane.prepare(reader, pairs)
-
-    # Stores are deferred past trailing_items(): only then is it known which
-    # turns carry trailing salvage and must stay out of the cache.
-    cacheable: list[tuple[Any, str | None, str, list[dict[str, Any]]]] = []
-    for turn_index, turn in pairs:
-        if turn is None:
-            out.extend(
-                items._stub_turn_items(
-                    thread_id, turn_index, queries_by_turn, responses_by_turn
-                )
-            )
-            continue
-
-        response = responses_by_turn.get(turn_index)
-        response_id = (
-            str(response.get("conversation_response_id")) if response else None
-        )
-        stored_events = stored_merge._stored_events(response)
-
-        segment = [
-            items._user_message_item(thread_id, q, response)
-            for q in queries_by_turn.get(turn_index, [])
+            item
+            for i, item in zip(flagged, decoded)
+            if replay_lines.FLAG_WIDGET in lines[i].flags
         ]
-
-        turn_items = history_events_to_sse(
-            messages_to_history_events(turn.messages), thread_id=thread_id
-        )
-        # Compaction signals (offload counts, the summarize event) live in
-        # private state keys, not the messages channel — re-emit them at the
-        # head of the turn they landed in (live they fire before the first
-        # post-compaction model call). Fallback notices follow the same
-        # head placement: live they fire before the succeeding model's chunks.
-        turn_items[:0] = projector.context_signal_items(thread_id, turn) + projector.model_fallback_items(
-            thread_id, turn
-        )
-        task_items, turn_task_ids = lane.project_for_turn(
-            turn, turn_index, response_id
-        )
-        turn_items.extend(task_items)
-        # Legacy path→URL records belong to the turn whose state delta contains
-        # them. A thread-global map is incorrect when a sandbox filename is
-        # reused later: last-write-wins would rewrite the older turn's image to
-        # the newer content-addressed object.
-        _apply_image_url_map(
-            turn_items, _collect_image_url_map(turn.new_ui_records)
-        )
-        # Table-sourced synthesis rides ahead of the merge: a turn with stored
-        # events drops these copies and replays the stored ones instead (the
-        # _STORED_PREFERRED_EVENTS transition rule).
-        turn_items = items._insert_provenance_items(
-            turn_items, provenance_by_response.get(response_id) or []
-        )
-        turn_items.extend(
-            items._interrupt_item(thread_id, intr) for intr in turn.ending_interrupts
-        )
-        credit_item = items._credit_usage_item(
-            thread_id, response, usage_by_response.get(response_id)
-        )
-        if credit_item:
-            turn_items.append(credit_item)
-
-        if _has_unresolved_sandbox_images(turn_items) and stored_events:
-            # Non-derivable image URLs live only in the stored events for
-            # this turn — replay the MAIN lane from storage wholesale.
-            turn_items = stored_merge._replay_main_lane_from_storage(
-                task_items, stored_events, lane.turn_lossy_lanes
-            )
-        else:
-            turn_items = stored_merge._merge_stored_payloads(
-                turn_items, stored_events, lane.turn_lossy_lanes
-            )
-
-        _fill_token_thresholds(turn_items)
-        # Terminal error: never in stored events (persisted before it is
-        # yielded live), so it appends after the merge on every turn.
-        error_item = items._error_item(thread_id, response)
-        if error_item:
-            turn_items.append(error_item)
-
-        # After the stored-events merge so both projected and stored-copy
-        # artifacts are covered, and before caching: the watermark is a fact
-        # about what this build claimed, and a cached turn's claims are final
-        # (a turn with a still-writing run is never cached).
-        task_status.stamp_projected_watermarks(turn_items, lane.claimed_watermarks)
-        for item in turn_items:
-            items._enrich(item, thread_id, turn_index, response_id)
-        segment.extend(turn_items)
-        out.extend(segment)
-        # A still-writing subagent transcript (tail mode) must not be frozen:
-        # its task-ns writes never move this turn's tail, so a partial entry
-        # would never be invalidated. Rebuild-per-read until the task's
-        # stream finalizes, then the next read caches the full transcript.
-        #
-        # Same discipline while a settled lane's archive is still owed: the
-        # collector races the refresh-at-finalize, and it never invalidates
-        # this cache. A lossy lane's capture-only rows and the fuller stored
-        # copy behind a projected eviction pointer exist only in that
-        # archive — caching before it lands would freeze the loss for the
-        # cache TTL. A stored transcript-class row clears the debt: those
-        # classes are written only by the atomic archive writers (collector,
-        # stop drain), never by the live root path.
-        awaiting_archive = set(lane.turn_lossy_lanes)
-        for i in turn_items:
-            d = i.get("data") or {}
-            agent = str(d.get("agent", ""))
-            if (
-                i.get("event") == "tool_call_result"
-                and agent.startswith("task:")
-                and isinstance(d.get("content"), str)
-                and d["content"].startswith(stored_merge._EVICTED_RESULT_PREFIX)
-            ):
-                awaiting_archive.add(agent)
-        if awaiting_archive:
-            awaiting_archive -= {
-                str((e.get("data") or {}).get("agent", ""))
-                for e in stored_events or []
-                if stored_merge._valid_stored(e) and e["event"] in stored_merge._ARCHIVE_EVIDENCE_EVENTS
-            }
-        # Gate on the PRE-read probe (lane.prepare), not a probe here: a
-        # stream sealing between the namespace read and a post-projection
-        # probe would let this build cache pre-terminal state it read
-        # moments earlier — frozen for the cache TTL, since task-ns writes
-        # never move this turn's tail. A lane the projection could not
-        # reconcile vetoes outright: no stored evidence retires that debt.
-        if (
-            not awaiting_archive
-            and not lane.turn_uncacheable_lanes
-            and not (turn_task_ids & lane.live_streams_at_read)
-        ):
-            cacheable.append(
-                (
-                    turn_index,
-                    turn.tail_checkpoint_id,
-                    _turn_fingerprint(
-                        response, usage_by_response, provenance_by_response
-                    ),
-                    segment,
-                )
-            )
-
-    out.extend(await lane.trailing_items())
-    # Trailing salvage rides items but belongs to no turn's checkpoint range,
-    # so the all-cache-hit fast path (which never runs the task lane) would
-    # silently drop it. Keep the salvage-stamped turn uncacheable — skip its
-    # store and evict any entry from before the orphan appeared — so every
-    # read misses there and rebuilds until the salvage resolves.
-    salvaged = lane.salvaged_turn_indexes
-    fingerprints: dict[Any, str] = {}
-    for turn_index, tail_checkpoint_id, fingerprint, segment in cacheable:
-        fingerprints[turn_index] = fingerprint
-        if turn_index not in salvaged:
-            await projection_cache.store_turn(
-                thread_id, tail_checkpoint_id, fingerprint, segment
-            )
-    if salvaged:
-        tails_by_turn = {ti: t.tail_checkpoint_id for ti, t in pairs if t is not None}
-        # A salvaged turn is usually uncacheable for other reasons too, so it
-        # may never have reached `cacheable` — derive its fingerprint directly
-        # rather than assuming an entry was recorded there.
-        await projection_cache.delete_turns(
-            thread_id,
-            [
-                (
-                    tails_by_turn[ti],
-                    fingerprints.get(ti)
-                    or _turn_fingerprint(
-                        responses_by_turn.get(ti),
-                        usage_by_response,
-                        provenance_by_response,
-                    ),
-                )
-                for ti in salvaged
-                if tails_by_turn.get(ti)
-            ],
-        )
-
-    for interrupt in history.interrupts:
-        out.append(items._interrupt_item(thread_id, interrupt))
-
-    return out
+    )
+    await task_status.stamp_replay_task_status(
+        thread_id, decoded, status_only=status_only
+    )
+    for i, item in zip(flagged, decoded):
+        lines[i] = line_of(item)
 
 
-def _pair_turns_to_queries(
-    turns: list[Any],
-    turn_indexes: list[Any],
-    responses_by_turn: dict[Any, dict[str, Any]],
-    windowed: bool,
-) -> list[tuple[Any, Any]]:
-    """Pair checkpoint turns with persisted turn_indexes, metadata-keyed.
+async def project_turns(
+    rows: ThreadRows,
+    branch_tip_checkpoint_id: str,
+    *,
+    turn_indexes: list[Any] | None = None,
+    last_n_turns: int | None = None,
+    claims_pass: bool = True,
+) -> dict[Any, list[Line]]:
+    """Bring the given turns' stored lines up to date (or the newest
+    ``last_n_turns``), so the next read streams them without projecting.
+    Returns the lines of every selected turn with a checkpoint boundary.
 
-    A ``TurnSlice`` pairs by its stamped ``turn_index`` metadata when present,
-    falling back to head-anchored ordinal position (pre-stamping threads;
-    resume boundaries never carry metadata). Returns ordered
-    ``(turn_index, TurnSlice | None)`` — a ``None`` slice is a persisted turn
-    with no committed boundary (the in-flight active turn, or a run that never
-    checkpointed), replayed as its user_message stub only. In windowed mode,
-    unpaired rows older than the window are dropped, not stubbed.
+    Without ``claims_pass``, turns that need the thread's run launches placed
+    raise ``ClaimsPassNeeded`` rather than read the whole thread for them."""
+    reader = CheckpointHistoryReader.get_instance()
+    branch = await _branch(reader, rows, branch_tip_checkpoint_id)
+    if branch is None:
+        return {}
+    inputs, anchored, _tip = branch
+    wanted = set(turn_indexes or ())
+    selected = [
+        (ti, a)
+        for k, (ti, a) in enumerate(anchored)
+        if ti in wanted
+        or (last_n_turns is not None and k >= len(anchored) - last_n_turns)
+    ]
+    return await _turn_lines(
+        reader,
+        inputs,
+        anchored,
+        selected,
+        cold.Policy(claims_pass=claims_pass),
+    )
 
-    Raises ``CheckpointReplayUnavailable`` on anything a projection could
-    silently mislabel: a stamped index missing from the rows, non-monotonic
-    pairing, or a *completed* response with no boundary (a completed turn
-    always persists its boundary pointer, so checkpoints can't cover it).
+
+async def unserved_turns(
+    rows: ThreadRows,
+    branch_tip_checkpoint_id: str,
+    *,
+    reader: CheckpointHistoryReader | None = None,
+) -> list[Any] | None:
+    """The branch's turns a read would project rather than stream from their
+    stored slice and lines, or None when the branch has no turns.
+
+    Checkpoint storage maintenance reads this to know a thread's history no
+    longer depends on its old checkpoint states. Raises
+    ``CheckpointReplayUnavailable`` when the turns cannot be paired.
+    """
+    reader = reader or CheckpointHistoryReader.get_instance()
+    branch = await _branch(reader, rows, branch_tip_checkpoint_id)
+    if branch is None:
+        return None
+    inputs, anchored, _tip = branch
+    _, stale = await _stored_lines(inputs, anchored)
+    return [ti for ti, _ in stale]
+
+
+# ---------------------------------------------------------------- pairing
+
+
+def pair_anchors(
+    anchors: list[TurnAnchor], turn_indexes: list[Any]
+) -> list[tuple[Any, TurnAnchor]]:
+    """Pair checkpoint turns with persisted turn_indexes (``pair_turns``).
+
+    Raises on anything a projection could silently mislabel: a stamped index
+    missing from the rows, a turn left without one, or non-monotonic pairing.
     """
     known = set(turn_indexes)
-    pairs: list[tuple[Any, Any]] = []
-    for turn in turns:
-        if turn.turn_index is not None:
-            ti = turn.turn_index
-            if ti not in known:
-                raise CheckpointReplayUnavailable(
-                    f"checkpoint turn_index {ti} has no persisted turn"
-                )
-        elif turn.turn_ordinal < len(turn_indexes):
-            ti = turn_indexes[turn.turn_ordinal]
-        else:
+    pairs: list[tuple[Any, TurnAnchor]] = []
+    for anchor, ti in zip(anchors, pair_turns(anchors, turn_indexes)):
+        if ti is None:
             raise CheckpointReplayUnavailable(
                 "more checkpoint turns than persisted turns"
             )
-        pairs.append((ti, turn))
-
-    paired_tis = [ti for ti, _ in pairs]
-    if paired_tis != sorted(set(paired_tis)):
-        raise CheckpointReplayUnavailable("turn pairing is not monotonic")
-
-    window_start = paired_tis[0]
-    paired = set(paired_tis)
-    for ti in turn_indexes:
-        if ti in paired:
-            continue
-        if windowed and ti < window_start:
-            continue
-        if (responses_by_turn.get(ti) or {}).get("status") == "completed":
+        if ti not in known:
             raise CheckpointReplayUnavailable(
-                f"persisted turn {ti} completed but has no checkpoint boundary"
+                f"checkpoint turn_index {ti} has no persisted turn"
             )
-        pairs.append((ti, None))
+        pairs.append((ti, anchor))
 
-    pairs.sort(key=lambda p: p[0])
+    paired = [ti for ti, _ in pairs]
+    if paired != sorted(set(paired)):
+        raise CheckpointReplayUnavailable("turn pairing is not monotonic")
     return pairs
 
 
-def build_sse_replay_items(
-    thread_id: str,
-    queries: list[dict[str, Any]],
-    responses_by_turn: dict[Any, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Replay items sourced verbatim from persisted ``sse_events`` (the fallback).
+def _select_page(
+    anchored: list[tuple[Any, TurnAnchor]],
+    inputs: Inputs,
+    before_turn: Any | None,
+    limit: int | None,
+) -> tuple[list[tuple[Any, TurnAnchor | None]], bool]:
+    """The page's ``(turn_index, anchor | None)`` pairs in order, and whether
+    older turns remain.
 
-    Same ``{"event", "data"}`` shape as the checkpoint path, so the endpoint
-    emits either source through one loop. The terminal error event is
-    synthesized from the response row here too — it is yielded live *after*
-    the persist snapshot, so stored events never contain it.
+    A ``None`` anchor is a persisted turn with no committed boundary (the
+    in-flight active turn, or a run that never checkpointed), replayed as its
+    stub. One older than the page's oldest checkpointed turn belongs to an
+    earlier page.
     """
-    out: list[dict[str, Any]] = []
-    errors_emitted: set[str] = set()
-    for query in queries:
-        if not isinstance(query, dict):
+    in_range = [
+        (ti, a) for ti, a in anchored if before_turn is None or ti < before_turn
+    ]
+    has_more = limit is not None and len(in_range) > limit
+    chosen: list[tuple[Any, TurnAnchor | None]] = list(
+        in_range[-limit:] if has_more else in_range
+    )
+    oldest = chosen[0][0] if has_more else None
+
+    paired = {ti for ti, _ in anchored}
+    for ti in inputs.turn_indexes:
+        if ti in paired:
             continue
-        turn_index = query.get("turn_index")
-        response = responses_by_turn.get(turn_index)
-        response_id = (
-            str(response.get("conversation_response_id")) if response else None
+        if oldest is not None and ti < oldest:
+            continue
+        if before_turn is not None and ti >= before_turn:
+            continue
+        chosen.append((ti, None))
+    chosen.sort(key=lambda p: p[0])
+    return chosen, has_more
+
+
+async def _branch(
+    reader: CheckpointHistoryReader,
+    rows: ThreadRows,
+    branch_tip_checkpoint_id: str | None,
+) -> tuple[Inputs, list[tuple[Any, TurnAnchor]], str] | None:
+    """The rows indexed, the branch's checkpoint turns paired with them, and
+    the tip the branch was read from; None when it has no turns, which each
+    entry point answers its own way."""
+    try:
+        anchors, tip_id = await reader.aget_turn_anchors(
+            rows.thread_id, branch_tip_checkpoint_id
         )
-        out.append(items._user_message_item(thread_id, query, response))
-        for event in stored_merge._stored_events(response):
-            if not stored_merge._valid_stored(event):
-                continue
-            item = {"event": event["event"], "data": dict(event["data"])}
-            items._enrich(item, thread_id, turn_index, response_id)
-            out.append(item)
-        if response_id and response_id not in errors_emitted:
-            error_item = items._error_item(thread_id, response)
-            if error_item:
-                errors_emitted.add(response_id)
-                items._enrich(error_item, thread_id, turn_index, response_id)
-                out.append(error_item)
+    except CheckpointBranchTipNotFound as e:
+        raise CheckpointReplayUnavailable(str(e)) from e
+    if not anchors or tip_id is None:
+        return None
+    inputs = Inputs.of(rows)
+    return inputs, pair_anchors(anchors, inputs.turn_indexes), tip_id
+
+
+# ---------------------------------------------------------------- lines
+
+
+async def _turn_lines(
+    reader: CheckpointHistoryReader,
+    inputs: Inputs,
+    anchored: list[tuple[Any, TurnAnchor]],
+    selected: list[tuple[Any, TurnAnchor]],
+    policy: cold.Policy,
+) -> dict[Any, list[Line]]:
+    """Lines for the selected turns: stored ones whose key still matches,
+    the rest projected (and stored when final)."""
+    if not selected:
+        return {}
+    out, stale = await _stored_lines(inputs, selected)
+    if stale:
+        out.update(await cold.project_stale(reader, inputs, anchored, stale, policy))
     return out
 
 
-def _collect_image_url_map(records: list[dict[str, Any]]) -> dict[str, str]:
-    url_map: dict[str, str] = {}
-    for record in records:
-        if not isinstance(record, dict) or record.get("name") != IMAGE_CAPTURE_UI_NAME:
-            continue
-        path_to_url = (record.get("props") or {}).get("path_to_url")
-        if isinstance(path_to_url, dict):
-            url_map.update(
-                {str(k): str(v) for k, v in path_to_url.items() if k and v}
-            )
-    return url_map
-
-
-def _apply_image_url_map(
-    turn_items: list[dict[str, Any]], url_map: dict[str, str]
-) -> list[dict[str, Any]]:
-    if not url_map:
-        return turn_items
-
-    def replacer(match):
-        alt, path = match.group(1), match.group(2)
-        if path in url_map:
-            return f"![{alt}]({url_map[path]})"
-        return match.group(0)
-
-    for item in turn_items:
-        if item.get("event") != "message_chunk":
-            continue
-        data = item.get("data", {})
-        if data.get("content_type") != "text":
-            continue
-        content = data.get("content")
-        if content:
-            data["content"] = IMAGE_MD_RE.sub(replacer, content)
-    return turn_items
-
-
-def _has_unresolved_sandbox_images(turn_items: list[dict[str, Any]]) -> bool:
-    for item in turn_items:
-        if item.get("event") != "message_chunk":
-            continue
-        data = item.get("data", {})
-        if data.get("content_type") != "text":
-            continue
-        content = data.get("content") or ""
-        for match in IMAGE_MD_RE.finditer(content):
-            if is_sandbox_image_path(match.group(2)):
-                return True
-    return False
-
-
-def _fill_token_thresholds(turn_items: list[dict[str, Any]]) -> None:
-    """Stamp the UI-ring threshold on projected token_usage events.
-
-    The live handler adds it server-side (config, not graph state); replay
-    uses the same resolver so both wires carry the same value.
-    """
-    for item in turn_items:
-        data = item["data"]
+async def _stored_lines(
+    inputs: Inputs,
+    selected: list[tuple[Any, TurnAnchor]],
+) -> tuple[dict[Any, list[Line]], list[tuple[Any, TurnAnchor]]]:
+    """The selected turns' stored lines a read serves as they are, and the
+    stale turns it has to project."""
+    response_ids = [rid for ti, _ in selected if (rid := inputs.response_id(ti))]
+    stored = await slices_db.get_turn_lines(response_ids)
+    out: dict[Any, list[Line]] = {}
+    stale: list[tuple[Any, TurnAnchor]] = []
+    for ti, anchor in selected:
+        row = stored.get(inputs.response_id(ti) or "")
         if (
-            item["event"] == "context_window"
-            and data.get("action") == "token_usage"
-            and "threshold" not in data
+            slices.matches(row, anchor)
+            and row.lines is not None
+            and row.lines_key
+            == lines_key(inputs, ti, anchor, inputs.responses_by_turn.get(ti))
         ):
-            data["threshold"] = resolve_token_threshold()
-
-
+            try:
+                out[ti] = replay_lines.decode(row.lines)
+                continue
+            except Exception:
+                # Projected again and stored over, rather than failing every
+                # read of this thread on one bad row.
+                logger.warning(
+                    "[REPLAY] stored lines undecodable for %s turn %s",
+                    inputs.thread_id,
+                    ti,
+                    exc_info=True,
+                )
+        stale.append((ti, anchor))
+    return out, stale

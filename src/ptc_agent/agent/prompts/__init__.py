@@ -14,19 +14,30 @@ Usage:
     loader = init_loader()
 
     # Get the main system prompt (date auto-injected from session)
-    prompt = loader.get_system_prompt(tool_summary=tool_summary)
+    prompt = loader.get_system_prompt()
 
     # Get a sub-agent prompt
     prompt = loader.get_subagent_prompt("researcher")
 
-    # Format tool summary for prompts
+    # Format the MCP roster: the subagent compiler renders it inline, and the
+    # main agents hand it to the runtime-context baseline to freeze.
     summary = format_tool_summary(tools_by_server, mode="summary", server_configs=configs)
 """
 
 from .formatter import (
+    RegistryTools,
     build_tool_summary_from_registry,
+    format_registry_tools,
     format_subagent_summary,
     format_tool_summary,
+    read_registry_tools,
+    workspace_path_vars,
+)
+from .guidance import (
+    DEFAULT_GUIDANCE,
+    PromptGuidance,
+    guidance_template_vars,
+    resolve_prompt_guidance,
 )
 from .loader import (
     PromptLoader,
@@ -37,12 +48,20 @@ from .loader import (
 )
 
 __all__ = [
+    "DEFAULT_GUIDANCE",
+    "PromptGuidance",
     "PromptLoader",
+    "RegistryTools",
     "build_tool_summary_from_registry",
     "format_current_time",
+    "format_registry_tools",
     "format_subagent_summary",
     "format_tool_summary",
     "get_loader",
+    "guidance_template_vars",
     "init_loader",
+    "read_registry_tools",
     "reset_loader",
+    "resolve_prompt_guidance",
+    "workspace_path_vars",
 ]

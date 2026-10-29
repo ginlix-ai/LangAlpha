@@ -17,7 +17,6 @@ are available for alternative agent configurations.
 """
 
 from .bash import create_execute_bash_tool
-from .bash_output import create_bash_output_tool
 from .code_execution import create_execute_code_tool
 from .file_ops import create_filesystem_tools
 from .glob import create_glob_tool
@@ -46,7 +45,6 @@ from .todo import (
 __all__ = [
     # Bash
     "create_execute_bash_tool",
-    "create_bash_output_tool",
     # Code execution
     "create_execute_code_tool",
     # Filesystem

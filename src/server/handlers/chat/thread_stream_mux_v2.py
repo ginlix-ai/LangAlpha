@@ -12,8 +12,10 @@ Wire shape:
 - Cursors: ``?cursors=run:<run_id>#<entry_id>,…`` — resume is exclusive.
 - Frames: ``id: run:<run_id>#<entry_id>`` + the contract envelope
   ``{run_id, seq, lane, type, payload}`` as data. Control frames
-  (``chan_open``, ``chan_close``, ``resync_required``, ``transport_error``,
-  ``timeout``) carry no cursor.
+  (``chan_open``, ``chan_caught_up``, ``chan_close``, ``resync_required``,
+  ``transport_error``, ``timeout``) carry no cursor. ``chan_caught_up``
+  marks where a channel's backlog ends: everything before it existed when
+  the channel opened, everything after arrived live.
 - Close: the ``run_end`` frame, or — for a worker that died between the
   terminal CAS and the append — a rate-limited ledger-row probe emitting
   ``chan_close{reason: terminal}`` from row truth. 'unknown' never closes.
@@ -31,11 +33,12 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import HTTPException
 
+from src.server.contracts.run_times import epoch_ms
 from src.server.services.thread_control_stream import control_stream_key
 from src.utils.cache.redis_cache import get_cache_client, is_pool_exhaustion
 from src.utils.cache import stream_pool
 
-from src.server.services.report_back.flash.core import watch_wakes
+from src.server.services.report_back.handoff.core import watch_wakes
 from .xread_tuning import (
     XREAD_ERROR_BACKOFF_S,
     XREAD_EXHAUSTION_BACKOFF_S,
@@ -73,7 +76,9 @@ _PROBE_MIN_INTERVAL_S = 5.0
 # to the socket's own attach age plus the client's declared snapshot lag) —
 # closing the settled-before-seed race and the lost-announce case with
 # positive closure. Runs settled before the client's knowledge horizon are
-# already terminal in its history projection and are never re-announced.
+# already terminal in its history projection and are never re-announced —
+# except those the still-executing turn launched: replay excludes the open
+# turn, so a fresh page's attach drains them whatever their age (open_turn).
 # Must exceed the rescan interval so a run that both spawned and settled
 # between rescans is seen at least once.
 _RECENT_TERMINAL_SEED_S = 60
@@ -98,7 +103,7 @@ def _pending_key(thread_id: str) -> str:
     return f"mux2:pending:{thread_id}"
 
 
-async def _store_pending(cache, thread_id: str, run_id: str, lane: str) -> None:
+async def _store_pending(cache, thread_id: str, run_id: str, lane: str) -> bool:
     try:
         key = _pending_key(thread_id)
         # One connection, one round trip — and the TTL can no longer be
@@ -113,6 +118,8 @@ async def _store_pending(cache, thread_id: str, run_id: str, lane: str) -> None:
             "[mux2] pending store failed for %s/%s", thread_id, run_id,
             exc_info=True,
         )
+        return False
+    return True
 
 
 async def _load_pending(cache, thread_id: str) -> Optional[dict[str, str]]:
@@ -178,6 +185,13 @@ class _RunChan:
     # Ledger started_at (epoch ms), declared on chan_open: the client
     # orders per-task outcome votes by run start, never by close order.
     started_ms: Optional[float] = None
+    # Stream head when the channel opened, probed once by the pump. The
+    # entries up to it are backlog the client presents as already rendered;
+    # ``chan_caught_up`` is emitted once the cursor reaches it, or on the
+    # first read that returns nothing for the channel. A failed probe sends
+    # no marker and leaves the client to its bounded fallback.
+    head_at_open: Optional[bytes] = None
+    caught_up: bool = False
 
     @property
     def name(self) -> str:
@@ -228,6 +242,47 @@ def _parse_task_entry(fields: dict) -> Optional[tuple[str, str]]:
     return ftype, payload or ""
 
 
+async def _probe_backlog_head(cache, chan: _RunChan) -> Optional[str]:
+    """Record the channel's backlog head; the marker frame when there is none."""
+    try:
+        tail = await cache.client.xrevrange(chan.stream_key, count=1)
+    except Exception:
+        chan.caught_up = True  # no marker: the client's fallback bounds the wait
+        logger.warning(
+            "[mux2] backlog head probe failed for %s, no boundary marker",
+            chan.name,
+            exc_info=True,
+        )
+        return None
+    if not tail:
+        chan.caught_up = True
+        return _control("chan_caught_up", {"chan": chan.name})
+    chan.head_at_open = tail[0][0]
+    return None
+
+
+def _marker_before(chan: _RunChan, entry_id: bytes) -> Optional[str]:
+    """The marker ahead of the first entry past the recorded head, so a batch
+    that straddles the boundary never sends live entries as backlog."""
+    if chan.caught_up or chan.closed or chan.head_at_open is None:
+        return None
+    if not _entry_after(entry_id, chan.head_at_open.decode()):
+        return None
+    chan.caught_up = True
+    return _control("chan_caught_up", {"chan": chan.name})
+
+
+def _caught_up_frame(chan: _RunChan, got_entries: bool) -> Optional[str]:
+    """The marker once the cursor reaches the recorded head, or a read came
+    back empty for the channel (its backlog was shorter than the head said)."""
+    if chan.caught_up or chan.closed or chan.head_at_open is None:
+        return None
+    if got_entries and _entry_after(chan.head_at_open, chan.cursor.decode()):
+        return None
+    chan.caught_up = True
+    return _control("chan_caught_up", {"chan": chan.name})
+
+
 async def _run_row(run_id: str, lane: str) -> Optional[dict]:
     """Ledger row for a run, or None when unknown/unreadable."""
     try:
@@ -251,18 +306,23 @@ def _row_outcome(row: Optional[dict]) -> Optional[str]:
 
 
 def _row_started_ms(row: Optional[dict]) -> Optional[float]:
-    """Run start as epoch ms — the client orders outcome votes by this."""
-    ts = row.get("started_at") if row else None
-    try:
-        return ts.timestamp() * 1000.0 if ts is not None else None
-    except (AttributeError, ValueError, OSError):
+    """Run start as epoch ms; the client orders outcome votes by this."""
+    return epoch_ms(row.get("started_at")) if row else None
+
+
+async def _run_row_close(run_id: str, lane: str) -> Optional[dict]:
+    """``chan_close`` extras from a terminal row, or None while open/unknown:
+    the crash-window backstop for streams whose writer died between CAS
+    and run_end. A task run's row also says when it settled (``finished``),
+    which its ``run_end`` would have carried."""
+    row = await _run_row(run_id, lane)
+    outcome = _row_outcome(row)
+    if outcome is None:
         return None
-
-
-async def _run_row_outcome(run_id: str, lane: str) -> Optional[str]:
-    """Terminal row status, or None while open/unknown — the crash-window
-    backstop for streams whose writer died between CAS and run_end."""
-    return _row_outcome(await _run_row(run_id, lane))
+    finished = epoch_ms(row.get("finalized_at"))
+    if finished is None:
+        return {"outcome": outcome}
+    return {"outcome": outcome, "finished": finished}
 
 
 async def _admission_meta(
@@ -298,8 +358,9 @@ async def _seed_channels(
 
     Deliberately open runs only: a run already terminal at attach belongs to
     the history projection, and re-announcing it would replay content the
-    client just projected. Runs that settle AFTER attach are healed by the
-    rescan's recent-terminal admission below."""
+    client just projected (the open turn's settled runs are the exception,
+    drained by _settled_runs_of_open_turn). Runs that settle AFTER attach are
+    healed by the rescan's recent-terminal admission below."""
     out: list[tuple[str, str, Optional[float]]] = []
     try:
         from src.server.database.runs import lifecycle as tl_db
@@ -327,6 +388,33 @@ async def _seed_channels(
             "[mux2] ledger seed failed for %s", thread_id, exc_info=True
         )
     return out
+
+
+async def _settled_runs_of_open_turn(
+    thread_id: str, root_id: Optional[str], within_s: float
+) -> Optional[list[dict]]:
+    """Terminal task runs of every turn the client's history may lack.
+
+    The history projection a client attaches with stops before the open turn,
+    and the turn can outlive its runs by any margin, so these are settled yet
+    unseen however old: the horizon-bounded catch-up would miss them and leave
+    their cards running until the turn ends. A turn that finalized after the
+    snapshot (inside ``within_s``, the catch-up window) is unseen the same
+    way, even once a newer one holds the thread; ``root_id``, the root the
+    attach seed saw open, is named outright. Drained from 0; a client that
+    already holds one drops the backlog by its own settled check. None on a
+    failed read, so the caller withholds ``attached``."""
+    try:
+        from src.server.database.runs import subagent_runs as sr_db
+
+        return await sr_db.list_settled_runs_of_unseen_turns(
+            thread_id, root_id, within_s
+        )
+    except Exception:
+        logger.warning(
+            "[mux2] open-turn settled seed failed for %s", thread_id, exc_info=True
+        )
+        return None
 
 
 async def _resolve_lane(
@@ -364,7 +452,11 @@ def _entry_after(entry_id: bytes | str, cursor: str) -> bool:
 
 
 async def stream_thread_mux_v2(
-    thread_id: str, cursor_map: dict[str, str], since_age_s: float = 0.0
+    thread_id: str,
+    cursor_map: dict[str, str],
+    since_age_s: float = 0.0,
+    *,
+    open_turn: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Attach (seed + control snapshot), then one XREAD pump over control +
     every open run stream, plus the watch relay.
@@ -373,7 +465,14 @@ async def stream_thread_mux_v2(
     between its status/history snapshot (or last received frame) and this
     connect. The settled-run catch-up windows anchor at that horizon — not
     the socket's attach moment — so a task that settled during a slow
-    history load still gets positive closure."""
+    history load still gets positive closure.
+
+    ``open_turn``: the client's projection is fresh from history, which stops
+    before the executing turn, so attach also drains the runs that turn has
+    settled. Only a fresh page asks: a reconnecting socket already holds them,
+    and since the client sends no cursor for a closed channel, re-draining on
+    every reconnect would resend each of those streams whole. The trailing
+    ``attached`` frame tells the client its ask was served."""
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         yield _control("transport_error", {"retryable": True})
@@ -452,7 +551,9 @@ async def stream_thread_mux_v2(
     # next socket's client re-sends its cursors on attach, so only this
     # socket's rescan needs them). Popped when the channel finally opens.
     pending_cursors: dict[str, str] = {}
-    for run_id, lane, started_ms in await _seed_channels(thread_id):
+    seeds = await _seed_channels(thread_id)
+    seeded_root = next((rid for rid, lane, _ in seeds if lane == "main"), None)
+    for run_id, lane, started_ms in seeds:
         if _open_count() >= _MAX_CHANNELS:
             break
         cursor = cursor_map.get(run_id)
@@ -517,6 +618,34 @@ async def stream_thread_mux_v2(
         )
         attach_frames.append(_chan_open_frame(chan, "drain"))
 
+    open_turn_runs = (
+        await _settled_runs_of_open_turn(
+            thread_id,
+            seeded_root,
+            snapshot_lag + (time.monotonic() - started_at) + _ATTACH_GRACE_S,
+        )
+        if open_turn
+        else []
+    )
+    # Acknowledged only when every run is open or durably deferred: the client
+    # stops asking once it hears ``attached``, so a failed read or store must
+    # leave the ask standing for its next socket.
+    open_turn_served = open_turn_runs is not None
+    for run in open_turn_runs or []:
+        run_id = str(run["task_run_id"])
+        if run_id in channels:
+            continue
+        lane = f"task:{run['task_id']}"
+        if _open_count() >= _MAX_CHANNELS:
+            # Durable, like any deferral: the client's next socket will not
+            # ask for the open turn again once this one acknowledged it.
+            pending_admissions[run_id] = lane
+            if not await _store_pending(cache, thread_id, run_id, lane):
+                open_turn_served = False
+            continue
+        chan = _open(run_id, lane, b"0", _row_started_ms(run))
+        attach_frames.append(_chan_open_frame(chan, "drain"))
+
     # Pending admissions inherited from prior sockets: a defer whose socket
     # died before its retry succeeded is invisible to every window above
     # (announce consumed, run possibly terminal, horizon legitimately
@@ -556,12 +685,10 @@ async def stream_thread_mux_v2(
         except Exception:
             continue
         if not head:
-            outcome = await _run_row_outcome(chan.run_id, chan.lane)
-            if outcome is not None:
+            close = await _run_row_close(chan.run_id, chan.lane)
+            if close is not None:
                 chan.closed = True
-                attach_frames.append(
-                    _chan_close_frame(chan, "terminal", outcome=outcome)
-                )
+                attach_frames.append(_chan_close_frame(chan, "terminal", **close))
             continue
         if _entry_after(head[0][0], chan.cursor.decode()):
             chan.closed = True
@@ -570,6 +697,8 @@ async def stream_thread_mux_v2(
             )
             attach_frames.append(_chan_close_frame(chan, "resync_required"))
 
+    if open_turn and open_turn_served:
+        attach_frames.append(_control("attached", {}))
     for frame in attach_frames:
         yield frame
 
@@ -595,31 +724,32 @@ async def stream_thread_mux_v2(
         *,
         settled: bool = False,
         started_ms: Optional[float] = None,
-    ) -> None:
+    ) -> bool:
+        """False only when the run is neither open nor durably deferred."""
         if run_id in channels:
             pending_admissions.pop(run_id, None)
             pending_cursors.pop(run_id, None)
-            return
+            return True
         if _open_count() >= _MAX_CHANNELS:
             pending_admissions[run_id] = lane
-            await _store_pending(cache, thread_id, run_id, lane)
+            stored = await _store_pending(cache, thread_id, run_id, lane)
             logger.warning(
                 "[mux2] channel cap reached for %s; deferring %s",
                 thread_id,
                 run_id,
             )
-            return
+            return stored
         meta = await _admission_meta(run_id, lane, settled, started_ms)
         if meta is None:
             pending_admissions[run_id] = lane
-            await _store_pending(cache, thread_id, run_id, lane)
+            stored = await _store_pending(cache, thread_id, run_id, lane)
             logger.warning(
                 "[mux2] deferring %s (%s) for %s: start order unavailable",
                 run_id,
                 lane,
                 thread_id,
             )
-            return
+            return stored
         settled, started_ms = meta
         # Local retirement only — the durable field expires by TTL. Deleting
         # it here would erase a debt other sockets' clients still owe.
@@ -639,22 +769,23 @@ async def stream_thread_mux_v2(
             try:
                 head = await cache.client.xrange(chan.stream_key, count=1)
             except Exception:
-                return  # transient probe failure — the pump reads onward
+                return True  # transient probe failure — the pump reads onward
             if not head:
-                outcome = await _run_row_outcome(run_id, lane)
-                if outcome is not None:
-                    await _close(chan, "terminal", outcome=outcome)
-                return
+                close = await _run_row_close(run_id, lane)
+                if close is not None:
+                    await _close(chan, "terminal", **close)
+                return True
             if _entry_after(head[0][0], cursor):
                 await out_q.put(
                     ("frame", _control("resync_required", {"chan": chan.name}))
                 )
                 await _close(chan, "resync_required")
-            return
+            return True
         chan = _open(run_id, lane, b"0", started_ms)
         await out_q.put(
             ("frame", _chan_open_frame(chan, "drain" if settled else "replay"))
         )
+        return True
 
     async def _close(chan: _RunChan, reason: str, **extra) -> None:
         if chan.closed:
@@ -663,11 +794,35 @@ async def stream_thread_mux_v2(
         await out_q.put(("frame", _chan_close_frame(chan, reason, **extra)))
 
     async def _read_pump() -> None:
-        nonlocal control_cursor, pending_synced
+        nonlocal control_cursor, pending_synced, open_turn_served
         last_scan = time.monotonic()
         xread_failures = 0
         while True:
             open_chans = [c for c in channels.values() if not c.closed]
+            unprobed = [
+                c for c in open_chans if not c.caught_up and c.head_at_open is None
+            ]
+            if unprobed:
+                # One bound for the whole pass: probed together, so a slow
+                # pool costs one timeout, not one per channel, and the read
+                # loop keeps its keepalive cadence.
+                try:
+                    markers = await asyncio.wait_for(
+                        asyncio.gather(*(_probe_backlog_head(cache, c) for c in unprobed)),
+                        timeout=xread_wait_timeout_s(),
+                    )
+                except asyncio.TimeoutError:
+                    markers = []
+                    for c in unprobed:
+                        if c.head_at_open is None:
+                            c.caught_up = True
+                    logger.warning(
+                        "[mux2] backlog head probes timed out for %d channels, no boundary marker",
+                        len(unprobed),
+                    )
+                for marker in markers:
+                    if marker is not None:
+                        await out_q.put(("frame", marker))
             streams: dict[bytes, bytes] = {control_key: control_cursor}
             for c in open_chans:
                 streams[c.stream_key] = c.cursor
@@ -739,6 +894,9 @@ async def stream_thread_mux_v2(
                 got.add(chan.run_id)
                 chan.empty_rounds = 0
                 for entry_id, fields in entries:
+                    marker = _marker_before(chan, entry_id)
+                    if marker is not None:
+                        await out_q.put(("frame", marker))
                     chan.cursor = entry_id
                     parsed = (
                         _parse_main_entry(fields)
@@ -759,6 +917,9 @@ async def stream_thread_mux_v2(
                     if ftype == "run_end":
                         await _close(chan, "terminal")
                         break
+                marker = _caught_up_frame(chan, got_entries=True)
+                if marker is not None:
+                    await out_q.put(("frame", marker))
 
             # Crash-window backstop: a terminal ledger row whose stream
             # never got its run_end closes the channel from row truth.
@@ -766,15 +927,18 @@ async def stream_thread_mux_v2(
             for chan in open_chans:
                 if chan.run_id in got or chan.closed:
                     continue
+                marker = _caught_up_frame(chan, got_entries=False)
+                if marker is not None:
+                    await out_q.put(("frame", marker))
                 chan.empty_rounds += 1
                 if chan.empty_rounds < _QUIESCE_EMPTY_ROUNDS:
                     continue
                 if now - chan.last_probe_at < _PROBE_MIN_INTERVAL_S:
                     continue
                 chan.last_probe_at = now
-                outcome = await _run_row_outcome(chan.run_id, chan.lane)
-                if outcome is not None:
-                    await _close(chan, "terminal", outcome=outcome)
+                close = await _run_row_close(chan.run_id, chan.lane)
+                if close is not None:
+                    await _close(chan, "terminal", **close)
 
             if time.monotonic() - last_scan >= _RESCAN_INTERVAL_S:
                 last_scan = time.monotonic()
@@ -788,6 +952,30 @@ async def stream_thread_mux_v2(
                     await _admit(run_id, lane)
                 for run_id, lane, started_ms in await _seed_channels(thread_id):
                     await _admit(run_id, lane, started_ms=started_ms)
+                # An open-turn ask attach could not serve: the client waits on
+                # this socket for the ack, so the retry is the rescan's, and it
+                # acks only once every run is open or durably deferred.
+                if open_turn and not open_turn_served:
+                    runs = await _settled_runs_of_open_turn(
+                        thread_id,
+                        seeded_root,
+                        snapshot_lag
+                        + (time.monotonic() - started_at)
+                        + _ATTACH_GRACE_S,
+                    )
+                    if runs is not None:
+                        admitted = [
+                            await _admit(
+                                str(run["task_run_id"]),
+                                f"task:{run['task_id']}",
+                                settled=True,
+                                started_ms=_row_started_ms(run),
+                            )
+                            for run in runs
+                        ]
+                        if all(admitted):
+                            open_turn_served = True
+                            await out_q.put(("frame", _control("attached", {})))
                 # Recent-terminal reconciliation, bounded to runs that could
                 # only have settled AFTER the client's knowledge horizon
                 # (its snapshot lag plus this socket's age) — anything older

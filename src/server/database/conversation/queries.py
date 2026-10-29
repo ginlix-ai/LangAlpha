@@ -40,6 +40,45 @@ async def get_latest_turn_index(conversation_thread_id: str) -> Optional[int]:
         return None
 
 
+async def get_query_turn_indexes(conversation_thread_id: str) -> List[int]:
+    """Every persisted turn_index of a thread, ascending.
+
+    Raises on a failed read: the caller names turns for a fork that deletes
+    rows, and an empty answer would name them wrong.
+    """
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT turn_index
+                FROM conversation_queries
+                WHERE conversation_thread_id = %s
+                ORDER BY turn_index
+            """,
+                (conversation_thread_id,),
+            )
+            return [row["turn_index"] for row in await cur.fetchall()]
+
+
+async def get_query_at_turn(
+    conversation_thread_id: str, turn_index: int
+) -> Optional[Dict[str, Any]]:
+    async with pool.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    conversation_query_id, conversation_thread_id, turn_index, content, type,
+                    feedback_action, metadata, created_at
+                FROM conversation_queries
+                WHERE conversation_thread_id = %s AND turn_index = %s
+            """,
+                (conversation_thread_id, turn_index),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
 async def create_query(
     conversation_query_id: str,
     conversation_thread_id: str,

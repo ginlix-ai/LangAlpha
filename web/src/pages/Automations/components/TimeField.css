@@ -1,0 +1,54 @@
+.automation-time-input {
+  font-size: 0.8125rem;
+}
+
+/* Sized by the calendar beside it, not by its 96 quarter hours. */
+.automation-time-list {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  contain: size;
+  padding: 0 6px 6px;
+}
+
+.automation-time-slot {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.automation-time-slot:hover:not(:disabled):not([aria-selected='true']) {
+  background-color: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.automation-time-slot:disabled {
+  color: var(--color-text-quaternary);
+  cursor: default;
+}
+
+/* The chosen time takes the primary button's fill, as the chosen day in the
+   calendar beside it does: the one solid mark in the panel, and the same one
+   Save carries. */
+.automation-time-slot[aria-selected='true'] {
+  background-color: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+  font-weight: 600;
+}
+
+.automation-time-popover {
+  width: 8rem;
+  padding: 6px 0;
+  border-color: var(--color-border-muted);
+}
+
+.automation-time-popover .automation-time-list {
+  height: 240px;
+  flex: none;
+  padding: 0 6px;
+}

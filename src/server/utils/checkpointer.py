@@ -58,14 +58,11 @@ def _on_reconnect_failed(pool):
 
 async def _configure_postgres_connection(conn) -> None:
     """
-    Configure PostgreSQL connection for Supabase compatibility.
+    Configure a checkpoint connection.
 
-    Disables prepared statements which cause issues with Supabase poolers
-    (both session and transaction modes).
-
-    This is critical - without this, you get:
-    - "prepared statement already exists" errors
-    - Connection failures with poolers
+    Statements are prepared on first use. LangGraph repeats the same few
+    statements every agent step and names their columns, so a migration that
+    adds a column does not invalidate them the way it does a ``SELECT *``.
     """
     conn.prepare_threshold = 0
     _warn_if_plaintext(conn)

@@ -27,8 +27,7 @@ export const BROADCAST_CHANNEL = 'dashboard-prefs';
  *    wholesale, and a `next` computed without ever seeing the real prefs
  *    would erase the user's saved layout (irreversible — no prefs undo).
  *
- * Used by `useDashboardPrefs.flush()` (debounced widget edits) and
- * `DashboardRouter.onModeChange()` (mode toggle).
+ * Used by `useDashboardPrefs.flush()` (debounced widget edits).
  */
 export function useDashboardPrefsWriter() {
   const updatePrefs = useUpdatePreferences();
@@ -61,18 +60,39 @@ export function useDashboardPrefsWriter() {
     ): boolean => {
       const fresh = queryClient.getQueryData<UserPreferences>(queryKeys.user.preferences());
       if (fresh === undefined && opts?.fallbackOther === undefined) return false;
-      updatePrefs.mutate(
-        {
-          other_preference: { dashboard: next },
-        },
-        {
-          onSuccess: () => {
-            bcRef.current?.postMessage({ type: 'updated' });
-            opts?.onSuccess?.();
+      // A user with no preferences row reads as null, and a write's optimistic
+      // patch only lands on a row. Start them on the empty row this write
+      // creates, so the page shows the write as it saves and a rejected write
+      // rolls back to it, not past a write before it that landed.
+      if (fresh === null) {
+        queryClient.setQueryData<Partial<UserPreferences>>(queryKeys.user.preferences(), {});
+      }
+      updatePrefs
+        .mutateAsync(
+          {
+            // `mode` is not read since v2. It is written for a tab still on a
+            // build from before it, which reads any record without
+            // `mode: 'custom'` as Classic and would show (and save) that page.
+            other_preference: { dashboard: { ...next, mode: 'custom' } },
           },
-          onError: (err) => opts?.onError?.(err),
-        }
-      );
+          {
+            onSuccess: () => opts?.onSuccess?.(),
+            onError: (err) => opts?.onError?.(err),
+          }
+        )
+        // Announced from the write's own promise, not a per-call callback:
+        // those stop once the page unmounts, and the page saves an edit still
+        // waiting as it is left. Another tab not told would keep the older
+        // layout and save it over this one at its next edit.
+        .then(() => {
+          if (bcRef.current) {
+            bcRef.current.postMessage({ type: 'updated' });
+          } else if (typeof BroadcastChannel !== 'undefined') {
+            const chan = new BroadcastChannel(BROADCAST_CHANNEL);
+            chan.postMessage({ type: 'updated' });
+            chan.close();
+          }
+        }, () => {});
       return true;
     },
     [updatePrefs, queryClient]

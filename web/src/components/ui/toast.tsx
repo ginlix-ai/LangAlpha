@@ -1,113 +1,119 @@
 import * as React from "react"
 import * as ToastPrimitives from "@radix-ui/react-toast"
-import { cva, type VariantProps } from "class-variance-authority"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { aboveDialogs } from "@/hooks/useDialogA11y"
 
 const ToastProvider = ToastPrimitives.Provider
 
-const ToastViewport = React.forwardRef<
-  React.ComponentRef<typeof ToastPrimitives.Viewport>,
-  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Viewport>
->(({ className, ...props }, ref) => (
-  <ToastPrimitives.Viewport
-    ref={ref}
-    className={cn(
-      "fixed top-0 z-[100] flex max-h-screen w-full flex-col-reverse p-4 sm:bottom-0 sm:right-0 sm:top-auto sm:flex-col md:max-w-[420px]",
-      className
-    )}
-    {...props}
-  />
-))
-ToastViewport.displayName = ToastPrimitives.Viewport.displayName
-
-const toastVariants = cva(
-  "group pointer-events-auto relative flex w-full items-center justify-between space-x-4 overflow-hidden rounded-md border p-6 pr-8 shadow-lg transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
-  {
-    variants: {
-      variant: {
-        default: "border bg-background text-foreground",
-        destructive:
-          "destructive group border-red-500 bg-red-600 text-white",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-    },
-  }
-)
-
-const Toast = React.forwardRef<
-  React.ComponentRef<typeof ToastPrimitives.Root>,
-  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Root> & VariantProps<typeof toastVariants>
->(({ className, variant, ...props }, ref) => {
+function ToastViewport({
+  className,
+  ...props
+}: React.ComponentProps<typeof ToastPrimitives.Viewport>) {
+  // Above every modal layer, so a toast raised from inside a dialog is not
+  // dimmed under its backdrop. The empty viewport still spans its padding, so it
+  // passes pointer events through and only the toasts themselves take them.
+  // Being above them is also why an open dialog lets a toast keep focus.
+  //
+  // `--toast-lift` is written by `useToastInset` for any element floating at
+  // the bottom of the page, so a toast stacks above its buttons rather than
+  // over them. Unset everywhere else, which leaves the edge at 0.
   return (
-    <ToastPrimitives.Root
-      ref={ref}
-      className={cn(toastVariants({ variant }), className)}
+    <ToastPrimitives.Viewport
+      {...aboveDialogs}
+      className={cn(
+        "pointer-events-none fixed top-0 z-1050 flex max-h-screen w-full flex-col-reverse gap-2 p-4 sm:bottom-[var(--toast-lift,0px)] sm:right-0 sm:top-auto sm:flex-col sm:transition-[bottom] motion-reduce:transition-none md:max-w-[420px]",
+        className
+      )}
       {...props}
     />
   )
-})
-Toast.displayName = ToastPrimitives.Root.displayName
+}
 
-const ToastAction = React.forwardRef<
-  React.ComponentRef<typeof ToastPrimitives.Action>,
-  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Action>
->(({ className, ...props }, ref) => (
-  <ToastPrimitives.Action
-    ref={ref}
-    className={cn(
-      "inline-flex h-8 shrink-0 items-center justify-center rounded-md border bg-transparent px-3 text-sm font-medium ring-offset-background transition-colors hover:bg-secondary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 group-[.destructive]:border-muted/40 group-[.destructive]:hover:border-destructive/30 group-[.destructive]:hover:bg-destructive group-[.destructive]:hover:text-destructive-foreground group-[.destructive]:focus:ring-destructive",
-      className
-    )}
-    {...props}
-  />
-))
-ToastAction.displayName = ToastPrimitives.Action.displayName
+// One quiet surface for every tone (DESIGN.md): an elevated card, a uniform
+// neutral border, the card shadow. A failure is said by its leading glyph, not
+// by repainting the card red, so the toasts read as one family and a red slab
+// no longer shouts over the work. Positioning goes through `transform`
+// because the enter and exit keyframes animate `transform`, which would stack
+// on the separate `translate` property that translate-x-* sets instead of
+// replacing it.
+const toastClassName =
+  "group pointer-events-auto relative flex w-full items-center gap-3 overflow-hidden rounded-lg border border-(--color-border-elevated) bg-(--color-bg-elevated) py-3 pl-3.5 pr-2.5 text-(--color-text-primary) shadow-(--shadow-card) transition-all data-[swipe=cancel]:[transform:translateX(0)] data-[swipe=end]:[transform:translateX(var(--radix-toast-swipe-end-x))] data-[swipe=move]:[transform:translateX(var(--radix-toast-swipe-move-x))] data-[swipe=move]:transition-none toast-slide"
 
-const ToastClose = React.forwardRef<
-  React.ComponentRef<typeof ToastPrimitives.Close>,
-  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Close>
->(({ className, ...props }, ref) => (
-  <ToastPrimitives.Close
-    ref={ref}
-    className={cn(
-      "absolute right-2 top-2 rounded-md p-1 text-foreground/50 opacity-0 transition-opacity hover:text-foreground focus:opacity-100 focus:outline-none focus:ring-2 group-hover:opacity-100 group-[.destructive]:text-red-300 group-[.destructive]:hover:text-red-50 group-[.destructive]:focus:ring-red-400 group-[.destructive]:focus:ring-offset-red-600",
-      className
-    )}
-    toast-close=""
-    {...props}
-  >
-    <X className="h-4 w-4" />
-  </ToastPrimitives.Close>
-))
-ToastClose.displayName = ToastPrimitives.Close.displayName
+function Toast({
+  className,
+  ...props
+}: React.ComponentProps<typeof ToastPrimitives.Root>) {
+  return (
+    <ToastPrimitives.Root
+      className={cn(toastClassName, className)}
+      {...props}
+    />
+  )
+}
 
-const ToastTitle = React.forwardRef<
-  React.ComponentRef<typeof ToastPrimitives.Title>,
-  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Title>
->(({ className, ...props }, ref) => (
-  <ToastPrimitives.Title
-    ref={ref}
-    className={cn("text-sm font-semibold", className)}
-    {...props}
-  />
-))
-ToastTitle.displayName = ToastPrimitives.Title.displayName
+// The toast's one way forward, so it takes the primary pair; the close button
+// beside it is the way out.
+function ToastAction({
+  className,
+  ...props
+}: React.ComponentProps<typeof ToastPrimitives.Action>) {
+  return (
+    <ToastPrimitives.Action
+      className={cn(
+        "press inline-flex h-7 shrink-0 items-center justify-center rounded-md bg-(--color-btn-primary-bg) px-2.5 text-[13px] font-medium text-(--color-btn-primary-text) hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-(--color-bg-elevated) disabled:pointer-events-none disabled:opacity-50",
+        className
+      )}
+      {...props}
+    />
+  )
+}
 
-const ToastDescription = React.forwardRef<
-  React.ComponentRef<typeof ToastPrimitives.Description>,
-  React.ComponentPropsWithoutRef<typeof ToastPrimitives.Description>
->(({ className, ...props }, ref) => (
-  <ToastPrimitives.Description
-    ref={ref}
-    className={cn("text-sm opacity-90", className)}
-    {...props}
-  />
-))
-ToastDescription.displayName = ToastPrimitives.Description.displayName
+// Always shown, in the row beside the action, rather than revealed on hover
+// in a corner: a hover reveal hid it from touch screens and held an empty
+// gutter on every toast for a button that was usually invisible.
+function ToastClose({
+  className,
+  ...props
+}: React.ComponentProps<typeof ToastPrimitives.Close>) {
+  return (
+    <ToastPrimitives.Close
+      className={cn(
+        "shrink-0 rounded-md p-1 text-(--color-text-tertiary) transition hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+        className
+      )}
+      toast-close=""
+      {...props}
+    >
+      <X className="h-3.5 w-3.5" />
+    </ToastPrimitives.Close>
+  )
+}
+
+function ToastTitle({
+  className,
+  ...props
+}: React.ComponentProps<typeof ToastPrimitives.Title>) {
+  return (
+    <ToastPrimitives.Title
+      className={cn("text-sm font-medium leading-5", className)}
+      {...props}
+    />
+  )
+}
+
+function ToastDescription({
+  className,
+  ...props
+}: React.ComponentProps<typeof ToastPrimitives.Description>) {
+  return (
+    <ToastPrimitives.Description
+      className={cn("text-[13px] leading-[18px] text-(--color-text-secondary)", className)}
+      {...props}
+    />
+  )
+}
 
 export {
   ToastProvider,

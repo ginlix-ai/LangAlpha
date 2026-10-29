@@ -1,14 +1,10 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText, ImageIcon, Ruler, SquareDashedMousePointer } from 'lucide-react';
-import { type WidgetContextPreviewShape } from '@/pages/Dashboard/widgets/framework/WidgetContextPreview';
+import type { WidgetContextPreviewShape } from '@/pages/Dashboard/widgets/framework/WidgetContextPreview';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { SelectionContextPreview, type SelectionPreviewShape } from '../SelectionContextPreview';
-
-/** Selection price with 2 decimals (matching StockHeader); `—` when absent. */
-function fmtSelectionPrice(n: number | null | undefined): string {
-  return n == null || !Number.isFinite(n) ? '—' : n.toFixed(2);
-}
+import { selectionPriceBounds } from '../../utils/selectionBounds';
 
 /* --- Attachment helpers --- */
 const formatFileSize = (bytes: number | null | undefined): string => {
@@ -80,9 +76,8 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
         const title = s.selectionType === 'region'
           ? t('marketView.selection.cardRegionTitle')
           : t('marketView.selection.cardPriceTitle');
-        const bounds = s.selectionType === 'region'
-          ? `$${fmtSelectionPrice(s.priceLow)} – $${fmtSelectionPrice(s.priceHigh)}`
-          : `$${fmtSelectionPrice(s.priceLow)}`;
+        // en-US on purpose: the bounds mirror the context text the agent receives.
+        const bounds = selectionPriceBounds(s, 'en-US');
         // Prefer the user's note as the snippet; fall back to the bounds.
         const snippet = s.comment ? `“${s.comment}”` : bounds;
         return (
@@ -104,7 +99,7 @@ export function InlineSelectionCards({ selections }: { selections: SelectionPrev
             }}
           >
             <div
-              className="flex items-center justify-center flex-shrink-0"
+              className="flex items-center justify-center shrink-0"
               style={{
                 width: 34,
                 height: 34,
@@ -153,7 +148,7 @@ export function AttachmentCard({ attachment }: AttachmentCardProps): React.React
 
   if (isImage && hasPreview) {
     return (
-      <div className="relative group flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
+      <div className="relative group shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
         <img src={att.dataUrl || att.url || att.preview} alt={att.name} className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-black/20" />
       </div>
@@ -163,7 +158,7 @@ export function AttachmentCard({ attachment }: AttachmentCardProps): React.React
   if (isImage && !hasPreview) {
     // History image -- no thumbnail available, show placeholder
     return (
-      <div className="relative flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
+      <div className="relative shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
         <div className="w-full h-full p-3 flex flex-col items-center justify-center gap-2">
           <ImageIcon className="w-6 h-6" style={{ color: 'var(--color-icon-muted)' }} />
           <p className="text-[0.625rem] truncate w-full text-center" style={{ color: 'var(--color-text-tertiary)' }}>{att.name}</p>
@@ -174,7 +169,7 @@ export function AttachmentCard({ attachment }: AttachmentCardProps): React.React
 
   // PDF / generic file card
   return (
-    <div className="relative flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
+    <div className="relative shrink-0 w-24 h-24 rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border-muted)', background: 'var(--color-bg-input)' }}>
       <div className="w-full h-full p-3 flex flex-col justify-between">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded" style={{ background: 'var(--color-border-muted)' }}>

@@ -4,9 +4,11 @@ When referencing online information, cite sources inline using this format:
 ([domain.com](full_url))
 
 Place the citation immediately after the claim it supports. Use the source's shortest recognizable domain (e.g., nypost.com, not www.nypost.com).
+{% if guidance | default("detailed") == "detailed" %}
 
 **Example:**
 Oil prices surged above $110 ([nypost.com](https://nypost.com/2026/03/27/business/dow-falls-700-points))
+{% endif %}
 
 - Every factual claim from an online source MUST have an inline citation
 - Multiple citations can appear together: ...confirmed by multiple outlets ([reuters.com](url1)) ([bloomberg.com](url2))

@@ -1,4 +1,4 @@
-import { useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router';
 import type { NavItem } from './navItems';
 
 /** Returns a matcher that reports whether a nav item is active for the current pathname. */

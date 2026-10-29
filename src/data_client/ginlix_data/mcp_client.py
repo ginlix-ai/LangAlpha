@@ -1,8 +1,9 @@
 """Ginlix-data client for MCP servers running in Daytona sandboxes.
 
-Uses file-based OAuth tokens for authentication, with auto-refresh on 401.
-This is the sandbox counterpart to :class:`GinlixDataClient` (which uses
-service tokens on the host).
+Authenticates with the short-lived token the server writes into the sandbox
+and replaces before it runs out; the sandbox never refreshes it itself. This
+is the sandbox counterpart to :class:`GinlixDataClient` (which uses service
+tokens on the host).
 """
 
 from __future__ import annotations
@@ -10,14 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from ..market_data_provider import is_us_symbol
-from ..normalize import normalize_bars
-from .pagination import paginate_cursor
+from ..normalize import normalize_bars, symbol_timezone
+from .pagination import follow_cursor, paginate_cursor, unique_by_time
+from .v2_routes import GinlixDataV2Routes, path_segment
 
 logger = logging.getLogger(__name__)
 
@@ -62,28 +65,67 @@ def split_date_time(value: str | None) -> tuple[str | None, str | None]:
     return value, None
 
 
+_BAR_LABEL = "%Y-%m-%d %H:%M:%S"
+
+
+def _day(value: str | None) -> date | None:
+    # The day an FMP daily read takes from a bound: its first ten characters.
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def _bound(value: str | None, zone: tzinfo) -> datetime | None:
+    # A bound that does not read is None, and the read falls back: this tier
+    # refuses nothing, the FMP read that follows does, in the hosted words.
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(zone).replace(tzinfo=None)
+    return moment
+
+
+def intraday_bounds(
+    start_date: str | None, end_date: str | None, zone: tzinfo
+) -> tuple[datetime | None, datetime | None]:
+    """An intraday window as wall-clock bounds in *zone*, start inclusive, stop exclusive.
+
+    Read as the FMP reads read it (``mcp_servers._dates.intraday_window``): a
+    bare day spans the whole day and a time counts to the second.
+    """
+    start = _bound(start_date, zone)
+    stop = _bound(end_date, zone)
+    if stop is not None:
+        bare = len(end_date.strip()) <= 10
+        stop += timedelta(days=1) if bare else timedelta(seconds=1)
+    return start, stop
+
+
 def filter_bars_by_time(
     bars: list[dict],
-    start_time: str | None,
-    end_time: str | None,
+    start: datetime | None,
+    stop: datetime | None,
 ) -> list[dict]:
-    """Filter normalized bars by time-of-day.  No-op if both times are None."""
-    if not start_time and not end_time:
+    """Keep the normalized bars that open in ``[start, stop)``. No-op if both are None."""
+    if start is None and stop is None:
         return bars
     filtered = []
     for bar in bars:
-        bar_date = bar.get("date", "")
-        bar_time = ""
-        if "T" in bar_date:
-            bar_time = bar_date.split("T", 1)[1][:5]
-        elif " " in bar_date:
-            bar_time = bar_date.split(" ", 1)[1][:5]
-        if not bar_time:
+        try:
+            opened = datetime.strptime(bar.get("date", ""), _BAR_LABEL)
+        except (TypeError, ValueError):
             filtered.append(bar)
             continue
-        if start_time and bar_time < start_time[:5]:
+        if start is not None and opened < start:
             continue
-        if end_time and bar_time > end_time[:5]:
+        if stop is not None and opened >= stop:
             continue
         filtered.append(bar)
     return filtered
@@ -98,13 +140,16 @@ def filter_bars_by_time(
 # reader never has to guess. $HOME is NOT reliable here: Daytona sandboxes run as
 # root ($HOME=/root) while the working dir is /home/workspace, so keying off $HOME
 # read from the wrong place and the client always reported "not configured".
+# The fallback mirrors SandboxLayout.default().mcp_tokens. It is spelled out
+# because this module ships into the sandbox, where the host package is not
+# importable; a unit test holds it equal to the layout object.
 TOKEN_FILE = Path(
     os.environ.get("GINLIX_TOKEN_FILE", "/home/workspace/_internal/.mcp_tokens.json")
 )
 
-# Declared User-Agent for every sandbox→ginlix-data request (data + token
-# refresh). Set explicitly so the traffic is self-identifying at the edge and
-# does not depend on httpx's default UA — a generic client UA can be swept up by
+# Declared User-Agent for every sandbox→ginlix-data request. Set explicitly
+# so the traffic is self-identifying at the edge and does not depend on
+# httpx's default UA — a generic client UA can be swept up by
 # upstream bot mitigation, which would silently break the data path.
 _USER_AGENT = "langalpha-sandbox/1.0"
 
@@ -116,8 +161,14 @@ def _load_tokens() -> dict:
         return {}
 
 
-def _save_tokens(tokens: dict) -> None:
-    TOKEN_FILE.write_text(json.dumps(tokens))
+def _token_stamp() -> tuple[int, int, int] | None:
+    """Which token file is on disk. The server replaces it whole (a rename),
+    so a new token is a new inode even within the same mtime tick."""
+    try:
+        st = TOKEN_FILE.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
 
 
 # ---------------------------------------------------------------------------
@@ -127,44 +178,52 @@ def _save_tokens(tokens: dict) -> None:
 _MAX_PAGES = 10  # Up to 500k bars (10 × 50k)
 
 
-class GinlixMCPClient:
-    """Sandbox-side ginlix-data client with OAuth token-file auth.
+class GinlixMCPClient(GinlixDataV2Routes):
+    """Sandbox-side ginlix-data client with token-file auth.
 
-    Lazily initializes on first use.  Re-reads the token file until
-    initialization succeeds, so tokens uploaded after MCP server start
-    are picked up.
+    Reads the token file again whenever it changes, so a token the server
+    writes after this process started, or writes in place of one running out,
+    is used from the next request on.
     """
 
     def __init__(self) -> None:
         self._http: httpx.AsyncClient | None = None
+        self._stamp: tuple[int, int, int] | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
     async def ensure(self) -> bool:
         """Ensure the HTTP client is initialized.  Returns availability."""
-        if self._http is not None:
-            return True
+        stamp = _token_stamp()
+        if self._http is None or stamp != self._stamp:
+            self._load(stamp)
+        return self._http is not None
 
+    def _load(self, stamp: tuple[int, int, int] | None) -> None:
         tokens = _load_tokens()
         ginlix_url = tokens.get("ginlix_data_url") or os.getenv("GINLIX_DATA_URL", "")
         access_token = tokens.get("access_token", "")
-
-        if ginlix_url and access_token:
+        if not (ginlix_url and access_token):
+            # Nothing usable on disk: a client already built keeps the token
+            # it has, which may well still work.
+            return
+        self._stamp = stamp
+        base_url = ginlix_url.rstrip("/")
+        if self._http is None:
             self._http = httpx.AsyncClient(
-                base_url=ginlix_url.rstrip("/"),
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "User-Agent": _USER_AGENT,
-                },
+                base_url=base_url,
+                headers={"User-Agent": _USER_AGENT},
                 timeout=30.0,
             )
-            return True
-        return False
+        elif str(self._http.base_url).rstrip("/") != base_url:
+            self._http.base_url = base_url
+        self._http.headers["Authorization"] = f"Bearer {access_token}"
 
     async def close(self) -> None:
         if self._http:
             await self._http.aclose()
             self._http = None
+            self._stamp = None
 
     # -- HTTP ----------------------------------------------------------------
 
@@ -186,88 +245,47 @@ class GinlixMCPClient:
         return {"error": f"{action} failed ({type(e).__name__})"}
 
     async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        """Make a ginlix-data request with auto-refresh on 401."""
+        """Make a ginlix-data request, retried once on a 401 that a token
+        written while it was in flight may answer."""
         if not await self.ensure():
             raise RuntimeError("ginlix-data client not initialized")
         assert self._http is not None
+        sent = self._http.headers.get("Authorization")
         resp = await self._http.request(method, url, **kwargs)
-        if resp.status_code == 401:
-            new_token = await self._refresh_access_token()
-            if new_token:
-                self._http.headers["Authorization"] = f"Bearer {new_token}"
-                resp = await self._http.request(method, url, **kwargs)
-        return resp
+        if resp.status_code != 401:
+            return resp
+        self._load(_token_stamp())
+        if self._http.headers.get("Authorization") == sent:
+            return resp
+        return await self._http.request(method, url, **kwargs)
 
-    async def _refresh_access_token(self) -> str | None:
-        """Refresh access token via OAuth2.  Persists new tokens to file."""
-        tokens = _load_tokens()
-        auth_url = tokens.get("auth_service_url", "")
-        refresh_token = tokens.get("refresh_token", "")
-        client_id = tokens.get("client_id", "")
-        if not all([auth_url, refresh_token, client_id]):
-            return None
-        try:
-            async with httpx.AsyncClient(
-                headers={"User-Agent": _USER_AGENT}
-            ) as client:
-                resp = await client.post(
-                    f"{auth_url}/oauth/token",
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                        "client_id": client_id,
-                    },
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    # A non-200 is not an exception, so without this a misrouted
-                    # or rejected refresh fails completely silently.
-                    logger.warning(
-                        "Token refresh rejected: HTTP %s %s",
-                        resp.status_code,
-                        resp.text[:200],
-                    )
-                    return None
-                data = resp.json()
-        except Exception as exc:
-            logger.warning("Token refresh failed: %s", exc)
-            return None
-
-        tokens["access_token"] = data["access_token"]
-        if data.get("refresh_token"):
-            tokens["refresh_token"] = data["refresh_token"]
-        try:
-            _save_tokens(tokens)
-        except Exception as exc:  # noqa: BLE001
-            # The token is valid regardless; a failed write only costs the next
-            # process one more refresh, so never discard it over this.
-            logger.warning("Token file write failed: %s", exc)
-        return data["access_token"]
+    async def _v2_get(
+        self, path: str, params: dict[str, Any] | None = None, *, user_id: str | None = None
+    ) -> httpx.Response:
+        # The sandbox token already names the user; ``user_id`` is a host header.
+        if not await self.ensure():
+            # A transport error, so v2 callers' soft-miss handling covers it.
+            raise httpx.TransportError("ginlix-data client not configured")
+        return await self.request("GET", path, params=params)
 
     # -- shared helpers ------------------------------------------------------
 
     async def _fetch_paginated_bars(
         self, url: str, params: dict[str, Any],
     ) -> list[dict]:
-        """Cursor-based pagination loop for aggregate bar endpoints."""
-        all_bars: list[dict] = []
-        multiplier = params["multiplier"]
-        timespan = params["timespan"]
-        for _page in range(_MAX_PAGES):
-            resp = await self.request("GET", url, params=params)
+        """Every bar of an aggregates cursor walk, one per timestamp.
+
+        Later pages keep the first page's params: the route requires ``from``
+        and ``to`` on every call, so a cursor alone is rejected.
+        """
+
+        async def fetch_page(page_params: dict[str, Any]) -> dict[str, Any]:
+            resp = await self.request("GET", url, params=page_params)
             resp.raise_for_status()
-            body = resp.json()
-            all_bars.extend(body.get("results", []))
-            next_cursor = body.get("next_cursor")
-            if not next_cursor:
-                break
-            params = {
-                "multiplier": multiplier,
-                "timespan": timespan,
-                "limit": 50000,
-                "cursor": next_cursor,
-            }
-        return all_bars
+            return resp.json()
+
+        bars, _ = await follow_cursor(fetch_page, params, max_pages=_MAX_PAGES, label=url)
+        return unique_by_time(bars)
 
     # -- data fetching -------------------------------------------------------
 
@@ -277,16 +295,23 @@ class GinlixMCPClient:
         interval: str,
         start_date: str | None = None,
         end_date: str | None = None,
+        *,
+        market: str = "stock",
     ) -> list[dict] | dict | None:
         """Fetch stock OHLCV from ginlix-data with auto-pagination.
+
+        ``market`` is the aggregates route's market segment: ``index`` takes
+        Massive's own index ticker (``I:SPX``), which the US-listing gate on
+        stock symbols would not recognize.
 
         Returns:
             ``list[dict]``: Normalized OHLCV bars on success.
             ``dict``: Error dict on HTTP/validation error.
             ``None``: Not available (non-US symbol, no client, unsupported
-            interval, network error) — caller should fall back.
+            interval, a window it cannot read or one that ends before it
+            starts, network error) — caller should fall back.
         """
-        if not is_us_symbol(symbol):
+        if market == "stock" and not is_us_symbol(symbol):
             return None
 
         if not await self.ensure():
@@ -299,15 +324,21 @@ class GinlixMCPClient:
         if not ginlix_interval:
             return None
 
-        _, start_time = split_date_time(start_date)
-        _, end_time = split_date_time(end_date)
-        from_day, _ = split_date_time(start_date)
-        to_day, _ = split_date_time(end_date)
-
-        if not from_day or not to_day:
-            return None
-
         intraday = interval_lower not in DAILY_INTERVALS
+        if intraday:
+            start, stop = intraday_bounds(start_date, end_date, symbol_timezone(symbol))
+            if start is None or stop is None or start >= stop:
+                return None
+            # The route takes days in the bars' zone, which a bound with an
+            # offset need not share.
+            from_day = start.date().isoformat()
+            to_day = (stop - timedelta(microseconds=1)).date().isoformat()
+        else:
+            first, last = _day(start_date), _day(end_date)
+            if first is None or last is None or first > last:
+                return None
+            from_day, to_day = first.isoformat(), last.isoformat()
+
         multiplier, timespan = ginlix_interval.split("/")
         params: dict[str, Any] = {
             "multiplier": multiplier,
@@ -319,21 +350,20 @@ class GinlixMCPClient:
 
         try:
             all_bars = await self._fetch_paginated_bars(
-                f"/api/v1/data/aggregates/stock/{symbol}", params,
+                f"/api/v1/data/aggregates/{path_segment(market)}/{path_segment(symbol)}", params,
             )
             normalized = normalize_bars(all_bars, symbol, intraday=intraday)
             if intraday:
-                normalized = filter_bars_by_time(normalized, start_time, end_time)
+                normalized = filter_bars_by_time(normalized, start, stop)
             return normalized
         except httpx.HTTPStatusError as e:
-            try:
-                detail = e.response.json().get("detail", e.response.text)
-            except Exception:
-                detail = e.response.text
+            error = self._error_dict("Stock data fetch", e)
             status = e.response.status_code
             if 400 <= status < 500 and status != 429:
-                return {"error": f"ginlix-data error ({status}): {detail}"}
-            logger.warning("ginlix-data %s for %s: %s", status, symbol, detail)
+                # The status rides along so the caller routes on it, not on
+                # whatever the detail text happens to say.
+                return {**error, "status": status}
+            logger.warning("%s for %s", error["error"], symbol)
             return None
         except Exception:
             logger.debug("ginlix-data fetch failed for %s", symbol, exc_info=True)
@@ -419,7 +449,7 @@ class GinlixMCPClient:
 
         try:
             all_bars = await self._fetch_paginated_bars(
-                f"/api/v1/data/aggregates/option/{options_ticker}", params,
+                f"/api/v1/data/aggregates/option/{path_segment(options_ticker)}", params,
             )
             intraday = interval_lower not in DAILY_INTERVALS
             normalized = normalize_bars(all_bars, options_ticker, intraday=intraday)

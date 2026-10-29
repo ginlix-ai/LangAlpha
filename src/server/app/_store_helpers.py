@@ -18,7 +18,7 @@ from ptc_agent.agent.backends import (
     validate_store_key,
 )
 
-# Matches MemoryContextMiddleware's per-aget budget. Utility store reads stay
+# Matches the runtime-context baseline's per-aget budget. Utility store reads stay
 # responsive even when the pool is slow.
 STORE_OP_TIMEOUT_S = 2.0
 

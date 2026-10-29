@@ -4,15 +4,19 @@
  * none touches the main transcript's `setMessages`.
  */
 
-import { isToolResultFailure } from './subagentStatus';
+import { isToolResultFailure, toolNameOf } from './subagentStatus';
 import {
   WORKFLOW_TASK_TYPE, applyWorkflowLifecycle, isWorkflowRunTerminal, workflowRunDisplayStatus,
   workflowRunStatusFromLedger,
   type WorkflowLifecycleFrame, type WorkflowRunState,
 } from './workflowRunState';
 import type { MessageRecord, ToolCallRecord, ToolCallResultRecord } from '../../hooks/utils/types';
-import { getOrCreateTaskRefs, extractLastReasoningTitle } from '../streamRefs';
+import { getOrCreateTaskRefs } from '../streamRefs';
 import { isTaskAgentId } from '../../utils/agentId';
+import { appendTextChunk } from '../stream/textChunks';
+import { addToolCallChunk, hasPreparing, removeLandedToolCall, withoutPending } from '../stream/toolCallChunks';
+import { MAIN_AGENT_PROVENANCE } from '../provenance';
+import type { ContentSegment, PendingToolCallChunk } from '@/types/chat';
 import type {
   StreamRefs, TaskRefs, ToolCallChunkRecord, UpdateSubagentCard,
 } from '../streamRefs';
@@ -32,6 +36,7 @@ export function isSubagentEvent(event: Record<string, unknown> | null | undefine
  * @param {string} params.finishReason - Optional finish reason
  * @param {Object} params.refs - Refs object with subagent state refs
  * @param {Function} params.updateSubagentCard - Callback to update subagent card
+ * @param {number} [params.atMs] - When the writer captured the frame (epoch ms)
  * @returns {boolean} True if event was handled
  */
 export function handleSubagentMessageChunk({
@@ -40,16 +45,21 @@ export function handleSubagentMessageChunk({
   contentType,
   content,
   finishReason,
+  elapsedMs,
   refs,
-  updateSubagentCard
+  updateSubagentCard,
+  atMs,
 }: {
   taskId: string;
   assistantMessageId: string;
   contentType: string;
   content: string;
   finishReason: string | undefined;
+  /** The server's measured duration on a reasoning complete signal. */
+  elapsedMs?: number;
   refs: StreamRefs;
   updateSubagentCard: UpdateSubagentCard;
+  atMs?: number;
 }): boolean {
   if (!taskId || !assistantMessageId || !updateSubagentCard) {
     return false;
@@ -57,17 +67,30 @@ export function handleSubagentMessageChunk({
 
   const taskRefs = getOrCreateTaskRefs(refs, taskId);
   const { contentOrderCounterRef, currentReasoningIdRef } = taskRefs;
+  // A thought is timed by when the writer captured its frames, as a tool call
+  // is: arrival is one instant for a backlog, and a reconnect has no other.
+  // Without a capture time a reconnect's thought stays untimed.
+  const frameAt = atMs ?? (refs.isReconnect ? undefined : Date.now());
+  // Which run a message belongs to, for the run that has to find its closing
+  // prose among the task's later ones.
+  const opened = atMs !== undefined ? { openedAtMs: atMs } : {};
 
   // Handle finishReason with no content — model call complete
   if (finishReason && !content && contentType !== 'reasoning_signal') {
+    const updatedMessages = [...taskRefs.messages];
+    const msgIdx = updatedMessages.findIndex((m: MessageRecord) => m.id === assistantMessageId);
     if (finishReason === 'tool_calls') {
+      // Its calls have all landed by now.
+      if (msgIdx !== -1 && hasPreparing(updatedMessages[msgIdx])) {
+        updatedMessages[msgIdx] = withoutPending(updatedMessages[msgIdx]);
+        taskRefs.messages = updatedMessages;
+        updateSubagentCard(taskId, { messages: updatedMessages });
+      }
       return false; // More work coming, let tool_calls handler process
     }
     // finish_reason: "stop" — subagent's model call is done
-    const updatedMessages = [...taskRefs.messages];
-    const msgIdx = updatedMessages.findIndex((m: MessageRecord) => m.id === assistantMessageId);
     if (msgIdx !== -1) {
-      updatedMessages[msgIdx] = { ...updatedMessages[msgIdx], isStreaming: false };
+      updatedMessages[msgIdx] = { ...withoutPending(updatedMessages[msgIdx]), isStreaming: false };
       taskRefs.messages = updatedMessages;
       updateSubagentCard(taskId, { messages: updatedMessages });
     }
@@ -96,6 +119,7 @@ export function handleSubagentMessageChunk({
           reasoningProcesses: {},
           toolCallProcesses: {},
           isStreaming: true,
+          ...opened,
         });
         messageIndex = updatedMessages.length - 1;
       }
@@ -114,6 +138,7 @@ export function handleSubagentMessageChunk({
             isReasoning: true,
             reasoningComplete: false,
             order: currentOrder,
+            _startedAt: frameAt,
           },
         },
       };
@@ -131,12 +156,14 @@ export function handleSubagentMessageChunk({
           const prev = updatedMessages[messageIndex];
           const reasoningProcesses = { ...((prev.reasoningProcesses as Record<string, Record<string, unknown>>) || {}) };
           if (reasoningProcesses[reasoningId]) {
+            const startedAt = reasoningProcesses[reasoningId]._startedAt as number | undefined;
+            const completedAt = frameAt ?? 1;
             reasoningProcesses[reasoningId] = {
               ...reasoningProcesses[reasoningId],
               isReasoning: false,
               reasoningComplete: true,
-              reasoningTitle: null,
-              _completedAt: refs.isReconnect ? 1 : Date.now(),
+              _completedAt: completedAt,
+              elapsedMs: elapsedMs ?? (startedAt && frameAt !== undefined ? completedAt - startedAt : undefined),
             };
           }
           updatedMessages[messageIndex] = { ...prev, reasoningProcesses };
@@ -164,6 +191,7 @@ export function handleSubagentMessageChunk({
         reasoningProcesses: {},
         toolCallProcesses: {},
         isStreaming: true,
+        ...opened,
       });
       messageIndex = updatedMessages.length - 1;
     }
@@ -194,12 +222,10 @@ export function handleSubagentMessageChunk({
     const existingContent = (reasoningProcesses[reasoningId]?.content as string) || '';
     const newContent = existingContent + content;
 
-    const reasoningTitle = extractLastReasoningTitle(newContent) ?? (reasoningProcesses[reasoningId].reasoningTitle as string | null) ?? null;
     reasoningProcesses[reasoningId] = {
       ...reasoningProcesses[reasoningId],
       content: newContent,
       isReasoning: true,
-      reasoningTitle,
     };
 
     // Replace the message with a fresh object so ``React.memo`` invalidates;
@@ -232,6 +258,7 @@ export function handleSubagentMessageChunk({
         toolCallProcesses: {},
         content: '',
         isStreaming: true,
+        ...opened,
       });
       messageIndex = updatedMessages.length - 1;
     }
@@ -242,10 +269,7 @@ export function handleSubagentMessageChunk({
     const prev = updatedMessages[messageIndex];
     updatedMessages[messageIndex] = {
       ...prev,
-      contentSegments: [
-        ...((prev.contentSegments as unknown[]) || []),
-        { type: 'text', content, order: currentOrder },
-      ],
+      contentSegments: appendTextChunk((prev.contentSegments as ContentSegment[]) || [], content, currentOrder),
       content: ((prev.content as string) || '') + content,
       contentType: 'text',
       isStreaming: true,
@@ -300,17 +324,11 @@ export function handleSubagentToolCallChunks({ taskId, assistantMessageId, chunk
   }
 
   const msg = { ...updatedMessages[messageIndex] };
-  const pending = { ...((msg.pendingToolCallChunks as Record<string, Record<string, unknown>>) || {}) };
+  let pending = (msg.pendingToolCallChunks as Record<string, PendingToolCallChunk> | undefined) ?? {};
+  const seenAt = Date.now();
 
   chunks.forEach((chunk: ToolCallChunkRecord) => {
-    const key = `${chunk.index ?? 0}`;
-    const existing = pending[key] || { toolName: null, chunkCount: 0, argsLength: 0, firstSeenAt: Date.now() };
-    pending[key] = {
-      toolName: chunk.name || existing.toolName,
-      chunkCount: (existing.chunkCount as number) + 1,
-      argsLength: (existing.argsLength as number) + (chunk.args?.length || 0),
-      firstSeenAt: existing.firstSeenAt,
-    };
+    pending = addToolCallChunk(pending, chunk, seenAt);
   });
 
   msg.pendingToolCallChunks = pending;
@@ -329,14 +347,16 @@ export function handleSubagentToolCallChunks({ taskId, assistantMessageId, chunk
  * @param {Array} params.toolCalls - Array of tool call objects
  * @param {Object} params.refs - Refs object with subagent state refs
  * @param {Function} params.updateSubagentCard - Callback to update subagent card
+ * @param {number} [params.atMs] - When the writer captured the frame (epoch ms)
  * @returns {boolean} True if event was handled
  */
-export function handleSubagentToolCalls({ taskId, assistantMessageId, toolCalls, refs, updateSubagentCard }: {
+export function handleSubagentToolCalls({ taskId, assistantMessageId, toolCalls, refs, updateSubagentCard, atMs }: {
   taskId: string;
   assistantMessageId: string;
   toolCalls: ToolCallRecord[];
   refs: StreamRefs;
   updateSubagentCard: UpdateSubagentCard;
+  atMs?: number;
 }): boolean {
   if (!taskId || !assistantMessageId || !toolCalls || !Array.isArray(toolCalls) || !updateSubagentCard) {
     return false;
@@ -359,13 +379,18 @@ export function handleSubagentToolCalls({ taskId, assistantMessageId, toolCalls,
           reasoningProcesses: {},
           toolCallProcesses: {},
           isStreaming: true,
+          ...(atMs !== undefined ? { openedAtMs: atMs } : {}),
         });
         messageIndex = updatedMessages.length - 1;
       }
 
       const msg = updatedMessages[messageIndex];
+      // A message the call chunks opened carries no capture time, and its
+      // first call is the earliest one it will get.
+      if (atMs !== undefined && typeof msg.openedAtMs !== 'number') msg.openedAtMs = atMs;
       const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
       const contentSegments = [...((msg.contentSegments as Record<string, unknown>[]) || [])];
+      const firstLanding = !toolCallProcesses[toolCallId];
 
       if (!toolCallProcesses[toolCallId]) {
         contentOrderCounterRef.current++;
@@ -396,8 +421,9 @@ export function handleSubagentToolCalls({ taskId, assistantMessageId, toolCalls,
 
       msg.contentSegments = contentSegments;
       msg.toolCallProcesses = toolCallProcesses;
-      // Clear pending chunks now that the final tool_calls event has arrived
-      msg.pendingToolCallChunks = {};
+      // This call's arguments are complete; parallel calls after it keep theirs.
+      msg.pendingToolCallChunks = removeLandedToolCall(
+        (msg.pendingToolCallChunks as Record<string, PendingToolCallChunk> | undefined) ?? {}, toolCallId, firstLanding);
       taskRefs.messages = updatedMessages;
     }
   });
@@ -525,7 +551,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
     const msg = updatedMessages[messageIndex];
     const toolCallProcesses = { ...((msg.toolCallProcesses as Record<string, Record<string, unknown>>) || {}) };
 
-    const isFailed = isToolResultFailure(result);
+    const isFailed = isToolResultFailure({ ...result, toolName: toolNameOf(toolCallProcesses, toolCallId) });
 
     if (toolCallProcesses[toolCallId]) {
       toolCallProcesses[toolCallId] = {
@@ -744,6 +770,17 @@ export function handleWorkflowLifecycle({ taskId, event, refs, updateSubagentCar
   return true;
 }
 
+/** Who queued an instruction for a subagent: the user, or its main agent. */
+export type InstructionSender = 'user' | 'agent';
+
+/** One queue entry a steering delivery took, under the id its sender gave it. */
+export interface DeliveredInstruction {
+  input_id?: string | null;
+  content?: string;
+  /** Absent on entries from before the drain recorded it, which get no label. */
+  sender?: InstructionSender;
+}
+
 /**
  * Renders a user instruction into a subagent transcript — steering
  * follow-ups (steering_delivered) AND run boundaries (the epoch-opening
@@ -755,13 +792,17 @@ export function handleWorkflowLifecycle({ taskId, event, refs, updateSubagentCar
  * @param {Object} params - Handler parameters
  * @param {string} params.taskId - Task ID (e.g., "task:k7Xm2p")
  * @param {string} params.content - The steering instruction content
+ * @param {Array} params.entries - The queue entries a delivery took, when it names them
+ * @param {boolean} params.steered - Taken into the running run, not the instruction a run opens with
  * @param {Object} params.refs - Refs object with subagentStateRefs
  * @param {Function} params.updateSubagentCard - Callback to update subagent card
  * @returns {boolean} True if event was handled
  */
-export function handleTaskSteeringAccepted({ taskId, content, refs, updateSubagentCard }: {
+export function handleTaskSteeringAccepted({ taskId, content, entries, steered, refs, updateSubagentCard }: {
   taskId: string;
   content: string;
+  entries?: DeliveredInstruction[];
+  steered: boolean;
   refs: StreamRefs;
   updateSubagentCard: UpdateSubagentCard;
 }): boolean {
@@ -781,22 +822,38 @@ export function handleTaskSteeringAccepted({ taskId, content, refs, updateSubage
     }
   }
 
-  // Confirm an optimistic pending message if it matches, otherwise insert new one
-  const pendingIdx = updatedMessages.findIndex(
-    (m: MessageRecord) => m.role === 'user' && m.isPending && m.content === content
-  );
-  if (pendingIdx !== -1) {
-    updatedMessages[pendingIdx] = { ...updatedMessages[pendingIdx], isPending: false };
+  // Confirm the pending bubble of each entry this delivery took. An entry with
+  // none here, such as the main agent's own follow-up drained in the same
+  // step, gets a bubble of its own.
+  const taken = new Set<number>();
+  const delivered: MessageRecord[] = [];
+  const take = (i: number) => {
+    taken.add(i);
+    delivered.push({ ...updatedMessages[i], isPending: false });
+  };
+  if (entries?.length) {
+    for (const entry of entries) {
+      const i = pendingInstructionIndex(updatedMessages, entry.input_id);
+      if (i !== -1) take(i);
+      else if (entry.content) delivered.push(instructionBubble(entry.content, entry.sender));
+    }
   } else {
-    updatedMessages.push({
-      id: `followup-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-      role: 'user',
-      content,
-      contentSegments: [{ type: 'text', content, order: 0 }],
-      reasoningProcesses: {},
-      toolCallProcesses: {},
-    });
+    const matched = deliveredInstructionIndexes(updatedMessages, content);
+    matched.forEach(take);
+    if (matched.length === 0) delivered.push(instructionBubble(content));
   }
+  // A bubble shows where it was sent, but the subagent reads it here: after
+  // everything it streamed since, and ahead of any instruction still waiting.
+  // A notice that gave one of these up goes: a send can fail in transport
+  // after the server queued it.
+  const deliveredIds = new Set(entries?.map((entry) => entry.input_id).filter(Boolean));
+  const rest = updatedMessages.filter((m, i) => !taken.has(i) && !(isTaskNotice(m) && deliveredIds.has(m.inputId as string)));
+  const messages = [
+    ...rest.filter((m) => !isPendingInstruction(m)),
+    // Marked as the main transcript marks a steer its turn took in.
+    ...(steered ? delivered.map((m) => ({ ...m, steeringDelivered: true })) : delivered),
+    ...rest.filter(isPendingInstruction),
+  ];
 
   // Bump runIndex so the next event creates a new assistant message below the user bubble
   taskRefs.runIndex = (taskRefs.runIndex || 0) + 1;
@@ -804,8 +861,169 @@ export function handleTaskSteeringAccepted({ taskId, content, refs, updateSubage
   taskRefs.currentReasoningIdRef.current = null;
   taskRefs.currentToolCallIdRef.current = null;
 
-  taskRefs.messages = updatedMessages;
-  updateSubagentCard(taskId, { messages: updatedMessages });
+  taskRefs.messages = messages;
+  updateSubagentCard(taskId, { messages });
   return true;
 }
 
+/** A delivered instruction with no pending bubble to confirm. Only the main
+ *  agent's carry a label: the user's own, sent from another tab or read back
+ *  from history, look as they did when sent here. */
+function instructionBubble(content: string, sender?: InstructionSender): MessageRecord {
+  return {
+    id: `followup-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    role: 'user',
+    content,
+    contentSegments: [{ type: 'text', content, order: 0 }],
+    reasoningProcesses: {},
+    toolCallProcesses: {},
+    ...(sender === 'agent' ? { provenance: MAIN_AGENT_PROVENANCE } : {}),
+  };
+}
+
+/** An instruction the user sent a running subagent that it has not been given yet. */
+function isPendingInstruction(m: MessageRecord): boolean {
+  return m.role === 'user' && m.isPending === true;
+}
+
+function isTaskNotice(m: MessageRecord): boolean {
+  return m.role === 'assistant' && String(m.id).startsWith('task-notice-');
+}
+
+function noticeDetail(m: MessageRecord): unknown {
+  return (m.contentSegments as Array<{ detail?: string }> | undefined)?.[0]?.detail;
+}
+
+function pendingInstructionIndex(messages: MessageRecord[], inputId: string | null | undefined): number {
+  return inputId ? messages.findIndex((m) => isPendingInstruction(m) && m.inputId === inputId) : -1;
+}
+
+/**
+ * The pending bubbles a delivery that names no entries confirms, read off its
+ * text alone: an older server's frame, or a captured event from before
+ * entries. The subagent takes every instruction queued since its last model
+ * call at once, joined by newlines, so the match is a run of bubbles, the
+ * latest that fits.
+ */
+function deliveredInstructionIndexes(messages: MessageRecord[], content: string): number[] {
+  const pending = messages.flatMap((m, i) => (isPendingInstruction(m) ? [i] : []));
+  for (let start = pending.length - 1; start >= 0; start--) {
+    let joined = '';
+    for (let end = start; end < pending.length; end++) {
+      joined += (end === start ? '' : '\n') + String(messages[pending[end]].content);
+      if (joined === content) return pending.slice(start, end + 1);
+      if (!content.startsWith(joined)) break;
+    }
+  }
+  return [];
+}
+
+/**
+ * Shows an instruction the user just sent a running subagent, pending until
+ * its delivery confirms it (handleTaskSteeringAccepted). The bubble joins the
+ * task's transcript, not only its card: every stream write hands the card that
+ * whole transcript, and the card keeps a longer list over a shorter one, so a
+ * bubble only the card held froze the running message until the delivery.
+ */
+export function addPendingTaskInstruction({ taskId, inputId, content, subagentStateRefs, updateSubagentCard }: {
+  taskId: string;
+  inputId: string;
+  content: string;
+  subagentStateRefs: Record<string, TaskRefs>;
+  updateSubagentCard: UpdateSubagentCard | null;
+}): void {
+  if (!taskId || !content || !updateSubagentCard) return;
+  const taskRefs = getOrCreateTaskRefs({ subagentStateRefs }, taskId);
+  taskRefs.messages = [...taskRefs.messages, {
+    id: `pending-instruction-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    role: 'user',
+    content,
+    contentSegments: [{ type: 'text', content, order: 0 }],
+    reasoningProcesses: {},
+    toolCallProcesses: {},
+    isPending: true,
+    inputId,
+  }];
+  updateSubagentCard(taskId, { messages: taskRefs.messages });
+}
+
+/** An instruction the subagent was sent, as the frame that settles it names it. */
+export interface SentInstruction {
+  inputId?: string | null;
+  content: string;
+}
+
+/**
+ * The instruction a task lane's `steering_returned` frame hands back, or null
+ * when it names no text. Producers send the text as top-level content;
+ * messages[] is a defensive fallback only.
+ */
+export function returnedTaskInstruction(
+  event: { content?: unknown; input_id?: unknown; messages?: unknown },
+): SentInstruction | null {
+  const fallback = Array.isArray(event.messages)
+    ? (event.messages as Array<{ content?: string }>).map((m) => m?.content || '').filter(Boolean).join('\n')
+    : '';
+  const content = (typeof event.content === 'string' ? event.content : '') || fallback;
+  if (!content) return null;
+  return { inputId: typeof event.input_id === 'string' ? event.input_id : undefined, content };
+}
+
+/** Whether the instruction is still waiting on the subagent, neither delivered nor returned. */
+export function hasPendingInstruction(taskRefs: TaskRefs, inputId: string): boolean {
+  return pendingInstructionIndex(taskRefs.messages, inputId) !== -1;
+}
+
+/**
+ * Drops the pending bubble of an instruction the subagent never received. A
+ * frame with no id, from an entry an older producer queued, is matched by its
+ * text, latest first.
+ */
+function withdrawPendingInstruction(taskRefs: TaskRefs, { inputId, content }: SentInstruction): void {
+  const idx = inputId
+    ? pendingInstructionIndex(taskRefs.messages, inputId)
+    : taskRefs.messages.findLastIndex((m) => isPendingInstruction(m) && m.content === content);
+  if (idx !== -1) taskRefs.messages = taskRefs.messages.filter((_, i) => i !== idx);
+}
+
+/**
+ * Appends a notice to a task transcript as a message of its own rather than a
+ * segment on the last assistant message: a failed task may have no assistant
+ * message at all, and a pushed message survives that.
+ */
+export function pushTaskNotice(taskRefs: TaskRefs, text: string, detail?: string, inputId?: string | null): void {
+  const order = ++taskRefs.contentOrderCounterRef.current;
+  taskRefs.messages = [...taskRefs.messages, {
+    id: `task-notice-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    role: 'assistant',
+    content: '',
+    contentSegments: [{ type: 'notification', content: text, order, detail }],
+    reasoningProcesses: {},
+    toolCallProcesses: {},
+    ...(inputId ? { inputId } : {}),
+  }];
+}
+
+/**
+ * Takes back an instruction the subagent never received, whether the run
+ * ended before taking it or the send itself failed: its pending bubble goes
+ * and a notice carrying its text takes its place. The two travel together
+ * because the card keeps a longer list over a shorter one, so a withdrawal
+ * written on its own would never reach it.
+ */
+export function returnTaskInstruction(taskRefs: TaskRefs, instruction: SentInstruction, notice: string): void {
+  // Once per instruction: a refused send and the run's own return can both
+  // name it, and a reconnect re-sends a return history already placed. With
+  // no id, a notice of the same text and no pending bubble for it means this
+  // return is already shown; a second send of that text would still be
+  // pending.
+  const { inputId, content } = instruction;
+  if (inputId && taskRefs.messages.some((m) => isTaskNotice(m) && m.inputId === inputId)) return;
+  if (
+    !inputId
+    && !taskRefs.messages.some((m) => isPendingInstruction(m) && m.content === content)
+    && taskRefs.messages.some((m) => isTaskNotice(m) && !m.inputId && noticeDetail(m) === content)
+  ) return;
+  withdrawPendingInstruction(taskRefs, instruction);
+  pushTaskNotice(taskRefs, notice, instruction.content, inputId);
+}

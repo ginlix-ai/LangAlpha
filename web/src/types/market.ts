@@ -26,19 +26,62 @@ export interface IndicesResponse {
   failedCount: number;
 }
 
+// --- Freshness ---
+
+/**
+ * Freshness measured at the REST boundary against the venue clock. The
+ * declared tier says what a provider sells; this says what actually arrived,
+ * so `measured: false` (nothing carried a timestamp) means the label is only
+ * the declaration repeated back.
+ */
+export interface Freshness {
+  /** Newest bar/print that should exist now (Unix ms). */
+  expected_latest?: number | null;
+  /** Newest bar/print actually served (Unix ms). */
+  actual_latest?: number | null;
+  /** Seconds behind; on a closed venue, the shortfall against the final bar. */
+  lag_s?: number | null;
+  label: 'live' | 'delayed' | 'stale' | 'incomplete' | 'unknown';
+  measured: boolean;
+  /** Provider that filled the measured series or quote. */
+  source?: string | null;
+  /** Bar interval the measurement is against; null for quotes. */
+  interval?: string | null;
+  /** Venue fully closed when measured: a live row is the session's final
+   *  print, not a moving price. Null when no venue resolved. */
+  closed?: boolean | null;
+}
+
+/** Freshness a provider declares it sells for a quote. */
+export type QuoteTier = 'realtime' | 'delayed_15m' | 'eod';
+
 // --- Stock Snapshot ---
 
+/**
+ * One snapshot row as the snapshot endpoints send it (batch and single-symbol
+ * alike). The one wire type: the quote layer's `QuoteRow` and the dashboard's
+ * `SnapshotEntry` are this row, so a field the backend adds is declared once.
+ * An absent value arrives as null.
+ */
 export interface SnapshotData {
   symbol: string;
-  price: number | null;
-  change?: number;
-  change_percent?: number;
-  previous_close?: number;
-  name?: string;
-  open?: number;
-  high?: number;
-  low?: number;
-  volume?: number;
+  /** The request's own spellings this row answers (`600519.SS` asked, `600519.SH` shown). */
+  requested?: string[] | null;
+  price?: number | null;
+  /** ISO 4217 code the prices are quoted in, resolved per symbol by the API. */
+  currency?: string | null;
+  /** `index` quotes a level in points, not a price. */
+  asset_class?: string | null;
+  change?: number | null;
+  change_percent?: number | null;
+  previous_close?: number | null;
+  name?: string | null;
+  name_local?: string | null;
+  name_en?: string | null;
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
+  volume?: number | null;
   last_minute_close?: number | null;
   regular_close?: number | null;
   regular_trading_change?: number | null;
@@ -47,6 +90,12 @@ export interface SnapshotData {
   late_trading_change?: number | null;
   late_trading_change_percent?: number | null;
   source?: string | null;
+  /** Freshness the filling provider declares; the quote batcher narrows it with `asQuoteTier`. */
+  tier?: QuoteTier | null;
+  /** Time of the quoted print (Unix ms) when the provider reports one. */
+  as_of?: number | null;
+  /** Freshness measured for this quote at response time. */
+  freshness?: Freshness | null;
   [key: string]: unknown;
 }
 
@@ -61,6 +110,8 @@ export interface SnapshotBatchResponse {
 
 export interface StockPrice {
   symbol: string;
+  /** ISO 4217 code from the snapshot; absent on older payloads. */
+  currency?: string | null;
   price: number;
   change: number;
   changePercent: number;
@@ -93,7 +144,10 @@ export interface FetchStockDataResult {
 
 export interface StockInfo {
   Symbol: string;
-  Name: string;
+  /** Null when no source names the listing; the reader decides what stands in. */
+  Name: string | null;
+  NameLocal?: string | null;
+  NameEn?: string | null;
   Exchange: string;
   Price: number;
   Open: number;

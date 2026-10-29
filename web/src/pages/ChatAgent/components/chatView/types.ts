@@ -1,21 +1,51 @@
 /** ChatView's local type contracts, carved out of ChatView.tsx (5.9b). */
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
+import type { ChartSelectionSnapshot } from '@/pages/MarketView/stores/chartSelectionStore';
 import type { SubagentTokenUsage } from '../../utils/tokenUsage';
 
-export type MessageRecord = Record<string, unknown>;
+export type { MessageRecord } from '../../hooks/utils/types';
 
 export interface LocationState {
-  agentMode?: string;
   workspaceStatus?: string | null;
   initialMessage?: string;
-  planMode?: boolean;
   additionalContext?: Record<string, unknown>[] | null;
   attachmentMeta?: Record<string, unknown>[] | null;
   model?: string;
+  /** The level `initialMessage` runs at, as the sending composer showed it. */
   reasoningEffort?: string;
-  isOnboarding?: boolean;
-  isPersonalizing?: boolean;
-  isModifyingPreferences?: boolean;
+  fastMode?: boolean;
+  /**
+   * The effort and fast-mode picks of the composer that sent `initialMessage`,
+   * which the thread that send starts keeps as its own. Absent follows
+   * Settings.
+   */
+  reasoningEffortOverride?: string;
+  fastModeOverride?: boolean;
+  /**
+   * The Subagents toggle of the PTC composer that sent `initialMessage`, for
+   * the thread that send starts. Absent leaves it to the user's default.
+   */
+  subagentsAllowed?: boolean;
+  /**
+   * Text to leave in the composer, unsent, for the user to finish: "Set up a
+   * subagent that ". Ignored alongside `initialMessage`, which is sent.
+   */
+  draftMessage?: string;
+  /**
+   * The first send opens its turn with no message of its own, its
+   * `initialMessage` empty (`SendOptions.hiddenOpener`): the welcome flow
+   * asking the agent where to start (pages/Onboarding/welcome/kickoff.ts).
+   */
+  hiddenOpener?: boolean;
+  /** The title of the thread the first send creates (`SendOptions.threadTitle`). */
+  threadTitle?: string;
+  /**
+   * Opened by the welcome flow's hand-off, a view transition that holds the
+   * page until this view draws the first send (pages/Onboarding/welcome/
+   * handoff.ts). The send goes out at once, and no empty chat is drawn while
+   * it does.
+   */
+  handoff?: boolean;
   workspaceId?: string;
   workspaceName?: string;
   fromThreadId?: string;
@@ -43,16 +73,6 @@ export interface LocationState {
   [key: string]: unknown;
 }
 
-export interface ToolCallProcessRecord {
-  toolName?: string;
-  toolCallResult?: { artifact?: { type?: string } };
-  [key: string]: unknown;
-}
-
-export interface PlanData {
-  [key: string]: unknown;
-}
-
 /** Subagent message shape (matches useCardState's SubagentMessage) */
 export interface SubagentMessage {
   role: string;
@@ -70,8 +90,11 @@ export interface AgentInfo {
   prompt?: string;
   type: string;
   status: string;
-  /** Ledger failure reason for an errored task (shown in the detail header). */
+  /** Ledger failure reason for a task that settled with one (shown in the
+   *  detail header). */
   error?: string;
+  /** That reason's machine spelling (``credit_stop``, ``transport_lost``, …). */
+  errorType?: string;
   toolCalls: number;
   tokenUsage: SubagentTokenUsage;
   currentTool: string;
@@ -96,6 +119,7 @@ export interface SubagentUpdateData {
   isActive: boolean;
   status?: string;
   error?: string;
+  errorType?: string;
   currentTool?: string;
   messages?: SubagentMessage[];
   tokenUsage?: SubagentTokenUsage;
@@ -109,6 +133,7 @@ export interface SubagentInfo {
   type?: string;
   status?: string;
   error?: string;
+  errorType?: string;
   /** Owning workflow run's agent id (`task:<id>`) when opened via its drill-in. */
   ownerTaskId?: string;
 }
@@ -122,6 +147,7 @@ export interface SlashCommand {
 export interface ModelOptions {
   model?: string | null;
   reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   /**
    * Per-message Watch-toggle state. When on, `handleSendWithAttachments`
    * appends a `market-watch` skills item to `additional_context`.
@@ -133,6 +159,17 @@ export interface ModelOptions {
    * per snapshot) by `handleSendWithAttachments`.
    */
   widgetSnapshots?: WidgetContextSnapshot[];
+  /** Chart selections riding this send, so the user bubble renders their cards. */
+  chartSelections?: ChartSelectionSnapshot[];
+  /**
+   * The thread's subagents setting, carried only by the send that creates the
+   * thread (`useThreadSubagents`).
+   */
+  subagentsAllowed?: boolean;
+  /** The thread's own effort and fast mode, carried only by the send that
+   *  creates the thread (`useThreadTuning`). */
+  reasoningEffortOverride?: string;
+  fastModeOverride?: boolean;
 }
 
 export interface ActionCommand {
@@ -149,12 +186,6 @@ export interface MsgSelectionTooltipData {
   text: string;
 }
 
-export interface WorkspaceRecord {
-  status?: string;
-  name?: string;
-  [key: string]: unknown;
-}
-
 export interface ChatViewProps {
   workspaceId: string;
   threadId: string;
@@ -167,11 +198,4 @@ export interface ChatViewProps {
   // Lets the spinner show the slow-restore copy when a background warm — not a
   // chat message — owns the sandbox start.
   warmingState?: false | 'starting' | 'archived';
-}
-
-export interface SubagentStatusIndicatorProps {
-  status: string;
-  currentTool: string;
-  toolCalls?: number;
-  messages?: SubagentMessage[];
 }

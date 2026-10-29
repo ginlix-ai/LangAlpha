@@ -12,7 +12,7 @@ import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import { TaskSegmentCard } from '../messageList/TaskSegmentCard';
+import WorkflowRunCard from '../WorkflowRunCard';
 import { WorkflowRunContext } from '../WorkflowRunContext';
 import {
   createWorkflowRunState,
@@ -29,23 +29,28 @@ const REFUSAL =
   "Error: Unknown workflow 'no-such-workflow-xyz'. Workflows live in " +
   '.agents/workflows/<name>.js.';
 
+// As the transcript draws a workflow's task record.
 function renderCard(
   record: Partial<SubagentTaskRecord>,
   run?: WorkflowRunState,
 ): void {
+  const task: SubagentTaskRecord = {
+    subagentId: 'tc-1',
+    description: '',
+    prompt: '',
+    type: WORKFLOW_TASK_TYPE,
+    action: 'init',
+    status: 'running',
+    ...record,
+  };
   render(
     <WorkflowRunContext.Provider value={() => run}>
-      <TaskSegmentCard
-        subagentId="tc-1"
-        task={{
-          subagentId: 'tc-1',
-          description: '',
-          prompt: '',
-          type: WORKFLOW_TASK_TYPE,
-          action: 'init',
-          status: 'running',
-          ...record,
-        }}
+      <WorkflowRunCard
+        subagentId={task.subagentId}
+        description={task.description}
+        status={task.status}
+        launchReply={task.result}
+        launchFailed={task.status === 'error' && !!task.launchFailed}
       />
     </WorkflowRunContext.Provider>,
   );

@@ -2,7 +2,8 @@ import logging
 from importlib import import_module
 from typing import Optional
 
-from src.config import SELECTED_SEARCH_ENGINE
+from src.config.tool_settings import get_search_api
+from src.observability import TOOL_PROVIDER
 from src.tools.decorators import create_logged_tool
 from src.tools.web.manifest import (
     CAPABILITY_SEARCH,
@@ -48,22 +49,24 @@ def get_web_search_tool(
             True (default): Include images in results.
             False: Exclude images (lightweight for planning).
         provider: Search engine override (per-user preference). Falls back to
-            the deployment default (SELECTED_SEARCH_ENGINE) when unset or invalid.
+            the deployment default (``search_api`` in agent_config.yaml) when
+            unset or invalid.
         depth: Depth level name from the provider's manifest entry. Falls back
             to the provider's default_depth when unset or not offered.
     """
-    engine = provider or SELECTED_SEARCH_ENGINE
+    default = get_search_api()
+    engine = provider or default
     # User overrides degrade gracefully — including a manifest entry with no
     # builder yet (e.g. a deployment-edited manifest ahead of the module).
     # A bad deployment default still fails fast below.
-    if engine != SELECTED_SEARCH_ENGINE and (
+    if engine != default and (
         get_capability(engine, CAPABILITY_SEARCH) is None
         or engine not in _PROVIDER_BUILDERS
     ):
         logger.warning(
-            "Unknown search provider %r; falling back to default %r", engine, SELECTED_SEARCH_ENGINE
+            "Unknown search provider %r; falling back to default %r", engine, default
         )
-        engine = SELECTED_SEARCH_ENGINE
+        engine = default
 
     cap = get_capability(engine, CAPABILITY_SEARCH)
     if cap is None or engine not in _PROVIDER_BUILDERS:
@@ -91,5 +94,9 @@ def get_web_search_tool(
         tool_fn,
         name="WebSearch",
         tracking_name=cap.tracking_key(depth_spec),
-        run_metadata={"search_engine": engine, "search_depth": depth_spec.name},
+        run_metadata={
+            "search_engine": engine,
+            "search_depth": depth_spec.name,
+            TOOL_PROVIDER: engine,
+        },
     )

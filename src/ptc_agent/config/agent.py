@@ -9,13 +9,15 @@ Use src.config.loaders for file-based loading.
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ptc_agent.config.plugins import bundled_skill_dirs
 from ptc_agent.config.core import (
     CoreConfig,
     DaytonaConfig,
+    E2BConfig,
     FilesystemConfig,
     LoggingConfig,
     MCPConfig,
@@ -23,11 +25,20 @@ from ptc_agent.config.core import (
     SandboxConfig,
     SecurityConfig,
     create_default_security_config,
-    validate_daytona_api_key,
+    detect_provider_kind,
+    validate_sandbox_api_keys,
 )
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
+
+
+class SubagentModel(TypedDict):
+    """The model a subagent runs when it is not its launcher's: the catalog
+    name and the provider serving it."""
+
+    id: str
+    provider: str
 
 
 class CredentialSource(StrEnum):
@@ -48,56 +59,84 @@ class CompactionConfig(BaseModel):
     """Context compaction settings.
 
     Controls the two-tier context window lifecycle: token-threshold-based LLM
-    summarization (Tier 2) and message-count-based tool-arg truncation (Tier 1).
+    summarization (Tier 2), and trimming of large tool args and stale Read
+    results (Tier 1) at the start of a turn after a pause of
+    ``truncate_args_idle_minutes``. The pause is meant to find the provider's
+    prompt cache expired, so trimming the prefix costs no cache hit, where
+    trimming mid-turn would throw a warm one away. Tier 1 is off by default
+    (None): what it saves is negligible, and on Claude it invalidates the
+    preserved thinking after what it hides.
     """
 
     enabled: bool = True
     token_threshold: int = 120000
-    keep_messages: int = 5
-    truncate_args_trigger_messages: int | None = None
+    #: How much of the newest history a summary keeps word for word, in
+    #: tokens (see ``keep_cutoff``). The same for every preset: a larger tail
+    #: only brings the next summary sooner.
+    keep_tokens: int = 20_000
+    #: The same for a Claude model. Its tokenizer counts about 1.6 times
+    #: the others' for the same text, in every language measured, so this
+    #: keeps about the work ``keep_tokens`` keeps elsewhere.
+    claude_keep_tokens: int = 32_000
+    truncate_args_idle_minutes: int | None = None
     truncate_args_keep_messages: int = 20
     truncate_args_max_length: int = 2000
 
+    #: Which named preset the numbers above came from, stamped by
+    #: ``resolve_llm_config``. None means they are the deployment's own YAML
+    #: values, which is the honest answer for a model that declares no context
+    #: window. Reported, never read: the knobs are the behavior.
+    profile: str | None = None
 
-# Named presets that bundle the three user-facing compaction knobs
-# (token_threshold, truncate_args_trigger_messages, keep_messages). Applied at
-# request time in ``resolve_llm_config`` when the user selects a profile.
+    #: Whether a model whose provider can compact the conversation itself does
+    #: (see ``src.llms.provider_compaction``): the user's ``native_compaction``
+    #: setting, set per turn by ``apply_compaction``. The ``provider_compaction``
+    #: feature gates it when the middleware is built.
+    native: bool = True
+
+    #: Whether a model whose provider does not compact the conversation
+    #: writes its own summary, from its cached request, with the transcript
+    #: summarizer as the fallback (see ``CompactionMiddleware._writes_own``).
+    self_summary: bool = True
+
+
+# Named presets for when a thread compacts (token_threshold). Applied at
+# request time in ``resolve_llm_config`` when the user selects a profile, and
+# listed here in ascending order, which the settings pages draw them in.
 #
-# Thresholds are chosen to leave healthy headroom under common model context
-# windows: 100k (<=200k models), 130k (200k models), 200k (400k/1M models),
-# 300k (1M models). The other two knobs scale with the threshold so that
-# relaxed profiles also keep more recent history and truncate tool args later.
+# Thresholds leave headroom under common context windows: 100k-130k for 200k
+# models, 200k for 400k models, 300k-750k for 1M models. ``economy`` stops
+# short of 272k, past which OpenAI bills a whole request at long-context
+# rates.
 COMPACTION_PROFILES: dict[str, dict[str, int]] = {
-    "aggressive": {
-        "token_threshold": 100000,
-        "truncate_args_trigger_messages": 30,
-        "keep_messages": 5,
-    },
-    "moderate": {
-        "token_threshold": 130000,
-        "truncate_args_trigger_messages": 40,
-        "keep_messages": 8,
-    },
-    "extended": {
-        "token_threshold": 200000,
-        "truncate_args_trigger_messages": 60,
-        "keep_messages": 10,
-    },
-    "relaxed": {
-        "token_threshold": 300000,
-        "truncate_args_trigger_messages": 70,
-        "keep_messages": 15,
-    },
+    "aggressive": {"token_threshold": 100000},
+    "moderate": {"token_threshold": 130000},
+    "extended": {"token_threshold": 200000},
+    "economy": {"token_threshold": 250000},
+    "relaxed": {"token_threshold": 300000},
+    "spacious": {"token_threshold": 400000},
+    "expansive": {"token_threshold": 500000},
+    "maximal": {"token_threshold": 750000},
 }
 
 
-class FlashConfig(BaseModel):
-    """Flash agent configuration.
+#: The operator's own drop-in directory, and the one place to override a
+#: shipped skill. Absolute rather than relative to the working directory, so it
+#: means the same thing whether the server was started from the repo or from
+#: anywhere else.
+DEFAULT_USER_SKILLS_DIR = "~/.ptc-agent/skills"
 
-    Flash agent is a lightweight agent optimized for speed
+
+def host_skill_dirs(user_skills_dir: str = DEFAULT_USER_SKILLS_DIR) -> list[Path]:
+    """Every host-side skill source, in the order that resolves them.
+
+    Last wins, so the operator's directory comes after the bundles. Two
+    readers that never build a config -- skill-name reservation and the
+    content route -- have to name the same sources in the same order as
+    delivery does, because both answer questions about the file the agent will
+    actually load.
     """
-
-    enabled: bool = True
+    return [*bundled_skill_dirs(), Path(user_skills_dir).expanduser()]
 
 
 class SkillsConfig(BaseModel):
@@ -107,52 +146,69 @@ class SkillsConfig(BaseModel):
     Each skill is a directory containing a SKILL.md file with YAML frontmatter.
 
     Resolution and precedence:
-    - Skills are sourced from both user and project directories.
-    - Project skills override user skills when names conflict.
+    - Skills are sourced from the shipped bundles, then the user directory.
+    - A later source overrides an earlier one when names conflict, so an
+      operator can replace a shipped skill by dropping one of the same name
+      into ``user_skills_dir``.
     """
 
     enabled: bool = True
-    user_skills_dir: str = "~/.ptc-agent/skills"
-    project_skills_dir: str = (
-        "skills"  # Project skills directory (relative to project root)
-    )
-    sandbox_skills_base: str = "/home/workspace/.agents/skills"  # Where skills live in sandbox
+    #: See ``DEFAULT_USER_SKILLS_DIR``.
+    user_skills_dir: str = DEFAULT_USER_SKILLS_DIR
 
-    def local_skill_dirs_with_sandbox(
-        self, *, cwd: Path | None = None
-    ) -> list[tuple[str, str]]:
-        """Return ordered (local_dir, sandbox_dir) sources.
+    def local_skill_dirs(self) -> list[str]:
+        """Return the ordered host-side skill sources.
 
         Precedence is last-wins (later sources override earlier ones).
-        Order: user skills < project skills (project wins on conflict).
+        Order: bundled skills < user skills.
+
+        Nothing here depends on the working directory. Both sources resolve
+        from somewhere fixed — the bundles from the installed source, the
+        operator's from their home — so a server started from anywhere finds
+        the same skills, which a directory relative to ``cwd`` could not
+        promise once the shipped skills moved into the bundles that declare
+        them. Where they land is the sandbox's to say: the folder sits under
+        each computer's own root, which no deployment-wide setting knows.
         """
-        base = cwd or Path.cwd()
-
-        user_dir = str(Path(self.user_skills_dir).expanduser())
-        project_dir = str((base / self.project_skills_dir).resolve())
-
-        sources: list[tuple[str, str]] = [
-            (user_dir, self.sandbox_skills_base),
-            (project_dir, self.sandbox_skills_base),
-        ]
-        return sources
+        return [str(d) for d in host_skill_dirs(self.user_skills_dir)]
 
 
 class SubagentConfig(BaseModel):
-    """Configuration for a single subagent definition (built-in override or user-defined)."""
+    """One subagent definition in the deployment's YAML.
 
-    description: str
-    mode: Literal["ptc", "flash"] = "ptc"
+    Named after a built-in, it changes only the fields it sets, as an overlay
+    does, so the defaults below apply only to a subagent of the deployment's
+    own, which also needs a ``description``.
+    """
+
+    description: str | None = None
     model: str | None = None
     role_prompt: str = ""
     role_prompt_template: str | None = None
     custom_prompt_template: str | None = None
     custom_prompt: str | None = None
     tools: list[str] = Field(default_factory=lambda: ["execute_code", "filesystem"])
-    skills: list[str] = Field(default_factory=list)
     preload_skills: list[str] = Field(default_factory=list)
-    max_iterations: int = 15
     sections: dict[str, bool] = Field(default_factory=dict)
+    reasoning_effort: str | None = None
+    search_provider: str | None = None
+    search_depth: str | None = None
+    connectors: bool = True
+    brokerages: Literal["off", "on"] = "on"
+    preferred_connectors: list[str] = Field(default_factory=list)
+    # Unset is on for a subagent of the deployment's own.
+    memory: bool | None = None
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _effort_is_a_level(cls, value: str | None) -> str | None:
+        # A word outside the vocabulary would reach no model: the client falls
+        # back to the model's default while the pane shows the word.
+        from src.llms.reasoning import REASONING_LEVELS
+
+        if value is not None and value not in REASONING_LEVELS:
+            raise ValueError(f"must be one of {', '.join(REASONING_LEVELS)}")
+        return value
 
 
 class SubagentsConfig(BaseModel):
@@ -164,6 +220,27 @@ class SubagentsConfig(BaseModel):
 
     enabled: list[str] = Field(default_factory=lambda: ["general-purpose"])
     definitions: dict[str, SubagentConfig] = Field(default_factory=dict)
+    #: This user's merged roster (a ``ResolvedSubagents``), written on the
+    #: per-turn copy by ``resolve_llm_config`` for a PTC build. None on the
+    #: shared config and on builds that never resolved a user, which compile
+    #: the deployment's own roster (``merge.turn_roster``).
+    resolved: Any | None = Field(default=None, exclude=True)
+
+    @field_validator("definitions")
+    @classmethod
+    def _new_subagents_have_descriptions(
+        cls, value: dict[str, SubagentConfig]
+    ) -> dict[str, SubagentConfig]:
+        # The parent delegates by the description, and a built-in brings its own.
+        from ptc_agent.agent.subagents.builtins import BUILTIN_SUBAGENTS
+
+        for name, defn in value.items():
+            if name not in BUILTIN_SUBAGENTS and not defn.description:
+                raise ValueError(
+                    f"Invalid subagent definition '{name}': a subagent that is "
+                    "not built in needs a description"
+                )
+        return value
 
 
 class LLMDefinition(BaseModel):
@@ -189,10 +266,42 @@ class LLMConfig(BaseModel):
     """LLM configuration - references an LLM from models.json."""
 
     name: str  # Name/alias from src/llms/manifest/models.json
-    flash: str | None = None  # LLM for flash agent, defaults to main llm if None
+    background: str | None = None  # Background model, defaults to main llm if None
     compaction: str | None = None  # LLM for context compaction (summarization step)
     fetch: str | None = None  # LLM for web content extraction (fetch tool)
     fallback: list[str] | None = None  # Fallback model names for retry exhaustion
+
+    @property
+    def background_name(self) -> str:
+        """The Background model, resolving the ``name`` fallback.
+
+        Callers (metadata, tuning lookups) have to agree on which model that
+        is, so the rule lives here rather than being spelled out at each site.
+        """
+        return self.background or self.name
+
+    # Blank fetch means "whatever the Background model is for this turn".
+    # Resolved on read, not at load: a user's Background preference replaces
+    # ``background`` per turn, and a value baked in at load would keep the
+    # deployment's instead. Blank compaction means the model the turn runs,
+    # which a server turn writes in (``select_model``); read here it is the
+    # primary model.
+    @property
+    def compaction_name(self) -> str | None:
+        return self.compaction or self.name
+
+    @property
+    def fetch_name(self) -> str | None:
+        return self.fetch or self.background
+
+    def fallbacks_for(self, model: str | None) -> list[str]:
+        """``fallback`` as a chain behind ``model``: without ``model`` itself
+        and without repeats, in order.
+
+        Either one sends the request that just failed back to the model that
+        refused it, which costs a full attempt and can only fail the same way.
+        """
+        return list(dict.fromkeys(m for m in self.fallback or () if m and m != model))
 
 
 class AgentConfig(BaseModel):
@@ -215,9 +324,6 @@ class AgentConfig(BaseModel):
     # Skills configuration
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
-    # Flash agent configuration
-    flash: FlashConfig = Field(default_factory=FlashConfig)
-
     # Custom model input modalities override (set by resolve_llm_config for custom models)
     input_modalities: list[str] | None = None
 
@@ -226,6 +332,12 @@ class AgentConfig(BaseModel):
 
     # Compaction middleware configuration
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+
+    #: How much prompt scaffolding the main model gets, resolved per model and
+    #: stamped by ``resolve_llm_config``, the twin of ``CompactionConfig
+    #: .profile``. None means nobody resolved it, and the agents fall back to
+    #: what the deployment and the manifest declare.
+    prompt_guidance: str | None = None
 
     # Search API provider (tavily, serper, bocha, exa, parallel)
     search_api: str = "tavily"
@@ -267,16 +379,46 @@ class AgentConfig(BaseModel):
         default=CredentialSource.NONE, exclude=True
     )
     subsidiary_llm_clients: dict[str, Any] = Field(default_factory=dict, exclude=True)
-    fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)  # Pre-resolved fallback instances
+    # Scaffolding level per role key, for the model that role actually runs.
+    # Written alongside the clients above, because a role without a client of
+    # its own still runs a model: by name, or by inheriting the main one.
+    role_prompt_guidance: dict[str, str] = Field(default_factory=dict, exclude=True)
+    # Each subagent whose clients above run a model other than the turn's.
+    # Admission records it on the run, because nothing downstream of the
+    # build can still tell which model a run used.
+    subagent_models: dict[str, SubagentModel] = Field(
+        default_factory=dict, exclude=True
+    )
+    # None permits standalone name resolution; [] means resolution rejected all candidates.
+    fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)
     # Display names aligned index-for-index with ``fallback_llm_clients``
     # (skipped fallbacks drop from both lists).
     fallback_llm_names: list[str] | None = Field(default=None, exclude=True)
+    # Whether the fallbacks are a list the user saved rather than the
+    # deployment's. Only the user's may move a call their own key or
+    # subscription pays for onto the platform's key.
+    fallback_users_choice: bool = Field(default=False, exclude=True)
     # Forwarded by ``get_llm_client()`` to ``create_llm(cache_key=...)`` for
     # the lazy factory path.
     cache_key: str | None = Field(default=None, exclude=True)
     # Per-user resolved feature flags, set by ``resolve_llm_config``. None
     # (entry points that skip resolution) falls back to system defaults.
     features: dict[str, bool] | None = Field(default=None, exclude=True)
+    # Per-user skill tier, set by ``resolve_llm_config``: uploaded skill specs
+    # (duck-typed name/description/command), the host dir materializing their
+    # bodies, and builtin skill names the user disabled. Not to be confused
+    # with ``SkillsConfig.user_skills_dir``, a config-file path.
+    user_skills: list[Any] = Field(default_factory=list, exclude=True)
+    disabled_skills: frozenset[str] = Field(default_factory=frozenset, exclude=True)
+    user_skill_dir: str | None = Field(default=None, exclude=True)
+    # Workspace-tier bodies: a second host dir, because the sandbox delivery
+    # path uploads ``user_skill_dir`` wholesale and must not touch these.
+    workspace_skill_dir: str | None = Field(default=None, exclude=True)
+    # Platform-skill command renames (skill name → alias); the alias replaces
+    # the registry command as the slash trigger for this user.
+    skill_command_overrides: dict[str, str] = Field(
+        default_factory=dict, exclude=True
+    )
     config_file_dir: Path | None = Field(
         default=None, exclude=True
     )  # For path resolution
@@ -306,6 +448,10 @@ class AgentConfig(BaseModel):
             daytona_base_url: API URL (default: "https://app.daytona.io/api")
             python_version: Python version in sandbox (default: "3.12")
             auto_stop_interval: Seconds before auto-stop (default: 3600)
+
+        Optional - E2B (used when no Daytona key is set):
+            E2B_API_KEY: Your E2B API key (https://e2b.dev/dashboard?tab=keys)
+            E2B_DOMAIN / E2B_API_URL / E2B_SANDBOX_URL: self-hosted E2B only
 
         Optional - MCP:
             mcp_servers: List[MCPServerConfig] for additional tools (default: [])
@@ -352,26 +498,24 @@ class AgentConfig(BaseModel):
         llm_config = LLMConfig(name="custom")
 
         # Resolve provider: explicit > env var > auto-detect from API key presence
-        resolved_provider = provider or os.getenv("SANDBOX_PROVIDER", "")
-        if not resolved_provider:
-            resolved_provider = (
-                "daytona"
-                if (daytona_api_key or os.getenv("DAYTONA_API_KEY"))
-                else "docker"
-            )
+        resolved_provider = (
+            provider
+            or os.getenv("SANDBOX_PROVIDER", "")
+            or detect_provider_kind(daytona_api_key or "")
+        )
 
         # Create Daytona config (required for daytona provider, defaults for others).
         # Defaults live on DaytonaConfig (src/ptc_agent/config/core.py) — the
         # single source of truth for Python-side values. agent_config.yaml is
         # the runtime SSoT and overrides these.
         if resolved_provider == "daytona":
-            api_key = daytona_api_key or os.getenv("DAYTONA_API_KEY", "")
+            _daytona_defaults = DaytonaConfig.from_section(None)
+            api_key = daytona_api_key or _daytona_defaults.api_key
             if not api_key:
                 raise ValueError("DAYTONA_API_KEY must be provided or set in environment")
-            _daytona_defaults = DaytonaConfig()
             daytona_config = DaytonaConfig(
                 api_key=api_key,
-                secret_namespace=os.getenv("DAYTONA_SECRET_NAMESPACE", ""),
+                secret_namespace=_daytona_defaults.secret_namespace,
                 base_url=daytona_base_url,
                 auto_stop_interval=kwargs.pop(
                     "auto_stop_interval", _daytona_defaults.auto_stop_interval
@@ -398,6 +542,10 @@ class AgentConfig(BaseModel):
         else:
             # Non-Daytona providers don't need Daytona config; use defaults
             daytona_config = DaytonaConfig()
+
+        e2b_config = E2BConfig.from_section(None)
+        if resolved_provider == "e2b":
+            e2b_config.require_api_key()
 
         # Create Security config with defaults
         security_defaults = create_default_security_config()
@@ -442,21 +590,16 @@ class AgentConfig(BaseModel):
             enable_path_validation=kwargs.pop("enable_path_validation", True),
         )
 
-        # Create Skills config (derive sandbox_skills_base from filesystem working_directory)
         skills_config = SkillsConfig(
             enabled=kwargs.pop("skills_enabled", True),
             user_skills_dir=kwargs.pop("user_skills_dir", "~/.ptc-agent/skills"),
-            project_skills_dir=kwargs.pop("project_skills_dir", "skills"),
-            sandbox_skills_base=kwargs.pop(
-                "sandbox_skills_base",
-                f"{filesystem_config.working_directory}/.agents/skills",
-            ),
         )
 
         # Wrap in SandboxConfig with resolved provider
         sandbox_config = SandboxConfig(
             provider=resolved_provider,
             daytona=daytona_config,
+            e2b=e2b_config,
         )
 
         # Create the config
@@ -483,7 +626,7 @@ class AgentConfig(BaseModel):
     def validate_api_keys(self) -> None:
         """Validate that required API keys are present.
 
-        For configs created via create(), only checks DAYTONA_API_KEY since
+        For configs created via create(), only checks the sandbox provider key since
         the LLM client is passed directly with its own API key.
 
         For configs created via load_from_files(), LLM API key validation
@@ -492,8 +635,7 @@ class AgentConfig(BaseModel):
         Raises:
             ValueError: If required API keys are missing
         """
-        if self.sandbox.provider == "daytona":
-            validate_daytona_api_key(self.sandbox.daytona)
+        validate_sandbox_api_keys(self.sandbox)
 
     def get_llm_client(self) -> "BaseChatModel":
         """Return the LLM client instance.
@@ -530,10 +672,9 @@ class AgentConfig(BaseModel):
         """Return the pre-resolved client for a role, or None.
 
         Roles: "compaction", "fetch", "subagent:<name>". Returns a
-        ``.model_copy()`` so role-local mutation (e.g. compaction setting
-        ``streaming=False``) never touches the shared main client. With
-        ``fallback_to_main=True`` and no role client, returns a copy of the
-        main client when one exists.
+        ``.model_copy()`` so role-local mutation never touches the shared
+        main client. With ``fallback_to_main=True`` and no role client,
+        returns a copy of the main client when one exists.
         """
         c = self.subsidiary_llm_clients.get(role)
         if c is not None:
@@ -543,22 +684,30 @@ class AgentConfig(BaseModel):
         main = self.llm_client
         return main.model_copy() if main is not None else None
 
+    def prompt_guidance_for_role(self, role: str) -> str | None:
+        """Scaffolding level for the model this role actually runs.
+
+        Pinned roles run their own model, so sizing their prompt for the main
+        one is the drift ``resolve_llm_config`` records this to prevent.
+        """
+        return self.role_prompt_guidance.get(role) or self.prompt_guidance
+
     def to_core_config(self) -> CoreConfig:
         """Convert to CoreConfig for use with SessionManager.
 
-        Returns:
-            CoreConfig instance with sandbox/MCP settings
+        Every section is deep-copied, so a CoreConfig shares no mutable state
+        with the AgentConfig it came from or with any sibling CoreConfig. One
+        CoreConfig is one workspace's sandbox: sharing these by reference made
+        a per-workspace change to the effective MCP server set, the resource
+        tier, the working directory or the platform-secret version land on
+        every other workspace in the process at the same time.
         """
         core_config = CoreConfig(
-            sandbox=self.sandbox,
-            security=self.security,
-            # Deep-copy the MCP config so each CoreConfig (hence each workspace
-            # sandbox) owns its MCPConfig. Sharing it by reference made every
-            # workspace's effective server set the same object — Phase 2 swaps
-            # in per-workspace servers, which must not bleed across workspaces.
+            sandbox=self.sandbox.model_copy(deep=True),
+            security=self.security.model_copy(deep=True),
             mcp=self.mcp.model_copy(deep=True),
-            logging=self.logging,
-            filesystem=self.filesystem,
+            logging=self.logging.model_copy(deep=True),
+            filesystem=self.filesystem.model_copy(deep=True),
         )
         core_config.config_file_dir = self.config_file_dir
         return core_config

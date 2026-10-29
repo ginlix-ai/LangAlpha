@@ -1,13 +1,11 @@
 """Integration tests for MCP server CRUD against real PostgreSQL.
 
-Covers the user-level catalog, per-workspace rows (each write bumping
-``mcp_config_version`` in the same txn), the 20-server cap, and the
-version-keyed discovery schema cache.
+Covers the user-level catalog, per-workspace selection rows (each write
+bumping ``mcp_config_version`` in the same txn), creating a server switched on
+in one workspace only, and the version-keyed discovery schema cache.
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
@@ -116,9 +114,33 @@ class TestCatalogCrud:
         assert await delete_catalog_server(seed_user["user_id"], "acme") is False
         assert await get_catalog_server(seed_user["user_id"], "acme") is None
 
+    async def test_an_enabled_catalog_row_bumps_the_user_workspaces_with_it(
+        self, seed_workspace, patched_get_db_connection
+    ):
+        """An enabled row is live in every workspace the moment it commits, so
+        the bump has to commit with it: a caller that bumps later can die first.
+        An inert row reaches no workspace and moves no version."""
+        from src.server.database.mcp_servers import create_catalog_server
+        from src.server.database.workspace import create_workspace
+
+        user_id = seed_workspace["user_id"]
+        here = str(seed_workspace["workspace_id"])
+        sibling = await create_workspace(
+            user_id=user_id, name="Sibling", status="stopped"
+        )
+        wids = (here, str(sibling["workspace_id"]))
+        before = {wid: await _version(wid) for wid in wids}
+
+        await create_catalog_server(user_id, "inert", command="npx")
+        assert {wid: await _version(wid) for wid in wids} == before
+
+        await create_catalog_server(user_id, "live", command="npx", enabled=True)
+        for wid, version in before.items():
+            assert await _version(wid) == version + 1
+
 
 # ---------------------------------------------------------------------------
-# Workspace rows — version bump in the same txn
+# Workspace rows: selection only, version bump in the same txn
 # ---------------------------------------------------------------------------
 
 
@@ -129,17 +151,11 @@ class TestWorkspaceRows:
         wid = seed_workspace["workspace_id"]
         assert await _version(wid) == 0
 
-        await upsert_workspace_server(
-            wid, "acme", source="workspace", enabled=True,
-            config={"transport": "stdio", "command": "npx"},
-        )
+        await upsert_workspace_server(wid, "acme", source="user", enabled=False)
         assert await _version(wid) == 1
 
         # Update (same name) bumps again.
-        await upsert_workspace_server(
-            wid, "acme", source="workspace", enabled=True,
-            config={"transport": "stdio", "command": "uvx"},
-        )
+        await upsert_workspace_server(wid, "acme", source="user", enabled=False)
         assert await _version(wid) == 2
 
     async def test_disable_marker_bumps_version(self, seed_workspace, patched_get_db_connection):
@@ -158,49 +174,19 @@ class TestWorkspaceRows:
         assert rows[0]["enabled"] is False
         assert rows[0]["config"] is None
 
-    async def test_set_enabled_and_delete_bump(self, seed_workspace, patched_get_db_connection):
+    async def test_delete_bumps(self, seed_workspace, patched_get_db_connection):
         from src.server.database.mcp_servers import (
             delete_workspace_server,
-            set_workspace_server_enabled,
             upsert_workspace_server,
         )
 
         wid = seed_workspace["workspace_id"]
-        await upsert_workspace_server(
-            wid, "acme", source="workspace", enabled=True,
-            config={"transport": "stdio"},
-        )  # v1
-        assert await set_workspace_server_enabled(wid, "acme", False) is True  # v2
+        await upsert_workspace_server(wid, "acme", source="user", enabled=False)  # v1
+        assert await delete_workspace_server(wid, "acme") is True  # v2
         assert await _version(wid) == 2
-        assert await delete_workspace_server(wid, "acme") is True  # v3
-        assert await _version(wid) == 3
         # Absent rows don't bump.
-        assert await set_workspace_server_enabled(wid, "nope", True) is False
         assert await delete_workspace_server(wid, "nope") is False
-        assert await _version(wid) == 3
-
-    async def test_cap_enforced(self, seed_workspace, patched_get_db_connection):
-        from src.server.database.mcp_servers import (
-            MAX_MCP_SERVERS_PER_WORKSPACE,
-            upsert_workspace_server,
-        )
-
-        wid = seed_workspace["workspace_id"]
-        for i in range(MAX_MCP_SERVERS_PER_WORKSPACE):
-            await upsert_workspace_server(
-                wid, f"srv-{i}", source="workspace", enabled=True,
-                config={"transport": "stdio"},
-            )
-        with pytest.raises(ValueError):
-            await upsert_workspace_server(
-                wid, "one-too-many", source="workspace", enabled=True,
-                config={"transport": "stdio"},
-            )
-        # Updating an existing server at the cap still works (not a new insert).
-        await upsert_workspace_server(
-            wid, "srv-0", source="workspace", enabled=False,
-            config={"transport": "stdio"},
-        )
+        assert await _version(wid) == 2
 
     async def test_servers_and_version_snapshot_consistent(
         self, seed_workspace, patched_get_db_connection
@@ -216,109 +202,91 @@ class TestWorkspaceRows:
         rows, version = await get_workspace_servers_and_version(wid)
         assert rows == [] and version == 0
 
-        await upsert_workspace_server(
-            wid, "acme", source="workspace", enabled=True,
-            config={"transport": "stdio"},
-        )
+        await upsert_workspace_server(wid, "acme", source="user", enabled=False)
         rows, version = await get_workspace_servers_and_version(wid)
         assert [r["name"] for r in rows] == ["acme"]
         # The version reflects exactly the writes visible in rows (no torn read).
         assert version == 1
         assert version == await _version(wid)
 
-    async def test_insert_conflict_returns_none_no_overwrite(
+
+# ---------------------------------------------------------------------------
+# A server created from a workspace runs in that workspace only
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceCatalogServer:
+    async def _workspace(self, user_id: str, name: str, status: str) -> str:
+        from src.server.database.workspace import create_workspace
+
+        ws = await create_workspace(user_id=user_id, name=name, status=status)
+        return str(ws["workspace_id"])
+
+    async def _slot(self, workspace_id: str, name: str) -> dict | None:
+        from src.server.database.mcp_servers import list_workspace_servers
+
+        rows = {r["name"]: r for r in await list_workspace_servers(workspace_id)}
+        return rows.get(name)
+
+    async def test_live_in_its_workspace_tombstoned_everywhere_else(
         self, seed_workspace, patched_get_db_connection
     ):
-        """A second insert of an existing name returns None (no silent UPDATE)
-        and does not bump the version or clobber the original config."""
         from src.server.database.mcp_servers import (
-            get_workspace_servers_and_version,
-            insert_workspace_server,
-        )
-
-        wid = seed_workspace["workspace_id"]
-        first = await insert_workspace_server(
-            wid, "acme", config={"transport": "stdio", "command": "npx"},
-        )
-        assert first is not None
-        assert await _version(wid) == 1
-
-        # Second create of the same name: ON CONFLICT DO NOTHING ⇒ None.
-        second = await insert_workspace_server(
-            wid, "acme", config={"transport": "stdio", "command": "uvx"},
-        )
-        assert second is None
-        # Version unchanged and the original config survived (no overwrite).
-        assert await _version(wid) == 1
-        rows, _ = await get_workspace_servers_and_version(wid)
-        assert len(rows) == 1
-        assert rows[0]["config"]["command"] == "npx"
-
-    async def test_concurrent_insert_same_name_one_wins(
-        self, seed_workspace, patched_get_db_connection
-    ):
-        """Two concurrent creates of the SAME new name: exactly one inserts (201),
-        the other gets None (→ 409), never a silent last-write-wins overwrite."""
-        from src.server.database.mcp_servers import insert_workspace_server
-
-        wid = seed_workspace["workspace_id"]
-
-        async def _insert(cmd: str):
-            return await insert_workspace_server(
-                wid, "race", config={"transport": "stdio", "command": cmd},
-            )
-
-        results = await asyncio.gather(
-            _insert("npx"), _insert("uvx"), return_exceptions=True
-        )
-        winners = [r for r in results if isinstance(r, dict)]
-        losers = [r for r in results if r is None]
-        assert len(winners) == 1
-        assert len(losers) == 1
-        # Exactly one row, one version bump.
-        assert await _version(wid) == 1
-
-    async def test_concurrent_inserts_at_cap_serialize(
-        self, seed_workspace, patched_get_db_connection
-    ):
-        """With MAX-1 rows present, two concurrent inserts of two DIFFERENT new
-        names race — the advisory xact lock serializes the count check, so
-        exactly one insert wins and the other trips the cap (ValueError)."""
-        from src.server.database.mcp_servers import (
-            MAX_MCP_SERVERS_PER_WORKSPACE,
-            list_workspace_servers,
+            create_workspace_catalog_server,
+            get_catalog_server,
             upsert_workspace_server,
         )
 
-        wid = seed_workspace["workspace_id"]
-        for i in range(MAX_MCP_SERVERS_PER_WORKSPACE - 1):
-            await upsert_workspace_server(
-                wid, f"srv_seed_{i}", source="workspace", enabled=True,
-                config={"transport": "stdio"},
-            )
+        user_id = seed_workspace["user_id"]
+        here = str(seed_workspace["workspace_id"])
+        sibling = await self._workspace(user_id, "Sibling", "stopped")
+        home = await self._workspace(user_id, "Home", "unbound")
+        gone = await self._workspace(user_id, "Gone", "deleted")
+        # A leftover tombstone here would switch the new server off in the one
+        # workspace that asked for it; a stale enabled row elsewhere must not
+        # keep it on.
+        await upsert_workspace_server(here, "acme", source="user", enabled=False)
+        await upsert_workspace_server(sibling, "acme", source="user", enabled=True)
+        before = {wid: await _version(wid) for wid in (here, sibling, home)}
 
-        async def _insert(name: str):
-            return await upsert_workspace_server(
-                wid, name, source="workspace", enabled=True,
-                config={"transport": "stdio"},
-            )
-
-        results = await asyncio.gather(
-            _insert("srv_a"), _insert("srv_b"), return_exceptions=True
+        row = await create_workspace_catalog_server(
+            user_id, here, "acme", transport="stdio", command="npx",
         )
 
-        successes = [r for r in results if not isinstance(r, BaseException)]
-        failures = [r for r in results if isinstance(r, BaseException)]
-        assert len(successes) == 1
-        assert len(failures) == 1
-        assert isinstance(failures[0], ValueError)
+        assert row["name"] == "acme"
+        assert (await get_catalog_server(user_id, "acme"))["enabled"] is True
+        assert await self._slot(here, "acme") is None
+        for wid in (sibling, home):
+            slot = await self._slot(wid, "acme")
+            assert (slot["source"], slot["enabled"], slot["config"]) == (
+                "user", False, None,
+            )
+        assert await self._slot(gone, "acme") is None
+        for wid, version in before.items():
+            assert await _version(wid) == version + 1
 
-        # The workspace ends at exactly the cap; only the winning name landed.
-        rows = await list_workspace_servers(wid)
-        workspace_rows = [r for r in rows if r["source"] == "workspace"]
-        assert len(workspace_rows) == MAX_MCP_SERVERS_PER_WORKSPACE
-        names = {r["name"] for r in workspace_rows}
-        assert len(names & {"srv_a", "srv_b"}) == 1
+    async def test_a_taken_name_writes_nothing(
+        self, seed_workspace, patched_get_db_connection
+    ):
+        """One transaction: the duplicate aborts the tombstones with it."""
+        from src.server.database.mcp_servers import (
+            create_catalog_server,
+            create_workspace_catalog_server,
+        )
+
+        user_id = seed_workspace["user_id"]
+        here = str(seed_workspace["workspace_id"])
+        sibling = await self._workspace(user_id, "Sibling", "running")
+        await create_catalog_server(user_id, "acme", command="npx")
+        before = await _version(sibling)
+
+        with pytest.raises(ValueError):
+            await create_workspace_catalog_server(
+                user_id, here, "acme", command="uvx",
+            )
+
+        assert await self._slot(sibling, "acme") is None
+        assert await _version(sibling) == before
 
 
 # ---------------------------------------------------------------------------
@@ -372,10 +340,10 @@ class TestSchemaCache:
         assert await _schema_raw_count(wid, "acme") == 1
 
     async def test_delete_server_purges_schema_rows(self, seed_workspace, patched_get_db_connection):
-        """Deleting a workspace server removes its discovery snapshots too."""
+        """Deleting a workspace row removes its discovery snapshots too."""
         from src.server.database.mcp_servers import (
             delete_workspace_server,
-            insert_workspace_server,
+            upsert_workspace_server,
         )
         from src.server.database.mcp_tool_schemas import (
             get_tool_schemas,
@@ -383,9 +351,7 @@ class TestSchemaCache:
         )
 
         wid = seed_workspace["workspace_id"]
-        await insert_workspace_server(
-            wid, "acme", config={"transport": "stdio", "command": "npx"},
-        )
+        await upsert_workspace_server(wid, "acme", source="user", enabled=False)
         await upsert_tool_schemas(wid, "acme", "hash-1", status="ok")
         await upsert_tool_schemas(wid, "beta", "hash-b", status="ok")
 
@@ -393,6 +359,27 @@ class TestSchemaCache:
         names = {r["server_name"] for r in await get_tool_schemas(wid)}
         assert names == {"beta"}
         assert await _schema_raw_count(wid, "acme") == 0
+
+    async def test_deleting_an_account_server_purges_every_workspace_snapshot(
+        self, seed_workspace, patched_get_db_connection
+    ):
+        """In-sandbox discovery caches an account server under each workspace;
+        a same-name recreate with the same config must not be served those."""
+        from src.server.database.mcp_servers import (
+            create_catalog_server,
+            delete_catalog_server,
+        )
+        from src.server.database.mcp_tool_schemas import upsert_tool_schemas
+
+        wid = seed_workspace["workspace_id"]
+        user_id = seed_workspace["user_id"]
+        await create_catalog_server(user_id, "acme", command="npx")
+        await upsert_tool_schemas(wid, "acme", "hash-1", status="ok")
+        await upsert_tool_schemas(wid, "beta", "hash-b", status="ok")
+
+        assert await delete_catalog_server(user_id, "acme") is True
+        assert await _schema_raw_count(wid, "acme") == 0
+        assert await _schema_raw_count(wid, "beta") == 1
 
     async def test_upsert_replaces_same_key(self, seed_workspace, patched_get_db_connection):
         from src.server.database.mcp_tool_schemas import (
@@ -479,8 +466,11 @@ class TestSchemaCache:
         self, seed_workspace, patched_get_db_connection
     ):
         """Vault-mutation invalidation primitives: purge one server's snapshots
-        (any hash) and bump the version outside a row mutation."""
-        from src.server.database.mcp_servers import bump_workspace_mcp_version
+        (any hash) and bump every workspace of the user outside a row
+        mutation."""
+        from src.server.database.mcp_config_version import (
+            bump_user_workspaces_mcp_version,
+        )
         from src.server.database.mcp_tool_schemas import (
             delete_tool_schemas,
             upsert_tool_schemas,
@@ -495,5 +485,5 @@ class TestSchemaCache:
         assert await _schema_raw_count(wid, "beta") == 1
 
         v0 = await _version(wid)
-        await bump_workspace_mcp_version(wid)
+        assert await bump_user_workspaces_mcp_version(seed_workspace["user_id"]) == 1
         assert await _version(wid) == v0 + 1

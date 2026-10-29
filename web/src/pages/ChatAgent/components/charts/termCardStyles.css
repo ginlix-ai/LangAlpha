@@ -1,0 +1,136 @@
+/* The three card styles, stamped on <html> as data-card-style (lib/cardStyle):
+   Terminal, picked in Settings, and Balanced and Quiet (the default), which
+   only take marks away from it, so every card and panel keeps one layout in
+   all three.
+
+   The voice is a set of tokens the stylesheets read, Terminal's by default
+   (termCard.css). Balanced moves the words to the text face in sentence case,
+   untracked and out of brackets; figures and identifiers (`term-code`) stay
+   mono. It also turns
+   tags into pills and every dashed or dotted rule into a solid hairline. Quiet
+   is Balanced in the platform's own card: filled, the title inside, on the
+   warm grays the rest of the app uses. */
+
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) {
+  --term-case: none;
+  --term-track: 0;
+  --term-words: var(--font-content);
+  --term-open: none;
+  --term-close: none;
+  /* Pill outlines and the range track: drawn from the muted ink, so they read
+     on the page and on Quiet's filled card alike. */
+  --term-mark: color-mix(in srgb, var(--color-term-text-tertiary) 35%, transparent);
+}
+
+/* ── The text face's own sizes ── */
+
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-card-title { font-size: 1.13em; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-table td.term-fill:not(.term-code) { font-size: 1.0435em; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) :is(.term-k, .term-card .term-table th, .term-divider, .term-more) { font-size: 0.9583em; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) :is(.term-card .term-table th, .term-divider) { font-weight: 500; }
+/* A word in sentence case drops the tightening of the figures around it (an order's side in its headline). */
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-caps { letter-spacing: 0; }
+
+/* ── Pills, not brackets ── */
+
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-bracket { display: none; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) :is(.term-tag, .term-chip) {
+  font-size: 0.9em;
+  line-height: 1.55;
+  padding: 0 0.4375rem;
+  border: 1px solid var(--term-mark);
+  border-radius: 999px;
+}
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-status {
+  font-size: 0.9em;
+  font-weight: 500;
+  line-height: 1.55;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 11%, transparent);
+}
+/* A file's delivery is a state, though drawn as a tag. */
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-delivery-file > .term-tag {
+  border-color: transparent;
+  background: color-mix(in srgb, currentColor 11%, transparent);
+}
+
+/* ── Solid hairlines; rows ruled instead of dotted leaders ── */
+
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-card .term-table th {
+  border-bottom-style: solid;
+  border-bottom-color: var(--color-term-rule);
+}
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-card[data-scale='panel'] .term-table tbody tr + tr td { border-top-style: solid; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-divider::before { display: none; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-divider::after { border-top-style: solid; border-top-color: var(--color-term-rule); }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-kv-leader { border-bottom-color: transparent; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-card .term-kv > div { border-bottom: 1px solid var(--color-term-rule); }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) [data-card-join] > .term-card::before { border-top-style: solid; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) :is(
+  .term-panel .term-web-results, .term-panel .term-web-results > li + li,
+  .term-panel .term-direct-blocks > * + *, .order-term-ticket + .order-term-rest
+) {
+  border-top-style: solid;
+}
+
+/* The range as a rounded track. */
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-range { border-left: 0; border-right: 0; }
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-range::before {
+  border-top: 0;
+  top: calc(50% - 1.5px);
+  height: 3px;
+  border-radius: 2px;
+  background: var(--term-mark);
+}
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-range-at { width: 7px; height: 7px; }
+
+/* A label in the text face can stand taller than its bar row; the zero axis
+   runs the row's whole height, or it breaks between rows. */
+:root:is([data-card-style='balanced'], [data-card-style='quiet']) .term-bars-row {
+  align-self: stretch;
+  height: auto;
+  min-height: 18px;
+}
+
+/* ── Quiet: the platform's card ── */
+
+:root[data-card-style='quiet'] {
+  --color-term-text: var(--color-text-primary);
+  --color-term-text-secondary: var(--color-text-secondary);
+  --color-term-text-tertiary: var(--color-text-tertiary);
+  --color-term-edge: var(--color-border-default);
+  --color-term-edge-hover: var(--color-border-strong);
+  /* The platform's subtle border vanishes on the dark card fill. */
+  --color-term-rule: color-mix(in srgb, var(--color-text-tertiary) 22%, transparent);
+}
+/* The fill is the joint's too, so a run's later card covers the one above's
+   foot in the card's own color. */
+:root[data-card-style='quiet'] .term-card {
+  --term-edge-top: 0px;
+  --term-ground: var(--color-bg-card);
+  padding: 0 0.75rem 0.625rem;
+}
+:root[data-card-style='quiet'] .term-card[data-scale='panel'] { padding: 0 1rem 0.875rem; }
+:root[data-card-style='quiet'] .term-card[data-size='sm'] { padding: 0 0.625rem 0.5rem; }
+:root[data-card-style='quiet'] .term-card::before {
+  z-index: -1;
+  background: var(--color-bg-card);
+}
+:root[data-card-style='quiet'] .term-card .term-card-head {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
+  padding-top: 0.75rem;
+  margin-bottom: 0.625rem;
+}
+:root[data-card-style='quiet'] .term-card .term-card-head > * {
+  background: none;
+  padding: 0;
+}
+:root[data-card-style='quiet'] .term-card .term-card-sub { margin-left: 0; }
+/* Inside the card the hover mark would hold the header's end short of the
+   body's; the edge darkening on hover says the card opens. */
+:root[data-card-style='quiet'] .term-card .term-card-go { display: none; }
+:root[data-card-style='quiet'] .term-card-title { font-size: 1.0625em; }

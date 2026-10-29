@@ -3,7 +3,6 @@ Skills module — registry, middleware, and helpers for dynamic tool loading.
 
 This module provides:
 - SkillDefinition: Dataclass for defining loadable skills
-- SkillMode: Type alias for agent modes ("ptc" or "flash")
 - SKILL_REGISTRY: Registry of all available skills
 - SkillsMiddleware: Unified middleware for skill discovery and tool gating
 - Helper functions for skill management
@@ -15,6 +14,7 @@ from ptc_agent.agent.middleware.skills.content import (
     build_skill_content,
     compute_already_loaded,
     load_skill_content,
+    resolve_skill_dir,
 )
 from ptc_agent.agent.middleware.skills.discovery import SkillMetadata
 from ptc_agent.agent.middleware.skills.lock import (
@@ -23,15 +23,15 @@ from ptc_agent.agent.middleware.skills.lock import (
 )
 from ptc_agent.agent.middleware.skills.registry import (
     SKILL_REGISTRY,
+    SUBAGENT_WITHHELD_SKILLS,
     SkillDefinition,
-    SkillMode,
-    get_all_skill_tool_names,
-    get_all_skill_tools,
+    build_effective_skill_registry,
     get_command_to_skill_map,
-    get_sandbox_skill_names,
     get_skill,
     get_skill_registry,
     list_skills,
+    resolve_disabled_skills,
+    skills_outside_sandbox,
 )
 from ptc_agent.agent.middleware.skills.middleware import (
     SkillsMiddleware,
@@ -41,20 +41,21 @@ __all__ = [
     "SkillDefinition",
     "SkillLockEntry",
     "SkillMetadata",
-    "SkillMode",
     "SkillsLockFile",
     "SKILL_REGISTRY",
+    "SUBAGENT_WITHHELD_SKILLS",
     "SkillPrefixResult",
     "SkillRequest",
     "SkillsMiddleware",
+    "build_effective_skill_registry",
     "build_skill_content",
     "compute_already_loaded",
     "get_command_to_skill_map",
     "get_skill",
     "get_skill_registry",
-    "get_all_skill_tools",
-    "get_all_skill_tool_names",
-    "get_sandbox_skill_names",
     "list_skills",
     "load_skill_content",
+    "resolve_skill_dir",
+    "resolve_disabled_skills",
+    "skills_outside_sandbox",
 ]

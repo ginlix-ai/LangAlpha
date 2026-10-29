@@ -1,10 +1,12 @@
 """ChatOpenAI subclass for Codex store=false backends.
 
-Layers two Codex-specific fixes on ChatOpenAI: system messages are promoted to
+Layers three Codex-specific fixes on ChatOpenAI: system messages are promoted to
 the top-level ``instructions`` field (the Codex API rejects ``role:"system"`` in
-the input array), and a module-level guard coerces a null ``response.output`` —
+the input array), a module-level guard coerces a null ``response.output`` —
 which the chatgpt.com backend sends on terminal stream frames — to ``[]`` before
-langchain iterates it. Cross-turn reasoning continuity relies on
+langchain iterates it, and the client marks its own streams so the Responses
+stream bridge replays tool-call arguments that backend sends only in ``.done``
+events. Cross-turn reasoning continuity relies on
 ``include: ["reasoning.encrypted_content"]``; langchain-openai (>=1.3.4) drops
 unpersisted ids under store=false and keeps encrypted reasoning items itself, so
 no request-side id stripping is done here.
@@ -12,9 +14,34 @@ no request-side id stripping is done here.
 
 import logging
 
-from langchain_openai import ChatOpenAI
+from src.llms.extension.dashscope import ScopedResponsesStream, _codex_pending_calls
 
 logger = logging.getLogger(__name__)
+
+CODEX_ORIGINATOR = "codex_cli_rs"
+CODEX_PROVIDER = "codex-oauth"
+
+
+def codex_client_version() -> str:
+    """The Codex CLI version this server presents itself as.
+
+    One value, ``client_version`` on ``codex-oauth`` in providers.json, for the
+    request path and the model list: the backend gates which models an account
+    sees on it (0.99.0 listed one model where 0.164.0 listed nine), so the two
+    must never disagree.
+    """
+    from src.llms.llm import LLM
+
+    return LLM.get_model_config().get_provider_info(CODEX_PROVIDER)["client_version"]
+
+
+def codex_identity_headers() -> dict[str, str]:
+    """The first-party client identity the codex backend requires.
+
+    Without an originator naming a known client and a User-Agent carrying the
+    matching ``<originator>/`` prefix, newer models 404 "Model not found".
+    """
+    return {"originator": CODEX_ORIGINATOR, "User-Agent": f"{CODEX_ORIGINATOR}/{codex_client_version()}"}
 
 
 def _extract_system_to_instructions(payload: dict) -> None:
@@ -59,13 +86,17 @@ def _extract_system_to_instructions(payload: dict) -> None:
             logger.debug("[codex] Stripped system message(s) with no text content")
 
 
-class ChatCodexOpenAI(ChatOpenAI):
+class ChatCodexOpenAI(ScopedResponsesStream):
     """ChatOpenAI for Codex store=false backends.
 
     Promotes system messages to the ``instructions`` field the Codex API
     requires. Encrypted reasoning items are replayed as-is for cross-turn
     continuity (langchain-openai handles store=false id dropping).
     """
+
+    def _stream_scope(self):
+        # A fresh record per stream, so ids are never compared across streams.
+        return _codex_pending_calls, {}
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)

@@ -415,6 +415,9 @@ class TestThreeLayerHealth:
         # Reuters fails → host breaker opens.
         await wrapper.crawl("https://reuters.com/foo")
         assert wrapper._host_breakers["reuters.com"].state == CircuitState.OPEN
+        # Reuters now fails fast, as its own host's doing rather than ours.
+        fast_fail = await wrapper.crawl("https://reuters.com/bar")
+        assert fast_fail.error_type == "host_circuit_open"
         # Wikipedia should still succeed.
         result = await wrapper.crawl("https://en.wikipedia.org/wiki/Reuters")
         assert result.success is True

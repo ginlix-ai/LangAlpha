@@ -6,12 +6,7 @@ Contains the Message class for accumulating streaming chunks and managing
 message state during SSE streaming.
 """
 
-import json
 from typing import Any, Dict, List, Optional
-
-from rich.console import Console
-
-console = Console()
 
 
 class Message:
@@ -32,7 +27,6 @@ class Message:
         self.is_thinking: bool = False  # Track if agent is actively thinking
         self.finish_reason: Optional[str] = None
         self.options: List[Dict[str, str]] = []
-        self.plan_data: Optional[Dict[str, Any]] = None  # Store plan from create_plan tool
 
     def merge_event(self, event_type: str, event_data: Dict[str, Any]) -> None:
         """
@@ -119,39 +113,6 @@ class Message:
         tool_call_id = data.get("tool_call_id")
         if tool_call := self._find_tool_call(tool_call_id):
             tool_call["result"] = data.get("content")
-
-            # Capture plan data from create_plan tool
-            if tool_call.get("name") == "create_plan":
-                content = data.get("content")
-                if content:
-                    try:
-                        # Parse plan JSON from tool result
-                        parsed_content = None
-                        if isinstance(content, str):
-                            parsed_content = json.loads(content)
-                        elif isinstance(content, dict):
-                            parsed_content = content
-
-                        # Check for new structure with status and plan fields
-                        if parsed_content and isinstance(parsed_content, dict):
-                            status = parsed_content.get("status")
-                            if status == "success":
-                                # Extract plan from the plan field
-                                if "plan" in parsed_content:
-                                    self.plan_data = parsed_content["plan"]
-                                    console.print(
-                                        "\n[dim cyan]Plan captured from create_plan tool[/dim cyan]"
-                                    )
-                            else:
-                                # Handle non-success status
-                                error_msg = parsed_content.get("error", "Unknown error")
-                                console.print(
-                                    f"\n[dim red]Plan creation failed: {error_msg}[/dim red]"
-                                )
-                    except json.JSONDecodeError:
-                        console.print(
-                            "\n[dim yellow]Failed to parse plan from create_plan tool[/dim yellow]"
-                        )
 
     def _handle_interrupt(self, data: Dict[str, Any]) -> None:
         """Handle interrupt event - user interaction required."""

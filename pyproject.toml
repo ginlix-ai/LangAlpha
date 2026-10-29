@@ -16,12 +16,18 @@ requires-python = ">=3.13"
 dependencies = [
     "httpx[http2]>=0.28.1",
     # LangChain core packages (v1)
-    "langchain>=1.0.0",
-    "langchain-core>=1.4.7",
-    "langchain-openai>=1.3.5",
+    "langchain[mcp]>=1.4.0",
+    # >=1.6.11: src/observability/langsmith_tracer.py builds its tracer from
+    # tracers.context._get_tracer_kwargs, which replaced _get_tracer_project there.
+    "langchain-core>=1.6.11",
+    "langchain-openai>=1.6.0",
+    # Declared directly because src/llms/vendor/langchain_zai and libs/ptc-cli
+    # import it; the 3.x floor is the HTTPX2 client migration.
+    "openai>=3.8.0",
     "langchain-anthropic>=1.0.0",
     "langchain_google_genai>=2.0.0",
     "langchain-deepseek>=0.1.4",
+    "langchain-openrouter>=0.2.9",
     # LangGraph — floor pinned at the beta DeltaChannel on-disk format (messages
     # checkpoints are _DeltaSnapshot/sentinel blobs). langgraph<1.2 cannot read
     # them; downgrading after delta blobs exist strands threads on resume.
@@ -29,10 +35,17 @@ dependencies = [
     # in pregel/_messages.py), which stamps id-less BaseMessage/dict/list writes
     # before persistence — the mechanism that keeps reconstruction deterministic
     # paired with the non-minting reducer in ptc_agent.agent.state.
-    "langgraph>=1.2.2,<2",
+    # >=1.2.16 is the release verified without our old shims: 1.2.13 snapshots a
+    # new branch's delta channels (a run or update from an older checkpoint no
+    # longer replays the writes it dropped), and 1.2.15 stamps ids on
+    # update_state writes.
+    "langgraph>=1.2.16,<2",
     # ceiling mirrors langgraph<2 — the postgres saver serializes the same delta
     # blobs and moves in lockstep with core, so it can't cross a major on its own.
-    "langgraph-checkpoint-postgres>=3.1,<4",
+    # >=3.2.0: the history walk waits for a target past the first page
+    # (langchain-ai/langgraph#8556), and writes replay in the order they ran
+    # (writes_sort_key, from the langgraph-checkpoint>=4.3 it requires).
+    "langgraph-checkpoint-postgres>=3.2.0,<4",
     # Other dependencies
     "python-dotenv>=1.0.1",
     # Pinned: we import from scrapling.engines._browsers._controllers /
@@ -47,10 +60,13 @@ dependencies = [
     "pypdf>=4.0.0",
     "youtube-transcript-api>=1.0.0",
     "playwright",
-    "fastapi>=0.110.0",
+    "fastapi>=0.113.0",
     "anyio>=4.0.0",
     "uvicorn>=0.27.1",
-    "websockets>=12.0",
+    # The preview proxy subclasses the asyncio client to refuse redirects.
+    "websockets>=15.0",
+    # The public suffix list, for the preview base's separate-site check.
+    "tld>=0.13",
     "pandas>=2.2.3",
     "numpy>=1.24,<3.0",
     "json-repair>=0.7.0",
@@ -87,26 +103,46 @@ dependencies = [
     # __all__, so a 0.x minor is free to delete them without notice — 0.7.0
     # dropped WriteResult.files_update exactly that way. Bump deliberately.
     "deepagents>=0.6.11,<0.8",
-    "daytona>=0.200.1",
+    "daytona>=0.210.0",
     "boto3>=1.42.28",
     "tavily-python>=0.7.18",
-    "PyJWT[crypto]>=2.8",
-    "langalpha-cli",
+    "PyJWT[crypto]>=2.13",
+    "langalpha-market-protocol",
     "certifi>=2026.1.4",
     "requests>=2.32.5",
     "croniter>=2.0.0",
+    # Declared directly because zoneinfo falls back to it: slim OS images ship
+    # without the retired zone names browsers still send (Asia/Calcutta).
+    "tzdata>=2025.2",
     "aiodocker>=0.23.0",
     "charset-normalizer>=3.4.0",
     "opentelemetry-api>=1.41.1",
     "exchange-calendars>=4.13.2",
     "quickjs-rs>=0.2.4,<0.3.0",
     "jsonschema>=4.0",
+    # Imported directly (empty Registry = the no-remote-refs discipline), not
+    # just as jsonschema's transitive.
+    "referencing>=0.30",
+    "e2b>=2.53.1,<3",
+    # SSH computers. 2.24.1 is the floor because the far end is a machine its
+    # owner controls: it bounds packet lengths and stops a server writing
+    # outside the paths an SFTP client asked for.
+    "asyncssh>=2.24.1,<3",
+    # Past threads are searched on the server with the agent's own pattern;
+    # RE2 matches in linear time, so no pattern can hold a worker's loop.
+    "google-re2>=1.1.20251105",
 ]
 
 [tool.uv.sources]
 langalpha-cli = { path = "libs/ptc-cli", editable = true }
+langalpha-market-protocol = { path = "libs/market-protocol", editable = true }
 
 [project.optional-dependencies]
+# The interactive TUI (libs/ptc-cli). An extra, not a runtime dependency: the
+# server imports nothing from it, and as a main dependency it inverted the
+# package graph. langalpha-cli depends on langalpha-core, so the root project
+# depending back on it formed a cycle every backend install had to build.
+cli = ["langalpha-cli"]
 dev = [
     "ruff",
     "black>=24.2.0",
@@ -117,6 +153,8 @@ test = [
     "pytest-cov>=4.1.0",
     "pytest-asyncio>=1.3.0",
     "pytest-socket>=0.7.0",
+    # The xlsx skill test builds fixture workbooks; openpyxl is a sandbox package, not an app one.
+    "openpyxl>=3.1.5",
 ]
 # OpenTelemetry SDK + OTLP exporter + auto-instrumentations. Install when
 # OTEL_EXPORTER_OTLP_ENDPOINT will be set, otherwise the API ships its own
@@ -135,6 +173,12 @@ observability = [
 # `uv run playwright install chromium` to enable the `?format=pdf` routes;
 # without it the endpoints return 501 (lazy import, graceful no-op).
 pdf = ["playwright>=1.49"]
+# The Claude Code runtime (src/ptc_agent/agent/claude_code): the Agent SDK and
+# the claude CLI it bundles, about 290 MB installed. An extra so images that
+# never run a Claude Code turn do not carry the CLI; the package is imported
+# only by that runtime. Pinned exactly: the runtime subclasses the SDK's
+# subprocess transport, which is internal API.
+claude-code = ["claude-agent-sdk==0.2.174"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ptc_agent"]
@@ -147,7 +191,10 @@ required-version = ">=0.6.15"
 override-dependencies = ["curl_cffi>=0.14"]
 
 [tool.ruff]
-extend-exclude = ["src/llms/vendor"]
+extend-exclude = ["src/llms/vendor", "src/ptc_agent/core/sandbox/livefs_runtime/mfusepy.py"]
+# The package supports 3.11; a [tool.ruff] table of its own would make it the
+# config root and drop the rules below.
+per-file-target-version = { "libs/market-protocol/**" = "py311" }
 
 [tool.ruff.lint]
 ignore = ["E741"]  # allow short names like l, O, I (common in OHLCV code)
@@ -157,6 +204,8 @@ extend-select = ["TID251"]
 # ptc_agent has ONE module identity: the bare package. A src.-prefixed import
 # creates a second copy of every module (separate singletons, unpatched twins).
 "src.ptc_agent".msg = "import ptc_agent bare — src.ptc_agent creates a duplicate module identity"
+# market_protocol is the libs/market-protocol package; src/ no longer holds a copy.
+"src.market_protocol".msg = "import market_protocol, the libs/market-protocol package"
 
 [tool.ruff.lint.per-file-ignores]
 # Relative imports inside ptc_agent statically resolve to src.ptc_agent in
@@ -171,8 +220,11 @@ asyncio_mode = "strict"
 markers = [
     "integration: hits real APIs — requires env vars (deselect with '-m \"not integration\"')",
     "slow: long-running tests (stress, concurrency) -- opt-in",
+    "yahoo: hits live Yahoo Finance, no secrets needed; run by yahoo-live.yml when yfinance code or its version changes, not by the general integration job",
     "provider_docker: tests requiring Docker daemon",
     "provider_daytona: tests requiring Daytona API key",
+    "provider_e2b: tests requiring E2B API key",
+    "provider_ssh: tests requiring an SSH machine (see tests/integration/sandbox/ssh_target)",
     "regression: locks live market-data API behavior against a running server + live providers — opt-in",
 ]
 addopts = "-m 'not integration and not slow and not regression'"

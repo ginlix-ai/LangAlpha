@@ -1,0 +1,37 @@
+/* The macOS desktop shell hands the titlebar to the page, and a wizard renders
+   none of the app's chrome, so its own top bar is the titlebar: it shrinks to
+   the 38px row the window buttons sit in and starts clear of them (~73px).
+   Gated on the class index.html stamps, so a browser lays out as before. */
+html.desktop-mac .wizard-topbar {
+  height: 38px;
+  padding-left: 84px;
+}
+
+/* The home indicator on a phone sits over the bottom edge; the footer's
+   buttons stay above it. */
+.wizard-footer {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* A step's parts arrive in reading order, the question and then what answers
+   it, inside the step's own fade (WizardShell), with the shared `wizard-fade-in`
+   keyframe from styles/animations.css. Opacity only, so nothing moves
+   under a pointer already on its way to a choice; `backwards` rather than
+   `both`, so a part holds no style once it is in. A part that appears later
+   (a line saying what the flow is waiting for) fades in the same way. */
+.wizard-step > * {
+  animation: wizard-fade-in var(--motion-fold) var(--ease-reveal) backwards;
+}
+.wizard-step > :nth-child(2) { animation-delay: var(--motion-stagger); }
+.wizard-step > :nth-child(3) { animation-delay: calc(var(--motion-stagger) * 2); }
+.wizard-step > :nth-child(n + 4) { animation-delay: calc(var(--motion-stagger) * 3); }
+
+/* The check a step takes when it is left answered, as the rail's dot moves
+   off it. */
+@keyframes wizard-mark-in {
+  from { opacity: 0; transform: scale(0.4); }
+}
+
+.wizard-mark-in {
+  animation: wizard-mark-in var(--motion-fold) var(--ease-out) calc(var(--motion-stagger) * 2) backwards;
+}

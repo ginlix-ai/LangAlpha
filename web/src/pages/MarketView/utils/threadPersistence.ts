@@ -1,13 +1,35 @@
-import { safeLocalStorage } from '@/lib/utils';
+import { userLocalStorage } from '@/lib/userStorage';
+import { displaySpelling } from '@/lib/bars/exchanges';
 
 const PREFIX = 'marketview_thread_id_';
 
-function normalizeSymbol(symbol: string): string {
-  return symbol.trim().toUpperCase();
+function keyFor(workspaceId: string, symbol: string): string {
+  return `${PREFIX}${workspaceId}_${displaySpelling(symbol)}`;
 }
 
-function keyFor(workspaceId: string, symbol: string): string {
-  return `${PREFIX}${workspaceId}_${normalizeSymbol(symbol)}`;
+/** Pointers saved before keys took the display spelling sit under the symbol
+ *  as it arrived: Shanghai as `.SS`, a Hong Kong code bare or at HKEX's five
+ *  digits (`700.HK`, `00700.HK`). A candidate counts only when it folds to
+ *  this key's spelling; read once, it moves to the current key. */
+function legacyKeysFor(workspaceId: string, symbol: string): string[] {
+  const sym = displaySpelling(symbol);
+  const dot = sym.lastIndexOf('.');
+  if (dot === -1) return [];
+  const code = sym.slice(0, dot);
+  const venue = sym.slice(dot);
+  const bare = code.replace(/^0+/, '') || '0';
+  return [`${code}.SS`, `${bare}${venue}`, `${bare.padStart(5, '0')}${venue}`]
+    .filter((s) => s !== sym && displaySpelling(s) === sym)
+    .map((s) => `${PREFIX}${workspaceId}_${s}`);
+}
+
+function adoptLegacy(workspaceId: string, symbol: string): string | null {
+  const legacy = legacyKeysFor(workspaceId, symbol);
+  const raw = legacy.map((key) => userLocalStorage.getItem(key)).find((v) => v) ?? null;
+  if (!raw) return null;
+  legacy.forEach((key) => userLocalStorage.removeItem(key));
+  userLocalStorage.setItem(keyFor(workspaceId, symbol), raw);
+  return raw;
 }
 
 export function getMarketThreadId(
@@ -15,10 +37,10 @@ export function getMarketThreadId(
   symbol: string,
 ): string | null {
   if (!workspaceId || !symbol) return null;
-  const raw = safeLocalStorage.getItem(keyFor(workspaceId, symbol));
+  const raw = userLocalStorage.getItem(keyFor(workspaceId, symbol)) ?? adoptLegacy(workspaceId, symbol);
   if (!raw) return null;
   if (raw === '__default__') {
-    safeLocalStorage.removeItem(keyFor(workspaceId, symbol));
+    userLocalStorage.removeItem(keyFor(workspaceId, symbol));
     return null;
   }
   return raw;
@@ -31,10 +53,10 @@ export function setMarketThreadId(
 ): void {
   if (!workspaceId || !symbol) return;
   if (!threadId || threadId === '__default__') {
-    safeLocalStorage.removeItem(keyFor(workspaceId, symbol));
+    userLocalStorage.removeItem(keyFor(workspaceId, symbol));
     return;
   }
-  safeLocalStorage.setItem(keyFor(workspaceId, symbol), threadId);
+  userLocalStorage.setItem(keyFor(workspaceId, symbol), threadId);
 }
 
 export function clearMarketThreadId(
@@ -42,7 +64,8 @@ export function clearMarketThreadId(
   symbol: string,
 ): void {
   if (!workspaceId || !symbol) return;
-  safeLocalStorage.removeItem(keyFor(workspaceId, symbol));
+  userLocalStorage.removeItem(keyFor(workspaceId, symbol));
+  legacyKeysFor(workspaceId, symbol).forEach((key) => userLocalStorage.removeItem(key));
 }
 
 /**
@@ -55,17 +78,5 @@ export function clearAllMarketThreadsForWorkspace(
   workspaceId: string | null | undefined,
 ): void {
   if (!workspaceId) return;
-  const prefix = `${PREFIX}${workspaceId}_`;
-  // safeLocalStorage doesn't expose iteration; access the underlying store
-  // defensively. In SSR/no-localStorage environments this is a no-op.
-  try {
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i += 1) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(prefix)) keys.push(k);
-    }
-    keys.forEach((k) => safeLocalStorage.removeItem(k));
-  } catch {
-    // no-op
-  }
+  userLocalStorage.removeByPrefix(`${PREFIX}${workspaceId}_`);
 }

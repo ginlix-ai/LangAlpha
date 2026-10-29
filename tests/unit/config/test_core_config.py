@@ -115,6 +115,29 @@ class TestMCPServerConfig:
         assert cfg.command == "npx"
         assert len(cfg.args) == 2
 
+    def test_data_token_auth_on_a_builtin_http_server(self):
+        cfg = MCPServerConfig(
+            name="data", transport="http", url="https://d.example/mcp", auth="data_token"
+        )
+        assert cfg.auth == "data_token"
+
+    def test_data_token_auth_refused_on_a_user_server(self):
+        # The token spends the whole computer's data access; no server a user
+        # defined may be configured to receive it.
+        with pytest.raises(ValueError, match="built-in servers only"):
+            MCPServerConfig(
+                name="mine",
+                transport="http",
+                url="https://d.example/mcp",
+                auth="data_token",
+                source="user",
+            )
+
+    @pytest.mark.parametrize("transport", ["stdio", "sse"])
+    def test_data_token_auth_refused_off_http(self, transport):
+        with pytest.raises(ValueError, match="requires transport 'http'"):
+            MCPServerConfig(name="data", transport=transport, auth="data_token")
+
 
 class TestMCPConfig:
     def test_defaults(self):

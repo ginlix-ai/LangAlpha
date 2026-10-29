@@ -1,8 +1,8 @@
 /**
- * The agent draws a chart in several `draw_chart_annotation` calls. Only the
- * LATEST draw per chart instance renders the rich preview card; earlier draws
- * fold into the activity timeline as ordinary tool-call rows so the user can
- * watch the chart get built up step by step.
+ * The agent draws a chart in several `draw_chart_annotation` calls. The
+ * freshest draw per chart instance feeds the single chart card pinned at the
+ * first draw; the others fold into the activity timeline as ordinary tool-call
+ * rows so the user can watch the chart get built up step by step.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -10,7 +10,7 @@ import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { MessageContentSegments } from '../MessageList';
 
-vi.mock('framer-motion', async () => {
+vi.mock('@/lib/framer', async () => {
   const ReactActual = await vi.importActual<typeof import('react')>('react');
   const FRAMER_ONLY_PROPS = new Set([
     'initial', 'animate', 'exit', 'transition', 'variants',
@@ -27,12 +27,16 @@ vi.mock('framer-motion', async () => {
       return createEl(Comp, domProps, children);
     };
   return {
+    useReducedMotion: () => false,
     motion: new Proxy({} as Record<string, unknown>, {
       get: (_t, key: string) => (key === 'create' ? make : make(key)),
     }),
     AnimatePresence: ({ children }: { children?: React.ReactNode }) =>
       ReactActual.createElement(ReactActual.Fragment, null, children),
     animate: () => ({ stop: () => {} }),
+    useMotionValue: (v: number) => ({ get: () => v, set: () => {}, jump: () => {}, getVelocity: () => 0, on: () => () => {} }),
+    useIsPresent: () => true,
+    PresenceContext: ReactActual.createContext(null),
   };
 });
 
@@ -69,7 +73,10 @@ vi.mock('../charts/InlineArtifactCards', () => {
   );
   const NullCard = () => null;
   return {
+    chartSymbolOf: () => null,
     INLINE_ARTIFACT_TOOLS: new Set<string>(['draw_chart_annotation']),
+    isInlineArtifactReady: (name: string, artifact: unknown) =>
+      !!artifact && name === 'draw_chart_annotation',
     InlineStockPriceCard: NullCard,
     InlineCompanyOverviewCard: NullCard,
     InlineMarketIndicesCard: NullCard,
@@ -92,12 +99,9 @@ const baseProps = {
   toolCallProcesses: {},
   todoListProcesses: {},
   subagentTasks: {},
-  hasError: false,
-  isAssistant: true,
-  textOnly: true,
 } satisfies Partial<SegmentsProps>;
 
-// `cumulative` is the full annotation set returned by that draw — each draw is a
+// `cumulative` is the full annotation set returned by that draw, each draw is a
 // superset of the previous, mirroring the backend's cumulative artifact.
 // `symbol` selects the chart instance (chart_id = SYMBOL:1day) so a test can
 // drive draws against more than one chart in a single turn.
@@ -133,7 +137,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('MessageContentSegments — chart-annotation draws', () => {
+describe('MessageContentSegments, chart-annotation draws', () => {
   it('pins one card (fed the latest cumulative artifact); later draws fold into the accordion', () => {
     const props: SegmentsProps = {
       ...baseProps,
@@ -151,7 +155,7 @@ describe('MessageContentSegments — chart-annotation draws', () => {
     render(<MessageContentSegments {...props} />);
 
     // Exactly one card, and it shows the LATEST cumulative set (2), not the
-    // first draw's (1) — i.e. pinned at the first draw but fed the newest data.
+    // first draw's (1), i.e. pinned at the first draw but fed the newest data.
     const cards = screen.getAllByTestId('annotation-card');
     expect(cards).toHaveLength(1);
     expect(cards[0]).toHaveAttribute('data-count', '2');
@@ -160,7 +164,7 @@ describe('MessageContentSegments — chart-annotation draws', () => {
     expect(accordion).toBeInTheDocument();
     // Pin-to-FIRST: the card sits at the anchor (first) draw, so it renders
     // BEFORE the accordion holding the later draw. If the card were pinned at the
-    // latest draw instead, it would follow the accordion — guard against that swap.
+    // latest draw instead, it would follow the accordion, guard against that swap.
     expect(
       cards[0].compareDocumentPosition(accordion) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

@@ -3,15 +3,18 @@
  * "Failed" with no cause. These lock that an errored agent renders the reason
  * banner (with the ledger message when present), and that a non-errored agent
  * never does.
+ *
+ * A credit stop is the one terminal that is neither: it settles ``cancelled``
+ * because nothing malfunctioned, but it still carries a reason, so it keeps
+ * the banner in neutral dress rather than losing the explanation along with
+ * the danger styling. A plain cancel has no reason and grows no banner.
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
-// The bar imports the api layer (raw fetch) and a Markdown renderer; neither
-// is under test here.
-vi.mock('../../utils/api', () => ({ sendSubagentMessage: vi.fn() }));
+// The bar imports a Markdown renderer, which is not under test here.
 vi.mock('../Markdown', () => ({
   default: ({ content }: { content: string }) => <span>{content}</span>,
 }));
@@ -30,7 +33,6 @@ describe('SubagentStatusBar — failure reason banner', () => {
     render(
       <SubagentStatusBar
         agent={{ ...baseAgent, status: 'error', error: 'transport_lost: subagent event spill failed' }}
-        threadId="t-1"
       />,
     );
     expect(screen.getByText('This agent stopped with an error')).toBeInTheDocument();
@@ -38,12 +40,31 @@ describe('SubagentStatusBar — failure reason banner', () => {
   });
 
   it('shows the banner headline even when no ledger reason is available', () => {
-    render(<SubagentStatusBar agent={{ ...baseAgent, status: 'error' }} threadId="t-1" />);
+    render(<SubagentStatusBar agent={{ ...baseAgent, status: 'error' }} />);
     expect(screen.getByText('This agent stopped with an error')).toBeInTheDocument();
   });
 
+  it('shows a stopped task its reason, without calling it an error', () => {
+    const denial = 'Not enough credits to continue.';
+    render(
+      <SubagentStatusBar
+        agent={{ ...baseAgent, status: 'cancelled', error: denial }}
+      />,
+    );
+    expect(screen.getByText('This agent stopped')).toBeInTheDocument();
+    expect(screen.getByText(denial)).toBeInTheDocument();
+    expect(screen.queryByText('This agent stopped with an error')).toBeNull();
+    expect(screen.queryByText('Failed')).toBeNull();
+  });
+
+  it('renders no banner for a plain cancel, which carries no reason', () => {
+    render(<SubagentStatusBar agent={{ ...baseAgent, status: 'cancelled' }} />);
+    expect(screen.queryByText('This agent stopped')).toBeNull();
+    expect(screen.queryByText('This agent stopped with an error')).toBeNull();
+  });
+
   it('renders no error banner for a completed task', () => {
-    render(<SubagentStatusBar agent={{ ...baseAgent, status: 'completed' }} threadId="t-1" />);
+    render(<SubagentStatusBar agent={{ ...baseAgent, status: 'completed' }} />);
     expect(screen.queryByText('This agent stopped with an error')).toBeNull();
   });
 
@@ -54,7 +75,6 @@ describe('SubagentStatusBar — failure reason banner', () => {
     const { container } = render(
       <SubagentStatusBar
         agent={{ ...baseAgent, status: 'error', error: 'worker_lost: no live executor', currentTool: 'WebFetch' }}
-        threadId="t-1"
       />,
     );
     expect(screen.getByText('Failed')).toBeInTheDocument();

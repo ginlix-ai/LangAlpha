@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (k: string, o?: { defaultValue?: string }) => o?.defaultValue ?? k }),
-}));
+// Real catalogs (test/setup.ts loads them): the window's words are localized,
+// and these assertions read the English ones.
 vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/components/ui/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 
@@ -21,6 +20,13 @@ const IMAGELESS_ARTICLE = {
   tickers: [],
   keywords: [],
   sentiments: null,
+};
+
+// One ticker with a scored sentiment and its note.
+const SENTIMENT_ARTICLE = {
+  ...IMAGELESS_ARTICLE,
+  id: 'article-2',
+  sentiments: [{ ticker: 'AAPL', sentiment: 'positive', reasoning: 'Margins held through the quarter.' }],
 };
 
 const getNewsArticle = vi.fn();
@@ -101,9 +107,36 @@ describe('NewsDetailModal — imageless (TickerTick) article', () => {
   it('shows the empty state only when there is no fallback', async () => {
     getNewsArticle.mockRejectedValue(new Error('404'));
 
-    render(<NewsDetailModal newsId="x" onClose={vi.fn()} fallbackUrl="https://example.com/x" />);
+    render(<NewsDetailModal newsId="x" onClose={vi.fn()} />);
 
     expect(await screen.findByText(/Article details not available/i)).toBeInTheDocument();
-    expect(screen.getByText(/Open article/i)).toBeInTheDocument();
+  });
+
+  it('prints each ticker\'s note in full, and Escape closes the article', async () => {
+    const onClose = vi.fn();
+    getNewsArticle.mockResolvedValue(SENTIMENT_ARTICLE);
+
+    render(<NewsDetailModal newsId="article-2" onClose={onClose} />);
+    await screen.findByText('AAPL');
+    // The impact table holds the whole note, so there is no card to open for
+    // the rest of it: the note is on the page once.
+    expect(screen.getAllByText(/Margins held/)).toHaveLength(1);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not close on the Escape that abandons an IME composition', async () => {
+    const onClose = vi.fn();
+    getNewsArticle.mockResolvedValue(SENTIMENT_ARTICLE);
+
+    render(<NewsDetailModal newsId="article-2" onClose={onClose} />);
+    await screen.findByText('AAPL');
+
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

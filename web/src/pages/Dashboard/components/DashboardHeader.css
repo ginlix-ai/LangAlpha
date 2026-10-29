@@ -23,7 +23,6 @@
   height: 100%;
   padding: 0;
   font-size: 0.875rem;
-  outline: none;
   background: transparent;
 }
 
@@ -62,7 +61,7 @@
   font-size: 0.875rem;
   text-align: left;
   cursor: pointer;
-  transition: background-color 0.15s;
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
 .dashboard-search-dropdown-item:hover {
@@ -80,6 +79,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dashboard-search-dropdown-name-secondary {
+  margin-left: 6px;
+  font-size: 0.85em;
+  color: var(--color-text-tertiary);
 }
 
 .dashboard-search-dropdown-loading,

@@ -1,0 +1,270 @@
+/* Turn deliverables — the file deck under a turn's last bubble.
+ *
+ * The fan/collapse motion mirrors the sources deck (`.source-deck-*` in
+ * SourcesPanel.css, itself in step with the chat-input snapshot deck): same
+ * easing curve, same durations, so every stack in the transcript expands
+ * alike. Per-card top/transform/opacity are set inline (they depend on index +
+ * fan state); these rules carry the chrome and the transitions. The deck's
+ * entrance and its faces' fade are played from script (TurnFileCards.tsx), so
+ * a deck drawn again, on a thread coming back, does not play them over. */
+.turn-files {
+  position: relative;
+  width: 100%;
+  margin-top: 12px;
+  transition: height var(--motion-fold) var(--ease-out);
+}
+
+.turn-file-card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 12px;
+  background: var(--color-bg-card);
+  color: var(--color-text-primary);
+  transition:
+    transform var(--motion-fold) var(--ease-out),
+    opacity var(--motion-fold) var(--ease-out),
+    background var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out);
+}
+/* One card in the flow of a message rather than in a deck: the running app
+   an agent published, or a chart it annotated, wears the same card as the
+   files it wrote. A static one (a shared chat, where the app cannot be
+   opened) keeps its rest state. */
+.turn-file-card.is-inline {
+  position: relative;
+  height: 68px;
+}
+@media (hover: hover) {
+  .turn-file-card.is-static:hover {
+    background: var(--color-bg-card);
+    border-color: var(--color-border-muted);
+  }
+  .turn-file-card.is-static:hover .turn-file-sheet {
+    transform: translate(-3px, 3px) rotate(-5deg);
+  }
+}
+/* Promoted only while the deck is about to move. Every card of every deck stays
+   mounted so that opening is one continuous transition, so an unconditional
+   hint leaves a long thread holding an idle compositor layer per deliverable.
+   Hover is when the hint has to be in place, because hover precedes the click
+   that fans. */
+@media (hover: hover) {
+  .turn-files:hover .turn-file-card {
+    will-change: transform;
+  }
+}
+.turn-files[data-fanned='true'] .turn-file-card {
+  will-change: transform;
+}
+@media (hover: hover) {
+  .turn-file-card:hover {
+    background: var(--color-bg-elevated);
+    border-color: var(--color-border-default);
+  }
+  .turn-file-card:hover .turn-file-sheet {
+    transform: translate(-5px, 4px) rotate(-7deg);
+  }
+  .turn-file-card:hover .turn-file-open,
+  .turn-file-card:hover .turn-file-more {
+    color: var(--color-text-secondary);
+    border-color: var(--color-border-default);
+  }
+}
+/* The ring follows the button the key actually reached: the stripe lights the
+   whole card, the caret only itself.
+
+   Both halves sit behind @supports for the reason `.rings-within` does in
+   tokens.css: a parser without `:has()` drops the rule that rings the card but
+   keeps a plain reset, and that fallback is not a ring in the wrong place, it
+   is no ring at all. Together they degrade to the baseline, which rings the
+   stripe. The card is not the element holding focus, so the focus layer's
+   pointer guard cannot reach it and this reads the same record itself. */
+@supports selector(:has(*)) {
+  /* Transparent rather than `none`: forced colors repaints an outline but
+     cannot paint one that was never drawn, and it drops the shadow below. */
+  .turn-file-hit:focus-visible {
+    outline: 2px solid transparent;
+  }
+
+  :root:not([data-pointer-focus]) .turn-file-card:has(.turn-file-hit:focus-visible) {
+    box-shadow: 0 0 0 2px var(--color-focus-ring);
+  }
+}
+
+/* A document, drawn as paper: the sheet behind carries the depth, the page in
+   front carries the kind. */
+.turn-file-thumb {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 42px;
+}
+.turn-file-sheet,
+.turn-file-page {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 6px;
+}
+.turn-file-sheet {
+  background: var(--color-bg-elevated);
+  transform: translate(-3px, 3px) rotate(-5deg);
+  transition: transform var(--motion-fold) var(--ease-out);
+}
+.turn-file-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background: var(--color-bg-page);
+  border-color: var(--color-border-elevated);
+}
+.turn-file-glyph {
+  width: 14px;
+  height: 14px;
+  color: var(--color-accent-primary);
+}
+.turn-file-ext {
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 0.5rem;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary);
+}
+
+/* The stripe: a real button carrying the name, stretched by its own ::after
+   over the whole card so clicking anywhere but the caret opens the file. */
+.turn-file-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.turn-file-hit::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.turn-file-name {
+  font-size: 0.875rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.turn-file-meta {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The way in, always visible: the card reads as a door rather than a row. The
+   Open half is inert on purpose, because the stripe behind it already opens the
+   file; only the caret takes a click of its own. */
+.turn-file-actions {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+.turn-file-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--color-border-muted);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+/* A door with no caret beside it closes its own right edge: an annotated
+   chart's card offers nothing beyond the open the stripe already takes, so
+   there is no menu to split the button with. */
+.turn-file-open.is-solo {
+  border-right: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+}
+.turn-file-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 0 8px 8px 0;
+  background: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    color var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out),
+    background var(--motion-quick) var(--ease-out);
+}
+.turn-file-more:hover,
+.turn-file-more[data-state='open'] {
+  background: var(--color-bg-card);
+  color: var(--color-text-secondary);
+}
+/* Radix hands focus back to the trigger when the menu closes, which Chromium
+   matches as :focus-visible with no key ever pressed, so the ring reads the
+   modality record the same way the card's does. */
+.turn-file-more:focus-visible {
+  outline: 2px solid transparent;
+}
+:root:not([data-pointer-focus]) .turn-file-more:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+.turn-file-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+.turn-file-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--color-border-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-files,
+  .turn-file-card,
+  .turn-file-sheet {
+    transition: none;
+  }
+}

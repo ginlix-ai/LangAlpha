@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { renderHook } from '@testing-library/react';
 import {
   clearThemeTokenCache,
   createThemeResolver,
   readTokens,
   resolveTokenMap,
+  useThemeTokens,
 } from '../themeTokens';
 
 /**
@@ -78,5 +80,18 @@ describe('createThemeResolver', () => {
     const resolve = createThemeResolver(SOURCES, FALLBACKS);
     expect(resolve('light')).toEqual(FALLBACKS.light);
     expect(resolve('dark')).toEqual(FALLBACKS.dark);
+  });
+});
+
+describe('useThemeTokens', () => {
+  it('settles on what the effect reads once the stamp has landed', () => {
+    // Render reads before the stamp (the literals), the effect after it (the
+    // live values). The second render must not be served the first read again.
+    const literals = { bg: '#232426' };
+    const live = { bg: 'rgb(35, 36, 38)' };
+    let reads = 0;
+    const resolve = () => (reads++ === 0 ? literals : live);
+    const { result } = renderHook(() => useThemeTokens(resolve, 'dark'));
+    expect(result.current).toBe(live);
   });
 });

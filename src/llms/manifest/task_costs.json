@@ -1,0 +1,129 @@
+{
+  "source": {
+    "name": "Artificial Analysis",
+    "url": "https://artificialanalysis.ai/methodology/intelligence-benchmarking",
+    "metric": "Cost per Intelligence Index task (USD), v4.3.2",
+    "retrieved": "2026-10-18"
+  },
+  "model_sources": {
+    "deepseek-flash": {
+      "name": "DeepSeek, V4.1 Flash 1017 release note",
+      "url": "https://api-docs.deepseek.com/news/news261017",
+      "metric": "Max is Artificial Analysis's 'DeepSeek V4.1 Flash 1017 (Max)' (v4.3.2); Low and High are Max scaled by the ratios of the release note's DeepSWE v1.1 cost per task chart (read off its log scale: low 0.112, high 0.146, max 0.195 USD)",
+      "retrieved": "2026-10-27"
+    },
+    "kimi-k3.1-pro": {
+      "name": "Moonshot AI, Kimi K3.1 Pro launch post",
+      "url": "https://www.kimi.ai/blog/kimi-k3-1-pro",
+      "metric": "Max is Artificial Analysis's 'Kimi K3.1 Pro' (v4.3.2; Moonshot runs it at max by default); High is Max scaled by the launch post's Terminal-Bench 4.0 cost per task chart (read off its linear scale: high 4.14, max 5.22 USD)",
+      "retrieved": "2026-10-27"
+    }
+  },
+  "baseline": {
+    "model": "claude-sonnet-5-5",
+    "effort": "medium"
+  },
+  "models": {
+    "claude-sonnet-5-5": {
+      "low": 0.345161,
+      "medium": 0.483264,
+      "high": 0.88445,
+      "xhigh": 2.012035,
+      "max": 5.460853
+    },
+    "claude-opus-5-5": {
+      "low": 0.55118,
+      "medium": 1.336009,
+      "high": 1.822505,
+      "xhigh": 3.45911,
+      "max": 5.982012
+    },
+    "claude-haiku-5-5": {
+      "low": 0.024459,
+      "medium": 0.047031,
+      "high": 0.079427,
+      "xhigh": 0.123786,
+      "max": 0.21277
+    },
+    "claude-fable-5-1": {
+      "low": 2.371025,
+      "medium": 2.982597,
+      "high": 3.912527,
+      "xhigh": 5.978304,
+      "max": 7.629706
+    },
+    "gpt-6-luna": {
+      "none": 0.011345,
+      "low": 0.004517,
+      "medium": 0.017477,
+      "high": 0.029032,
+      "xhigh": 0.042184,
+      "max": 0.067823
+    },
+    "gpt-6.1-sol": {
+      "low": 0.130752,
+      "medium": 0.213701,
+      "high": 0.319144,
+      "xhigh": 0.392861,
+      "max": 0.724167
+    },
+    "gpt-6-astra": {
+      "low": 0.817514,
+      "medium": 1.540649,
+      "high": 1.725253,
+      "xhigh": 2.308796,
+      "max": 3.2575
+    },
+    "gpt-6.1-terra": {
+      "none": 0.1069,
+      "low": 0.0546,
+      "medium": 0.0953,
+      "high": 0.1343,
+      "xhigh": 0.1937,
+      "max": 0.4035
+    },
+    "deepseek-flash": {
+      "low": 0.150511,
+      "high": 0.196202,
+      "max": 0.26205
+    },
+    "glm-5.3": {
+      "low": 0.852217,
+      "max": 2.005638
+    },
+    "kimi-k3.1-pro": {
+      "high": 1.677017,
+      "max": 2.1145
+    },
+    "kimi-k3-coding": {
+      "low": 1.14631,
+      "max": 2.00013
+    },
+    "gemini-3.8-flash": {
+      "medium": 0.931038,
+      "high": 1.242795
+    },
+    "qwen3.8-max": {
+      "any": 5.408509
+    },
+    "gemini-3.1-flash-lite": {
+      "any": 0.060181
+    },
+    "minimax-m3": {
+      "any": 0.507613
+    },
+    "qwen3.7-plus": {
+      "any": 0.217026
+    },
+    "glm-5.3-flash": {
+      "any": 0.283595
+    }
+  },
+  "bounds": {
+    "kimi-k3.1-pro-highspeed": {
+      "model": "kimi-k3.1-pro",
+      "times": 2.0,
+      "basis": "The same model served faster: input and output bill at 2x Kimi K3.1 Pro's rates, cache hits at the same rate."
+    }
+  }
+}

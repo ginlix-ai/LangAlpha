@@ -5,6 +5,12 @@
   overflow: hidden;
 }
 
+/* Inside the file panel the crumb row above owns the title and the actions, so
+   the viewer is all frame: the overlays that sit under a toolbar sit at the top. */
+.preview-viewer.is-bare {
+  --preview-toolbar-height: 0px;
+}
+
 .preview-viewer-toolbar {
   display: flex;
   align-items: center;
@@ -60,12 +66,17 @@
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-quick) var(--ease-out);
 }
 
-.preview-viewer-btn:hover {
+.preview-viewer-btn:hover:not(:disabled) {
   color: var(--color-text-primary);
   background: var(--color-border-muted);
+}
+
+.preview-viewer-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 .preview-viewer-frame {
@@ -101,7 +112,6 @@
   justify-content: center;
   background: color-mix(in srgb, var(--color-bg-page) 75%, transparent);
   backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .preview-viewer-resize-card {

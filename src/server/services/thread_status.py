@@ -56,7 +56,9 @@ def extract_state_values(checkpoint_tuple) -> dict:
 
 
 async def read_thread_runtime_status(
-    thread_id: str, is_shared: Optional[bool] = None, msg_type: Optional[str] = None
+    thread_id: str,
+    is_shared: Optional[bool] = None,
+    user_id: Optional[str] = None,
 ) -> dict:
     """
     Get current workflow execution status.
@@ -66,9 +68,9 @@ async def read_thread_runtime_status(
         is_shared: Pre-resolved share flag. When provided (e.g. the ``/status``
             route already read it while authorizing), skips a redundant thread
             lookup; when ``None``, this fetches it.
-        msg_type: Pre-resolved thread kind; picks the report-back read model
-            (``ptc`` → task outbox, else flash watch set). Fetched with the
-            thread row when ``None`` and the row is read anyway.
+        user_id: Pre-resolved thread owner, which scopes the labels of the
+            threads a report-back is owed by. Looked up with the report-back
+            read when ``None``.
 
     Returns:
         Dict with current status, reconnectability, and progress info
@@ -140,24 +142,25 @@ async def read_thread_runtime_status(
 
                 thread_row = await get_thread_by_id(thread_id)
                 is_shared = bool(thread_row.get("is_shared")) if thread_row else False
-                if msg_type is None and thread_row:
-                    msg_type = thread_row.get("msg_type")
             except Exception as e:
                 logger.debug(f"Could not fetch share status for {thread_id}: {e}")
                 is_shared = False
 
         # Report-back pendingness AND the subagent ids for per-task reattach,
-        # from the thread kind's own read model (task slice = outbox row +
-        # ledger-backed active tasks; flash = Redis watch set, no subagents).
+        # from both read models (task slice = outbox row + ledger-backed
+        # active tasks; analyst hand-offs = Redis watch set).
         # active_tasks is NOT gated on an in_progress run: tail-mode
         # subagents outlive the run's terminal row.
-        from src.server.services.report_back.flash.status import read_report_back_slice
+        from src.server.services.report_back.handoff.status import read_report_back_slice
 
-        rb = await read_report_back_slice(thread_id, msg_type)
+        rb = await read_report_back_slice(thread_id, user_id)
         active_tasks = rb.get("active_tasks", [])
+        active_commands = rb.get("active_commands", [])
         pending_report_back = rb["pending_report_back"]
         report_back_run_id = rb["report_back_run_id"]
         recent_report_back_run_ids = rb.get("recent_report_back_run_ids", [])
+        owed_threads = rb.get("owed_threads")
+        owed_report_kinds = rb.get("owed_report_kinds")
 
         # Staleness signal for cached (never-unmounted) frontend views: once a
         # run is terminal there is no reconnectable run_id, so the persisted
@@ -168,19 +171,31 @@ async def read_thread_runtime_status(
 
         latest_turn_index = await get_latest_turn_index(thread_id)
 
+        # What the thread has used, for the chat's token totals. Read here, not
+        # with the replay, because this status decides whether the client
+        # reconnects: the run it names live is left out, and the reconnect
+        # replays that run's calls from the start.
+        from src.server.database.conversation.usage import get_thread_token_totals
+
+        token_totals = await get_thread_token_totals(thread_id, live_run_id=run_id)
+
         response = {
             "thread_id": thread_id,
             "run_id": run_id,
             "status": status,
             "can_reconnect": can_reconnect,
             "latest_turn_index": latest_turn_index,
+            "token_totals": token_totals,
             "last_update": last_update,
             "progress": checkpoint_info,
             "active_tasks": active_tasks,
+            "active_commands": active_commands,
             "is_shared": is_shared,
             "pending_report_back": pending_report_back,
             "report_back_run_id": report_back_run_id,
             "recent_report_back_run_ids": recent_report_back_run_ids,
+            "owed_threads": owed_threads,
+            "owed_report_kinds": owed_report_kinds,
         }
 
         logger.debug(f"Status check for {thread_id}: {status}")
@@ -189,6 +204,4 @@ async def read_thread_runtime_status(
 
     except Exception as e:
         logger.exception(f"Error checking workflow status for {thread_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to check workflow status: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail="Failed to check turn status")

@@ -111,3 +111,29 @@ describe('MessageBubble — long user message collapse', () => {
     expect(screen.queryByTestId('overflow-collapse-toggle')).toBeNull();
   });
 });
+
+describe('MessageBubble — Sources pill while streaming', () => {
+  const provenance = {
+    r1: {
+      record_id: 'r1',
+      timestamp: '2026-08-01T00:00:00Z',
+      source_type: 'web_fetch',
+      identifier: 'https://example.com/report',
+    },
+  };
+  const assistant = (isStreaming: boolean) =>
+    makeMessage({ id: 'a-1', role: 'assistant', content: 'Margins widened.', isStreaming, provenanceRecords: provenance });
+
+  it('keeps the faded pill out of the tab order until the turn finishes', () => {
+    const { rerender } = renderBubble(assistant(true));
+    const pill = screen.getByTitle('Sources');
+    // Faded to opacity 0 mid-turn: a keyboard user must not land on it.
+    expect(pill.closest('[inert]')).not.toBeNull();
+    rerender(
+      <MessageActionsProvider actions={{ onEditMessage: vi.fn() }}>
+        <MessageBubble message={assistant(false)} turnIndex={0} isTurnTail={false} />
+      </MessageActionsProvider>,
+    );
+    expect(screen.getByTitle('Sources').closest('[inert]')).toBeNull();
+  });
+});

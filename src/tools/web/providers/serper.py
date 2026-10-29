@@ -12,7 +12,13 @@ from urllib.parse import urlparse
 import httpx
 from langchain_core.tools import tool
 
-from src.tools.web.providers._shared import lazy, normalize_time_range, request_json, result_card
+from src.tools.web.providers._shared import (
+    lazy,
+    normalize_time_range,
+    request_json,
+    result_card,
+    search_failed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +355,9 @@ def build_web_search_tool(
             time_range: Filter by recency - 'h' (hour), 'd' (day), 'w' (week), 'm' (month), 'y' (year)
             geographic_location: Country code (e.g., 'us', 'cn', 'uk')
             language: Language code (e.g., 'en', 'zh-cn')
+
+        Returns:
+            Ranked results as titles, snippets and URLs — not full page text.
         """
         try:
             api = _get_api_wrapper()
@@ -376,15 +385,8 @@ def build_web_search_tool(
             logger.debug(f"Serper search completed: {len(detailed_results)} results returned")
             return detailed_results, metadata
 
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code if e.response is not None else "unknown"
-            body = e.response.text if e.response is not None else "no response body"
-            logger.error(f"Serper API HTTP {status}: {body}")
-            error_message = f"Search failed (HTTP {status}): {body}"
-            return error_message, {"error": error_message, "query": query}
         except httpx.HTTPError as e:
             logger.error(f"Serper search failed: {e}", exc_info=True)
-            error_message = f"Search failed: {str(e)}"
-            return error_message, {"error": str(e), "query": query}
+            return search_failed(e, query, quote_http_body=True)
 
     return web_search

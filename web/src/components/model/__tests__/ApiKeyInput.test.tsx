@@ -48,6 +48,28 @@ describe('ApiKeyInput', () => {
     });
   });
 
+  it('leaves a blank optional key unflagged', () => {
+    const { rerender } = render(<ApiKeyInput {...defaultProps} />);
+    const input = screen.getByPlaceholderText('Paste your API key here');
+    fireEvent.blur(input);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+
+    rerender(<ApiKeyInput {...defaultProps} optional />);
+    expect(input).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('reads as untested once the base URL changes after a passing test', async () => {
+    const onTest = vi.fn().mockResolvedValue({ success: true, model: 'gpt-4o', latency_ms: 200 });
+    const props = { ...defaultProps, value: 'sk-test1234567890', onTest, showBaseUrl: true, onBaseUrlChange: vi.fn() };
+    const { rerender } = render(<ApiKeyInput {...props} baseUrl="https://a.example/v1" />);
+
+    fireEvent.click(screen.getByRole('button', { name: /test/i }));
+    await screen.findByText(/Key works!/);
+
+    rerender(<ApiKeyInput {...props} baseUrl="https://b.example/v1" />);
+    expect(screen.queryByText(/Key works!/)).not.toBeInTheDocument();
+  });
+
   it('shows error state on blur when empty (no maskedKey)', () => {
     render(<ApiKeyInput {...defaultProps} value="" />);
 

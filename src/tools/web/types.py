@@ -86,9 +86,29 @@ class WebError:
         if self.provider_fault is None:
             object.__setattr__(self, "provider_fault", self.type.provider_fault_default)
 
+    @property
+    def provider_side(self) -> bool:
+        """Whether the provider failed (or we did) rather than the target page.
+
+        What traces count as an error. It follows ``provider_fault``, so the
+        alarms and the breaker agree on whose failure it was, except for an
+        open breaker: that is the provider's unless it is the in-house
+        crawler's breaker for one host, which opens only on that host's own
+        failures. The crawler's infra breaker reports ``provider_fault`` off
+        only so the router's breaker does not count the failures that opened
+        it a second time.
+        """
+        if self.type is WebErrorType.CIRCUIT_OPEN:
+            return self.native_kind != _HOST_CIRCUIT_OPEN
+        return bool(self.provider_fault)
+
     def __str__(self) -> str:
         status = f" HTTP {self.http_status}" if self.http_status else ""
         return f"[{self.type.value}{status}] {self.message}"
+
+
+# The in-house crawler's native kind for its breaker on a single host.
+_HOST_CIRCUIT_OPEN = "host_circuit_open"
 
 
 class WebToolError(Exception):

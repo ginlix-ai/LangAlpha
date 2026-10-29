@@ -38,7 +38,7 @@ async def test_fetch_clones_override_before_mutation(monkeypatch):
 
     captured = {}
 
-    async def fake_api_call(*, llm, system_prompt, user_prompt, disable_tracing):
+    async def fake_api_call(*, llm, system_prompt, user_prompt):
         captured["llm"] = llm
         return "ok"
 
@@ -77,7 +77,7 @@ async def test_fetch_keeps_streaming_for_codex_override(monkeypatch):
 
     captured = {}
 
-    async def fake_api_call(*, llm, system_prompt, user_prompt, disable_tracing):
+    async def fake_api_call(*, llm, system_prompt, user_prompt):
         captured["llm"] = llm
         return "ok"
 

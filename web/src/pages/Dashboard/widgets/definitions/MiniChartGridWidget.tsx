@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Grid2x2 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { WidgetCardMeta } from '../framework/widgetCardSlots';
 import { useWidgetContextExport } from '../framework/contextSnapshot';
 import {
   serializeRowsToMarkdown,
@@ -13,7 +14,8 @@ import {
 import { MiniChartGridConfigSchema } from '../framework/configSchemas';
 import {
   currencyForSymbol,
-  currencySymbol,
+  formatMoney,
+  quoteCurrency,
   dedupeMergeByTime,
   fetchBarsDelta,
   fetchStockData,
@@ -25,10 +27,10 @@ import { useQuotes, quoteKey } from '@/lib/quotes';
 import { DEFAULT_BLUE_CHIPS } from '../framework/defaults';
 import { SymbolListField } from '../framework/settings/SymbolListField';
 import { SettingsDoneButton } from '../framework/settings/SettingsDoneButton';
-import { createFormatter } from '@/lib/format';
+import { grouped2 } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../types';
 
-const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 interface MiniChartGridConfig {
   symbols: string[];
@@ -138,6 +140,7 @@ function MiniSparkline({ cell }: { cell: CellData }) {
 
 function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig>) {
   const { t } = useTranslation();
+  const locale = useLocale();
   const navigate = useNavigate();
   const { watchlist } = useDashboardContext();
   // Memoized so the query key stays reference-stable on unrelated re-renders
@@ -262,25 +265,10 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
   });
 
   return (
-    <div className="dashboard-glass-card p-4 flex flex-col h-full">
-      <div
-        className="flex items-baseline justify-between mb-3 pb-2 border-b"
-        style={{ borderColor: 'var(--color-border-muted)' }}
-      >
-        <div className="flex items-baseline gap-2">
-          <Grid2x2 className="h-3.5 w-3.5 self-center" style={{ color: 'var(--color-text-tertiary)' }} />
-          <span
-            className="text-[0.625rem] font-semibold uppercase tracking-[0.14em]"
-            style={{ color: 'var(--color-text-secondary)' }}
-          >
-            {t('dashboard.widgets.miniChartGrid.header')}
-          </span>
-        </div>
-        <span className="text-[0.6875rem] dashboard-mono" style={{ color: 'var(--color-text-tertiary)' }}>
-          {t('dashboard.widgets.miniChartGrid.summary', { count: effectiveSymbols.length, days: SPARK_DAYS })}
-        </span>
-      </div>
-
+    <div className="flex flex-col h-full">
+      <WidgetCardMeta>
+        {t('dashboard.widgets.miniChartGrid.summary', { count: effectiveSymbols.length, days: SPARK_DAYS })}
+      </WidgetCardMeta>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {isLoading && !data ? (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -330,7 +318,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       className="text-[0.6875rem] dashboard-mono"
                       style={{ color: up ? 'var(--color-profit)' : 'var(--color-loss)' }}
                     >
-                      {up ? '+' : ''}{fmt2(pct)}%
+                      {up ? '+' : ''}{grouped2(pct, locale)}%
                     </span>
                   </div>
                   <div className="flex items-end justify-between mt-1">
@@ -338,7 +326,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       className="text-[0.6875rem] dashboard-mono"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
-                      {currencySymbol(cell.currency)}{fmt2(cell.last)}
+                      {formatMoney(cell.last, quoteCurrency(cell.currency, cell.symbol), locale)}
                     </span>
                     <MiniSparkline cell={cell} />
                   </div>
@@ -386,6 +374,7 @@ function MiniChartGridSettings({
 registerWidget<MiniChartGridConfig>({
   type: 'markets.miniChartGrid',
   titleKey: 'dashboard.widgets.miniChartGrid.title',
+  cardTitleKey: 'dashboard.widgets.miniChartGrid.header',
   descriptionKey: 'dashboard.widgets.miniChartGrid.description',
   category: 'markets',
   icon: Grid2x2,

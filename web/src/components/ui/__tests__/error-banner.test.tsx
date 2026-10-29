@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
 import { ErrorBanner } from '../error-banner';
 import type { StructuredError } from '@/utils/rateLimitError';
 
@@ -52,7 +52,7 @@ describe('ErrorBanner', () => {
   it('renders an internal link that navigates via react-router', () => {
     const err: StructuredError = {
       message: 'You hit the credit limit.',
-      link: { url: '/settings/billing', label: 'View Usage' },
+      links: [{ url: '/settings/billing', label: 'View Usage' }],
     };
     let currentPath = '';
     renderInRouter(<ErrorBanner error={err} />, (p) => { currentPath = p; });
@@ -64,10 +64,46 @@ describe('ErrorBanner', () => {
     expect(currentPath).toBe('/settings/billing');
   });
 
+  it('leaves a same-origin external link to the browser, in a new tab', () => {
+    // /account/plans is served by the account portal, a different app on the
+    // same origin. Routing to it would land on our catch-all and load nothing,
+    // and navigating in place would discard the banner and the rejected
+    // message, which only ever existed in client state.
+    const err: StructuredError = {
+      message: 'Monthly credit limit reached.',
+      links: [{ url: '/account/plans', label: 'Upgrade plan', external: true }],
+    };
+    let currentPath = '';
+    renderInRouter(<ErrorBanner error={err} />, (p) => { currentPath = p; });
+    const link = screen.getByText('Upgrade plan');
+    expect(link).toHaveAttribute('href', '/account/plans');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    fireEvent.click(link);
+    expect(currentPath).toBe('/start');
+  });
+
+  it('renders every link in order, separated', () => {
+    const err: StructuredError = {
+      message: 'Monthly credit limit reached.',
+      links: [
+        { url: '/account/plans', label: 'Upgrade plan', external: true },
+        { url: '/account/usage', label: 'View usage', external: true },
+      ],
+    };
+    renderInRouter(<ErrorBanner error={err} />);
+    const links = screen.getAllByRole('link');
+    expect(links.map((l) => l.textContent)).toEqual(['Upgrade plan', 'View usage']);
+    expect(links[1]).toHaveAttribute('href', '/account/usage');
+    expect(links[1]).toHaveAttribute('target', '_blank');
+    // The separator is decoration, so it must not reach the accessible name.
+    expect(screen.getByText('·')).toHaveAttribute('aria-hidden', 'true');
+  });
+
   it('renders an external link with target=_blank', () => {
     const err: StructuredError = {
       message: 'Upstream provider failed.',
-      link: { url: 'https://status.anthropic.com', label: 'Status' },
+      links: [{ url: 'https://status.anthropic.com', label: 'Status' }],
     };
     renderInRouter(<ErrorBanner error={err} />);
     const link = screen.getByText('Status');
@@ -97,6 +133,14 @@ describe('ErrorBanner', () => {
     renderInRouter(<ErrorBanner error={err} />);
     expect(screen.getByText('Database unavailable')).toBeInTheDocument();
     consoleErr.mockRestore();
+  });
+
+  it('shows an internal failure the server sent no words for as its headline alone', () => {
+    // A run that failed where no error frame could be written for it.
+    const { container } = renderInRouter(<ErrorBanner error={{ message: '', kind: 'internal' }} />);
+    const column = container.querySelector('.flex-col');
+    expect(column?.children).toHaveLength(1);
+    expect(column?.textContent).not.toBe('');
   });
 
   // Ported from ChatViewErrorBanner.test.tsx (local-copy drift test, deleted):
@@ -138,5 +182,19 @@ describe('ErrorBanner', () => {
     expect(screen.getByText(/Daily credit limit reached/)).toBeInTheDocument();
     expect(screen.queryByText(/Rate limit exceeded:/)).not.toBeInTheDocument();
   });
-});
 
+  it('renders a notice as information, not as an error', () => {
+    const err: StructuredError = { message: 'This chat changed somewhere else, so it was refreshed. Try again.', kind: 'notice' };
+    const { container } = renderInRouter(<ErrorBanner error={err} />);
+    const row = screen.getByRole('status');
+    expect(row).toHaveTextContent(err.message);
+    expect(row.getAttribute('style')).toContain('var(--color-text-tertiary)');
+    expect(container.innerHTML).not.toContain('--color-loss');
+  });
+
+  it('keeps the error style for a failure', () => {
+    const { container } = renderInRouter(<ErrorBanner error="Failed to send message" />);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(container.innerHTML).toContain('--color-loss');
+  });
+});

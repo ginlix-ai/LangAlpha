@@ -47,7 +47,7 @@ class _GatedProvider:
         self.started = asyncio.Event()
         self.source_names = ["stub"]
 
-    def source_names_for(self, symbol, capability=None):
+    def source_names_for(self, symbol, capability=None, **_kw):
         return list(self.source_names)
 
     async def get_daily_with_source(self, symbol, from_date, to_date, is_index, user_id):

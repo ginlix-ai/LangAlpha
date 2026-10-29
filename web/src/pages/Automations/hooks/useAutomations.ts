@@ -1,34 +1,35 @@
 import { useQuery } from '@tanstack/react-query';
+import { queryKeys } from '@/lib/queryKeys';
 import type { Automation } from '@/types/automation';
+import { isAutomationRunning } from '../utils/status';
+import { pollMs } from '../utils/polling';
 import { listAutomations } from '../utils/api';
 
-const POLL_INTERVAL = 30000;
-
-interface UseAutomationsOptions {
-  status?: string;
-}
+const LIST_PARAMS = { limit: 100, offset: 0 };
 
 interface UseAutomationsResult {
   automations: Automation[];
-  total: number;
   loading: boolean;
+  /** The list arrived, as opposed to a read that failed or never ran. */
+  loaded: boolean;
   error: Error | null;
-  refetch: () => void;
 }
 
-export function useAutomations({ status }: UseAutomationsOptions = {}): UseAutomationsResult {
-  const { data = { automations: [] as Automation[], total: 0 }, isLoading: loading, error, refetch } = useQuery({
-    queryKey: ['automations', status],
-    queryFn: async () => {
-      const params: Record<string, unknown> = { limit: 100, offset: 0 };
-      if (status) params.status = status;
-      const { data } = await listAutomations(params);
-      return { automations: data.automations as Automation[], total: data.total as number };
-    },
-    refetchInterval: POLL_INTERVAL,
+const EMPTY: Automation[] = [];
+
+export function useAutomations(): UseAutomationsResult {
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.automations.list(LIST_PARAMS),
+    queryFn: async () => (await listAutomations(LIST_PARAMS)).data,
+    refetchInterval: (query) => pollMs(!!query.state.data?.automations.some(isAutomationRunning)),
     refetchIntervalInBackground: false,
     staleTime: 5000,
   });
 
-  return { automations: data.automations, total: data.total, loading, error: error as Error | null, refetch };
+  return {
+    automations: data?.automations ?? EMPTY,
+    loading: isLoading,
+    loaded: data !== undefined,
+    error,
+  };
 }

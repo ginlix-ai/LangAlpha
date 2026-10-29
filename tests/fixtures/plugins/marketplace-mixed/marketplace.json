@@ -1,0 +1,25 @@
+{
+  "name": "example-marketplace",
+  "owner": { "name": "Example" },
+  "plugins": [
+    {
+      "name": "alpha",
+      "source": "plugins/alpha",
+      "description": "Alpha, as the marketplace describes it."
+    },
+    {
+      "name": "ctx",
+      "source": { "source": "local", "path": "./external_plugins/ctx" }
+    },
+    {
+      "name": "remote-widget",
+      "description": "Lives in another repository.",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/acme/widgets.git",
+        "path": "plugins/widget",
+        "ref": "v1.0.0"
+      }
+    }
+  ]
+}

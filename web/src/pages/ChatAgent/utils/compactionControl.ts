@@ -37,7 +37,7 @@ export function isManualCompactionInFlight(opts: {
   return routeStopAction(opts) === 'compaction';
 }
 
-/** Pull a structured detail code from an axios-style rejection, if present. */
+/** Pull a structured detail code from an API client rejection, if present. */
 export function compactionErrorCode(err: unknown): string | undefined {
   return (
     err as { response?: { data?: { detail?: { code?: string } } } } | undefined

@@ -15,9 +15,10 @@ global pooled saver, lifecycle SQL on the app pool, single worker only.
 """
 
 import asyncio
+import contextvars
 import contextlib
-import hashlib
 import logging
+import weakref
 from typing import Any, Callable, Optional
 
 from psycopg import AsyncConnection
@@ -25,6 +26,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from src.config.settings import get_writer_pool_max
+from src.server.database.sql_fences import advisory_key
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +74,10 @@ class GuardSessionLost(Exception):
 
 
 # --------------------------------------------------------------------------
-# Advisory key scheme — 64-bit, domain-separated (not 32-bit hashtext).
+# Advisory key scheme: 64-bit, domain-separated (not 32-bit hashtext). The
+# function itself lives in sql_fences so operator scripts share it without
+# importing the app; it is re-exported here for the lock-key helpers below.
 # --------------------------------------------------------------------------
-
-
-def advisory_key(domain: str, *parts: str) -> int:
-    """sha256("domain|part|part")[:8] as a signed bigint for pg advisory locks."""
-    digest = hashlib.sha256("|".join((domain, *parts)).encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big", signed=True)
 
 
 def thread_key(thread_id: str) -> int:
@@ -148,7 +146,10 @@ _writer_pool: Optional[AsyncConnectionPool] = None
 
 
 async def _configure_writer_conn(conn: AsyncConnection) -> None:
-    conn.prepare_threshold = 0  # pooler (Supabase) compatibility
+    # Prepared, for the run's checkpoint writes: they repeat every agent step
+    # and name their columns. The run's own START and finalize SQL reads `*`
+    # and opts out in runs/lifecycle.py's _lifecycle_connection.
+    conn.prepare_threshold = 0
 
 
 async def _reset_writer_conn(conn: AsyncConnection) -> None:
@@ -276,6 +277,11 @@ class WriterGuard:
     turn (drops N(root) so the next turn can start, keeps the session alive
     for the tail writers' saver) → ``release``. All idempotent; ``release``
     is safe on a dead connection.
+
+    Until finalize takes the guard over, the run's handle owns it
+    (``bind_owner``): the guard holds the handle weakly, so a run whose every
+    owner died without settling it loses its fence within two monitor ticks
+    of the handle being collected, instead of holding the thread forever.
     """
 
     def __init__(
@@ -311,6 +317,8 @@ class WriterGuard:
 
         self._monitor_task: Optional[asyncio.Task] = None
         self._abort_cb: Optional[Callable[[], Any]] = None
+        self._owner: Optional[weakref.ref] = None
+        self._orphaned = False
 
     @property
     def usable(self) -> bool:
@@ -356,8 +364,13 @@ class WriterGuard:
                         exc_info=True,
                     )
             raise
+        # Fresh contexts for both guard tasks: the guard and its tasks form a
+        # reference cycle that outlives the turn until a full collection, and
+        # a copied context would pin the turn's request-scoped state with it.
         guard._monitor_task = asyncio.create_task(
-            guard._monitor(), name=f"writer-guard-monitor-{run_id[:8]}"
+            guard._monitor(),
+            name=f"writer-guard-monitor-{run_id[:8]}",
+            context=contextvars.Context(),
         )
         logger.info(
             f"[WriterGuard] fenced run={run_id} thread={thread_id} "
@@ -397,6 +410,12 @@ class WriterGuard:
             return bool(row and row["ok"])
 
     # ------------------------------------------------------------- session
+
+    def bind_owner(self, handle: Any) -> None:
+        """Track the run handle that will settle this guard; None hands it
+        to finalize, which always releases it, and stops the check."""
+        self._owner = weakref.ref(handle) if handle is not None else None
+        self._orphaned = False
 
     def attach_abort(self, cb: Callable[[], Any]) -> None:
         """Register the graph-cancel callback the monitor fires on session loss.
@@ -569,6 +588,23 @@ class WriterGuard:
             await asyncio.sleep(MONITOR_INTERVAL)
             if self._released:
                 return
+            if self._owner is not None and self._owner() is None:
+                # Nothing can finalize this run any more, and a live fence
+                # makes the recovery scanner treat it as running: release so
+                # the scanner settles it. Discard, since a dead run's saver
+                # may still reference this connection. Only on the second
+                # such tick: the cycle collector clears this weakref before
+                # an abandoned stream generator's death path runs, and that
+                # path is about to hand the guard to finalize.
+                if self._orphaned:
+                    logger.critical(
+                        f"[WriterGuard] run={self.run_id} thread={self.thread_id} "
+                        f"lost its owner without being settled; releasing its "
+                        f"fence for recovery"
+                    )
+                    self._start_release(discard=True)
+                    return
+                self._orphaned = True
             async with self.mutex:
                 if self._released:
                     return
@@ -642,18 +678,23 @@ class WriterGuard:
         request arriving after a clean release started is logged and has no
         effect (a mid-flight flip could retarget the saver at the pool AND
         close the conn — the exact resurrection discard exists to prevent)."""
+        await asyncio.shield(self._start_release(discard))
+
+    def _start_release(self, discard: bool) -> asyncio.Task:
         if self._release_task is None:
             if discard:
                 self._discard = True
             self._release_task = asyncio.create_task(
-                self._do_release(), name=f"writer-guard-release-{self.run_id[:8]}"
+                self._do_release(),
+                name=f"writer-guard-release-{self.run_id[:8]}",
+                context=contextvars.Context(),
             )
         elif discard and not self._discard:
             logger.warning(
                 f"[WriterGuard] late discard request for run={self.run_id} "
                 f"ignored; release already started clean"
             )
-        await asyncio.shield(self._release_task)
+        return self._release_task
 
     async def _do_release(self) -> None:
         self._released = True

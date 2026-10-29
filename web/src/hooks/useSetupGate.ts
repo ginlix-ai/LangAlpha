@@ -12,13 +12,13 @@ export function skipSetup(): void {
 
 /**
  * Determines whether the current user still needs to complete the
- * BYOK setup wizard (i.e. has neither configured an API key nor
- * redeemed an invitation code).
+ * BYOK setup wizard: no key or subscription of their own, no plan, and no
+ * deployment key that runs the default model. A self-hosted stack with keys
+ * in its config is the last case: its turns already run, so sending its user
+ * to the wizard on every visit was asking for a provider they have.
  *
- * When auth is off (self-hosted / local dev), the gate still fires so
- * users land on the wizard, but SetupWizard always shows an "Exit" button
- * so they can skip it freely. Clicking "Exit" sets a sessionStorage flag
- * that suppresses the redirect for the rest of this browser session.
+ * "Exit setup" sets a sessionStorage flag that suppresses the redirect for
+ * the rest of this browser session.
  */
 export function useSetupGate(): { isLoading: boolean; needsSetup: boolean } {
   const { user, isLoading } = useUser();
@@ -35,7 +35,8 @@ export function useSetupGate(): { isLoading: boolean; needsSetup: boolean } {
   const hasApiKey = Boolean(user.has_api_key);
   const hasOAuth = Boolean(user.has_oauth_token);
   const hasPlatformAccess = (user.access_tier ?? -1) >= 0;
-  const needsSetup = !hasApiKey && !hasOAuth && !hasPlatformAccess;
+  const servedByDeployment = Boolean(user.deployment_serves);
+  const needsSetup = !hasApiKey && !hasOAuth && !hasPlatformAccess && !servedByDeployment;
 
   return { isLoading: false, needsSetup };
 }

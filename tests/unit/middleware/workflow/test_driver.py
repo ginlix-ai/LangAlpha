@@ -96,10 +96,10 @@ class RecordingRegistry(BackgroundTaskRegistry):
         super().__init__(thread_id="thread-1")
         self.events: list[dict[str, Any]] = []
 
-    async def _spill_record_to_redis(
-        self, task: Any, record: dict[str, Any]
+    async def _spill_records_to_redis(
+        self, task: Any, records: list[dict[str, Any]]
     ) -> None:
-        self.events.append(record["data"])
+        self.events.extend(record["data"] for record in records)
 
 
 class FakeDispatcher:
@@ -258,6 +258,31 @@ async def test_token_accrual_is_read_only() -> None:
     assert done["tokens_used"] == 17
     assert done["tokens_spent"] == 17
     assert dispatcher.tasks[0].per_call_records == records
+
+
+@pytest.mark.asyncio
+async def test_a_child_starts_on_the_clock_the_driver_kills_it_by() -> None:
+    """Its own clock is its cap, so its wrap-up comes before the kill."""
+    driver, _, dispatcher, _ = await _make_driver(
+        _script("await agent('one'); return 'done';"),
+        caps=_caps(child_timeout=1800, run_timeout=16200),
+    )
+
+    await driver.run()
+
+    assert dispatcher.calls[0]["time_limit"] == 1800
+
+
+@pytest.mark.asyncio
+async def test_a_child_late_in_the_run_starts_on_what_is_left_of_it() -> None:
+    driver, _, dispatcher, _ = await _make_driver(
+        _script("await agent('one'); return 'done';"),
+        caps=_caps(child_timeout=1800, run_timeout=600),
+    )
+
+    await driver.run()
+
+    assert 590 < dispatcher.calls[0]["time_limit"] <= 600
 
 
 @pytest.mark.asyncio

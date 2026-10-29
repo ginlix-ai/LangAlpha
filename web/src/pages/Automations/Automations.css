@@ -1,72 +1,213 @@
+/* The page frame is the Plugins/Orders shape: an unpadded column whose first
+   child is the desktop shell's drag strip, so every scroll port sits below it
+   (App.css). The feed scrolls as one port; the manage view keeps the header
+   still and gives the list and the open automation a port each. */
 .automations-page {
-  display: flex;
-  flex-direction: column;
+  --automations-gutter: clamp(16px, 3vw, 32px);
+  /* The column a setting's name sits in on the form and a starting point
+     draws its cadence in, so the form lines up under what it opened from. */
+  --automations-label-col: 132px;
+  --automations-label-gap: 28px;
   height: 100%;
-  padding: clamp(16px, 3vw, 32px) clamp(16px, 3vw, 32px);
-  overflow: hidden;
-}
-
-.automations-creation-section {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-bottom: 20px;
+  min-height: 0;
 }
 
-.automations-card {
-  position: relative;
+.automations-frame {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-inline: var(--automations-gutter);
+}
+
+.automations-frame-fill {
+  height: 100%;
+  min-height: 0;
+}
+
+.automations-body {
   flex: 1;
   min-height: 0;
+}
+
+.automations-scroll {
+  height: 100%;
+  overflow-y: auto;
+  padding-bottom: 56px;
+}
+
+/* ── Header ─────────────────────────────────────────── */
+
+.automations-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: var(--page-top) 0 22px;
+}
+
+.automations-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-text-primary);
+}
+
+.automations-tagline {
+  margin-top: 6px;
+  font-size: 0.875rem;
+  /* One line box for the tagline and the census, so the header keeps its
+     height whichever of the two a loaded page turns out to show. */
+  line-height: 1.3125rem;
+  color: var(--color-text-secondary);
+}
+
+.automations-census {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  line-height: 1.3125rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Shared voices ──────────────────────────────────── */
+
+/* The one small-caps voice every section heading on the page speaks in. */
+.automations-kicker {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+/* Tracking spaces Latin capitals; it only pulls Chinese characters apart. */
+:lang(zh) .automations-kicker,
+:lang(zh) .automation-history th {
+  letter-spacing: normal;
+}
+
+.automations-quiet-note {
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+  padding: 8px 0;
+}
+
+.automation-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  border-radius: 4px;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+
+.automation-link:hover {
+  color: var(--color-text-primary);
+}
+
+/* Times, counts and schedules. Each use sets its own size and ink. */
+.automation-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An automation's name where pressing it opens the automation. */
+.automation-name {
+  min-width: 0;
+  text-align: left;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+
+.automation-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-border-default);
+}
+
+/* A pane here shows its scrollbar only while it moves, or while the pointer
+   is on the thumb. The app-wide webkit scrollbar is always painted, and a
+   pane that overflows by a few rows turns it into a stripe the height of the
+   content. */
+.automations-scroller::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+
+.automations-scroller[data-scrolling]::-webkit-scrollbar-thumb {
+  background-color: var(--color-border-elevated);
+}
+
+.automations-scroller::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-tertiary);
+}
+
+/* ── Starting points ────────────────────────────────── */
+
+/* A starting point to press: its cadence in the label column, its name
+   beside it. The hover wash bleeds past the hairlines so the text keeps the
+   edge of what surrounds it; each list sets how far. */
+.automations-starter {
+  display: grid;
+  align-items: center;
+  width: calc(100% + 2 * var(--starter-bleed));
+  margin-inline: calc(-1 * var(--starter-bleed));
+  padding-inline: var(--starter-bleed);
+  border-radius: 8px;
+  text-align: left;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+
+.automations-starter:hover {
+  --automation-meter-wash: var(--color-bg-hover);
+  background-color: var(--color-bg-hover);
+}
+
+.automations-starter-when {
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
-  padding: 20px;
-  border: 1px solid var(--color-border-default);
-  background-color: var(--color-bg-elevated);
-  background-image: radial-gradient(circle at center, var(--color-dot-grid) 0.75px, transparent 0.75px);
-  background-size: 18px 18px;
-  background-position: 0 0;
-  overflow: hidden;
+  gap: 6px;
 }
 
-.automations-card ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* ── Form pane ──────────────────────────────────────── */
+
+.automation-form-pane {
+  max-width: 760px;
 }
 
-.automations-card ::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 999px;
+/* A form is under the page title wherever it opens: one step down. */
+.automation-form-title {
+  margin: 0 0 16px;
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
 }
 
-.automations-card ::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-/* ── Inline form label pattern ─────────────────────── */
-
-.automation-inline-form .form-label {
-  font-size: 0.6875rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  line-height: 1;
+.automations-zero-form {
+  padding: 8px 0 56px;
 }
 
 @media (max-width: 767px) {
-  .automations-page {
-    padding: 16px 12px;
-    overflow-y: auto;
+  .automations-header {
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 12px 0 14px;
   }
-  .automations-creation-section { gap: 12px; margin-bottom: 16px; }
-  .automations-card { padding: 12px; border-radius: 8px; }
-  .automation-inline-form { padding: 16px !important; gap: 16px !important; }
-  .automation-inline-form .form-actions {
-    flex-direction: column;
-  }
-  .automation-inline-form .form-actions button {
-    width: 100%;
-    justify-content: center;
+  .automations-starter-when {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
   }
 }

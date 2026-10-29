@@ -1,8 +1,6 @@
 /**
- * User-level vault secrets (Connectors backing store). Mirrors the workspace
- * vault API but scoped to the signed-in user: these secrets back inherited
- * (user-level) MCP servers and are merged into every sandbox push, with
- * workspace secrets winning on name collision.
+ * The account vault (Plugins → Secrets), the only vault: these secrets back
+ * the account's MCP servers and are pushed into every workspace's sandbox.
  */
 import { api } from '@/api/client';
 
@@ -23,6 +21,31 @@ export interface UserVaultSecretList {
 export async function getUserVaultSecrets(): Promise<UserVaultSecretList> {
   const { data } = await api.get<UserVaultSecretList>('/api/v1/mcp/vault/secrets');
   return { secrets: data.secrets ?? [], remaining_slots: data.remaining_slots ?? 0 };
+}
+
+/** A user-tier blueprint; plugin-declared entries carry the plugin's name. */
+export interface UserVaultBlueprint {
+  name: string;
+  label: string;
+  description: string;
+  docs_url: string | null;
+  regex: string | null;
+  sources: string[];
+  plugin_name?: string | null;
+}
+
+export interface UserVaultBlueprintsResponse {
+  blueprints: UserVaultBlueprint[];
+  remaining_slots: number;
+}
+
+/** Credentials builtin servers and enabled plugins declare but the user
+ * vault doesn't hold yet — the install wizard's bindings data source. */
+export async function getUserVaultBlueprints(): Promise<UserVaultBlueprintsResponse> {
+  const { data } = await api.get<UserVaultBlueprintsResponse>(
+    '/api/v1/mcp/vault/blueprints',
+  );
+  return { blueprints: data.blueprints ?? [], remaining_slots: data.remaining_slots ?? 0 };
 }
 
 export async function createUserVaultSecret(body: {

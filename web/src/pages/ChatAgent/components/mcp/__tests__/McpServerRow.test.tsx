@@ -34,16 +34,17 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
       {children}
     </button>
   ),
+  DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DropdownMenuSeparator: () => <hr />,
 }));
 
 function makeServer(overrides: Partial<EffectiveServer> = {}): EffectiveServer {
   return {
     name: 'placeholder_server',
-    origin: 'workspace',
+    origin: 'user',
     transport: 'stdio',
     enabled: true,
     editable: true,
-    deletable: true,
     status: 'connected',
     error: '',
     tool_count: 3,
@@ -66,8 +67,6 @@ const handlers = () => ({
   onToggle: vi.fn(),
   onEdit: vi.fn(),
   onDiscover: vi.fn(),
-  onDelete: vi.fn(),
-  onPromoteToTemplate: vi.fn(),
   onSetupSecret: vi.fn(),
 });
 
@@ -76,17 +75,17 @@ beforeEach(() => {
 });
 
 describe('McpServerRow — origin badge + base render', () => {
-  it('shows the workspace badge, tool count, and connected pill when verified + synced', () => {
+  it('shows the account badge, tool count, and connected pill when verified + synced', () => {
     // A fully-settled server (verified AND applied to the live agent) collapses
     // to the clean green pill — no perpetual lifecycle track.
     render(<McpServerRow server={makeServer()} synced sandboxRunning {...handlers()} />);
-    expect(screen.getByText('workspace')).toBeInTheDocument();
+    expect(screen.getByText('account')).toBeInTheDocument();
     expect(screen.getByText('3 tools')).toBeInTheDocument();
     expect(screen.getByTestId('mcp-status-connected')).toBeInTheDocument();
   });
 
   it('shows the built-in badge for builtins', () => {
-    render(<McpServerRow server={makeServer({ origin: 'builtin', editable: false, deletable: false })} {...handlers()} />);
+    render(<McpServerRow server={makeServer({ origin: 'builtin', editable: false })} {...handlers()} />);
     expect(screen.getByText('built-in')).toBeInTheDocument();
   });
 });
@@ -94,7 +93,7 @@ describe('McpServerRow — origin badge + base render', () => {
 describe('McpServerRow — enabled toggle', () => {
   it('toggles via the switch (interactive for builtins too)', () => {
     const h = handlers();
-    const server = makeServer({ origin: 'builtin', editable: false, deletable: false });
+    const server = makeServer({ origin: 'builtin', editable: false });
     render(<McpServerRow server={server} {...h} />);
     fireEvent.click(screen.getByRole('switch'));
     // Handlers receive the row's own server (stable-prop pattern) + the new value.
@@ -103,25 +102,21 @@ describe('McpServerRow — enabled toggle', () => {
 });
 
 describe('McpServerRow — kebab menu (builtins restricted)', () => {
-  it('disables Edit/Test/Delete for a built-in server', () => {
+  it('disables Edit/Test for a built-in server', () => {
     const h = handlers();
-    render(<McpServerRow server={makeServer({ origin: 'builtin', editable: false, deletable: false })} {...h} />);
+    render(<McpServerRow server={makeServer({ origin: 'builtin', editable: false })} {...h} />);
 
-    for (const label of ['Edit', 'Test connection', 'Save to Connectors', 'Delete']) {
+    for (const label of ['Edit', 'Test connection']) {
       const item = screen.getByText(label).closest('[role="menuitem"]')!;
       expect(item).toHaveAttribute('aria-disabled', 'true');
     }
 
     // Clicking a disabled item is a no-op.
     fireEvent.click(screen.getByText('Edit'));
-    fireEvent.click(screen.getByText('Delete'));
-    fireEvent.click(screen.getByText('Save to Connectors'));
     expect(h.onEdit).not.toHaveBeenCalled();
-    expect(h.onDelete).not.toHaveBeenCalled();
-    expect(h.onPromoteToTemplate).not.toHaveBeenCalled();
   });
 
-  it('enables Edit/Test/Save/Delete for a workspace server and fires handlers', () => {
+  it('enables Edit/Test for an account server and fires handlers', () => {
     const h = handlers();
     render(<McpServerRow server={makeServer()} {...h} />);
 
@@ -130,23 +125,15 @@ describe('McpServerRow — kebab menu (builtins restricted)', () => {
 
     fireEvent.click(screen.getByText('Test connection'));
     expect(h.onDiscover).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByText('Save to Connectors'));
-    expect(h.onPromoteToTemplate).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByText('Delete'));
-    expect(h.onDelete).toHaveBeenCalledTimes(1);
   });
 
-  it('disables "Save to Connectors" when no promote handler is provided', () => {
-    const { onPromoteToTemplate, ...rest } = handlers();
-    void onPromoteToTemplate;
-    render(<McpServerRow server={makeServer()} {...rest} />);
-    const item = screen.getByText('Save to Connectors').closest('[role="menuitem"]')!;
-    expect(item).toHaveAttribute('aria-disabled', 'true');
+  it('has no delete here: removal is an account action, so the menu says where', () => {
+    render(<McpServerRow server={makeServer()} onManageInPlugins={vi.fn()} {...handlers()} />);
+    expect(screen.queryByText('Delete')).not.toBeInTheDocument();
+    expect(screen.getByText(/remove it from your account/i)).toBeInTheDocument();
   });
 
-  it('keeps a disabled workspace server re-enableable but ungates only the toggle', () => {
+  it('keeps a disabled server re-enableable but ungates only the toggle', () => {
     const h = handlers();
     const server = makeServer({ enabled: false, status: 'disabled' });
     render(<McpServerRow server={server} {...h} />);
@@ -159,27 +146,20 @@ describe('McpServerRow — kebab menu (builtins restricted)', () => {
     expect(screen.getByText('Test connection').closest('[role="menuitem"]'))
       .toHaveAttribute('aria-disabled', 'true');
 
-    // …but Edit / Save to Connectors / Delete still work on a disabled server.
+    // …but Edit still works on a disabled server.
     fireEvent.click(screen.getByText('Edit'));
-    fireEvent.click(screen.getByText('Save to Connectors'));
-    fireEvent.click(screen.getByText('Delete'));
     expect(h.onEdit).toHaveBeenCalledTimes(1);
-    expect(h.onPromoteToTemplate).toHaveBeenCalledTimes(1);
-    expect(h.onDelete).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('McpServerRow — in-flight affordances', () => {
-  it('shows the kebab spinner while deleting but NOT while toggling (optimistic)', () => {
+  it('shows no kebab spinner while toggling (optimistic)', () => {
     // Toggle is optimistic — the switch already moved, so a spinning "reload"
-    // icon on the kebab is just flicker. Only a real delete (row leaving) spins.
-    const { container, rerender } = render(
+    // icon on the kebab is just flicker.
+    const { container } = render(
       <McpServerRow server={makeServer()} toggling {...handlers()} />,
     );
     expect(container.querySelector('[role="status"]')).toBeNull();
-
-    rerender(<McpServerRow server={makeServer()} deleting {...handlers()} />);
-    expect(container.querySelector('[role="status"]')).not.toBeNull();
   });
 });
 
@@ -229,11 +209,11 @@ describe('McpServerRow — status-specific affordances', () => {
   it('offers exactly one next step on a revoked row with a stale needs_secret status', () => {
     // Regression: the needs_secret gate was missing the `!oauthBroken` conjunct
     // its two sibling gates had, so a revoked inherited row rendered BOTH
-    // "Set up NAME" and "Reconnect in Connectors" — two contradictory fixes,
+    // "Set up NAME" and "Reconnect in Plugins" — two contradictory fixes,
     // only one of which works. The missing secret is not the real problem here;
     // the cached status predates the disconnect.
     const h = handlers();
-    const onManageInConnectors = vi.fn();
+    const onManageInPlugins = vi.fn();
     render(
       <McpServerRow
         server={makeServer({
@@ -242,14 +222,14 @@ describe('McpServerRow — status-specific affordances', () => {
           missing_secrets: ['PLACEHOLDER_TOKEN'],
           oauth_status: 'revoked',
         })}
-        onManageInConnectors={onManageInConnectors}
+        onManageInPlugins={onManageInPlugins}
         {...h}
       />,
     );
 
     expect(screen.queryByText('Set up PLACEHOLDER_TOKEN')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText('Reconnect in Connectors'));
-    expect(onManageInConnectors).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText('Reconnect in Plugins'));
+    expect(onManageInPlugins).toHaveBeenCalledTimes(1);
     expect(h.onSetupSecret).not.toHaveBeenCalled();
   });
 
@@ -265,13 +245,13 @@ describe('McpServerRow — status-specific affordances', () => {
           missing_secrets: ['PLACEHOLDER_TOKEN'],
           oauth_status: 'connected',
         })}
-        onManageInConnectors={vi.fn()}
+        onManageInPlugins={vi.fn()}
         {...h}
       />,
     );
     fireEvent.click(screen.getByText('Set up PLACEHOLDER_TOKEN'));
     expect(h.onSetupSecret).toHaveBeenCalledWith('PLACEHOLDER_TOKEN');
-    expect(screen.queryByText('Reconnect in Connectors')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reconnect in Plugins')).not.toBeInTheDocument();
   });
 
   it('suppresses the tool count while still verifying', () => {

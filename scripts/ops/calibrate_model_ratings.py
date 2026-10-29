@@ -10,11 +10,17 @@ model-detail flyout:
 AA lists one row PER reasoning-effort per model (xhigh/high/medium/low/
 non-reasoning). Two ways to read an "intelligence" number off that:
 
-  --basis served  (default) pick the AA row whose effort matches how WE run the
-                  model (from manifest ``parameters``), nearest-effort fallback.
-                  Honest: gpt-5.4@medium rates below gpt-5.5, not tied to it.
-  --basis ceiling pick the highest-intelligence row. Simpler, but mid-tier
-                  "full" models look near-flagship.
+  --basis ceiling (default) pick the highest-intelligence row. Simpler, but
+                  mid-tier "full" models look near-flagship.
+  --basis served  pick the AA row whose effort matches how WE run the model
+                  (from manifest ``parameters``), nearest-effort fallback. The
+                  honest reading in principle, and not the default because the
+                  two rank functions below still disagree with the manifest:
+                  ``target_effort_rank`` never reads ``extra_body.reasoning_effort``
+                  and maps neither ``max`` nor ``none``, and ``aa_effort_rank``
+                  does not recognise a bare "(max)" suffix. Until those are
+                  fixed it silently falls back to the ceiling row, or worse,
+                  to a lower-effort one.
 
 The AA index spans the whole AA universe (~5..62 in v4); our manifest is all
 frontier models, so a global quantile collapses to 5. We bucket with
@@ -22,8 +28,8 @@ FRONTIER-CALIBRATED absolute thresholds (INTEL_BANDS / SPEED_BANDS) so a "5"
 always means the same thing and the lineup still spreads across 1-5.
 
 Usage:
-  python scripts/ops/calibrate_model_ratings.py                  # dry-run, served basis
-  python scripts/ops/calibrate_model_ratings.py --basis ceiling  # dry-run, ceiling
+  python scripts/ops/calibrate_model_ratings.py                  # dry-run, ceiling basis
+  python scripts/ops/calibrate_model_ratings.py --basis served   # dry-run, served
   python scripts/ops/calibrate_model_ratings.py --apply --fields intelligence
   python scripts/ops/calibrate_model_ratings.py --apply --fields intelligence,speed
   python scripts/ops/calibrate_model_ratings.py --no-cache       # force refetch
@@ -52,8 +58,14 @@ MANIFEST = REPO / "src/llms/manifest/models.json"
 DEFAULT_ENV = REPO / ".env"
 
 # Frontier-calibrated bands. (lower_bound_inclusive, tier) high->low.
-INTEL_BANDS = [(56, 5), (49, 4), (42, 3), (35, 2), (0, 1)]   # <- AA intelligence index
-SPEED_BANDS = [(150, 5), (110, 4), (75, 3), (50, 2), (0, 1)]  # <- AA output tokens/sec
+# Placed in the GAPS of the observed distribution, not at round numbers: a
+# threshold sitting on top of a model flips that badge on the next AA refresh.
+# Re-placed for the rescaled index: the frontier now tops out near 58 rather
+# than 63, so the old 54 cut left one model in band 5. Each cut sits in a gap
+# of at least 1.5 points (48.5: 47.5|49.6, 43: 42.1|43.6, 35.5: 33.7|37.3,
+# 27: 25.2|29.2); speed cuts moved off the three models sitting on 65 tok/s.
+INTEL_BANDS = [(48.5, 5), (43, 4), (35.5, 3), (27, 2), (0, 1)]  # <- AA intelligence index
+SPEED_BANDS = [(150, 5), (92, 4), (63, 3), (44, 2), (0, 1)]     # <- AA output tokens/sec
 
 # Our access/region/serving variants that map onto a base model's AA rating.
 VARIANT_SUFFIXES = (
@@ -66,38 +78,31 @@ STOP_TOKENS = {"preview", "experimental", "exp"}
 # Models AA's language endpoint doesn't track (or tracks without throughput).
 # Hand-grounded from the cited sources; applied to every visible variant of the
 # base, and only for the fields present (so AA-derived fields survive otherwise).
-MANUAL = {
-    # Qwen commercial SKUs <- their OSS siblings on AA (per request).
-    "qwen3.5-plus":  {"speed": 2, "intelligence": 3,
-                      "ref": "AA Qwen3.5 397B-A17B (Reasoning): II 45, 51.8 tok/s"},
-    "qwen3.6-flash": {"speed": 5, "intelligence": 3,
-                      "ref": "AA Qwen3.6 35B-A3B (Reasoning): II 43.5, 172 tok/s"},
-    # GLM turbo throughput <- OpenRouter/Fireworks (~48-70 tok/s). 'turbo' is
-    # cheap/agentic, not high-throughput. Intelligence stays AA-derived.
-    "glm-5-turbo":  {"speed": 2, "ref": "OpenRouter ~48 / Fireworks 70 tok/s -> band 2"},
-    "glm-5v-turbo": {"speed": 2, "ref": "GLM-turbo family throughput ~48-70 tok/s"},
-    # Doubao Seed 2.0 <- LMArena + ByteDance Seed2.0 Model Card (Feb 2026); no
-    # AA index yet, no public tok/s, speed left as hand estimate (Pro slow ->
-    # Mini fast).
-    "doubao-seed-2.0-pro":  {"intelligence": 4,
-                             "ref": "LMArena Elo ~1466 (~21st), ~40 below the frontier cluster "
-                                    "(GPT-5.5/Opus-4.7/Gemini-3.1-Pro ~1505). ByteDance's model card "
-                                    "benches only vs the Feb-2026 frontier (GPT-5.2/Opus-4.5/"
-                                    "Gemini-3-Pro) and concedes coding + long-tail gaps: GPQA 88.9 "
-                                    "vs 92.4, SimpleQA 36 vs 72, SWE-Verified 76.5 vs Opus-4.5 80.9"},
-    "doubao-seed-2.0-lite": {"intelligence": 3,
-                             "ref": "ByteDance benches Lite vs GPT-5-mini/Gemini-3-Flash (efficient "
-                                    "tier, not flagships): MMLU-Pro 87.7, AIME25 93.0, GPQA 85.1, "
-                                    "SWE-Verified 73.5; strong for its class, no independent data"},
-    "doubao-seed-2.0-code": {"intelligence": 4,
-                             "ref": "self-report SWE-Verified 76.5 / LiveCodeBench-v6 87.8, Pro-equal "
-                                    "coding but below Opus-4.5 (80.9). NB: AA's 'Doubao Seed Code' "
-                                    "II-34/#10 entry is the older Nov-2025 model, not Seed-2.0-Code"},
-    "doubao-seed-2.0-mini": {"intelligence": 3,
-                             "ref": "smallest Seed 2.0 SKU: self-report AIME25 87.0, GPQA 79.0, "
-                                    "SWE-Verified 67.9, benched vs GPT-5-mini/Gemini-3-Flash"},
+MANUAL: dict[str, dict] = {}
+
+# Our model key -> AA slug, where AA files a model under its research release
+# name and the vendor sells it under another. The opposite of a MANUAL entry:
+# it removes hand-set numbers by letting AA's own row reach the model.
+AA_SLUG_ALIASES = {
+    # DashScope's `qwen3.8-flash` is the productionised Qwen3.8-Flash-Next
+    # (same weights, 262k native context served extended to 1M).
+    "qwen3.8-flash": "qwen3-8-flash-next",
+    # The key predates the point release; the entry serves V4.1 Flash.
+    "deepseek-flash": "deepseek-v4-1-flash",
 }
 
+
+def _keep_inline_arrays(text: str, original: str) -> str:
+    """Re-collapse the short arrays the manifest hand-keeps on one line.
+
+    ``json.dumps`` expands every array, which would bury a values-only rewrite
+    under whitespace noise in the diff.
+    """
+    for m in re.finditer(r'^([ \t]*)"([^"]+)": (\[[^\[\]]*\])(,?)$', original, re.M):
+        indent, key, inline, comma = m.groups()
+        expanded = json.dumps(json.loads(inline), indent=2).replace("\n", "\n" + indent)
+        text = text.replace(f'{indent}"{key}": {expanded}{comma}', m.group(0))
+    return text
 
 def band(value: float, bands: list[tuple[float, int]]) -> int:
     for lo, tier in bands:
@@ -134,11 +139,12 @@ def fetch_aa(key: str, use_cache: bool) -> list[dict]:
     return out
 
 
-def tokens(s: str) -> frozenset[str]:
-    """Order-insensitive token set, parens + release qualifiers dropped:
-    'claude-haiku-4-5' ~ 'Claude 4.5 Haiku', 'gemini-3.1-pro' ~ 'Gemini 3.1 Pro Preview'."""
+def tokens(s: str) -> tuple[str, ...]:
+    """Order-insensitive token multiset, parens + release qualifiers dropped:
+    'claude-haiku-4-5' ~ 'Claude 4.5 Haiku', 'gemini-3.1-pro' ~ 'Gemini 3.1 Pro Preview'.
+    A multiset, not a set: a set folds 'Opus 5.5' into 'Opus 5'."""
     s = re.sub(r"\(.*?\)", "", s.lower())
-    return frozenset(t for t in re.findall(r"[a-z]+|\d+", s) if t and t not in STOP_TOKENS)
+    return tuple(sorted(t for t in re.findall(r"[a-z]+|\d+", s) if t and t not in STOP_TOKENS))
 
 
 def base_name(model_key: str) -> str:
@@ -224,7 +230,7 @@ def pick_row(rows: list[dict], target: int | None, basis: str) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="write models.json (default: dry-run)")
-    ap.add_argument("--basis", choices=("served", "ceiling"), default="served")
+    ap.add_argument("--basis", choices=("served", "ceiling"), default="ceiling")
     ap.add_argument("--fields", default="intelligence,speed",
                     help="comma list of fields to write on --apply")
     ap.add_argument("--no-cache", action="store_true")
@@ -233,8 +239,10 @@ def main() -> None:
     write_fields = {f.strip() for f in args.fields.split(",") if f.strip()}
 
     aa = fetch_aa(get_key(args.env_file), use_cache=not args.no_cache)
-    by_tokens: dict[frozenset[str], list[dict]] = {}
+    by_tokens: dict[tuple[str, ...], list[dict]] = {}
+    by_slug: dict[str, dict] = {}
     for m in aa:
+        by_slug[m["slug"]] = m
         for label in (m["slug"], m["name"]):
             by_tokens.setdefault(tokens(label), []).append(m)
 
@@ -248,12 +256,14 @@ def main() -> None:
 
     matched, unmatched, changes = [], [], 0
     print(f"basis={args.basis}  fields={','.join(sorted(write_fields))}\n")
-    print(f"{'model':30s} {'cur s/i':>7}  {'AA II':>6} {'AA tps':>7}  {'new s/i':>7}  AA row (effort matched)")
+    print(f"{'model':30s} {'cur s/i':>7}  {'AA II':>6} {'AA tps':>7}  {'new s/i':>7}  AA row ({args.basis})")
     print("-" * 100)
     for k in sorted(visible):
         cur = manifest[k]
         cur_s, cur_i = cur.get("speed"), cur.get("intelligence")
-        rows = by_tokens.get(tokens(k)) or by_tokens.get(tokens(base_name(k)))
+        alias = by_slug.get(AA_SLUG_ALIASES.get(collapse_base(k), ""))
+        rows = [alias] if alias else (
+            by_tokens.get(tokens(k)) or by_tokens.get(tokens(base_name(k))))
         row = pick_row(rows, target_effort_rank(cur), args.basis) if rows else {}
         if not row:
             ov = overrides.get(k, {})
@@ -298,7 +308,8 @@ def main() -> None:
                 if f in ov and f in write_fields:
                     manifest[k][f] = ov[f]
         # Match the manifest's canonical format exactly so the diff is values-only.
-        MANIFEST.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+        rendered = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+        MANIFEST.write_text(_keep_inline_arrays(rendered, MANIFEST.read_text()))
         print(f"\nWROTE {MANIFEST} — fields={','.join(sorted(write_fields))}; "
               f"{len(matched)} AA models + {len(overrides)} manual-override variants")
     else:

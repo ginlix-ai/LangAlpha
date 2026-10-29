@@ -7,6 +7,7 @@
  * - `starting` without `sandbox_state`          -> 'starting' (generic copy)
  * - `starting` with an unknown `sandbox_state`  -> 'starting' (graceful fallback)
  * - `ready`                                     -> false (spinner clears)
+ * - `turn_held` held/released drive `turnHeld` the same way; a reconnect also clears it
  *
  * Note: the hook's `cleanupAfterStreamEnd` resets `workspaceStarting` to
  * false when the stream completes, so we keep the stream open with a
@@ -47,10 +48,13 @@ vi.mock('../../session/history/historyHandlers', async (importOriginal) =>
 
 vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
-import { sendChatMessageStream } from '../../utils/api';
+import { sendChatMessageStream, getWorkflowStatus, reconnectToWorkflowStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
+import { threadStatus } from './chatHookHarness';
 
 const mockSendStream = sendChatMessageStream as Mock;
+const mockStatus = getWorkflowStatus as Mock;
+const mockReconnect = reconnectToWorkflowStream as Mock;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,9 +77,7 @@ function mockHangingStream(events: Array<Record<string, unknown>>) {
       _msg: string,
       _ws: string,
       _tid: string | null,
-      _hist: unknown[],
-      _plan: boolean,
-      onEvent: StreamCallback,
+      { onEvent }: { onEvent: StreamCallback },
     ) => {
       onEvent({ event: 'thread_id', thread_id: 'thread-1' });
       for (const e of events) {
@@ -106,7 +108,7 @@ describe('useChatMessages – workspace_status SSE handling', () => {
 
     // Fire without awaiting so stream stays mid-flight.
     act(() => {
-      void result.current.handleSendMessage('hello', false);
+      void result.current.handleSendMessage('hello');
     });
 
     await waitFor(() => {
@@ -124,7 +126,7 @@ describe('useChatMessages – workspace_status SSE handling', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     act(() => {
-      void result.current.handleSendMessage('hello', false);
+      void result.current.handleSendMessage('hello');
     });
 
     await waitFor(() => {
@@ -144,7 +146,7 @@ describe('useChatMessages – workspace_status SSE handling', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     act(() => {
-      void result.current.handleSendMessage('hello', false);
+      void result.current.handleSendMessage('hello');
     });
 
     await waitFor(() => {
@@ -164,7 +166,7 @@ describe('useChatMessages – workspace_status SSE handling', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     act(() => {
-      void result.current.handleSendMessage('hello', false);
+      void result.current.handleSendMessage('hello');
     });
 
     await waitFor(() => {
@@ -180,9 +182,7 @@ describe('useChatMessages – workspace_status SSE handling', () => {
         _msg: string,
         _ws: string,
         _tid: string | null,
-        _hist: unknown[],
-        _plan: boolean,
-        onEvent: StreamCallback,
+        { onEvent }: { onEvent: StreamCallback },
       ) => {
         onEvent({ event: 'thread_id', thread_id: 'thread-1' });
         return { disconnected: false };
@@ -192,7 +192,7 @@ describe('useChatMessages – workspace_status SSE handling', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     await act(async () => {
-      await result.current.handleSendMessage('hello', false);
+      await result.current.handleSendMessage('hello');
     });
 
     expect(result.current.workspaceStarting).toBe(false);
@@ -207,9 +207,7 @@ describe('useChatMessages – workspace_status SSE handling', () => {
         _msg: string,
         _ws: string,
         _tid: string | null,
-        _hist: unknown[],
-        _plan: boolean,
-        onEvent: StreamCallback,
+        { onEvent }: { onEvent: StreamCallback },
       ) => {
         onEvent({ event: 'thread_id', thread_id: 'thread-1' });
         onEvent({ event: 'workspace_status', status: 'starting', sandbox_state: 'archived' });
@@ -221,12 +219,146 @@ describe('useChatMessages – workspace_status SSE handling', () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 
     await act(async () => {
-      await result.current.handleSendMessage('hello', false);
+      await result.current.handleSendMessage('hello');
     });
 
     // After cleanupAfterStreamEnd runs, spinner should be cleared.
     await waitFor(() => {
       expect(result.current.workspaceStarting).toBe(false);
+    });
+  });
+
+  it('turn_held held sets turnHeld to the reason', async () => {
+    const { resolve } = mockHangingStream([
+      { event: 'turn_held', status: 'held', reason: 'handoff' },
+    ]);
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    act(() => {
+      void result.current.handleSendMessage('hello');
+    });
+
+    await waitFor(() => {
+      expect(result.current.turnHeld).toBe('handoff');
+    });
+
+    resolve();
+  });
+
+  it('turn_held released clears turnHeld mid-stream', async () => {
+    let emit: StreamCallback = () => {};
+    const hang = new Promise<{ disconnected: false }>(() => {});
+    mockSendStream.mockImplementation(
+      async (
+        _msg: string,
+        _ws: string,
+        _tid: string | null,
+        { onEvent }: { onEvent: StreamCallback },
+      ) => {
+        emit = onEvent;
+        onEvent({ event: 'thread_id', thread_id: 'thread-1' });
+        onEvent({ event: 'turn_held', status: 'held', reason: 'compact' });
+        return hang;
+      },
+    );
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    act(() => {
+      void result.current.handleSendMessage('hello');
+    });
+
+    await waitFor(() => {
+      expect(result.current.turnHeld).toBe('compact');
+    });
+
+    act(() => {
+      emit({ event: 'turn_held', status: 'released' });
+    });
+
+    expect(result.current.turnHeld).toBeNull();
+  });
+
+  it('a reconnect clears turnHeld when the stream dropped before released', async () => {
+    mockStatus.mockResolvedValue(threadStatus({ can_reconnect: true, status: 'running' }));
+    // The resumed run stream stays open, so only the attach can clear the line.
+    mockReconnect.mockImplementation(() => new Promise(() => {}));
+    mockSendStream.mockImplementation(
+      async (
+        _msg: string,
+        _ws: string,
+        _tid: string | null,
+        { onEvent }: { onEvent: StreamCallback },
+      ) => {
+        onEvent({ event: 'thread_id', thread_id: 'thread-1' });
+        onEvent({ event: 'turn_held', status: 'held', reason: 'handoff' });
+        return { disconnected: true };
+      },
+    );
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    act(() => {
+      void result.current.handleSendMessage('hello');
+    });
+
+    await waitFor(() => expect(mockReconnect).toHaveBeenCalled());
+    expect(result.current.turnHeld).toBeNull();
+  });
+
+  it('a thread switch clears the held line of the thread it leaves', async () => {
+    mockSendStream.mockImplementation(
+      async (
+        _msg: string,
+        _ws: string,
+        _tid: string | null,
+        { onEvent }: { onEvent: StreamCallback },
+      ) => {
+        onEvent({ event: 'thread_id', thread_id: 'thread-A' });
+        onEvent({ event: 'turn_held', status: 'held', reason: 'handoff' });
+        return new Promise(() => {});
+      },
+    );
+    let tid = 'thread-A';
+    const { result, rerender } = renderHookWithProviders(() => useChatMessages('ws-test', tid));
+
+    act(() => {
+      void result.current.handleSendMessage('hello');
+    });
+    await waitFor(() => expect(result.current.turnHeld).toBe('handoff'));
+
+    await act(async () => {
+      tid = 'thread-B';
+      rerender();
+      await Promise.resolve();
+    });
+
+    expect(result.current.turnHeld).toBeNull();
+  });
+
+  it('stream cleanup clears turnHeld when released never comes', async () => {
+    mockSendStream.mockImplementation(
+      async (
+        _msg: string,
+        _ws: string,
+        _tid: string | null,
+        { onEvent }: { onEvent: StreamCallback },
+      ) => {
+        onEvent({ event: 'thread_id', thread_id: 'thread-1' });
+        onEvent({ event: 'turn_held', status: 'held', reason: 'offload' });
+        return { disconnected: false };
+      },
+    );
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    await act(async () => {
+      await result.current.handleSendMessage('hello');
+    });
+
+    await waitFor(() => {
+      expect(result.current.turnHeld).toBeNull();
     });
   });
 });

@@ -1,6 +1,6 @@
 .jump-to-latest-pill {
   position: absolute;
-  bottom: 16px;
+  bottom: calc(var(--composer-h, 0px) + 16px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 20;
@@ -21,10 +21,28 @@
   /* Theme-aware token (strong on the dark default, soft on light) — a hardcoded
      near-black shadow was invisible against the dark theme's near-black bg. */
   box-shadow: var(--shadow-card);
+  /* `bottom` follows the composer's height, which drops by a whole row when
+     the tray folds into it as this pill appears. */
   transition:
-    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 180ms ease;
-  animation: jumpPillIn 220ms cubic-bezier(0.16, 1, 0.3, 1);
+    bottom var(--motion-fold) var(--ease-out),
+    opacity var(--motion-enter) var(--ease-out),
+    transform var(--motion-enter) var(--ease-out),
+    background-color var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out),
+    visibility 0s;
+}
+
+/* Leaving: a shorter fade back down, and hidden only once it has finished. */
+.jump-to-latest-pill[data-state='closed'] {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    bottom var(--motion-fold) var(--ease-out),
+    opacity var(--motion-exit) var(--ease-out),
+    transform var(--motion-exit) var(--ease-out),
+    visibility 0s linear var(--motion-exit);
 }
 
 .jump-to-latest-pill--count {
@@ -39,14 +57,11 @@
   }
 }
 
+/* A neutral hover, as on the other floating controls: the accent is kept for
+   what is live or the reader's own. */
 .jump-to-latest-pill:hover {
-  transform: translateX(-50%) translateY(-1px);
-  border-color: var(--color-accent-primary);
-}
-
-.jump-to-latest-pill:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border-strong);
 }
 
 .jump-to-latest-pill__count {
@@ -58,16 +73,9 @@
   color: var(--color-text-primary);
 }
 
-@keyframes jumpPillIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .jump-to-latest-pill {
-    animation: none;
+  .jump-to-latest-pill,
+  .jump-to-latest-pill[data-state='closed'] {
     transition: none;
-  }
-  .jump-to-latest-pill:hover {
-    transform: translateX(-50%);
   }
 }

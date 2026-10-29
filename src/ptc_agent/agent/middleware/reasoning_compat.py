@@ -9,6 +9,12 @@ Anthropic-compatible shim, so its own provenance field is not trustworthy.
 Everything here is read-side: the checkpoint keeps whatever it holds and each
 request is sanitized on the way out, so already-broken threads heal on their
 next turn without a migration.
+
+Reasoning is not all a provider binds to itself. A Responses ``function_call``
+also carries the id its server gave the item, which another server rejects, so
+gate A drops those too. And one API requires the reverse of stripping: DeepSeek
+refuses a tool-calling turn with no thinking block, so a turn another model
+wrote, once stripped, gets an empty one on the way to it.
 """
 
 from __future__ import annotations
@@ -27,13 +33,20 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage, AnyMessage
 
+from src.llms.provider_compaction import adopt
 from src.llms.reasoning_lineage import (
     ANTHROPIC_LINEAGE,
     UNKNOWN_LINEAGE,
     lineage_for_model_id,
     lineage_for_route,
+    tool_turns_need_reasoning,
 )
-from src.llms.reasoning_payload import drop_if_empty, strip_reasoning
+from src.llms.reasoning_payload import (
+    drop_if_empty,
+    pad_tool_turn,
+    strip_item_ids,
+    strip_reasoning,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -52,6 +65,8 @@ class SanitizeStats:
 
     msgs_stripped: int = 0
     msgs_removed: int = 0
+    msgs_ids_dropped: int = 0
+    msgs_padded: int = 0
     blocks_repaired: int = 0
     blocks_dropped: int = 0
 
@@ -70,7 +85,7 @@ def _target_route(model: Any) -> str | None:
     return route if isinstance(route, str) and route else None
 
 
-def _message_lineage(msg: AIMessage) -> str:
+def message_lineage(msg: AIMessage) -> str:
     meta = msg.response_metadata or {}
     origin = meta.get(ORIGIN_KEY)
     if isinstance(origin, str) and origin:
@@ -82,7 +97,7 @@ def _message_lineage(msg: AIMessage) -> str:
 
 
 def _origin_gate(msg: AIMessage, stats: SanitizeStats) -> AIMessage | None:
-    """Gate A — drop reasoning minted by a lineage other than the target's.
+    """Gate A: drop the reasoning and item ids another lineage minted.
 
     The caller establishes that the lineages differ; unattributable history
     resolves to ``UNKNOWN_LINEAGE``, which matches nothing and so fails closed.
@@ -90,7 +105,12 @@ def _origin_gate(msg: AIMessage, stats: SanitizeStats) -> AIMessage | None:
     stripped = strip_reasoning(msg)
     if stripped is not msg:
         stats.msgs_stripped += 1
-    return stripped
+    if stripped is None:
+        return None
+    unlinked = strip_item_ids(stripped)
+    if unlinked is not stripped:
+        stats.msgs_ids_dropped += 1
+    return unlinked
 
 
 def _structure_gate(
@@ -146,12 +166,18 @@ def _structure_gate(
 
 
 def _sanitize(
-    messages: list[AnyMessage], target_lineage: str
+    messages: list[AnyMessage], target_lineage: str, *, pad_tool_turns: bool = False
 ) -> tuple[list[AnyMessage], SanitizeStats]:
     """Run both gates over a history — origin first, then structure.
 
     Order matters only in that gate A already removes every reasoning block on a
-    cross-lineage message, so gate B sees nothing left to judge there.
+    cross-lineage message, so gate B sees nothing left to judge there. Padding
+    runs last, for a target whose API needs a thinking block on every tool-calling
+    turn, so neither gate ever judges the placeholder. It covers every turn
+    without one, whoever wrote it: a turn of the target's own that lost its
+    reasoning to unattributable history, or to the resilience retry that strips
+    all of it, needs the block just the same. Closed turns are padded too, which
+    the API accepts, so the rule never has to know where it thinks a turn began.
     """
     stats = SanitizeStats()
     # A target goes UNKNOWN only when its client skipped LLM.get_llm() — today
@@ -172,10 +198,15 @@ def _sanitize(
             continue
 
         new_msg: AIMessage | None = msg
-        if origin_gate and _message_lineage(msg) != target_lineage:
+        if origin_gate and message_lineage(msg) != target_lineage:
             new_msg = _origin_gate(msg, stats)
         if new_msg is not None:
             new_msg = _structure_gate(new_msg, stats, drop_unsigned=drop_unsigned)
+        if new_msg is not None and pad_tool_turns:
+            padded = pad_tool_turn(new_msg)
+            if padded is not new_msg:
+                stats.msgs_padded += 1
+            new_msg = padded
 
         if new_msg is None:
             stats.msgs_removed += 1
@@ -240,7 +271,16 @@ class ReasoningCompatibilityMiddleware(AgentMiddleware):
     def _prepare(self, request: ModelRequest) -> tuple[ModelRequest, str | None]:
         route = _target_route(request.model)
         target_lineage = lineage_for_route(route)
-        sanitized, stats = _sanitize(request.messages, target_lineage)
+        sanitized, stats = _sanitize(
+            request.messages,
+            target_lineage,
+            pad_tool_turns=tool_turns_need_reasoning(route),
+        )
+        # A summary a provider signed goes as its block to a client that can
+        # take one, inside the lineage that signed it, and as text elsewhere.
+        adopted = adopt(sanitized, request.model, route)
+        if adopted is not None:
+            sanitized = adopted
         if stats:
             # Sanitizing is read-side and the checkpoint keeps the foreign
             # blocks, so one provider switch re-sanitizes on every later call
@@ -254,6 +294,7 @@ class ReasoningCompatibilityMiddleware(AgentMiddleware):
                 target_lineage=target_lineage,
                 **stats.as_log_fields(),
             )
+        if stats or adopted is not None:
             request = request.override(messages=sanitized)
         return request, route
 

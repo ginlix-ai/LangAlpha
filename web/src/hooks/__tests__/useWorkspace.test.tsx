@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { renderHookWithProviders, createTestQueryClient } from '../../test/utils';
 import { useWorkspace } from '../useWorkspace';
+import { queryKeys } from '../../lib/queryKeys';
 import { waitFor } from '@testing-library/react';
 
 // Mock the API function
@@ -75,5 +76,19 @@ describe('useWorkspace', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data!.name).toBe('Fetched');
+  });
+
+  it("names Home from Home's own query while its detail is read", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(queryKeys.workspaces.home(), { workspace_id: 'home-1', is_home: true, status: 'unbound' });
+    mockGetWorkspace.mockResolvedValue({ workspace_id: 'home-1', is_home: true, status: 'running', computer_id: 'c-1' });
+
+    const { result } = renderHookWithProviders(() => useWorkspace('home-1'), { queryClient });
+
+    // Only a stand-in: the detail is still read for its computer and status.
+    expect(result.current.data).toMatchObject({ workspace_id: 'home-1', is_home: true });
+    expect(result.current.isPlaceholderData).toBe(true);
+    await waitFor(() => expect(result.current.data?.computer_id).toBe('c-1'));
+    expect(mockGetWorkspace).toHaveBeenCalledWith('home-1');
   });
 });

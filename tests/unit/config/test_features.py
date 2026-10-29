@@ -34,6 +34,23 @@ def test_market_watch_is_cataloged_enabled_opt_in():
     assert spec.tradeoffs  # experiments state their cost
 
 
+def test_scratchpad_is_cataloged_enabled_opt_in():
+    spec = FEATURES["scratchpad"]
+    assert spec.enabled is True
+    assert spec.gate is FeatureGate.OPT_IN
+    assert spec.label and spec.description
+    assert spec.tradeoffs
+
+
+def test_claude_code_runtime_is_off_until_a_deployment_enables_it_and_a_user_opts_in(monkeypatch):
+    _stub_config(monkeypatch)
+    assert FEATURES["claude_code_runtime"].enabled is False
+    assert effective_flags({"claude_code_runtime": True})["claude_code_runtime"] is False
+    _stub_config(monkeypatch, claude_code_runtime={"enabled": True})
+    assert effective_flags(None)["claude_code_runtime"] is False
+    assert effective_flags({"claude_code_runtime": True})["claude_code_runtime"] is True
+
+
 def test_system_flag_partial_override_merges_with_catalog(monkeypatch):
     _stub_config(monkeypatch, market_watch={"gate": "opt_out"})
     flag = system_flag("market_watch")

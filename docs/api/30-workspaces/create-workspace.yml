@@ -27,29 +27,33 @@ settings:
 
 tests:
   test1: |
-    test("should return 201 on successful creation", function() {
-      expect(res.status).to.equal(201);
+    test("should return 201, or 409 when a workspace already has the name", function() {
+      expect(res.status).to.be.oneOf([201, 409]);
     });
   test2: |
-    test("response should have workspace_id", function() {
-      expect(res.body.workspace_id).to.be.a("string");
+    test("response should name a workspace_id (the holder's on a 409)", function() {
+      const workspace = res.status === 409 ? res.body.detail : res.body;
+      expect(workspace.workspace_id).to.be.a("string");
     });
   test3: |
-    test("response should have user_id", function() {
-      expect(res.body.user_id).to.be.a("string");
+    test("a 409 should carry the workspace_name_taken code", function() {
+      if (res.status === 409) {
+        expect(res.body.detail.code).to.equal("workspace_name_taken");
+      }
     });
   test4: |
-    test("response should have name", function() {
-      expect(res.body.name).to.be.a("string");
+    test("a created workspace should have user_id, name and status", function() {
+      if (res.status === 201) {
+        expect(res.body.user_id).to.be.a("string");
+        expect(res.body.name).to.be.a("string");
+        expect(res.body.status).to.be.a("string");
+      }
     });
   test5: |
-    test("response should have status", function() {
-      expect(res.body.status).to.be.a("string");
-    });
-  test6: |
     test("should set workspace_id variable", function() {
-      if (res.body.workspace_id) {
-        bru.setEnvVar("workspace_id", res.body.workspace_id);
+      const workspace = res.status === 409 ? res.body.detail : res.body;
+      if (workspace && workspace.workspace_id) {
+        bru.setEnvVar("workspace_id", workspace.workspace_id);
       }
     });
 
@@ -63,7 +67,10 @@ docs: |
   - `X-User-Id` (required): User ID for workspace ownership
 
   **Request Body:**
-  - `name` (required): Workspace name (1-255 characters)
+  - `name` (required): Workspace name, 1-80 characters. Unique per user,
+    compared case-insensitively on the folder it names: the workspace's
+    folder on its computer is its name, so two names that make the same
+    folder are the same name.
   - `description` (optional): Workspace description (max 1000 characters)
   - `config` (optional): Configuration settings object
 
@@ -73,6 +80,9 @@ docs: |
   - `name`: Workspace name
   - `description`: Workspace description
   - `sandbox_id`: Daytona sandbox ID (may be null initially)
+  - `dir_name`: The workspace's folder on its computer, its name in folder form
+  - `previous_dir_names`: Folders a rename moved the workspace out of, newest
+    first (empty for a new workspace)
   - `status`: Workspace status (creating, running, stopped, error, deleted)
   - `created_at`: Creation timestamp
   - `updated_at`: Last update timestamp
@@ -81,5 +91,10 @@ docs: |
   - `config`: Configuration settings
 
   **Error Responses:**
-  - 400: Invalid request (name too long, etc.)
+  - 400 `workspace_name_invalid`: The name is reserved or has no usable folder
+    spelling. `{"detail": {"code": "workspace_name_invalid", "message": "..."}}`
+  - 409 `workspace_name_taken`: Another of the user's workspaces has the name.
+    `{"detail": {"code": "workspace_name_taken", "message": "...", "name": "...", "workspace_id": "..."}}`,
+    where `workspace_id` is the workspace holding it.
+  - 422: Request validation failed (name empty or longer than 80 characters)
   - 500: Failed to create workspace

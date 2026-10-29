@@ -13,7 +13,10 @@ Covers:
 """
 
 import asyncio
+import contextvars
+import gc
 import logging
+import weakref
 from contextlib import suppress
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +28,12 @@ from src.server.services.runs.executor import (
     LocalRunExecution,
     LocalRunStatus,
 )
+from ptc_agent.agent.middleware.background_subagent.registry import (
+    BackgroundTask,
+    RunTasksKilled,
+)
+from src.server.services.runs import subagent_collection
+from src.server.services.runs.teardown import StopTeardown
 
 REGISTRY_STORE_MOD = "src.server.services.background_registry_store"
 
@@ -534,7 +543,6 @@ class TestMarkCancelledUserLabeling:
         mod = "src.server.services.runs.executor"
         with patch(f"{fin}.get_token_usage_from_callback", return_value=(None, [])), \
              patch(f"{fin}.get_tool_usage_from_handler", return_value={}), \
-             patch(f"{fin}.get_sse_events_from_handler", return_value=[]), \
              patch(f"{fin}.calculate_execution_time", return_value=1.0), \
              patch(f"{mod}.release_burst_slot", new_callable=AsyncMock), \
              patch("src.server.services.runs.coordinator.RunCoordinator") as mock_coord_cls:
@@ -586,6 +594,76 @@ class TestMarkCancelledUserLabeling:
         assert persist_metadata["cancelled_by_user"] is False
 
 
+def _model_call_error(status_code):
+    """A model call's exception as ModelResilienceMiddleware leaves it."""
+    exc = RuntimeError("Error code: %d" % status_code)
+    exc.__model_resilience__ = {
+        "model": "primary",
+        "attempted_models": [
+            {"model": "primary", "error": "rejected", "status_code": status_code, "attempts": 1},
+            {"model": "fallback", "error": "down", "status_code": 503, "attempts": 1},
+        ],
+    }
+    return exc
+
+
+class TestFailedRunRecordsItsModelCall:
+    """A run that failed on its model call records the status the primary
+    earned and whether the credential that made the call was the user's, so
+    an automation can tell a rejected key of theirs from one of ours."""
+
+    async def _finalize_failed(self, exc, credential_source):
+        btm = _make_btm()
+        task_info = _make_task_info(thread_id="thread-fail", run_id="run-fail")
+        handler = MagicMock()
+        handler.agent_config.credential_source = credential_source
+        task_info.metadata = {
+            "workspace_id": "ws-1",
+            "user_id": "user-1",
+            "run_handle": MagicMock(),
+            "handler": handler,
+        }
+        btm.executions[(task_info.thread_id, task_info.run_id)] = task_info
+
+        coordinator = MagicMock()
+        coordinator.finalize_run = AsyncMock()
+        fin = "src.server.services.runs.finalization"
+        mod = "src.server.services.runs.executor"
+        with patch(f"{fin}.get_token_usage_from_callback", return_value=(None, [])), \
+             patch(f"{fin}.get_tool_usage_from_handler", return_value={}), \
+             patch(f"{fin}.calculate_execution_time", return_value=1.0), \
+             patch(f"{mod}.release_burst_slot", new_callable=AsyncMock), \
+             patch("src.server.services.runs.coordinator.RunCoordinator") as coord_cls:
+            coord_cls.get_instance.return_value = coordinator
+            await btm._finalize_run(
+                task_info.thread_id, task_info.run_id,
+                kind="failed", error=str(exc), exc=exc,
+            )
+        return coordinator.finalize_run.await_args.args[1].metadata
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "credential_source, owned",
+        [("byok", True), ("oauth", True), ("platform", False)],
+    )
+    async def test_a_rejected_model_call_names_whose_key(
+        self, monkeypatch, credential_source, owned
+    ):
+        monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+        metadata = await self._finalize_failed(_model_call_error(401), credential_source)
+        assert metadata["error_status_code"] == 401
+        assert metadata["error_credential_owned"] is owned
+
+    @pytest.mark.asyncio
+    async def test_a_failure_off_the_model_call_records_nothing(self):
+        # A tool's HTTP 401 carries no resilience trace.
+        exc = RuntimeError("Client error '401 Unauthorized'")
+        exc.status_code = 401
+        metadata = await self._finalize_failed(exc, "byok")
+        assert "error_status_code" not in metadata
+        assert "error_credential_owned" not in metadata
+
+
 class TestThrownFinalizeLeavesEntryRunning:
     """REGRESSION (F4): a THROWN finalize CAS must not stamp the local entry
     terminal. The durable row is still in_progress — stamping COMPLETED
@@ -612,7 +690,6 @@ class TestThrownFinalizeLeavesEntryRunning:
         mod = "src.server.services.runs.executor"
         with patch(f"{fin}.get_token_usage_from_callback", return_value=(None, [])), \
              patch(f"{fin}.get_tool_usage_from_handler", return_value={}), \
-             patch(f"{fin}.get_sse_events_from_handler", return_value=[]), \
              patch(f"{fin}.calculate_execution_time", return_value=1.0), \
              patch(f"{mod}.release_burst_slot", new_callable=AsyncMock), \
              patch("src.server.services.runs.coordinator.RunCoordinator") as coord_cls:
@@ -704,7 +781,10 @@ class TestStopPathFlushGating:
         btm = _make_btm()
         flush, teardown = await self._drive_stop(btm, explicit=True)
         flush.assert_awaited_once_with("t-stop", "r-stop")
-        teardown.assert_awaited_once_with("t-stop", "r-stop")
+        # The teardown fills the result the run already holds, so a finalize
+        # that starts before the teardown is done still reads its claim.
+        stop = btm.executions[("t-stop", "r-stop")].stop_teardown
+        teardown.assert_awaited_once_with("t-stop", "r-stop", stop)
 
     @pytest.mark.asyncio
     async def test_system_cancel_does_not_flush_or_teardown(self):
@@ -800,6 +880,135 @@ class TestStopPathFlushGating:
 
 
 # ---------------------------------------------------------------------------
+# The graph's stream is closed before the executor flushes or finalizes
+# ---------------------------------------------------------------------------
+
+class _InFlightGraph:
+    """LangGraph stand-in: a model call in flight, cancelled and awaited when
+    its stream closes, as LangGraph's background executor does."""
+
+    def __init__(self):
+        self.call: asyncio.Task | None = None
+        self.closed = False
+
+    def astream(self, _input_state, config=None, **_kwargs):
+        async def _gen():
+            self.call = asyncio.ensure_future(asyncio.sleep(30))
+            try:
+                while True:
+                    yield ((), "custom", {"type": "context_window", "action": "offload"})
+                    await asyncio.sleep(0.01)
+            finally:
+                self.call.cancel()
+                await asyncio.gather(self.call, return_exceptions=True)
+                self.closed = True
+
+        return _gen()
+
+
+def _ptc_workflow(graph: _InFlightGraph):
+    """A PTC turn's stream as ptc_run composes it, over the real orchestrator."""
+    from ptc_agent.agent.middleware.background_subagent.orchestrator import (
+        BackgroundSubagentOrchestrator,
+    )
+    from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
+    from ptc_agent.core.project_context import ProjectContext, run_with_project
+    from src.server.services.egress.direct_tools import DirectMCPBinding
+    from src.server.services.runs.sse_producer import RunSSEProducer
+
+    producer = RunSSEProducer(thread_id="t-close", run_id="r-close")
+    return run_with_project(
+        ProjectContext(workspace_id="ws-close", dir_name="close"),
+        run_with_credit_gate(
+            None,
+            DirectMCPBinding(user_id=None).drive(
+                producer.stream_workflow(
+                    BackgroundSubagentOrchestrator(graph, MagicMock()),
+                    {},
+                    {"configurable": {}},
+                )
+            ),
+        ),
+    )
+
+
+class TestGraphClosedBeforeTheExecutorGoesOn:
+    """Each way out of ``consume_workflow`` closes the turn's stream through
+    every wrapper before the flush or finalize: work still running then could
+    finish after its usage was read."""
+
+    async def _drive(self, *, on_third_write, stop=None):
+        from src.server.services.runs.stream_writer import TransportLostError
+
+        btm = _make_btm()
+        btm.enable_storage = True
+        graph = _InFlightGraph()
+        key = ("t-close", "r-close")
+        task_info = _make_task_info(thread_id=key[0], run_id=key[1])
+        btm.executions[key] = task_info
+        seen: dict[str, bool] = {}
+        writes = 0
+        in_write = asyncio.Event()
+
+        async def buffer(_thread_id, _run_id, _event):
+            nonlocal writes
+            writes += 1
+            if writes == 3:
+                if on_third_write == "lose transport":
+                    raise TransportLostError("stream gone")
+                if on_third_write == "flag a stop":
+                    # Seen at the next event, with no task cancel behind it.
+                    task_info.explicit_cancel = True
+                    task_info.cancel_event.set()
+                    return
+                in_write.set()
+                await asyncio.sleep(30)
+
+        async def flush(*_args):
+            seen["flush"] = graph.closed
+
+        async def finalize(*_args, kind, **_kwargs):
+            seen[kind] = graph.closed
+
+        with patch.object(btm, "_buffer_event_redis", side_effect=buffer), \
+             patch.object(btm, "_flush_checkpoint", side_effect=flush), \
+             patch.object(btm, "_finalize_run", side_effect=finalize), \
+             patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
+            outer = asyncio.create_task(
+                btm._run_workflow(
+                    key[0], key[1], _ptc_workflow(graph),
+                    cancel_event=task_info.cancel_event,
+                )
+            )
+            if stop is not None:
+                await in_write.wait()
+                task_info.explicit_cancel = True
+                task_info.cancel_event.set()
+                stop(task_info)
+            with suppress(asyncio.CancelledError):
+                await outer
+        assert graph.call.cancelled()
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_a_lost_transport_closes_the_graph_before_the_finalize(self):
+        seen = await self._drive(on_third_write="lose transport")
+        assert seen == {"failed": True}
+
+    @pytest.mark.asyncio
+    async def test_a_stop_during_a_write_closes_the_graph_before_the_flush(self):
+        seen = await self._drive(
+            on_third_write="hang", stop=lambda info: info.inner_task.cancel()
+        )
+        assert seen == {"flush": True, "cancelled": True}
+
+    @pytest.mark.asyncio
+    async def test_a_cooperative_cancel_closes_the_graph_before_the_flush(self):
+        seen = await self._drive(on_third_write="flag a stop")
+        assert seen == {"flush": True, "cancelled": True}
+
+
+# ---------------------------------------------------------------------------
 # Single-owner teardown ordering (decision 1A): drain BEFORE cancel_run_tasks,
 # everything scoped to the stopped run.
 # ---------------------------------------------------------------------------
@@ -839,9 +1048,9 @@ class TestStopTeardownOrdering:
         fake_store = MagicMock()
         fake_store.get_registry = AsyncMock(return_value=fake_registry)
 
-        async def fake_cancel_run_tasks(thread_id, run_id, *, force):
+        async def fake_cancel_run_tasks(thread_id, run_id, *, force, claim_for):
             order.append("cancel_run_tasks")
-            return 1
+            return RunTasksKilled(cancelled=1, claimed=[own_task])
 
         fake_store.cancel_run_tasks = AsyncMock(side_effect=fake_cancel_run_tasks)
 
@@ -849,17 +1058,18 @@ class TestStopTeardownOrdering:
             f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=fake_store,
         ), patch.object(btm, "_drain_killed_subagent_events", side_effect=fake_drain):
-            await btm._teardown_subagents_on_stop("t-order", "r-order")
+            stop = StopTeardown()
+            await btm._teardown_subagents_on_stop("t-order", "r-order", stop)
 
         assert order == ["cancel_run_tasks", "drain"]
         # Prior-turn tasks are excluded: their events belong to their own
         # response, not the stopped one.
         assert drained_tasks == [own_task]
         fake_store.cancel_run_tasks.assert_awaited_once_with(
-            "t-order", "r-order", force=True
+            "t-order", "r-order", force=True, claim_for="r-order"
         )
-        stashed = task_info.metadata.get("_stop_subagent_events")
-        assert stashed and stashed[0]["data"]["agent"] == "task:x"
+        assert stop.events and stop.events[0]["data"]["agent"] == "task:x"
+        assert stop.claimed == [own_task]
 
     @pytest.mark.asyncio
     async def test_drain_timeout_proceeds_without_events(self):
@@ -882,7 +1092,9 @@ class TestStopTeardownOrdering:
 
         fake_store = MagicMock()
         fake_store.get_registry = AsyncMock(return_value=fake_registry)
-        fake_store.cancel_run_tasks = AsyncMock(return_value=1)
+        fake_store.cancel_run_tasks = AsyncMock(
+            return_value=RunTasksKilled(cancelled=1)
+        )
 
         with patch(
             f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
@@ -892,10 +1104,11 @@ class TestStopTeardownOrdering:
                "src.server.services.runs.teardown.get_stop_drain_timeout",
                return_value=0.05,
            ):
-            await btm._teardown_subagents_on_stop("t-tmo", "r-tmo")
+            stop = StopTeardown()
+            await btm._teardown_subagents_on_stop("t-tmo", "r-tmo", stop)
 
-        # No drained events stashed, but cancel_run_tasks still ran.
-        assert "_stop_subagent_events" not in task_info.metadata
+        # No drained events kept, but cancel_run_tasks still ran.
+        assert stop.events == []
         fake_store.cancel_run_tasks.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -926,13 +1139,15 @@ class TestStopTeardownOrdering:
 
         fake_store = MagicMock()
         fake_store.get_registry = AsyncMock(return_value=None)
-        fake_store.cancel_run_tasks = AsyncMock(return_value=0)
+        fake_store.cancel_run_tasks = AsyncMock(
+            return_value=RunTasksKilled(cancelled=0)
+        )
 
         with patch(
             f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=fake_store,
         ):
-            await btm._teardown_subagents_on_stop("t-orph", "r-orph")
+            await btm._teardown_subagents_on_stop("t-orph", "r-orph", StopTeardown())
 
         await asyncio.sleep(0)  # let done-callbacks run
         assert collector.cancelled()
@@ -963,107 +1178,28 @@ class TestStopTeardownOrdering:
 
 
 # ---------------------------------------------------------------------------
-# Drain closes open subagent reasoning blocks (replay zombie fix)
+# The stop drain takes a lane whole or not at all
 # ---------------------------------------------------------------------------
 
-class TestDrainReasoningClose:
+class TestStopDrainSnapshot:
 
-    def _task(self, task_id: str, count: int) -> MagicMock:
-        task = MagicMock()
-        task.task_id = task_id
+    def _task(self, task_id: str, count: int) -> BackgroundTask:
+        # No writer handles: the drain withholds tasks whose writers are alive.
+        task = BackgroundTask(
+            tool_call_id=f"tc-{task_id}",
+            task_id=task_id,
+            description="d",
+            prompt="p",
+            subagent_type="general-purpose",
+            spawned_run_id="run-1",
+        )
         task.captured_event_count = count
-        task.spawned_run_id = "run-1"
-        # Settled writers: the drain withholds tasks whose writers are alive.
-        task.asyncio_task = None
-        task.handler_task = None
         return task
 
     @pytest.mark.asyncio
-    async def test_open_reasoning_block_gets_synthetic_close(self):
-        """A subagent killed mid-reasoning (start with no complete) gets a
-        synthetic reasoning_signal 'complete' — matching its own agent+id —
-        before the stopped close, so replay isn't stuck 'thinking'."""
-        btm = _make_btm()
-        records = [
-            {"event": "message_chunk", "data": {
-                "agent": "task:abc", "id": "m1",
-                "content": "start", "content_type": "reasoning_signal"},
-             "run": "run-1"},
-        ]
-
-        async def fake_iter(thread_id, task):
-            for r in records:
-                yield r
-
-        with patch(
-            "src.server.services.runs.subagent_collection.iter_subagent_events_full",
-            side_effect=fake_iter,
-        ):
-            merged = await btm._drain_killed_subagent_events(
-                "t-x", [self._task("abc", 1)]
-            )
-
-        completes = [
-            e for e in merged
-            if e["data"].get("content_type") == "reasoning_signal"
-            and e["data"].get("content") == "complete"
-        ]
-        assert len(completes) == 1
-        assert completes[0]["data"]["agent"] == "task:abc"
-        assert completes[0]["data"]["id"] == "m1"
-        # The synthetic complete precedes the finish_reason 'stopped' close.
-        idx_complete = next(
-            i for i, e in enumerate(merged)
-            if e["data"].get("content") == "complete"
-        )
-        idx_stop = next(
-            i for i, e in enumerate(merged)
-            if e["data"].get("finish_reason") == "stopped"
-        )
-        assert idx_complete < idx_stop
-
-    @pytest.mark.asyncio
-    async def test_already_completed_reasoning_not_double_closed(self):
-        """A subagent whose reasoning block already closed gets no extra
-        synthetic complete appended."""
-        btm = _make_btm()
-        records = [
-            {"event": "message_chunk", "data": {
-                "agent": "task:abc", "id": "m1",
-                "content": "start", "content_type": "reasoning_signal"},
-             "run": "run-1"},
-            {"event": "message_chunk", "data": {
-                "agent": "task:abc", "id": "m1",
-                "content": "complete", "content_type": "reasoning_signal"},
-             "run": "run-1"},
-        ]
-
-        async def fake_iter(thread_id, task):
-            for r in records:
-                yield r
-
-        with patch(
-            "src.server.services.runs.subagent_collection.iter_subagent_events_full",
-            side_effect=fake_iter,
-        ):
-            merged = await btm._drain_killed_subagent_events(
-                "t-x", [self._task("abc", 2)]
-            )
-
-        completes = [
-            e for e in merged
-            if e["data"].get("content_type") == "reasoning_signal"
-            and e["data"].get("content") == "complete"
-        ]
-        # Only the original complete survives — no synthetic duplicate.
-        assert len(completes) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_recovered_events_skips_synthetic_close(self):
-        """A task with captured events whose XRANGE recovered nothing gets NO
-        synthetic rows: a transcript-class row is the replay cache gate's
-        archive evidence, and a bare close would vouch for a snapshot that
-        isn't there. The lane stays uncacheable instead."""
+    async def test_no_recovered_events_carry_nothing(self):
+        """A task with captured events whose XRANGE recovered nothing is
+        withheld; its capture stream stays for the archive."""
         btm = _make_btm()
 
         async def empty_iter(thread_id, task):
@@ -1071,7 +1207,7 @@ class TestDrainReasoningClose:
             yield  # pragma: no cover
 
         with patch(
-            "src.server.services.runs.subagent_collection.iter_subagent_events_full",
+            "src.server.services.runs.teardown.iter_subagent_events_full",
             side_effect=empty_iter,
         ):
             merged = await btm._drain_killed_subagent_events(
@@ -1083,9 +1219,9 @@ class TestDrainReasoningClose:
     @pytest.mark.asyncio
     async def test_partial_recovery_withholds_snapshot(self):
         """A truncated read (fewer records than attempted appends — torn
-        spill prefix, mid-stream trim) is as unsafe as zero: persisting the
-        prefix would clear the replay cache gate and cache an incomplete
-        snapshot. The whole task is withheld, closes included."""
+        spill prefix, mid-stream trim) is as unsafe as zero: recording the
+        prefix would record part of the lane as all of it. The whole task
+        is withheld."""
         btm = _make_btm()
         records = [
             {"event": "message_chunk", "data": {
@@ -1099,7 +1235,7 @@ class TestDrainReasoningClose:
                 yield r
 
         with patch(
-            "src.server.services.runs.subagent_collection.iter_subagent_events_full",
+            "src.server.services.runs.teardown.iter_subagent_events_full",
             side_effect=fake_iter,
         ):
             merged = await btm._drain_killed_subagent_events(
@@ -1126,7 +1262,7 @@ class TestDrainReasoningClose:
                 "content": "x", "content_type": "text"}}
 
         with patch(
-            "src.server.services.runs.subagent_collection.iter_subagent_events_full",
+            "src.server.services.runs.teardown.iter_subagent_events_full",
             side_effect=fake_iter,
         ):
             merged = await btm._drain_killed_subagent_events("t-x", [task])
@@ -1153,7 +1289,7 @@ class TestDrainReasoningClose:
                 yield r
 
         with patch(
-            "src.server.services.runs.subagent_collection.iter_subagent_events_full",
+            "src.server.services.runs.teardown.iter_subagent_events_full",
             side_effect=fake_iter,
         ):
             merged = await btm._drain_killed_subagent_events(
@@ -1161,68 +1297,6 @@ class TestDrainReasoningClose:
             )
 
         assert merged == []
-
-
-class TestPersistCollectedEvents:
-
-    @pytest.mark.asyncio
-    async def test_persist_delegates_to_locked_rebase(self):
-        """The archive write goes through the row-locked rebase (concurrent
-        atomic appends serialize on the lock instead of being erased): the
-        collected agents are the strip set, cleaned rows the append set,
-        and the pre-compose main rows the missing-row fallback."""
-        btm = _make_btm()
-        main = [
-            {"event": "message_chunk", "data": {"agent": "ptc", "content": "m"}}
-        ]
-        captured = [
-            {
-                "event": "message_chunk",
-                "data": {"agent": "task:abc", "content": "t"},
-                "ts": 123.0,
-            }
-        ]
-
-        rebase = AsyncMock(return_value=True)
-        with patch(
-            "src.server.database.conversation.rebase_sse_events", new=rebase
-        ):
-            ok = await btm._persist_collected_events(
-                main, captured, "resp-1", "t-x", "ws", "u"
-            )
-
-        assert ok is True
-        rebase.assert_awaited_once()
-        args, kwargs = rebase.await_args
-        assert args == ("resp-1",)
-        assert kwargs["drop_agents"] == {"task:abc"}
-        # ts is stripped before archival.
-        assert kwargs["append_events"] == [
-            {"event": "message_chunk", "data": {"agent": "task:abc", "content": "t"}}
-        ]
-        assert kwargs["fallback_base"] is main
-
-    @pytest.mark.asyncio
-    async def test_double_failure_returns_false(self):
-        """Both write attempts failing returns False so callers skip stream
-        retirement — the Redis capture streams are the only remaining source
-        of the transcript after a failed archive write."""
-        btm = _make_btm()
-
-        with patch(
-            "src.server.database.conversation.rebase_sse_events",
-            new=AsyncMock(side_effect=RuntimeError("db down")),
-        ), patch("asyncio.sleep", new=AsyncMock()):
-            ok = await btm._persist_collected_events(
-                [],
-                [{"event": "message_chunk", "data": {"agent": "task:abc"}}],
-                "resp-1",
-                "t-x",
-                "ws",
-                "u",
-            )
-
-        assert ok is False
 
 
 class TestReplayOwnedTaskEvents:
@@ -1244,7 +1318,6 @@ class TestReplayOwnedTaskEvents:
 
     @pytest.mark.asyncio
     async def test_complete_recovery_appends_and_succeeds(self):
-        btm = _make_btm()
         records = [
             {
                 "event": "message_chunk",
@@ -1262,7 +1335,7 @@ class TestReplayOwnedTaskEvents:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=self._iter(records),
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "t-x", self._task(2), "resp-1", out
             )
         assert ok is True
@@ -1275,7 +1348,6 @@ class TestReplayOwnedTaskEvents:
         NOTHING — a partial archive would clear the replay cache gate and
         freeze an incomplete transcript — and returns False so cleanup
         retains the streams."""
-        btm = _make_btm()
         records = [
             {
                 "event": "message_chunk",
@@ -1288,7 +1360,7 @@ class TestReplayOwnedTaskEvents:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=self._iter(records),
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "t-x", self._task(3), "resp-1", out
             )
         assert ok is False
@@ -1299,13 +1371,12 @@ class TestReplayOwnedTaskEvents:
         """The zero-row XRANGE failure mode: captured events exist but the
         iterator yields nothing — must NOT read as a successful no-op
         (persist would be skipped and cleanup would retire the only copy)."""
-        btm = _make_btm()
         out: list = []
         with patch(
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=self._iter([]),
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "t-x", self._task(3), "resp-1", out
             )
         assert ok is False
@@ -1318,7 +1389,6 @@ class TestReplayOwnedTaskEvents:
         ``expected`` records, but all are foreign-stamped. They must not pad
         the completeness tally — round 1's capture is gone and its streams
         must be retained, not retired as safely archived."""
-        btm = _make_btm()
         records = [
             {
                 "event": "message_chunk",
@@ -1336,7 +1406,7 @@ class TestReplayOwnedTaskEvents:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=self._iter(records),
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "t-x", self._task(2), "resp-1", out
             )
         assert ok is False
@@ -1347,7 +1417,6 @@ class TestReplayOwnedTaskEvents:
         """More own-round records than the entry snapshot (a terminal append
         landing mid-replay) also withholds — the snapshot the caller is
         about to vouch for no longer matches what the writer produced."""
-        btm = _make_btm()
         records = [
             {
                 "event": "message_chunk",
@@ -1365,7 +1434,7 @@ class TestReplayOwnedTaskEvents:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=self._iter(records),
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "t-x", self._task(1), "resp-1", out
             )
         assert ok is False
@@ -1378,7 +1447,6 @@ class TestReplayOwnedTaskEvents:
         stream can only be a foreign pre-stamp writer's (rolling-deploy
         resume). It must neither count nor archive, even when the counts
         happen to match."""
-        btm = _make_btm()
         records = [
             {"event": "message_chunk", "data": {"agent": "task:abc", "content": "a"}},
             {"event": "message_chunk", "data": {"agent": "task:abc", "content": "b"}},
@@ -1388,7 +1456,7 @@ class TestReplayOwnedTaskEvents:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=self._iter(records),
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "t-x", self._task(2), "resp-1", out
             )
         assert ok is False
@@ -1398,7 +1466,6 @@ class TestReplayOwnedTaskEvents:
     async def test_unstamped_records_accepted_for_legacy_task(self):
         """A task with no spawned_run_id (pre-stamp writer) legitimately
         produces unstamped records — they still count and archive."""
-        btm = _make_btm()
         task = self._task(1)
         task.spawned_run_id = None
         records = [
@@ -1409,7 +1476,7 @@ class TestReplayOwnedTaskEvents:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=self._iter(records),
         ):
-            ok = await btm._replay_owned_task_events("t-x", task, "resp-1", out)
+            ok = await subagent_collection.replay_owned_task_events("t-x", task, "resp-1", out)
         assert ok is True
         assert len(out) == 1
 
@@ -1429,7 +1496,6 @@ class TestCleanupRetireSplit:
         return task
 
     async def _run(self, retire_streams: bool) -> tuple[AsyncMock, AsyncMock]:
-        btm = _make_btm()
         delete_mock = AsyncMock()
         registry = MagicMock()
         registry.remove_task_if_owned = AsyncMock()
@@ -1445,7 +1511,7 @@ class TestCleanupRetireSplit:
             f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=store,
         ):
-            await btm._await_drain_and_cleanup_tasks(
+            await subagent_collection.await_drain_and_cleanup_tasks(
                 [self._task()], "t-x", "resp-1",
                 timeout=0.01, retire_streams=retire_streams,
             )
@@ -1664,6 +1730,110 @@ class TestStartWorkflowHandoffCancelIntent:
                     await ti.task
 
 
+class TestHandoffUnderCallerCancellation:
+    """The caller is a chat stream task that a client disconnect cancels at
+    every await (an AnyIO scope). Once start_run has registered the run, the
+    run is the executor's: a cancel landing on start_run's own awaits must not
+    hand it back to the stream's death path, skip the session-loss abort, or
+    lose a Stop that arrived before registration."""
+
+    @staticmethod
+    async def _start_cancelled(btm, run_handle, row, scope=None):
+        async def gen():
+            await asyncio.Event().wait()
+            yield {}
+
+        async def _get_run(_run_id):
+            await asyncio.sleep(0)
+            return row
+
+        import anyio
+
+        # Instance-level, so the workflow's own teardown in _stop stays mocked.
+        btm._finalize_run = AsyncMock()
+        with patch(
+            "src.server.database.runs.lifecycle.get_run", side_effect=_get_run
+        ):
+            with anyio.CancelScope() as cancel:
+                cancel.cancel()
+                try:
+                    await btm.start_run(
+                        thread_id="t-1",
+                        run_id="run-1",
+                        workflow_generator=gen(),
+                        metadata={"user_id": "u-1", "run_handle": run_handle},
+                        on_registered=(
+                            scope.transfer_to_executor if scope is not None else None
+                        ),
+                    )
+                except asyncio.CancelledError:
+                    # The chat handlers' death path.
+                    if scope is not None and scope.slot_owned:
+                        await scope.fail_open("client disconnected during setup")
+                    raise
+            for _ in range(5):
+                await asyncio.sleep(0)
+        return btm.executions[("t-1", "run-1")]
+
+    @staticmethod
+    async def _stop(ti):
+        ti.task.cancel()
+        with suppress(asyncio.CancelledError):
+            await ti.task
+
+    @pytest.mark.asyncio
+    async def test_a_registered_run_is_not_settled_by_the_stream_death_path(self):
+        from src.server.services.runs.admission import RunScope
+
+        btm = _make_btm()
+        run_handle = MagicMock(run_id="run-1", guard=None)
+        scope = RunScope(user_id="u-1", burst_slot_id="s-1")
+        scope.attach_run(run_handle)
+        coordinator = MagicMock(fail_open_run=AsyncMock())
+        row = {"status": "in_progress", "cancel_requested_at": None}
+
+        with patch(
+            "src.server.services.runs.coordinator.RunCoordinator.get_instance",
+            return_value=coordinator,
+        ), patch(
+            "src.server.dependencies.usage_limits.release_burst_slot",
+            new=AsyncMock(),
+        ) as release:
+            ti = await self._start_cancelled(btm, run_handle, row, scope)
+        try:
+            assert ti.task is not None and not ti.task.done()
+            coordinator.fail_open_run.assert_not_awaited()
+            release.assert_not_awaited()
+            assert not scope.slot_owned
+        finally:
+            await self._stop(ti)
+
+    @pytest.mark.asyncio
+    async def test_a_stop_found_at_handoff_survives_the_callers_cancel(self):
+        btm = _make_btm()
+        run_handle = MagicMock(run_id="run-1", guard=None)
+        row = {"status": "in_progress", "cancel_requested_at": "2026-01-01T00:00:00Z"}
+
+        ti = await self._start_cancelled(btm, run_handle, row)
+        try:
+            assert ti.cancel_event.is_set()
+            assert ti.user_stop is True
+        finally:
+            await self._stop(ti)
+
+    @pytest.mark.asyncio
+    async def test_session_loss_abort_is_wired_before_the_first_await(self):
+        btm = _make_btm()
+        run_handle = MagicMock(run_id="run-1")
+        row = {"status": "in_progress", "cancel_requested_at": None}
+
+        ti = await self._start_cancelled(btm, run_handle, row)
+        try:
+            run_handle.guard.attach_abort.assert_called_once()
+        finally:
+            await self._stop(ti)
+
+
 # ---------------------------------------------------------------------------
 # Compaction admission guard
 # ---------------------------------------------------------------------------
@@ -1795,7 +1965,7 @@ class TestMutationAdmissionGuard:
 
 
 # ---------------------------------------------------------------------------
-# _clear_report_back_watch — terminal runs clear the flash report-back watch
+# _clear_report_back_watch — terminal runs clear the report-back watch
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -1860,7 +2030,268 @@ def _sentinel_cache(
     return cache
 
 
+class TestRunEndCountsSettledSubagents:
+    """A collected run's settled subagents are billed before its run_end, so
+    the token totals the frame carries count them; the collector gets the
+    claimed tasks and bills whatever settles later."""
+
+    @staticmethod
+    def _task(task_id, *, spawned_run_id="run-1", owner_task_id=None):
+        return BackgroundTask(
+            tool_call_id=f"tc-{task_id}",
+            task_id=task_id,
+            description="d",
+            prompt="p",
+            subagent_type="workflow" if task_id.startswith("wf") else "research",
+            spawned_run_id=spawned_run_id,
+            owner_task_id=owner_task_id,
+        )
+
+    @staticmethod
+    async def _finished_writer():
+        async def body():
+            return {"success": True, "result": "ok"}
+
+        writer = asyncio.create_task(body())
+        await writer
+        return writer
+
+    @pytest.mark.asyncio
+    async def test_bills_only_tasks_whose_usage_is_final(self):
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            BackgroundTaskRegistry,
+        )
+
+        gate = asyncio.Event()
+
+        async def running():
+            await gate.wait()
+            return {"success": True, "result": "late"}
+
+        registry = BackgroundTaskRegistry(thread_id="t-1")
+        done = self._task("done")
+        done.per_call_records = [{"usage": {"input_tokens": 5}}]
+        done.asyncio_task = await self._finished_writer()
+        live = self._task("live")
+        live.asyncio_task = asyncio.create_task(running())
+        # A running workflow's settled child: its driver still reads the
+        # child's records, so billing must wait for the collector.
+        wf_live = self._task("wf_live")
+        wf_live.asyncio_task = asyncio.create_task(running())
+        child_of_live = self._task("c_live", owner_task_id="wf_live")
+        child_of_live.per_call_records = [{"usage": {"input_tokens": 7}}]
+        child_of_live.asyncio_task = await self._finished_writer()
+        # A settled workflow's child registered after the sweep's run.
+        wf_done = self._task("wf_done")
+        wf_done.captured_event_count = 1
+        wf_done.asyncio_task = await self._finished_writer()
+        child_of_done = self._task(
+            "c_done", spawned_run_id="run-0", owner_task_id="wf_done"
+        )
+        child_of_done.per_call_records = [{"usage": {"input_tokens": 9}}]
+        child_of_done.asyncio_task = await self._finished_writer()
+        for t in (done, live, wf_live, child_of_live, wf_done, child_of_done):
+            registry._tasks[t.tool_call_id] = t
+
+        bg_store = MagicMock()
+        bg_store.get_registry = AsyncMock(return_value=registry)
+        with patch(
+            f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
+            return_value=bg_store,
+        ), patch.object(
+            subagent_collection, "persist_subagent_usage", new_callable=AsyncMock
+        ) as persist:
+            tasks = await subagent_collection.claim_turn_subagents(
+                "t-1", "run-1", {"is_byok": False}, "ws-1", "user-1"
+            )
+
+        billed = persist.await_args.args[1]
+        assert {t.task_id for t in billed} == {"done", "wf_done", "c_done"}
+        assert {t.task_id for t in tasks} == {
+            "done", "live", "wf_live", "c_live", "wf_done", "c_done",
+        }
+        gate.set()
+        await asyncio.gather(live.asyncio_task, wf_live.asyncio_task)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_bill_still_hands_the_tasks_to_the_collector(self):
+        task = self._task("done")
+        registry = MagicMock()
+        registry.claim_run_subagents = AsyncMock(return_value=[task])
+        bg_store = MagicMock()
+        bg_store.get_registry = AsyncMock(return_value=registry)
+        with patch(
+            f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
+            return_value=bg_store,
+        ), patch.object(
+            subagent_collection,
+            "persist_subagent_usage",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ):
+            tasks = await subagent_collection.claim_turn_subagents(
+                "t-1", "run-1", {}, "ws-1", "user-1"
+            )
+
+        assert tasks == [task]
+
+    @staticmethod
+    async def _post_terminal(btm, *, kind, status):
+        from src.server.services.runs.finalization import FinalizeVerdict
+
+        await btm._apply_post_terminal_effects(
+            "t-1",
+            "run-1",
+            FinalizeVerdict(applied=True, status=status),
+            kind=kind,
+            stop=None,
+            carried_events=[],
+            task_info=MagicMock(),
+            completion_callback=None,
+            execution_time=1.0,
+            interrupt_reason=None,
+            error=None,
+            metadata={"is_byok": False},
+            workspace_id="ws-1",
+            user_id="user-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_claims_and_bills_before_run_end_then_collects(self):
+        btm = _make_btm()
+        claimed = [MagicMock()]
+        order: list = []
+        btm.append_run_end_event = AsyncMock(
+            side_effect=lambda *a, **k: order.append("run_end")
+        )
+        with patch.object(
+            subagent_collection,
+            "claim_turn_subagents",
+            new_callable=AsyncMock,
+            side_effect=lambda *a, **k: order.append("claim") or claimed,
+        ), patch.object(
+            subagent_collection,
+            "spawn_subagent_collector",
+            side_effect=lambda *a, **k: order.append("collect"),
+        ) as spawn:
+            await self._post_terminal(btm, kind="stream_end", status="completed")
+
+        assert order == ["claim", "run_end", "collect"]
+        assert spawn.call_args.args[2] is claimed
+
+    @pytest.mark.asyncio
+    async def test_a_failed_run_claims_nothing_before_run_end(self):
+        btm = _make_btm()
+        btm.append_run_end_event = AsyncMock()
+        with patch.object(
+            subagent_collection, "claim_turn_subagents", new_callable=AsyncMock
+        ) as claim, patch.object(
+            subagent_collection, "end_run_subagents", new_callable=AsyncMock
+        ):
+            await self._post_terminal(btm, kind="failed", status="error")
+
+        claim.assert_not_awaited()
+        btm.append_run_end_event.assert_awaited_once()
+
+
 class TestAppendRunEndEvent:
+
+    @pytest.fixture(autouse=True)
+    def totals(self):
+        # Unit tests have no pool; a failed read leaves the totals off.
+        with patch(
+            "src.server.database.conversation.usage.get_thread_token_totals",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as read:
+            yield read
+
+    @pytest.fixture(autouse=True)
+    def returned(self):
+        with patch(
+            "src.server.services.runs.stream_writer.steering_returned_frame",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as read:
+            yield read
+
+    @pytest.mark.asyncio
+    async def test_returned_chat_app_steers_close_the_stream_ahead_of_run_end(
+        self, returned
+    ):
+        """A gateway stops reading at ``run_end``, so the steers it must
+        resubmit come before it, once, for every reader of the stream."""
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        returned.return_value = "event: steering_returned\ndata: {}\n\n"
+        calls: list = []
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=_sentinel_cache(calls),
+        ):
+            await btm.append_run_end_event("t-1", "r-1", "completed")
+
+        returned.assert_awaited_once_with("t-1", "r-1")
+        frames = [c[2][b"event"].decode("utf-8") for c in calls if c[0] == "xadd"]
+        assert [f.split("\n", 1)[0] for f in frames] == [
+            "event: steering_returned",
+            "event: run_end",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_lost_gate_writes_no_returned_steers(self, returned):
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        returned.return_value = "event: steering_returned\ndata: {}\n\n"
+        calls: list = []
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=_sentinel_cache(calls, gate_acquired=False),
+        ):
+            await btm.append_run_end_event("t-1", "r-1", "completed")
+
+        assert not [c for c in calls if c[0] == "xadd"]
+
+    @pytest.mark.asyncio
+    async def test_terminal_frame_carries_the_threads_token_totals(self, totals):
+        """Read after the finalize committed the run's usage row, so the
+        client takes the count over the calls its stream reported."""
+        import json as _json
+
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        totals.return_value = {"input_tokens": 1460, "output_tokens": 20}
+        calls: list = []
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=_sentinel_cache(calls),
+        ):
+            await btm.append_run_end_event("t-1", "r-1", "completed")
+
+        totals.assert_awaited_once_with("t-1")
+        wire = next(c for c in calls if c[0] == "xadd")[2][b"event"].decode("utf-8")
+        assert _json.loads(wire.split("data: ", 1)[1])["token_totals"] == {
+            "input_tokens": 1460,
+            "output_tokens": 20,
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_truth_frame_reads_no_totals(self, totals):
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=_sentinel_cache([]),
+        ):
+            await btm.append_run_end_event(
+                "t-1", "r-1", None, error_frame={"error": "boom"}
+            )
+
+        totals.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_appends_sse_wire_frame_with_outcome_and_ttl(self):
@@ -2080,7 +2511,7 @@ class TestNoPreFinalizeRunEndOnTerminalFlavors:
         async def record_run_end(thread_id, run_id, outcome):
             order.append(f"run_end:{outcome}")
 
-        async def record_finalize(thread_id, run_id, *, kind, error=None):
+        async def record_finalize(thread_id, run_id, *, kind, error=None, exc=None):
             order.append(f"finalize:{kind}")
 
         with patch.object(btm, "_buffer_event_redis", side_effect=record_buffer), \
@@ -2110,7 +2541,7 @@ class TestNoPreFinalizeRunEndOnTerminalFlavors:
         async def record_run_end(thread_id, run_id, outcome):
             order.append(f"run_end:{outcome}")
 
-        async def record_finalize(thread_id, run_id, *, kind, error=None):
+        async def record_finalize(thread_id, run_id, *, kind, error=None, exc=None):
             order.append(f"finalize:{kind}")
 
         with patch.object(btm, "_buffer_event_redis", side_effect=record_buffer), \
@@ -2139,7 +2570,7 @@ class TestNoPreFinalizeRunEndOnTerminalFlavors:
         async def record_run_end(thread_id, run_id, outcome):
             order.append(f"run_end:{outcome}")
 
-        async def record_finalize(thread_id, run_id, *, kind, error=None):
+        async def record_finalize(thread_id, run_id, *, kind, error=None, exc=None):
             order.append(f"finalize:{kind}")
 
         async def set_cancel():
@@ -2165,7 +2596,7 @@ class TestNoPreFinalizeRunEndOnTerminalFlavors:
 
 
 # ---------------------------------------------------------------------------
-# _await_drain_and_cleanup_tasks — spill-lock-serialized, claim-fenced deletes
+# await_drain_and_cleanup_tasks: spill-lock-serialized, claim-fenced deletes
 # ---------------------------------------------------------------------------
 
 class TestCleanupSpillLockFence:
@@ -2201,7 +2632,6 @@ class TestCleanupSpillLockFence:
 
     @pytest.mark.asyncio
     async def test_steal_while_waiting_on_spill_lock_skips_deletes(self):
-        btm = _make_btm()
         task = self._task("run-old")
         cache = self._cache()
 
@@ -2217,7 +2647,7 @@ class TestCleanupSpillLockFence:
             return_value=fake_store,
         ):
             cleanup = asyncio.create_task(
-                btm._await_drain_and_cleanup_tasks([task], "thread-x", "run-old")
+                subagent_collection.await_drain_and_cleanup_tasks([task], "thread-x", "run-old")
             )
             for _ in range(10):  # let cleanup reach and block on the lock
                 await asyncio.sleep(0)
@@ -2230,7 +2660,6 @@ class TestCleanupSpillLockFence:
 
     @pytest.mark.asyncio
     async def test_owned_task_conditional_delete_under_the_lock(self):
-        btm = _make_btm()
         task = self._task("run-old")
         locked_during_eval: list[bool] = []
 
@@ -2252,7 +2681,7 @@ class TestCleanupSpillLockFence:
             f"{REGISTRY_STORE_MOD}.BackgroundRegistryStore.get_instance",
             return_value=fake_store,
         ):
-            await btm._await_drain_and_cleanup_tasks([task], "thread-x", "run-old")
+            await subagent_collection.await_drain_and_cleanup_tasks([task], "thread-x", "run-old")
 
         assert locked_during_eval == [True]
         # One atomic script call: meta hash checked as owner key, the
@@ -2268,7 +2697,7 @@ class TestCleanupSpillLockFence:
 
 
 # ---------------------------------------------------------------------------
-# _replay_owned_task_events — per-record claim recheck across the XRANGE await
+# replay_owned_task_events: per-record claim recheck across the XRANGE await
 # ---------------------------------------------------------------------------
 
 class TestReplayOwnershipRecheck:
@@ -2282,7 +2711,6 @@ class TestReplayOwnershipRecheck:
             BackgroundTask,
         )
 
-        btm = _make_btm()
         task = BackgroundTask(
             tool_call_id="tc-1",
             task_id="abc123",
@@ -2304,7 +2732,7 @@ class TestReplayOwnershipRecheck:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=_iter,
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "thread-x", task, "run-1", out
             )
 
@@ -2325,7 +2753,6 @@ class TestReplayOwnershipRecheck:
             BackgroundTask,
         )
 
-        btm = _make_btm()
         task = BackgroundTask(
             tool_call_id="tc-1",
             task_id="abc123",
@@ -2358,10 +2785,51 @@ class TestReplayOwnershipRecheck:
             "src.server.services.runs.subagent_collection.iter_subagent_events_full",
             side_effect=_iter,
         ):
-            ok = await btm._replay_owned_task_events(
+            ok = await subagent_collection.replay_owned_task_events(
                 "thread-x", task, "run-1", out
             )
 
         assert ok is True
         contents = [e["data"]["content"] for e in out]
         assert contents == ["LEGACY", "OWN"]
+
+
+# ---------------------------------------------------------------------------
+# A finished run must not pin the request's context
+# ---------------------------------------------------------------------------
+
+class _RequestScoped:
+    pass
+
+
+_request_var: "contextvars.ContextVar[_RequestScoped | None]" = contextvars.ContextVar(
+    "test_request_scoped", default=None
+)
+
+
+class TestFinishedRunReleasesContext:
+
+    @pytest.mark.asyncio
+    async def test_finished_run_drops_task_and_its_context(self):
+        """The entry outlives the run by the result TTL; the task (and the
+        request context it copied) must not, or every object that context
+        references stays alive for that long."""
+        btm = _make_btm()
+
+        async def fake_workflow():
+            yield "event-0"
+
+        async def handler() -> LocalRunExecution:
+            _request_var.set(_RequestScoped())
+            return await btm.start_run("thread-ctx", "run-1", fake_workflow())
+
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock):
+            info = await asyncio.create_task(handler(), context=contextvars.Context())
+            scoped = weakref.ref(info.task.get_context()[_request_var])
+            await asyncio.wait({info.task})
+            await asyncio.sleep(0)
+
+        assert btm.executions[("thread-ctx", "run-1")] is info
+        assert info.task is None
+        gc.collect()
+        assert scoped() is None

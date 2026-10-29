@@ -1,7 +1,6 @@
 """Tests for the HTML-output skills (html-report, ui-design) in the registry."""
 
 import re
-from pathlib import Path
 
 import pytest
 import yaml
@@ -9,10 +8,10 @@ import yaml
 from ptc_agent.agent.middleware.skills.registry import (
     SKILL_REGISTRY,
     get_command_to_skill_map,
-    get_sandbox_skill_names,
     get_skill,
     get_skill_registry,
     list_skills,
+    skills_outside_sandbox,
 )
 
 # New HTML-output skills under test.
@@ -22,56 +21,42 @@ NEW_SKILLS = ("html-report", "ui-design")
 # html-report is user-invocable (like /dashboard); ui-design is a pure design reference.
 EXPECTED_COMMANDS = {"html-report": "html-report", "ui-design": None}
 
-# Repo root: tests/unit/middleware/skills/ -> repo root is four parents up.
-REPO_ROOT = Path(__file__).resolve().parents[4]
-
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 @pytest.mark.parametrize("name", NEW_SKILLS)
 def test_skill_registered(name):
-    """Both new skills are present in the registry as plain, tool-less PTC skills."""
+    """Both new skills are present in the registry as plain, tool-less skills."""
     assert name in SKILL_REGISTRY
     skill = SKILL_REGISTRY[name]
     assert skill.name == name
-    assert skill.tools == []
+    assert skill.tool_names == ()
     assert skill.command == EXPECTED_COMMANDS[name]
     assert skill.skill_md_path == f"skills/{name}/SKILL.md"
 
 
 @pytest.mark.parametrize("name", NEW_SKILLS)
-def test_exposure_is_ptc(name):
-    """Flash has no sandbox/filesystem, so these are PTC-only."""
-    assert SKILL_REGISTRY[name].exposure == "ptc"
-
-
-@pytest.mark.parametrize("name", NEW_SKILLS)
 def test_included_in_sandbox_sync_set(name):
-    """get_sandbox_skill_names() picks up the new PTC skills automatically."""
-    assert name in get_sandbox_skill_names()
+    """The sandbox sync picks up the new skills automatically."""
+    assert name not in skills_outside_sandbox()
 
 
 @pytest.mark.parametrize("name", NEW_SKILLS)
-def test_exposed_to_ptc_not_flash(name):
-    """Mode filtering: visible to PTC, hidden from Flash."""
-    assert name in get_skill_registry("ptc")
-    assert name not in get_skill_registry("flash")
-    assert get_skill(name, mode="ptc") is not None
-    assert get_skill(name, mode="flash") is None
+def test_enabled_in_registry(name):
+    assert name in get_skill_registry()
+    assert get_skill(name) is not None
 
 
 @pytest.mark.parametrize("name", NEW_SKILLS)
-def test_listed_for_ptc(name):
-    """Non-hidden skills appear in the PTC listing."""
-    ptc_names = {entry["name"] for entry in list_skills("ptc")}
-    assert name in ptc_names
+def test_listed(name):
+    """Non-hidden skills appear in the listing."""
+    assert name in {entry["name"] for entry in list_skills()}
 
 
 @pytest.mark.parametrize("name", NEW_SKILLS)
-def test_skill_md_exists_and_frontmatter_parses(name):
+def test_skill_md_exists_and_frontmatter_parses(name, shipped_skill_md):
     """SKILL.md is on disk with valid YAML frontmatter whose name matches the directory."""
-    skill_md = REPO_ROOT / SKILL_REGISTRY[name].skill_md_path
-    assert skill_md.is_file(), f"missing {skill_md}"
+    skill_md = shipped_skill_md(name)
 
     content = skill_md.read_text(encoding="utf-8")
     match = _FRONTMATTER_RE.match(content)
@@ -85,6 +70,21 @@ def test_skill_md_exists_and_frontmatter_parses(name):
 
 def test_command_shortcuts():
     """html-report is invocable via the /html-report shortcut; ui-design has none."""
-    commands = get_command_to_skill_map("ptc")
+    commands = get_command_to_skill_map()
     assert commands.get("html-report") == "html-report"
     assert "ui-design" not in commands.values()
+
+
+def _shipped_names() -> list[str]:
+    from ptc_agent.config.plugins import bundled_skill_dirs
+
+    shipped = {p.parent.name for root in bundled_skill_dirs() for p in root.glob("*/SKILL.md")}
+    return sorted(name for name in SKILL_REGISTRY if name in shipped)
+
+
+@pytest.mark.parametrize("name", _shipped_names())
+def test_registry_description_mirrors_frontmatter(name, shipped_skill_md):
+    """The registry description is what discovery shows the model; the frontmatter is what
+    the agent reads once the skill loads. The two are one string, verbatim."""
+    frontmatter = yaml.safe_load(_FRONTMATTER_RE.match(shipped_skill_md(name).read_text(encoding="utf-8")).group(1))
+    assert frontmatter["description"] == SKILL_REGISTRY[name].description, name

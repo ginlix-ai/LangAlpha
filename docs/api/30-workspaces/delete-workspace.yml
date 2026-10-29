@@ -9,6 +9,10 @@ http:
   headers:
     - name: X-User-Id
       value: "{{user_id}}"
+  params:
+    - name: delete_files
+      value: "false"
+      enabled: true
   auth: inherit
 
 settings:
@@ -22,22 +26,34 @@ tests:
     });
 
 docs: |
-  Delete a workspace and its sandbox.
+  Delete a workspace and its threads.
 
-  This permanently deletes the workspace and its associated Daytona
-  sandbox. All data will be lost and cannot be recovered.
+  The workspace's computer and the other workspaces on it are left alone.
+  What happens to the workspace's folder depends on the computer:
+
+  - Daytona, E2B and Docker: the folder is deleted.
+  - A machine the user brought over SSH: the folder stays where it is,
+    unless `delete_files=true`. A folder that stays is never removed later;
+    if a new workspace on that machine takes the same name, the old folder is
+    moved to `_internal/leftovers/<workspace_id>` under the computer's root.
+
+  When the folder is to be deleted and the computer is stopped, it is deleted
+  the next time the computer runs.
 
   **Path Parameters:**
   - `workspace_id`: Workspace UUID
 
+  **Query Parameters:**
+  - `delete_files` (default `false`): also delete the folder from a machine
+    the user brought. Ignored on every other computer, where the folder is
+    always deleted.
+
   **Response:**
   - Returns 204 No Content on successful deletion
 
-  **Notes:**
-  - This operation is irreversible
-  - All workspace data including conversation history will be deleted
-  - The associated Daytona sandbox will be destroyed
-
   **Error Responses:**
+  - 400: The workspace is Home, which cannot be deleted
+  - 403: The workspace belongs to another user
   - 404: Workspace not found
+  - 409: The workspace has active work, or is moving to another computer
   - 500: Failed to delete workspace

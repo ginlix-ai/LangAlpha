@@ -16,11 +16,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ptc_agent.agent.tools.file_ops import (
-    _DEFAULT_READ_LIMIT,
-    _MAX_READ_CHARS,
-    create_filesystem_tools,
-)
+from ptc_agent.agent.backends.read_window import DEFAULT_READ_LINES, MAX_READ_CHARS
+from ptc_agent.agent.tools.file_ops import create_filesystem_tools
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 
 
 def _make_backend(*, content: str | None, supports_validate: bool = True) -> Any:
@@ -55,7 +53,7 @@ class TestReadToolDefaultLimits:
         result = await read.ainvoke({"file_path": "/tmp/x.txt"})
 
         backend.aread_range.assert_awaited_once_with(
-            "/tmp/x.txt", 0, _DEFAULT_READ_LIMIT
+            "/tmp/x.txt", 0, DEFAULT_READ_LINES
         )
         # Line-number prefix uses width 6 + tab; assert the first line shows up.
         assert "alpha" in result
@@ -71,6 +69,38 @@ class TestReadToolDefaultLimits:
         backend.aread_range.assert_awaited_once_with("/tmp/x.txt", 10, 2)
 
 
+class TestReadToolLineCap:
+    """The backend returns at most ``limit`` lines, so a full window can't tell
+    the whole file from its first page; the agent is told how to go on."""
+
+    @pytest.mark.asyncio
+    async def test_a_full_window_says_where_to_continue(self):
+        backend = _make_backend(content="a\nb\nc\n")
+        read = _get_read_tool(backend)
+
+        result = await read.ainvoke({"file_path": "/tmp/x.txt", "offset": 10, "limit": 3})
+
+        assert result.endswith("Read(file_path='/tmp/x.txt', offset=13) for more.]")
+
+    @pytest.mark.asyncio
+    async def test_a_short_window_is_the_end_of_the_file(self):
+        backend = _make_backend(content="a\nb\n")
+        read = _get_read_tool(backend)
+
+        result = await read.ainvoke({"file_path": "/tmp/x.txt", "limit": 3})
+
+        assert "for more" not in result
+
+    @pytest.mark.asyncio
+    async def test_an_offset_past_the_end_says_so(self):
+        backend = _make_backend(content="")
+        read = _get_read_tool(backend)
+
+        result = await read.ainvoke({"file_path": "/tmp/x.txt", "offset": 500})
+
+        assert "no lines from offset 500" in result
+
+
 class TestReadToolCharCap:
     """The char cap fires after line trimming and after cat-n formatting; the
     line cap alone cannot save us from a file whose lines are megabytes long."""
@@ -79,13 +109,13 @@ class TestReadToolCharCap:
     async def test_long_single_line_takes_single_line_overflow_path(self):
         # One line that on its own exceeds the char budget. Recovery hint must
         # name this as the single-line overflow case, not the multi-line one.
-        huge_line = "x" * (_MAX_READ_CHARS * 2)
+        huge_line = "x" * (MAX_READ_CHARS * 2)
         backend = _make_backend(content=huge_line)
         read = _get_read_tool(backend)
 
         result = await read.ainvoke({"file_path": "/tmp/huge.md"})
 
-        assert len(result) <= _MAX_READ_CHARS
+        assert len(result) <= MAX_READ_CHARS
         assert "Read truncated" in result
         assert "exceeds the" in result and "context budget" in result
         assert "/tmp/huge.md" in result
@@ -96,17 +126,17 @@ class TestReadToolCharCap:
         # (narrative + head -c hint + sed -n hint). At 250 chars (close to
         # the POSIX 255-char filesystem cap), the marker alone is ~960
         # chars. If marker_budget is too small the result blows past
-        # _MAX_READ_CHARS, the cap stops being a cap.
+        # MAX_READ_CHARS, the cap stops being a cap.
         long_path = "/home/daytona/work/" + ("subdir/" * 32) + "result.md"
         assert len(long_path) >= 250, f"path needs to actually be long, got {len(long_path)}"
-        huge_line = "x" * (_MAX_READ_CHARS * 2)
+        huge_line = "x" * (MAX_READ_CHARS * 2)
         backend = _make_backend(content=huge_line)
         read = _get_read_tool(backend)
 
         result = await read.ainvoke({"file_path": long_path})
 
-        assert len(result) <= _MAX_READ_CHARS, (
-            f"result length {len(result)} exceeds budget {_MAX_READ_CHARS} "
+        assert len(result) <= MAX_READ_CHARS, (
+            f"result length {len(result)} exceeds budget {MAX_READ_CHARS} "
             f"for path of {len(long_path)} chars"
         )
         assert long_path in result
@@ -117,7 +147,7 @@ class TestReadToolCharCap:
         # plan. If we report `len(formatted)` it counts trailing lines that
         # fit after the huge first line and inflates the slice target. The
         # reported size should be the offending line itself.
-        first_line = "x" * (_MAX_READ_CHARS * 2)
+        first_line = "x" * (MAX_READ_CHARS * 2)
         trailing = "y" * 1000  # a small second line that happens to fit
         backend = _make_backend(content=first_line + "\n" + trailing)
         read = _get_read_tool(backend)
@@ -149,7 +179,7 @@ class TestReadToolCharCap:
 
         result = await read.ainvoke({"file_path": "/tmp/big.md"})
 
-        assert len(result) <= _MAX_READ_CHARS
+        assert len(result) <= MAX_READ_CHARS
         assert "Read truncated" in result
         # Extract the "You saw lines 1..K" range and the next offset N.
         range_match = re.search(r"You saw lines (\d+)\.\.(\d+)", result)
@@ -173,7 +203,7 @@ class TestReadToolCharCap:
         # the model may copy back verbatim and get "file not found". Plain
         # single-quoting keeps the path roundtrippable.
         path = "/tmp/测试.md"
-        huge = "x" * (_MAX_READ_CHARS * 2)
+        huge = "x" * (MAX_READ_CHARS * 2)
         backend = _make_backend(content=huge)
         read = _get_read_tool(backend)
 
@@ -260,3 +290,98 @@ class TestReadToolPassthroughs:
         result = await read.ainvoke({"file_path": "/tmp/missing.txt"})
 
         assert result.startswith("ERROR: File not found")
+
+
+class TestReadToolTranscripts:
+    """A transcript line is one event, so a window cuts each long field and a
+    single-line Read is how the agent gets the event whole."""
+
+    SEGMENT = "/home/workspace/Home/.agents/transcripts/abcd1234/turn-0001.jsonl"
+    LONG = "w" * 5_000
+
+    def _line(self) -> str:
+        import json
+
+        return json.dumps({"role": "tool", "text": self.LONG})
+
+    @pytest.mark.asyncio
+    async def test_a_window_cuts_a_long_field_and_names_the_offset(self):
+        read = _get_read_tool(_make_backend(content=self._line() + "\n"))
+
+        result = await read.ainvoke({"file_path": self.SEGMENT, "offset": 4})
+
+        assert self.LONG not in result
+        assert "[cut: 5,000 chars" in result
+        assert "Read(offset=4, limit=1)" in result
+
+    @pytest.mark.asyncio
+    async def test_one_line_comes_whole(self):
+        read = _get_read_tool(_make_backend(content=self._line() + "\n"))
+
+        result = await read.ainvoke({"file_path": self.SEGMENT, "offset": 4, "limit": 1})
+
+        assert self.LONG in result
+        assert "[cut:" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_same_content_elsewhere_is_not_cut(self):
+        read = _get_read_tool(_make_backend(content=self._line() + "\n"))
+
+        result = await read.ainvoke({"file_path": "/home/workspace/Home/notes.jsonl"})
+
+        assert self.LONG in result
+
+
+class TestReadSandboxOutcome:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raised", "outcome", "error_class"),
+        [
+            pytest.param(SandboxGoneError("gone"), "error", "SandboxGoneError", id="gone"),
+            pytest.param(
+                SandboxTransientError("unreachable"),
+                "error",
+                "SandboxTransientError",
+                id="unreachable",
+            ),
+            # What else the catch-all sees is the request refused, such as
+            # a read-only path.
+            pytest.param(PermissionError("read-only"), "ok", None, id="refused"),
+        ],
+    )
+    async def test_only_the_sandbox_failing_marks_the_run(
+        self, traced_tool, raised, outcome, error_class
+    ):
+        backend = _make_backend(content=None)
+        backend.aread_range = AsyncMock(side_effect=raised)
+
+        content, metadata = await traced_tool(
+            _get_read_tool(backend), {"file_path": "notes.md"}
+        )
+
+        assert content.startswith("ERROR")
+        assert metadata["tool_outcome"] == outcome
+        assert metadata.get("error_class") == error_class
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("file_path", "channel", "provider"),
+        [
+            ("notes.md", "docker", "docker"),
+            ("../.agents/threads.jsonl", "fuse", "docker"),
+            ("/memory/notes.md", "server", None),
+        ],
+        ids=["sandbox", "file-mount", "store-mount"],
+    )
+    async def test_a_call_names_its_channel_and_the_provider_of_a_sandbox_it_reaches(
+        self, traced_tool, file_path, channel, provider
+    ):
+        channels = {"notes.md": "docker", "../.agents/threads.jsonl": "fuse"}
+        backend = _make_backend(content="hello")
+        backend.provider = "docker"
+        backend.channel_for = lambda p: channels.get(p, "server")
+
+        _content, metadata = await traced_tool(_get_read_tool(backend), {"file_path": file_path})
+
+        assert metadata.get("tool_channel") == channel
+        assert metadata.get("tool_provider") == provider

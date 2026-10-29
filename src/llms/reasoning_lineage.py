@@ -57,7 +57,7 @@ def lineage_for_route(route: str | None, config: ModelConfig | None = None) -> s
     # Declared on a provider *group* and inherited by its variants
     # (``_flatten_providers`` merges group fields into each), so declaring it on
     # a group whose variants are different upstreams — ``moonshot`` vs
-    # ``moonshot-coding``, ``doubao-anthropic`` vs ``doubao-coding`` — silently
+    # ``moonshot-coding``, ``minimax`` vs ``minimax-coding`` — silently
     # merges them. ``claude-oauth`` inherits ``anthropic`` correctly because
     # both reach api.anthropic.com; ``codex-oauth`` opts out with its own key.
     # ``test_reasoning_lineage`` locks the partition so a bad merge fails there.
@@ -99,3 +99,21 @@ def lineage_for_model_id(model_id: str | None) -> str:
     if not model_id:
         return UNKNOWN_LINEAGE
     return _model_id_index(_config()).get(model_id) or UNKNOWN_LINEAGE
+
+
+def tool_turns_need_reasoning(
+    route: str | None, config: ModelConfig | None = None
+) -> bool:
+    """Whether the route's API rejects a tool-calling turn with no reasoning block.
+
+    Declared per provider in ``providers.json`` as
+    ``"tool_turns_need_reasoning": true``. DeepSeek is the case: with thinking
+    on, every tool-calling turn of the turn in progress must carry a thinking
+    block, so a turn another model wrote, whose reasoning gate A has stripped,
+    is a 400. An empty block satisfies it, with thinking on or off. Off for a
+    route redirected off its manifest endpoint, which may not be that API.
+    """
+    if not route or ROUTE_ENDPOINT_SEP in route:
+        return False
+    info = (config or _config()).get_provider_info(route)
+    return info.get("tool_turns_need_reasoning") is True

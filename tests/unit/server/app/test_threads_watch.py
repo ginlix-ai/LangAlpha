@@ -1,6 +1,6 @@
 """Tests for the thread `/watch` SSE endpoint (src/server/app/threads.py).
 
-Regression guard for the report-back persistent-watch fix: a flash thread can
+Regression guard for the report-back persistent-watch fix: a Chief of Staff thread can
 dispatch N concurrent PTC analyses whose report-backs arrive as separate runs.
 The watch must forward EVERY ``workflow_started`` wake on one pub/sub
 subscription — the old one-shot ``break`` after the first wake dropped wake #2+,
@@ -12,12 +12,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services.report_back.flash.keys import (
+from src.server.services.report_back.handoff.keys import (
     thread_wake_key,
     thread_wake_pattern,
 )
-from src.server.services.report_back.flash import wake
-from src.server.services.report_back.flash.wake_listener import ThreadWakeListener
+from src.server.services.report_back.handoff import wake
+from src.server.services.report_back.handoff.wake_listener import ThreadWakeListener
 
 THREADS_MOD = "src.server.app.threads.messaging"
 AUTH_MOD = "src.server.utils.api"
@@ -85,10 +85,10 @@ async def test_watch_forwards_every_wake_on_one_subscription(
     # Two report-back wakes, delivered as distinct runs on the same thread.
     client, pubsub = _pattern_pubsub(
         [
-            _wake_frame("th-flash", b'{"run_id": "rb-1"}'),
-            _wake_frame("th-flash", b'{"run_id": "rb-2"}'),
+            _wake_frame("th-cos", b'{"run_id": "rb-1"}'),
+            _wake_frame("th-cos", b'{"run_id": "rb-2"}'),
         ],
-        ready=lambda: "th-flash" in wake_listener._subs,
+        ready=lambda: "th-cos" in wake_listener._subs,
     )
 
     cache = MagicMock()
@@ -110,7 +110,7 @@ async def test_watch_forwards_every_wake_on_one_subscription(
         try:
             body = ""
             async with threads_client.stream(
-                "GET", "/api/v1/threads/th-flash/watch"
+                "GET", "/api/v1/threads/th-cos/watch"
             ) as resp:
                 assert resp.status_code == 200
                 async for line in resp.aiter_lines():
@@ -126,7 +126,7 @@ async def test_watch_forwards_every_wake_on_one_subscription(
     pubsub.psubscribe.assert_awaited_once_with(thread_wake_pattern())
     # And the viewer's slot is gone. detach is synchronous, so a disconnect —
     # which tears the generator down under cancellation — cannot skip it.
-    assert "th-flash" not in wake_listener._subs
+    assert "th-cos" not in wake_listener._subs
 
 
 @pytest.mark.asyncio
@@ -139,7 +139,7 @@ async def test_watch_emits_error_when_cache_unavailable(threads_client):
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
         async with threads_client.stream(
-            "GET", "/api/v1/threads/th-flash/watch"
+            "GET", "/api/v1/threads/th-cos/watch"
         ) as resp:
             assert resp.status_code == 200
             # The generator yields one error frame and returns, so the stream

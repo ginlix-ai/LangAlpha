@@ -1,10 +1,12 @@
-.cite-bubble-pill:hover {
-  background: var(--color-bg-input);
+/* The fill lives here rather than in the pill's inline style, where it would
+   outrank the hover. */
+.cite-bubble-pill {
+  background: var(--color-bg-elevated);
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
-.cite-bubble-pill:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
+.cite-bubble-pill:hover {
+  background: var(--color-bg-input);
 }
 
 .cite-bubble-card-title:hover {

@@ -94,7 +94,7 @@ export function useAddToMemo({
       title: t('context.memoAdding', { name: shortName }),
       description: (
         <span className="inline-flex items-center gap-2 text-xs">
-          <span aria-hidden="true" className="flex-shrink-0">
+          <span aria-hidden="true" className="shrink-0">
             <Loader size={14} className="text-current" />
           </span>
           {t('context.memoUploading')}
@@ -105,9 +105,9 @@ export function useAddToMemo({
     try {
       // For text mimes, route through /files/read (unlimited) so the bytes we
       // upload are exactly what the detail view will later display. Going via
-      // /files/download would skip vault-secret redaction and preserve a
-      // trailing newline that /files/read strips — making future stale checks
-      // false-positive even when the file hasn't changed.
+      // /files/download would preserve a trailing newline that /files/read
+      // strips, making future stale checks false-positive even when the file
+      // hasn't changed.
       let file: File;
       if (mime === 'application/pdf') {
         const buf = await downloadFileAsArrayBufferFn(workspaceId, filePath);
@@ -133,7 +133,7 @@ export function useAddToMemo({
           : t('context.memoAddSuccess', { name: shortName }),
         description: (
           <span className="inline-flex items-center gap-2 text-xs">
-            <span aria-hidden="true" className="flex-shrink-0">
+            <span aria-hidden="true" className="shrink-0">
               <Loader size={14} className="text-current" />
             </span>
             {t('context.memoGenerating')}
@@ -266,7 +266,7 @@ export function MemoStaleBanner({
     : t('filePanel.memoBanner.unknown');
   return (
     <div className={`file-panel-memo-banner file-panel-memo-banner-${tone}`}>
-      <ScrollText className="h-4 w-4 flex-shrink-0" />
+      <ScrollText className="h-4 w-4 shrink-0" />
       <span className="text-sm flex-1 truncate">{message}</span>
       <div className="file-panel-memo-banner-actions">
         {status === 'stale' && onViewDiff && (
@@ -287,7 +287,7 @@ export function MemoStaleBanner({
             disabled={syncing}
           >
             {syncing && (
-              <span aria-hidden="true" className="flex-shrink-0">
+              <span aria-hidden="true" className="shrink-0">
                 <Loader size={12} className="text-current" />
               </span>
             )}
@@ -314,7 +314,7 @@ export function MemoStaleBanner({
 function DiffSpinner(): React.ReactElement {
   return (
     <div className="flex items-center justify-center h-full">
-      <Loader size={20} className="text-[color:var(--color-text-tertiary)]" />
+      <Loader size={20} className="text-(--color-text-tertiary)" />
     </div>
   );
 }
@@ -416,7 +416,7 @@ export function MemoDiffModal({
               backgroundColor: 'var(--color-bg-card)',
             }}
           >
-            <ScrollText className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
+            <ScrollText className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
             <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
               {t('filePanel.memoBanner.diffLeftLabel')}
             </span>
@@ -428,7 +428,7 @@ export function MemoDiffModal({
             className="flex-1 flex items-center gap-2 px-4 py-2 overflow-hidden"
             style={{ backgroundColor: 'var(--color-bg-card)' }}
           >
-            <HardDrive className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
+            <HardDrive className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
             <span className="text-sm font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
               {t('filePanel.memoBanner.diffRightLabel')}
             </span>

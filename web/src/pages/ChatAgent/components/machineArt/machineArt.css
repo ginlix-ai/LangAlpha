@@ -1,0 +1,137 @@
+/* The machine drawings: fills by tone, hairlines that stay 0.6px at any scale.
+   Every colour is a --color-art-* token, or the app's own for the screen,
+   which shows the app in the reader's theme. */
+.machine-art {
+  max-width: 100%;
+  max-height: 100%;
+  overflow: visible;
+}
+/* A machine the user brings fills less of its frame than a hosted box's stage
+   does, so a laptop beside the boxes reads at their scale rather than over it. */
+.machine-art.is-own {
+  max-width: 78%;
+  max-height: 78%;
+}
+.machine-art :is(path, rect, circle, ellipse, polyline) { vector-effect: non-scaling-stroke; }
+
+.machine-art .ma-top { fill: var(--color-art-top); }
+.machine-art .ma-s3 { fill: var(--color-art-s3); }
+.machine-art .ma-s2 { fill: var(--color-art-s2); }
+.machine-art .ma-s1 { fill: var(--color-art-s1); }
+.machine-art .ma-s0 { fill: var(--color-art-s0); }
+.machine-art .ma-glass { fill: var(--color-art-glass); }
+.machine-art .ma-camera { fill: var(--color-art-port); }
+.machine-art .ma-hole { fill: var(--color-art-ground); }
+.machine-art .ma-port { fill: var(--color-art-port); }
+.machine-art .ma-foot { fill: var(--color-art-line-hi); opacity: 0.45; }
+
+.machine-art .ma-edge { fill: none; stroke-width: 0.6; stroke-linejoin: round; }
+.machine-art .ma-edge-mid { stroke: var(--color-art-line-mid); }
+.machine-art .ma-edge-lo { stroke: var(--color-art-line-lo); }
+.machine-art .ma-ln { fill: none; stroke: var(--color-art-line-lo); stroke-width: 0.6; stroke-linecap: round; }
+.machine-art .ma-ln-mid { stroke: var(--color-art-line-mid); }
+.machine-art .ma-ln-faint { stroke: var(--color-art-line-faint); }
+
+.machine-art .ma-dots circle { fill: var(--color-art-dot); }
+.machine-art .ma-mesh circle { fill: var(--color-art-mesh); }
+.machine-art .ma-grille { fill: var(--color-art-mesh); opacity: 0.73; }
+.machine-art .ma-etch { fill: var(--color-art-line-mid); font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.14em; }
+.machine-art .ma-halo { fill: var(--color-art-halo); filter: blur(4px); }
+
+.machine-art .ma-led-on { fill: var(--color-success); }
+.machine-art .ma-led-prep { fill: var(--color-accent-primary); }
+
+/* A machine getting ready: its light flickers like a disk at work, and its
+   screen types a few lines of setup, a line a beat, then waits on a cursor.
+   Each loop ends with the work; reduced motion runs each once, at once, so
+   the still frame is every line shown and the light and cursor lit. */
+.machine-art .ma-led-busy {
+  /* motion-exempt: a disk light's flicker, its period irregular on purpose */
+  animation: ma-busy 1.3s linear infinite;
+}
+.machine-art .ma-setup { opacity: 0.62; }
+.machine-art .ma-setup-line {
+  /* motion-exempt: the log's pace, a line a beat, read as typing rather than as a control responding */
+  animation: ma-setup-in var(--motion-reveal) var(--ease-reveal) calc(var(--ma-line) * 900ms) both;
+}
+.machine-art .ma-setup-cursor {
+  /* motion-exempt: the log's pace, and a terminal cursor's blink */
+  animation: ma-setup-in var(--motion-reveal) var(--ease-reveal) calc(var(--ma-line) * 900ms) both, ma-blink 1s steps(1, end) calc(var(--ma-line) * 900ms) infinite;
+}
+@keyframes ma-busy { 12% { opacity: 0.25; } 24% { opacity: 1; } 55% { opacity: 0.3; } 62% { opacity: 1; } }
+@keyframes ma-setup-in { from { opacity: 0; } }
+@keyframes ma-blink { 50% { opacity: 0; } }
+
+/* The screen comes on as the machine starts, and goes dark as it stops. */
+.machine-art .ma-screen { transition: opacity var(--motion-fold) var(--ease-out); }
+.machine-art .ma-glare { fill: var(--color-art-glare); }
+.machine-art .ma-app-page { fill: var(--color-bg-page); }
+.machine-art .ma-app-side { fill: var(--color-bg-surface); }
+.machine-art .ma-app-nav { fill: var(--color-border-default); }
+.machine-art .ma-app-accent { fill: var(--color-accent-primary); }
+.machine-art .ma-app-ink { fill: var(--color-text-primary); }
+.machine-art .ma-app-card { fill: var(--color-bg-card); stroke: var(--color-border-muted); stroke-width: 0.8; }
+.machine-art .ma-app-tile { fill: var(--color-bg-tag); }
+.machine-art .ma-app-line { fill: none; stroke: var(--color-accent-primary); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+.machine-art .ma-term { fill: var(--color-art-term-ink); font-family: var(--font-mono); }
+.machine-art .ma-term-prompt { fill: var(--color-art-term-prompt); }
+
+/* Before a machine of the user's own is reached: outlines only, dashed. */
+.machine-art.machine-ghost { max-width: 72%; max-height: 100%; }
+.machine-art.machine-ghost :is(path, circle) {
+  fill: none;
+  stroke: var(--color-art-line-lo);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
+  stroke-linecap: round;
+}
+
+/* The framed ground a drawing stands in, with mono labels in its corners. */
+.art-frame {
+  position: relative;
+  background: var(--color-art-ground);
+}
+/* Every drawing stands on the frame's floor, so machines side by side share one. */
+.art-frame-figure {
+  position: absolute;
+  inset: 36px 18px 34px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.art-frame-corner {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.art-frame-corner.is-tl { left: 14px; top: 12px; color: var(--color-text-secondary); }
+.art-frame-corner.is-tr { right: 14px; top: 12px; max-width: 70%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-frame-foot {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 9px;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.art-frame-foot .art-frame-corner { position: static; }
+.art-frame-corner.is-bl { min-width: 0; margin-bottom: 2px; line-height: 1.25; }
+.art-frame-corner.is-br { margin-left: auto; flex-shrink: 0; text-transform: none; letter-spacing: normal; font-family: var(--font-ui); }
+
+/* A form's drawing of the machine it will make: New computer, Change spec. */
+.art-frame.is-preview {
+  flex-shrink: 0;
+  height: 150px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+}
+/* No status in the lower corners here, so the drawing takes their room. */
+.art-frame.is-preview .art-frame-figure { inset: 30px 24px 12px; }

@@ -1,0 +1,52 @@
+{# The turn's anchor, written once into history and read from there for the
+   rest of the thread. Facts only: no countdown, because a countdown is true
+   for a minute and this line is not rewritten. A row outlives the model that
+   wrote it, so it renders the same at every guidance level and takes no
+   guidance kwarg. Every line is guarded, so an unsupplied value drops its
+   line instead of rendering a blank.
+
+   The lines carry no labels. A stamp, a session line and a gap each say what
+   they are in their own words, so a label would only spend tokens naming what
+   the line already names. The run line keeps its words because "web, AAPL,
+   automation" is not self-describing; it just loses its heading, and its
+   first letter is raised so it reads as a sentence whichever piece leads.
+
+   `market_line` is supplied only when the market state moved since the last
+   row that stated it (see `TurnContextMiddleware._market_line`), so an absent
+   line here means unchanged, which `components/time_rules.md.j2` tells the
+   model. `surface_rules` is the one steering block a row carries, rendered by
+   `envelope/surface_rules.md.j2` and supplied only when this turn's delivery
+   rules are not the last ones still on the wire, which is why it is a whole
+   paragraph rather than a line. `disk_recovered` is set on the first turn
+   after a row that stated the low-disk line, since that line stays in history
+   in the present tense and would otherwise still read as standing. #}
+{% if opened %}
+{{ opened }}{% if local_tz %} ({{ local_tz }}){% endif %}
+
+{% endif %}
+{% if market_line %}
+{{ market_line }}
+{% endif %}
+{% if elapsed_human %}
+{{ elapsed_human }} since your last turn{% if sessions_closed %} ({{ sessions_closed }} {{ market | default("market", true) }} session{{ "" if sessions_closed == 1 else "s" }} closed in between){% endif %}
+
+{% endif %}
+{% if surface or started_by or is_subagent %}
+{% set run = [] %}
+{% if surface %}{% set _ = run.append("surface `" ~ surface ~ "`" ~ (", symbol " ~ symbol if symbol else "")) %}{% endif %}
+{% if started_by %}{% set _ = run.append("started by " ~ started_by) %}{% endif %}
+{% if is_subagent %}{% set _ = run.append("you are a subagent reporting to a parent agent") %}{% endif %}
+{% set run_line = run | join(", ") %}
+{{ run_line[:1] | upper }}{{ run_line[1:] }}
+{% endif %}
+{% if disk_free_mb is defined and disk_free_mb is not none %}
+
+The computer's disk is nearly full: {{ disk_free_mb }} MB free, shared by every workspace on it. Avoid large downloads and package installs, write large outputs only when asked, and delete temporary files you create. If a write fails for lack of space, say so and suggest the user free space or upgrade the computer's spec.
+{% elif disk_recovered %}
+
+The computer's disk is no longer reported as nearly full, so the low-disk limits from an earlier turn no longer apply.
+{% endif %}
+{% if surface_rules %}
+
+{{ surface_rules }}
+{% endif %}

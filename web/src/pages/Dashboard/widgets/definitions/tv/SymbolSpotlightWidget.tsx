@@ -18,7 +18,6 @@ function SymbolSpotlightWidget({ instance }: WidgetRenderProps<SymbolSpotlightCo
   const { symbol, range } = instance.config;
   return (
     <TradingViewEmbed
-      card
       scriptKey="symbol-overview"
       config={{
         symbols: [[symbol, `${symbol}|${range}`]],

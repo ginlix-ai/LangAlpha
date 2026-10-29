@@ -1,0 +1,170 @@
+/* ====== Tab strip ======
+   It reuses .file-panel-header, so the row keeps the height the ChatView
+   header is aligned against; the 28px tabs sit inside that padding rather
+   than setting the height themselves. */
+.file-panel-tabstrip {
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+.file-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.file-panel-tabs::-webkit-scrollbar {
+  display: none;
+}
+/* An end with tabs past it fades out rather than cutting a pill in half.
+   32px is TAB_ROW_FADE in TabStrip.tsx, which keeps the active tab clear of it. */
+.file-panel-tabs[data-more-end] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+.file-panel-tabs[data-more-start] {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+}
+.file-panel-tabs[data-more-start][data-more-end] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+.file-panel-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 28px;
+  max-width: 11rem;
+  padding: 0 4px 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.file-panel-tab:hover {
+  background-color: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+.file-panel-tab[aria-selected='true'] {
+  background-color: var(--color-bg-elevated);
+  border-color: var(--color-border-muted);
+  color: var(--color-text-primary);
+}
+/* Arrow keys rove onto tabs with tabIndex -1, which the focus layer keeps
+   quiet by default; this unlayered rule draws the ring anyway, inset because
+   the strip scrolls and clips anything outside the pill. */
+.file-panel-tab:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+/* Italic is the entire preview signal: one click's tab is on loan, and a
+   second click, an edit or a context add is what makes it stay. */
+.file-panel-tab.is-preview .file-panel-tab-name {
+  font-style: italic;
+}
+/* A name that outgrows the pill runs under a fade rather than stopping at an
+   ellipsis: the eye reads the start and knows there is more, and the pill
+   stays the same shape at every length. */
+.file-panel-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* The fade lives entirely in the padding, so a name that fits is untouched
+     and one that overflows is gone by the time the close button begins: the
+     padding minus the margin is the breathing room every pill keeps before
+     its X, and the ramp is exactly that room plus the flex gap. */
+  padding-right: 24px;
+  margin-right: -10px;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent calc(100% - 4px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent calc(100% - 4px));
+}
+/* The hover card: the whole name, and under it the folder or the port. */
+.file-panel-tab-hint {
+  max-width: min(28rem, calc(100vw - 32px));
+  padding: 6px 10px;
+}
+.file-panel-tab-hint-name {
+  color: var(--color-text-primary);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.file-panel-tab-hint-detail {
+  margin-top: 2px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  overflow-wrap: anywhere;
+}
+.file-panel-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background-color: var(--color-status-modified);
+}
+/* A tool tab whose call failed carries the mark beside its name, in front or
+   not: the strip is where the reader learns which of the open calls to look at. */
+.file-panel-tab-failed {
+  color: var(--color-loss);
+}
+.file-panel-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
+}
+/* The X is a hover affordance, not a badge: the active pill stays as quiet as
+   the rest until the pointer is on it. Its room is reserved either way, so
+   nothing shifts when it appears. Keyboard focus and touch keep it visible. */
+.file-panel-tab:hover .file-panel-tab-close,
+.file-panel-tab:focus-visible .file-panel-tab-close,
+.file-panel-tab-close:focus-visible {
+  opacity: 1;
+}
+.file-panel-tab-close:hover {
+  background-color: var(--color-border-muted);
+  color: var(--color-text-primary);
+}
+.file-panel-strip-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* ====== Mobile responsive ====== */
+@media (max-width: 767px) {
+  /* No hover on a touch screen, so the close is always on. */
+  .file-panel-tab-close { opacity: 1; }
+  .file-panel-tab { max-width: 9rem; }
+}
+/* A finger needs a bigger target than a pointer: the X grows to a 28px hit
+   box with the glyph centred in it, and stays on, since there is no hover to
+   reveal it. The pill keeps its height and the box overhangs it. */
+@media (pointer: coarse) {
+  .file-panel-tab-close {
+    width: 28px;
+    height: 28px;
+    margin: -5px -5px -5px 0;
+    opacity: 1;
+  }
+}

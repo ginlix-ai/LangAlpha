@@ -2,16 +2,14 @@
 Tests for ptc_agent.core.sandbox.runtime — ABCs and data classes.
 
 Covers:
-- ExecResult, CodeRunResult, Artifact, RuntimeState data classes
-- SandboxRuntime ABC contract (cannot instantiate, subclass works, capabilities, archive)
+- ExecResult, RuntimeState data classes
+- SandboxRuntime ABC contract (cannot instantiate, subclass works, optional abilities, archive)
 - SandboxProvider ABC contract (cannot instantiate, is_transient_error default)
 """
 
 import pytest
 
 from ptc_agent.core.sandbox.runtime import (
-    Artifact,
-    CodeRunResult,
     ExecResult,
     RuntimeState,
     SandboxProvider,
@@ -37,38 +35,6 @@ class TestExecResult:
         assert r.stderr == "fail"
 
 
-class TestArtifact:
-    def test_required_fields(self):
-        a = Artifact(type="image/png", data="base64data")
-        assert a.type == "image/png"
-        assert a.data == "base64data"
-
-    def test_name_default_none(self):
-        a = Artifact(type="text/plain", data="abc")
-        assert a.name is None
-
-    def test_name_provided(self):
-        a = Artifact(type="image/png", data="xyz", name="chart.png")
-        assert a.name == "chart.png"
-
-
-class TestCodeRunResult:
-    def test_fields(self):
-        r = CodeRunResult(stdout="42", stderr="", exit_code=0)
-        assert r.stdout == "42"
-        assert r.exit_code == 0
-
-    def test_artifacts_default_empty(self):
-        r = CodeRunResult(stdout="", stderr="", exit_code=0)
-        assert r.artifacts == []
-
-    def test_with_artifacts(self):
-        art = Artifact(type="image/png", data="aaa")
-        r = CodeRunResult(stdout="", stderr="", exit_code=0, artifacts=[art])
-        assert len(r.artifacts) == 1
-        assert r.artifacts[0].type == "image/png"
-
-
 class TestRuntimeState:
     def test_enum_values(self):
         assert RuntimeState.RUNNING == "running"
@@ -76,18 +42,41 @@ class TestRuntimeState:
         assert RuntimeState.STARTING == "starting"
         assert RuntimeState.STOPPING == "stopping"
         assert RuntimeState.ARCHIVED == "archived"
+        assert RuntimeState.ARCHIVING == "archiving"
         assert RuntimeState.ERROR == "error"
 
     def test_is_string(self):
         assert isinstance(RuntimeState.RUNNING, str)
 
     def test_all_members(self):
-        assert len(RuntimeState) == 6
+        assert len(RuntimeState) == 7
 
 
 # ---------------------------------------------------------------------------
 # SandboxRuntime ABC
 # ---------------------------------------------------------------------------
+
+
+class _NoSessions:
+    """The session methods every runtime must define, for stubs that never use them."""
+
+    async def create_session(self, session_id):
+        raise NotImplementedError
+
+    async def session_execute(self, session_id, command):
+        raise NotImplementedError
+
+    async def session_command_logs(self, session_id, command_id):
+        raise NotImplementedError
+
+    async def session_logs(self, session_id):
+        raise NotImplementedError
+
+    async def list_sessions(self):
+        raise NotImplementedError
+
+    async def delete_session(self, session_id):
+        raise NotImplementedError
 
 
 class TestSandboxRuntimeABC:
@@ -98,7 +87,7 @@ class TestSandboxRuntimeABC:
     def test_concrete_subclass_works(self):
         """A minimal stub implementing all abstract methods should instantiate."""
 
-        class StubRuntime(SandboxRuntime):
+        class StubRuntime(_NoSessions, SandboxRuntime):
             @property
             def id(self) -> str:
                 return "stub-1"
@@ -122,9 +111,6 @@ class TestSandboxRuntimeABC:
             async def exec(self, command, timeout=60):
                 return ExecResult("", "", 0)
 
-            async def code_run(self, code, env=None, timeout=300):
-                return CodeRunResult("", "", 0)
-
             async def upload_file(self, content, dest_path):
                 pass
 
@@ -142,9 +128,9 @@ class TestSandboxRuntimeABC:
         assert runtime.working_dir == "/work"
 
     def test_default_capabilities(self):
-        """capabilities property should return the default set."""
+        """A runtime claims no optional ability until it overrides one."""
 
-        class StubRuntime(SandboxRuntime):
+        class StubRuntime(_NoSessions, SandboxRuntime):
             @property
             def id(self):
                 return "s"
@@ -167,9 +153,6 @@ class TestSandboxRuntimeABC:
 
             async def exec(self, command, timeout=60):
                 return ExecResult("", "", 0)
-
-            async def code_run(self, code, env=None, timeout=300):
-                return CodeRunResult("", "", 0)
 
             async def upload_file(self, content, dest_path):
                 pass
@@ -184,11 +167,13 @@ class TestSandboxRuntimeABC:
                 return []
 
         runtime = StubRuntime()
-        assert runtime.capabilities == {"exec", "code_run", "file_io"}
+        assert not runtime.updates_env
+        assert not runtime.archives
+        assert not runtime.autostops
 
     @pytest.mark.asyncio
     async def test_archive_raises_not_implemented(self):
-        class StubRuntime(SandboxRuntime):
+        class StubRuntime(_NoSessions, SandboxRuntime):
             @property
             def id(self):
                 return "s"
@@ -211,9 +196,6 @@ class TestSandboxRuntimeABC:
 
             async def exec(self, command, timeout=60):
                 return ExecResult("", "", 0)
-
-            async def code_run(self, code, env=None, timeout=300):
-                return CodeRunResult("", "", 0)
 
             async def upload_file(self, content, dest_path):
                 pass
@@ -233,7 +215,7 @@ class TestSandboxRuntimeABC:
 
     @pytest.mark.asyncio
     async def test_get_metadata_defaults(self):
-        class StubRuntime(SandboxRuntime):
+        class StubRuntime(_NoSessions, SandboxRuntime):
             @property
             def id(self):
                 return "meta-1"
@@ -256,9 +238,6 @@ class TestSandboxRuntimeABC:
 
             async def exec(self, command, timeout=60):
                 return ExecResult("", "", 0)
-
-            async def code_run(self, code, env=None, timeout=300):
-                return CodeRunResult("", "", 0)
 
             async def upload_file(self, content, dest_path):
                 pass

@@ -6,7 +6,7 @@ Covers:
 - load_from_dict() with string LLM format
 - load_from_dict() with dict LLM format
 - Missing required sections
-- Optional sections (agent, subagents, skills, flash)
+- Optional sections (agent, subagents, skills)
 - Subagent validation against builtins
 - load_from_files() config search behavior
 - generate_config_template()
@@ -29,7 +29,7 @@ def _full_config_dict(**overrides) -> dict:
     base = {
         "llm": {
             "name": "test-model",
-            "flash": "test-flash",
+            "background": "test-background",
             "compaction": "test-summary",
             "fetch": "test-fetch",
             "fallback": ["fallback-1"],
@@ -67,7 +67,7 @@ class TestLoadFromDictLLM:
         """LLM section as dict with name and optional fields."""
         config = load_from_dict(_full_config_dict())
         assert config.llm.name == "test-model"
-        assert config.llm.flash == "test-flash"
+        assert config.llm.background == "test-background"
         assert config.llm.compaction == "test-summary"
         assert config.llm.fetch == "test-fetch"
         assert config.llm.fallback == ["fallback-1"]
@@ -77,13 +77,13 @@ class TestLoadFromDictLLM:
         data = _full_config_dict(llm="claude-sonnet-4-5")
         config = load_from_dict(data)
         assert config.llm.name == "claude-sonnet-4-5"
-        assert config.llm.flash is None
+        assert config.llm.background is None
         assert config.llm.compaction is None
         assert config.llm.fetch is None
         assert config.llm.fallback is None
 
     def test_dict_llm_missing_name_raises(self):
-        data = _full_config_dict(llm={"flash": "model"})
+        data = _full_config_dict(llm={"background": "model"})
         with pytest.raises(ValueError, match="llm.name is required"):
             load_from_dict(data)
 
@@ -115,8 +115,15 @@ class TestLoadFromDictLLM:
         data = _full_config_dict(llm={"name": "gpt-4o"})
         config = load_from_dict(data)
         assert config.llm.name == "gpt-4o"
-        assert config.llm.flash is None
+        assert config.llm.background is None
         assert config.llm.compaction is None
+
+    def test_the_old_llm_flash_is_refused_naming_llm_background(self):
+        """A dict handed straight to the loader skips load_yaml_config, so the
+        loader refuses the old spelling itself rather than dropping it."""
+        data = _full_config_dict(llm={"name": "gpt-4o", "flash": "gpt-4o-mini"})
+        with pytest.raises(ValueError, match=r"llm\.flash was renamed to llm\.background"):
+            load_from_dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -171,21 +178,18 @@ class TestLoadFromDictOptionalSections:
         data = _full_config_dict(skills={
             "enabled": False,
             "user_skills_dir": "/custom/skills",
-            "project_skills_dir": "my-skills",
-            "sandbox_skills_base": "/sandbox/skills",
         })
         config = load_from_dict(data)
         assert config.skills.enabled is False
         assert config.skills.user_skills_dir == "/custom/skills"
 
-    def test_no_flash_section(self):
-        config = load_from_dict(_full_config_dict())
-        assert config.flash.enabled is True
-
-    def test_flash_disabled(self):
+    def test_a_retired_flash_section_still_loads(self):
+        # An agent_config.yaml written for the removed Flash agent keeps
+        # starting the server; the section is ignored, not an error.
         data = _full_config_dict(flash={"enabled": False})
         config = load_from_dict(data)
-        assert config.flash.enabled is False
+        assert "flash" not in type(config).model_fields
+        assert config.llm.background == "test-background"
 
 
 # ---------------------------------------------------------------------------
@@ -222,14 +226,70 @@ class TestLoadFromDictSubagents:
             "definitions": {
                 "my-agent": {
                     "description": "Custom agent",
-                    "mode": "flash",
                     "tools": ["web_search"],
                 },
             },
         })
         config = load_from_dict(data)
         assert "my-agent" in config.subagents.enabled
-        assert config.subagents.definitions["my-agent"].mode == "flash"
+        assert config.subagents.definitions["my-agent"].tools == ["web_search"]
+
+    @pytest.mark.parametrize(("name", "loads"), [("research", True), ("my-agent", False)])
+    def test_only_a_new_subagent_needs_a_description(self, name, loads):
+        """A built-in's name changes only the fields given; a new subagent has
+        no description to keep."""
+        data = _full_config_dict(subagents={
+            "enabled": ["general-purpose"],
+            "definitions": {name: {"model": "m-deploy", "reasoning_effort": "low"}},
+        })
+        if loads:
+            assert load_from_dict(data).subagents.definitions[name].model == "m-deploy"
+        else:
+            with pytest.raises(ValueError, match="needs a description"):
+                load_from_dict(data)
+
+    @pytest.mark.parametrize("value", [[], 0, ""])
+    def test_a_definition_that_is_not_a_map_is_refused(self, value):
+        data = _full_config_dict(subagents={"definitions": {"research": value}})
+        with pytest.raises(ValueError, match="Invalid subagent definition 'research'"):
+            load_from_dict(data)
+
+    def test_a_bare_builtin_key_is_an_empty_patch(self):
+        data = _full_config_dict(subagents={"definitions": {"research": None}})
+        assert load_from_dict(data).subagents.definitions["research"].model_fields_set == set()
+
+    def _one_subagent(self, **defn):
+        return _full_config_dict(subagents={
+            "enabled": ["my-agent"],
+            "definitions": {"my-agent": {"description": "Custom agent", **defn}},
+        })
+
+    def test_mode_flash_is_refused_naming_sections(self):
+        with pytest.raises(ValueError, match="mode: flash was retired") as refused:
+            load_from_dict(self._one_subagent(mode="flash"))
+        assert "subagents.definitions.my-agent" in str(refused.value)
+        assert "sections:" in str(refused.value)
+
+    def test_mode_flash_on_a_builtin_patch_is_refused_too(self):
+        data = _full_config_dict(subagents={"definitions": {"research": {"mode": "flash"}}})
+        with pytest.raises(ValueError, match="subagents.definitions.research: mode: flash"):
+            load_from_dict(data)
+
+    def test_mode_ptc_is_dropped_as_the_old_default(self):
+        with_mode = load_from_dict(self._one_subagent(mode="ptc"))
+        without = load_from_dict(self._one_subagent())
+        defn = with_mode.subagents.definitions["my-agent"]
+        assert "mode" not in defn.model_fields_set
+        assert defn == without.subagents.definitions["my-agent"]
+
+    @pytest.mark.parametrize("value", ["pttc", None, "Flash"])
+    def test_any_other_mode_is_refused_as_before(self, value):
+        with pytest.raises(ValueError, match="mode was retired; remove it"):
+            load_from_dict(self._one_subagent(mode=value))
+
+    def test_mode_ptc_on_a_builtin_patch_leaves_an_empty_patch(self):
+        data = _full_config_dict(subagents={"definitions": {"research": {"mode": "ptc"}}})
+        assert load_from_dict(data).subagents.definitions["research"].model_fields_set == set()
 
 
 # ---------------------------------------------------------------------------
@@ -308,28 +368,28 @@ class TestLoadFromDictCompaction:
         config = load_from_dict(_full_config_dict())
         assert config.compaction.enabled is True
         assert config.compaction.token_threshold == 120000
-        assert config.compaction.keep_messages == 5
+        assert config.compaction.keep_tokens == 20_000
 
     def test_custom_compaction(self):
         data = _full_config_dict(compaction={
             "enabled": False,
             "token_threshold": 80000,
-            "keep_messages": 3,
-            "truncate_args_trigger_messages": 15,
+            "keep_tokens": 3,
+            "truncate_args_idle_minutes": 30,
             "truncate_args_keep_messages": 10,
             "truncate_args_max_length": 1000,
         })
         config = load_from_dict(data)
         assert config.compaction.enabled is False
         assert config.compaction.token_threshold == 80000
-        assert config.compaction.keep_messages == 3
-        assert config.compaction.truncate_args_trigger_messages == 15
+        assert config.compaction.keep_tokens == 3
+        assert config.compaction.truncate_args_idle_minutes == 30
 
     def test_partial_compaction(self):
         """Partial compaction section uses defaults for missing fields."""
-        data = _full_config_dict(compaction={"enabled": True, "keep_messages": 10})
+        data = _full_config_dict(compaction={"enabled": True, "keep_tokens": 10})
         config = load_from_dict(data)
-        assert config.compaction.keep_messages == 10
+        assert config.compaction.keep_tokens == 10
         assert config.compaction.token_threshold == 120000  # default
 
     def test_default_search_api(self):
@@ -437,7 +497,7 @@ class TestGenerateConfigTemplate:
         data = yaml.safe_load(content)
         # Template should have required sections
         assert "llm" in data
-        assert "daytona" in data
+        assert data["sandbox"]["provider"] == "daytona"
         assert "mcp" in data
         assert "logging" in data
         assert "filesystem" in data

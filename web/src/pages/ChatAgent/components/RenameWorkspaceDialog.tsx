@@ -11,6 +11,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import type { Workspace } from '@/types/api';
+import { clampWorkspaceName } from '../utils/workspaceName';
 
 interface RenameWorkspaceDialogProps {
   target: Workspace | null;
@@ -41,7 +42,7 @@ function RenameWorkspaceDialog({ target, onClose, onSubmit, busy }: RenameWorksp
         </DialogHeader>
         <Input
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => setDraft(clampWorkspaceName(e.target.value))}
           placeholder={t('workspace.workspaceName')}
           aria-label={t('workspace.rename')}
           autoFocus

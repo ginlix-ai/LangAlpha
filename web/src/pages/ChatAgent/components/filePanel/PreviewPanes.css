@@ -1,0 +1,11 @@
+/* Every open preview keeps its iframe mounted; only the active one is shown.
+   Switching tabs must not reload a running app, and an iframe that leaves the
+   tree loses its document, its scroll position and whatever was typed in it. */
+.file-panel-preview-pane {
+  position: absolute;
+  inset: 0;
+  background-color: var(--color-bg-page);
+}
+.file-panel-preview-pane[hidden] {
+  display: none;
+}

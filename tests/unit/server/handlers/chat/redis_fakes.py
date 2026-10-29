@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from src.server.services.report_back.flash import keys, pointer, reserve
+from src.server.services.report_back.handoff import keys, pointer, reserve
 
 
 class FakePipeline:
@@ -81,14 +81,16 @@ class FakeClient:
             kept = [x for x in lst if x != value]
             self.lists[key] = kept
             return len(lst) - len(kept)
+        # A negative count removes from the tail, as Redis does.
+        order = lst[::-1] if count < 0 else lst
         removed = 0
         out = []
-        for x in lst:
-            if x == value and removed < count:
+        for x in order:
+            if x == value and removed < abs(count):
                 removed += 1
                 continue
             out.append(x)
-        self.lists[key] = out
+        self.lists[key] = out[::-1] if count < 0 else out
         return removed
 
     async def llen(self, key) -> int:
@@ -128,6 +130,10 @@ class FakeClient:
     async def expire(self, key, ttl) -> None:
         self.ttls[key] = ttl
 
+    async def hget(self, key, field):
+        value = self.hashes.get(key, {}).get(str(field))
+        return value.encode() if isinstance(value, str) else value
+
     async def delete(self, *keys) -> None:
         for key in keys:
             self.sets.pop(key, None)
@@ -154,9 +160,32 @@ class FakeClient:
                 return None
         return current
 
+    def _steering_eval(self, script, keys, argv):
+        """The steering middleware's take script, or NotImplemented for another."""
+        from ptc_agent.agent.middleware import steering
+
+        if script is not None and script is getattr(steering, "_TAKE_LUA", None):
+            queue, take = keys
+            ttl, *values = argv
+            if take not in self.kv:
+                entries = self.lists.get(queue, [])
+                flags = []
+                for value in values:
+                    found = value in entries
+                    if found:
+                        entries.remove(value)
+                    flags.append("1" if found else "0")
+                self.kv[take] = "".join(flags).encode()
+                self.ttls[take] = int(ttl)
+            return self.kv[take]
+        return NotImplemented
+
     async def eval(self, script, numkeys, *args):
-        """Emulates the report-back Lua scripts by identity."""
+        """Emulates the report-back and steering Lua scripts by identity."""
         keys, argv = args[:numkeys], args[numkeys:]
+        steered = self._steering_eval(script, keys, argv)
+        if steered is not NotImplemented:
+            return steered
         if script is reserve.ADMISSION_GATE_LUA:
             receipt_key, origin_key = keys
             gen, run_id = argv
@@ -385,17 +414,17 @@ class FakeClient:
             return 0
         if script is reserve.RESERVE_LUA:
             watch_key, user_key, origin_key = keys
-            ptc_id, flash_id, max_flash, max_user, ttl, origin_json = argv
+            ptc_id, dispatcher_id, max_thread, max_user, ttl, origin_json = argv
             prev = self._decoded(origin_key)
-            if isinstance(prev, dict) and prev.get("flash_thread_id") not in (
+            if isinstance(prev, dict) and prev.get("home_thread_id") not in (
                 None,
-                flash_id,
+                dispatcher_id,
             ):
                 return ["cross", 0, 0, ""]
             in_watch = ptc_id in self.sets.get(watch_key, set())
             in_user = ptc_id in self.sets.get(user_key, set())
-            if not in_watch and len(self.sets.get(watch_key, set())) >= int(max_flash):
-                return ["cap_flash", 0, 0, ""]
+            if not in_watch and len(self.sets.get(watch_key, set())) >= int(max_thread):
+                return ["cap_thread", 0, 0, ""]
             if not in_user and len(self.sets.get(user_key, set())) >= int(max_user):
                 return ["cap_user", 0, 0, ""]
             if not in_watch:
@@ -498,27 +527,27 @@ class FakeCache:
         self.kv.pop(key, None)
 
 
-def origin(ptc: str, flash: str = "flash-1", user: str = "u-1") -> dict:
+def origin(ptc: str, dispatcher: str = "cos-1", user: str = "u-1") -> dict:
     return {
-        "origin": "flash",
+        "origin": "home",
         "report_back": True,
-        "flash_thread_id": flash,
-        "flash_workspace_id": "fws-1",
+        "home_thread_id": dispatcher,
+        "home_workspace_id": "fws-1",
         "ptc_thread_id": ptc,
         "ptc_workspace_id": f"ws-{ptc}",
         "user_id": user,
     }
 
 
-def seed_dispatched(cache: FakeCache, flash: str, ptcs: list[str], user: str = "u-1") -> None:
+def seed_dispatched(cache: FakeCache, dispatcher: str, ptcs: list[str], user: str = "u-1") -> None:
     """Mirror what reservation + origin recording leave behind for each FRESH
     dispatch (the reserve script created both memberships, so the origin
     carries ownership of them)."""
     for ptc in ptcs:
-        cache.client.sets.setdefault(keys.flash_watch_key(flash), set()).add(ptc)
-        cache.client.sets.setdefault(keys.flash_user_pending_key(user), set()).add(ptc)
+        cache.client.sets.setdefault(keys.watch_key(dispatcher), set()).add(ptc)
+        cache.client.sets.setdefault(keys.user_pending_key(user), set()).add(ptc)
         cache.kv[keys.ptc_origin_key(ptc)] = {
-            **origin(ptc, flash, user),
+            **origin(ptc, dispatcher, user),
             "owns_watch": True,
             "owns_user": True,
         }

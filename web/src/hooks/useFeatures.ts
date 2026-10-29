@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
 import { getFeatures, setFeatureOverride } from '../api/features';
 import type { FeatureState } from '../types/api';
@@ -7,13 +7,22 @@ import type { FeatureState } from '../types/api';
 // while still picking up server-side changes within a session.
 const FEATURES_STALE_TIME_MS = 5 * 60_000;
 
+/** The user's effective flags, retried like any read: a flag decides where a
+ *  chat outside a workspace runs, and a failed read reads as off until the
+ *  next refetch. */
+export const featuresQuery = queryOptions({
+  queryKey: queryKeys.features.list(),
+  queryFn: getFeatures,
+  staleTime: FEATURES_STALE_TIME_MS,
+});
+
 export function useFeatures() {
-  return useQuery({
-    queryKey: queryKeys.features.list(),
-    queryFn: getFeatures,
-    staleTime: FEATURES_STALE_TIME_MS,
-    retry: false,
-  });
+  return useQuery(featuresQuery);
+}
+
+/** Whether a flag is on in a read of the flags; no read yet means off. */
+export function isFeatureEnabled(features: FeatureState[] | undefined, key: string): boolean {
+  return features?.find((f) => f.key === key)?.enabled ?? false;
 }
 
 /**
@@ -22,8 +31,7 @@ export function useFeatures() {
  * flashes on before the real value lands.
  */
 export function useFeatureEnabled(key: string): boolean {
-  const { data } = useFeatures();
-  return data?.find((f) => f.key === key)?.enabled ?? false;
+  return isFeatureEnabled(useFeatures().data, key);
 }
 
 /** Mutation for a user override; setQueryData propagates the returned list instantly. */

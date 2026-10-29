@@ -24,10 +24,9 @@ from ptc_agent.config.core import (
     SecurityConfig,
 )
 from ptc_agent.core.sandbox.runtime import (
-    CodeRunResult,
     ExecResult,
     RuntimeState,
-    SandboxProvider,
+    SandboxHostUnavailableError,
     SandboxRuntime,
 )
 from src.server.services.runs.executor import (
@@ -35,6 +34,7 @@ from src.server.services.runs.executor import (
     LocalRunExecution,
     LocalRunStatus,
 )
+from tests.unit.core.sandbox.fake_provider import fake_provider
 
 
 def _make_config(**overrides) -> CoreConfig:
@@ -54,6 +54,9 @@ def mock_runtime():
     runtime = AsyncMock(spec=SandboxRuntime)
     runtime.id = "mock-runtime-1"
     runtime.working_dir = "/home/workspace"
+    # A real path, not the spec'd AsyncMock's return: reconnect stores this as
+    # the computer root and everything downstream joins paths onto it.
+    runtime.fetch_working_dir = AsyncMock(return_value="/home/workspace")
     runtime.exec = AsyncMock(return_value=ExecResult("output", "", 0))
     runtime.upload_file = AsyncMock()
     runtime.upload_files = AsyncMock()
@@ -61,7 +64,6 @@ def mock_runtime():
     runtime.list_files = AsyncMock(
         return_value=[{"name": "file.txt", "is_dir": False}]
     )
-    runtime.code_run = AsyncMock(return_value=CodeRunResult("result", "", 0, []))
     runtime.get_state = AsyncMock(return_value=RuntimeState.RUNNING)
     runtime.start = AsyncMock()
     runtime.stop = AsyncMock()
@@ -71,7 +73,7 @@ def mock_runtime():
 
 @pytest.fixture
 def mock_provider(mock_runtime):
-    provider = AsyncMock(spec=SandboxProvider)
+    provider = fake_provider()
     provider.create = AsyncMock(return_value=mock_runtime)
     provider.get = AsyncMock(return_value=mock_runtime)
     provider.close = AsyncMock()
@@ -171,37 +173,47 @@ class TestHasActiveTasksForWorkspace:
 
 
 class TestCleanupIdleWorkspacesGuard:
-    """cleanup_idle_workspaces skips workspaces with active workflows."""
+    """cleanup_idle_workspaces skips machines with active workflows.
+
+    The reaper walks computers, so the gate it consults is the machine-wide
+    one: the sandbox belongs to the computer, and one idle project on it is
+    not a reason to take it from a sibling that is mid-turn.
+    """
+
+    @staticmethod
+    def _idle_machine(computer_id: str) -> dict:
+        return {
+            "computer_id": computer_id,
+            "user_id": "user-1",
+            "kind": "daytona",
+            "is_always_on": False,
+            "last_activity_at": datetime.now(timezone.utc) - timedelta(seconds=3600),
+            "updated_at": datetime.now(timezone.utc) - timedelta(seconds=3600),
+        }
 
     @pytest.mark.asyncio
-    async def test_skips_workspace_with_active_task(self):
+    async def test_skips_machine_with_active_task(self):
         from ptc_agent.config import AgentConfig
 
         config = MagicMock(spec=AgentConfig)
+        config.to_core_config.return_value.sandbox = SandboxConfig()
         from src.server.services.workspace_manager import WorkspaceManager
 
-        mgr = WorkspaceManager(config=config, idle_timeout=1800)
+        mgr = WorkspaceManager(config=config)
 
-        stale_time = datetime.now(timezone.utc) - timedelta(seconds=3600)
-        workspace = {
-            "workspace_id": "ws-active",
-            "last_activity_at": stale_time,
-        }
-
-        # Patch DB query to return one "idle" workspace
         with (
             patch(
-                "src.server.services.workspace_manager.get_workspaces_by_status",
+                "src.server.services.workspace_manager.get_computers_by_status",
                 new_callable=AsyncMock,
-                return_value=[workspace],
+                return_value=[self._idle_machine("comp-active")],
             ),
-            patch.object(mgr, "stop_workspace", new_callable=AsyncMock) as mock_stop,
+            patch.object(mgr, "_stop_machine", new_callable=AsyncMock) as mock_stop,
             patch(
                 "src.server.services.runs.executor.LocalRunExecutor.get_instance"
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()
-            mock_instance.has_active_tasks_for_workspace = AsyncMock(return_value=True)
+            mock_instance.has_active_tasks_for_computer = AsyncMock(return_value=True)
             mock_get_instance.return_value = mock_instance
 
             stopped = await mgr.cleanup_idle_workspaces()
@@ -210,39 +222,37 @@ class TestCleanupIdleWorkspacesGuard:
         mock_stop.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_stops_workspace_without_active_task(self):
+    async def test_stops_machine_without_active_task(self):
         from ptc_agent.config import AgentConfig
 
         config = MagicMock(spec=AgentConfig)
+        config.to_core_config.return_value.sandbox = SandboxConfig()
         from src.server.services.workspace_manager import WorkspaceManager
 
-        mgr = WorkspaceManager(config=config, idle_timeout=1800)
-
-        stale_time = datetime.now(timezone.utc) - timedelta(seconds=3600)
-        workspace = {
-            "workspace_id": "ws-idle",
-            "last_activity_at": stale_time,
-        }
+        mgr = WorkspaceManager(config=config)
+        machine = self._idle_machine("comp-idle")
 
         with (
             patch(
-                "src.server.services.workspace_manager.get_workspaces_by_status",
+                "src.server.services.workspace_manager.get_computers_by_status",
                 new_callable=AsyncMock,
-                return_value=[workspace],
+                return_value=[machine],
             ),
-            patch.object(mgr, "stop_workspace", new_callable=AsyncMock) as mock_stop,
+            patch.object(mgr, "_stop_machine", new_callable=AsyncMock) as mock_stop,
             patch(
                 "src.server.services.runs.executor.LocalRunExecutor.get_instance"
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()
-            mock_instance.has_active_tasks_for_workspace = AsyncMock(return_value=False)
+            mock_instance.has_active_tasks_for_computer = AsyncMock(return_value=False)
             mock_get_instance.return_value = mock_instance
 
             stopped = await mgr.cleanup_idle_workspaces()
 
         assert stopped == 1
-        mock_stop.assert_called_once_with("ws-idle")
+        mock_stop.assert_called_once_with(
+            "comp-idle", unchanged_since=machine["updated_at"], reason="idle"
+        )
 
 
 class TestSessionClosedIsTransient:
@@ -297,7 +307,7 @@ class TestEnsureSandboxConnectedRecreatesProvider:
         sandbox.sandbox_id = "existing-sandbox"
 
         # Fresh provider for the reconnect
-        fresh_provider = AsyncMock(spec=SandboxProvider)
+        fresh_provider = fake_provider()
         fresh_provider.get = AsyncMock(return_value=mock_runtime)
         fresh_provider.close = AsyncMock()
         fresh_provider.is_transient_error = MagicMock(return_value=False)
@@ -310,92 +320,141 @@ class TestEnsureSandboxConnectedRecreatesProvider:
         assert mock_create_provider.call_count == 2
 
 
-class TestEnsureSandboxConnectedNoFutureLeak:
-    """After Fix 3, _ensure_sandbox_connected has no asyncio.Future coalescing
-    primitive, so a failing reconnect cannot produce a 'Future exception was
-    never retrieved' warning. Serialization is still enforced via the lock."""
+class TestEnsureSandboxConnectedSharesOneReconnect:
+    """Callers arriving while a reconnect runs take its outcome rather than
+    queue for their own: against a host that does not answer, each queued one
+    paid its own connect timeout in turn."""
+
+    @staticmethod
+    def _sandbox(mock_create_provider, mock_provider, mock_runtime, reconnect):
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+        sandbox.sandbox_id = "existing-sandbox"
+        fresh_provider = fake_provider()
+        fresh_provider.close = AsyncMock()
+        mock_create_provider.return_value = fresh_provider
+        sandbox.reconnect = AsyncMock(side_effect=reconnect)
+        return sandbox
 
     @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
     @pytest.mark.asyncio
-    async def test_no_future_leak_on_reconnect_failure(
+    async def test_concurrent_callers_share_one_reconnect(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        async def slow_reconnect(sid):
+            await asyncio.sleep(0.01)
+
+        sandbox = self._sandbox(
+            mock_create_provider, mock_provider, mock_runtime, slow_reconnect
+        )
+
+        await asyncio.gather(*(sandbox._ensure_sandbox_connected() for _ in range(3)))
+
+        assert sandbox.reconnect.await_count == 1
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_share_its_failure(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        verdict = SandboxHostUnavailableError("existing-sandbox", "did not answer")
+
+        async def silent_host(sid):
+            await asyncio.sleep(0.01)
+            raise verdict
+
+        sandbox = self._sandbox(
+            mock_create_provider, mock_provider, mock_runtime, silent_host
+        )
+
+        outcomes = await asyncio.gather(
+            *(sandbox._ensure_sandbox_connected() for _ in range(3)),
+            return_exceptions=True,
+        )
+
+        assert outcomes == [verdict, verdict, verdict]
+        assert sandbox.reconnect.await_count == 1
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_a_caller_after_it_ended_reconnects_anew(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        """An outcome is news only to those who waited for it; the host may
+        answer by the next call."""
+        sandbox = self._sandbox(
+            mock_create_provider,
+            mock_provider,
+            mock_runtime,
+            [SandboxHostUnavailableError("existing-sandbox", "did not answer"), None],
+        )
+
+        with pytest.raises(SandboxHostUnavailableError):
+            await sandbox._ensure_sandbox_connected()
+        await sandbox._ensure_sandbox_connected()
+
+        assert sandbox.reconnect.await_count == 2
+        assert sandbox._reconnect_task is None
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_a_caller_giving_up_does_not_cancel_it_for_the_others(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        release = asyncio.Event()
+
+        async def held_reconnect(sid):
+            await release.wait()
+
+        sandbox = self._sandbox(
+            mock_create_provider, mock_provider, mock_runtime, held_reconnect
+        )
+        quitter = asyncio.create_task(sandbox._ensure_sandbox_connected())
+        waiter = asyncio.create_task(sandbox._ensure_sandbox_connected())
+        await asyncio.sleep(0)
+
+        quitter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await quitter
+        release.set()
+        await waiter
+
+        assert sandbox.reconnect.await_count == 1
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_a_failure_no_caller_waited_for_is_not_reported_unretrieved(
         self, mock_create_provider, mock_provider, mock_runtime, caplog
     ):
         import gc
         import logging
-        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
-        mock_create_provider.return_value = mock_provider
-        sandbox = PTCSandbox(config=_make_config())
-        sandbox.runtime = mock_runtime
-        sandbox.sandbox_id = "existing-sandbox"
+        release = asyncio.Event()
 
-        fresh_provider = AsyncMock(spec=SandboxProvider)
-        fresh_provider.close = AsyncMock()
-        mock_create_provider.return_value = fresh_provider
+        async def failing_reconnect(sid):
+            await release.wait()
+            raise RuntimeError("reconnect bombed")
 
-        sandbox.reconnect = AsyncMock(
-            side_effect=RuntimeError("reconnect bombed")
+        sandbox = self._sandbox(
+            mock_create_provider, mock_provider, mock_runtime, failing_reconnect
         )
-
-        caplog.set_level(logging.WARNING, logger="asyncio")
-
-        with pytest.raises(RuntimeError, match="reconnect bombed"):
-            await sandbox._ensure_sandbox_connected()
-
-        # Force GC; if there were a stranded Future with an unretrieved
-        # exception, the asyncio debug machinery would log here.
-        gc.collect()
+        caplog.set_level(logging.ERROR, logger="asyncio")
+        quitter = asyncio.create_task(sandbox._ensure_sandbox_connected())
         await asyncio.sleep(0)
+        quitter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await quitter
 
-        assert not any(
-            "Future exception was never retrieved" in rec.getMessage()
-            for rec in caplog.records
-        ), "Fix 3 regression: Future coalescing primitive reintroduced"
+        release.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        gc.collect()
 
-        # No private state survives the failed attempt.
-        assert not hasattr(sandbox, "_reconnect_inflight")
-
-    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
-    @pytest.mark.asyncio
-    async def test_concurrent_callers_serialized_by_lock(
-        self, mock_create_provider, mock_provider, mock_runtime
-    ):
-        """Two concurrent _ensure_sandbox_connected calls each invoke reconnect
-        serially (the lock was the only real serializer — Fix 3 removed the
-        dead Future that pretended to coalesce)."""
-        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
-
-        mock_create_provider.return_value = mock_provider
-        sandbox = PTCSandbox(config=_make_config())
-        sandbox.runtime = mock_runtime
-        sandbox.sandbox_id = "existing-sandbox"
-
-        fresh_provider = AsyncMock(spec=SandboxProvider)
-        fresh_provider.close = AsyncMock()
-        mock_create_provider.return_value = fresh_provider
-
-        running = 0
-        peak_concurrency = 0
-
-        async def tracked_reconnect(sid):
-            nonlocal running, peak_concurrency
-            running += 1
-            peak_concurrency = max(peak_concurrency, running)
-            await asyncio.sleep(0.01)
-            running -= 1
-
-        sandbox.reconnect = AsyncMock(side_effect=tracked_reconnect)
-
-        await asyncio.gather(
-            sandbox._ensure_sandbox_connected(),
-            sandbox._ensure_sandbox_connected(),
-        )
-
-        assert sandbox.reconnect.await_count == 2
-        assert peak_concurrency == 1, (
-            "Lock must serialize concurrent reconnects; saw "
-            f"peak_concurrency={peak_concurrency}"
-        )
+        assert sandbox._reconnect_task is None
+        assert not any("never retrieved" in rec.getMessage() for rec in caplog.records)
 
 
 class TestInitTaskCancellation:

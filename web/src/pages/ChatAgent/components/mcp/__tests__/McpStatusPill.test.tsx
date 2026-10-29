@@ -9,7 +9,7 @@ describe('McpStatusPill — status matrix', () => {
   it.each([
     ['connected', 'Connected'],
     ['error', 'Error'],
-    ['needs_secret', 'Needs secret'],
+    ['needs_secret', 'Needs a key'],
     ['pending', 'Pending'],
     ['unknown', 'Unknown'],
   ] as [McpStatus, string][])('renders %s label when enabled', (status, label) => {
@@ -29,7 +29,7 @@ describe('McpStatusPill — status matrix', () => {
   it('surfaces the pending hint via title for the pending state', () => {
     render(<McpStatusPill status="pending" enabled />);
     const pill = screen.getByTestId('mcp-status-pending');
-    expect(pill).toHaveAttribute('title', expect.stringMatching(/waiting for discovery/i));
+    expect(pill).toHaveAttribute('title', expect.stringMatching(/not checked yet/i));
   });
 
 });

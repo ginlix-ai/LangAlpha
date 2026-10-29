@@ -133,7 +133,7 @@ class TestGenerate:
 
         kwargs = llm_service.complete.await_args.kwargs
         assert kwargs["response_schema"] is MemoMetadata
-        assert kwargs["mode"] == "flash"
+        assert kwargs["slot"] == "background"
         assert kwargs["user_id"] == "user_abc"
         # The filename and mime type flow into the prompt
         assert "Q1 Thesis.md" in kwargs["user_prompt"]

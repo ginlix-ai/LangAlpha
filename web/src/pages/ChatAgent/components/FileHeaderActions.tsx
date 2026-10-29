@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Download, FileDown, Pencil, Save, Settings2, X, Undo2, Redo2, FileDiff, FileText, Check, Clipboard } from 'lucide-react';
+import { Code2, Download, Eye, ExternalLink, FileDown, Link2, Pencil, Settings2, X, Undo2, Redo2, FileDiff, FileText, Check, Clipboard } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,25 +12,28 @@ import {
   DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu';
 import { toast } from '@/components/ui/use-toast';
+import { copyText } from '@/lib/clipboard';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { fileExtension } from '../utils/filePaths';
+import { useDownloadState, workspaceDownloadKey } from '../utils/downloadNotice';
 import { exportServedPdf } from './viewers/html/useHtmlActions';
+import { useServedHtml } from './viewers/html/useServedHtml';
+import ShareLinkDialog from './ShareLinkDialog';
 
 const PDF_SCALE_CHOICES = [0.8, 1, 1.25];
 
 // --- File type detection helpers ---
 
-export function getFileExtension(fileName: string): string {
-  const dot = fileName.lastIndexOf('.');
-  return dot >= 0 ? fileName.slice(dot + 1).toLowerCase() : '';
-}
+/** The one extension reader; re-exported so this module's callers keep one import. */
+export { fileExtension as getFileExtension };
 
 export function isMarkdownFile(filePath: string, mime: string | null): boolean {
-  return getFileExtension(filePath.split('/').pop() || '') === 'md' || (mime?.includes('markdown') ?? false);
+  return fileExtension(filePath) === 'md' || (mime?.includes('markdown') ?? false);
 }
 
 export function isHtmlFile(filePath: string): boolean {
-  return ['html', 'htm'].includes(getFileExtension(filePath.split('/').pop() || ''));
+  return ['html', 'htm'].includes(fileExtension(filePath));
 }
 
 export function isTextMime(mime: string | null): boolean {
@@ -53,10 +56,21 @@ interface FileHeaderActionsProps {
   onStartEdit: () => void;
   onOpenExportModal: () => void;
   triggerDownloadFn: (workspaceId: string, filePath: string) => Promise<void>;
+  /** Whether this viewer may save the bytes. A copy-link share grants
+   *  `allow_files` without `allow_download`, and every item in the menu below
+   *  writes a file to disk, so the whole menu goes rather than leaving a
+   *  trigger over an empty list. Copy-to-clipboard goes with it: the menu is
+   *  labelled and iconed for downloading, and the viewer can still select the
+   *  text it is reading. */
+  canDownload?: boolean;
   readFileFullFn: (workspaceId: string, filePath: string) => Promise<{ content: string }>;
-  /** Byte-faithful served URL for the selected HTML file (e.g. the public
-   *  share serve URL). Defaults to the wsfiles route when omitted. */
-  htmlServedUrl?: string;
+  /** The serve prefix a share was handed; omitted, the owner's grant serves HTML. */
+  servePrefix?: string;
+  /** Offer the selected file's share dialog: the owner's own panel only. */
+  canShare?: boolean;
+  /** An HTML file's view: its markup rather than its page, and the switch between them. */
+  htmlSource?: boolean;
+  onToggleHtmlSource?: (() => void) | null;
   // Edit mode callbacks
   editorRef: React.RefObject<any>;
   canUndo: boolean;
@@ -82,8 +96,12 @@ function FileHeaderActions({
   onStartEdit,
   onOpenExportModal,
   triggerDownloadFn,
+  canDownload = true,
   readFileFullFn,
-  htmlServedUrl,
+  servePrefix,
+  canShare = false,
+  htmlSource = false,
+  onToggleHtmlSource = null,
   editorRef,
   canUndo,
   canRedo,
@@ -96,21 +114,35 @@ function FileHeaderActions({
   onCancelEdit,
 }: FileHeaderActionsProps) {
   const { t } = useTranslation();
+  const downloadPending = useDownloadState(
+    selectedFile ? workspaceDownloadKey(workspaceId, selectedFile) : null,
+  ) !== 'idle';
   const [copied, setCopied] = useState(false);
   // Server PDF renders take seconds; ignore re-entry while one is in flight.
   const pdfInFlight = useRef(false);
   const [pdfScale, setPdfScale] = useState(1);
   const [pdfPageNumbers, setPdfPageNumbers] = useState(false);
   const [pdfBranding, setPdfBranding] = useState(true);
+  const [shareOpen, setShareOpen] = useState(false);
+
+  const served = useServedHtml(
+    workspaceId,
+    selectedFile && isHtmlFile(selectedFile) ? selectedFile : null,
+    servePrefix,
+  );
 
   const handleExportHtmlPdf = async () => {
     if (!selectedFile || pdfInFlight.current) return;
+    if (!served.plainUrl) {
+      toast({ description: t('filePanel.pdfFailed') });
+      return;
+    }
     pdfInFlight.current = true;
     try {
       await exportServedPdf({
-        workspaceId,
         filePath: selectedFile,
-        servedUrl: htmlServedUrl,
+        servedUrl: served.plainUrl,
+        openUrl: served.openUrl,
         printHint: t('filePanel.pdfPrintHint'),
         generatingHint: t('filePanel.pdfGenerating'),
         scale: pdfScale,
@@ -127,7 +159,7 @@ function FileHeaderActions({
     try {
       // Fetch full content to avoid copying truncated text for large files
       const { content } = await readFileFullFn(workspaceId, selectedFile);
-      await navigator.clipboard.writeText(content);
+      await copyText(content);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -177,7 +209,7 @@ function FileHeaderActions({
           title={t('filePanel.save')}
           disabled={!hasUnsavedChanges || isSaving}
         >
-          <Save className={`h-4 w-4 ${isSaving ? 'animate-pulse' : ''}`} />
+          <Check className={`h-4 w-4 ${isSaving ? 'animate-pulse' : ''}`} />
         </button>
         <button
           onClick={onCancelEdit}
@@ -192,9 +224,21 @@ function FileHeaderActions({
 
   // --- View mode ---
 
+  // One handler for every save in this menu. Four sites carried this same body
+  // before, which is four places a new one could copy without the guard above.
+  const download = () => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => {
+    console.error('[FileHeaderActions] Download failed:', err);
+    // A save is the whole interaction: nothing opens, nothing navigates, and the
+    // browser shows no file. Without this the menu item is indistinguishable
+    // from a dead one. A toast rather than an inline error, because the document
+    // the reader is looking at is still fine and should stay on screen.
+    toast({ description: t('filePanel.downloadFailed'), variant: 'destructive' });
+  });
+
   const isMd = isMarkdownFile(selectedFile, fileMime);
   const isHtml = isHtmlFile(selectedFile);
   const isText = isTextMime(fileMime);
+  const openUrl = isHtml ? served.openUrl : undefined;
 
   const renderDropdownItems = () => {
     if (isMd) {
@@ -205,7 +249,7 @@ function FileHeaderActions({
             <FileText className="h-3.5 w-3.5" />
             {t('filePanel.downloadAsPdf')}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FileHeaderActions] Download failed:', err))}>
+          <DropdownMenuItem onSelect={download} disabled={downloadPending}>
             <Download className="h-3.5 w-3.5" />
             {t('filePanel.downloadAsMarkdown')}
           </DropdownMenuItem>
@@ -214,13 +258,13 @@ function FileHeaderActions({
     }
 
     if (isHtml) {
-      // HTML file: this menu owns Download + Save-as-PDF; the HtmlViewer
-      // toolbar keeps only view actions (link/fullscreen/new tab).
+      // HTML file: this menu owns Download + Save-as-PDF; the view actions
+      // (source, open in new tab) sit beside it in the header.
       // PDF options toggle component state via preventDefault so the menu
       // stays open while the user composes the export.
       return (
         <>
-          <DropdownMenuItem onSelect={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FileHeaderActions] Download failed:', err))}>
+          <DropdownMenuItem onSelect={download} disabled={downloadPending}>
             <Download className="h-3.5 w-3.5" />
             {t('filePanel.download')}
           </DropdownMenuItem>
@@ -276,7 +320,7 @@ function FileHeaderActions({
       // Non-markdown text file: Download + Copy to clipboard
       return (
         <>
-          <DropdownMenuItem onSelect={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FileHeaderActions] Download failed:', err))}>
+          <DropdownMenuItem onSelect={download} disabled={downloadPending}>
             <Download className="h-3.5 w-3.5" />
             {t('filePanel.download')}
           </DropdownMenuItem>
@@ -296,7 +340,7 @@ function FileHeaderActions({
 
     // Binary file: Download only
     return (
-      <DropdownMenuItem onSelect={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FileHeaderActions] Download failed:', err))}>
+      <DropdownMenuItem onSelect={download} disabled={downloadPending}>
         <Download className="h-3.5 w-3.5" />
         {t('filePanel.download')}
       </DropdownMenuItem>
@@ -305,19 +349,65 @@ function FileHeaderActions({
 
   return (
     <>
-      <DropdownMenu modal={false}>
-        <DropdownMenuTrigger asChild>
+      {/* One switch for the two views, showing where it goes. */}
+      {isHtml && onToggleHtmlSource && (
+        <button
+          onClick={onToggleHtmlSource}
+          className="file-panel-icon-btn"
+          title={htmlSource ? t('filePanel.viewPreview') : t('filePanel.viewSource')}
+          aria-label={htmlSource ? t('filePanel.viewPreview') : t('filePanel.viewSource')}
+        >
+          {htmlSource ? <Eye className="h-4 w-4" /> : <Code2 className="h-4 w-4" />}
+        </button>
+      )}
+      {canShare && (
+        <>
           <button
+            onClick={() => setShareOpen(true)}
             className="file-panel-icon-btn"
-            aria-label={t('filePanel.downloadOptions') ?? 'Download options'}
+            title={t('filePanel.copyShareLink')}
+            aria-label={t('filePanel.copyShareLink')}
           >
-            <Download className="h-4 w-4" />
+            <Link2 className="h-4 w-4" />
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" sideOffset={4}>
-          {renderDropdownItems()}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          {/* Keyed by file so each file's dialog starts fresh, while staying
+              mounted through its own close so the exit animation plays. */}
+          <ShareLinkDialog
+            key={selectedFile}
+            open={shareOpen}
+            workspaceId={workspaceId}
+            filePath={selectedFile}
+            onClose={() => setShareOpen(false)}
+          />
+        </>
+      )}
+      {/* The file's own page in a new tab: its /a/ link for the owner, the
+          share's served bytes on a share. Never the grant URL, which expires. */}
+      {openUrl && (
+        <button
+          onClick={() => window.open(openUrl, '_blank', 'noopener,noreferrer')}
+          className="file-panel-icon-btn"
+          title={t('filePanel.openInNewTab')}
+          aria-label={t('filePanel.openInNewTab')}
+        >
+          <ExternalLink className="h-4 w-4" />
+        </button>
+      )}
+      {canDownload && (
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="file-panel-icon-btn"
+              aria-label={t('filePanel.downloadOptions') ?? 'Download options'}
+            >
+              <Download className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" sideOffset={4}>
+            {renderDropdownItems()}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       {canEdit && (
         <button

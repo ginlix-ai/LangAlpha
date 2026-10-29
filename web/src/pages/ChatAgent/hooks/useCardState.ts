@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 import { isTerminalStatus } from '../session/subagents/subagentStatus';
+import { createFrameQueue } from '../session/stream/frameQueue';
+import { withoutPending } from '../session/stream/toolCallChunks';
 
 // --- Card-level types ---
 
@@ -48,6 +50,11 @@ interface SubagentData {
   /** Owning workflow run's agent id (workflow children only) — such cards
    *  are hidden from the sidebar and reached via the run's detail view. */
   ownerTaskId?: string;
+  /** When the task went quiet (epoch ms), set only by the write that settles
+   *  it: the time that write carries, else when this view saw it. A card
+   *  created already settled has only the time its write carries, which a
+   *  close that is news here and a ledger read do and opening it does not. */
+  lastActivityMs?: number;
   [key: string]: unknown;
 }
 
@@ -63,13 +70,24 @@ type CardsMap = Record<string, Card>;
 export interface UseCardStateResult {
   cards: CardsMap;
   updateTodoListCard: (todoData: TodoData) => void;
-  updateSubagentCard: (agentId: string, subagentDataUpdate: SubagentData) => void;
+  updateSubagentCard: (agentId: string, subagentDataUpdate: SubagentData, options?: { nextFrame?: boolean }) => void;
   finalizePendingTodos: () => void;
   clearSubagentCards: () => void;
 }
 
 export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
-  const [cards, setCards] = useState<CardsMap>(initialCards);
+  const [cards, setCardsState] = useState<CardsMap>(initialCards);
+  // A subagent's streamed chunks reach its card on the next frame, like the
+  // main transcript's (see createFrameQueue): every chunk was a render of the
+  // whole chat view, and parallel subagents stream at once. Every other write
+  // applies them first, so it can neither overtake a chunk nor be overtaken:
+  // both updaters sit in the hook's queue in order and render in one commit.
+  const [chunkQueue] = useState(() => createFrameQueue<CardsMap>(setCardsState));
+  useEffect(() => () => chunkQueue.cancel(), [chunkQueue]);
+  const setCards = (update: (prev: CardsMap) => CardsMap) => {
+    chunkQueue.flush();
+    setCardsState(update);
+  };
 
   const updateTodoListCard = (todoData: TodoData) => {
     const cardId = 'todo-list-card';
@@ -95,7 +113,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
     });
   };
 
-  const updateSubagentCard = (agentId: string, subagentDataUpdate: SubagentData) => {
+  const updateSubagentCard = (agentId: string, subagentDataUpdate: SubagentData, { nextFrame = false } = {}) => {
     const cardId = `subagent-${agentId}`;
 
     // An explicit terminal status write (a per-task chan_close) is authoritative:
@@ -103,8 +121,10 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
     // as inactive or absent — otherwise a closure is silently dropped and the card
     // is left free to be re-activated by a stale-liveness signal.
     const isTerminalWrite = isTerminalStatus(subagentDataUpdate.status);
+    // Read here, not in the updater, which React may run twice.
+    const now = Date.now();
 
-    setCards((prev) => {
+    const apply = (prev: CardsMap): CardsMap => {
       if (prev[cardId]) {
         const existingCard = prev[cardId];
         const existingSubagentData = existingCard.subagentData || {};
@@ -163,6 +183,13 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
           return preservedStatus;
         })();
 
+        // The write that settles a task is the tray's record of when it went
+        // quiet, at the time it carries or now; a history refresh only reports
+        // a settle from before, and any other write leaves the time as it was.
+        const settles = isTerminalStatus(finalStatus)
+          && !isTerminalStatus(existingSubagentData.status)
+          && !subagentDataUpdate.isHistory;
+
         const finalIsActive = subagentDataUpdate.isHistory
           ? false
           : (subagentDataUpdate.isActive !== undefined
@@ -177,7 +204,8 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
         if (isTerminalStatus(finalStatus) && finalMessages.length > 0) {
           finalMessages = finalMessages.map(msg => {
             if (msg.role !== 'assistant') return msg;
-            const m: SubagentMessage = { ...msg, isStreaming: false };
+            // A call still preparing never lands now, so its row goes too.
+            const m: SubagentMessage = { ...withoutPending(msg), isStreaming: false };
             if (m.toolCallProcesses) {
               const procs = { ...m.toolCallProcesses };
               for (const [id, proc] of Object.entries(procs)) {
@@ -209,6 +237,9 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
                 : existingSubagentData.currentTool || '',
               status: finalStatus,
               isActive: finalIsActive,
+              lastActivityMs: settles
+                ? subagentDataUpdate.lastActivityMs ?? now
+                : existingSubagentData.lastActivityMs,
             },
           },
         };
@@ -247,7 +278,9 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
           },
         };
       }
-    });
+    };
+    if (nextFrame) chunkQueue.queue(apply);
+    else setCards(apply);
   };
 
   const finalizePendingTodos = () => {

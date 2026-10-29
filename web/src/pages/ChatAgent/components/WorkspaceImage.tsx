@@ -1,11 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { useWorkspaceId, useWorkspaceDownloadFile } from '../contexts/WorkspaceContext';
+import { useTranslation } from 'react-i18next';
+import { authSessionCheck, registerAuthReset } from '@/lib/authResets';
+import { useWorkspaceId, useWorkspaceDownloadFile, useWorkspaceFolders } from '../contexts/WorkspaceContext';
 import { downloadWorkspaceFile } from '../utils/api';
-import { parseWsPath } from './FileCard';
+import { onOtherComputer, parseAgentHref } from '../utils/agentPaths';
+import { normalizeFilePath, parseFolderHref, parseWsPath } from '../utils/filePaths';
 import ImageLightbox from './ImageLightbox';
 
 // Module-level cache: key:path → blobUrl
 const blobCache = new Map<string, string>();
+// Its bytes are the account's files, so a sign-out or account switch revokes
+// and forgets them.
+registerAuthReset(() => {
+  blobCache.forEach((url) => URL.revokeObjectURL(url));
+  blobCache.clear();
+});
 
 function isExternalUrl(src: string): boolean {
   return /^(https?:\/\/|data:|blob:)/i.test(src);
@@ -19,13 +28,23 @@ interface WorkspaceImageProps extends React.ImgHTMLAttributes<HTMLImageElement> 
 }
 
 function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
+  const { t } = useTranslation();
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const contextWorkspaceId = useWorkspaceId();
   const downloadFileFn = useWorkspaceDownloadFile();
+  const folders = useWorkspaceFolders();
 
-  // Support __wsref__/{workspaceId}/path for cross-workspace file references
+  // Support __wsref__/{workspaceId}/path for cross-workspace file references,
+  // and another workspace's folder (`../NVDA/chart.png`), which names its
+  // workspace the same way.
   const wsRef = src ? parseWsPath(src) : null;
-  const workspaceId = wsRef?.workspaceId || contextWorkspaceId;
+  const other = parseFolderHref(src, folders);
+  // The rest of another computer is on no machine this view reads, so the
+  // image is named, as its link would be, rather than fetched here, where a
+  // namesake could answer.
+  const elsewhere = !!src && !wsRef && !other && !isExternalUrl(src)
+    && onOtherComputer(parseAgentHref(src, folders?.rootDir), folders);
+  const workspaceId = wsRef?.workspaceId || other?.workspaceId || contextWorkspaceId;
   // For __wsref__ paths the context downloadFileFn is normally skipped (it's
   // bound to the active workspace, not the referenced one). But the public
   // shared view has no authed per-workspace route — its downloadFileFn IS the
@@ -33,14 +52,16 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   // bypass it when a real workspace context exists to fall back on; otherwise a
   // logged-out share viewer would hit the authed /workspaces/{id}/files/download
   // endpoint and get a 401.
-  const effectiveDownloadFn = wsRef && contextWorkspaceId ? null : downloadFileFn;
+  const effectiveDownloadFn = (wsRef || other) && contextWorkspaceId ? null : downloadFileFn;
 
-  const canFetch = !!(src && !isExternalUrl(src) && (workspaceId || effectiveDownloadFn));
-  const rawPath = canFetch ? (wsRef ? wsRef.path : src!) : '';
-  // Decode LLM-emitted percent-encoded paths (e.g. ![](.../%E5%9B%BE%E8%A1%A8.png))
-  // so Axios doesn't re-encode the leading `%` to `%25`. Idempotent on raw paths.
-  let normalizedPath = rawPath;
-  try { normalizedPath = decodeURIComponent(rawPath); } catch { /* malformed %XX — pass through */ }
+  const canFetch = !!(src && !elsewhere && !isExternalUrl(src) && (workspaceId || effectiveDownloadFn));
+  // The one reading of the destination, the same one a file link gets, so
+  // `/home/workspace/charts/x.png` fetches `charts/x.png`, and `../<own
+  // folder>/x.png` fetches `x.png`, rather than a path no workspace holds. The
+  // decode is part of it and happens exactly once, so a name an LLM emitted
+  // encoded (`.../%E5%9B%BE%E8%A1%A8.png`) reaches the API as raw Unicode;
+  // callers hand over the raw destination for that reason.
+  const normalizedPath = canFetch ? other?.path ?? normalizeFilePath(src!, folders) : '';
   const cacheKey = canFetch ? `${workspaceId || 'shared'}:${normalizedPath}` : '';
 
   const [state, setState] = useState<LoadState>(() =>
@@ -67,11 +88,22 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
       ? effectiveDownloadFn(normalizedPath)
       : downloadWorkspaceFile(workspaceId!, normalizedPath);
 
+    const current = authSessionCheck();
     (fetcher as Promise<string>)
       .then((url) => {
-        if (cancelled) return;
-        blobCache.set(cacheKey, url);
-        setBlobUrl(url);
+        // Nothing will show it, or a sign-out landed first and the file is the
+        // last account's.
+        if (cancelled || !current()) {
+          URL.revokeObjectURL(url);
+          if (!cancelled) setState('error');
+          return;
+        }
+        // Two images of one file fetch at once, and only the cached copy is
+        // revoked at sign-out, so the second to land shows the first's.
+        const landed = blobCache.get(cacheKey);
+        if (landed) URL.revokeObjectURL(url);
+        else blobCache.set(cacheKey, url);
+        setBlobUrl(landed ?? url);
         setState('loaded');
       })
       .catch(() => {
@@ -81,6 +113,8 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
 
     return () => { cancelled = true; };
   }, [canFetch, cacheKey, workspaceId, normalizedPath, effectiveDownloadFn]);
+
+  if (elsewhere) return <span>{alt || src!.split('/').pop()}</span>;
 
   // Pass through: no context, no src, or external URL
   if (!canFetch) {
@@ -117,10 +151,9 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   }
 
   if (state === 'error') {
-    const filename = normalizedPath.split('/').pop();
     return (
       <span className="text-xs my-2 inline-block" style={{ color: 'var(--color-text-tertiary)' }}>
-        [image: {filename}]
+        {t('chat.imageLoadFailed', { name: normalizedPath.split('/').pop() })}
       </span>
     );
   }

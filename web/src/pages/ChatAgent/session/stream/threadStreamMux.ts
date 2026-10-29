@@ -20,17 +20,28 @@
  * being buffered.
  */
 import { openThreadMuxStream } from '../../utils/api';
+import { RECONNECT_BACKLOG_CAP_MS } from './lifecycle';
 import { taskIdFromAgentId } from '../../utils/agentId';
+import { parseSubagentModel, type TaskRunFacts } from '../subagents/taskRuns';
 
 type SSEEventObj = Record<string, unknown>;
 
 export interface ThreadMuxSink {
   /** A task-lane content frame, shaped like a v1 SSE event object
-   * (`event`, `agent`, `_eventId`, …) for the hook's dispatch switchboard. */
+   * (`event`, `agent`, `_eventId`, `_atMs` …) for the hook's dispatch
+   * switchboard. `_atMs` is when the writer captured the frame. */
   onTaskEvent: (event: SSEEventObj) => void;
+  /** A channel opened for a task run that is still executing (`replay` or
+   * `resume`; a `drain` channel carries a settled run's backlog). */
+  onTaskRunOpened: (taskId: string) => void;
+  /** What the server declared of one run, drain or not, as it declared it:
+   * its ledger start at the channel's open, its launching Task call and its
+   * model (when not its launcher's) at the lane's open, its ledger finish at
+   * its terminal close, ahead of `onTaskRunClosed`. */
+  onTaskRun?: (taskId: string, runId: string, facts: TaskRunFacts) => void;
   /** The task's current run reached terminal (run_end or ledger-row truth)
    * and no other run of the task is open. Fires only from server-side
-   * closure — never from detach or socket loss. */
+   * closure, never from detach or socket loss. */
   onTaskRunClosed: (taskId: string, outcome: string | null) => void;
   /** The client's knowledge horizon is beyond the server's catch-up window
    * (e.g. a tab asleep past the since_age cap): stream catch-up can't be
@@ -49,6 +60,15 @@ interface RunChannel {
   // Server-declared run start (epoch ms, ledger row truth; 0 = undeclared).
   // Outcome voting orders by this — close order never decides.
   startedAt: number;
+  // Ledger finalized_at (epoch ms; 0 = undeclared), from run_end or the
+  // terminal chan_close, reported at that close.
+  finishedAt: number;
+  // Between chan_open and chan_caught_up the frames are the backlog that
+  // existed when the channel opened, and carry `_replay` so the sink can
+  // present them as already rendered. The timer bounds a marker that never
+  // comes (a failed head probe) at the main stream's own backlog cap.
+  replaying: boolean;
+  replayCap: ReturnType<typeof setTimeout> | null;
 }
 
 interface ParsedFrame {
@@ -59,7 +79,9 @@ interface ParsedFrame {
 
 const CONTROL_EVENTS = new Set([
   'chan_open',
+  'chan_caught_up',
   'chan_close',
+  'attached',
   'resync_required',
   'transport_error',
   'timeout',
@@ -120,6 +142,13 @@ export class ThreadStreamMux {
   // A discarding tear had no rollback floor: declare an over-cap age so the
   // server answers with a thread-scoped resync (projection reload).
   private horizonUntrusted = false;
+  // Whether a connection has served the open-turn drain (its `attached`
+  // frame). The projection this mux attaches beside comes from history, which
+  // stops before the executing turn, so the turn's already-settled runs reach
+  // the page only if the server is asked for them. Asked once, not on every
+  // reconnect: the client sends no cursor for a closed channel, so each ask
+  // resends every one of those streams whole.
+  private openTurnServed = false;
 
   constructor(
     private threadId: string,
@@ -181,6 +210,13 @@ export class ThreadStreamMux {
         : this.knownAt == null
           ? 0
           : Math.max(0, (Date.now() - this.knownAt) / 1000);
+      // Asked again while a drain is cut off before its close: one opened
+      // without a frame has no cursor to resume from. The server then drains
+      // every settled run of the turn again, which the settled and watermark
+      // guards drop; rare enough that resent bytes beat a per-run ask.
+      const openTurn =
+        !this.openTurnServed ||
+        [...this.runs.values()].some((chan) => chan.drain && !chan.closed && !chan.cursor);
       try {
         await openThreadMuxStream(
           this.threadId,
@@ -188,6 +224,7 @@ export class ThreadStreamMux {
           (line) => this.onLine(line),
           aborted,
           sinceAgeS,
+          openTurn,
         );
         // A transport_error close resolves the HTTP request normally but is
         // a failure — let the backoff keep growing across an outage.
@@ -229,6 +266,7 @@ export class ThreadStreamMux {
     if (this.disposed) return;
     this.disposed = true;
     this.controller?.abort();
+    for (const chan of this.runs.values()) this.endReplay(chan);
     this.onDispose();
   }
 
@@ -311,12 +349,20 @@ export class ThreadStreamMux {
     const ftype = typeof frame.type === 'string' ? frame.type : 'message_chunk';
     if (ftype === 'run_end') {
       chan.cursor = entryId;
-      const p = frame.payload as { outcome?: unknown } | null;
+      const p = frame.payload as { outcome?: unknown; finished?: unknown } | null;
       if (p && typeof p.outcome === 'string') chan.outcome = p.outcome;
+      if (p && typeof p.finished === 'number') chan.finishedAt = p.finished;
       return; // closure is delivered via the chan_close that follows
     }
     if (ftype === 'lane_open') {
       chan.cursor = entryId;
+      // The run's first frame, so its model is filed before any content.
+      const open = frame.payload as { launch_tool_call_id?: unknown; model?: unknown } | null;
+      const launch = typeof open?.launch_tool_call_id === 'string' ? open.launch_tool_call_id : undefined;
+      const model = parseSubagentModel(open?.model);
+      if (launch || model) {
+        this.reportRun(chan, { ...(launch ? { launchToolCallId: launch } : {}), ...(model ? { model } : {}) });
+      }
       return; // channel metadata, not content
     }
     if (chan.lane === 'main') {
@@ -337,7 +383,7 @@ export class ThreadStreamMux {
     // The payload is the captured record {seq, event, data}; project it to
     // the v1 SSE event shape the hook's handlers consume.
     const record = frame.payload as
-      | { seq?: unknown; event?: unknown; data?: unknown }
+      | { seq?: unknown; event?: unknown; data?: unknown; ts?: unknown }
       | null;
     const ev: SSEEventObj = {
       ...((record?.data as SSEEventObj) ?? {}),
@@ -345,6 +391,10 @@ export class ThreadStreamMux {
       thread_id: this.threadId,
     };
     if (typeof record?.seq === 'number') ev._eventId = record.seq;
+    // The writer's capture time (epoch seconds on the record): a tool call
+    // is timed by when it happened, not by when this socket delivered it,
+    // which for a replayed backlog is all at once.
+    if (typeof record?.ts === 'number') ev._atMs = record.ts * 1000;
     // Drain channels carry a settled run's backlog; the flag lets the sink
     // skip content the client already projected from history, and the run
     // start (server row truth) lets it do so at run granularity — a stale
@@ -353,6 +403,7 @@ export class ThreadStreamMux {
       ev._drain = true;
       if (chan.startedAt) ev._runStartedMs = chan.startedAt;
     }
+    if (chan.replaying) ev._replay = true;
     try {
       this.sink?.onTaskEvent(ev);
       // Cursor and high-water advance only after successful delivery: the
@@ -382,6 +433,26 @@ export class ThreadStreamMux {
       chan.closed = false;
       chan.drain = data.mode === 'drain';
       if (typeof data.started === 'number') chan.startedAt = data.started;
+      this.beginReplay(chan);
+      if (chan.startedAt) this.reportRun(chan, { startedAtMs: chan.startedAt });
+      const taskId = taskIdFromLane(chan.lane);
+      if (taskId && !chan.drain) {
+        try {
+          this.sink?.onTaskRunOpened(taskId);
+        } catch (e) {
+          console.warn(`[mux:${this.threadId}] onTaskRunOpened threw for ${taskId}`, e);
+        }
+      }
+      return;
+    }
+    if (event === 'attached') {
+      this.openTurnServed = true;
+      return;
+    }
+    if (event === 'chan_caught_up') {
+      const runId = runIdFromChanName(data.chan);
+      const chan = runId ? this.runs.get(runId) : undefined;
+      if (chan) this.endReplay(chan);
       return;
     }
     if (event === 'resync_required' && typeof data.chan !== 'string') {
@@ -410,6 +481,7 @@ export class ThreadStreamMux {
       if (!runId) return;
       const chan = this.runs.get(runId);
       if (!chan || chan.closed) return;
+      this.endReplay(chan);
       if (data.reason === 'resync_required') {
         // Our cursor points below a lost head. Drop the cursor and force one
         // reconnect: the channel re-attaches in replay mode from 0, and the
@@ -429,8 +501,12 @@ export class ThreadStreamMux {
       if (data.reason === 'terminal') {
         chan.closed = true;
         if (typeof data.outcome === 'string') chan.outcome = data.outcome;
+        if (typeof data.finished === 'number') chan.finishedAt = data.finished;
         const taskId = taskIdFromLane(chan.lane);
         if (!taskId) return;
+        // Every run's own finish, a predecessor's too: the close below
+        // speaks for the task's latest run only.
+        if (chan.finishedAt) this.reportRun(chan, { finishedAtMs: chan.finishedAt });
         // The task's outcome is its latest-STARTED run's — never whichever
         // channel happened to close last. A predecessor's backlog (live
         // replay or drain) can close after a short successor under batched
@@ -468,6 +544,30 @@ export class ThreadStreamMux {
     // here (the report-back watch has its own transport until M8).
   }
 
+  /** File what the server declared of a task run with the sink, keyed by
+   * the run: a predecessor's frames can only ever describe the predecessor. */
+  private reportRun(chan: RunChannel, facts: TaskRunFacts): void {
+    const taskId = taskIdFromLane(chan.lane);
+    if (!taskId) return;
+    try {
+      this.sink?.onTaskRun?.(taskId, chan.runId, facts);
+    } catch (e) {
+      console.warn(`[mux:${this.threadId}] onTaskRun threw for ${taskId}`, e);
+    }
+  }
+
+  private beginReplay(chan: RunChannel): void {
+    if (chan.replayCap) clearTimeout(chan.replayCap);
+    chan.replaying = true;
+    chan.replayCap = setTimeout(() => this.endReplay(chan), RECONNECT_BACKLOG_CAP_MS);
+  }
+
+  private endReplay(chan: RunChannel): void {
+    if (chan.replayCap) clearTimeout(chan.replayCap);
+    chan.replayCap = null;
+    chan.replaying = false;
+  }
+
   private getOrCreateRun(runId: string, lane: string): RunChannel {
     let chan = this.runs.get(runId);
     if (!chan) {
@@ -480,6 +580,9 @@ export class ThreadStreamMux {
         outcome: null,
         drain: false,
         startedAt: 0,
+        finishedAt: 0,
+        replaying: false,
+        replayCap: null,
       };
       this.runs.set(runId, chan);
     } else if (lane && !chan.lane) {

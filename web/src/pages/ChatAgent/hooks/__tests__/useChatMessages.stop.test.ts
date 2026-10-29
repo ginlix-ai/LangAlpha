@@ -43,6 +43,7 @@ vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMo
 import { sendChatMessageStream, cancelWorkflow, getWorkflowStatus, reconnectToWorkflowStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
 import type { AssistantMessage } from '@/types/chat';
+import { settleMountEffect } from './chatHookHarness';
 
 const mockSendStream = sendChatMessageStream as Mock;
 const mockCancel = cancelWorkflow as Mock;
@@ -69,6 +70,13 @@ function findReasoning(msg: AssistantMessage | undefined) {
   return keys.length ? procs[keys[keys.length - 1]] : null;
 }
 
+/** Mounts the hook and lets the thread's load settle, since the composer stays closed until it does. */
+async function mountSettled() {
+  const view = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+  await settleMountEffect();
+  return view;
+}
+
 describe('useChatMessages — stopWorkflow (hard stop)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -90,11 +98,8 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
 
     mockSendStream.mockImplementation(
       async (...args: unknown[]) => {
-        const onEvent = args[5] as OnEvent;
-        // signal is the trailing positional arg of sendChatMessageStream; find
-        // it by type so inserting a new param before it can't silently break
-        // this capture (the mock isn't typed against the real signature).
-        capturedSignal = args.find((a): a is AbortSignal => a instanceof AbortSignal);
+        const onEvent = (args[3] as { onEvent: OnEvent }).onEvent;
+        capturedSignal = (args[3] as { signal: AbortSignal }).signal;
         // metadata first (latches run_id), then open a reasoning block.
         onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
         onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'reasoning_signal', content: 'start' });
@@ -105,7 +110,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
 
     let send: Promise<unknown> = Promise.resolve();
     await act(async () => {
-      send = result.current.handleSendMessage('analyze AAPL', false);
+      send = result.current.handleSendMessage('analyze AAPL');
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -116,7 +121,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
   }
 
   it('aborts the controller, clears isLoading, and closes the open reasoning block synchronously', async () => {
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
     const { hang, getSignal, send } = await startHangingSendWithReasoning(result);
 
     // Sanity: the reasoning block is open before stop.
@@ -155,11 +160,11 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
   });
 
   it('clears the in-flight tool-call "generating" row on stop (no lingering shimmer)', async () => {
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
 
     const hang = deferred<{ disconnected: boolean; aborted: boolean }>();
     mockSendStream.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[5] as OnEvent;
+      const onEvent = (args[3] as { onEvent: OnEvent }).onEvent;
       onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
       // An in-flight tool call: args still streaming, no tool_calls completion
       // and no result — this is what renders the "generating (~N chars)…" shimmer.
@@ -169,15 +174,19 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
 
     let send: Promise<unknown> = Promise.resolve();
     await act(async () => {
-      send = result.current.handleSendMessage('analyze AAPL', false);
+      send = result.current.handleSendMessage('analyze AAPL');
       await Promise.resolve();
       await Promise.resolve();
     });
     await waitFor(() => expect(result.current.isLoading).toBe(true));
 
-    // Before stop: the preparing tool-call chunks are present (shimmer on).
-    const before = result.current.messages.find((m) => m.role === 'assistant') as AssistantMessage;
-    expect(Object.keys((before.pendingToolCallChunks as Record<string, unknown>) || {}).length).toBeGreaterThan(0);
+    // Before stop: the preparing tool-call chunks are present (shimmer on),
+    // applied to the live transcript on the next frame. The stop below must
+    // finalize that, not the structure-only `messages`.
+    await waitFor(() => {
+      const before = result.current.liveMessages.get().find((m) => m.role === 'assistant') as AssistantMessage;
+      expect(Object.keys((before.pendingToolCallChunks as Record<string, unknown>) || {}).length).toBeGreaterThan(0);
+    });
 
     await act(async () => {
       await result.current.stopWorkflow();
@@ -194,11 +203,11 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
   });
 
   it('folds an in-progress tool-call process on stop (no row left spinning)', async () => {
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
 
     const hang = deferred<{ disconnected: boolean; aborted: boolean }>();
     mockSendStream.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[5] as OnEvent;
+      const onEvent = (args[3] as { onEvent: OnEvent }).onEvent;
       onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
       // A started tool call with no result yet → toolCallProcesses entry with
       // isInProgress:true. Always-live tools (TaskOutput/WebFetch) render their
@@ -213,7 +222,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
 
     let send: Promise<unknown> = Promise.resolve();
     await act(async () => {
-      send = result.current.handleSendMessage('check on the subagent', false);
+      send = result.current.handleSendMessage('check on the subagent');
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -239,7 +248,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
   });
 
   it('double-click stop is idempotent (one cancel, no duplicate synthetic events)', async () => {
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
     const { hang, send } = await startHangingSendWithReasoning(result);
 
     await act(async () => {
@@ -263,7 +272,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
       .mockRejectedValueOnce(new Error('net'))
       .mockRejectedValueOnce(new Error('net again'));
 
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
     const { hang, send } = await startHangingSendWithReasoning(result);
 
     await act(async () => {
@@ -295,7 +304,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
       message: 'A run is active on this thread but the one to stop is gone.',
     });
 
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
     const { hang, send } = await startHangingSendWithReasoning(result);
 
     await act(async () => {
@@ -320,7 +329,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
       // teardown, which is the common case, and train the toast to be ignored.
       mockCancel.mockResolvedValue({ cancelled: false, state, message: 'nothing to cancel' });
 
-      const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+      const { result } = await mountSettled();
       const { hang, send } = await startHangingSendWithReasoning(result);
 
       await act(async () => {
@@ -335,7 +344,7 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
   );
 
   it('an aborted stream is swallowed — no error banner, no double cleanup', async () => {
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
     const { hang, send } = await startHangingSendWithReasoning(result);
 
     await act(async () => {
@@ -366,10 +375,11 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
       onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
       onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'reasoning_signal', content: 'start' });
       onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'reasoning', content: 'resuming...' });
+      onEvent({ event: 'caught_up' });
       return hang.promise;
     });
 
-    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+    const { result } = await mountSettled();
 
     // Mount effect kicks off the reconnect. The first streamed event proves the
     // stream is live, so the "Reconnecting…" spinner clears even while the run
@@ -447,5 +457,141 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
     );
     expect(bubble).toBeUndefined();
     expect(result.current.messageError).toBeNull();
+  });
+});
+
+describe('useChatMessages — stopWorkflow gives the user\'s steers back', () => {
+  // The stop takes the user's unread steers back from the run and the cancel
+  // answer lists them (`returned_steers`), each once under its request key.
+  // They go back to the composer, and the bubbles that showed them waiting go.
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  interface SendOpts { onEvent: OnEvent; requestKey: string; steerOnly?: boolean; signal?: AbortSignal | null }
+
+  /** A running turn the test can feed, and steers it accepts. */
+  async function runningTurnWithSteers(texts: string[]) {
+    let main: OnEvent = () => {};
+    mockSendStream.mockImplementation(async (_msg: string, _ws: string, _tid: string | null, opts: SendOpts) => {
+      if (opts.steerOnly) {
+        opts.onEvent({ event: 'steering_accepted', position: 1 });
+        return { disconnected: false };
+      }
+      main = opts.onEvent;
+      opts.onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
+      return new Promise((resolve) => {
+        opts.signal?.addEventListener('abort', () => resolve({ disconnected: false, aborted: true }), { once: true });
+      });
+    });
+    const view = await mountSettled();
+    await act(async () => {
+      void view.result.current.handleSendMessage('analyze AAPL');
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.isLoading).toBe(true));
+    for (const text of texts) {
+      await act(async () => {
+        await view.result.current.handleSendMessage(text);
+      });
+    }
+    const keys = mockSendStream.mock.calls.slice(1).map((c) => (c[3] as SendOpts).requestKey);
+    return { ...view, keys, feed: (e: Record<string, unknown>) => act(async () => { main(e); }) };
+  }
+
+  const userTexts = (result: { current: ReturnType<typeof useChatMessages> }) =>
+    result.current.messages.filter((m) => m.role === 'user').map((m) => m.content);
+
+  it('puts each returned steer in the composer once, by its key, and removes its bubble', async () => {
+    const { result, keys } = await runningTurnWithSteers(['steer one', 'steer two']);
+    expect(userTexts(result)).toEqual(['analyze AAPL', 'steer one', 'steer two']);
+    mockCancel.mockResolvedValue({
+      cancelled: true,
+      message: 'ok',
+      returned_steers: [
+        { content: 'steer one', request_key: keys[0], timestamp: 1 },
+        { content: 'steer one', request_key: keys[0], timestamp: 1 },
+        { content: 'steer two', request_key: keys[1], timestamp: 2 },
+      ],
+    });
+
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+
+    expect(result.current.returnedSteering).toBe('steer one\nsteer two');
+    expect(userTexts(result)).toEqual(['analyze AAPL']);
+  });
+
+  it('gives back a steer from elsewhere it has no bubble for, and one with no key by its words', async () => {
+    const { result } = await runningTurnWithSteers(['steer one']);
+    mockCancel.mockResolvedValue({
+      cancelled: true,
+      message: 'ok',
+      returned_steers: [
+        { content: 'from another tab', request_key: 'rk-other' },
+        { content: 'steer one', request_key: null },
+      ],
+    });
+
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+
+    expect(result.current.returnedSteering).toBe('from another tab\nsteer one');
+    expect(userTexts(result)).toEqual(['analyze AAPL']);
+  });
+
+  it('keeps a steer the run delivered after all, and does not give it back', async () => {
+    const { result, keys, feed } = await runningTurnWithSteers(['steer one', 'steer two']);
+    await feed({ event: 'steering_delivered', messages: [{ content: 'steer one', request_key: keys[0] }] });
+    mockCancel.mockResolvedValue({
+      cancelled: true,
+      message: 'ok',
+      returned_steers: [
+        { content: 'steer one', request_key: keys[0] },
+        { content: 'steer two', request_key: keys[1] },
+      ],
+    });
+
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+
+    expect(result.current.returnedSteering).toBe('steer two');
+    expect(userTexts(result)).toEqual(['analyze AAPL', 'steer one']);
+    expect(result.current.messages.find((m) => m.content === 'steer one')).toMatchObject({ steeringDelivered: true });
+  });
+
+  it('sends a returned steer again under a new key, the server keeping its old one spent', async () => {
+    const { result, keys } = await runningTurnWithSteers(['steer one']);
+    mockCancel.mockResolvedValue({
+      cancelled: true,
+      message: 'ok',
+      returned_steers: [{ content: 'steer one', request_key: keys[0] }],
+    });
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+    expect(result.current.isLoading).toBe(false);
+
+    mockSendStream.mockClear();
+    mockSendStream.mockResolvedValue({ disconnected: false });
+    await act(async () => {
+      await result.current.handleSendMessage('steer one');
+    });
+    expect(mockSendStream).toHaveBeenCalledTimes(1);
+    const resend = mockSendStream.mock.calls[0][3] as SendOpts;
+    expect(resend.steerOnly).toBeFalsy();
+    expect(resend.requestKey).not.toBe(keys[0]);
+  });
+
+  it('leaves the composer alone when the stop returns no steers', async () => {
+    const { result } = await runningTurnWithSteers([]);
+    mockCancel.mockResolvedValue({ cancelled: true, message: 'ok' });
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+    expect(result.current.returnedSteering).toBeNull();
   });
 });

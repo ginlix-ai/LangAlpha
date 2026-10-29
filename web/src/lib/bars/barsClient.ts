@@ -156,6 +156,8 @@ export function headerToMeta(
     currency: (header?.price_currency as string) || undefined,
     displayDecimals: typeof header?.display_decimals === 'number' ? header.display_decimals : undefined,
     revision: typeof header?.revision === 'number' ? header.revision : undefined,
+    priceTreatment: header?.price_treatment || undefined,
     cached: cache?.cached,
+    freshness: cache?.freshness ?? null,
   };
 }

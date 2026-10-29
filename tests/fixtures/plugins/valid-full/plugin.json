@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "valid-full",
+  "version": "1.0.0",
+  "description": "anchor fixture",
+  "unknownRootKey": true,
+  "extensions": {
+    "ai.langalpha": {
+      "secrets": [
+        {
+          "name": "FX_KEY",
+          "label": "Fixture key",
+          "bind": [
+            {
+              "server": "remote",
+              "header": "Authorization"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

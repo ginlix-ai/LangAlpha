@@ -50,11 +50,56 @@ body > :first-child {
   border: none !important;
   border-radius: 0 !important;
   box-shadow: none !important;
-  margin: 0 !important;
+  margin: 0 auto !important;
 }`;
 
-export function resolveThemeVars(): string {
-  const style = getComputedStyle(document.documentElement);
+/**
+ * The widget is a separate document, so it inherits none of the app's chrome and
+ * draws the platform's default scrollbar: a bright slab against a dark surface.
+ * Applies to both variants — an inline widget with its own scrolling table shows
+ * the same one. Matches `styles/tokens.css`; keep them in step. A widget with
+ * WebKit scrollbar rules of its own gets none of it: the two would merge rule by
+ * rule, and a 6px scrollbar less this 3px inset on each side paints no thumb at
+ * all. `scrollbar-width` and `scrollbar-color` cannot merge that way, so a
+ * widget that sets only those still gets it, and a browser without them shows it.
+ */
+const SCROLLBARS = `
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; margin: 4px; }
+::-webkit-scrollbar-thumb { background-color: var(--color-border-elevated); background-clip: padding-box; border: 3px solid transparent; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--color-text-tertiary); }`;
+const STYLES_OWN_SCROLLBAR = /-webkit-scrollbar/i;
+
+/**
+ * Fullscreen caps at the chat column the widget was authored for and centres in
+ * whatever room is left, rather than stretching: a widget built for a 768px
+ * column has no layout to give at 1366px, so the extra width becomes dead space.
+ *
+ * The magnification that fills the dialog is NOT here. It is a `zoom` on the
+ * host iframe (HtmlFullscreenModal.css), which is the element that knows how
+ * much room there is; Chromium divides the child's layout viewport by it, so
+ * this stays plain layout with no measurement in it. Keeping it out of the
+ * document is also what stops it reaching the other boxes the same markup is
+ * rendered in, notably the 680px print root.
+ */
+const FULLSCREEN_LAYOUT = `
+body {
+  max-width: 768px;
+  margin-left: auto;
+  margin-right: auto;
+}
+body > :first-child {
+  margin-left: auto !important;
+  margin-right: auto !important;
+}`;
+
+/**
+ * `from` exists for the print path, which needs the light palette rather than
+ * the one the document is currently wearing (see widgetPdf.ts). Every other
+ * caller wants the live theme and passes nothing.
+ */
+export function resolveThemeVars(from: Element = document.documentElement): string {
+  const style = getComputedStyle(from);
   const vars = THEME_VARS.map((v) => {
     const val = style.getPropertyValue(v).trim();
     return val ? `${v}: ${val};` : '';
@@ -71,6 +116,31 @@ export function resolveThemeVars(): string {
   return scheme && scheme !== 'normal' ? `color-scheme: ${scheme};\n  ${vars}` : vars;
 }
 
+/**
+ * What each variant asks of the document, so the template carries no branches.
+ *
+ * A widget is authored for the chat column, so neither variant stretches to fill
+ * a wider box and the inline one never scrolls at all. Fullscreen still caps at
+ * that column width, but it no longer clips what overflows it. `html` here
+ * carries no overflow of its own, so the body's value propagates to the
+ * viewport, and `overflow-x: hidden` there put a widget wider than the cap out
+ * of reach entirely rather than merely making it untidy. A widget that does not
+ * fit the column is a widget we did not author; a sideways scrollbar is the
+ * better way to be wrong about one.
+ */
+const VARIANTS: Record<HtmlSrcDocVariant, { bodyOverflow: string; layout: string }> = {
+  'widget-inline': {
+    // Seamless in the chat flow: the host sizes the iframe from the widget's
+    // own reported height, so the document never scrolls itself.
+    bodyOverflow: 'overflow: hidden;',
+    layout: SEAMLESS_OVERRIDE,
+  },
+  'widget-fullscreen': {
+    bodyOverflow: 'overflow: auto; height: 100%;',
+    layout: FULLSCREEN_LAYOUT,
+  },
+};
+
 export function buildHtmlSrcDoc(
   variant: HtmlSrcDocVariant,
   { html, data: widgetData }: BuildHtmlSrcDocOptions,
@@ -82,6 +152,11 @@ export function buildHtmlSrcDoc(
 
   // Injected before any widget code runs:
   // 1. Patch JSON.parse to handle NaN/Infinity from Python's json.dumps (not valid JSON).
+  //    Quoted strings are left untouched: a flat token scan with a per-parse
+  //    inString flag, so there is no repetition for the regexp engine to
+  //    backtrack over and a very long string cannot exhaust its stack. Text
+  //    with neither spelling skips the scan: the patch is global to the iframe,
+  //    so every other parse (chart libraries included) would pay for it.
   // 2. Catch uncaught errors and unhandled rejections, display an inline error overlay.
   // 3. Route link clicks to window.open(..., 'noopener'): a plain <a href>
   //    navigates the IFRAME itself, rendering the target inside the sandbox
@@ -90,7 +165,13 @@ export function buildHtmlSrcDoc(
 (function(){
   var _p=JSON.parse;
   JSON.parse=function(t,r){
-    if(typeof t==='string')t=t.replace(/\\bNaN\\b/g,'null').replace(/(?<![A-Za-z_])-?Infinity\\b/g,'null');
+    if(typeof t==='string'&&(t.indexOf('NaN')!==-1||t.indexOf('Infinity')!==-1)){
+      var inString=false;
+      t=t.replace(/\\\\[\\s\\S]|"|(?<!\\w)(?:NaN|-?Infinity)\\b/g,function(token){
+        if(token==='"'){inString=!inString;return token;}
+        return inString||token.charAt(0)==='\\\\'?token:'null';
+      });
+    }
     return _p.call(this,t,r);
   };
   var shown={},count=0,rendering=false;
@@ -138,14 +219,6 @@ export function buildHtmlSrcDoc(
 })();
 </script>\n`;
 
-  // Body overflow rule + seamless override differ between variants:
-  // - widget-inline: seamless (overflow hidden, first-child reset) for chat embedding.
-  // - widget-fullscreen: scrollable, fills the modal, no seamless reset.
-  const bodyOverflow = variant === 'widget-fullscreen'
-    ? 'overflow: auto; height: 100%;'
-    : 'overflow: hidden;';
-  const seamless = variant === 'widget-fullscreen' ? '' : `${SEAMLESS_OVERRIDE}\n`;
-
   return `<!DOCTYPE html><html><head>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
 <style>
@@ -153,8 +226,9 @@ export function buildHtmlSrcDoc(
   ${themeCSS}
 }
 *, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; ${bodyOverflow} }
-${seamless}</style>
+body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; ${VARIANTS[variant].bodyOverflow} }
+${VARIANTS[variant].layout}\n${STYLES_OWN_SCROLLBAR.test(html) ? '' : SCROLLBARS}
+</style>
 ${earlyScripts}${dataScript}<script>
 window.sendPrompt = function(text) {
   parent.postMessage({ type: 'widget:sendPrompt', text: String(text) }, '*');

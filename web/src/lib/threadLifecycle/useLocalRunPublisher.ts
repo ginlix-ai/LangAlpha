@@ -25,6 +25,10 @@ export function useLocalRunPublisher(
   threadId: string,
   isLoading: boolean,
   runIdRef: { current: string | null },
+  // The newest run this view saw start. A response header names its run
+  // before the server starts it, and a send refused at the stream's head
+  // starts none, so only a run seen starting has a row to settle.
+  startedRunIdRef?: { current: string | null },
 ): void {
   // Holds WHICH thread this tab observed running (not a bare boolean), so a
   // threadId swap without an unmount can never settle the new thread on the
@@ -59,11 +63,14 @@ export function useLocalRunPublisher(
     }
     if (wasRunningThisThread && threadId && threadId !== '__default__') {
       const runId = runIdRef.current ?? undefined;
-      if (runId === undefined) {
-        // The send ended before response headers delivered a run id (network
-        // or admission failure), so no run row was committed — a seq-less
-        // terminal observation could never be reconciled away by snapshots or
-        // list seeding and would sit as a permanent phantom dot. Drop it.
+      const unstarted = startedRunIdRef !== undefined && startedRunIdRef.current !== runId;
+      if (runId === undefined || unstarted) {
+        // The send ended with no run row behind it: before response headers
+        // named one (network or admission failure), or refused before the run
+        // it named started. A terminal observation for it could never be
+        // reconciled away by snapshots or list seeding and would sit as a
+        // permanent phantom dot, and the server refuses to stamp it seen.
+        // Drop it.
         clearLocalObservation(threadId);
       } else {
         publishLocalSettled(threadId, runId);

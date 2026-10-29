@@ -51,6 +51,35 @@ function buildWall(): string {
 
 const WALL = buildWall();
 
+/**
+ * The readout ahead of the label spells the product name in ASCII, a byte at
+ * a time. A byte holds for `dwell` ticks, then walks to the next one bit per
+ * tick, low bit first, so the bits change like a Gray code and never jump.
+ * It leads the label the way every other liveness glyph in the app leads its
+ * text.
+ */
+function buildByteWalk(word: string, dwell: number): string[] {
+  const bits = (byte: number) => byte.toString(2).padStart(8, '0');
+  const codes = [...word].map((ch) => ch.charCodeAt(0));
+  const frames: string[] = [];
+  codes.forEach((code, i) => {
+    for (let t = 0; t < dwell; t++) frames.push(bits(code));
+    const next = codes[(i + 1) % codes.length];
+    let byte = code;
+    for (let bit = 0; bit < 8; bit++) {
+      if (((byte ^ next) >> bit) & 1) {
+        byte ^= 1 << bit;
+        // The landing frame is the next letter's first dwell frame.
+        if (byte !== next) frames.push(bits(byte));
+      }
+    }
+  });
+  return frames;
+}
+
+const BYTE_WALK = buildByteWalk('LangAlpha', 6);
+const BYTE_WALK_STYLE = { '--pl-frames': String(BYTE_WALK.length) } as React.CSSProperties;
+
 interface PageLoadingProps {
   /**
    * `screen` (default) fills the viewport on the page background — for the
@@ -82,10 +111,14 @@ function PageLoading({ variant = 'screen' }: PageLoadingProps) {
       </div>
       <div className="page-loading__center">
         <p className="page-loading__label">
-          {t('common.loading')}
-          <span className="page-loading__cursor" aria-hidden="true">
-            ▉
+          <span className="page-loading__bytes" aria-hidden="true">
+            <span className="page-loading__bytes-strip" style={BYTE_WALK_STYLE}>
+              {BYTE_WALK.map((bits, i) => (
+                <span key={i}>{bits}</span>
+              ))}
+            </span>
           </span>
+          {t('common.loading')}
         </p>
       </div>
     </div>

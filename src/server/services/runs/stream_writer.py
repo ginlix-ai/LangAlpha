@@ -8,13 +8,14 @@ the cross-worker consumer counter. Process-local run state stays in
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from src.utils.cache.redis_cache import get_cache_client
 from src.utils.cache.stream_append import (
     StreamAppendError,
     stream_append_with_retry,
 )
+from src.utils.cache.stream_quota import StreamQuota
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,9 @@ def stream_meta_key(thread_id: str, run_id: str) -> str:
 
 
 # Visible end-of-run frame (I6): written only after the finalize CAS commits,
-# carrying {thread_id, run_id, outcome}. Replaces the pre-finalize
-# ``workflow_stream_end`` sentinel, which survives only as a deploy-compat
-# swallow in ``stream_from_log``.
+# carrying {thread_id, run_id, outcome}, plus the thread's token_totals when
+# they were read. Replaces the pre-finalize ``workflow_stream_end`` sentinel,
+# which survives only as a deploy-compat swallow in ``stream_from_log``.
 RUN_END_EVENT_TYPE = "run_end"
 
 
@@ -52,7 +53,8 @@ class TransportLostError(RuntimeError):
 
 
 class StreamQuotaExceededError(TransportLostError):
-    """The run produced more events than its replay archive may hold.
+    """The run produced more events, or more bytes, than its replay archive
+    may hold.
 
     A subtype so dashboards can tell a runaway run from a sick Redis: both
     finalize the run, but only one of them is an infrastructure problem.
@@ -60,7 +62,11 @@ class StreamQuotaExceededError(TransportLostError):
 
 
 async def buffer_event(
-    thread_id: str, run_id: str, event: str, *, max_stored_messages: int
+    thread_id: str,
+    run_id: str,
+    event: str,
+    *,
+    quota: StreamQuota,
 ) -> None:
     """Append a workflow event to the per-run Redis Stream.
 
@@ -68,6 +74,9 @@ async def buffer_event(
     replay archive and any attached consumer silently diverge from what
     the model actually produced, so the run must finalize
     ``failed(transport_lost)`` instead of completing with holes.
+
+    ``quota`` is the run's budget, charged here; the caller keeps it,
+    because this module holds no per-run state.
     """
     key = (thread_id, run_id)
     try:
@@ -94,17 +103,33 @@ async def buffer_event(
             "archive would silently diverge"
         )
 
+    # Charged before the write, so a frame that would break the budget never
+    # reaches Redis and the cap bounds what the stream holds.
+    breach = quota.charge(event_id, len(event.encode("utf-8")), label=str(key))
+    if breach == "events":
+        raise StreamQuotaExceededError(
+            f"transport_lost: stream quota exceeded for {key} "
+            f"({event_id}/{quota.max_events} events); finalizing "
+            "instead of silently trimming the replay head"
+        )
+    if breach == "bytes":
+        raise StreamQuotaExceededError(
+            f"transport_lost: stream byte quota exceeded for {key} "
+            f"({quota.bytes}/{quota.max_bytes} bytes); finalizing "
+            "instead of growing a stream nothing can evict"
+        )
+
     # Retention contract: active streams carry NO TTL — a quiet-but-alive run
     # must never lose its stream mid-run. The attach-grace TTL is stamped once,
     # at terminal, by ``append_run_end_event``. MAXLEN is a 2x backstop only:
-    # the quota check below finalizes the run before FIFO trim could ever touch
+    # the quota check above finalizes the run before FIFO trim could ever touch
     # the head, so a served replay never has a silent hole.
     try:
         await stream_append_with_retry(
             cache,
             stream_key(thread_id, run_id),
             event_id=event_id,
-            max_size=max_stored_messages * 2,
+            max_size=quota.maxlen,
             stream_event=event,
             label=str(key),
         )
@@ -115,23 +140,34 @@ async def buffer_event(
 
     logger.debug(f"[EventBuffer] Buffered event to Redis: {key} (id={event_id})")
 
-    # The frame's own id is the event count: it is assigned sequentially from 1
-    # per run, and it counts every event the run emitted — including any the
-    # buffer never saw — so gating on it can only ever fire early.
-    if event_id > max_stored_messages:
-        raise StreamQuotaExceededError(
-            f"transport_lost: stream quota exceeded for {key} "
-            f"({event_id}/{max_stored_messages} events); finalizing "
-            "instead of silently trimming the replay head"
-        )
 
-    capacity_threshold = int(max_stored_messages * 0.9)
-    if event_id >= capacity_threshold and (event_id - capacity_threshold) % 1000 == 0:
-        logger.warning(
-            f"[EventBuffer] Buffer near quota for {key}: "
-            f"{event_id}/{max_stored_messages} events. "
-            "At quota the run finalizes error(transport_lost)."
-        )
+async def steering_returned_frame(thread_id: str, run_id: str) -> str | None:
+    """The ``steering_returned`` SSE event for the chat-app steers ``run_id``
+    returned, or None. Read once its finalize has committed, which settled
+    them.
+
+    Only chat-app steers come back this way: the gateway resubmits them as
+    the next turn and relays the reply, which it does not do for a turn the
+    server starts. Every other steer a run missed stays on the thread for
+    the next one.
+    """
+    from src.server.database.runs import outbox as outbox_db
+
+    try:
+        returned = await outbox_db.list_returned_platform_steers(run_id)
+    except Exception:
+        logger.exception(f"Failed to read returned steers for run {run_id}")
+        return None
+    if not returned:
+        return None
+    event_data = json.dumps({
+        "thread_id": thread_id,
+        "messages": [
+            {"content": m["content"], "user_id": m.get("user_id")}
+            for m in returned
+        ],
+    })
+    return f"event: steering_returned\ndata: {event_data}\n\n"
 
 
 async def append_run_end_event(
@@ -140,6 +176,8 @@ async def append_run_end_event(
     outcome: Optional[str],
     *,
     error_frame: Optional[Dict[str, Any]] = None,
+    token_totals: Optional[Dict[str, int]] = None,
+    closing_frames: Sequence[str] = (),
     redis_event_ttl: int,
     max_stored_messages: int,
 ) -> None:
@@ -150,6 +188,7 @@ async def append_run_end_event(
     durable row exists with that outcome. The SETNX gate picks ONE
     emitter among the owner, the recovery scanner, and the dispatch
     reconcile; the winner writes the whole closing story — the caller's
+    ``closing_frames`` (SSE text the settled run owes its readers), the
     ``error_frame`` payload (a failure the dead owner never told), then
     ``run_end``. Raw auto-ID XADD, not ``buffer_event``: it has no seq
     slot, and the auto ID (ms timestamp) always sorts after the
@@ -212,10 +251,14 @@ async def append_run_end_event(
         )
         if not acquired:
             return
-        data = json.dumps(
-            {"thread_id": thread_id, "run_id": run_id, "outcome": outcome},
-            ensure_ascii=False,
-        )
+        frame_data: Dict[str, Any] = {
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "outcome": outcome,
+        }
+        if token_totals is not None:
+            frame_data["token_totals"] = token_totals
+        data = json.dumps(frame_data, ensure_ascii=False)
         payload = f"event: {RUN_END_EVENT_TYPE}\ndata: {data}\n\n".encode(
             "utf-8"
         )
@@ -226,6 +269,8 @@ async def append_run_end_event(
         # best-effort by contract, and the consumer's two-empty-round
         # terminal handshake covers a missing frame.
         async with cache.client.pipeline(transaction=False) as pipe:
+            for frame in closing_frames:
+                pipe.xadd(stream_k, {b"event": frame.encode("utf-8")})
             if error_frame is not None:
                 err_wire = (
                     f"event: error\n"

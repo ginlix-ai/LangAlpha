@@ -1,16 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { X, ExternalLink, Sparkles, ChevronDown, Paperclip } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { X } from 'lucide-react';
+import { motion, AnimatePresence } from '@/lib/framer';
 import { useTranslation } from 'react-i18next';
-import TopicBadge from './TopicBadge';
 import { getInsightDetail } from '../utils/api';
+import { useBackdropDismiss } from '@/hooks/useDialogA11y';
+import { DashWindowDialog } from './DashWindowDialog';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
 import { Loader } from '@/components/ui/loader';
 import { useToast } from '@/components/ui/use-toast';
 import { ContextBus } from '@/lib/contextBus';
+import { createDateFormatter } from '@/lib/format';
 import { buildInsightWidgetSnapshot, normalizeInsight } from '../utils/insightFetch';
-import i18n from '@/i18n';
+import { useLocale } from '@/hooks/useLocale';
+import { TermCard, TermChange, TermTag } from '@/pages/ChatAgent/components/charts/TermCard';
+import { TermLink } from '@/pages/ChatAgent/components/charts/TermPanel';
+import { TermPanelContext } from '@/pages/ChatAgent/components/charts/termContext';
+import './dashWindow.css';
 
 interface InsightTopic {
   text: string;
@@ -46,260 +52,183 @@ interface InsightDetailModalProps {
   onClose: () => void;
 }
 
-function formatDate(dateString: string | undefined): string {
+const dateTime = createDateFormatter({
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+function formatDate(dateString: string | undefined, locale: string): string {
   if (!dateString) return '';
   try {
     const d = new Date(dateString);
-    return d.toLocaleDateString(i18n.language, {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    return dateTime(d, locale);
   } catch {
     return dateString;
   }
 }
 
-/** Shared inner content for both mobile bottom sheet and desktop dialog */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace('www.', '');
+  } catch {
+    return url;
+  }
+}
+
+/** How many sources show before the list is asked to open. */
+const SOURCES_SHOWN = 5;
+
+/** Shared inner content for both mobile bottom sheet and desktop dialog: the
+ *  brief in the detail panel's language, its parts as cards. */
 function InsightBody({
   detail,
   loading,
   sourcesOpen,
   setSourcesOpen,
-  isMobile,
   onAttach,
+  onClose,
 }: {
   detail: InsightDetail | null;
   loading: boolean;
   sourcesOpen: boolean;
-  setSourcesOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  isMobile: boolean;
-  /** Optional handler. If provided, an Attach-to-chat button is rendered next to the eyebrow. */
+  setSourcesOpen: (open: boolean) => void;
+  /** Optional handler. If provided, an Add-to-chat chip is rendered in the meta line. */
   onAttach?: () => void;
+  /** The window's close, at the meta line's end; the sheet closes by its own handle. */
+  onClose?: () => void;
 }) {
   const { t } = useTranslation();
+  const locale = useLocale();
+  const closeButton = onClose ? (
+    <button type="button" className="dash-window-x" onClick={onClose} aria-label={t('dashboard.newsDetail.close')}>
+      <X size={16} />
+    </button>
+  ) : null;
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <Loader size={32} className="text-[color:var(--color-accent-primary)]" />
+      <div className="dash-window-state">
+        {closeButton}
+        <Loader size={24} className="text-(--color-accent-primary)" />
       </div>
     );
   }
 
   if (!detail) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <p style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.insightDetail.notFound')}</p>
+      <div className="dash-window-state">
+        {closeButton}
+        <p>{t('dashboard.insightDetail.notFound')}</p>
       </div>
     );
   }
 
+  const topics = detail.topics ?? [];
+  const content = detail.content ?? [];
+  // Model-written addresses: only a web page becomes a link.
+  const sources = (detail.sources ?? []).filter((source) => /^https?:/i.test(source.url ?? ''));
+  const shownSources = sourcesOpen ? sources : sources.slice(0, SOURCES_SHOWN);
+  const hasSide = topics.length > 0 || sources.length > 0;
+
   return (
-    <>
-      <div className={isMobile ? '' : 'p-6 md:p-8 pb-0'}>
-        <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4 flex-wrap">
-          <div
-            className="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full border flex items-center gap-1.5 sm:gap-2 text-[0.625rem] sm:text-xs font-semibold uppercase tracking-wider"
-            style={{
-              backgroundColor: 'var(--color-accent-soft)',
-              borderColor: 'var(--color-accent-overlay)',
-              color: 'var(--color-accent-light)',
-            }}
-          >
-            <Sparkles size={isMobile ? 10 : 12} />
-            {t('dashboard.insightDetail.eyebrow')}
-          </div>
-          {detail.model && (
-            <span
-              className="px-2 py-0.5 rounded text-[0.625rem] font-bold uppercase tracking-wider"
-              style={{
-                backgroundColor: 'var(--color-bg-hover)',
-                color: 'var(--color-text-secondary)',
-              }}
-            >
-              {detail.model}
-            </span>
-          )}
-          {detail.completed_at && (
-            <span className="text-[0.6875rem] sm:text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              {formatDate(detail.completed_at)}
-            </span>
-          )}
-          {onAttach && (
-            <button
-              type="button"
-              onClick={onAttach}
-              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[0.6875rem] sm:text-xs font-medium transition-colors"
-              style={{
-                backgroundColor: 'var(--color-accent-soft)',
-                borderColor: 'var(--color-accent-overlay)',
-                color: 'var(--color-accent-primary)',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = '0.9';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = '1';
-              }}
-              title={t('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
-            >
-              <Paperclip size={isMobile ? 12 : 13} />
-              {t('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
-            </button>
-          )}
+    <TermPanelContext value={true}>
+      <div className="dash-window-top">
+        <div className="term-line dash-window-meta">
+          <TermTag tone="neutral">{t('dashboard.insightDetail.eyebrow')}</TermTag>
+          {detail.model && <span className="term-t3">{detail.model}</span>}
+          {detail.completed_at && <span className="term-t3">{formatDate(detail.completed_at, locale)}</span>}
+          <span className="term-push dash-window-acts">
+            {onAttach && (
+              <button
+                type="button"
+                className="term-chip dash-window-chip"
+                onClick={onAttach}
+                aria-label={t('dashboard.newsDetail.addToChat')}
+                title={t('dashboard.widgets.frame.addToContextTitle')}
+              >
+                {t('dashboard.newsDetail.addToChat')}
+              </button>
+            )}
+            {closeButton}
+          </span>
         </div>
-
-        <h1
-          className="text-xl sm:text-2xl md:text-3xl font-bold leading-tight mb-3 sm:mb-4"
-          style={{ color: 'var(--color-text-primary)' }}
-        >
-          {detail.headline}
-        </h1>
-
-        {(detail.topics?.length ?? 0) > 0 && (
-          <div className="flex flex-wrap gap-1.5 sm:gap-2 mb-4 sm:mb-6">
-            {detail.topics!.map((topic) => (
-              <TopicBadge key={topic.text} text={topic.text} trend={topic.trend} />
-            ))}
-          </div>
-        )}
-
-        {detail.summary && (
-          <p
-            className="text-[0.8125rem] sm:text-sm leading-relaxed mb-4 sm:mb-6"
-            style={{ color: 'var(--color-text-secondary)' }}
-          >
-            {detail.summary}
-          </p>
-        )}
+        <h2 className="dash-window-title">{detail.headline}</h2>
       </div>
 
-      <div className={isMobile ? '' : 'px-6 md:px-8 pb-6 md:pb-8'}>
-        {(detail.content?.length ?? 0) > 0 && (
-          <div
-            className="rounded-xl border overflow-hidden"
-            style={{
-              backgroundColor: 'var(--color-bg-subtle)',
-              borderColor: 'var(--color-border-muted)',
-            }}
-          >
-            {detail.content!.map((item, i) => {
-              const domain = item.url ? (() => { try { return new URL(item.url).hostname.replace('www.', ''); } catch { return ''; } })() : '';
-              const favicon = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=32` : undefined;
-
-              return (
-                <div
-                  key={i}
-                  className={isMobile ? 'px-3 py-3 flex gap-3' : 'px-5 py-4 flex gap-4'}
-                  style={i > 0 ? { borderTop: '1px solid var(--color-border-muted)' } : undefined}
-                >
-                  <span
-                    className="text-[0.6875rem] sm:text-xs font-bold mt-0.5 shrink-0 w-4 sm:w-5 text-right"
-                    style={{ color: 'var(--color-text-tertiary)' }}
-                  >
-                    {i + 1}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className={isMobile ? 'flex flex-col gap-1' : 'flex items-start justify-between gap-3'}>
-                      <h3
-                        className="text-[0.8125rem] sm:text-sm font-semibold leading-snug"
-                        style={{ color: 'var(--color-text-primary)' }}
-                      >
-                        {item.title}
-                      </h3>
-                      {item.url && (
-                        <a
-                          href={item.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 text-[0.6875rem] sm:text-xs shrink-0 transition-opacity hover:opacity-80"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        >
-                          {favicon ? (
-                            <img src={favicon} alt="" className="w-3.5 h-3.5 rounded-sm" />
-                          ) : (
-                            <ExternalLink size={12} />
-                          )}
-                          <span>{domain}</span>
-                        </a>
-                      )}
-                    </div>
-                    <p
-                      className="text-[0.8125rem] sm:text-sm leading-relaxed mt-1"
-                      style={{ color: 'var(--color-text-secondary)' }}
-                    >
-                      {item.body}
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Collapsible All Sources */}
-        {(detail.sources?.length ?? 0) > 0 && (
-          <div className="mt-6">
-            <button
-              onClick={() => setSourcesOpen((v) => !v)}
-              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider w-full py-2 transition-colors"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            >
-              <ChevronDown
-                size={14}
-                className="transition-transform"
-                style={{ transform: sourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
-              />
-              {t('dashboard.insightDetail.allSources', { count: detail.sources!.length })}
-              {!sourcesOpen && (
-                <span className="flex items-center -space-x-1 ml-1">
-                  {detail.sources!
-                    .filter((s) => s.favicon)
-                    .slice(0, 5)
-                    .map((s, i) => (
-                      <img
-                        key={i}
-                        src={s.favicon}
-                        alt=""
-                        className="w-4 h-4 rounded-full ring-1 ring-[var(--color-bg-elevated)]"
-                      />
-                    ))}
-                </span>
-              )}
-            </button>
-            {sourcesOpen && (
-              <div className="mt-2 space-y-1">
-                {detail.sources!.map((source, i) => {
-                  const domain = (() => { try { return new URL(source.url).hostname.replace('www.', ''); } catch { return source.url; } })();
+      <div className={hasSide ? 'dash-window-grid' : 'dash-window-grid dash-window-grid--one'}>
+        <div className="dash-window-col">
+          {detail.summary && (
+            <TermCard title={t('dashboard.newsDetail.summary')} meta={t('dashboard.newsDetail.summaryMeta')}>
+              <p className="dash-window-prose">{detail.summary}</p>
+            </TermCard>
+          )}
+          {content.length > 0 && (
+            <TermCard title={t('dashboard.insightDetail.stories')} meta={content.length}>
+              <ol className="dash-window-stories">
+                {content.map((item, i) => {
+                  const url = item.url && /^https?:/i.test(item.url) ? item.url : undefined;
                   return (
-                    <a
-                      key={i}
-                      href={source.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-xs py-1.5 px-3 rounded-lg transition-colors"
-                      style={{ color: 'var(--color-text-secondary)' }}
-                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-                    >
-                      {source.favicon ? (
-                        <img src={source.favicon} alt="" className="w-4 h-4 rounded-sm shrink-0" />
-                      ) : (
-                        <ExternalLink size={14} className="shrink-0 opacity-50" />
-                      )}
-                      <span className="truncate">{source.title || domain}</span>
-                      <span className="ml-auto shrink-0 opacity-40">{domain}</span>
-                    </a>
+                    <li key={i}>
+                      <div className="term-line">
+                        <span className="term-t3">{String(i + 1).padStart(2, '0')}</span>
+                        <span className="dash-window-story-title">{item.title}</span>
+                        {url && <span className="term-push"><TermLink href={url}>{hostOf(url)}</TermLink></span>}
+                      </div>
+                      <p className="dash-window-prose dash-window-prose--sub">{item.body}</p>
+                    </li>
                   );
                 })}
-              </div>
+              </ol>
+            </TermCard>
+          )}
+        </div>
+        {hasSide && (
+          <aside className="dash-window-col">
+            {topics.length > 0 && (
+              <TermCard title={t('dashboard.newsDetail.topics')}>
+                <div className="dash-window-tags">
+                  {topics.map((topic) => (
+                    <span key={topic.text} className="term-tag dash-window-topic">
+                      <TermChange value={topic.trend === 'up' ? 1 : topic.trend === 'down' ? -1 : 0}>{''}</TermChange>
+                      {topic.text}
+                    </span>
+                  ))}
+                </div>
+              </TermCard>
             )}
-          </div>
+            {sources.length > 0 && (
+              <TermCard title={t('dashboard.insightDetail.sources')} meta={sources.length}>
+                <ul className="dash-window-sources">
+                  {shownSources.map((source, i) => (
+                    <li key={i}>
+                      <a href={source.url} target="_blank" rel="noopener noreferrer" title={source.title || source.url}>
+                        <span className="term-fill">{source.title || hostOf(source.url)}</span>
+                        <span className="term-t3">{hostOf(source.url)}</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+                {sources.length > SOURCES_SHOWN && (
+                  <button
+                    type="button"
+                    className="term-more dash-window-more"
+                    aria-expanded={sourcesOpen}
+                    onClick={() => setSourcesOpen(!sourcesOpen)}
+                  >
+                    {sourcesOpen
+                      ? t('dashboard.insightDetail.fewerSources')
+                      : t('dashboard.insightDetail.allSources', { count: sources.length })}
+                  </button>
+                )}
+              </TermCard>
+            )}
+          </aside>
         )}
       </div>
-    </>
+    </TermPanelContext>
   );
 }
 
@@ -308,8 +237,12 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
   const { toast } = useToast();
   const [detail, setDetail] = useState<InsightDetail | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sourcesOpen, setSourcesOpen] = useState(false);
+  // Which brief its sources were opened for, so another brief opens folded.
+  const [sourcesOpenFor, setSourcesOpenFor] = useState<string | null>(null);
+  const sourcesOpen = !!marketInsightId && sourcesOpenFor === marketInsightId;
+  const setSourcesOpen = (open: boolean) => setSourcesOpenFor(open ? marketInsightId ?? null : null);
   const isMobile = useIsMobile();
+  const backdrop = useBackdropDismiss<HTMLDivElement>(onClose);
 
   const handleAttach = () => {
     if (!detail || !marketInsightId) return;
@@ -322,7 +255,7 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
     ContextBus.attach(snapshot);
     toast({
       title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
-      description: 'Brief: ' + (detail.headline || ''),
+      description: t('dashboard.insightDetail.attachedBrief', { title: detail.headline || '' }),
     });
   };
   const canAttach = !!detail && !!marketInsightId;
@@ -351,7 +284,10 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
   useEffect(() => {
     if (!marketInsightId) return;
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // The guard the dialog hook uses: an Escape that abandons an IME
+      // candidate, or one a layer inside already handled, is not a dismissal.
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      onClose();
     };
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
@@ -363,8 +299,8 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
       loading={loading}
       sourcesOpen={sourcesOpen}
       setSourcesOpen={setSourcesOpen}
-      isMobile={isMobile}
       onAttach={canAttach ? handleAttach : undefined}
+      onClose={isMobile ? undefined : onClose}
     />
   );
 
@@ -376,6 +312,7 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
         onClose={onClose}
         sizing="fixed"
         height="92vh"
+        className="dash-window dash-window--sheet"
         style={{ paddingBottom: 'calc(var(--bottom-tab-height, 0px) + 16px)' }}
       >
         {body}
@@ -391,38 +328,13 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 z-50 flex items-center justify-center p-8"
+          {...backdrop}
+          className="fixed inset-0 z-1010 flex items-center justify-center p-8"
           style={{ backgroundColor: 'var(--color-bg-overlay, rgba(0,0,0,0.6))', backdropFilter: 'blur(4px)' }}
         >
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-4xl max-h-[90vh] rounded-3xl overflow-hidden shadow-2xl flex flex-col relative border"
-            style={{
-              backgroundColor: 'var(--color-bg-elevated)',
-              borderColor: 'var(--color-border-muted)',
-            }}
-          >
-            {/* Close */}
-            <button
-              onClick={onClose}
-              className="absolute top-4 right-4 z-20 p-2 rounded-full transition-colors"
-              style={{
-                backgroundColor: 'rgba(0,0,0,0.5)',
-                color: '#fff',
-                backdropFilter: 'blur(8px)',
-              }}
-            >
-              <X size={20} />
-            </button>
-
-            <div className="overflow-y-auto flex-1">
-              {body}
-            </div>
-          </motion.div>
+          <DashWindowDialog label={detail?.headline || t('dashboard.insightDetail.eyebrow')} onClose={onClose}>
+            {body}
+          </DashWindowDialog>
         </motion.div>
       )}
     </AnimatePresence>

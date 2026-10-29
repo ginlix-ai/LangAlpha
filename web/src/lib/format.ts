@@ -1,64 +1,119 @@
 /**
- * Locale-aware number/date formatter factories.
+ * Locale-aware number/date formatters.
  *
- * Each factory returns a function that memoizes its `Intl.*Format` instance
- * by `i18n.language`, so a per-row formatter on a hot render path costs one
- * Intl construction per locale switch (not per call).
- *
- * Consumers MUST call `useTranslation()` in the component that uses the
- * formatter — without it, the component never re-renders on locale switch
- * and the cell shows stale-locale output until something else triggers a
- * re-render. The formatter itself only re-creates Intl when `i18n.language`
- * changes; React's render cycle is what forces it to actually re-run.
+ * Every formatter takes the locale as an argument (`useLocale()` in a
+ * component), and `relativeTime` takes the time (`useNow()`), instead of
+ * reading `i18n.language` or the clock itself. The React Compiler caches a call
+ * on its arguments, so an input read behind its back pins the output at the
+ * first value it saw: the old language after a switch, or a clock that never
+ * moves. Intl instances are cached per locale, so a hot render path pays for
+ * one construction per locale, not per call.
  */
-import i18n from '@/i18n';
 
-// Defensive: if `i18n.language` is briefly empty/null/invalid (transient
-// changeLanguage state, broken localStorage), the Intl constructor throws.
-// Without the catch, the closure would re-throw on every subsequent call —
+// Defensive: if the locale is briefly empty or invalid (transient
+// changeLanguage state, a broken cookie), the Intl constructor throws, and
 // every formatted widget on the dashboard would crash at once. The fallback
-// uses the host default locale and we still update `lastLocale` so we don't
-// retry the bad construction every call.
-function safeNumberFormat(lang: string, opts: Intl.NumberFormatOptions): Intl.NumberFormat {
-  try {
-    return new Intl.NumberFormat(lang, opts);
-  } catch {
-    return new Intl.NumberFormat(undefined, opts);
-  }
-}
-
-function safeDateFormat(lang: string, opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
-  try {
-    return new Intl.DateTimeFormat(lang, opts);
-  } catch {
-    return new Intl.DateTimeFormat(undefined, opts);
-  }
-}
-
-export function createFormatter(opts: Intl.NumberFormatOptions): (n: number) => string {
-  let lastLocale: string | null = null;
-  let fmt: Intl.NumberFormat | null = null;
-  return (n: number): string => {
-    const lang = i18n.language;
-    if (lang !== lastLocale || !fmt) {
-      fmt = safeNumberFormat(lang, opts);
-      lastLocale = lang;
+// uses the host default locale, cached under the bad key so the construction
+// is not retried on every call.
+function perLocale<T>(make: (locale: string | undefined) => T): (locale: string) => T {
+  const made = new Map<string, T>();
+  return (locale) => {
+    let value = made.get(locale);
+    if (value === undefined) {
+      try {
+        value = make(locale);
+      } catch {
+        value = make(undefined);
+      }
+      made.set(locale, value);
     }
-    return fmt.format(n);
+    return value;
   };
 }
 
-export function createDateFormatter(opts: Intl.DateTimeFormatOptions): (d: Date | number) => string {
-  let lastLocale: string | null = null;
-  let fmt: Intl.DateTimeFormat | null = null;
-  return (d: Date | number): string => {
-    const lang = i18n.language;
-    if (lang !== lastLocale || !fmt) {
-      fmt = safeDateFormat(lang, opts);
-      lastLocale = lang;
+export function createFormatter(opts: Intl.NumberFormatOptions): (n: number, locale: string) => string {
+  const format = perLocale((locale) => new Intl.NumberFormat(locale, opts));
+  return (n, locale) => format(locale).format(n);
+}
+
+export function createDateFormatter(
+  opts: Intl.DateTimeFormatOptions,
+): (d: Date | number, locale: string) => string {
+  const format = perLocale((locale) => new Intl.DateTimeFormat(locale, opts));
+  return (d, locale) => format(locale).format(d);
+}
+
+// Option sets shared by several components.
+export const shortMonthDay = createDateFormatter({ month: 'short', day: 'numeric' });
+export const clockTime = createDateFormatter({ hour: 'numeric', minute: '2-digit' });
+export const paddedClockTime = createDateFormatter({ hour: '2-digit', minute: '2-digit' });
+export const mediumDate = createDateFormatter({ dateStyle: 'medium' });
+export const mediumTime = createDateFormatter({ timeStyle: 'medium' });
+export const shortWeekday = createDateFormatter({ weekday: 'short' });
+export const weekdayMonthDay = createDateFormatter({ weekday: 'long', month: 'short', day: 'numeric' });
+
+// The fields Date#toLocaleString() prints by default.
+const dateTime = createDateFormatter({
+  year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+});
+
+/** A timestamp string as a date and time in `locale`. An unparseable one comes
+ *  back as written, since Intl throws a RangeError on an invalid Date. */
+export function formatTimestamp(ts: string | null | undefined, locale: string): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return dateTime(d, locale);
+}
+
+const listFormat = perLocale((locale) => new Intl.ListFormat(locale, { type: 'conjunction' }));
+
+/** Names joined as the locale says "A, B and C". A Chinese conjunction is a
+ *  word and is spaced from a Latin name or a number beside it (`moomoo 和
+ *  Webull`), but not from Chinese (`2 个连接器和 2 个技能`), where a space
+ *  reads as a gap; the enumeration comma needs no space. */
+export function formatList(items: readonly string[], locale: string): string {
+  const parts = listFormat(locale).formatToParts(items);
+  const han = (ch: string | undefined) => !!ch && /\p{Script=Han}/u.test(ch);
+  return parts
+    .map((part, i) => {
+      if (part.type !== 'literal' || !/^\p{Script=Han}+$/u.test(part.value)) return part.value;
+      const before = han(parts[i - 1]?.value.at(-1)) ? '' : ' ';
+      const after = han(parts[i + 1]?.value.at(0)) ? '' : ' ';
+      return `${before}${part.value}${after}`;
+    })
+    .join('');
+}
+
+const zoneNames = new Map<string, string>();
+
+/** A zone's name in `locale` ("Eastern Time", "中国标准时间"). UTC stays
+ *  "UTC", which Intl would call "GMT". The short style names the country where
+ *  a zone is a whole one ("Germany Time"). */
+export function formatTimezoneName(
+  tz: string,
+  locale: string,
+  style: 'longGeneric' | 'shortGeneric' = 'longGeneric',
+): string {
+  if (tz === 'UTC' || tz === 'Etc/UTC') return 'UTC';
+  const key = `${locale}|${style}|${tz}`;
+  let name = zoneNames.get(key);
+  if (name === undefined) {
+    try {
+      const opts: Intl.DateTimeFormatOptions = { timeZone: tz, timeZoneName: style };
+      let zone: Intl.DateTimeFormat;
+      try {
+        zone = new Intl.DateTimeFormat(locale, opts);
+      } catch {
+        zone = new Intl.DateTimeFormat(undefined, opts);
+      }
+      name = zone.formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value ?? tz;
+    } catch {
+      name = tz;
     }
-    return fmt.format(d);
-  };
+    zoneNames.set(key, name);
+  }
+  return name;
 }
 
 // Compact short-form integer formatter — `1234 → "1.2K"`, `5_142 → "5.1K"`,
@@ -66,12 +121,79 @@ export function createDateFormatter(opts: Intl.DateTimeFormatOptions): (d: Date 
 // full; suffix style follows the active locale (en `K`, zh `万`, etc).
 export const compactNumber = createFormatter({ notation: 'compact', maximumFractionDigits: 1 });
 
-function safeRelativeFormat(lang: string): Intl.RelativeTimeFormat {
-  try {
-    return new Intl.RelativeTimeFormat(lang, { numeric: 'auto', style: 'narrow' });
-  } catch {
-    return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'narrow' });
+// Grouped, for a figure read in the locale's own style (`1,234.50`). `grouped`
+// is `toLocaleString()`'s default digits; `integer` is a count. Not `fixed2`,
+// which turns grouping off.
+export const grouped = createFormatter({ maximumFractionDigits: 3 });
+export const grouped2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export const integer = createFormatter({ maximumFractionDigits: 0 });
+
+// The quote-strip variants. Two fixed decimals so a column of figures keeps
+// its width from one tick to the next; grouping off because a stock price
+// reads as one number (`1234.50`, not `1,234.50`). Null is the reader's
+// concern: these take a number, the caller decides what an absent one shows.
+export const fixed2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
+// `exceptZero` rather than `always`: a flat or sub-cent move prints `0.00`, not `-0.00`.
+export const signedFixed2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false, signDisplay: 'exceptZero' });
+export const compactNumberFixed2 = createFormatter({ notation: 'compact', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Calendar days, as a market's daily bar is dated: a `YYYY-MM-DD` with no
+// clock. Read at UTC midnight and printed in UTC, so no reader's offset moves
+// the day.
+const calendarDayRange = perLocale((locale) => new Intl.DateTimeFormat(locale, {
+  year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC',
+}));
+export const calendarMonthDay = createDateFormatter({ month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+/** `YYYY-MM-DD` as a UTC Date, or null for anything else. */
+export function parseCalendarDay(day: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) : null;
+}
+
+/** "Oct 23", for a day whose year is said elsewhere; a string that is not a
+ *  calendar day prints as it came. */
+export function formatCalendarMonthDay(day: string, locale: string): string {
+  const date = parseCalendarDay(day);
+  return date ? calendarMonthDay(date, locale) : day;
+}
+
+/** "Oct 23, 2026"; a string that is not a calendar day prints as it came. */
+export function formatCalendarDay(day: string, locale: string): string {
+  const date = parseCalendarDay(day);
+  return date ? calendarDayRange(locale).format(date) : day;
+}
+
+/** "Oct 5 – 23, 2026": the locale decides what the two ends share. */
+export function formatCalendarDayRange(from: string, to: string, locale: string): string {
+  const a = parseCalendarDay(from);
+  const b = parseCalendarDay(to);
+  if (!a || !b) return [from, to].filter(Boolean).join(' – ');
+  // Older engines throw on a reversed range rather than printing it.
+  return a <= b ? calendarDayRange(locale).formatRange(a, b) : calendarDayRange(locale).formatRange(b, a);
+}
+
+const byteAmount = createFormatter({ maximumFractionDigits: 1 });
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+
+// A byte count in the largest binary unit it reaches, one decimal under ten
+// (`40960 → "40 KB"`, `1536 → "1.5 KB"`). The number follows the locale; the
+// unit symbols are the same everywhere, spaced so zh-CN reads `256 MB` too.
+export function formatBytes(bytes: number, locale: string): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return `${byteAmount(0, locale)} B`;
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
   }
+  // 1023.7 KB would print as "1,024 KB"; carry it into the next unit instead.
+  if (unit > 0 && unit < BYTE_UNITS.length - 1 && Math.round(value) >= 1024) {
+    value /= 1024;
+    unit += 1;
+  }
+  const shown = unit === 0 || value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
+  return `${byteAmount(shown, locale)} ${BYTE_UNITS[unit]}`;
 }
 
 const _RELATIVE_STEPS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
@@ -83,33 +205,64 @@ const _RELATIVE_STEPS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
   ['minute', 60],
 ];
 
+const relativeFormats = perLocale((locale) => ({
+  counts: new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'narrow' }),
+  phrases: new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'long' }),
+}));
+
 /**
- * Locale-aware relative time — `"5m ago"`, `"yesterday"`, `"in 3d"`, `"昨天"`.
- * Same memoization + `useTranslation()` contract as the factories above.
- * Signed, so future timestamps read as future; sub-minute deltas collapse to
- * the locale's "now" phrasing.
+ * Locale-aware relative time from `now` — `"5m ago"`, `"yesterday"`,
+ * `"in 3d"`, `"next month"`, `"昨天"`. Signed, so future timestamps read as
+ * future; sub-minute deltas collapse to the locale's "now" phrasing.
+ *
+ * A count is compact (`"in 3mo"`), but a phrase is spelled out: `numeric:
+ * 'auto'` words a step of one as a phrase, and the narrow style would clip
+ * its words to `"next mo."`.
  *
  * Missing and unparseable inputs return `''` rather than a plausible-looking
  * "now" — every call site renders this straight into the DOM, so a bad
  * timestamp has to read as absent, not as fresh.
  */
-export const relativeTime = (() => {
-  let lastLocale: string | null = null;
-  let fmt: Intl.RelativeTimeFormat | null = null;
-  return (d: Date | number | string | null | undefined): string => {
-    if (d === null || d === undefined || d === '') return '';
-    const ms = new Date(d).getTime();
-    if (Number.isNaN(ms)) return '';
-    const lang = i18n.language;
-    if (lang !== lastLocale || !fmt) {
-      fmt = safeRelativeFormat(lang);
-      lastLocale = lang;
-    }
-    const seconds = (ms - Date.now()) / 1000;
-    const abs = Math.abs(seconds);
-    for (const [unit, unitSeconds] of _RELATIVE_STEPS) {
-      if (abs >= unitSeconds) return fmt.format(Math.round(seconds / unitSeconds), unit);
-    }
-    return fmt.format(0, 'second');
-  };
-})();
+export function relativeTime(
+  d: Date | number | string | null | undefined,
+  locale: string,
+  now: number,
+): string {
+  if (d === null || d === undefined || d === '') return '';
+  const ms = new Date(d).getTime();
+  if (Number.isNaN(ms)) return '';
+  const { counts, phrases } = relativeFormats(locale);
+  const seconds = (ms - now) / 1000;
+  const abs = Math.abs(seconds);
+  for (const [unit, unitSeconds] of _RELATIVE_STEPS) {
+    if (abs < unitSeconds) continue;
+    const n = Math.round(seconds / unitSeconds);
+    const isCount = counts.formatToParts(n, unit).some((p) => p.type === 'integer');
+    return (isCount ? counts : phrases).format(n, unit);
+  }
+  return counts.format(0, 'second');
+}
+
+const weekdayClockTime = createDateFormatter({ weekday: 'long', hour: 'numeric', minute: '2-digit' });
+const monthDayClockTime = createDateFormatter({ month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const fullMonthDayClockTime = createDateFormatter({ year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+export const fullDateTime = createDateFormatter({ dateStyle: 'full', timeStyle: 'long' });
+
+function localDayStart(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** A chat message's time against `now`: the clock alone today ("8:43 PM"),
+ *  the weekday within the week ("Tuesday 2:28 PM"), the date before that
+ *  ("Oct 14, 2:28 PM"), with the year only when it isn't this one. */
+export function chatTime(ms: number, locale: string, now: number): string {
+  // Rounded: a day across a DST change is 23 or 25 hours.
+  const days = Math.round((localDayStart(now) - localDayStart(ms)) / 86_400_000);
+  if (days === 0) return clockTime(ms, locale);
+  if (days > 0 && days < 7) return weekdayClockTime(ms, locale);
+  return new Date(ms).getFullYear() === new Date(now).getFullYear()
+    ? monthDayClockTime(ms, locale)
+    : fullMonthDayClockTime(ms, locale);
+}

@@ -1,0 +1,61 @@
+/* The outcomes a turn leaves in the flow of a message (a published app, an
+   annotated chart) keep the file card's shell, so everything a turn produced
+   still reads as one kind of object. Only their small print is set in the
+   terminal type the data cards use: the meta line, and the door as a word in
+   brackets, [ OPEN ▾ ]. */
+
+.turn-file-card.is-term .turn-file-meta {
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+}
+
+.turn-file-card.is-term .turn-file-actions {
+  align-items: center;
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-text-tertiary);
+}
+.turn-file-card.is-term .turn-file-actions::before {
+  content: var(--term-open);
+  margin-right: 0.75ch;
+}
+.turn-file-card.is-term .turn-file-actions::after {
+  content: var(--term-close);
+  margin-left: 0.75ch;
+}
+
+.turn-file-card.is-term .turn-file-open,
+.turn-file-card.is-term .turn-file-open.is-solo {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  font-size: inherit;
+  color: var(--color-text-secondary);
+}
+
+/* The caret keeps its own click inside the same brackets. */
+.turn-file-card.is-term .turn-file-more {
+  width: auto;
+  height: 1.25rem;
+  margin-left: 0.5ch;
+  padding: 0 0.125rem;
+  border: none;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+}
+.turn-file-card.is-term .turn-file-more:hover,
+.turn-file-card.is-term .turn-file-more[data-state='open'] {
+  background: none;
+  color: var(--color-text-primary);
+}
+
+@media (hover: hover) {
+  .turn-file-card.is-term:hover .turn-file-open,
+  .turn-file-card.is-term:hover .turn-file-more {
+    color: var(--color-text-primary);
+  }
+}

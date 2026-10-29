@@ -44,7 +44,22 @@ docs: |
   - Content-Type header set based on file extension (defaults to application/octet-stream)
   - Content-Disposition header set for attachment download with filename
 
+  ### Byte Ranges
+  A request with `Range: bytes=<first>-<last>` (one closed range) for a binary file gets a 206 with that slice:
+  - At most 8 MiB per answer. A shorter answer than asked is normal: read `Content-Range` and ask again from where it stopped.
+  - Headers: `Content-Range: bytes <first>-<last>/<size>`, `Accept-Ranges: bytes`, `Cache-Control: private, no-store, no-transform`, and an `ETag` naming the file's version: a stopped workspace's stored digest, or a live file's size with its modification time, change time and inode. A slice whose ETag or size differs from the first one is from a different version of the file; start over. `no-transform` keeps a proxy from re-encoding the body, which would weaken or drop that ETag.
+  - A range starting at or past the end of a file with a binary type: 416 with `Content-Range: bytes */<size>`. It is decided from the size, before the file's content is looked at, so an empty file answers any range with 416.
+  - The ETag of a 206 is not the ETag of a whole answer, so do not compare the two.
+
+  The whole file comes back as a 200, as if Range were absent, for:
+  - Text, by type or by content (it has to be whole to be redacted)
+  - An open-ended (`bytes=100-`), suffix (`bytes=-500`) or multi-range request
+  - Any conditional request (`If-Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`)
+  - A stopped workspace's file stored inline in the database, including an empty one
+  - A live file changed within the last two seconds, or whose version the sandbox's `stat` cannot give
+
   ### Error Responses
   - 403: Forbidden (not workspace owner or path validation failed)
   - 404: File not found or workspace not found
-  - 503: Sandbox not available
+  - 416: Range starts at or past the end of the file
+  - 503: Sandbox not available, or the file changed while a range of it was read. The latter has `detail.code` `file_changed` and `Retry-After` set: retry the range, and start over if its ETag differs.

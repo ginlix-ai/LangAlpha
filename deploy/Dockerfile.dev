@@ -18,7 +18,9 @@ WORKDIR /app
 
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock README.md ./
+# Copied but not installed; see the note in Dockerfile.backend.
 COPY libs/ptc-cli/ libs/ptc-cli/
+COPY libs/market-protocol/ libs/market-protocol/
 
 # Install dependencies (frozen = use lockfile exactly).
 ARG INSTALL_OBSERVABILITY=false
@@ -38,12 +40,12 @@ RUN uv run patchright install --with-deps chromium \
 COPY src/ src/
 COPY server.py .
 COPY scripts/ scripts/
-COPY config.yaml .
-COPY agent_config.yaml .
+COPY config*.yaml ./
+COPY agent_config*.yaml ./
 COPY alembic.ini .
 COPY migrations/ migrations/
 COPY mcp_servers/ mcp_servers/
-COPY skills/ skills/
+COPY plugins/ plugins/
 COPY workflows/ workflows/
 
 # DB init + server start entrypoint

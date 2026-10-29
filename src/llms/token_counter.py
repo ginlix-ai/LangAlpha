@@ -446,8 +446,9 @@ class TokenUsageTracker:
                 config = LLM.get_model_config()
 
                 for model in self.model_totals.keys():
-                    # Try to find the model in config across all providers
-                    for provider in ['openai', 'anthropic', 'gemini', 'volcengine', 'openrouter', 'vllm']:
+                    # Every provider's catalog, so a provider added to the
+                    # manifest is priced without a list here to keep up.
+                    for provider in config.manifest.get("models", {}):
                         model_info = config.get_model_info(provider, model)
                         if model_info and 'pricing' in model_info:
                             model_pricing_map[model] = model_info['pricing']

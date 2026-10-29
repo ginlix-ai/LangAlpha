@@ -15,6 +15,16 @@ def _reload_module():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _no_key_prefix(monkeypatch):
+    """A prefix set in the developer's env registers a hook on ``client.meta``,
+    which the bare stub clients below don't have. The reload rebinds the
+    module's copy from ``key_prefix``, so pin it there."""
+    from src.utils.storage import key_prefix
+
+    monkeypatch.setattr(key_prefix, "KEY_PREFIX", "")
+
+
 def test_default_timeouts_applied_to_boto3_config():
     mod = _reload_module()
     mod._reset_client_for_test()

@@ -1,0 +1,78 @@
+.automations-feed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 56px;
+  align-items: start;
+  padding-top: 8px;
+}
+
+.automations-feed-main {
+  max-width: 720px;
+  min-width: 0;
+}
+
+.automations-day + .automations-day {
+  margin-top: 28px;
+}
+
+.automations-day-heading {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.automation-run {
+  display: flex;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.automation-run-time {
+  width: 64px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding-top: 2px;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+
+.automation-run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.automation-run-glyph {
+  display: inline-flex;
+  width: 14px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.automation-run-name {
+  flex: 1;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+@media (max-width: 1023px) {
+  .automations-feed {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
+  }
+
+  /* One column: what waits on the reader leads, rather than sitting below a
+     history that keeps loading more. */
+  .automations-feed > .automations-rail {
+    order: -1;
+    position: static;
+  }
+}
+
+@media (max-width: 767px) {
+  /* A 12-hour clock ("12:56 AM") is eight characters of the mono face. */
+  .automation-run-time {
+    width: 8ch;
+  }
+}

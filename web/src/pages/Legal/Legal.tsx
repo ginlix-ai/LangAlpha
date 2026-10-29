@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
+import { PRIVACY_URL } from '../../config/supportLinks';
 
 function Legal() {
   return (
@@ -107,13 +108,15 @@ Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/`}</pre>
               </a>
               .
             </p>
-            <p className="mt-3 text-sm">
-              See also our{' '}
-              <Link to="/privacy" className="underline">
-                Privacy Policy
-              </Link>
-              .
-            </p>
+            {PRIVACY_URL && (
+              <p className="mt-3 text-sm">
+                See also our{' '}
+                <a href={PRIVACY_URL} className="underline">
+                  Privacy Policy
+                </a>
+                .
+              </p>
+            )}
           </section>
         </div>
       </article>

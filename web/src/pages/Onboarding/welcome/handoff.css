@@ -1,0 +1,156 @@
+/* The welcome flow handing its conversation to the chat (handoff.ts), as one
+   view transition. Every name is given only while it runs, under the flag on
+   the page, and only inside the two views taking part, the flow and the
+   thread it opens ([data-handoff-scope]): a name outlasting the transition
+   would leave its element a stacking context, and the chat keeps other
+   threads' views mounted beside the one in view. The sidebar, the flow's top
+   bar and the sidebar's brand are named by their own classes, there being one
+   of each on a page. */
+html[data-handoff] [data-handoff-scope] [data-handoff='transcript'] {
+  view-transition-name: handoff-transcript;
+}
+/* The agent's mark itself rather than its row, which the thread pads above
+   the mark once its reply has anything in it. */
+html[data-handoff] [data-handoff-scope] [data-handoff='agent'] > div:first-child {
+  view-transition-name: handoff-agent;
+}
+/* A task the user wrote: their bubble in the flow, their message in the thread. */
+html[data-handoff] [data-handoff-scope] :is([data-handoff='task'], [data-message-role='user']) {
+  view-transition-name: handoff-task;
+}
+html[data-handoff] [data-handoff-scope] [data-handoff='composer'] {
+  view-transition-name: handoff-composer;
+}
+html[data-handoff] [data-handoff-scope] [data-handoff='header'] {
+  view-transition-name: handoff-header;
+}
+html[data-handoff] :is([data-handoff-scope] .wizard-topbar img, .sidebar-brand > img, .sidebar-logo > img) {
+  view-transition-name: handoff-logo;
+}
+html[data-handoff] :is([data-handoff-scope] .wizard-topbar .title-font, .sidebar-wordmark) {
+  view-transition-name: handoff-wordmark;
+}
+html[data-handoff] .sidebar {
+  view-transition-name: handoff-sidebar;
+}
+
+/* The sidebar rows' own entrance would run inside the transition's, as a
+   second fade of the rows. Its length goes to nothing rather than its name: a
+   name put back as the flag comes off starts the animation again, where a
+   length put back leaves one long finished alone. */
+html[data-handoff] .sidebar > * {
+  animation-duration: 0s;
+  animation-delay: 0s;
+}
+
+@keyframes handoff-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes handoff-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes handoff-drift-out {
+  to {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+}
+@keyframes handoff-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+}
+@keyframes handoff-drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* What travels (the agent's mark, the composer, the logo and wordmark, a task
+   the user wrote) moves on the entrance curve, from where the flow drew it to
+   where the thread does. Stacked in the order they read in: what travels
+   above the sidebar it may cross, the sidebar above what is leaving. */
+html[data-handoff]::view-transition-group(*) {
+  /* motion-exempt: the hand-off's one long travel; the other legs are timed against it */
+  animation-duration: 480ms;
+  animation-timing-function: var(--ease-out);
+}
+html[data-handoff]::view-transition-group(handoff-transcript) {
+  z-index: 2;
+}
+html[data-handoff]::view-transition-group(handoff-sidebar),
+html[data-handoff]::view-transition-group(handoff-header) {
+  z-index: 3;
+}
+html[data-handoff]::view-transition-group(handoff-composer) {
+  z-index: 4;
+}
+html[data-handoff]::view-transition-group(handoff-task),
+html[data-handoff]::view-transition-group(handoff-agent) {
+  z-index: 5;
+}
+html[data-handoff]::view-transition-group(handoff-logo),
+html[data-handoff]::view-transition-group(handoff-wordmark) {
+  z-index: 6;
+}
+
+/* The rest of each page: the flow's top bar goes quickly, the app's ground
+   comes up under what travels. Blended normally, not added: the two grounds
+   are one color, and adding them brightens the dark one mid-fade. */
+html[data-handoff]::view-transition-old(root) {
+  /* motion-exempt: the top bar leaves quickly, timed against the 480ms travel */
+  animation: handoff-fade-out 180ms var(--ease-out) both;
+}
+html[data-handoff]::view-transition-new(root) {
+  /* motion-exempt: the app's ground comes up under the travelling objects, timed against the 480ms travel */
+  animation: handoff-fade-in 360ms var(--ease-out) 60ms both;
+}
+
+/* The answered turns drift up and off as the thread takes their place. */
+html[data-handoff]::view-transition-old(handoff-transcript) {
+  /* motion-exempt: the answered turns leave over most of the travel, so the thread's rise reads as taking their place */
+  animation: handoff-drift-out 300ms var(--ease-out) both;
+}
+
+/* Each of these is one object drawn a little differently on each side: the
+   mark mid-figure, the composer's placeholder, the bubble's text a few pixels
+   lower. So the two pictures cross early in the move rather than ghosting over
+   the whole of it, added as a cross-fade of one object is, which holds its
+   ground solid through it. */
+html[data-handoff]::view-transition-old(handoff-agent),
+html[data-handoff]::view-transition-old(handoff-task),
+html[data-handoff]::view-transition-old(handoff-composer) {
+  /* motion-exempt: the two pictures cross early in the move, timed against the 480ms travel */
+  animation: handoff-fade-out 200ms var(--ease-out) both;
+  mix-blend-mode: plus-lighter;
+}
+html[data-handoff]::view-transition-new(handoff-agent),
+html[data-handoff]::view-transition-new(handoff-task),
+html[data-handoff]::view-transition-new(handoff-composer) {
+  /* motion-exempt: the two pictures cross early in the move, timed against the 480ms travel */
+  animation: handoff-fade-in 200ms var(--ease-out) both;
+  mix-blend-mode: plus-lighter;
+}
+
+/* What only the app has comes in around the conversation: the sidebar from
+   its edge, then the thread's header. What only the flow has (the logo where
+   no sidebar draws one) leaves with its top bar. */
+html[data-handoff]::view-transition-new(handoff-sidebar) {
+  /* motion-exempt: the sidebar arrives as the travelling objects land, offset against the 480ms travel */
+  animation: handoff-slide-in 440ms var(--ease-out) 90ms both;
+}
+html[data-handoff]::view-transition-new(handoff-header) {
+  /* motion-exempt: the header follows the sidebar by a beat, offset against the 480ms travel */
+  animation: handoff-drop-in 360ms var(--ease-out) 140ms both;
+}
+html[data-handoff]::view-transition-old(handoff-logo):only-child,
+html[data-handoff]::view-transition-old(handoff-wordmark):only-child {
+  /* motion-exempt: the flow's logo leaves with its top bar, timed against the 480ms travel */
+  animation: handoff-fade-out 180ms var(--ease-out) both;
+}

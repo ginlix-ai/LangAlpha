@@ -19,7 +19,7 @@ from ptc_agent.config.agent import CredentialSource
 from tests.conftest import create_test_app
 
 THREADS_MOD = "src.server.app.threads.messaging"
-RESERVE_MOD = "src.server.services.report_back.flash.reserve"
+RESERVE_MOD = "src.server.services.report_back.handoff.reserve"
 
 USER = "usr-dispatch-001"
 TOKEN = "test-internal-service-token"
@@ -27,7 +27,6 @@ TOKEN = "test-internal-service-token"
 _BODY = {
     "workspace_id": "ws-placeholder",
     "messages": [{"role": "user", "content": "test query"}],
-    "agent_mode": "ptc",
 }
 
 
@@ -99,12 +98,20 @@ def _stub_workflow(release_burst=None, admit=None):
 
     with (
         patch(
-            f"{THREADS_MOD}.get_thread_owner_id",
-            new=AsyncMock(return_value=USER),
+            f"{THREADS_MOD}.get_thread_auth_meta",
+            new=AsyncMock(
+                return_value={"user_id": USER, "workspace_id": "ws-placeholder", "llm_model": None}
+            ),
         ),
         patch(
             "src.server.database.workspace.get_workspace",
-            new=AsyncMock(return_value={"user_id": USER, "status": "running"}),
+            new=AsyncMock(
+                return_value={
+                    "workspace_id": "ws-placeholder",
+                    "user_id": USER,
+                    "status": "running",
+                }
+            ),
         ),
         patch.object(setup_module, "agent_config", MagicMock()),
         patch(
@@ -264,7 +271,7 @@ async def test_refused_admission_gate_aborts_dispatch(monkeypatch):
             app,
             body={
                 **_BODY,
-                "origin_flash_thread_id": "flash-1",
+                "origin_home_thread_id": "cos-1",
                 "origin_dispatch_gen": "g-1",
             },
             headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
@@ -290,7 +297,7 @@ async def test_dispatch_gen_runs_the_refusal_gate(monkeypatch):
             app,
             body={
                 **_BODY,
-                "origin_flash_thread_id": "flash-1",
+                "origin_home_thread_id": "cos-1",
                 "origin_dispatch_gen": "g-1",
             },
             headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
@@ -343,7 +350,7 @@ async def test_priming_failure_retracts_intent_stamp(
             app,
             body={
                 **_BODY,
-                "origin_flash_thread_id": "flash-1",
+                "origin_home_thread_id": "cos-1",
                 "origin_dispatch_gen": "g-1",
             },
             headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
@@ -384,7 +391,7 @@ async def test_dispatch_retransmit_race_adopts_existing_run(monkeypatch):
             app,
             body={
                 **_BODY,
-                "origin_flash_thread_id": "flash-1",
+                "origin_home_thread_id": "cos-1",
                 "origin_dispatch_gen": "g-1",
             },
             headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
@@ -400,6 +407,45 @@ async def test_dispatch_retransmit_race_adopts_existing_run(monkeypatch):
     stubs.gate.retract.assert_not_awaited()
 
 
+def _steering_gen(**kwargs):
+    """A dispatched generator whose hand-off went into a running turn."""
+
+    async def _gen():
+        from src.server.handlers.chat.request_prep import HandOffSteered
+
+        yield HandOffSteered("run-live", "job-1")
+
+    return _gen()
+
+
+@pytest.mark.asyncio
+async def test_a_steered_hand_off_names_the_run_and_its_steer(monkeypatch):
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+
+    with _stub_workflow() as stubs, patch(
+        "src.server.handlers.chat.astream_ptc_workflow", new=_steering_gen
+    ):
+        resp = await _post(
+            _app(),
+            body={
+                **_BODY,
+                "origin_home_thread_id": "cos-1",
+                "origin_dispatch_gen": "g-1",
+            },
+            headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert (body["status"], body["run_id"], body["steer_id"]) == (
+        "steered",
+        "run-live",
+        "job-1",
+    )
+    stubs.consume.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_no_dispatch_header_foreground_unchanged(monkeypatch):
     """Without X-Dispatch nothing changes: plain foreground SSE."""
@@ -410,6 +456,152 @@ async def test_no_dispatch_header_foreground_unchanged(monkeypatch):
         resp = await _post(app)
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({}, None),
+        ({"X-Service-Token": TOKEN}, "Reply in one line."),
+    ],
+)
+async def test_surface_rules_survive_only_a_service_token_request(monkeypatch, headers, expected):
+    """The field is the gateway's; the text rides the operator role, so a
+    user's own copy is dropped with the other internal-only fields."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen["request"] = kwargs["request"]
+        return _stub_ptc_workflow(**kwargs)
+
+    with (
+        _stub_workflow(),
+        patch("src.server.handlers.chat.astream_ptc_workflow", new=_capture),
+    ):
+        resp = await _post(
+            app, headers=headers, body={**_BODY, "surface_rules": "Reply in one line."}
+        )
+    assert resp.status_code == 200, resp.text
+    assert seen["request"].surface_rules == expected
+
+
+_RUN = {
+    "id": "exec-1",
+    "targets": [
+        {"entry": "slack:T/C", "address": "slack:T/C", "name": "#desk", "ok": True}
+    ],
+}
+_EARLIER_RUN = {
+    "id": "exec-0",
+    "targets": [
+        {"entry": "discord", "address": "discord:@me", "name": None, "ok": True}
+    ],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "carried"),
+    [({}, False), ({"X-Service-Token": TOKEN}, True)],
+    ids=["a user's request", "a service request"],
+)
+async def test_the_run_a_report_back_sends_for_reaches_only_a_service_turns_config(
+    monkeypatch, headers, carried
+):
+    """A report-back turn sends for the automation run it names, as the run's
+    own turn did; a user's own copy of the field is dropped, so no user can
+    send under a run's id."""
+    from src.server.services import automation_delivery
+
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return _stub_ptc_workflow(**kwargs)
+
+    with (
+        _stub_workflow(),
+        patch("src.server.handlers.chat.astream_ptc_workflow", new=_capture),
+    ):
+        resp = await _post(
+            app,
+            headers=headers,
+            body={
+                **_BODY,
+                "automation_delivery": _RUN,
+                "automation_earlier_runs": [_EARLIER_RUN],
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    if carried:
+        assert seen["extra_configurable"] == automation_delivery.turn_configurable(
+            automation_delivery.read_stamp(_RUN),
+            [automation_delivery.read_stamp(_EARLIER_RUN)],
+        )
+        assert seen["extra_configurable"]["automation_execution_id"] == "exec-1"
+    else:
+        assert seen["request"].automation_delivery is None
+        assert seen["request"].automation_earlier_runs is None
+        assert seen["extra_configurable"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_turn_naming_no_run_carries_none(monkeypatch):
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return _stub_ptc_workflow(**kwargs)
+
+    with (
+        _stub_workflow(),
+        patch("src.server.handlers.chat.astream_ptc_workflow", new=_capture),
+    ):
+        resp = await _post(app, headers={"X-Service-Token": TOKEN})
+    assert resp.status_code == 200, resp.text
+    assert seen["extra_configurable"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "kept"),
+    [({}, False), ({"X-Service-Token": TOKEN}, True)],
+)
+async def test_report_source_survives_only_a_service_token_request(monkeypatch, headers, kept):
+    """A user's own copy would label their message as a report-back."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen["request"] = kwargs["request"]
+        return _stub_ptc_workflow(**kwargs)
+
+    with (
+        _stub_workflow(),
+        patch("src.server.handlers.chat.astream_ptc_workflow", new=_capture),
+    ):
+        resp = await _post(
+            app,
+            headers=headers,
+            body={
+                **_BODY,
+                "report_source": {"kind": "task", "task_id": "k3x9", "display_id": "Task-k3x9"},
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    assert (seen["request"].report_source is not None) is kept
 
 
 @pytest.mark.asyncio

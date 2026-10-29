@@ -11,12 +11,19 @@ replacement for `psycopg.types.json.Json` when binding JSONB.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
+import re
 import uuid
 from typing import Any
 
-from psycopg.types.json import Json
+from psycopg.types.json import Json, Jsonb
+
+# A `\u0000` escape starts at an odd-numbered backslash of its run. After an even
+# run the backslash before `u0000` is itself escaped, so the six characters are
+# text ("\u0000" written out in a JSON file, code or a repr) and must survive.
+_NUL_ESCAPE = re.compile(r"(?<!\\)((?:\\\\)*)\\u0000")
 
 
 def strip_pg_nul_str(value: str | None) -> str | None:
@@ -73,22 +80,56 @@ def _safe_dumps(value: Any) -> str:
     """JSON-serialize for psycopg JSONB bind, stripping any `\\u0000` escape.
 
     Piggybacks on the dumps psycopg already performs at bind time. The strip is a
-    single C-level `str.replace` on the serialized text — no extra Python-level
-    walks of the value tree. Non-finite floats (NaN/Inf) are nulled out so the
-    bind never produces invalid JSON that would lose the whole row.
+    single C-level pass over the serialized text — no extra Python-level walks
+    of the value tree. It matches whole escapes only: a plain replace also cut
+    the escaped backslash in front of a literal `\\u0000` in half, and the
+    dangling backslash made Postgres reject the row. Non-finite floats (NaN/Inf)
+    are nulled out for the same reason.
     """
     s = finite_json_dumps(value, ensure_ascii=False)
     if "\\u0000" not in s:
         return s
-    return s.replace("\\u0000", "")
+    return _NUL_ESCAPE.sub(r"\1", s)
+
+
+# Items per slice: a few milliseconds of encoding between event-loop yields.
+_JSON_ARRAY_SLICE = 2000
+
+
+async def safe_jsonb_array(items: list[Any]) -> Jsonb:
+    """``SafeJson`` encoding of a long list, a slice at a time, bound as jsonb.
+
+    The C encoder holds the GIL for a whole ``json.dumps``, so the loop yields
+    between slices. The split is here, not in smaller writes, because a
+    subagent archive write must carry each task's events whole (it replaces
+    those agents' rows), and one write can be the entire archive: every task
+    settled before collection starts, or what a turn collector hands its orphan
+    continuation. Each slice becomes UTF-8 as it is dumped and psycopg sends
+    the joined bytes as they are, so no str of the whole array is ever built:
+    one character past Latin-1 anywhere would widen all of it.
+    """
+    chunks = [b"["]
+    for start in range(0, len(items), _JSON_ARRAY_SLICE):
+        if start:
+            await asyncio.sleep(0)
+            chunks.append(b", ")
+        chunks.append(
+            _safe_dumps(items[start : start + _JSON_ARRAY_SLICE])[1:-1].encode()
+        )
+    chunks.append(b"]")
+    return Jsonb(b"".join(chunks), dumps=_as_is)
+
+
+def _as_is(data: bytes) -> bytes:
+    return data
 
 
 class SafeJson(Json):
     """Drop-in replacement for `psycopg.types.json.Json` that strips `\\u0000`.
 
     psycopg already calls `dumps()` once per `Json` bind. Overriding `dumps`
-    here adds zero extra traversal — only one extra C-level scan on the
-    serialized JSON for the escape sequence.
+    here adds zero extra traversal — only one extra scan on the serialized JSON
+    for the escape sequence.
     """
 
     def __init__(self, value: Any):

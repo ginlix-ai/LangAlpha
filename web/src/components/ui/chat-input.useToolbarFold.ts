@@ -33,7 +33,7 @@ export interface ToolbarItem {
  * budget is spelled out instead of hidden in magic numbers. */
 /** `gap-1` between action-bar controls. */
 export const TOOLBAR_GAP = 4;
-/** `h-8 w-8` icon buttons (attach, chart capture, mic, send, ⋯). */
+/** `h-8 w-8` icon buttons (attach, chart capture, mic, send, ⋯) and the token-usage ring's slot. */
 export const ICON_BUTTON_W = 32;
 /** `gap-2` between the left and right control groups. */
 export const GROUP_GAP = 8;
@@ -41,8 +41,6 @@ export const GROUP_GAP = 8;
 export const CONTAINER_PX = 24;
 /** 1px container border per side — `getBoundingClientRect` reports border-box. */
 export const CONTAINER_BORDER = 2;
-/** Token-usage ring. */
-export const TOKEN_RING_W = 18;
 
 export interface FoldResult {
   inline: Set<string>;

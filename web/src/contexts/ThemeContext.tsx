@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useMemo } from 'react';
+import { desktop } from '../lib/desktop';
 
 type ThemePreference = 'light' | 'dark' | 'auto';
 export type ResolvedTheme = 'light' | 'dark';
@@ -46,6 +47,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('theme', preference);
     const favicon = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null;
     if (favicon) favicon.href = theme === 'light' ? '/logo-favicon.svg' : '/logo-favicon-dark.svg';
+    // The desktop window's background has to equal the page's, because during a
+    // live resize the frame outruns the paint and that colour fills the gap.
+    // Optional call: an older shell predates this method and simply does not
+    // get told, which is the browser's behaviour and costs nothing.
+    desktop?.setTheme?.(theme);
   }, [theme, preference]);
 
   const setTheme = (value: ThemePreference) => setPreference(value);
@@ -63,9 +69,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <ThemeContext.Provider value={value}>
+    <ThemeContext value={value}>
       {children}
-    </ThemeContext.Provider>
+    </ThemeContext>
   );
 }
 

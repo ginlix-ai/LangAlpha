@@ -60,7 +60,7 @@
   color: var(--color-text-secondary);
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.12s;
+  transition: all var(--motion-quick) var(--ease-out);
 }
 .export-preview-stepper-btn:hover:not(:disabled) {
   background: var(--color-bg-hover);
@@ -94,15 +94,11 @@
   font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-quick) var(--ease-out);
   margin-top: auto;
 }
 .export-preview-save-btn:hover {
   opacity: 0.9;
-}
-.export-preview-save-btn:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
 }
 
 /* Preview area — gray canvas to show page sheets */
@@ -191,6 +187,10 @@
 }
 
 /* Hidden source element — keeps original content for react-to-print PDF export */
+/* `.export-pdf-host` is the live portal this modal renders the source into. Its
+   own rules, and how it interacts with the shell's detached copy, live in
+   styles/printExport.css alongside every other export rule. */
+
 .export-preview-source {
   position: absolute !important;
   top: 0 !important;
@@ -263,6 +263,7 @@
   height: 16px;
   border-radius: 4px;
   background: #d1d5db;
+  /* motion-exempt: the skeleton loop's period, and a loop breathes on ease-in-out rather than the one-shot entrance curve */
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 @keyframes pulse {
@@ -290,14 +291,10 @@
   color: var(--color-text-primary);
   font-size: 0.8125rem;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-quick) var(--ease-out);
 }
 .export-preview-retry-btn:hover {
   background: var(--color-bg-hover);
-}
-.export-preview-retry-btn:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
-  outline-offset: 2px;
 }
 .export-preview-anyway-btn {
   padding: 6px 16px;
@@ -307,7 +304,7 @@
   color: var(--color-text-secondary);
   font-size: 0.8125rem;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-quick) var(--ease-out);
 }
 .export-preview-anyway-btn:hover {
   color: var(--color-text-primary);
@@ -472,14 +469,23 @@
 /* react-to-print prints the hidden source div via the browser's native engine.
    These rules ensure the PDF has light-mode colors and proper typography. */
 @media print {
+  /* Must stay in step with `A4_PAGE_RULE` (lib/pageGeometry.ts), which is the same
+     geometry for the routes that can inject it. This copy covers the one that
+     cannot: a plain Cmd+P of this document while the preview is up. The
+     reasoning behind `!important` is on that constant. */
   @page {
-    size: A4;
-    margin: 15mm; /* Paged.js @page{margin:0} is scoped to media=screen during print */
+    size: A4 !important;
+    margin: 15mm !important;
   }
 
   /* Unclip ancestor chain — react-to-print iframe inherits parent stylesheets.
-     The matching `color-scheme: light` lives in the pageStyle prop, not here —
-     see the comment on useReactToPrint in ExportPreviewModal.tsx. */
+     `color-scheme: light` deliberately does not live here. This file is a lazy
+     chunk and a stylesheet is loaded for the life of the document, so a
+     declaration in it reaches every later print, the app's own Ctrl+P included.
+     Each route states it where it is already scoped: the pageStyle prop for the
+     iframe, which react-to-print inlines and which therefore arrives even when
+     the iframe's re-fetch of this file fails, and printExport.css's
+     `:has(#export-pdf-root)` block for the shell render. */
   html, body {
     height: auto !important;
     overflow: visible !important;

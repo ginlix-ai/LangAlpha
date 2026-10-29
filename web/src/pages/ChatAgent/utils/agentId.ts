@@ -20,3 +20,19 @@ export function taskIdFromAgentId(agentId: string | null | undefined): string | 
   if (!isTaskAgentId(agentId)) return null;
   return agentId.slice(TASK_AGENT_PREFIX.length);
 }
+
+const DISPLAY_ID_PREFIX = 'Task-';
+
+/**
+ * The task id a model-written reference means. Launch results and reports
+ * show a task by its display id (`Task-k7Xm2p`), so the model passes that
+ * back as often as the bare id, and the server takes either. A minted id is
+ * six characters, too short to carry the prefix itself. Mirrors `bare_task_id`
+ * in src/ptc_agent/agent/middleware/background_subagent/task.py.
+ */
+export function bareTaskId(taskId: string): string {
+  const id = taskId.trim();
+  return id.startsWith(DISPLAY_ID_PREFIX) && id.length > DISPLAY_ID_PREFIX.length + 1
+    ? id.slice(DISPLAY_ID_PREFIX.length)
+    : id;
+}

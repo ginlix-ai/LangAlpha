@@ -10,6 +10,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from langsmith.run_helpers import tracing_context
+from langsmith.run_trees import RunTree
 
 import src.tools.web.crawl as crawl_mod
 from src.tools.decorators import set_tool_tracker, start_tool_tracking
@@ -229,6 +231,14 @@ class FakeBackend:
         return True
 
 
+class _RecordingClient:
+    def create_run(self, **kwargs):
+        return None
+
+    def update_run(self, **kwargs):
+        return None
+
+
 class FakeAdapter:
     name = "fake"
 
@@ -393,6 +403,36 @@ class TestWebCrawlTool:
         assert artifact["pages"] == 0
         # The artifact must not claim the crawl is still running.
         assert artifact["state"] == "cancelled"
+
+    @pytest.mark.parametrize(
+        ("final", "cap", "outcome", "error_class"),
+        [
+            pytest.param(CrawlState.COMPLETED, False, None, None, id="completed"),
+            pytest.param(CrawlState.CANCELLED, False, "error", "provider_error", id="cancelled-by-provider"),
+            pytest.param(CrawlState.RUNNING, True, "unavailable", "timeout", id="time-cap"),
+        ],
+    )
+    async def test_a_crawl_that_did_not_finish_marks_why(
+        self, monkeypatch, final, cap, outcome, error_class
+    ):
+        """A crawl the provider stopped is its failure; one still running at
+        our cap is a site too big or slow, as a slow page is for WebFetch."""
+        adapter = FakeAdapter(
+            statuses=[CrawlStatus(state=final, total=1, completed=0)]
+        )
+        tools, _ = _make_tools(monkeypatch, adapter)
+        if cap:
+            monkeypatch.setattr(crawl_mod, "_CRAWL_TIMEOUT", 0.0)
+        tool_run = RunTree(name="WebCrawl", run_type="tool", client=_RecordingClient())
+
+        with tracing_context(parent=tool_run):
+            _, artifact = await tools[0].coroutine(url=SITE)
+
+        assert tool_run.metadata.get("tool_outcome") == outcome
+        assert tool_run.metadata.get("error_class") == error_class
+        assert artifact["state"] == ("completed" if final is CrawlState.COMPLETED else "cancelled")
+        # Only the cap cancels the job itself.
+        assert adapter.cancelled is cap
 
 
 @pytest.mark.asyncio

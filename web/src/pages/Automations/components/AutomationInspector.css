@@ -1,0 +1,176 @@
+.automation-inspector {
+  max-width: 760px;
+}
+
+.automation-inspector-title {
+  margin-top: 8px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.automation-inspector-desc {
+  margin-top: 6px;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+.automation-inspector-schedule {
+  margin-top: 10px;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+.automation-inspector-meter {
+  margin-top: 14px;
+  max-width: 420px;
+}
+
+.automation-inspector-reading {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.automation-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.automation-inspector-section {
+  margin-top: 32px;
+}
+
+.automation-inspector-section > .automations-kicker {
+  margin-bottom: 10px;
+}
+
+.automation-report {
+  padding: 14px 16px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+  background-color: var(--color-bg-card);
+}
+
+.automation-instruction {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+}
+
+.automation-instruction.is-folded {
+  max-height: calc(1.6em * 8 + 24px);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+
+.automation-history-scroll {
+  overflow-x: auto;
+}
+
+.automation-history {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.automation-history th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  padding: 0 12px 8px 0;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+
+.automation-history td {
+  padding: 9px 12px 9px 0;
+  border-bottom: 1px solid var(--color-border-muted);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.automation-history td.automation-mono {
+  font-size: 0.75rem;
+}
+
+/* A run's start opens it in the report above; the one shown there takes the
+   list's selected fill. The negative margin keeps the time on the column. */
+.automation-history-run {
+  margin-left: -4px;
+  padding: 1px 4px;
+}
+
+.automation-history-run[aria-current='true'] {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+
+.automation-run-missing {
+  margin-bottom: 8px;
+}
+
+/* A failed run's error reads as the second line of its row: the hairline
+   moves below it, and the text wraps across the whole table. */
+.automation-history tr.has-error td {
+  border-bottom: 0;
+  padding-bottom: 4px;
+}
+
+.automation-history-error td {
+  padding-top: 0;
+  white-space: normal;
+}
+
+.automation-history-error .automation-run-error {
+  margin-top: 0;
+}
+
+.automation-history-error .automation-run-error + .automation-run-error {
+  margin-top: 2px;
+}
+
+/* A run can land in several chats: one line each, wrapping rather than
+   widening the table. */
+.automation-history td.automation-history-delivery {
+  white-space: normal;
+  min-width: 10rem;
+}
+
+.automation-history-attempt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.automation-details {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 24px;
+  row-gap: 8px;
+  font-size: 0.8125rem;
+}
+
+.automation-details dt {
+  color: var(--color-text-tertiary);
+}
+
+.automation-details dd {
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}

@@ -1,4 +1,6 @@
-import { motion } from "framer-motion";
+import { motion } from "@/lib/framer";
+import { STAGGER, TWEEN } from "@/lib/motion";
+import { useMotionSafe } from "@/lib/reducedMotion";
 import { useTheme } from "@/contexts/ThemeContext";
 
 export interface AgentPlanItem {
@@ -87,6 +89,9 @@ interface StepperTrackProps {
 const MAX_VISIBLE_NODES = 12;
 
 export function StepperTrack({ items }: StepperTrackProps) {
+  // The sweep is a framer loop, which MotionConfig's reduced-motion setting
+  // does not stop.
+  const motionSafe = useMotionSafe();
   const palette = usePalette();
   if (!items.length) return null;
 
@@ -127,7 +132,8 @@ export function StepperTrack({ items }: StepperTrackProps) {
                     : palette.pending.conn,
                 }}
               >
-                {nextItem &&
+                {motionSafe &&
+                  nextItem &&
                   (item.status === "completed" || item.status === "stale") &&
                   nextItem.status === "in_progress" && (
                     <motion.div
@@ -136,10 +142,15 @@ export function StepperTrack({ items }: StepperTrackProps) {
                         width: "30%",
                         background: "rgba(255,255,255,0.25)",
                       }}
-                      animate={{ left: ["-30%", "100%"] }}
+                      // A transform rather than `left`, so the sweep composites
+                      // instead of laying out every frame. -100% of its own
+                      // 30% width to 100% of the track.
+                      animate={{ x: ["-100%", "333%"] }}
                       transition={{
+                        // eslint-disable-next-line no-restricted-syntax -- the sweep's period, a loop no token names
                         duration: 1.2,
                         repeat: Infinity,
+                        // eslint-disable-next-line no-restricted-syntax -- the same sweep's in-out, a loop curve no token names
                         ease: "easeInOut",
                       }}
                     />
@@ -151,7 +162,7 @@ export function StepperTrack({ items }: StepperTrackProps) {
       })}
       {overflow && (
         <span
-          className="flex-shrink-0 text-xs tabular-nums"
+          className="shrink-0 text-xs tabular-nums"
           style={{ color: "var(--color-text-quaternary)", marginLeft: 2 }}
         >
           +{items.length - MAX_VISIBLE_NODES}
@@ -163,12 +174,10 @@ export function StepperTrack({ items }: StepperTrackProps) {
 
 // --- Expanded List (Ticker-tape style) ---
 
-export const EASING: [number, number, number, number] = [0.22, 1, 0.36, 1];
-
 const listVariants = {
   hidden: {},
   visible: {
-    transition: { staggerChildren: 0.04 },
+    transition: { staggerChildren: STAGGER },
   },
 };
 
@@ -177,7 +186,7 @@ const itemVariants = {
   visible: {
     opacity: 1,
     x: 0,
-    transition: { duration: 0.3, ease: EASING },
+    transition: TWEEN.fold,
   },
 };
 
@@ -218,7 +227,7 @@ export default function StepperList({ items }: { items: AgentPlanItem[] }) {
             variants={itemVariants}
           >
             <span
-              className="flex-shrink-0 text-right"
+              className="shrink-0 text-right"
               style={{
                 fontSize: "0.625rem",
                 fontWeight: 600,
@@ -232,7 +241,7 @@ export default function StepperList({ items }: { items: AgentPlanItem[] }) {
             </span>
 
             <div
-              className="flex-shrink-0"
+              className="shrink-0"
               style={{
                 width: 1,
                 height: 12,

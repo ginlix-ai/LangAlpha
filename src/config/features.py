@@ -60,6 +60,24 @@ class FeatureSpec:
 
 
 FEATURES: dict[str, FeatureSpec] = {
+    "wakeups": FeatureSpec(
+        key="wakeups",
+        label="Wakeups",
+        description=(
+            "Lets the agent pick a thread back up by itself to carry on a task: "
+            "at a time, every few minutes, when a price moves, or when an order "
+            "it placed fills. Pending wakeups show in the chat tray and the "
+            "Status panel, where you can cancel any of them."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_OUT,
+        tradeoffs=(
+            "A wakeup that fires while the thread is idle starts a turn by "
+            "itself, which costs as much as any turn; checking every 5 minutes "
+            "can take up to 24 turns over two hours. Turning this off cancels "
+            "every pending wakeup."
+        ),
+    ),
     "market_watch": FeatureSpec(
         key="market_watch",
         label="Market watch",
@@ -93,6 +111,82 @@ FEATURES: dict[str, FeatureSpec] = {
             "so a broad crawl costs more than targeted fetches. Experimental — "
             "behavior and pricing may change."
         ),
+    ),
+    "todo_write": FeatureSpec(
+        key="todo_write",
+        label="Task checklist (legacy)",
+        description=(
+            "Gives the agent a TodoWrite tool to keep a checklist of its steps "
+            "on long tasks, shown as a live todo list in chat."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        tradeoffs=(
+            "Each checklist update is an extra tool call, which adds a little "
+            "time and cost to long turns. Legacy, and may be removed in a "
+            "future release."
+        ),
+    ),
+    "scratchpad": FeatureSpec(
+        key="scratchpad",
+        label="Scratchpad and working notes",
+        description=(
+            "Gives the agent a scratchpad folder in each thread for its "
+            "intermediate files, and has it keep running notes there: key "
+            "findings, decisions and why, and corrections you give mid-task. "
+            "The notes carry a long task through after older messages in the "
+            "thread are summarized."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
+        tradeoffs=(
+            "The agent spends a few extra tool calls per task keeping its "
+            "notes. The scratchpad and its notes are deleted when you archive "
+            "the thread, so keep anything you want to last in the workspace's "
+            "own files."
+        ),
+    ),
+    "provider_compaction": FeatureSpec(
+        key="provider_compaction",
+        label="Provider compaction",
+        description=(
+            "When a long thread is compacted, Claude and OpenAI models "
+            "summarize it with their provider's own compaction rather than "
+            "ours, which keeps more of what they knew: Claude keeps its "
+            "reasoning in the turns it keeps. To turn it off for one model "
+            "only, use Per-model settings on the Model tab."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_OUT,
+        tradeoffs=(
+            "OpenAI's summary is encrypted, so only OpenAI models can read it "
+            "and the compaction card shows a plain record of the conversation "
+            "instead. Switch such a thread to another provider's model and it "
+            "gets that record, which leaves out the earlier tool results."
+        ),
+    ),
+    # Off in every deployment until an operator turns it on; then each user
+    # opts in. Nothing reads it yet: the graph build consults it once
+    # Claude Code models are routable (design phase 2).
+    "claude_code_runtime": FeatureSpec(
+        key="claude_code_runtime",
+        label="Claude Code runtime (preview)",
+        description=(
+            "Runs your Claude threads through Claude Code on your own Claude "
+            "plan instead of an API key."
+        ),
+        enabled=False,
+        gate=FeatureGate.OPT_IN,
+    ),
+    "a_share_pack": FeatureSpec(
+        key="a_share_pack",
+        label="A-share market pack",
+        description=(
+            "Switches the dashboard news widget to the Chinese-language CN "
+            "market feed (Chinese locales only)."
+        ),
+        enabled=True,
+        gate=FeatureGate.OPT_IN,
     ),
 }
 

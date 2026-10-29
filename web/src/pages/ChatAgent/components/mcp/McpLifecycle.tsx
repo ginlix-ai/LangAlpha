@@ -1,6 +1,8 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { motion } from 'framer-motion';
+import { motion } from '@/lib/framer';
+import { SPRING_SNAPPY } from '@/lib/motion';
+import { useMotionSafe } from '@/lib/reducedMotion';
 import { McpOauthPill, McpStatusPill } from './McpStatusPill';
 import { deriveLifecycle, type McpLifecycleInput, type McpLifecycleStep } from './mcpState';
 
@@ -25,8 +27,6 @@ import { deriveLifecycle, type McpLifecycleInput, type McpLifecycleStep } from '
  * Which of those to render is decided by `deriveLifecycle` in `mcpState.ts`;
  * this component only paints the result.
  */
-
-const SPRING = { type: 'spring' as const, stiffness: 200, damping: 22 };
 
 export function McpLifecycle(props: McpLifecycleInput) {
   const { t } = useTranslation();
@@ -72,6 +72,8 @@ function LifecycleTrack({ steps }: { steps: Array<{ key: string; state: McpLifec
 }
 
 function Node({ state }: { state: McpLifecycleStep }) {
+  // Framer's reduced-motion setting would still run the opacity half.
+  const breathes = useMotionSafe() && state === 'active';
   const color =
     state === 'done'
       ? 'var(--color-profit)'
@@ -88,13 +90,16 @@ function Node({ state }: { state: McpLifecycleStep }) {
         border: state === 'todo' ? '1.5px solid var(--color-border-muted)' : undefined,
       }}
       // The active node breathes; done/todo are static.
-      animate={state === 'active' ? { scale: [1, 1.35, 1], opacity: [1, 0.6, 1] } : { scale: 1, opacity: 1 }}
-      transition={state === 'active' ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' } : SPRING}
+      animate={breathes ? { scale: [1, 1.35, 1], opacity: [1, 0.6, 1] } : { scale: 1, opacity: 1 }}
+      // eslint-disable-next-line no-restricted-syntax -- the breathing loop's period
+      transition={breathes ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' } : SPRING_SNAPPY}
     />
   );
 }
 
 function Connector({ filled, shimmer }: { filled: boolean; shimmer: boolean }) {
+  // A sweep on `left`, which framer's reduced-motion setting does not cover.
+  const motionSafe = useMotionSafe();
   return (
     <span
       className="relative inline-block overflow-hidden"
@@ -106,11 +111,12 @@ function Connector({ filled, shimmer }: { filled: boolean; shimmer: boolean }) {
         background: filled ? 'var(--color-profit)' : 'var(--color-border-muted)',
       }}
     >
-      {shimmer && (
+      {shimmer && motionSafe && (
         <motion.span
           className="absolute inset-y-0"
           style={{ width: '40%', background: 'rgba(255,255,255,0.45)' }}
           animate={{ left: ['-40%', '100%'] }}
+          // eslint-disable-next-line no-restricted-syntax -- the shimmer sweep's loop period
           transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
         />
       )}

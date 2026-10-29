@@ -1,7 +1,61 @@
 /* ============================================
    Shared entrance animations & utility classes
    Used across Dashboard, ChatAgent, SharedChat
-   ============================================ */
+   ============================================
+
+   Timings are the `--motion-*` and `--ease-*` tokens (tokens.css, mirroring
+   lib/motion.ts). This file and tokens.css are the only stylesheets allowed a
+   literal duration or curve (styles/__tests__/motionTokens.test.ts), and here
+   only for what no token names: a loop's period, a keyframe's own shape. */
+
+/* === Reduced motion, app-wide ===
+
+   One rule for every stylesheet: a reader who asked the OS for less motion
+   gets each transition and keyframe at once, delays included, so a stagger
+   doesn't hold a still list back for a beat. A delay that gates rather than
+   staggers (the page loader's debounce, the chart's settle mask) restores
+   itself beside its animation.
+
+   A keyframe runs for near-zero rather than `none`, so it still ends (Radix
+   unmounts a closing surface on animationend) and a loop runs once and stops.
+   A transition takes no time at all: even a 0.01ms one starts from the old
+   value, so code that writes a style and then measures (a fold, the scroll
+   pin's floor) would read the value it just replaced. Nothing here waits on
+   transitionend. A component that wants a still state of its own, rather than
+   its last frame, says so next to its animation. The motion CSS cannot reach
+   (a framer loop, an imperative `animate()`, a smooth `scrollTo`) asks
+   `lib/reducedMotion.ts` instead. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* === Press ===
+
+   A committing button presses in to `--press-scale` and back, over
+   `--motion-press`, so a click lands without moving anything around it.
+   Hover changes color or background, and nothing in the app scales on
+   hover. The scale needs its own duration beside the colors' quick one, and a
+   transition list cannot be split across two classes, so this carries the
+   whole list: give a control `press` in place of its `transition-*` class,
+   never beside one. Still under reduced motion. */
+@utility press {
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, filter, scale;
+  transition-timing-function: var(--ease-out);
+  transition-duration: var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-quick), var(--motion-press);
+
+  @media (prefers-reduced-motion: no-preference) {
+    &:active:not(:disabled, [aria-disabled='true']) {
+      scale: var(--press-scale);
+    }
+  }
+}
 
 /* === Title font (display face = the UI voice, Sora) === */
 .title-font {
@@ -9,16 +63,263 @@
   letter-spacing: -0.01em;
 }
 
-/* === Staggered fade-up entrance === */
+/* === Staggered fade-up entrance ===
+
+   `backwards`, not `both`: a forwards fill keeps the last keyframe's
+   transform applied after the animation ends (an identity matrix, never
+   `none`), which makes every element using this the containing block for its
+   fixed-position children for good (Sidebar.css has the same note). Backwards
+   still covers the delay, and the end state equals the natural style. */
 @keyframes fade-up-enter {
-  from { opacity: 0; transform: translateY(16px); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.enter-fade-up { animation: fade-up-enter 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.enter-fade-up { animation: fade-up-enter var(--motion-enter) var(--ease-out) backwards; }
 .enter-fade-up-d1 { animation-delay: 0ms; }
-.enter-fade-up-d2 { animation-delay: 80ms; }
-.enter-fade-up-d3 { animation-delay: 160ms; }
-.enter-fade-up-d4 { animation-delay: 240ms; }
-.enter-fade-up-d5 { animation-delay: 80ms; }
-.enter-fade-up-d6 { animation-delay: 160ms; }
+.enter-fade-up-d2 { animation-delay: var(--motion-stagger); }
+.enter-fade-up-d3 { animation-delay: calc(var(--motion-stagger) * 2); }
+.enter-fade-up-d4 { animation-delay: calc(var(--motion-stagger) * 3); }
+.enter-fade-up-d5 { animation-delay: var(--motion-stagger); }
+.enter-fade-up-d6 { animation-delay: calc(var(--motion-stagger) * 2); }
+
+/* === Hover lift ===
+
+   A card under the pointer rises a step, takes the card shadow and firms its
+   edge. Only where a pointer hovers, so a tap
+   leaves nothing stuck raised. Reduced motion keeps the shadow and the edge and
+   drops the rise. The edge is read through --lift-edge, so a card that draws
+   its border inline writes `border: 1px solid var(--lift-edge, <its colour>)`. */
+.hover-lift {
+  transition-property: transform, scale, box-shadow, border-color;
+  transition-duration: var(--motion-quick);
+  transition-timing-function: var(--ease-out);
+}
+@media (hover: hover) {
+  .hover-lift:hover {
+    --lift-edge: var(--color-border-strong);
+    box-shadow: var(--shadow-card);
+  }
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .hover-lift:hover { transform: translateY(-2px); }
+}
+
+/* === Dialog overlay fade ===
+
+   The one animation the Radix dialog layer draws for itself. It is a keyframe
+   rather than a transition because Radix holds a closing element mounted only
+   while an animation is running, so a transition would fade the overlay in and
+   then cut it. Quick in, exit out, on the house entrance curve. */
+@keyframes overlay-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes overlay-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.overlay-fade[data-state='open'] {
+  animation: overlay-fade-in var(--motion-quick) var(--ease-out);
+}
+
+.overlay-fade[data-state='closed'] {
+  animation: overlay-fade-out var(--motion-exit) var(--ease-out);
+}
+
+/* === Radix surface motion ===
+
+   Enter and exit for the floating surfaces Radix mounts and unmounts: menus,
+   popovers, hover cards, dialogs, the mobile sheet and toasts. Keyframes for
+   the same reason `overlay-fade` is one: a closing element stays mounted only
+   while its animation runs, so a transition would play the entrance and then
+   cut the exit off.
+
+   Quick for a menu, enter for a dialog or a sheet, exit for anything
+   leaving, on the house entrance curve. */
+
+/* --- A small surface popping open at its anchor: menus, popovers, hover
+       cards. `data-side` is Radix's own answer for which side of the trigger
+       it landed on and `data-placement` react-aria's, so the nudge always
+       travels away from the trigger; react-aria marks the two phases with
+       `data-entering` and `data-exiting` rather than a state. --- */
+@keyframes pop-in {
+  from { opacity: 0; transform: translate(var(--pop-x, 0), var(--pop-y, 0)) scale(0.95); }
+  to   { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+
+@keyframes pop-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.95); }
+}
+
+.pop-in[data-side='bottom'], .pop-in[data-placement='bottom'] { --pop-y: -0.5rem; }
+.pop-in[data-side='top'],    .pop-in[data-placement='top']    { --pop-y: 0.5rem; }
+.pop-in[data-side='left'],   .pop-in[data-placement='left']   { --pop-x: 0.5rem; }
+.pop-in[data-side='right'],  .pop-in[data-placement='right']  { --pop-x: -0.5rem; }
+
+/* A tooltip opens `delayed-open`, or `instant-open` when the pointer moves on
+   from another one, and that second one appears in place, as a toolbar's
+   hints should. */
+.pop-in[data-state='open'],
+.pop-in[data-state='delayed-open'],
+.pop-in[data-entering] {
+  animation: pop-in var(--motion-quick) var(--ease-out);
+}
+
+.pop-in[data-state='closed'],
+.pop-in[data-exiting] {
+  animation: pop-out var(--motion-exit) var(--ease-out);
+}
+
+/* --- Centred fixed surface: the dialog. The keyframe carries the centring
+       translate itself, because an animated `transform` replaces the one
+       positioning the element rather than composing with it. --- */
+@keyframes center-pop-in {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.95); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes center-pop-out {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to   { opacity: 0; transform: translate(-50%, -48%) scale(0.95); }
+}
+
+.pop-in-center[data-state='open'] {
+  animation: center-pop-in var(--motion-enter) var(--ease-out);
+}
+
+.pop-in-center[data-state='closed'] {
+  animation: center-pop-out var(--motion-exit) var(--ease-out);
+}
+
+/* --- The mobile bottom sheet arrives from the edge it is pinned to. Swipe to
+       dismiss drives the CSS `translate` property instead of `transform`, so
+       a drag and this animation never fight over one declaration. --- */
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sheet-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(100%); }
+}
+
+.sheet-in[data-state='open'] {
+  animation: sheet-in var(--motion-enter) var(--ease-out);
+}
+
+.sheet-in[data-state='closed'] {
+  animation: sheet-out var(--motion-exit) var(--ease-out);
+}
+
+/* --- Toasts enter from whichever edge the viewport is pinned to (top on a
+       phone, bottom from `sm` up) and leave to the right, the same direction a
+       swipe sends them. --- */
+@keyframes toast-in-top {
+  from { opacity: 0; transform: translateY(-100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-in-bottom {
+  from { opacity: 0; transform: translateY(100%); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-out-right {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(100%); }
+}
+
+.toast-slide[data-state='open'] {
+  animation: toast-in-top var(--motion-quick) var(--ease-out);
+}
+
+@media (min-width: 640px) {
+  .toast-slide[data-state='open'] { animation-name: toast-in-bottom; }
+}
+
+.toast-slide[data-state='closed'],
+.toast-slide[data-swipe='end'] {
+  animation: toast-out-right var(--motion-exit) var(--ease-out);
+}
+
+/* --- The image lightbox scrim. React mounts and unmounts it outright, so an
+       entrance is the only half there is to draw. --- */
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.scrim-in {
+  animation: scrim-in var(--motion-quick) var(--ease-out);
+}
+
+/* === Download progress: a thin indicator, so the accent is permitted. The
+       indeterminate fill is for work that reports nothing until it ends. === */
+@keyframes download-progress-slide {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(250%); }
+}
+
+.download-progress-track {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--color-border-muted);
+}
+
+.download-progress-fill {
+  height: 100%;
+  background: var(--color-accent-primary);
+  transition: width var(--motion-quick) linear;
+}
+
+.download-progress-fill[data-indeterminate] {
+  width: 40%;
+  /* A loop's period and its symmetric sweep, which no token names. */
+  animation: download-progress-slide 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Still, but not absent: the text carries the state. */
+@media (prefers-reduced-motion: reduce) {
+  .download-progress-fill[data-indeterminate] {
+    width: 100%;
+    opacity: 0.4;
+    animation: none;
+  }
+}
+
+/* A part that appears after its step is already on screen, or that a flow
+   shows without a frame of its own (the welcome conversation), fades in
+   rather than snapping. Opacity only, and `backwards` so it holds no style
+   once it is in. Lives here, not in wizard.css, so it does not depend on
+   something having imported the wizard kit. */
+@keyframes wizard-fade-in {
+  from { opacity: 0; }
+}
+
+.wizard-fade-in {
+  animation: wizard-fade-in var(--motion-quick) var(--ease-reveal) backwards;
+}
+
+/* === Running label shimmer (components/ui/text-shimmer.tsx) ===
+
+   The one looping text treatment DESIGN.md sanctions: a highlight sweeping a
+   label while its work runs. A keyframe so it runs without a JS frame loop;
+   the global reduced-motion rule leaves it at rest, where the highlight sits
+   off the text and the label reads in its base color. Not `text-shimmer`:
+   tailwind-merge reads any `text-*` class as a text color and drops it for the
+   component's own `text-transparent`. */
+@keyframes shimmer-sweep {
+  from { background-position: 100% center; }
+  to   { background-position: 0% center; }
+}
+
+.shimmer-sweep {
+  animation: shimmer-sweep var(--shimmer-period, 2s) linear infinite;
+}

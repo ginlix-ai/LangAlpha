@@ -1,0 +1,61 @@
+{# What this turn's reply has to be shaped like, written into the turn row
+   rather than into the system prefix. The prefix would have to carry every
+   surface's rules on every turn of every thread so that one of them could
+   apply; the row carries the one that does, and the harness sends it only
+   when the last rules the model can still see are not these
+   (`TurnContextMiddleware`). A thread that never leaves the web app therefore
+   states the web line once.
+
+   Built-in lines exist only for the surfaces langalpha renders itself, `web`
+   and `market_view`. Every other surface is drawn by the client that posted
+   the turn, and that client is the one that knows what its transport accepts,
+   so it states its own rules on the request (`ChatRequest.surface_rules`) and
+   they arrive here as `surface_rules`. Caller rules are the surface paragraph:
+   they replace the built-in line rather than joining it, because the owner of
+   what is rendered is the authority on it. They are rendered verbatim, with no
+   wrapper and no label.
+
+   `handoff` marks the first attended turn after an automation's: the last
+   rules in view say nobody is waiting, and only a later row can take that
+   back, so this turn states its rules even when it has no surface line.
+   `reset` is the same shape for a surface: a turn with no rules of its own
+   after one that stated some (a channel thread continued in the web app)
+   would leave the channel's paragraph as the last rule in view, so the
+   return to the default shape is stated once.
+
+   Row voice: facts addressed to the reader now, no headers and no table,
+   because this is prose inside a conversation rather than a section of a
+   document. A subagent has no surface at all, so its paragraph replaces the
+   surface one instead of joining it.
+
+   State only, so it renders the same at both guidance levels and takes no
+   guidance kwarg: the row persists, and the model that reads it back may not
+   be the one it was written for. A surface with no built-in line and no caller
+   rules renders nothing here, which leaves the model on its default shape; the
+   run line above still names it. #}
+{% set caller_rules = surface_rules | default("", true) | trim %}
+{% set documented = caller_rules or surface == "web" or surface == "market_view" %}
+{% if is_subagent %}
+You are reporting to the parent agent, not to a person. Return findings, numbers, file paths, and the caveats the parent needs in order to judge them; the parent decides what reaches the user. Say plainly what you could not determine instead of filling the gap. Anything beyond your task that the parent should act on, such as something worth remembering or a problem you found, goes in your result for the parent to decide; don't act on it yourself.
+{% else %}
+{% if reset %}
+This turn arrived with no delivery rules of its own. The rules stated earlier in this thread do not apply to it. Reply in your default shape.
+{% elif caller_rules %}
+{{ caller_rules }}
+{% elif surface == "web" %}
+Surface web: full markdown, no length cap; widgets, charts, HTML reports and file deliverables are all available.
+{% elif surface == "market_view" %}
+Surface market_view: the user is looking at the price chart for {{ symbol if symbol else "the symbol they have open" }} and asking about what is in front of them. Anything they selected on that chart arrives with their message. Annotations you draw on that chart show up to the user on it.
+{% endif %}
+{% if handoff %}
+{% if documented %}
+
+{% endif %}
+A person sent this turn and is waiting for the reply. The automation rules stated earlier in this thread do not apply to it.
+{% elif origin == "automation" %}
+{% if documented %}
+
+{% endif %}
+This thread was started by an automation. Nobody is waiting and nobody can answer a question, so where you would have asked, make the defensible assumption, state it in the output, and continue. Produce the deliverable and a short summary that stands on its own for a reader who does not remember what triggered the run. If something blocked the run, say what it was and what input would unblock the next one.
+{% endif %}
+{% endif %}

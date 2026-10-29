@@ -12,14 +12,25 @@ body > :first-child {
   border: none !important;
   border-radius: 0 !important;
   box-shadow: none !important;
-  margin: 0 !important;
+  margin: 0 auto !important;
 }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; margin: 4px; }
+::-webkit-scrollbar-thumb { background-color: var(--color-border-elevated); background-clip: padding-box; border: 3px solid transparent; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--color-text-tertiary); }
 </style>
 <script>
 (function(){
   var _p=JSON.parse;
   JSON.parse=function(t,r){
-    if(typeof t==='string')t=t.replace(/\bNaN\b/g,'null').replace(/(?<![A-Za-z_])-?Infinity\b/g,'null');
+    if(typeof t==='string'&&(t.indexOf('NaN')!==-1||t.indexOf('Infinity')!==-1)){
+      var inString=false;
+      t=t.replace(/\\[\s\S]|"|(?<!\w)(?:NaN|-?Infinity)\b/g,function(token){
+        if(token==='"'){inString=!inString;return token;}
+        return inString||token.charAt(0)==='\\'?token:'null';
+      });
+    }
     return _p.call(this,t,r);
   };
   var shown={},count=0,rendering=false;

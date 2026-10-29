@@ -1,0 +1,42 @@
+/* What scrolls out of the transcript fades under the top bar and into the
+   composer rather than being cut along them. Each fade is shorter than the
+   column's padding at that end, so nothing at rest sits in one. */
+.welcome-chat__scroller {
+  mask-image: linear-gradient(to bottom, transparent, #000 1rem, #000 calc(100% - 1.5rem), transparent);
+}
+@media (min-width: 640px) {
+  .welcome-chat__scroller {
+    mask-image: linear-gradient(to bottom, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
+  }
+}
+
+/* The agent's line is the transcript's own text block, whose paragraphs sit a
+   chat message apart: close enough that the introduction and the question
+   under it read as one block. Here they are set a paragraph apart, with a
+   little more leading for prose read as it types. */
+.welcome-chat__line p {
+  line-height: 1.625;
+}
+.welcome-chat__line p + p {
+  margin-top: 0.75em;
+}
+
+/* An answer as it lands, and the agent taking the last one: a short rise,
+   opacity and transform only. A turn's card comes up a row at a time instead
+   (rows.ts), and takes this only under reduced motion, as a short fade. */
+@keyframes welcome-chat-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.welcome-chat__rise {
+  animation: welcome-chat-rise var(--motion-enter) var(--ease-out) backwards;
+}
+/* The composer opens on the last turn, where what is written in it goes to
+   the agent with the answers. Its edge comes up in the accent, short of the
+   full edge focus gives it, so it reads as on offer rather than in use; the
+   box's own border transition carries the change. */
+.welcome-chat__composer--cue .chat-input-container:not(:focus-within, .recording) {
+  border-color: color-mix(in srgb, var(--color-accent-primary) 70%, var(--color-border-input));
+}

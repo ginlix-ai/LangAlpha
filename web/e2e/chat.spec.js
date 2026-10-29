@@ -2,7 +2,7 @@
  * E2E tests for the ChatAgent page (/chat).
  *
  * Covers: WorkspaceGallery, ThreadGallery, ChatView (SSE streaming),
- * error handling, HITL plan approval, message editing, and file panel.
+ * error handling, message editing, and file panel.
  */
 import {
   configureSSE,
@@ -17,6 +17,7 @@ import {
   sseEvents,
 } from './helpers/mockResponses.js';
 import { loadFixture } from './helpers/loadFixture.js';
+import { chatViewOverrides as sharedChatViewOverrides } from './helpers/chatScenario.js';
 
 // -- Shared helpers --
 
@@ -51,23 +52,7 @@ function threadOverrides() {
 
 /** Overrides for the chat view with a specific thread. */
 function chatViewOverrides() {
-  return {
-    ...threadOverrides(),
-    'GET /threads/b0000001-0000-4000-8000-000000000001': th1,
-    'GET /threads/b0000001-0000-4000-8000-000000000001/status': { can_reconnect: false, status: 'idle' },
-    'GET /threads/b0000001-0000-4000-8000-000000000001/turns': {
-      thread_id: 'b0000001-0000-4000-8000-000000000001',
-      turns: [
-        {
-          turn_index: 0,
-          edit_checkpoint_id: 'cp-edit-0',
-          regenerate_checkpoint_id: 'cp-regen-0',
-        },
-      ],
-      retry_checkpoint_id: 'cp-retry-0',
-    },
-    'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: [] },
-  };
+  return sharedChatViewOverrides({ workspaces: [ws1, ws2], threads: [th1, th2] });
 }
 
 /**
@@ -103,20 +88,59 @@ test.describe('Workspace Gallery', () => {
     await page.goto('/chat');
 
     // Both workspace names should appear
-    await expect(page.getByText('Research', { exact: true })).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('Alpha Research', { exact: true })).toBeVisible();
+    await expect(workspaceCard(page, 'Research')).toBeVisible({ timeout: 10000 });
+    await expect(workspaceCard(page, 'Alpha Research')).toBeVisible();
   });
 
   test('empty state shows create prompt', async ({ page }) => {
-    // Override flash workspace POST to fail so no workspaces exist at all
+    // Fail the Home POST too, so no workspace exists at all
     await mockAPI(page, {
-      'POST /workspaces/flash': (route) =>
+      'GET /workspaces': { workspaces: [], total: 0, limit: 20, offset: 0 },
+      'POST /workspaces/home': (route) =>
         route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"error"}' }),
     });
     await page.goto('/chat');
 
     // The empty state shows a "Create Workspace" button
     await expect(page.locator('button', { hasText: 'Create Workspace' })).toBeVisible({ timeout: 10000 });
+  });
+
+  test('search loads matches beyond the first hundred workspaces', async ({ page }) => {
+    const rows = Array.from({ length: 101 }, (_, index) => ({
+      workspace_id: `a000${String(index).padStart(4, '0')}-0000-4000-8000-000000000000`,
+      name: index === 100 ? 'Needle Research' : `Workspace ${index}`,
+      status: 'stopped',
+      is_home: false,
+      config: {},
+      created_at: '2025-01-01T00:00:00Z',
+      updated_at: '2025-01-01T00:00:00Z',
+    }));
+    await mockAPI(page, {
+      'GET /workspaces': (route) => {
+        const url = new URL(route.request().url());
+        const limit = Number(url.searchParams.get('limit') || 20);
+        const offset = Number(url.searchParams.get('offset') || 0);
+        const pageRows = rows.slice(offset, offset + limit);
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            workspaces: pageRows,
+            total: rows.length,
+            limit,
+            offset,
+          }),
+        });
+      },
+    });
+
+    await page.goto('/chat');
+    await page.getByPlaceholder('Search workspaces...').fill('Needle');
+
+    // Scoped to the card: the sidebar tree lists the same name.
+    await expect(workspaceCard(page, 'Needle Research')).toBeVisible({
+      timeout: 10000,
+    });
   });
 
   test('create workspace via dialog', async ({ page }) => {
@@ -126,17 +150,18 @@ test.describe('Workspace Gallery', () => {
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(sampleWorkspace({ workspace_id: 'ws-new', name: 'New Project' })),
+          body: JSON.stringify(sampleWorkspace({ workspace_id: 'a0000003-0000-4000-8000-000000000003', name: 'New Project' })),
         });
       },
     });
     await page.goto('/chat');
 
     // Wait for gallery to load
-    await expect(page.getByText('Research', { exact: true })).toBeVisible({ timeout: 10000 });
+    await expect(workspaceCard(page, 'Research')).toBeVisible({ timeout: 10000 });
 
-    // Click "New workspace" header button (use getByRole to avoid matching the hidden mobile duplicate)
-    await page.getByRole('button', { name: 'New workspace' }).click();
+    // The gallery header's button: the sidebar's workspace section has its own
+    // "New workspace" action, rendered once the workspace list loads.
+    await page.locator('header').getByRole('button', { name: 'New workspace' }).click();
 
     // Modal should appear
     await expect(page.locator('h2.cwm-title')).toBeVisible();
@@ -145,8 +170,10 @@ test.describe('Workspace Gallery', () => {
     await page.locator('div.cwm-modal input').first().fill('New Project');
     await page.locator('button.cwm-btn-create').click();
 
-    // Progress phase: wait for "done" state (open workspace button appears)
-    await expect(page.locator('button.cwm-btn-create', { hasText: /Open Workspace/ })).toBeVisible({ timeout: 10000 });
+    // With no files queued there is no progress phase: the modal closes and
+    // the new workspace opens.
+    await expect(page).toHaveURL(/\/chat\/a0000003-0000-4000-8000-000000000003/, { timeout: 10000 });
+    await expect(page.locator('h2.cwm-title')).toHaveCount(0);
   });
 
   test('delete workspace removes card', async ({ page }) => {
@@ -227,8 +254,8 @@ test.describe('Thread Gallery', () => {
     await page.goto('/chat/a0000001-0000-4000-8000-000000000001');
 
     // Thread titles should be visible
-    await expect(page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Test conversation' })).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Second thread' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Test conversation', exact: true })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('heading', { name: 'Second thread', exact: true })).toBeVisible();
   });
 
   test('click thread navigates to chat', async ({ page }) => {
@@ -242,12 +269,19 @@ test.describe('Thread Gallery', () => {
     await page.goto('/chat/a0000001-0000-4000-8000-000000000001');
 
     // Click on first thread
-    const threadCard = page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Test conversation' });
+    const threadCard = page.getByRole('heading', { name: 'Test conversation', exact: true });
     await expect(threadCard).toBeVisible({ timeout: 10000 });
     await threadCard.click();
 
-    // Should navigate to chat view - textarea should appear
-    await expect(page.locator('textarea')).toBeVisible({ timeout: 10000 });
+    // The gallery keeps its own composer, same component and label, through
+    // its exit animation, and the chat view's can mount on either side of the
+    // exit's end. So the chat view is known by its URL, by the gallery's other
+    // card being gone, and by its composer being the one left.
+    await expect(page).toHaveURL(/\/chat\/t\/b0000001-0000-4000-8000-000000000001$/, { timeout: 10000 });
+    await expect(page.getByRole('heading', { name: 'Second thread', exact: true })).toHaveCount(0, { timeout: 10000 });
+    const composer = page.getByRole('textbox', { name: 'Type / for skills, @ for files' });
+    await expect(composer).toHaveCount(1, { timeout: 10000 });
+    await expect(composer).toBeVisible();
   });
 
   test('delete thread removes from list', async ({ page }) => {
@@ -271,7 +305,7 @@ test.describe('Thread Gallery', () => {
     await page.goto('/chat/a0000001-0000-4000-8000-000000000001');
 
     // Wait for thread to appear
-    const threadTitle = page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Test conversation' });
+    const threadTitle = page.getByRole('heading', { name: 'Test conversation', exact: true });
     await expect(threadTitle).toBeVisible({ timeout: 10000 });
 
     // Hover on the thread card to reveal the delete button
@@ -289,7 +323,7 @@ test.describe('Thread Gallery', () => {
 
     // Thread should be removed (only "Second thread" remains)
     await expect(threadTitle).not.toBeVisible({ timeout: 10000 });
-    await expect(page.locator('h3.text-sm.font-normal.truncate', { hasText: 'Second thread' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Second thread', exact: true })).toBeVisible();
   });
 });
 
@@ -354,6 +388,37 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('is up 1.2% today.')).toBeVisible({ timeout: 15000 });
   });
 
+  test('a long link does not stall the reveal while text arrives every frame', async ({ page }) => {
+    // The typewriter holds a word back until it is whole, and restarted from
+    // the held cursor on every update, so with text arriving every frame it
+    // never got through a run longer than one frame's progress: the reply
+    // froze at the first link until the stream ended.
+    await mockAPI(page, chatViewOverrides());
+    await configureEmptyReplay();
+    const text = 'Filed today, see [the full filing](https://example.com/filings/2026/q3/10-q.htm) for detail. '
+      + 'Next the margin bridge. '
+      + 'Revenue grew on mix while costs held flat across the quarter. '.repeat(24);
+    const events = [];
+    for (let i = 0; i < text.length; i += 4) events.push(sseEvents.messageChunk(text.slice(i, i + 4)));
+    events.push(sseEvents.finishStop(), sseEvents.creditUsage());
+    await configureSSE({
+      method: 'POST',
+      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
+      events,
+      delay: 16,
+    });
+
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
+    await page.waitForSelector('textarea', { timeout: 10000 });
+    await page.locator('textarea').fill('Summarize the filing');
+    await page.locator('button[aria-label="Send message"]').click();
+
+    // The stream runs about six seconds; the words after the link show long
+    // before it ends.
+    await expect(page.getByText('Next the margin bridge.', { exact: false })).toBeVisible({ timeout: 4000 });
+    await expect(page.locator('[data-testid="streaming-indicator"]')).toHaveCount(1);
+  });
+
   test('tool call renders tool card with result', async ({ page }) => {
     await mockAPI(page, chatViewOverrides());
 
@@ -378,77 +443,18 @@ test.describe('Chat View -- SSE Streaming', () => {
 
     await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
-    // The tool call card should appear. The accordion header is now
-    // content-aware (skill/memory/memo/code/web/search/file/generic) — for
-    // a single WebSearch call it renders as "made 1 web call".
-    await expect(page.getByText(/made \d+ web call/i)).toBeVisible({ timeout: 10000 });
-    // The final assistant text should appear
+    // The final assistant text is the turn's answer and survives the fold.
     await expect(page.getByText('NVIDIA reported strong Q4 earnings')).toBeVisible({ timeout: 10000 });
-  });
 
-  test('plan mode interrupt shows approval UI', async ({ page }) => {
-    await mockAPI(page, chatViewOverrides());
+    // The tool call card sits behind the summary row once the turn settles, so
+    // open it rather than racing the close: asserting on the live accordion
+    // caught it only while the turn was still replaying.
+    await page.locator('[data-turn-fold="collapsed"] button').click();
 
-    // Replay that ends with an interrupt
-    await configureSSE({
-      method: 'GET',
-      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
-      events: [
-        sseEvents.userMessage('Analyze TSLA'),
-        sseEvents.interrupt('int-1', 'Here is my plan:\n1. Fetch TSLA financials\n2. Create a chart'),
-        sseEvents.replayDone(),
-      ],
-      delay: 10,
-    });
-
-    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
-
-    // Plan approval card should be visible
-    await expect(page.getByText('Plan Approval Required')).toBeVisible({ timeout: 10000 });
-    // Approve and Reject buttons should be present
-    await expect(page.getByText('Approve')).toBeVisible();
-    await expect(page.getByText('Reject')).toBeVisible();
-  });
-
-  test('approve plan resumes workflow', async ({ page }) => {
-    await mockAPI(page, {
-      ...chatViewOverrides(),
-    });
-
-    // Replay with interrupt
-    await configureSSE({
-      method: 'GET',
-      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages/replay',
-      events: [
-        sseEvents.userMessage('Analyze TSLA'),
-        sseEvents.interrupt('int-1', 'Plan:\n1. Fetch data\n2. Analyze'),
-        sseEvents.replayDone(),
-      ],
-      delay: 10,
-    });
-
-    // Configure the POST for plan approval (HITL response sends as message)
-    await configureSSE({
-      method: 'POST',
-      path: '/api/v1/threads/b0000001-0000-4000-8000-000000000001/messages',
-      events: [
-        sseEvents.messageChunk('Executing the plan...'),
-        sseEvents.finishStop(),
-        sseEvents.creditUsage(),
-      ],
-      delay: 30,
-    });
-
-    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
-
-    // Wait for approval UI
-    await expect(page.getByText('Plan Approval Required')).toBeVisible({ timeout: 10000 });
-
-    // Click Approve
-    await page.getByText('Approve').click();
-
-    // After approval, status should change to "Plan Approved"
-    await expect(page.getByText('Plan Approved')).toBeVisible({ timeout: 10000 });
+    // The accordion header is content-aware (skill/memory/memo/code/web/
+    // search/file/generic) — for a single WebSearch call it reads
+    // "made 1 web call".
+    await expect(page.getByText(/made \d+ web call/i)).toBeVisible({ timeout: 10000 });
   });
 
   test('stop button cancels streaming', async ({ page }) => {
@@ -636,7 +642,12 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('Options trading involves contracts')).toBeVisible({ timeout: 15000 });
   });
 
+  // The panel opens at 55% of the chat column, capped at 850 px, and below
+  // 720 px the file tree is a sheet that starts closed. At the default
+  // 1280 px viewport the panel is 561 px, so each case sets the width it means.
   test('file panel opens and lists files', async ({ page }) => {
+    // Wide enough for the full 850 px panel, where the tree is a column.
+    await page.setViewportSize({ width: 1920, height: 1080 });
     await mockAPI(page, {
       ...chatViewOverrides(),
       'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: ['report.pdf', 'analysis.py', 'chart.png'] },
@@ -653,6 +664,78 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('report.pdf')).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('analysis.py')).toBeVisible();
     await expect(page.getByText('chart.png')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Toggle file tree' })).toHaveCount(0);
+  });
+
+  test('a narrow file panel opens on the full file tree', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await mockAPI(page, {
+      ...chatViewOverrides(),
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: ['report.pdf', 'analysis.py', 'chart.png'] },
+    });
+    await configureEmptyReplay();
+
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
+    await page.waitForSelector('textarea', { timeout: 10000 });
+    await page.locator('button[title="Workspace Files"]').click();
+
+    // An empty tab lays the tree across the whole panel at any width, so
+    // there is no tree toggle to press until a file takes the body.
+    await expect(page.getByText('report.pdf')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('analysis.py')).toBeVisible();
+    await expect(page.getByText('chart.png')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Toggle file tree' })).toHaveCount(0);
+  });
+
+  test('a right click on the new tab button picks what the tab opens on', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await mockAPI(page, {
+      ...chatViewOverrides(),
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: ['report.pdf', 'analysis.py'] },
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files/read': {
+        workspace_id: 'a0000001-0000-4000-8000-000000000001', path: 'analysis.py', content: 'print(1)', mime: 'text/x-python', truncated: false,
+      },
+    });
+    await configureEmptyReplay();
+
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
+    await page.waitForSelector('textarea', { timeout: 10000 });
+    await page.locator('button[title="Workspace Files"]').click();
+    await page.getByRole('treeitem', { name: 'analysis.py' }).dispatchEvent('click');
+    await expect(page.locator('[role="tab"]', { hasText: 'analysis.py' })).toHaveAttribute('aria-selected', 'true');
+
+    await page.getByRole('button', { name: 'New tab' }).click({ button: 'right' });
+    const menu = page.getByRole('menu');
+    await expect(menu.getByRole('menuitem')).toHaveText(['Files', 'Chart']);
+    await menu.getByRole('menuitem', { name: 'Files' }).click();
+
+    await expect(page.locator('[role="tab"]')).toHaveCount(2);
+    await expect(page.getByRole('treeitem', { name: 'report.pdf' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Toggle file tree' })).toHaveCount(0);
+  });
+
+  test('a keyboard open waits on the loading strip for as long as the panel takes', async ({ page }) => {
+    await mockAPI(page, {
+      ...chatViewOverrides(),
+      'GET /workspaces/a0000001-0000-4000-8000-000000000001/files': { files: ['report.pdf'] },
+    });
+    await configureEmptyReplay();
+    // Holds the panel's code back until the test lets it through.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    await page.route(/\/components\/FilePanel\.tsx(\?|$)/, async (route) => { await held; await route.continue(); });
+
+    await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
+    await page.waitForSelector('textarea', { timeout: 10000 });
+    await page.locator('[data-panel-toggle="header"]').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-panel-toggle-stand-in]')).toBeFocused();
+    // Longer than the hand-off waits for a toggle that is not drawn at all.
+    await page.waitForTimeout(2500);
+    release();
+
+    await expect(page.getByText('report.pdf')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('[data-panel-toggle="panel"]:not([data-panel-toggle-stand-in])')).toBeFocused();
   });
 
   test('workspace starting shows warm-up indicator', async ({ page }) => {
@@ -789,10 +872,13 @@ test.describe('Steering -- History Replay', () => {
     // Post-steering assistant content should appear (the agent continued after steering)
     await expect(page.getByText('NVIDIA GTC 2026').first()).toBeVisible({ timeout: 15000 });
 
+    // Lean display hides the pre-steering process until its turn is opened.
+    await page.locator('[data-turn-fold="collapsed"] button').click();
+
     // The turn has 1 steering_delivered → 2 assistant messages (pre + post steering).
-    // Each assistant message renders exactly one img[alt="Assistant"] avatar.
-    const assistantAvatars = page.locator('img[alt="Assistant"]');
-    await expect(assistantAvatars).toHaveCount(2);
+    // Each assistant message renders exactly one bubble root.
+    const assistantBubbles = page.locator('[data-message-role="assistant"]');
+    await expect(assistantBubbles).toHaveCount(2);
   });
 
   test('subagent steering_delivered does not create empty main-chat placeholders', async ({ page }) => {
@@ -804,7 +890,7 @@ test.describe('Steering -- History Replay', () => {
     //
     // Regression: before the fix, each subagent steering_delivered was caught by
     // the main-agent history handler, creating 3 empty assistant placeholders
-    // (inflating the assistant avatar count from 4 to 7).
+    // (inflating the assistant bubble count from 4 to 7).
     const turn0Events = loadFixture('steering-single-turn.json', 0);
     const turn1Events = loadFixture('steering-with-subagents.json', 1);
 
@@ -823,19 +909,24 @@ test.describe('Steering -- History Replay', () => {
 
     await page.goto('/chat/t/b0000001-0000-4000-8000-000000000001');
 
-    // Wait for post-steering content to confirm replay completed
-    await expect(page.getByText('All three subagents updated')).toBeVisible({ timeout: 30000 });
+    // The intermediate update is process content, behind the settled turn fold.
+    await expect(page.getByText('Full report:', { exact: true })).toBeVisible({ timeout: 15000 });
+    // Only collapsed folds, re-queried after each click: the list re-renders on
+    // every open, and clicking an already-open fold would shut it again.
+    const collapsedFolds = page.locator('[data-turn-fold="collapsed"] button');
+    while (await collapsedFolds.count()) await collapsedFolds.first().click();
+    await expect(page.getByText('All three subagents updated')).toBeVisible();
 
     // Main steering user message should be visible (from the steering_delivered event)
     await expect(page.getByText('let subagent group its finding by sector')).toBeVisible();
 
-    // Regression gate: count assistant avatars. Each assistant message renders
-    // exactly one img[alt="Assistant"]. Expected layout:
+    // Regression gate: count assistant bubbles. Each assistant message renders
+    // exactly one [data-message-role="assistant"] root. Expected layout:
     //   Turn 0: 2 assistants (pre-steering + post-steering)
     //   Turn 1: 2 assistants (pre-steering + post-steering)
     //   Total: 4
     // Before fix: 3 subagent steering_delivered events inflated this to 7.
-    const assistantAvatars = page.locator('img[alt="Assistant"]');
-    await expect(assistantAvatars).toHaveCount(4);
+    const assistantBubbles = page.locator('[data-message-role="assistant"]');
+    await expect(assistantBubbles).toHaveCount(4);
   });
 });

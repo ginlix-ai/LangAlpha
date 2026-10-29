@@ -14,6 +14,7 @@ from src.llms.reasoning_lineage import (
     UNKNOWN_LINEAGE,
     lineage_for_model_id,
     lineage_for_route,
+    tool_turns_need_reasoning,
 )
 
 # Where an SDK points when a provider declares no base_url of its own. Only the
@@ -89,7 +90,6 @@ class TestNoAccidentalMerges:
         for a, b in (
             ("moonshot", "moonshot-coding"),
             ("minimax", "minimax-coding"),
-            ("doubao-anthropic", "doubao-coding"),
             ("z-ai", "z-ai-coding"),
         ):
             if a in providers and b in providers:
@@ -159,18 +159,18 @@ class TestProviderRouteStamp:
     """
 
     def test_a_manifest_route_stamps_its_bare_key(self):
-        assert LLM("claude-opus-5")._provider_route() == "anthropic"
+        assert LLM("claude-opus-5-5")._provider_route() == "anthropic"
 
     def test_oauth_keeps_its_own_key_and_inherits_the_group(self):
         """Its declared base_url matches the manifest, so it is not a redirect."""
-        route = LLM("claude-opus-5-oauth")._provider_route()
+        route = LLM("claude-opus-5-5-oauth")._provider_route()
         assert route == "claude-oauth"
         assert lineage_for_route(route) == ANTHROPIC_LINEAGE
 
     def test_a_byok_base_url_override_qualifies_the_route(self):
         """The BYOK path that made the bare provider key unsafe as an identity."""
         route = LLM(
-            "claude-opus-5",
+            "claude-opus-5-5",
             api_key="unused",
             base_url_override="https://gateway.example/v1",
         )._provider_route()
@@ -180,7 +180,7 @@ class TestProviderRouteStamp:
 
 class TestModelIdFallback:
     def test_unambiguous_id_resolves(self):
-        assert lineage_for_model_id("claude-opus-5") == ANTHROPIC_LINEAGE
+        assert lineage_for_model_id("claude-opus-5-5") == ANTHROPIC_LINEAGE
 
     def test_unknown_and_missing_ids_fail_closed(self):
         assert lineage_for_model_id("some-unknown-model") == UNKNOWN_LINEAGE
@@ -194,3 +194,22 @@ class TestModelIdFallback:
         config = LLM.get_model_config()
         assert _model_id_index(config) is _model_id_index(config)
         assert _model_id_index(ModelConfig()) is not _model_id_index(config)
+
+
+class TestToolTurnsNeedReasoning:
+    """Which routes get an empty thinking block on every tool-calling turn."""
+
+    def test_deepseek_declares_it(self):
+        assert tool_turns_need_reasoning("deepseek")
+
+    def test_only_deepseek_declares_it(self):
+        flagged = [k for k in _providers() if tool_turns_need_reasoning(k)]
+        assert flagged == ["deepseek"]
+
+    def test_a_redirected_route_does_not_inherit_it(self):
+        assert not tool_turns_need_reasoning(
+            f"deepseek{ROUTE_ENDPOINT_SEP}https://gateway.example"
+        )
+
+    def test_no_route(self):
+        assert not tool_turns_need_reasoning(None)

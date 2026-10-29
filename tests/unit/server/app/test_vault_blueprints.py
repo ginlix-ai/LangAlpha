@@ -1,13 +1,12 @@
-"""Tests for GET /api/v1/workspaces/{id}/vault/blueprints.
+"""Tests for GET /api/v1/mcp/vault/blueprints (config-declared blueprints).
 
-Covers filtering (enabled-only, already-set), dedup across servers, auth guards,
-startup-race handling, and `remaining_slots` math.
+Covers filtering (enabled-only, already-set), dedup across servers,
+startup-race handling, and `remaining_slots` math against the user's vault.
 """
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,29 +15,10 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from ptc_agent.config.core import MCPServerConfig, VaultBlueprint
+from src.server.database.user_vault_secrets import MAX_SECRETS_PER_USER
 from tests.conftest import create_test_app
 
-NOW = datetime.now(timezone.utc)
-
-
-def _ws(workspace_id=None, user_id="test-user-123", **overrides):
-    return {
-        "workspace_id": workspace_id or str(uuid.uuid4()),
-        "user_id": user_id,
-        "name": "Test Workspace",
-        "description": None,
-        "sandbox_id": "sandbox-abc",
-        "status": "running",
-        "mode": "ptc",
-        "sort_order": 0,
-        "is_pinned": False,
-        "created_at": NOW,
-        "updated_at": NOW,
-        "last_activity_at": None,
-        "stopped_at": None,
-        "config": None,
-        **overrides,
-    }
+URL = "/api/v1/mcp/vault/blueprints"
 
 
 def _agent_config(servers: list[MCPServerConfig]) -> MagicMock:
@@ -71,9 +51,26 @@ def _srv(
     )
 
 
+@contextmanager
+def _vault(cfg, secret_names=frozenset()):
+    """The user's stored secret names and the process config, no plugins."""
+    with (
+        patch(
+            "src.server.database.user_vault_secrets.get_user_secret_names",
+            new=AsyncMock(return_value=set(secret_names)),
+        ),
+        patch(
+            "src.server.database.plugins.list_plugins",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch("src.server.app.setup.agent_config", cfg),
+    ):
+        yield
+
+
 @pytest_asyncio.fixture
 async def client():
-    from src.server.app.vault import router
+    from src.server.app.user_vault import router
 
     app = create_test_app(router)
     async with AsyncClient(
@@ -89,29 +86,12 @@ async def client():
 
 @pytest.mark.asyncio
 async def test_blueprint_returned_when_key_not_set(client):
-    ws = _ws()
-    cfg = _agent_config([_srv(blueprints=[_bp()])])
-
-    with (
-        patch(
-            "src.server.app.vault.db_get_workspace",
-            new_callable=AsyncMock,
-            return_value=ws,
-        ),
-        patch(
-            "src.server.app.vault.get_workspace_secret_names",
-            new_callable=AsyncMock,
-            return_value=set(),
-        ),
-        patch("src.server.app.setup.agent_config", cfg),
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
+    with _vault(_agent_config([_srv(blueprints=[_bp()])])):
+        resp = await client.get(URL)
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["remaining_slots"] == 20
+    assert body["remaining_slots"] == MAX_SECRETS_PER_USER
     assert len(body["blueprints"]) == 1
     bp = body["blueprints"][0]
     assert bp["name"] == "X_BEARER_TOKEN"
@@ -127,26 +107,14 @@ async def test_blueprint_returned_when_key_not_set(client):
 
 @pytest.mark.asyncio
 async def test_set_keys_are_filtered_out(client):
-    ws = _ws()
     cfg = _agent_config([_srv(blueprints=[_bp()])])
-
-    with (
-        patch("src.server.app.vault.db_get_workspace", new_callable=AsyncMock, return_value=ws),
-        patch(
-            "src.server.app.vault.get_workspace_secret_names",
-            new_callable=AsyncMock,
-            return_value={"X_BEARER_TOKEN"},
-        ),
-        patch("src.server.app.setup.agent_config", cfg),
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
+    with _vault(cfg, {"X_BEARER_TOKEN"}):
+        resp = await client.get(URL)
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["blueprints"] == []
-    assert body["remaining_slots"] == 19  # 20 - 1 set secret
+    assert body["remaining_slots"] == MAX_SECRETS_PER_USER - 1
 
 
 # ---------------------------------------------------------------------------
@@ -156,24 +124,12 @@ async def test_set_keys_are_filtered_out(client):
 
 @pytest.mark.asyncio
 async def test_disabled_server_blueprints_excluded(client):
-    ws = _ws()
     cfg = _agent_config([
         _srv(name="x_api", enabled=False, blueprints=[_bp()]),
         _srv(name="other", enabled=True, blueprints=[]),
     ])
-
-    with (
-        patch("src.server.app.vault.db_get_workspace", new_callable=AsyncMock, return_value=ws),
-        patch(
-            "src.server.app.vault.get_workspace_secret_names",
-            new_callable=AsyncMock,
-            return_value=set(),
-        ),
-        patch("src.server.app.setup.agent_config", cfg),
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
+    with _vault(cfg):
+        resp = await client.get(URL)
 
     assert resp.status_code == 200
     assert resp.json()["blueprints"] == []
@@ -186,26 +142,14 @@ async def test_disabled_server_blueprints_excluded(client):
 
 @pytest.mark.asyncio
 async def test_duplicate_blueprint_name_dedupes_first_wins(client):
-    ws = _ws()
     first = _bp(description="FIRST", docs_url="https://first.example", regex="^first$")
     second = _bp(description="SECOND", docs_url="https://second.example", regex="^second$")
     cfg = _agent_config([
         _srv(name="server_a", blueprints=[first]),
         _srv(name="server_b", blueprints=[second]),
     ])
-
-    with (
-        patch("src.server.app.vault.db_get_workspace", new_callable=AsyncMock, return_value=ws),
-        patch(
-            "src.server.app.vault.get_workspace_secret_names",
-            new_callable=AsyncMock,
-            return_value=set(),
-        ),
-        patch("src.server.app.setup.agent_config", cfg),
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
+    with _vault(cfg):
+        resp = await client.get(URL)
 
     body = resp.json()
     assert len(body["blueprints"]) == 1
@@ -217,60 +161,15 @@ async def test_duplicate_blueprint_name_dedupes_first_wins(client):
 
 
 # ---------------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_workspace_not_found_returns_404(client):
-    with patch(
-        "src.server.app.vault.db_get_workspace",
-        new_callable=AsyncMock,
-        return_value=None,
-    ):
-        resp = await client.get(f"/api/v1/workspaces/{uuid.uuid4()}/vault/blueprints")
-
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_non_owner_returns_403(client):
-    ws = _ws(user_id="someone-else")
-    with patch(
-        "src.server.app.vault.db_get_workspace",
-        new_callable=AsyncMock,
-        return_value=ws,
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
-
-    assert resp.status_code == 403
-
-
-# ---------------------------------------------------------------------------
 # remaining_slots edge cases
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_remaining_slots_at_cap_is_zero(client):
-    ws = _ws()
-    cfg = _agent_config([_srv(blueprints=[])])
-    full_vault = {f"SECRET_{i:02d}" for i in range(20)}  # exactly the cap
-
-    with (
-        patch("src.server.app.vault.db_get_workspace", new_callable=AsyncMock, return_value=ws),
-        patch(
-            "src.server.app.vault.get_workspace_secret_names",
-            new_callable=AsyncMock,
-            return_value=full_vault,
-        ),
-        patch("src.server.app.setup.agent_config", cfg),
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
+    full_vault = {f"SECRET_{i:02d}" for i in range(MAX_SECRETS_PER_USER)}
+    with _vault(_agent_config([_srv(blueprints=[])]), full_vault):
+        resp = await client.get(URL)
 
     assert resp.json()["remaining_slots"] == 0
 
@@ -282,23 +181,11 @@ async def test_remaining_slots_at_cap_is_zero(client):
 
 @pytest.mark.asyncio
 async def test_startup_race_agent_config_none(client):
-    ws = _ws()
-    with (
-        patch("src.server.app.vault.db_get_workspace", new_callable=AsyncMock, return_value=ws),
-        patch(
-            "src.server.app.vault.get_workspace_secret_names",
-            new_callable=AsyncMock,
-            return_value=set(),
-        ),
-        patch("src.server.app.setup.agent_config", None),
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
+    with _vault(None):
+        resp = await client.get(URL)
 
     assert resp.status_code == 200
-    body = resp.json()
-    assert body == {"blueprints": [], "remaining_slots": 20}
+    assert resp.json() == {"blueprints": [], "remaining_slots": MAX_SECRETS_PER_USER}
 
 
 # ---------------------------------------------------------------------------
@@ -308,24 +195,11 @@ async def test_startup_race_agent_config_none(client):
 
 @pytest.mark.asyncio
 async def test_empty_mcp_servers_list(client):
-    ws = _ws()
-    cfg = _agent_config([])  # no servers at all
-
-    with (
-        patch("src.server.app.vault.db_get_workspace", new_callable=AsyncMock, return_value=ws),
-        patch(
-            "src.server.app.vault.get_workspace_secret_names",
-            new_callable=AsyncMock,
-            return_value=set(),
-        ),
-        patch("src.server.app.setup.agent_config", cfg),
-    ):
-        resp = await client.get(
-            f"/api/v1/workspaces/{ws['workspace_id']}/vault/blueprints"
-        )
+    with _vault(_agent_config([])):
+        resp = await client.get(URL)
 
     assert resp.status_code == 200
-    assert resp.json() == {"blueprints": [], "remaining_slots": 20}
+    assert resp.json() == {"blueprints": [], "remaining_slots": MAX_SECRETS_PER_USER}
 
 
 # ---------------------------------------------------------------------------

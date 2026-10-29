@@ -171,10 +171,13 @@ export interface QuoteRow {
   volume?: number;
   shares?: number;
   marketValue?: number | null;
-  currency?: string;
+  /** ISO code the row is quoted in. Null quotes a level in points (an index),
+   *  printed bare; absent is a row from before currencies, in dollars. */
+  currency?: string | null;
 }
 
-function formatQuoteAmount(value: number, currency?: string): string {
+function formatQuoteAmount(value: number, currency?: string | null): string {
+  if (currency === null) return value.toFixed(2);
   return currency ? `${currency} ${value.toFixed(2)}` : `$${value.toFixed(2)}`;
 }
 
@@ -189,7 +192,7 @@ export function serializeQuoteRowToMarkdown(row: QuoteRow): string {
   if (bits.length) lines.push(bits.join(' '));
   if (row.preMarket !== undefined) lines.push(`pre-market ${formatQuoteAmount(row.preMarket, row.currency)}`);
   if (row.postMarket !== undefined) lines.push(`post-market ${formatQuoteAmount(row.postMarket, row.currency)}`);
-  if (row.volume !== undefined) lines.push(`vol ${row.volume.toLocaleString()}`);
+  if (row.volume !== undefined) lines.push(`vol ${row.volume}`);
   if (row.shares !== undefined) lines.push(`shares ${row.shares}`);
   if (row.marketValue != null) {
     lines.push(`mkt val ${formatQuoteAmount(row.marketValue, row.currency)}`);
@@ -200,7 +203,7 @@ export function serializeQuoteRowToMarkdown(row: QuoteRow): string {
 export function serializeQuoteRowsToMarkdown(rows: QuoteRow[]): string {
   if (!rows.length) return '_no symbols_';
   const includeVol = rows.some((r) => r.volume !== undefined);
-  const includeCurrency = rows.some((r) => r.currency !== undefined);
+  const includeCurrency = rows.some((r) => r.currency != null);
   const headers = ['symbol'];
   if (includeCurrency) headers.push('currency');
   headers.push('price', 'change', 'change%');

@@ -30,14 +30,17 @@
 
 import type React from 'react';
 import type {
-  MessageRecord, SetMessages, TokenUsage, PendingInterrupt, OffloadBatch, SSEEvent,
-  SubagentHistoryEntry, TaskRefs, HistoryInterruptInfo, FallbackSuggestion,
+  SetMessages, TokenUsage, PendingInterrupt, OffloadBatch, SSEEvent,
+  TaskRefs, HistoryInterruptInfo, FallbackSuggestion,
 } from './types';
-import type { UpdateSubagentCard } from './streamRefs';
+import type { CardUpdater } from './streamRefs';
+import type { SubagentHistoryStore } from './subagents/historyStore';
 import type { SubagentTokenUsage } from '../utils/tokenUsage';
 import type { RecentlySentTracker } from '../hooks/utils/recentlySentTracker';
+import type { RequestKeyTracker } from '../hooks/utils/requestKey';
 import type { PreviewData } from '../hooks/utils/types';
 import type { StructuredError } from '@/utils/rateLimitError';
+import type { ChatMessage } from '@/types/chat';
 
 /** Mutable ref container (matches both useRef cells and hand-built refs). */
 type Ref<T> = { current: T };
@@ -53,18 +56,17 @@ export interface SubagentRuntime {
   // render-current
   workspaceId: string;
   t: Translate;
-  updateSubagentCard: UpdateSubagentCard | null;
+  updateSubagentCard: CardUpdater | null;
   // stable (setters)
   setMessages: SetMessages;
   setHasActiveSubagents: React.Dispatch<React.SetStateAction<boolean>>;
   setReloadTrigger: React.Dispatch<React.SetStateAction<number>>;
   // stable containers, ref-current reads — owned by this lane
   subagentStateRefsRef: Ref<Record<string, TaskRefs>>;
-  subagentHistoryRef: Ref<Record<string, SubagentHistoryEntry>>;
+  subagentHistory: SubagentHistoryStore;
   subagentProcessEventRef: Ref<((event: SSEEvent) => void) | null>;
   subagentTokenUsageRef: Ref<Record<string, SubagentTokenUsage>>;
   terminalTaskOutcomesRef: Ref<Map<string, 'completed' | 'cancelled' | 'error'>>;
-  toolCallIdToTaskIdMapRef: Ref<Map<string, string>>;
   historyPendingTaskToolCallIdsRef: Ref<string[]>;
   pendingMuxResyncRef: Ref<boolean>;
   // stable containers, ref-current reads — consumed read-only
@@ -81,17 +83,16 @@ export interface HistoryRuntime {
   // render-current
   workspaceId: string;
   threadId: string;
-  messages: MessageRecord[];
   t: Translate;
   updateTodoListCard: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null;
   // stable (setters)
   setMessages: SetMessages;
   setIsLoadingHistory: React.Dispatch<React.SetStateAction<boolean>>;
-  setIsCompacting: React.Dispatch<React.SetStateAction<string | false>>;
+  setHistoryLoadFailed: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsCompacting: (value: string | false) => void;
   setMessageError: React.Dispatch<React.SetStateAction<string | StructuredError | null>>;
   setFallbackSuggestion: React.Dispatch<React.SetStateAction<FallbackSuggestion | null>>;
   setThreadModels: React.Dispatch<React.SetStateAction<string[]>>;
-  setLastThreadModel: React.Dispatch<React.SetStateAction<string | null>>;
   setTokenUsage: React.Dispatch<React.SetStateAction<TokenUsage | null>>;
   setReloadTrigger: React.Dispatch<React.SetStateAction<number>>;
   setThreadId: React.Dispatch<React.SetStateAction<string>>;
@@ -106,10 +107,18 @@ export interface HistoryRuntime {
   historyPendingTaskToolCallIdsRef: Ref<string[]>;
   // stable containers, ref-current reads — shared with other lanes
   currentMessageRef: Ref<string | null>;
+  /** The thread's newest run as this view has seen it: the replay names it,
+   *  and every run the view latches afterwards is newer. A fork sends it. */
+  latestRunIdRef: Ref<string | null>;
+  /** Counts the live writes of that run (session/latestRun.ts): a replay
+   *  that ran across one keeps the live run over its own. */
+  latestRunEpochRef: Ref<number>;
   lastEventIdRef: Ref<number | string | null>;
   renderedInterruptIdsRef: Ref<Set<string>>;
-  toolCallIdToTaskIdMapRef: Ref<Map<string, string>>;
+  subagentHistory: SubagentHistoryStore;
   recentlySentTrackerRef: Ref<RecentlySentTracker>;
+  /** A replay that delivers a steer this view sent settles its key. */
+  requestKeyRef: Ref<RequestKeyTracker>;
   offloadBatchRef: Ref<OffloadBatch>;
 }
 
@@ -123,29 +132,34 @@ export interface StreamRuntime {
   workspaceId: string;
   threadId: string;
   t: Translate;
-  updateSubagentCard: UpdateSubagentCard | null;
+  updateSubagentCard: CardUpdater | null;
   onWorkspaceCreated: ((info: { workspaceId: string; question: string }) => void) | null;
   onFileArtifact: ((event: SSEEvent) => void) | null;
   onPreviewUrl: ((data: PreviewData) => void) | null;
-  onOnboardingRelatedToolComplete: (() => void) | null;
   // stable (setters)
   setMessages: SetMessages;
+  /** Per-token writes, applied on the next frame (`frameQueue.ts`). */
+  queueMessages: (update: (prev: ChatMessage[]) => ChatMessage[]) => void;
+  /** Apply the queued per-token writes now. */
+  flushMessages: () => void;
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setPendingInterrupt: React.Dispatch<React.SetStateAction<PendingInterrupt | null>>;
   setTokenUsage: React.Dispatch<React.SetStateAction<TokenUsage | null>>;
   setMessageError: React.Dispatch<React.SetStateAction<string | StructuredError | null>>;
-  setIsCompacting: React.Dispatch<React.SetStateAction<string | false>>;
+  setIsCompacting: (value: string | false) => void;
+  setCompactionTokens: (tokens: number | null) => void;
   setFallbackSuggestion: React.Dispatch<React.SetStateAction<FallbackSuggestion | null>>;
-  setReturnedSteering: React.Dispatch<React.SetStateAction<string | null>>;
   setThreadId: React.Dispatch<React.SetStateAction<string>>;
   setWorkspaceStarting: React.Dispatch<React.SetStateAction<false | 'starting' | 'archived'>>;
+  setTurnHeld: React.Dispatch<React.SetStateAction<string | null>>;
   // stable containers, ref-current reads — owned by this lane (per-turn cursors)
   contentOrderCounterRef: Ref<number>;
   currentReasoningIdRef: Ref<string | null>;
   currentToolCallIdRef: Ref<string | null>;
   currentMessageRef: Ref<string | null>;
   currentRunIdRef: Ref<string | null>;
-  currentPlanModeRef: Ref<boolean>;
+  latestRunIdRef: Ref<string | null>;
+  latestRunEpochRef: Ref<number>;
   steeringAtOrderRef: Ref<number | null>;
   pendingPTCBackfillRef: Ref<Map<string, string>>;
   // stable containers, ref-current reads — shared with other lanes
@@ -155,9 +169,10 @@ export interface StreamRuntime {
   renderedInterruptIdsRef: Ref<Set<string>>;
   unresolvedHistoryInterruptRef: Ref<HistoryInterruptInfo[]>;
   terminalTaskOutcomesRef: Ref<Map<string, 'completed' | 'cancelled' | 'error'>>;
-  toolCallIdToTaskIdMapRef: Ref<Map<string, string>>;
-  subagentHistoryRef: Ref<Record<string, SubagentHistoryEntry>>;
+  subagentHistory: SubagentHistoryStore;
   subagentTokenUsageRef: Ref<Record<string, SubagentTokenUsage>>;
+  /** A delivery of a steer this view sent settles its key. */
+  requestKeyRef: Ref<RequestKeyTracker>;
   offloadBatchRef: Ref<OffloadBatch>;
 }
 
@@ -170,14 +185,16 @@ export interface StreamRuntime {
  */
 export interface RecoveryRuntime {
   // render-current
-  updateSubagentCard: UpdateSubagentCard | null;
+  t: Translate;
+  updateSubagentCard: CardUpdater | null;
   // stable (setters)
   setMessages: SetMessages;
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setIsReconnecting: React.Dispatch<React.SetStateAction<boolean>>;
   setMessageError: React.Dispatch<React.SetStateAction<string | StructuredError | null>>;
   setWorkspaceStarting: React.Dispatch<React.SetStateAction<false | 'starting' | 'archived'>>;
-  setIsCompacting: React.Dispatch<React.SetStateAction<string | false>>;
+  setTurnHeld: React.Dispatch<React.SetStateAction<string | null>>;
+  setIsCompacting: (value: string | false) => void;
   setHasActiveSubagents: React.Dispatch<React.SetStateAction<boolean>>;
   setReloadTrigger: React.Dispatch<React.SetStateAction<number>>;
   // stable containers, ref-current reads — owned by this lane
@@ -186,11 +203,14 @@ export interface RecoveryRuntime {
   mainStreamAbortRef: Ref<AbortController | null>;
   isReconnectingOwnerRef: Ref<AbortController | null>;
   wasStoppedRef: Ref<boolean>;
+  sessionEpochRef: Ref<number>;
   backgroundReconnectRef: Ref<boolean>;
   pendingMuxResyncRef: Ref<boolean>;
   // stable containers, ref-current reads — shared with other lanes
   threadIdRef: Ref<string>;
   currentRunIdRef: Ref<string | null>;
+  latestRunIdRef: Ref<string | null>;
+  latestRunEpochRef: Ref<number>;
   lastEventIdRef: Ref<number | string | null>;
   currentMessageRef: Ref<string | null>;
   contentOrderCounterRef: Ref<number>;
@@ -199,7 +219,7 @@ export interface RecoveryRuntime {
   terminalTaskOutcomesRef: Ref<Map<string, 'completed' | 'cancelled' | 'error'>>;
   unresolvedHistoryInterruptRef: Ref<HistoryInterruptInfo[]>;
   renderedInterruptIdsRef: Ref<Set<string>>;
-  subagentHistoryRef: Ref<Record<string, SubagentHistoryEntry>>;
+  subagentHistory: SubagentHistoryStore;
   subagentTokenUsageRef: Ref<Record<string, SubagentTokenUsage>>;
 }
 

@@ -8,17 +8,11 @@ that read from agent_config.yaml via the shared YAML cache.
 import logging
 from typing import Any
 
-from src.config.core import load_yaml_config, find_config_file
+from src.config.core import load_agent_config
 
 logger = logging.getLogger(__name__)
 
-
-def _get_agent_config_dict() -> dict:
-    """Get the agent_config.yaml as a raw dict via shared YAML cache."""
-    path = find_config_file("agent_config.yaml")
-    if path is None:
-        return {}
-    return load_yaml_config(str(path))
+_get_agent_config_dict = load_agent_config
 
 
 def _get_tool_config(key_path: str, default: Any = None) -> Any:
@@ -43,6 +37,15 @@ def _get_tool_config(key_path: str, default: Any = None) -> Any:
             return default
 
     return value
+
+
+# =============================================================================
+# Search Configuration
+# =============================================================================
+
+def get_search_api(default: str = "tavily") -> str:
+    """The deployment's default search engine; a per-user preference overrides it."""
+    return str(_get_tool_config('search_api', default))
 
 
 # =============================================================================

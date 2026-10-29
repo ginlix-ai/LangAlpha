@@ -27,20 +27,69 @@ html {
   input, select, textarea { font-size: max(16px, 1rem) !important; }
 }
 
+/* ---------- Motion ----------
+   `lib/motion.ts` for CSS, the same numbers under the same names (DESIGN.md
+   § Motion). A stylesheet reaches for these and never writes a duration or a
+   curve of its own; `styles/__tests__/motionTokens.test.ts` fails on one.
+
+   The curves are Tailwind theme variables, so they double as utilities
+   (`ease-out`, `ease-reveal`, `ease-collapse`). Tailwind's own `ease-out`
+   (0, 0, .2, 1) is a different curve under the same name, and this replaces
+   it rather than leaving two. The durations become `duration-quick` and its
+   siblings. The two defaults put every bare `transition-*` class on the quick
+   duration and the house curve, where Tailwind would put 150ms on the
+   Material curve. `static` emits them all whether or not a class uses
+   them, since plain stylesheets read them too. */
+@theme static {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-reveal: cubic-bezier(0.33, 1, 0.68, 1);
+  --ease-collapse: cubic-bezier(0.45, 0, 0.2, 1);
+  --transition-duration-press: var(--motion-press);
+  --transition-duration-quick: var(--motion-quick);
+  --transition-duration-fold: var(--motion-fold);
+  --transition-duration-enter: var(--motion-enter);
+  --transition-duration-exit: var(--motion-exit);
+  --default-transition-duration: var(--motion-quick);
+  --default-transition-timing-function: var(--ease-out);
+}
+
+:root {
+  --motion-press: 100ms;
+  --motion-quick: 160ms;
+  --motion-fold: 240ms;
+  --motion-enter: 280ms;
+  --motion-exit: 140ms;
+  --motion-reveal: 360ms;
+  /* `lib/motion.ts` STAGGER: the gap between items of a batch arriving. */
+  --motion-stagger: 40ms;
+  /* `lib/motion.ts` PRESS_SCALE: how far a committing button presses in. */
+  --press-scale: 0.97;
+}
+
 /* ---------- Semantic color tokens (hex/rgba for inline use) ---------- */
 :root {
   /* Font roles: Sora is the app's voice (chrome, nav, controls); Geist is
      the reading face for long-form surfaces (conversation, file content).
      Apply via body default + the .font-content utility. */
   /* One shared CJK companion (Noto Sans SC, unicode-range sliced by Google
-     Fonts) sits after the Latin faces in both roles: Latin glyphs never reach
-     it, CJK renders identically on every OS instead of PingFang/YaHei. */
+     Fonts) sits after the Latin faces in every role: Latin glyphs never reach
+     it, CJK renders identically on every OS instead of PingFang/YaHei. Mono
+     needs it too, since kickers and readouts set translated copy in it. In
+     each it goes ahead of the system faces, which can reach the OS's own CJK
+     face through the system's fallback before a later family is tried. */
   --font-ui: 'Sora', 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
   --font-content: 'Geist', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Menlo', ui-monospace, SFMono-Regular, monospace;
+  --font-mono: 'JetBrains Mono', 'Menlo', 'Noto Sans SC', ui-monospace, SFMono-Regular, monospace;
 
-  --sidebar-width: 80px;
+  --sidebar-width: 64px;
+  --sidebar-rail-width: 64px;
   --bottom-tab-height: 78px;
+  /* Space above a page's first row. Every route's title or header row starts
+     this far down, so the first row sits at one depth when moving between pages
+     (centre of a 28px title row: --page-top + 14px). */
+  --page-top: clamp(16px, 3vw, 32px);
+  /* The lane every webkit scrollbar takes from the layout (rules below). */
+  --scrollbar-size: 12px;
 
   /* ---------- Background roles ----------
      Which fill belongs on which surface. Reach for the role, not a lookalike
@@ -49,8 +98,9 @@ html {
      | token        | surface                                                |
      |--------------|--------------------------------------------------------|
      | bg-page      | the app ground: chat page, settings, auth               |
-     | bg-canvas    | ground behind a card grid (dashboard); = page in dark   |
+     | bg-canvas    | ground behind filled cards (orders); = page in dark     |
      | bg-card      | a card/panel sitting on page or canvas                  |
+     | bg-card-hover| hover fill of a clickable card row (solid twin of card) |
      | bg-tool-card | agent tool/artifact cards inside the transcript         |
      | bg-elevated  | raised chrome over a card: menus, tooltips, hover sheets |
      | bg-input     | text inputs, textareas, field-shaped readouts           |
@@ -69,6 +119,7 @@ html {
   --color-bg-page: hsl(var(--background));
   --color-bg-canvas: var(--color-bg-page);
   --color-bg-card: hsl(var(--card));
+  --color-bg-card-hover: hsl(220 4% 17%);
   --color-bg-tool-card: #232426;
   --color-bg-elevated: #2A2B2E;
   --color-bg-input: hsl(var(--input));
@@ -79,6 +130,13 @@ html {
   --color-bg-hover: rgba(255, 255, 255, 0.05);
   --color-bg-subtle: rgba(255, 255, 255, 0.03);
   --color-bg-chart-placeholder: #FFFFFF;
+  /* Spreadsheet grid (ExcelViewer, CsvViewer). Deliberately theme-invariant,
+     like a printed page: a workbook's own fills and font colours were chosen
+     against a white sheet, and only on one do they read as their author saw
+     them. The surface around the grid carries the theme instead. Every other
+     grid shade is mixed from this pair in ExcelViewer.css. */
+  --color-sheet-paper: #FFFFFF;
+  --color-sheet-ink: #1F1F1E;
   --color-bg-overlay: rgba(0, 0, 0, 0.6);
   --color-bg-overlay-strong: rgba(0, 0, 0, 0.8);
 
@@ -87,6 +145,22 @@ html {
   --color-border-elevated: #34363A;
   --color-border-subtle: #26282B;
   --color-border-input: #34363A;
+  /* The edge of a chosen option card. The borders above are hairlines that
+     vanish on bg-elevated, the dialog fill; this one has to read on every
+     fill, so it is a step up from all of them. Neutral: a selection never
+     takes the accent. */
+  --color-border-strong: rgba(230, 230, 228, 0.32);
+
+  /* Data cards in the transcript (charts/termCard.css): an unfilled box held
+     by its edge, the rules inside it a step quieter. Light is cool and
+     neutral against the warm page, so a number reads as data, not as
+     chrome; the cards are the only cool surface. */
+  --color-term-edge: #3A3C40;
+  --color-term-edge-hover: #5C5F65;
+  --color-term-rule: #2E3033;
+  --color-term-text: #E6E6E4;
+  --color-term-text-secondary: #9B9FA6;
+  --color-term-text-tertiary: rgba(230, 230, 228, 0.62);
 
   --color-text-primary: #E6E6E4;
   --color-text-secondary: #9B9FA6;
@@ -114,6 +188,10 @@ html {
      blends toward muddy brown over charcoal instead of reading as accent. */
   --color-accent-overlay: rgba(233, 149, 74, 0.75);
   --color-accent-gradient: linear-gradient(90deg, #E9954A 0%, #E9954A 100%);
+
+  /* Focus ring, for plain CSS files. Derived from --ring so Tailwind's
+     ring-ring and a hand-written box-shadow can never drift apart. */
+  --color-focus-ring: hsl(var(--ring));
 
   --color-slash-icon: rgb(233, 149, 74);
   --color-slash-pill-bg: rgba(233, 149, 74, 0.1);
@@ -146,6 +224,9 @@ html {
   --color-btn-danger-pressed: #991b1b;
   --color-icon-danger: #f87171;
   --color-danger-hover-bg: rgba(239, 68, 68, 0.2);
+  /* Resting tint behind a danger glyph and its words (a failed status pill).
+     Failure, not P&L: --color-loss-soft stays with the market. */
+  --color-danger-soft: rgba(248, 113, 113, 0.12);
 
   --color-status-modified: rgba(216, 176, 76, 0.7);
   --color-status-modified-border: rgba(216, 176, 76, 0.5);
@@ -153,6 +234,51 @@ html {
 
   /* Dot-grid retired from work surfaces — kept barely-visible for empty states. */
   --color-dot-grid: rgba(255, 255, 255, 0.05);
+
+  /* Machine drawings (Computers dialog, machineArt/). An illustration carries
+     its own shading (DESIGN.md § Illustrations): lit from the upper left, a
+     top and four side shades, hairlines in three weights, a soft contact
+     shadow. Glass stays near black in both themes, as a screen does. */
+  --color-art-ground: #191919;
+  --color-art-top: #2A2A2A;
+  --color-art-s3: #252525;
+  --color-art-s2: #212121;
+  --color-art-s1: #1D1D1D;
+  --color-art-s0: #191919;
+  --color-art-line-hi: #D4D4D4;
+  --color-art-line-mid: #707074;
+  --color-art-line-lo: #48484C;
+  --color-art-line-faint: #333336;
+  --color-art-dot: rgba(230, 230, 230, 0.3);
+  --color-art-mesh: rgba(230, 230, 230, 0.75);
+  --color-art-port: #0D0D0E;
+  --color-art-glass: #121214;
+  --color-art-halo: rgba(0, 0, 0, 0.8);
+  --color-art-glare: rgba(255, 255, 255, 0.035);
+  --color-art-term-ink: #C9C8C4;
+  --color-art-term-prompt: #7FBF8E;
+
+  /* Identity tiles (Plugins rows): a name hashes to one of these eight muted
+     tints, so every server/skill/plugin keeps a recognizable mark across
+     surfaces. Identity is meaning — the one sanctioned hue system outside
+     accent + semantic colors; fills stay translucent so the tiles annotate
+     rather than brand. */
+  --color-identity-0-bg: hsla(212, 55%, 60%, 0.16);
+  --color-identity-0-fg: hsl(212, 62%, 72%);
+  --color-identity-1-bg: hsla(175, 55%, 52%, 0.16);
+  --color-identity-1-fg: hsl(175, 45%, 60%);
+  --color-identity-2-bg: hsla(132, 50%, 55%, 0.16);
+  --color-identity-2-fg: hsl(132, 40%, 64%);
+  --color-identity-3-bg: hsla(95, 45%, 55%, 0.16);
+  --color-identity-3-fg: hsl(95, 38%, 62%);
+  --color-identity-4-bg: hsla(45, 60%, 55%, 0.16);
+  --color-identity-4-fg: hsl(45, 55%, 64%);
+  --color-identity-5-bg: hsla(15, 60%, 58%, 0.16);
+  --color-identity-5-fg: hsl(15, 60%, 71%);
+  --color-identity-6-bg: hsla(275, 55%, 62%, 0.16);
+  --color-identity-6-fg: hsl(275, 55%, 76%);
+  --color-identity-7-bg: hsla(322, 55%, 60%, 0.16);
+  --color-identity-7-fg: hsl(322, 50%, 72%);
   --color-bg-card-gradient: rgba(255, 255, 255, 0.04);
   --color-bg-card-border: rgba(255, 255, 255, 0.10);
 
@@ -175,8 +301,17 @@ html {
   --destructive-foreground: 0 0% 98%;
   --border: 0 0% 100% / 0.08;
   --input: 220 4% 14.5%;
-  /* Focus ring is NEUTRAL — the amber never rings a control (DESIGN.md). */
-  --ring: 0 0% 100% / 0.45;
+  /* Focus ring is the primary text color, carrying no hue at all. Amber is the
+     active/selected language here, so a ring painted in it reads as "selected"
+     rather than "focused", and any other hue would be a color the product uses
+     nowhere else (DESIGN.md). Ink is what the eye already reads as "this one":
+     a control gains the same edge its label has. It also clears WCAG 1.4.11 by
+     a wide margin on every surface, 11:1 on --color-bg-elevated, the menus and
+     tooltips, where the previous navy was tuned to reach 3.35:1. Kept as an
+     HSL triplet, and derived rather than repeated, because Tailwind composes
+     `ring-ring` as `hsl(var(--ring) / <alpha>)` and DESIGN.md publishes the
+     equality with the text ink as a contract. */
+  --ring: var(--foreground);
   --radius: 0.5rem;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 16px rgba(0, 0, 0, 0.25);
 
@@ -212,12 +347,14 @@ html {
   /* Warm paper ground so white cards read as raised surfaces instead of
      border-only outlines on the same white. */
   --color-bg-canvas: #F5F4F1;
-  /* Chat artifact cards: warm paper fill (inverse of the dashboard pairing —
-     there white cards sit on tinted canvas; here tinted cards sit on the
-     white chat page). The lightweight-charts canvases inside those cards now
-     read this token (MarketDataCharts CANVAS_SOURCES) instead of mirroring
-     it, so they cannot seam. */
+  /* Filled surfaces in the chat (task cards, the subagent bar, the chart
+     annotation chip): warm paper fill, the inverse of the canvas pairing
+     (on the orders page white cards sit on tinted canvas; here tinted cards
+     sit on the white chat page). The data cards are unfilled frames, and the
+     detail panel's chart canvases draw on a transparent ground, so neither
+     reads this token. */
   --color-bg-tool-card: #F5F4F1;
+  --color-bg-card-hover: #FAFAF8;
   --color-bg-elevated: #F7F7F6;
   --color-bg-tag: #EFEFED;
   --color-bg-code: #F4F4F2;
@@ -225,6 +362,9 @@ html {
   --color-bg-hover: rgba(0, 0, 0, 0.04);
   --color-bg-subtle: rgba(0, 0, 0, 0.02);
   --color-bg-chart-placeholder: #FFFFFF;
+  /* Spreadsheet grid: the same printed page as dark (see the role note in :root). */
+  --color-sheet-paper: #FFFFFF;
+  --color-sheet-ink: #1F1F1E;
   --color-bg-overlay: rgba(0, 0, 0, 0.25);
   --color-bg-overlay-strong: rgba(0, 0, 0, 0.45);
 
@@ -233,6 +373,14 @@ html {
   --color-border-elevated: #E3E3E1;
   --color-border-subtle: #EFEFEE;
   --color-border-input: #E3E3E1;
+  --color-border-strong: rgba(31, 31, 30, 0.3);
+
+  --color-term-edge: #CDD2D9;
+  --color-term-edge-hover: #9AA1AC;
+  --color-term-rule: #E3E6EA;
+  --color-term-text: #15181D;
+  --color-term-text-secondary: #5B6370;
+  --color-term-text-tertiary: #8A919C;
 
   --color-text-primary: #1F1F1E;
   --color-text-secondary: #73726E;
@@ -279,7 +427,7 @@ html {
   --color-success-soft: rgba(26, 127, 55, 0.08);
   --color-accent-light: #E09A57;
   /* Confirm/approve buttons in chat — deliberately ink, not the accent, so
-     approving a plan never reads as the same affordance as a brand action. */
+     approving a request never reads as the same affordance as a brand action. */
   --color-btn-primary-bg: #1F1D1A;
   --color-btn-primary-text: #FAF9F7;
   --color-btn-stop-hover-bg: #3A211E;
@@ -288,12 +436,48 @@ html {
   --color-btn-danger-pressed: #b91c1c;
   --color-icon-danger: #dc2626;
   --color-danger-hover-bg: rgba(220, 38, 38, 0.08);
+  --color-danger-soft: rgba(220, 38, 38, 0.07);
 
   --color-status-modified: rgba(180, 83, 9, 0.7);
   --color-status-modified-border: rgba(180, 83, 9, 0.3);
   --color-status-modified-glow: rgba(180, 83, 9, 0.15);
 
   --color-dot-grid: rgba(31, 31, 30, 0.05);
+
+  --color-art-ground: #FCFCFB;
+  --color-art-top: #FFFFFF;
+  --color-art-s3: #F4F4F1;
+  --color-art-s2: #EDEDEA;
+  --color-art-s1: #E5E5E2;
+  --color-art-s0: #DCDCD9;
+  --color-art-line-hi: #26262A;
+  --color-art-line-mid: #8A8A8F;
+  --color-art-line-lo: #B4B4B8;
+  --color-art-line-faint: #D4D4D6;
+  --color-art-dot: rgba(58, 58, 62, 0.3);
+  --color-art-mesh: rgba(58, 58, 62, 0.75);
+  --color-art-port: #2B2B2E;
+  --color-art-glass: #121214;
+  --color-art-halo: rgba(138, 138, 128, 0.3);
+
+  /* Identity tiles — same hues as dark, tuned for the white page: slightly
+     denser fills, darker monograms. */
+  --color-identity-0-bg: hsla(212, 60%, 45%, 0.12);
+  --color-identity-0-fg: hsl(212, 60%, 38%);
+  --color-identity-1-bg: hsla(175, 55%, 40%, 0.12);
+  --color-identity-1-fg: hsl(175, 60%, 26%);
+  --color-identity-2-bg: hsla(132, 50%, 40%, 0.12);
+  --color-identity-2-fg: hsl(132, 50%, 28%);
+  --color-identity-3-bg: hsla(95, 45%, 40%, 0.12);
+  --color-identity-3-fg: hsl(95, 48%, 27%);
+  --color-identity-4-bg: hsla(45, 70%, 45%, 0.14);
+  --color-identity-4-fg: hsl(45, 80%, 27%);
+  --color-identity-5-bg: hsla(15, 65%, 48%, 0.12);
+  --color-identity-5-fg: hsl(15, 65%, 36%);
+  --color-identity-6-bg: hsla(275, 50%, 50%, 0.12);
+  --color-identity-6-fg: hsl(275, 45%, 40%);
+  --color-identity-7-bg: hsla(322, 55%, 48%, 0.12);
+  --color-identity-7-fg: hsl(322, 55%, 36%);
 
   /* Solid white tile + crisp system hairline — the 75%-white wash the dark
      theme uses for glass is invisible against the white page. */
@@ -319,8 +503,8 @@ html {
   --destructive-foreground: 0 0% 100%;
   --border: 60 2% 12% / 0.09;
   --input: 60 4% 96.5%;
-  /* Focus ring is NEUTRAL — the amber never rings a control (DESIGN.md). */
-  --ring: 60 2% 12% / 0.4;
+  /* The light theme's text ink, for the same reason. */
+  --ring: var(--foreground);
   /* Kept tight rather than dropped: floating overlays (AgentEventOverlay,
      SelectionCommentOverlay, JumpToLatestPill) rely on this to separate from
      a now-pure-white page — the workspace cards carry their own border. */
@@ -343,115 +527,232 @@ html {
   --sidebar-indicator: 28 63% 51%;
 }
 
-@layer base {
-  * {
-    box-sizing: border-box;
-    @apply border-border;
+/* Focus rings.
+
+   Everything in here is a default: the ring a control gets unless something
+   draws its own. It sits in a cascade layer of its own so that "its own"
+   means any rule outside this layer, whatever its specificity -- a Tailwind
+   `focus-visible:` utility, a hand-written `.class:focus-visible`, a
+   box-shadow ring on a sidebar row. Unlayered styles beat layered ones
+   outright, so a component never has to out-specify this block. (Tailwind's
+   preflight, the base rules in base.css and the utilities are imported
+   outside any layer for the same reason; see index.css.) */
+@layer focus-defaults {
+  /* Without a baseline the fallback is Chromium's -- `outline: auto` in a blue
+     this product uses nowhere -- and that was the ring on four out of five
+     controls, the chat transcript included. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
   }
 
-  body {
-    @apply bg-background text-foreground;
-    font-family: var(--font-ui);
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100vh;
-    min-width: 320px;
-    overflow: hidden;
+  /* A field that fills a bordered container has nowhere to put a ring of its
+     own. An outline on the field alone cuts across the container's border and
+     leaves whatever else lives in there outside the indicator: the icon on a
+     search pill, the chips already entered on a token field. Mark the container
+     and it rings on the field's behalf. Such a container carries
+     `owns-its-edge` too, its sibling opt-out for the focused-field edge below.
+
+     Scoped to a direct-child input so a button sharing the container -- a clear
+     affordance, a chip's remove -- still rings itself instead of lighting the
+     whole box. Held off under the pointer like everything else here, and for
+     the same reason: the field inside matches :focus-visible for either
+     device, so ungated this would light the container on a click.
+
+     All three sit behind @supports because only the first of them survives a
+     parser without :has(): taking the ring off the field is a plain selector,
+     while the two rules that put it on the container are dropped as invalid.
+     Split, the fallback is not a ring in the wrong place, it is no ring at
+     all. Together they degrade to the baseline, which rings the field. */
+  @supports selector(:has(*)) {
+    .rings-within > input:focus-visible {
+      outline: none;
+    }
+
+    .rings-within:has(> input:focus-visible) {
+      outline: 2px solid var(--color-focus-ring);
+      outline-offset: 2px;
+    }
+
+    /* Transparent for the reason the rule at the end of this layer is. */
+    :root[data-pointer-focus] .rings-within:has(> input:focus-visible) {
+      outline-color: transparent;
+    }
   }
 
-  #root {
-    width: 100%;
-    height: 100vh;
-    margin: 0;
-    padding: 0;
+  /* Inside an SVG, Chromium paints its own ring on plain :focus -- it does not
+     gate that on :focus-visible the way it does for HTML, so a mouse click on
+     a chart draws a ring where the same click on a button would not. Take the
+     non-keyboard half away and the pseudo-class above rings the surface on a
+     Tab, exactly like everything else.
+
+     The descendant half is what the visible bug was: recharts stacks its
+     z-index layers as `<g tabindex="-1">`, so a click landing on a bar focuses
+     that layer rather than the surface, which is why the stray ring hugged the
+     bars and left the axis labels outside them. */
+  svg:focus:not(:focus-visible),
+  svg :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* A box that clips -- a tab bar that scrolls sideways, a segmented control
+     rounding its children -- eats the outset ring off whichever child sits
+     flush against the clipped edge, and what is left renders as a bar down one
+     side. Mark the clipper and its children ring inward instead. */
+  .clips-focus-ring > :focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* tabindex="-1" is not a tab stop -- it is a landing spot script moves focus
+     to so the next Tab starts there (dialog roots, scroll ports). Chromium
+     carries :focus-visible across that programmatic move (lib/inputModality.ts),
+     so without this the ring draws around an entire dialog. */
+  [tabindex="-1"]:focus-visible {
+    outline: none;
+  }
+
+  /* Menu and listbox items are tabindex="-1" as well (roving focus), but they
+     are the one landing spot the user drives through: someone arrowing down a
+     menu needs the ring to travel with them. Inward, because the menu clips at
+     its own padding. currentColor rather than the ink token: a highlighted
+     item swaps its text to the accent foreground, and a ring in the page ink
+     drawn inside that fill reads at under 2:1 against it.
+
+     The ring below it is transparent rather than absent, and it is on every
+     item rather than the focused one: forced colors drops the highlight tint
+     that marks the current row everywhere else, and what it repaints instead
+     is an outline that was already drawn. A row with no outline at all is a
+     row the OS has nothing to paint, which under a mouse is every row in the
+     menu. This is the transparent outline the items used to carry as a
+     utility class, kept where the rest of the rule lives. */
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="menuitemradio"],
+  [role="option"] {
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+  }
+
+  [role="menuitem"]:focus-visible,
+  [role="menuitemcheckbox"]:focus-visible,
+  [role="menuitemradio"]:focus-visible,
+  [role="option"]:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+  }
+
+  /* The browser matches :focus-visible on a mouse click for any control that
+     might take a keystroke next -- text fields, <select>, the number and date
+     widgets -- and Chromium carries it across a programmatic focus move on top
+     of that: the first control a dialog focuses after a click, the trigger a
+     menu hands focus back to, the item under the mouse as it crosses a menu.
+     No selector tells any of those from a Tab, so lib/inputModality.ts records
+     whether a key placed the focus the page holds, and while it says no the
+     ring this sheet draws is held off. A keystroke lifts the record, so the
+     same control rings the moment the keyboard takes over. It out-specifies
+     both the baseline and the item rule above, so it reaches every ring in
+     this layer. Only the color, so a rule that already set `outline: none`
+     stays at none -- and a component painting a ring of its own outside this
+     layer keeps it, which is why one that can light under a pointer reads the
+     same record itself (`:root:not([data-pointer-focus])`, LoginPage.css).
+
+     Transparent rather than `none`, which is not a stylistic choice: forced
+     colors repaints every outline in the system palette but cannot paint one
+     that was never drawn, and it drops the box-shadow and normalizes the
+     border a field would otherwise be distinguished by. `none` here leaves a
+     high-contrast user with a clicked field marked by nothing but the caret.
+     A transparent outline is invisible everywhere else and becomes the
+     system's own focus color there -- the same reason Tailwind's
+     `outline-hidden` draws this under forced colors rather than nothing. */
+  :root[data-pointer-focus] :focus-visible {
+    outline-color: transparent;
   }
 }
 
-@layer utilities {
-  /* Reading face for long-form surfaces: conversation transcript, file
-     viewers. Chrome/UI stays on the body default (--font-ui). */
-  .font-content {
-    font-family: var(--font-content);
-  }
+/* Focused text fields.
 
-  /* Flat — the radial glow washes are retired with the quiet-workspace system. */
-  .bg-app {
-    background: hsl(var(--bg-main));
-  }
+   The layer above answers one question: does a keyboard ring draw. This
+   answers a different one: does a field the pointer just clicked look
+   focused. It does, by its edge and nothing else -- the accent border that
+   marks the about-to-act moment everywhere else, plus a one-pixel halo of
+   the soft accent so that edge reads on a dark card. No outline and no
+   pointer gate: a field the mouse focused is about to receive typing.
 
-  .panel {
-    background: hsl(var(--bg-panel));
-    border: 1px solid hsl(var(--border-light));
-    backdrop-filter: blur(10px);
-    border-radius: 8px;
-    box-shadow: var(--shadow-card);
-  }
+   Unlayered and !important on purpose. Fields set their resting border as
+   an inline style across the app, and inline beats every stylesheet rule
+   except an important one; sweeping the border onto a class would give
+   every field a second place its edge is decided. Only the edge, only
+   while focused, never on a field flagged invalid, and never on a control
+   with no text entry (checkbox, radio, range, file, color), whose focus is
+   the ring's job.
 
-  .fin-card {
-    background: hsl(var(--bg-main) / 0.65);
-    border: 1px solid hsl(var(--border-light));
-    border-radius: 8px;
-    box-shadow: var(--shadow-card);
-  }
+   Every other exception is opt-out by one class a box puts on itself,
+   `owns-its-edge`, so the next edge-owning box declares itself where it is
+   built instead of coming back to edit this selector. It must: the halo is
+   a shadow, and a shadow draws on a borderless field too, as a faint
+   rectangle inside a box already lit. The block below hands that box the
+   edge on its field's behalf, the way `.rings-within` hands it the ring. */
+:where(input, textarea, select):focus:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="submit"], [type="button"], [aria-invalid="true"], .owns-its-edge, .owns-its-edge *) {
+  border-color: var(--color-accent-primary) !important;
+  box-shadow: 0 0 0 1px var(--color-accent-soft) !important;
+}
 
-  .fin-card-inner {
-    background: var(--color-bg-card);
-    border: 1px solid var(--color-border-default);
-    border-radius: 8px;
-  }
-
-  .text-muted-fin {
-    color: hsl(var(--muted));
-    opacity: 0.65;
-  }
-
-  .text-muted2 {
-    color: hsl(var(--muted));
-  }
-
-  .text-up {
-    color: hsl(var(--color-up));
-  }
-
-  .text-down {
-    color: hsl(var(--color-down));
-  }
-
-  .bg-up-soft {
-    background: hsl(var(--color-up-soft));
-  }
-
-  .bg-down-soft {
-    background: hsl(var(--color-down-soft));
-  }
-
-  .ring-accent {
-    box-shadow: 0 0 0 1px hsl(var(--accent-fin) / 0.30);
-  }
-
-  .tabular-nums {
-    font-variant-numeric: tabular-nums;
-    font-feature-settings: "tnum";
+@supports selector(:has(*)) {
+  .owns-its-edge:has(> :where(input, textarea):focus) {
+    border-color: var(--color-accent-primary) !important;
+    box-shadow: 0 0 0 1px var(--color-accent-soft) !important;
   }
 }
 
+/* Reading face for long-form surfaces: conversation transcript, file
+   viewers. Chrome/UI stays on the body default (--font-ui). */
+@utility font-content {
+  font-family: var(--font-content);
+}
+
+@utility tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* A scrollbar never touches the edge it runs along. The thumb paints only the
+   middle of its --scrollbar-size lane, a transparent border insetting it from
+   the container's border, and the track stops short of both ends, clear of
+   rounded corners and of a divider above the list. A container that tints its
+   thumb sets background-color, never the background shorthand, which would
+   reset the clip and paint the inset too. Documents the app frames carry a
+   copy, so a change here goes to each: buildHtmlSrcDoc.ts (widgets), the
+   server's workspace_files/serve.py (served HTML) and sec_proxy.py (filings). */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
+  margin: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-elevated);
-  border-radius: 4px;
+  background-color: var(--color-border-elevated);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: calc(var(--scrollbar-size) / 2);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-tertiary);
+  background-color: var(--color-text-tertiary);
+}
+
+/* Monaco's own scrollbar, inset through CodeEditor's options. Its arrows are
+   there only to hold the track short of both ends. */
+.monaco-editor .scrollbar > .scra,
+.monaco-editor .scrollbar > .arrow-background {
+  display: none;
+}
+
+.monaco-editor .scrollbar > .slider {
+  border-radius: 3px;
 }
 
 /* === Floating AI chat FAB (mobile) === */

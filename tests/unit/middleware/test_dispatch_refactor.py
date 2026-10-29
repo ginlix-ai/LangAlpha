@@ -7,7 +7,7 @@ invariants:
 
 - ``run_subagent_graph`` builds the same per-task config the Task-tool init
   branch does (``checkpoint_ns=task:{task_id}`` under the parent thread,
-  recursion_limit 2000, subagent_type metadata, checkpoint-position keys
+  the unbounded recursion_limit, subagent_type metadata, checkpoint-position keys
   dropped, background token-tracker callback attached from the ContextVar).
 - ``dispatch_background_subagent`` registers a task carrying
   ``spawned_run_id`` / ``owner_task_id``, spawns its writer through the
@@ -35,6 +35,8 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
+from ptc_agent.agent.limits import UNBOUNDED_RECURSION_LIMIT
+from ptc_agent.agent.middleware.runtime_context.turn import TURN_TIME_LIMIT_KEY
 from ptc_agent.agent.middleware.background_subagent import dispatch as dispatch_mod
 from ptc_agent.agent.middleware.background_subagent import spawn as spawn_mod
 from ptc_agent.agent.middleware.background_subagent.context import (
@@ -99,13 +101,15 @@ class _RecordingGraph:
         self.received_config: dict | None = None
         self.received_state: dict | None = None
         self.received_stream_mode = None
+        self.received_durability = None
         self._final_text = final_text
         self._extra_values = extra_values or {}
 
-    async def astream(self, state, config, stream_mode=None):
+    async def astream(self, state, config, stream_mode=None, durability=None):
         self.received_state = state
         self.received_config = config
         self.received_stream_mode = stream_mode
+        self.received_durability = durability
         snapshot = {
             "messages": [AIMessage(content=self._final_text)],
             **self._extra_values,
@@ -124,10 +128,11 @@ async def test_run_subagent_graph_config_invariants():
     per-call pregel state the Task path gets fresh per tool call: the
     scratchpad (its shared subgraph counter suffixes each successive child's
     checkpoint_ns with ``|N``, silently killing token streaming for every
-    child after the first) and the settled turn's stream handle. The
-    remaining ``__pregel_*`` internals are KEPT — they mark the run as
-    nested, which is what makes LangGraph preserve the ``task:<id>``
-    checkpoint namespace instead of resetting it to the root namespace."""
+    child after the first). The runner drops the launcher's stream handle on
+    every path. The remaining ``__pregel_*`` internals are KEPT — they mark
+    the run as nested, which is what makes LangGraph preserve the
+    ``task:<id>`` checkpoint namespace instead of resetting it to the root
+    namespace."""
     graph = _RecordingGraph()
     registry = BackgroundTaskRegistry()  # no task registered -> no forwarder
     base = {
@@ -139,6 +144,8 @@ async def test_run_subagent_graph_config_invariants():
         "__pregel_stream": object(),
         "__pregel_send": object(),
         "__pregel_task_id": "parent-task",
+        "__pregel_resuming": True,
+        "__pregel_replay_state": object(),
         "user_id": "user-9",
         "run_name": "keep-me",
     }
@@ -158,6 +165,8 @@ async def test_run_subagent_graph_config_invariants():
     conf = cfg["configurable"]
     # Per-task namespace under the parent thread.
     assert conf["checkpoint_ns"] == "task:task-abc"
+    # A model call confirms the steers the step before it saved.
+    assert graph.received_durability == "sync"
     assert conf["thread_id"] == "parent-thread"
     # Non-checkpoint base keys pass through.
     assert conf["user_id"] == "user-9"
@@ -170,10 +179,13 @@ async def test_run_subagent_graph_config_invariants():
     # writes checkpoints into the thread's root namespace).
     assert "__pregel_scratchpad" not in conf
     assert "__pregel_stream" not in conf
+    # The launcher's resume flag would skip the child's prompt.
+    assert "__pregel_resuming" not in conf
+    assert "__pregel_replay_state" not in conf
     assert conf["__pregel_task_id"] == "parent-task"
     assert conf["__pregel_send"] is base["__pregel_send"]
     # Recursion limit + metadata mirror the parent's with_config.
-    assert cfg["recursion_limit"] == 2000
+    assert cfg["recursion_limit"] == UNBOUNDED_RECURSION_LIMIT
     assert cfg["metadata"]["subagent_type"] == "research"
     assert cfg["metadata"]["description"] == ("P" * 250)[:200]
     # Tracker unset -> no callbacks key at all.
@@ -182,6 +194,26 @@ async def test_run_subagent_graph_config_invariants():
     assert base["checkpoint_ns"] == "leaked-ns"
     # The subagent is driven with the combined stream modes.
     assert set(graph.received_stream_mode) == {"values", "messages", "custom"}
+
+
+@pytest.mark.asyncio
+async def test_run_subagent_graph_runs_on_the_clock_its_owner_gives(monkeypatch):
+    """A workflow child's clock is the driver's kill, not the turn's longer one."""
+    monkeypatch.setattr("src.config.settings.get_workflow_timeout", lambda: 6 * 3600)
+    graph = _RecordingGraph()
+
+    await run_subagent_graph(
+        graph,
+        prompt="p",
+        parent_thread_id="parent-thread",
+        task_id="task-abc",
+        subagent_type="research",
+        registry=BackgroundTaskRegistry(),
+        tool_call_id="tc-1",
+        time_limit=1800,
+    )
+
+    assert graph.received_config["configurable"][TURN_TIME_LIMIT_KEY] == 1800
 
 
 @pytest.mark.asyncio
@@ -235,6 +267,49 @@ async def test_run_subagent_graph_returns_command_with_final_text():
     assert tool_msg.content == "the final answer"  # rstrip'd
     # Non-message state keys are merged into the command update.
     assert cmd.update["scratch"] == "kept"
+
+
+def test_a_run_that_ends_on_refusals_hands_back_what_the_subagent_said():
+    """The repeat guard ends a run on refused calls with no closing reply, so
+    its last message is a refusal: the answer is the last thing the subagent
+    said, as the durable result reads it."""
+    from ptc_agent.agent.middleware.background_subagent.subagent import (
+        return_command_with_state_update,
+    )
+
+    refused = ToolMessage(
+        content="Not run: this turn is out of time.",
+        tool_call_id="c2",
+        status="error",
+        additional_kwargs={"refusal": "time_up"},
+    )
+    cmd = return_command_with_state_update(
+        {
+            "messages": [
+                AIMessage(content="What I found so far: X.  "),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "bash", "args": {}, "id": "c2"}],
+                ),
+                refused,
+            ]
+        },
+        "tc-1",
+    )
+
+    assert cmd.update["messages"][0].content == "What I found so far: X."
+
+
+def test_a_run_that_said_nothing_hands_back_nothing():
+    from ptc_agent.agent.middleware.background_subagent.subagent import (
+        return_command_with_state_update,
+    )
+
+    cmd = return_command_with_state_update(
+        {"messages": [ToolMessage(content="Not run.", tool_call_id="c1")]}, "tc-1"
+    )
+
+    assert cmd.update["messages"][0].content == ""
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +612,7 @@ async def test_subagent_dispatcher_dispatch_passes_through(monkeypatch):
         run_id="r9",
         owner_task_id="own",
         base_configurable={"k": "v"},
+        time_limit=1200,
     )
 
     assert out is sentinel
@@ -550,3 +626,4 @@ async def test_subagent_dispatcher_dispatch_passes_through(monkeypatch):
     assert kwargs["run_id"] == "r9"
     assert kwargs["owner_task_id"] == "own"
     assert kwargs["base_configurable"] == {"k": "v"}
+    assert kwargs["time_limit"] == 1200

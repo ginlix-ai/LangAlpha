@@ -4,7 +4,7 @@
 response to storage URLs *before* the message enters state, so checkpointed
 truth carries durable URLs and replay needs no sandbox or rewrite map. Keys
 are content-addressed (sha256 of the bytes), so any re-capture of the same
-image — including the post-stream sse_events safety net — converges on the
+image, including the late capture when the turn settles, converges on the
 identical URL with no coordination.
 """
 
@@ -18,6 +18,8 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
+
+from ptc_agent.core.project_context import ProjectContext
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -35,21 +37,19 @@ IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"}
 IMAGE_MD_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 # Capture rides the live turn-completion path (paths are rewritten pre-commit so
-# checkpointed truth carries durable URLs). Bound it so a hung sandbox or storage
-# backend can't stall the turn — on timeout the paths are left in place and the
-# idempotent post-stream capture (same content-addressed keys) recovers them.
-_CAPTURE_TIMEOUT_SECONDS = 30.0
+# checkpointed truth carries durable URLs), and the late capture rides the
+# run's finalize. Both are bounded so a hung sandbox or storage backend can't
+# stall the turn: a path the model-time capture leaves in place is retried
+# late, at the same content-addressed keys.
+CAPTURE_TIMEOUT_SECONDS = 30.0
 
 
-def is_sandbox_image_path(path: str, work_dir: str = "/home/workspace") -> bool:
+def is_sandbox_image_path(path: str) -> bool:
     """Check if path is a sandbox-relative image (not an external URL)."""
     if path.startswith(("http://", "https://", "//", "data:")):
         return False
-    work_dir_prefix = work_dir.rstrip("/") + "/"
-    normalized = (
-        path.replace(work_dir_prefix, "") if path.startswith(work_dir_prefix) else path
-    )
-    ext = normalized.rsplit(".", 1)[-1].lower() if "." in normalized else ""
+    basename = path.rsplit("/", 1)[-1]
+    ext = basename.rsplit(".", 1)[-1].lower() if "." in basename else ""
     return ext in IMAGE_EXTS
 
 
@@ -60,28 +60,35 @@ def image_storage_key(thread_id: str, sha_hex: str, basename: str) -> str:
 
 
 async def capture_sandbox_images(
-    sandbox: Any, paths: set[str], thread_id: str = ""
+    sandbox: Any,
+    paths: set[str],
+    thread_id: str = "",
+    *,
+    project: ProjectContext | None = None,
 ) -> dict[str, str]:
     """Download sandbox image paths, upload content-addressed, return path→URL.
 
     Per-path captures run concurrently; each failure is logged and simply
     absent from the returned map (callers leave unmapped paths untouched).
+
+    Paths go to ``normalize_path`` exactly as the agent wrote them: it already
+    resolves every spelling, and it is the only thing that knows an absolute
+    path may name an allowed root outside the work dir (``/tmp``, matplotlib's
+    default savefig target). Folding to a work-dir-relative form first would
+    re-root those under the work dir and the image would vanish.
     """
-    work_dir_prefix = sandbox.working_dir.rstrip("/") + "/"
 
     async def _capture_one(path: str) -> tuple[str, str] | None:
         try:
             normalized = (
-                path.replace(work_dir_prefix, "")
-                if path.startswith(work_dir_prefix)
-                else path
+                sandbox.normalize_path(path, project=project)
+                if project is not None
+                else sandbox.normalize_path(path)
             )
-            content = await sandbox.adownload_file_bytes(
-                sandbox.normalize_path(normalized)
-            )
+            content = await sandbox.adownload_file_bytes(normalized)
             if not content:
                 return None
-            basename = normalized.rsplit("/", 1)[-1]
+            basename = path.rsplit("/", 1)[-1]
             key = image_storage_key(
                 thread_id, hashlib.sha256(content).hexdigest(), basename
             )
@@ -110,11 +117,12 @@ def rewrite_image_paths(text: str, url_map: dict[str, str]) -> str:
     return IMAGE_MD_RE.sub(replacer, text)
 
 
-def _collect_sandbox_paths(messages: list[Any], work_dir: str) -> set[str]:
+def collect_sandbox_paths(messages: list[Any]) -> set[str]:
+    """The sandbox image paths the AI messages' text names."""
     paths: set[str] = set()
     for text in _iter_text_segments(messages):
         for match in IMAGE_MD_RE.finditer(text):
-            if is_sandbox_image_path(match.group(2), work_dir):
+            if is_sandbox_image_path(match.group(2)):
                 paths.add(match.group(2))
     return paths
 
@@ -179,12 +187,12 @@ class ImageCaptureMiddleware(AgentMiddleware):
         response = await handler(request)
         try:
             result = await asyncio.wait_for(
-                self._arewrite(response.result), _CAPTURE_TIMEOUT_SECONDS
+                self._arewrite(response.result), CAPTURE_TIMEOUT_SECONDS
             )
         except TimeoutError:
             logger.warning(
                 "[ImageCapture] capture exceeded %ss; sandbox paths left in place",
-                _CAPTURE_TIMEOUT_SECONDS,
+                CAPTURE_TIMEOUT_SECONDS,
             )
             return response
         except Exception:
@@ -202,7 +210,7 @@ class ImageCaptureMiddleware(AgentMiddleware):
         sandbox = getattr(self._session, "sandbox", None)
         if sandbox is None or not is_storage_enabled():
             return None
-        paths = _collect_sandbox_paths(messages, sandbox.working_dir)
+        paths = collect_sandbox_paths(messages)
         if not paths:
             return None
 

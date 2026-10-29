@@ -1,16 +1,16 @@
-import { Suspense, useMemo } from 'react';
-import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Suspense, useEffect, useState } from 'react';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Shield, X } from 'lucide-react';
-import { useTheme } from '@/contexts/ThemeContext';
+import { Shield } from 'lucide-react';
+import { Loader } from '@/components/ui/loader';
+import { WizardExit, WizardProgress, WizardShell } from '@/components/ui/wizard';
 import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
 import { useUser } from '@/hooks/useUser';
 import { skipSetup } from '@/hooks/useSetupGate';
+import { captureSetupReturn, returnFromSetup, withoutSetupReturnParam } from '@/lib/setupReturn';
+import { SetupFooterSlot } from './SetupFooter';
 
 import { isPlatformMode } from '@/config/hostMode';
-import logoLight from '@/assets/img/logo.svg';
-import logoDark from '@/assets/img/logo-dark.svg';
 import React from 'react';
 
 const MethodStep = React.lazy(() => import('./steps/MethodStep'));
@@ -54,195 +54,95 @@ function routeIndex(pathname: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Progress stepper
-// ---------------------------------------------------------------------------
-
-function ProgressStepper({ currentDot, labels }: { currentDot: number; labels: string[] }) {
-  return (
-    <div
-      className="flex items-center justify-center gap-0"
-      role="progressbar"
-      aria-valuenow={currentDot + 1}
-      aria-valuemin={1}
-      aria-valuemax={4}
-      aria-label={`Step ${currentDot + 1} of ${labels.length}: ${labels[currentDot]}`}
-    >
-      {labels.map((label, i) => (
-        <div key={label} className="flex items-center">
-          {i > 0 && (
-            <div
-              className="h-px w-10 sm:w-16 transition-colors duration-200"
-              style={{
-                backgroundColor: i <= currentDot
-                  ? 'var(--color-accent-primary)'
-                  : 'var(--color-border-default)',
-              }}
-            />
-          )}
-          <div className="flex flex-col items-center gap-1.5">
-            <div
-              className="flex items-center justify-center rounded-full transition-all duration-200"
-              style={{
-                width: 28,
-                height: 28,
-                backgroundColor: i <= currentDot
-                  ? 'var(--color-accent-primary)'
-                  : 'transparent',
-                border: i <= currentDot
-                  ? 'none'
-                  : '2px solid var(--color-border-default)',
-                color: i <= currentDot
-                  ? '#fff'
-                  : 'var(--color-text-tertiary)',
-                fontSize: '0.75rem',
-                fontWeight: 600,
-              }}
-            >
-              {i + 1}
-            </div>
-            <span
-              className="text-xs font-medium select-none"
-              style={{
-                color: i <= currentDot
-                  ? 'var(--color-text-primary)'
-                  : 'var(--color-text-tertiary)',
-              }}
-            >
-              {label}
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Transition variants
-// ---------------------------------------------------------------------------
-
-function slideVariants(direction: number) {
-  return {
-    initial: { x: direction > 0 ? 40 : -40, opacity: 0 },
-    animate: { x: 0, opacity: 1 },
-    exit: { x: direction > 0 ? -40 : 40, opacity: 0 },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // SetupWizard
 // ---------------------------------------------------------------------------
 
 export default function SetupWizard() {
   const { t } = useTranslation();
-  const { theme } = useTheme();
-  const logo = theme === 'light' ? logoDark : logoLight;
   const location = useLocation();
   const navigate = useNavigate();
   const { hasAny: hasProvider } = useConfiguredProviders();
   const { user } = useUser();
   const hasPlatformAccess = (user?.access_tier ?? -1) >= 0;
   const canExit = hasProvider || hasPlatformAccess || !isPlatformMode;
+  // Captured on entry, in the initializer so the first render already knows
+  // whether to show the exit. Writing the same target twice is harmless.
+  const [hasReturn, setHasReturn] = useState(() => captureSetupReturn(location.search) !== null);
+  // A page that sent the user here has somewhere to go back to, so the exit
+  // shows even before they have any model access.
+  const showExit = canExit || hasReturn;
   const stepperLabels = STEPPER_KEYS.map((k) => t(`setup.${k}`));
 
   const current = routeIndex(location.pathname);
+  const connectMethod = (location.state as { method?: string } | null)?.method;
   const currentDot = stepperDot(current);
 
-  const direction = useMemo(() => 1, []);
-  const variants = slideVariants(direction);
+  // Where the steps draw their buttons; see SetupFooter.
+  const [footerSlot, setFooterSlot] = useState<HTMLElement | null>(null);
+
+  // Once captured, the param leaves the address bar, so a copied or reloaded
+  // URL doesn't carry it. The router state the steps rely on is kept.
+  useEffect(() => {
+    const search = withoutSetupReturnParam(location.search);
+    if (search === null) return;
+    navigate(
+      { pathname: location.pathname, search, hash: location.hash },
+      { replace: true, state: location.state },
+    );
+  }, [location, navigate]);
+
+  const handleExit = () => {
+    if (returnFromSetup()) return;
+    if (!canExit) {
+      // The return expired while the page was open; without access there is
+      // still nowhere else to go.
+      setHasReturn(false);
+      return;
+    }
+    skipSetup();
+    navigate('/dashboard');
+  };
 
   return (
-    <div
-      className="h-screen h-dvh flex flex-col overflow-y-auto"
-      style={{ backgroundColor: 'var(--color-bg-page)' }}
+    <WizardShell
+      testId="setup-flow"
+      stepKey={String(current)}
+      stepIndex={current}
+      progress={
+        <WizardProgress steps={stepperLabels} current={currentDot} label={t('setup.progressLabel')} />
+      }
+      // Shown when the user already has model access configured, or when
+      // another page sent them here and expects them back.
+      exit={showExit ? <WizardExit label={t('setup.exitSetup', 'Exit setup')} onClick={handleExit} /> : undefined}
+      footer={<div ref={setFooterSlot} />}
     >
-      {/* Exit button — visible when user already has model access configured */}
-      {canExit && (
-        <button
-          type="button"
-          onClick={() => { skipSetup(); navigate('/dashboard'); }}
-          className="fixed top-4 right-4 z-50 flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-md text-xs font-medium transition-colors hover:opacity-80"
-          style={{
-            color: 'var(--color-text-secondary)',
-            background: 'var(--color-bg-surface)',
-            border: '1px solid var(--color-border-default)',
-          }}
+      <SetupFooterSlot value={footerSlot}>
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-20 text-(--color-text-tertiary)">
+              <Loader size={20} label={t('common.loading')} />
+            </div>
+          }
         >
-          <X className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{t('setup.exitSetup', 'Exit setup')}</span>
-        </button>
-      )}
-
-      {/* Branded header */}
-      <header className="flex flex-col items-center gap-3 sm:gap-4 pt-5 sm:pt-10 pb-2 px-4">
-        <img src={logo} alt="LangAlpha" className="h-7" />
-        <h1
-          className="text-center font-semibold text-lg sm:text-2xl"
-          style={{
-            lineHeight: 1.3,
-            color: 'var(--color-text-primary)',
-          }}
-        >
-          {t('setup.brandedHeader')}
-        </h1>
-        <p
-          className="hidden sm:flex items-center gap-1.5 text-xs"
-          style={{ color: 'var(--color-text-tertiary)' }}
-        >
-          <Shield className="h-3.5 w-3.5" />
-          {t('setup.securityNote')}
+          <Routes location={location}>
+            <Route path="method" element={<MethodStep />} />
+            <Route path="provider" element={<ProviderStep />} />
+            <Route path="connect" element={<ConnectStep />} />
+            <Route path="models" element={<ModelPickStep />} />
+            <Route path="defaults" element={<DefaultsStep />} />
+            <Route path="ready" element={<DoneStep />} />
+            <Route path="*" element={<Navigate to="/setup/method" replace />} />
+          </Routes>
+        </Suspense>
+      </SetupFooterSlot>
+      {/* Said while keys are being chosen and entered, not after. A
+          subscription sign-in has its own note about the tokens it stores. */}
+      {(current <= 1 || (current === 2 && connectMethod !== 'oauth')) && (
+        <p className="mt-8 flex items-center gap-1.5 text-xs text-(--color-text-tertiary)">
+          <Shield aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+          <span>{t('setup.securityNote')}</span>
         </p>
-      </header>
-
-      {/* Progress stepper */}
-      <div className="py-4 sm:py-6">
-        <ProgressStepper currentDot={currentDot} labels={stepperLabels} />
-      </div>
-
-      {/* Step content */}
-      <main
-        role="main"
-        aria-label="Account setup"
-        className="flex-1 w-full mx-auto"
-        style={{
-          maxWidth: 640,
-          padding: 'clamp(16px, 5vw, 48px)',
-          paddingTop: 0,
-          paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 32px)',
-        }}
-      >
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={current}
-            variants={variants}
-            initial="initial"
-            animate="animate"
-            exit="exit"
-            transition={{ duration: 0.2, ease: 'easeInOut' }}
-          >
-            <Suspense
-              fallback={
-                <div
-                  className="flex items-center justify-center py-20"
-                  style={{ color: 'var(--color-text-tertiary)' }}
-                >
-                  <span className="text-sm">Loading...</span>
-                </div>
-              }
-            >
-              <Routes location={location}>
-                <Route path="method" element={<MethodStep />} />
-                <Route path="provider" element={<ProviderStep />} />
-                <Route path="connect" element={<ConnectStep />} />
-                <Route path="models" element={<ModelPickStep />} />
-                <Route path="defaults" element={<DefaultsStep />} />
-                <Route path="ready" element={<DoneStep />} />
-                <Route path="*" element={<Navigate to="/setup/method" replace />} />
-              </Routes>
-            </Suspense>
-          </motion.div>
-        </AnimatePresence>
-      </main>
-    </div>
+      )}
+    </WizardShell>
   );
 }

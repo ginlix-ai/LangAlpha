@@ -3,7 +3,7 @@
 The relay base URL is minted into every sandbox credential file, but whether
 the sandbox can dial it depends on where the sandbox runs: a local Docker
 container reaches the host only via the Docker host gateway, and a remote
-(Daytona) sandbox reaches nothing that isn't publicly routable. This module
+(Daytona or E2B) sandbox reaches nothing that isn't publicly routable. This module
 keeps that topology awareness in one place so the rest of the relay stack
 stays deployment-agnostic.
 """
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import ipaddress
 from urllib.parse import urlsplit
+
+from ptc_agent.core.sandbox.providers import provider_class, provider_runs_remote
 
 # Hostnames that are local by construction — no DNS needed to know a remote
 # sandbox can never reach them.
@@ -54,7 +56,7 @@ def effective_relay_base_url(provider: str) -> str:
         return EGRESS_RELAY_BASE_URL
     parts = urlsplit(SERVER_BASE_URL)
     host = (parts.hostname or "").lower()
-    if provider == "docker" and (
+    if not provider_runs_remote(provider) and (
         host in _LOOPBACK_HOSTNAMES or host.startswith("127.")
     ):
         port = f":{parts.port}" if parts.port else ""
@@ -69,12 +71,13 @@ def relay_reachability_warning(provider: str, base_url: str) -> str | None:
     machine, so a loopback/private relay base can never work. Warn, never
     block — a self-hosted Daytona on a private network is legitimate.
     """
-    if provider != "daytona":
+    if not provider_runs_remote(provider):
         return None
     if not _is_local_host(_hostname(base_url)):
         return None
     return (
-        f"Daytona sandboxes run remotely and cannot reach the egress relay at "
+        f"{provider_class(provider).label} sandboxes run remotely and "
+        f"cannot reach the egress relay at "
         f"'{base_url}'. OAuth connector tools will fail inside sandboxes until "
         "EGRESS_RELAY_BASE_URL points at a URL that is reachable from the "
         "sandbox network — your backend's public domain, or a tunnel "

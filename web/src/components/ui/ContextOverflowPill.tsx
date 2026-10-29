@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Sparkles, ArrowUp } from 'lucide-react';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
+import { scrollMotion } from '@/lib/reducedMotion';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import './ContextOverflowPill.css';
 
@@ -87,7 +88,7 @@ export function ContextOverflowPill() {
   const handleClick = () => {
     const els = ChatInputRegistry.list();
     if (els.length > 0) {
-      els[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      els[0].scrollIntoView({ behavior: scrollMotion(), block: 'center' });
       return;
     }
     // Strip image data URLs — chip rendering doesn't need them and a couple of
@@ -99,7 +100,7 @@ export function ContextOverflowPill() {
   return (
     <button
       type="button"
-      className="context-overflow-pill"
+      className="context-overflow-pill press"
       onClick={handleClick}
       aria-label={t('chat.widgetContext.overflowAria', {
         count: snapshots.length,

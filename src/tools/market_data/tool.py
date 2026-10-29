@@ -40,7 +40,7 @@ async def get_daily_prices(
     and charting.
 
     Args:
-        symbol: US "AAPL", A-share "600519.SS", HK "0700.HK".
+        symbol: US "AAPL", A-share "600519.SH", HK "0700.HK".
         start_date: Start "YYYY-MM-DD" (optional).
         end_date: End "YYYY-MM-DD" (optional).
         limit: Max records when no date range is given (default 60 trading days).
@@ -61,7 +61,7 @@ async def get_company_overview(
     consensus, earnings, and revenue segmentation.
 
     Args:
-        symbol: US "AAPL", A-share "600519.SS", HK "0700.HK".
+        symbol: US "AAPL", A-share "600519.SH", HK "0700.HK".
     """
     content, artifact = await fetch_company_overview(symbol, config=config)
     return content, artifact
@@ -78,7 +78,7 @@ async def get_quote(
     current price, including a re-check right before stating a price in your answer.
 
     Args:
-        symbols: Up to 20 tickers — US "NVDA", A-share "600519.SS", HK "0700.HK".
+        symbols: Up to 20 tickers — US "NVDA", A-share "600519.SH", HK "0700.HK".
         asset_type: "stocks" (default) or "indices" for index symbols like "^GSPC".
     """
     content, artifact = await fetch_quote(symbols, asset_type=asset_type, config=config)

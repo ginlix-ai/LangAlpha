@@ -37,6 +37,17 @@ export const INITIAL_LOAD_DAYS: Record<string, number> = {
   '1hour': 180, '4hour': 365, '1day': 0,
 };
 
+// Days to prepend on scroll-left per interval
+export const SCROLL_CHUNK_DAYS: Record<string, number> = {
+  '1min': 5, '5min': 20, '15min': 30, '30min': 60,
+  '1hour': 120, '4hour': 180, '1day': 365,
+};
+
+// Scroll-load: how close to left edge (in bars) before fetching more data
+export const SCROLL_LOAD_THRESHOLD = 20;
+// Debounce delay for visible range changes (ms)
+export const RANGE_CHANGE_DEBOUNCE_MS = 300;
+
 // Stage 1 (fast) initial load — days to fetch for immediate render.
 // Intervals not listed here skip staged loading entirely.
 export const STAGE1_LOAD_DAYS: Record<string, number> = {
@@ -77,10 +88,4 @@ export const WS_STALE_WINDOW_MS = 5000;
 export const BARS_PER_DAY: Record<string, number> = {
   '1min': 960, '5min': 192, '15min': 64, '30min': 32,
   '1hour': 16, '4hour': 4, '1day': 1,
-};
-
-// Ideal visible bar count per interval (legacy, used by scroll-load heuristics)
-export const AUTO_FIT_BARS: Record<string, number> = {
-  '1min': 390, '5min': 390, '15min': 200,
-  '30min': 200, '1hour': 180, '4hour': 180, '1day': 180,
 };

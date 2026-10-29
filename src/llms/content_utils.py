@@ -12,7 +12,6 @@ from various LLM message formats. These utilities are provider-agnostic and hand
 
 This module is designed to be used by:
 - LLM API call utilities (src/llms/api_call.py)
-- Tracking utilities (src/utils/tracking/core.py)
 - SSE streaming layer (src/server/content_normalizer.py)
 """
 
@@ -129,10 +128,13 @@ def extract_content_with_type(content: Any) -> Tuple[Optional[str], Optional[str
                         has_reasoning = True
                     continue
 
-                # Handle thinking objects
+                # Handle thinking objects. Items are concatenated, so a
+                # whitespace-only one is text, like a text item below: DeepSeek
+                # streams the space before a number as its own delta (" ", "9").
+                # Whether it may open a reasoning section is the stream's call.
                 if item.get("type") == "thinking" and "thinking" in item:
                     thinking = item["thinking"]
-                    if thinking and str(thinking).strip():
+                    if thinking:
                         text_parts.append(thinking)
                         has_reasoning = True
                     continue

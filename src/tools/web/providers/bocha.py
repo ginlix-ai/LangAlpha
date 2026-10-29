@@ -14,7 +14,14 @@ import httpx
 from langchain_core.tools import tool
 
 from src.tools.utils.validation_utils import validate_date_format
-from src.tools.web.providers._shared import lazy, normalize_time_range, request_json
+from src.tools.web.providers._shared import (
+    lazy,
+    normalize_time_range,
+    request_json,
+    search_failed,
+    search_refusal,
+)
+from src.tools.web.types import WebError, WebErrorType, WebToolError
 
 logger = logging.getLogger(__name__)
 
@@ -355,12 +362,18 @@ def build_web_search_tool(
                 Returns results from this date onwards.
             end_date: End date for filtering results (YYYY-MM-DD format).
                 Returns results up to this date.
+
+        Returns:
+            Ranked results as titles, snippets and URLs — not full page text.
         """
         try:
-            # Validate date formats
             validate_date_format(start_date)
             validate_date_format(end_date)
+        except ValueError as e:
+            # A malformed date is the agent's mistake, not a failed search.
+            return search_refusal(e, query)
 
+        try:
             # Apply default time_range if LLM didn't specify one
             effective_time_range = time_range or default_time_range
             if effective_time_range != time_range:
@@ -380,6 +393,11 @@ def build_web_search_tool(
                 freshness=freshness,
                 answer=False  # Don't request LLM answer
             )
+            if metadata.get("error"):
+                # The API wrapper hands its failure back as metadata, not an
+                # exception; an empty result list would read as nothing found.
+                failure = WebError(type=WebErrorType.PROVIDER_ERROR, message=metadata["error"])
+                return search_failed(WebToolError(failure), query)
 
             # Build content for LLM (focused, no UI metadata)
             content: List[Dict[str, Any]] = []
@@ -451,7 +469,6 @@ def build_web_search_tool(
 
         except (httpx.HTTPError, ValueError) as e:
             logger.error(f"Bocha AI search failed: {e}", exc_info=True)
-            error_message = f"Search failed: {str(e)}"
-            return error_message, {"error": str(e), "query": query}
+            return search_failed(e, query)
 
     return web_search

@@ -1,0 +1,628 @@
+/* The detail panel in the cards' language (termCard.css), a size up: the
+   same frames and marks, its own line and links. */
+
+.term-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-term-text);
+}
+
+/* A section that takes the panel's spare height (a filing's document), and
+   never less than enough of it to read. */
+.term-panel-fill {
+  flex: 1;
+  min-height: 16rem;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A panel holding a section that fills (a filing's document) takes the height
+   its host gives it, or that section has no height to fill. */
+.term-panel:has(> .term-panel-fill) {
+  flex: 1;
+}
+
+/* And its hosts hand that height down, on a phone too: the tool's scroller
+   (ToolCallDetailView) and the tab around it (DetailPanel). The scroller
+   scrolls only a panel too short for that section's floor. */
+.term-panel-scroller:has(> .term-panel > .term-panel-fill) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.term-panel-host:has(> .term-panel-scroller > .term-panel > .term-panel-fill) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.term-panel-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.term-panel-title {
+  font-family: var(--term-words);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.term-panel-title > .term-bracket:first-child {
+  margin-right: 0.375em;
+}
+.term-panel-title > .term-bracket:last-child {
+  margin-left: 0.375em;
+}
+.term-panel-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--term-words);
+  font-size: 0.75rem;
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-secondary);
+}
+.term-panel-aside {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  white-space: nowrap;
+  font-family: var(--term-words);
+  font-size: 0.6875rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-tertiary);
+}
+
+.term-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-family: var(--term-words);
+  font-size: 0.6875rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  text-decoration: none;
+  white-space: nowrap;
+  color: var(--color-term-text-secondary);
+  cursor: pointer;
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.term-link:hover {
+  color: var(--color-term-text);
+}
+.term-link:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.term-link-mark {
+  width: 0.875em;
+  height: 0.875em;
+  flex-shrink: 0;
+}
+
+/* Text set to be read rather than scanned, in the reply's own face in every
+   card style. */
+.term-prose {
+  font-family: var(--font-content);
+  font-variant-numeric: normal;
+  letter-spacing: normal;
+}
+
+/* recharts sets its own type on each tick; the panel's charts read in mono. */
+.term-chart text {
+  font-family: var(--font-mono);
+}
+.term-chart .recharts-legend-item-text,
+.term-chart .recharts-legend-wrapper {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+}
+/* A series name in a chart's legend, set as a label. */
+.term-legend {
+  font-family: var(--term-words);
+  color: var(--color-term-text-tertiary);
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+}
+
+/* A chart's hover readout: the panel's type on an elevated fill. */
+.term-tooltip {
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--color-term-edge);
+  border-radius: 4px;
+  background: var(--color-bg-elevated);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-term-text);
+}
+.term-tooltip > p {
+  margin: 0;
+}
+.term-tooltip > p:first-child {
+  color: var(--color-term-text-tertiary);
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+}
+
+/* Panel tables: the cards' table, a size up, its headers sortable. */
+.term-card[data-scale='panel'] .term-table th {
+  font-size: 0.65625rem;
+}
+.term-card[data-scale='panel'] .term-table td {
+  padding-top: 0.3125rem;
+  padding-bottom: 0.3125rem;
+}
+.term-card[data-scale='panel'] .term-table tbody tr + tr td {
+  border-top: 1px dotted var(--color-term-rule);
+}
+.term-sort {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--color-term-text-tertiary);
+  cursor: pointer;
+}
+.term-sort:hover {
+  color: var(--color-term-text);
+}
+.term-sort:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.term-clip {
+  max-width: 13rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* One-sided bars, each count against the largest: `BUY ████████ 41  52%`.
+   The buy side in the profit color, the sell side in the loss color, the
+   plain grades fainter than the strong ones, a hold in ink. */
+.term-hbars {
+  display: grid;
+  grid-template-columns: max-content minmax(4ch, 1fr) max-content max-content;
+  align-items: center;
+  column-gap: 1.5ch;
+  row-gap: 0.375rem;
+}
+.term-hbars-label {
+  font-family: var(--term-words);
+  white-space: nowrap;
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-secondary);
+}
+.term-hbars-track {
+  height: 0.625rem;
+}
+.term-hbar {
+  display: block;
+  height: 100%;
+  min-width: 1px;
+  background: var(--color-term-text-tertiary);
+}
+.term-hbar[data-tone='up'] {
+  background: var(--color-profit);
+}
+.term-hbar[data-tone='down'] {
+  background: var(--color-loss);
+}
+.term-hbar[data-weak] {
+  opacity: 0.55;
+}
+
+/* ── Web, delivery and direct tool panels ── */
+
+/* The page a fetch read, over what it read: scheme and path quieter than
+   the host. */
+.term-fetch-url {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-term-rule);
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.45;
+  color: var(--color-term-text);
+  text-decoration: none;
+}
+.term-fetch-url-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.term-fetch-url .term-link-mark {
+  color: var(--color-term-text-tertiary);
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.term-fetch-url:hover .term-fetch-url-text {
+  text-decoration: underline;
+  text-decoration-color: var(--color-term-edge-hover);
+  text-underline-offset: 2px;
+}
+.term-fetch-url:hover .term-link-mark {
+  color: var(--color-term-text);
+}
+.term-fetch-url:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: -2px;
+}
+
+/* A search: `> "query"`, an answer when the engine gave one, then each
+   result numbered as on the card. */
+.term-web-query {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.term-web-answer {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.term-web-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+* + .term-web-results {
+  margin-top: 0.625rem;
+  border-top: 1px dashed var(--color-term-edge);
+}
+.term-web-results > li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 1.25ch;
+  padding: 0.75rem 0;
+}
+.term-web-results > li:first-child {
+  padding-top: 0.625rem;
+}
+.term-web-results > li:last-child {
+  padding-bottom: 0.125rem;
+}
+.term-web-results > li + li {
+  border-top: 1px dotted var(--color-term-rule);
+}
+.term-web-index,
+.term-web-site {
+  font-size: 0.6875rem;
+  color: var(--color-term-text-tertiary);
+}
+/* On the host's baseline, so the number beside it lines up with the text
+   rather than the icon's foot. */
+.term-web-site {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5ch;
+  min-width: 0;
+  white-space: nowrap;
+}
+.term-web-favicon {
+  display: inline-flex;
+  align-self: center;
+}
+.term-web-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-term-text-secondary);
+}
+.term-web-date {
+  flex-shrink: 0;
+  letter-spacing: calc(0.04em * var(--term-track));
+  text-transform: var(--term-case);
+}
+.term-web-title {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--color-term-text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.term-web-title .term-link-mark {
+  display: inline-block;
+  margin-left: 0.25em;
+  vertical-align: -0.1em;
+  color: var(--color-term-text-tertiary);
+  opacity: 0;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+.term-web-title:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--color-term-edge-hover);
+  text-underline-offset: 3px;
+}
+.term-web-title:hover .term-link-mark {
+  opacity: 1;
+}
+.term-web-title:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.term-web-snippet {
+  display: -webkit-box;
+  margin: 0.25rem 0 0;
+  overflow: hidden;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--color-term-text-secondary);
+}
+
+/* A sent message: the outcome under its verdict, then each file against its
+   own. */
+.term-delivery-address {
+  letter-spacing: normal;
+  text-transform: none;
+}
+.term-delivery-outcome {
+  margin: 0.375rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-term-text-secondary);
+  overflow-wrap: anywhere;
+}
+.term-delivery-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.term-delivery-clip {
+  width: 0.875em;
+  height: 0.875em;
+}
+.term-delivery-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.term-delivery-files > li {
+  padding: 0.1875rem 0;
+}
+.term-delivery-file {
+  display: flex;
+  align-items: baseline;
+}
+.term-delivery-path {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: var(--color-term-text);
+  overflow-wrap: anywhere;
+}
+button.term-delivery-path {
+  cursor: pointer;
+}
+button.term-delivery-path:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--color-term-edge-hover);
+  text-underline-offset: 2px;
+}
+button.term-delivery-path:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.term-delivery-file > .term-tag {
+  flex-shrink: 0;
+}
+/* The danger ink the send's own verdict uses, not the loss red, which is P&L. */
+.term-delivery-file > .term-tag[data-tone='bad'] {
+  color: var(--color-icon-danger);
+}
+.term-delivery-reason {
+  margin-top: 0.125rem;
+  font-family: var(--term-words);
+  font-size: 0.6875rem;
+  color: var(--color-term-text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+/* A direct tool call: the frame sent and the answer, in the panel's inks.
+   ArgsTable and JsonTree colour themselves from the text tokens, so they are
+   pointed at the panel's own here; the accent a number wears elsewhere is
+   ink in a panel that keeps colour for states. */
+.term-direct-body {
+  --color-text-primary: var(--color-term-text);
+  --color-text-secondary: var(--color-term-text-secondary);
+  --color-text-tertiary: var(--color-term-text-tertiary);
+  --color-text-quaternary: var(--color-term-text-tertiary);
+  --color-accent-primary: var(--color-term-text);
+  min-width: 0;
+}
+.term-direct-mark {
+  display: inline-block;
+  margin-right: 0.5ch;
+  vertical-align: -0.15em;
+}
+.term-direct-id {
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--color-term-text-tertiary);
+}
+/* The tree's toggles hang left of its first brace. */
+.term-direct-json {
+  padding-left: 1rem;
+}
+.term-direct-blocks > * + * {
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px dashed var(--color-term-edge);
+}
+.term-direct-text {
+  margin: 0;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-term-text);
+}
+.term-direct-notice-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-weight: 600;
+}
+.term-direct-notice-mark {
+  flex-shrink: 0;
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--color-term-text-tertiary);
+}
+.term-direct-notice-body {
+  margin: 0.25rem 0 0 1.375rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-term-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* ── Automation panel ── */
+
+/* A name too long for the line wraps inside its brackets, rather than
+   running off the panel. */
+.term-auto-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* The instruction, as the user wrote it. */
+.term-auto-prose {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* A name in the list wraps rather than being cut, and on a phone the line
+   under it, its schedule, wraps too. */
+.term-table td.term-auto-wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* The count beside the link on the list's edge, in the link's type. */
+.term-auto-count {
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+}
+/* A run's error, under the run and on no rule of its own. */
+.term-card[data-scale='panel'] .term-table tbody tr.term-auto-error td {
+  padding-top: 0;
+  border-top: 0;
+  white-space: normal;
+}
+.term-auto-error-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  font-size: 0.6875rem;
+  color: var(--color-loss);
+}
+
+/* ── Market data panels ── */
+
+/* The keys of the lines a chart draws, at the far end of the line above it:
+   `── MA20  ── MA50`. */
+.term-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.25ch;
+  margin-left: auto;
+}
+.term-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75ch;
+  font-family: var(--term-words);
+  font-size: 0.65625rem;
+  letter-spacing: calc(0.06em * var(--term-track));
+  text-transform: var(--term-case);
+  color: var(--color-term-text-tertiary);
+}
+.term-key-mark {
+  width: 1rem;
+  height: 2px;
+  flex-shrink: 0;
+}
+
+/* ── Options chain and movers ── */
+
+/* A mover's symbol opens it in Market View: it reads as the table prints it,
+   and says so on hover, as a search result's title does. */
+.term-sym-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.term-sym-link .term-link-mark {
+  align-self: center;
+  color: var(--color-term-text-tertiary);
+  opacity: 0;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+.term-sym-link:hover > span {
+  text-decoration: underline;
+  text-decoration-color: var(--color-term-edge-hover);
+  text-underline-offset: 2px;
+}
+.term-sym-link:hover .term-link-mark,
+.term-sym-link:focus-visible .term-link-mark {
+  opacity: 1;
+}
+.term-sym-link:focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}

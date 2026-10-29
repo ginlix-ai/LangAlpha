@@ -1,138 +1,96 @@
 import React from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { X, Zap } from 'lucide-react';
-import { getDisplayName, getToolIcon } from './toolDisplayConfig';
-import Markdown from './Markdown';
+import { cn } from '@/lib/utils';
+import { XCircle } from 'lucide-react';
+import { getDisplayName, isTaskTool } from './toolDisplayConfig';
+import { ToolIcon } from './ToolIcon';
 import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import { useTranslation } from 'react-i18next';
 import ToolCallDetailView, { type ToolCallProcessRecord, type SubagentInfo } from './ToolCallDetailView';
 import { taskCardStatusKind } from './taskStatusUi';
-
-interface PlanData {
-  description?: string;
-  [key: string]: unknown;
-}
+import { isToolCallFailed } from './filePanel/toolCallFailure';
+import { useWorkspaceFolders } from '../contexts/WorkspaceContext';
 
 interface DetailPanelProps {
   toolCallProcess: ToolCallProcessRecord | null;
-  planData?: PlanData | null;
-  onClose: () => void;
   onOpenFile?: (filePath: string, workspaceId?: string) => void;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
 }
 
-function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSubagentTask }: DetailPanelProps): React.ReactElement | null {
+/**
+ * A tool call's result. On desktop it is the body of a Files tab, whose strip
+ * already names it; on mobile it is the body of a bottom sheet, which has no
+ * strip, so the header names it here and the sheet owns dismissal.
+ */
+function DetailPanel({ toolCallProcess, onOpenFile, onOpenSubagentTask }: DetailPanelProps): React.ReactElement | null {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
-
-  // Plan detail view
-  if (planData) {
-    return (
-      <div
-        className={isMobile ? '' : 'h-full flex flex-col'}
-        style={{
-          backgroundColor: 'transparent',
-          ...(!isMobile && { borderLeft: '1px solid var(--color-border-muted)' }),
-        }}
-      >
-        <div
-          className="flex items-center justify-between px-4 py-3 flex-shrink-0"
-          style={!isMobile ? { borderBottom: '1px solid var(--color-border-muted)' } : undefined}
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <Zap className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-            <span
-              className="font-semibold truncate"
-              style={{ color: 'var(--color-text-primary)', fontSize: '0.875rem' }}
-            >
-              {t('toolArtifact.planDetails')}
-            </span>
-          </div>
-          {!isMobile && (
-            <button
-              onClick={onClose}
-              className="p-1 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"
-              style={{ color: 'var(--Labels-Secondary)' }}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-        <div
-          className={`${isMobile ? '' : 'flex-1 overflow-y-auto'} px-4 py-4`}
-          style={!isMobile ? { minHeight: 0 } : undefined}
-        >
-          <Markdown variant="panel" content={planData.description || t('toolArtifact.noPlanDescription')} className="text-sm" />
-        </div>
-      </div>
-    );
-  }
+  const root = useWorkspaceFolders()?.rootDir;
 
   if (!toolCallProcess) return null;
 
   const toolName = toolCallProcess.toolName || '';
   const toolArgs = toolCallProcess.toolCall?.args;
-  const isTaskTool = toolName === 'Task' || toolName === 'task';
-  const displayName = isTaskTool ? t('toolArtifact.subagentTask') : getDisplayName(toolName, t, toolArgs);
-  const IconComponent = getToolIcon(toolName, toolArgs);
+  const isTask = isTaskTool(toolName);
   const artifact = toolCallProcess.toolCallResult?.artifact;
-  const content = toolCallProcess.toolCallResult?.content;
-  const subagentType = isTaskTool ? ((toolCallProcess.toolCall?.args?.subagent_type as string) || 'general-purpose') : '';
+  const displayName = isTask
+    ? t('toolArtifact.subagentTask')
+    : getDisplayName(toolName, t, toolArgs, { artifact, root });
+  const subagentType = isTask ? ((toolCallProcess.toolCall?.args?.subagent_type as string) || 'general-purpose') : '';
   // Status only — a Task's reply exists from the moment it is dispatched, so
   // `content` marked every running task "completed" and contradicted the
   // status chip the panel body renders. Liveness is the question the icon
   // answers, not completion: the body below picks the same way, and a failed
   // or stopped task is as done working as a finished one.
   const isSubagentLive =
-    isTaskTool && taskCardStatusKind(toolCallProcess._subagentStatus) === 'running';
+    isTask && taskCardStatusKind(toolCallProcess._subagentStatus) === 'running';
+  const isFailed = isToolCallFailed(toolCallProcess);
 
   return (
     <div
-      className={isMobile && artifact?.type !== 'sec_filing' ? '' : 'h-full flex flex-col'}
-      style={{
-        backgroundColor: 'transparent',
-        ...(!isMobile && { borderLeft: '1px solid var(--color-border-muted)' }),
-      }}
+      className={cn('term-panel-host', !isMobile && 'h-full flex flex-col')}
+      style={{ backgroundColor: 'transparent' }}
     >
-      {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 py-3 flex-shrink-0"
-        style={!isMobile ? { borderBottom: '1px solid var(--color-border-muted)' } : undefined}
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          {isTaskTool ? (
-            <img src={isSubagentLive ? iconRoboSing : iconRobo} alt="Subagent" className="w-5 h-5 flex-shrink-0" />
-          ) : (
-            <IconComponent className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
-          )}
-          <span
-            className="font-semibold truncate"
-            style={{ color: 'var(--color-text-primary)', fontSize: '0.875rem' }}
-          >
-            {displayName}
-          </span>
-          {isTaskTool && subagentType && (
-            <span style={{ color: 'var(--Labels-Tertiary)', fontSize: '0.8125rem' }}>
-              — {subagentType}
+      {isMobile && (
+        <div className="flex items-center justify-between px-4 py-3 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            {isTask ? (
+              <img src={isSubagentLive ? iconRoboSing : iconRobo} alt="Subagent" className="w-5 h-5 shrink-0" />
+            ) : (
+              <ToolIcon
+                toolName={toolName}
+                args={toolArgs}
+                className="h-4 w-4 shrink-0"
+                style={{ color: isFailed ? 'var(--color-loss)' : 'var(--color-accent-primary)' }}
+              />
+            )}
+            <span
+              className="font-semibold truncate"
+              style={{ color: isFailed ? 'var(--color-loss)' : 'var(--color-text-primary)', fontSize: '0.875rem' }}
+            >
+              {displayName}
             </span>
-          )}
-          {!isTaskTool && (toolCallProcess.toolCall?.args?.symbol as string | undefined) && (
-            <span style={{ color: 'var(--Labels-Tertiary)', fontSize: '0.8125rem' }}>
-              — {toolCallProcess.toolCall!.args!.symbol as string}
-            </span>
-          )}
+            {isFailed && (
+              <XCircle
+                className="h-4 w-4 shrink-0"
+                aria-label={t('toolArtifact.a11y.toolCallFailed')}
+                style={{ color: 'var(--color-loss)' }}
+              />
+            )}
+            {isTask && subagentType && (
+              <span style={{ color: 'var(--Labels-Tertiary)', fontSize: '0.8125rem' }}>
+                · {subagentType}
+              </span>
+            )}
+            {!isTask && (toolCallProcess.toolCall?.args?.symbol as string | undefined) && (
+              <span style={{ color: 'var(--Labels-Tertiary)', fontSize: '0.8125rem' }}>
+                · {toolCallProcess.toolCall!.args!.symbol as string}
+              </span>
+            )}
+          </div>
         </div>
-        {!isMobile && (
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"
-            style={{ color: 'var(--Labels-Secondary)' }}
-          >
-            <X className="h-4 w-4" />
-          </button>
-        )}
-      </div>
+      )}
 
       <ToolCallDetailView
         toolCallProcess={toolCallProcess}

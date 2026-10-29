@@ -1,3 +1,5 @@
+import { userSessionStorage } from '@/lib/userStorage';
+
 const KEY = 'chat_session_restore';
 const TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -18,20 +20,20 @@ export function saveChatSession({ workspaceId, threadId }: SaveChatSessionParams
   if (threadId && threadId !== '__default__') {
     data.threadId = threadId;
   }
-  sessionStorage.setItem(KEY, JSON.stringify(data));
+  userSessionStorage.setItem(KEY, JSON.stringify(data));
 }
 
 export function getChatSession(): ChatSessionData | null {
-  const raw = sessionStorage.getItem(KEY);
+  const raw = userSessionStorage.getItem(KEY);
   if (!raw) return null;
   const session: ChatSessionData = JSON.parse(raw);
   if (Date.now() - session.ts > TTL_MS) {
-    sessionStorage.removeItem(KEY);
+    userSessionStorage.removeItem(KEY);
     return null;
   }
   return session;
 }
 
 export function clearChatSession(): void {
-  sessionStorage.removeItem(KEY);
+  userSessionStorage.removeItem(KEY);
 }

@@ -4,9 +4,10 @@ Vendors deepagents' batch reducer as a public `messages_delta_reducer` and
 defines `DeltaAgentState` (an `AgentState` whose `messages` uses `DeltaChannel`
 for O(1)-per-step checkpoint storage instead of re-serializing the full list).
 `DeltaAgentState` is structurally identical to deepagents 0.6.11's
-`DeepAgentState` (`AgentState` + `DeltaChannel(reducer, snapshot_frequency=50)`);
-we vendor the reducer rather than import the private `deepagents._messages_reducer`
-symbol so on-disk reconstruction stays frozen to our release. The parity test
+`DeepAgentState` (`AgentState` + `DeltaChannel(reducer)`) apart from a sparser
+snapshot frequency; we vendor the reducer rather than import the private
+`deepagents._messages_reducer` symbol so on-disk reconstruction stays frozen to
+our release. The parity test
 `test_messages_delta_reducer.py::test_vendored_reducer_matches_deepagents` fails
 CI if our copy drifts.
 
@@ -14,6 +15,10 @@ One-way data format: once a thread is checkpointed under `DeltaChannel` its head
 blob is a sentinel or `_DeltaSnapshot`, which reverting to `add_messages` (or
 downgrading langgraph below 1.2) cannot read — so keep the `langgraph`/
 `langgraph-checkpoint*` floors pinned at >=1.2 in pyproject.toml.
+
+A run from an older checkpoint, or from a state update written on one, stores
+each message once because langgraph (>=1.2.13) snapshots the channel in a new
+branch's first checkpoint; `test_delta_channel_branches.py` pins that.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from collections.abc import Sequence
 from typing import Annotated, Any, cast
 
 from langchain.agents import AgentState
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import (
     AnyMessage,
     BaseMessage,
@@ -34,22 +40,25 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.ui import AnyUIMessage, ui_message_reducer
 from typing_extensions import NotRequired, Required
 
-# A full snapshot blob is written every N updates, bounding delta replay depth
-# (matches deepagents' tested default). Single source of truth for the
-# `DeltaChannel` snapshot frequency, consumed by `DeltaAgentState` below.
-MESSAGES_SNAPSHOT_FREQUENCY = 50
+# A full snapshot blob is written every N updates, bounding delta replay depth.
+# Storage per message written is about 1 + W/N for a list of W messages. At 250
+# a long thread stores a fifth of the snapshot bytes it did at 50 while a tip
+# load still reads one scan page; at 1000 loads cost half again as much. A
+# thread from before DeltaChannel walks to its root until its first snapshot,
+# so run scripts/ops/thin_message_snapshots.py --keep all over those first.
+# Single source of truth for the `DeltaChannel` snapshot frequency, consumed
+# by `DeltaAgentState` below.
+MESSAGES_SNAPSHOT_FREQUENCY = 250
 
 
 def ensure_message_ids(messages: list[AnyMessage]) -> list[AnyMessage]:
     """Stamp a stable uuid on any id-less message, in place, and return the list.
 
-    langgraph's own ``ensure_message_ids`` runs only inside the normal Pregel
-    execution loop, NOT on the ``graph.aupdate_state`` path. Messages injected
-    via ``aupdate_state`` (orchestrator notifications, steering triggers)
-    therefore persist with ``id=None`` under ``messages_delta_reducer`` — which
-    appends id-less writes verbatim, so a later full-list re-write duplicates
-    them and the compaction id-anchor can never match them. Call this before any
-    ``aupdate_state`` that injects new messages.
+    langgraph stamps a write's messages only as it saves them (the loop's
+    ``put_writes``, and ``aupdate_state`` since 1.2.15), which is too late for a
+    caller that needs the ids first: compaction anchors its cut on them. The
+    ``aupdate_state`` injectors that call it predate the upstream stamp, which
+    now does the same.
     """
     for msg in messages:
         if getattr(msg, "id", None) is None:
@@ -66,12 +75,11 @@ def messages_delta_reducer(  # noqa: C901, PLR0912
     `REMOVE_ALL_MESSAGES`, and coerces raw dict/str/tuple input via
     `convert_to_messages`. IDs are NOT assigned here: langgraph's
     `ensure_message_ids` (>=1.2.2) stamps id-less writes before they are
-    persisted, so by replay time messages already carry stable ids; minting in
-    the reducer would re-roll a different uuid on every replay. id-less messages
-    are appended as-is (deterministic) — note this only holds on the normal
-    Pregel path; the `aupdate_state` path does NOT run `ensure_message_ids`, so
-    injectors there must pre-stamp via `ensure_message_ids` (above) or their
-    writes persist id-less and duplicate on re-write. Matches deepagents 0.6.11's
+    persisted (`aupdate_state` writes too, since 1.2.15), so by replay time
+    messages already carry stable ids; minting in the reducer would re-roll a
+    different uuid on every replay. id-less messages are appended as-is
+    (deterministic), and a full-list re-write duplicates them, since nothing
+    can match a message without an id. Matches deepagents 0.6.11's
     batch `_messages_delta_reducer` (the vendoring source), NOT `add_messages`
     (an unknown-id `RemoveMessage` is silently ignored; chunks are not converted).
     """
@@ -144,3 +152,14 @@ class DeltaAgentState(AgentState):
         ]
     ]
     ui: NotRequired[Annotated[Sequence[AnyUIMessage], ui_message_reducer]]
+
+    # The runtime-context baseline: the per-thread epoch (agent.md + memory/memo
+    # indices + identity), frozen once and re-rendered byte-identically per call
+    # so the cached prefix in front of it stays valid. A plain overwrite is right
+    # because a rebuild replaces the whole epoch. PrivateStateAttr: agent
+    # plumbing, never part of the caller's input or output schema.
+    #
+    # What moved underneath the epoch is not a channel at all: it is written
+    # into ``messages`` as an ordinary runtime-update message, so a row keeps
+    # its place in time and needs no reducer of its own.
+    runtime_baseline: NotRequired[Annotated[dict[str, Any], PrivateStateAttr]]

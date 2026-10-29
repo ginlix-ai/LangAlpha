@@ -1,4 +1,4 @@
-"""Translation of an MCP server's advertised tool schemas into wrapper facts.
+"""Translation of an MCP server's advertised schemas into wrapper facts.
 
 Transport-free and read-only: the registry, codegen and the prompt formatter
 all read a server's schema through this one module, so they cannot drift into
@@ -7,6 +7,27 @@ disagreeing about what a tool's parameters or return type are.
 
 import re
 from typing import Any, NamedTuple
+
+
+def client_identity(client: object) -> dict[str, Any] | None:
+    """The handshake card a connected client is holding, as the wire spelled it.
+
+    Never raises, and that is the whole point. This is decoration on paths
+    whose real job is tools: a card the SDK keeps somewhere else, or a server
+    that stamps nonsense, must not fail a connection or turn a good discovery
+    into an error row. The spec says the field is display-only; this makes the
+    code agree.
+
+    Dumped by alias so a server discovered in the sandbox and one connected
+    here hand the UI the same spelling.
+    """
+    try:
+        info = getattr(client, "server_info", None)
+        if info is None:
+            return None
+        return info.model_dump(mode="json", by_alias=True, exclude_none=True)
+    except Exception:  # noqa: BLE001 — a business card is never worth a failure
+        return None
 
 
 class ResolvedType(NamedTuple):

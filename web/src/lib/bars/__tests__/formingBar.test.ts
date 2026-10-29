@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { applyQuoteToDailyBar, foldMinuteBar, isSettledDailyHead } from '../formingBar';
 import type { ChartBar } from '../marketProtocol';

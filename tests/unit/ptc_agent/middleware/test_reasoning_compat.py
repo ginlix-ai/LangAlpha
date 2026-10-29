@@ -9,6 +9,10 @@ Locks two settled contracts:
 - **Gate B (structure)** — the Anthropic API also rejects blocks an interrupted
   stream leaves behind: signature-only orphans (repaired by injecting
   `thinking: ""`) and signature-less blocks (dropped).
+
+Gate A also drops the item ids a Responses server gave another lineage's
+function calls (OpenAI rejects DashScope's), and a route that requires a
+thinking block on tool-calling turns (DeepSeek) gets an empty one on each.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -29,6 +33,13 @@ SHIM_SIGNATURE = "60156c35-166d-41eb-9899-1a2b3c4d5e6f"
 TEXT = {"type": "text", "text": "answer"}
 TOOL_USE = {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {}}
 TOOL_CALL = {"name": "lookup", "args": {}, "id": "tu_1", "type": "tool_call"}
+FUNCTION_CALL = {
+    "type": "function_call",
+    "id": "msg_1",
+    "call_id": "tu_1",
+    "name": "lookup",
+}
+PLACEHOLDER = {"type": "thinking", "thinking": ""}
 
 
 def signed(signature: str = REAL_SIGNATURE) -> dict:
@@ -123,7 +134,7 @@ class TestOriginGate:
         assert types_of(out[0]) == ["text"]
 
     def test_unstamped_message_resolves_via_model_id(self):
-        msgs = [ai([signed(), TEXT], model_name="claude-opus-5")]
+        msgs = [ai([signed(), TEXT], model_name="claude-opus-5-5")]
         out, _ = _sanitize(msgs, "anthropic")
         assert out is msgs
 
@@ -136,6 +147,71 @@ class TestOriginGate:
         """No provenance on the target is no basis to strip the whole history."""
         msgs = [ai([signed(SHIM_SIGNATURE), TEXT], origin="deepseek")]
         out, _ = _sanitize(msgs, "unknown")
+        assert out is msgs
+
+
+class TestItemIds:
+    def test_foreign_function_call_ids_are_dropped(self):
+        msgs = [
+            HumanMessage("q"),
+            ai([FUNCTION_CALL], origin="dashscope", tool_calls=[TOOL_CALL]),
+            ToolMessage(content="42", tool_call_id="tu_1"),
+        ]
+        out, stats = _sanitize(msgs, "openai")
+        assert out[1].content == [{k: v for k, v in FUNCTION_CALL.items() if k != "id"}]
+        assert out[1].tool_calls == msgs[1].tool_calls
+        assert stats.msgs_ids_dropped == 1
+
+    def test_own_lineage_keeps_its_ids(self):
+        own = {**FUNCTION_CALL, "id": "fc_1"}
+        msgs = [HumanMessage("q"), ai([own], origin="openai", tool_calls=[TOOL_CALL])]
+        out, _ = _sanitize(msgs, "openai")
+        assert out is msgs
+
+
+class TestToolTurnPadding:
+    def test_foreign_tool_turn_is_padded_after_its_reasoning_goes(self):
+        msgs = [
+            HumanMessage("q"),
+            ai([signed(), TOOL_USE], origin="anthropic", tool_calls=[TOOL_CALL]),
+            ToolMessage(content="42", tool_call_id="tu_1"),
+        ]
+        out, stats = _sanitize(msgs, "deepseek", pad_tool_turns=True)
+        assert out[1].content == [PLACEHOLDER, TOOL_USE]
+        assert (stats.msgs_stripped, stats.msgs_padded) == (1, 1)
+
+    def test_own_turn_whose_reasoning_was_lost_is_padded(self):
+        """Unattributable history and the strip-all retry both leave one bare."""
+        msgs = [
+            HumanMessage("q"),
+            ai([TOOL_USE], origin="deepseek", tool_calls=[TOOL_CALL]),
+        ]
+        out, _ = _sanitize(msgs, "deepseek", pad_tool_turns=True)
+        assert out[1].content == [PLACEHOLDER, TOOL_USE]
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            ai(
+                [{"type": "thinking", "thinking": "r"}, TOOL_USE],
+                origin="deepseek",
+                tool_calls=[TOOL_CALL],
+            ),
+            ai([TEXT], origin="openai"),
+        ],
+        ids=["own-reasoning", "no-tool-calls"],
+    )
+    def test_left_alone(self, msg):
+        msgs = [HumanMessage("q"), msg]
+        out, _ = _sanitize(msgs, "deepseek", pad_tool_turns=True)
+        assert out is msgs
+
+    def test_off_unless_asked(self):
+        msgs = [
+            HumanMessage("q"),
+            ai([TOOL_USE], origin="openai", tool_calls=[TOOL_CALL]),
+        ]
+        out, _ = _sanitize(msgs, "deepseek")
         assert out is msgs
 
 
@@ -241,6 +317,19 @@ class TestRequestPath:
         await ReasoningCompatibilityMiddleware().awrap_model_call(request, handler)
 
         assert request.overridden_with is None
+
+    @pytest.mark.parametrize(
+        ("route", "padded"), [("deepseek", True), ("anthropic", False)]
+    )
+    def test_the_route_decides_whether_tool_turns_are_padded(self, route, padded):
+        msgs = [
+            HumanMessage("q"),
+            ai([TOOL_USE], origin="openai", tool_calls=[TOOL_CALL]),
+        ]
+        request, _ = ReasoningCompatibilityMiddleware()._prepare(
+            _FakeRequest(route, msgs)
+        )
+        assert (types_of(request.messages[1])[0] == "thinking") is padded
 
     def test_clean_request_skips_override(self):
         request = _FakeRequest("anthropic", [ai([TEXT], origin="anthropic")])

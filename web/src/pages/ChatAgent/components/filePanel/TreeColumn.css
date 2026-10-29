@@ -1,0 +1,323 @@
+.file-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Sized for the 260px tree column: the row has to hold a name, a badge and
+     a status dot without wrapping, which is what buys the tighter padding. */
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.file-panel-item:hover,
+.file-panel-item-context-active {
+  background-color: var(--color-border-muted);
+}
+/* ====== Indent Guide Lines (VS Code-style) ====== */
+.file-tree-row {
+  position: relative;
+}
+/* Rows rove with tabIndex -1, which the focus layer keeps quiet; the arrow
+   keys still have to show where they landed. */
+.file-tree-row:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+.file-tree-indent-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background-color: var(--color-border-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-quick) var(--ease-out);
+}
+.file-tree-root:hover .file-tree-indent-guide {
+  opacity: 1;
+}
+
+/* ====== Tree column chrome ====== */
+.file-panel-tree-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 4px;
+  flex-shrink: 0;
+}
+.file-panel-tree-tools .file-panel-icon-btn {
+  padding: 0.3125rem;
+}
+.file-panel-tree-filter {
+  padding: 0 8px 6px;
+  flex-shrink: 0;
+}
+.file-panel-tree-scope,
+.file-panel-tree-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 0 8px 6px;
+  flex-shrink: 0;
+}
+.file-panel-tree-count {
+  padding: 4px 10px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+.file-panel-chip {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  border: 1px solid var(--color-border-muted);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all var(--motion-quick) var(--ease-out);
+  white-space: nowrap;
+}
+.file-panel-chip:hover {
+  border-color: var(--color-border-default);
+  color: var(--color-text-secondary);
+}
+.file-panel-chip.active {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-default);
+  color: var(--color-text-primary);
+}
+
+/* Sort dropdown */
+.file-panel-sort-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+.file-panel-sort-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-muted);
+  border-radius: 6px;
+  overflow: hidden;
+  z-index: 50;
+  min-width: 110px;
+  box-shadow: var(--shadow-card);
+}
+.file-panel-sort-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.file-panel-sort-item:hover {
+  background-color: var(--color-border-muted);
+}
+.file-panel-sort-item.active {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-hover);
+}
+
+/* ====== Directory Group Header ====== */
+.file-panel-dir-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--motion-quick) var(--ease-out);
+}
+.file-panel-dir-header:hover {
+  background-color: var(--color-border-muted);
+}
+
+/* ====== Selected File Row ====== */
+.file-panel-item-selected {
+  background-color: var(--color-bg-elevated);
+}
+.file-panel-item-selected:hover {
+  background-color: var(--color-bg-elevated);
+}
+
+/* ====== Delete Confirmation Button ====== */
+.file-panel-delete-confirm-btn {
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  border: 1px solid var(--color-border-loss);
+  background: var(--color-loss-soft);
+  color: var(--color-loss);
+  cursor: pointer;
+  transition: all var(--motion-quick) var(--ease-out);
+  white-space: nowrap;
+  animation: confirm-pulse var(--motion-enter) var(--ease-out);
+}
+.file-panel-delete-confirm-btn:hover:not(:disabled) {
+  background: var(--color-loss-soft);
+  border-color: var(--color-border-loss);
+}
+.file-panel-delete-confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ====== Row Status Group (memo badge + backup dot) ====== */
+.file-panel-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.file-panel-memo-badge {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+/* ====== Backup Status Dot ====== */
+.file-panel-backup-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all var(--motion-quick) var(--ease-out);
+}
+.file-panel-backup-dot.backed-up {
+  background-color: var(--color-profit-muted);
+  border: 1px solid var(--color-profit-border);
+  box-shadow: 0 0 4px var(--color-profit-soft);
+}
+.file-panel-backup-dot.modified {
+  background-color: var(--color-status-modified);
+  border: 1px solid var(--color-status-modified-border);
+  box-shadow: 0 0 4px var(--color-status-modified-glow);
+}
+
+.file-panel-tree {
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  flex-shrink: 0;
+  min-height: 0;
+  border-left: 1px solid var(--color-border-muted);
+  background-color: var(--color-bg-page);
+}
+/* Under a narrow panel the column would starve the viewer, so it floats over
+   it instead of beside it. Its edge is the column's hairline, not a shadow:
+   the scrim already sets it apart, and a blur would smear over the strip. */
+.file-panel-tree.is-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+}
+/* On the empty tab the listing is the tab and fills the body, so there is no
+   viewer for the line to part it from. */
+.file-panel-tree.is-full { border-left: none; }
+/* The column folds on width, so its content never goes below the column's
+   width and is clipped rather than reflowed mid-fold. Wider than that, as on
+   the empty tab, it follows the column. */
+.file-panel-tree { overflow: hidden; }
+.file-panel-tree-inner {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 260px;
+  flex: 1;
+  min-height: 0;
+}
+.file-panel-tree.is-overlay .file-panel-tree-inner { min-width: 0; }
+.file-panel-tree-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 29;
+  background-color: var(--color-bg-overlay-strong);
+}
+.file-panel-tree-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+.file-panel-tree-list::-webkit-scrollbar-thumb {
+  background-color: var(--color-border-muted);
+}
+
+/* An open file reads as a first-class row; the one on screen carries the
+   panel's focus tint. Neither gets an edge marker: a list entry is not a
+   status, and the tint already says which is which. */
+.file-panel-item-open {
+  background-color: var(--color-bg-hover);
+}
+.file-panel-item-active,
+.file-panel-item-active:hover {
+  background-color: var(--color-bg-elevated);
+}
+
+/* ====== Pinned stores ======
+   Memory, memo and a chart, pinned above the listing as rows of it, with a
+   hairline under the group: they open a tab the way a file does, but they are
+   not in the tree and a search of it must not read as having hidden them. */
+.file-panel-store-group {
+  flex-shrink: 0;
+  padding: 2px 0 4px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+.file-panel-store-row {
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+/* ====== Running apps ======
+   A dev server the agent started, listed above the tree and shown in a tab.
+   The port is the identity, so it is mono and always on the row; the group
+   is styled as a directory group and carries no edge marker, because a
+   list entry is not a status. */
+.file-panel-preview-group {
+  flex-shrink: 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+.file-panel-preview-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  user-select: none;
+}
+.file-panel-preview-row {
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.file-panel-port-chip {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid var(--color-border-muted);
+  background-color: var(--color-bg-elevated);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+}
+
+/* ====== Mobile responsive ====== */
+@media (max-width: 767px) {
+  .file-panel-tree { width: min(300px, 85%); }
+}

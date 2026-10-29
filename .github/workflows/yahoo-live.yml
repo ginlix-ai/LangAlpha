@@ -1,0 +1,50 @@
+name: Yahoo live
+
+# The yfinance tests call Yahoo Finance itself, so they fail when Yahoo changes
+# something nobody here touched (its news endpoint was withdrawn once and took
+# the general integration job down with it). They run here instead, only when a
+# change could be the cause: yfinance code, these tests, or the dependency set
+# that pins the yfinance version. They need no secrets, so fork PRs run too.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/yfinance/**"
+      - "mcp_servers/_yf_common.py"
+      - "src/data_client/yfinance/**"
+      - "libs/market-protocol/**"
+      - "tests/integration/test_yf_mcp_live.py"
+      - "tests/integration/test_yfinance_live.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/yahoo-live.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "plugins/yfinance/**"
+      - "mcp_servers/_yf_common.py"
+      - "src/data_client/yfinance/**"
+      - "libs/market-protocol/**"
+      - "tests/integration/test_yf_mcp_live.py"
+      - "tests/integration/test_yfinance_live.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/yahoo-live.yml"
+  workflow_dispatch:
+
+# The backend image's Python (deploy/Dockerfile.backend). Left unset, uv
+# downloads the newest release, which a dependency may not ship wheels for yet.
+env:
+  UV_PYTHON: "3.13"
+
+jobs:
+  yahoo-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: "latest"
+      - run: uv sync --group dev --extra test
+      - run: uv run pytest tests/integration/ -v --tb=short -m yahoo

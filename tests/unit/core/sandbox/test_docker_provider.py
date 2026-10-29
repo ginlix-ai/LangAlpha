@@ -4,7 +4,7 @@ Covers:
 - DockerRuntime state mapping (_DOCKER_STATE_MAP)
 - DockerRuntime exec: mock container.exec(), verify ExecResult
 - DockerRuntime lifecycle: start/stop/delete delegate to container methods
-- DockerRuntime capabilities: no "archive", no "snapshot"
+- DockerRuntime abilities: no archive, env update or auto-stop
 - DockerRuntime archive: raises NotImplementedError
 - DockerRuntime tar upload/download: mock container.put_archive/get_archive
 - DockerRuntime bind upload/download: use tmp_path for real filesystem
@@ -13,29 +13,40 @@ Covers:
 - DockerProvider get: mock container lookup
 - DockerProvider close: verify client is closed
 - DockerProvider is_transient_error: test classification
-- _parse_memory helper: test conversions
+- parse_memory helper: test conversions
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
+import os
+import shlex
+import subprocess
 import tarfile
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ptc_agent.config.core import DockerConfig
+from ptc_agent.config.core import (
+    DockerConfig,
+    ResourceTier,
+)
+from ptc_agent.core.sandbox.providers import docker as docker_provider
+from ptc_agent.core.sandbox.providers._tiers import parse_memory
 from ptc_agent.core.sandbox.providers.docker import (
     DockerProvider,
     DockerRuntime,
     _DOCKER_STATE_MAP,
-    _parse_memory,
     _parse_proxy_port_range,
 )
 from ptc_agent.core.sandbox.runtime import (
     ExecResult,
     RuntimeState,
     SandboxTransientError,
+    SessionState,
 )
 
 
@@ -90,47 +101,47 @@ def _make_exec_mock(output: str = "", exit_code: int = 0) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# _parse_memory helper
+# parse_memory helper
 # ---------------------------------------------------------------------------
 
 
 class TestParseMemory:
     def test_bytes_plain(self):
-        assert _parse_memory("1024") == 1024
+        assert parse_memory("1024") == 1024
 
     def test_kilobytes(self):
-        assert _parse_memory("1k") == 1024
+        assert parse_memory("1k") == 1024
 
     def test_kilobytes_with_b(self):
-        assert _parse_memory("1kb") == 1024
+        assert parse_memory("1kb") == 1024
 
     def test_megabytes(self):
-        assert _parse_memory("512m") == 512 * 1024**2
+        assert parse_memory("512m") == 512 * 1024**2
 
     def test_megabytes_with_b(self):
-        assert _parse_memory("512mb") == 512 * 1024**2
+        assert parse_memory("512mb") == 512 * 1024**2
 
     def test_gigabytes(self):
-        assert _parse_memory("4g") == 4 * 1024**3
+        assert parse_memory("4g") == 4 * 1024**3
 
     def test_gigabytes_with_b(self):
-        assert _parse_memory("4gb") == 4 * 1024**3
+        assert parse_memory("4gb") == 4 * 1024**3
 
     def test_terabytes(self):
-        assert _parse_memory("1t") == 1024**4
+        assert parse_memory("1t") == 1024**4
 
     def test_fractional(self):
-        assert _parse_memory("1.5g") == int(1.5 * 1024**3)
+        assert parse_memory("1.5g") == int(1.5 * 1024**3)
 
     def test_with_whitespace(self):
-        assert _parse_memory("  4g  ") == 4 * 1024**3
+        assert parse_memory("  4g  ") == 4 * 1024**3
 
     def test_uppercase_is_lowered(self):
-        assert _parse_memory("4G") == 4 * 1024**3
+        assert parse_memory("4G") == 4 * 1024**3
 
     def test_invalid_raises(self):
         with pytest.raises(ValueError, match="Cannot parse memory limit"):
-            _parse_memory("not_a_number")
+            parse_memory("not_a_number")
 
 
 # ---------------------------------------------------------------------------
@@ -193,12 +204,9 @@ class TestDockerRuntimeProperties:
         assert result == "/home/workspace"
 
     def test_capabilities_no_archive(self, runtime):
-        caps = runtime.capabilities
-        assert "exec" in caps
-        assert "code_run" in caps
-        assert "file_io" in caps
-        assert "archive" not in caps
-        assert "snapshot" not in caps
+        assert not runtime.archives
+        assert not runtime.updates_env
+        assert not runtime.autostops
 
     @pytest.mark.asyncio
     async def test_archive_raises_not_implemented(self, runtime):
@@ -342,7 +350,20 @@ class TestDockerRuntimeExec:
         container.exec.assert_called_once_with(
             cmd=["bash", "-c", "ls"],
             workdir="/home/workspace",
+            user="",
+            environment=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_exec_as_root_overrides_the_image_user(self, runtime, container):
+        exec_mock = _make_exec_mock("", exit_code=0)
+        container.exec = AsyncMock(return_value=exec_mock)
+
+        await runtime.exec_as_root("id -u", env={"SECRET": "x"})
+        assert container.exec.call_args.kwargs["user"] == "root"
+        # The secret rides the exec's environment, never its command line.
+        assert container.exec.call_args.kwargs["environment"] == {"SECRET": "x"}
+        assert "x" not in container.exec.call_args.kwargs["cmd"][-1]
 
     @pytest.mark.asyncio
     async def test_exec_nonzero_exit_code(self, runtime, container):
@@ -427,6 +448,51 @@ class TestDockerRuntimeTarUpload:
         await runtime.upload_file(b"data", "/home/workspace/subdir/file.txt")
         # The exec call is for mkdir
         container.exec.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_uploads_are_owned_by_the_container_user(self, runtime, container):
+        """A tar entry defaults to root, and put_archive extracts what it says.
+
+        The container runs as its own non-root user, and a file that user does
+        not own can be read but never chmod'd or utime'd — which is what
+        placing a restored workspace file has to do."""
+        container.exec = AsyncMock(side_effect=lambda **kw: _make_exec_mock("1001\n1001\n"))
+        await runtime.upload_file(b"x", "/home/workspace/a.txt")
+        await runtime.upload_files([(b"y", "/home/workspace/b.txt")])
+        for call in container.put_archive.call_args_list:
+            with tarfile.open(fileobj=io.BytesIO(call[0][1]), mode="r") as tar:
+                for m in tar.getmembers():
+                    assert (m.uid, m.gid) == (1001, 1001)
+        # One lookup for the runtime's whole life, not one per upload.
+        cmds = [" ".join(c.kwargs["cmd"]) for c in container.exec.call_args_list]
+        assert sum("id -u" in c for c in cmds) == 1
+
+    @pytest.mark.asyncio
+    async def test_uploads_carry_the_upload_time(self, runtime, container):
+        """Extraction applies each entry's mtime, and ``TarInfo`` defaults it to 0.
+
+        At the epoch, a same-size rewrite keeps the (mtime, size) stamp the
+        sandbox detects changes by, so a rotated secret or a re-uploaded file
+        reads as unchanged. The PAX record keeps the sub-second part, which is
+        what separates two rewrites within one second."""
+        before = time.time()
+        await runtime.upload_file(b"x", "/home/workspace/a.txt")
+        await runtime.upload_files([(b"y", "/home/workspace/b.txt")])
+        after = time.time()
+        for call in container.put_archive.call_args_list:
+            with tarfile.open(fileobj=io.BytesIO(call[0][1]), mode="r") as tar:
+                for m in tar.getmembers():
+                    assert "mtime" in m.pax_headers
+                    assert before <= m.mtime <= after
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_uid_falls_back_to_root(self, runtime, container):
+        """Losing the lookup must not lose the upload; root is what it was before."""
+        container.exec = AsyncMock(side_effect=lambda **kw: _make_exec_mock(""))
+        await runtime.upload_file(b"x", "/home/workspace/a.txt")
+        tar_data = container.put_archive.call_args[0][1]
+        with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r") as tar:
+            assert tar.getmembers()[0].uid == 0
 
 
 # ---------------------------------------------------------------------------
@@ -551,9 +617,11 @@ class TestDockerProvider:
 
     @pytest.fixture
     def provider(self, mock_client):
-        p = DockerProvider.__new__(DockerProvider)
-        p._config = DockerConfig(image="test-sandbox:latest")
-        p._working_dir = "/home/workspace"
+        # Built through __init__ rather than __new__ so the instance carries
+        # whatever per-provider state the real constructor sets up.
+        p = DockerProvider(
+            DockerConfig(image="test-sandbox:latest"), working_dir="/home/workspace"
+        )
         p._client = mock_client
         return p
 
@@ -616,23 +684,34 @@ class TestDockerProvider:
         assert "OTHER=value2" in env
 
     @pytest.mark.asyncio
-    async def test_create_no_env_vars_omits_env(self, provider, mock_client):
+    async def test_create_no_env_vars_still_sets_thread_pools(
+        self, provider, mock_client
+    ):
+        """Without caller env the container still gets the BLAS thread caps."""
         await provider.create()
         call_kwargs = mock_client.containers.create.call_args
         config = call_kwargs.kwargs.get("config") or call_kwargs[1].get("config")
-        assert "Env" not in config
+        # One helper for both providers; the image bakes NUMEXPR at 1, so the
+        # container has to override it too.
+        assert set(config["Env"]) == {
+            "OMP_NUM_THREADS=2",
+            "OPENBLAS_NUM_THREADS=2",
+            "MKL_NUM_THREADS=2",
+            "NUMEXPR_NUM_THREADS=2",
+        }
 
     @pytest.mark.asyncio
     async def test_create_with_bind_mount(self, mock_client, tmp_path):
         """When dev_mode=True and host_work_dir is set, Binds should appear in host config."""
         host_dir = str(tmp_path / "host_sandbox")
-        p = DockerProvider.__new__(DockerProvider)
-        p._config = DockerConfig(
-            image="test-sandbox:latest",
-            dev_mode=True,
-            host_work_dir=host_dir,
+        p = DockerProvider(
+            DockerConfig(
+                image="test-sandbox:latest",
+                dev_mode=True,
+                host_work_dir=host_dir,
+            ),
+            working_dir="/home/workspace",
         )
-        p._working_dir = "/home/workspace"
         p._client = mock_client
 
         await p.create()
@@ -718,9 +797,26 @@ class TestDockerProvider:
 
     @pytest.mark.asyncio
     async def test_get_container_not_found_raises(self, provider, mock_client):
-        mock_client.containers.get = AsyncMock(side_effect=Exception("404 not found"))
-        with pytest.raises(RuntimeError, match="Docker container not found"):
+        from aiodocker.exceptions import DockerError
+        from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxFailureKind
+
+        mock_client.containers.get = AsyncMock(side_effect=DockerError(404, {"message": "missing"}))
+        with pytest.raises(SandboxGoneError) as error:
             await provider.get("nonexistent")
+        assert provider.classify_error(error.value) is SandboxFailureKind.SANDBOX_GONE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [403, 500])
+    async def test_get_error_does_not_authorize_replacement(self, provider, mock_client, status):
+        from aiodocker.exceptions import DockerError
+        from ptc_agent.core.sandbox.runtime import SandboxFailureKind
+
+        error = DockerError(status, {"message": "unavailable"})
+        mock_client.containers.get = AsyncMock(side_effect=error)
+        with pytest.raises(DockerError) as caught:
+            await provider.get("existing")
+        assert caught.value is error
+        assert provider.classify_error(error) is not SandboxFailureKind.SANDBOX_GONE
 
     @pytest.mark.asyncio
     async def test_close_closes_client(self, provider, mock_client):
@@ -1052,20 +1148,26 @@ class TestDockerRuntimeSessions:
 
     @pytest.mark.asyncio
     async def test_create_session(self, runtime):
-        """create_session creates the session directory."""
-        runtime._container.exec = AsyncMock(
-            return_value=_make_exec_mock(exit_code=1)  # dir doesn't exist
-        )
+        """create_session creates the session directory in one exec."""
+        runtime._container.exec = AsyncMock(return_value=_make_exec_mock(exit_code=0))
         await runtime.create_session("preview-8080")
-        assert runtime._container.exec.call_count == 2  # test -d + mkdir -p
+        assert runtime._container.exec.call_count == 1
 
     @pytest.mark.asyncio
     async def test_create_session_already_exists(self, runtime):
         """create_session raises when session dir already exists."""
         runtime._container.exec = AsyncMock(
-            return_value=_make_exec_mock(exit_code=0)  # dir exists
+            return_value=_make_exec_mock(exit_code=3)  # dir exists
         )
         with pytest.raises(RuntimeError, match="Session already exists"):
+            await runtime.create_session("preview-8080")
+
+    @pytest.mark.asyncio
+    async def test_create_session_that_fails_raises(self, runtime):
+        """A launch into a directory that was never made would fail later and
+        less clearly."""
+        runtime._container.exec = AsyncMock(return_value=_make_exec_mock(exit_code=1))
+        with pytest.raises(RuntimeError, match="Could not create session"):
             await runtime.create_session("preview-8080")
 
     @pytest.mark.asyncio
@@ -1076,29 +1178,18 @@ class TestDockerRuntimeSessions:
 
     @pytest.mark.asyncio
     async def test_session_execute_async(self, runtime):
-        """session_execute with run_async=True returns None exit_code."""
+        """session_execute starts the command in the background and returns its id."""
         runtime._container.exec = AsyncMock(
             return_value=_make_exec_mock(output="99999\n")
         )
-        result = await runtime.session_execute("preview-8080", "python -m http.server 8080", run_async=True)
-        assert result.exit_code is None
-        assert result.cmd_id  # non-empty
+        cmd_id = await runtime.session_execute("preview-8080", "python -m http.server 8080")
+        assert cmd_id  # non-empty
         # Verify base64 encoding is in the exec command
         call_args = runtime._container.exec.call_args
         cmd = call_args[1].get("cmd", call_args[0][0] if call_args[0] else None)
         cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
         assert "base64" in cmd_str
-        assert "nohup setsid" in cmd_str
-
-    @pytest.mark.asyncio
-    async def test_session_execute_sync(self, runtime):
-        """session_execute with run_async=False returns actual exit code."""
-        runtime._container.exec = AsyncMock(
-            return_value=_make_exec_mock(output="hello\n", exit_code=0)
-        )
-        result = await runtime.session_execute("preview-8080", "echo hello", run_async=False)
-        assert result.exit_code == 0
-        assert result.stdout == "hello\n"
+        assert "L=setsid" in cmd_str and "nohup $L bash" in cmd_str
 
     @pytest.mark.asyncio
     async def test_session_command_logs_finished(self, runtime):
@@ -1132,19 +1223,66 @@ class TestDockerRuntimeSessions:
             await runtime.session_command_logs("preview-8080", "../etc/passwd")
 
     @pytest.mark.asyncio
-    async def test_delete_session(self, runtime):
-        """delete_session kills process groups and removes directory."""
-        runtime._container.exec = AsyncMock(
-            return_value=_make_exec_mock(exit_code=0)
+    async def test_delete_missing_session_raises_not_found(self, runtime):
+        """A stop tells "no such command" from a failed delete by this."""
+        runtime._container.exec = AsyncMock(return_value=_make_exec_mock(exit_code=3))
+        with pytest.raises(FileNotFoundError):
+            await runtime.delete_session("bg-0123456789ab")
+
+    @pytest.mark.asyncio
+    async def test_delete_that_did_not_finish_raises(self, runtime):
+        """exec reports a timeout as -1, and the command may still be running."""
+        runtime._container.exec = AsyncMock(return_value=_make_exec_mock(exit_code=-1))
+        with pytest.raises(RuntimeError, match="Could not delete session"):
+            await runtime.delete_session("bg-0123456789ab")
+
+    @pytest.mark.asyncio
+    async def test_a_stop_before_the_pid_is_written_keeps_the_command_from_running(
+        self, runtime, tmp_path
+    ):
+        """The launch returns before its wrapper writes the .pid, so a stop in
+        that window finds no PID to kill; the wrapper must then not run."""
+        sessions = tmp_path / "sessions"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+        async def local_exec(command: str, timeout: int = 60) -> ExecResult:
+            done = subprocess.run(
+                ["bash", "-c", command.replace("/tmp/.sessions", str(sessions))],
+                capture_output=True, text=True, env=env,
+            )
+            return ExecResult(stdout=done.stdout, stderr=done.stderr, exit_code=done.returncode)
+
+        stop_scripts: list[str] = []
+
+        async def record(command: str, timeout: int = 60) -> ExecResult:
+            stop_scripts.append(command.replace("/tmp/.sessions", str(sessions)))
+            return ExecResult(stdout="", stderr="", exit_code=0)
+
+        runtime.exec = record
+        await runtime.delete_session("bg-0123456789ab")
+
+        # The wrapper starts through setsid, so a setsid on PATH runs the stop
+        # after the launch returned and before the .pid is written.
+        ran, launched = tmp_path / "ran", tmp_path / "launched"
+        setsid = bin_dir / "setsid"
+        setsid.write_text(
+            f"#!/bin/bash\nbash -c {shlex.quote(stop_scripts[0])}\n\"$@\"\ntouch {launched}\n"
         )
-        await runtime.delete_session("preview-8080")
-        call_args = runtime._container.exec.call_args
-        cmd = call_args[1].get("cmd", call_args[0][0] if call_args[0] else None)
-        cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
-        # Kills entire process group (negative PID) and the process itself
-        assert 'kill -- -"$pid"' in cmd_str
-        assert 'kill "$pid"' in cmd_str
-        assert "rm -rf" in cmd_str
+        setsid.chmod(0o755)
+
+        runtime.exec = local_exec
+        await runtime.create_session("bg-0123456789ab")
+        await runtime.session_execute("bg-0123456789ab", f"touch {ran}")
+        for _ in range(100):
+            if launched.exists():
+                break
+            await asyncio.sleep(0.05)
+
+        assert launched.exists()
+        assert not ran.exists()
+        assert not list(sessions.glob("*/bg-0123456789ab"))
 
     @pytest.mark.asyncio
     async def test_delete_session_invalid_id(self, runtime):
@@ -1165,25 +1303,150 @@ class TestDockerRuntimeSessions:
             await runtime.session_command_logs("../evil", "abc12345")
 
 
-# ---------------------------------------------------------------------------
-# DockerRuntime — updated capabilities
-# ---------------------------------------------------------------------------
+def _stat_line(pid: int, start: int, pgrp: int = 0) -> str:
+    """A /proc/<pid>/stat line whose start time (field 22) is ``start`` and
+    group (field 5) ``pgrp``, behind a command name with the spaces and parens
+    one may hold."""
+    return f"{pid} (a) b (c) S 0 {pgrp} {' '.join(['0'] * 16)} {start} 0 0\n"
 
 
-class TestDockerRuntimeUpdatedCapabilities:
-    def test_capabilities_include_preview_and_sessions(self):
-        container = _make_mock_container()
+class TestDockerSessionsAcrossRestartsAndPidReuse:
+    """The session scripts run in a local bash, with the session root and /proc
+    moved into a temp dir, so a test sets which process each pid names. A real
+    process in its own group stands in for whatever a pid names now, so a kill
+    that reaches it shows."""
+
+    SID = "bg-0123456789ab"
+
+    @pytest.fixture
+    def machine(self, tmp_path):
+        sessions, proc = tmp_path / "sessions", tmp_path / "proc"
+        proc.mkdir()
+
+        async def local_exec(command: str, timeout: int = 60) -> ExecResult:
+            command = command.replace("/tmp/.sessions", str(sessions))
+            command = command.replace("/proc/", f"{proc}/")
+            done = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+            # The Docker exec stream carries stderr in stdout too.
+            return ExecResult(
+                stdout=done.stdout + done.stderr, stderr="", exit_code=done.returncode
+            )
+
+        def set_start(pid: int, start: int) -> None:
+            (proc / str(pid)).mkdir(exist_ok=True)
+            (proc / str(pid) / "stat").write_text(_stat_line(pid, start))
+
+        def add_member(pgrp: int, environ: bytes) -> None:
+            """A process in group ``pgrp`` with ``environ``, under a pid no
+            test records."""
+            member = proc / "424242"
+            member.mkdir()
+            (member / "stat").write_text(_stat_line(424242, 400, pgrp=pgrp))
+            (member / "environ").write_bytes(environ)
+
+        def record(run: int, pid: int, start: int) -> None:
+            """A command whose wrapper wrote no exit code."""
+            session = sessions / f"run-{run}" / self.SID
+            session.mkdir(parents=True)
+            (session / "c0ffee00.pid").write_text(f"{pid} {start}\n")
+
         runtime = DockerRuntime(
-            container,
-            runtime_id="docker-test",
-            working_dir="/home/workspace",
+            _make_mock_container(), runtime_id="docker-test", working_dir="/home/workspace"
         )
-        caps = runtime.capabilities
-        assert "preview_url" in caps
-        assert "sessions" in caps
-        assert "exec" in caps
-        assert "code_run" in caps
-        assert "file_io" in caps
+        runtime.exec = local_exec
+        victim = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        yield SimpleNamespace(
+            runtime=runtime,
+            sessions=sessions,
+            set_start=set_start,
+            add_member=add_member,
+            record=record,
+            victim=victim,
+        )
+        victim.kill()
+        victim.wait()
+
+    @pytest.mark.asyncio
+    async def test_a_restart_leaves_no_sessions_and_signals_nothing(self, machine):
+        """A stop ends every process in the container, but the session files
+        stay on its disk, and pids count up from 1 again, so the pid a killed
+        command recorded soon names a new run's job."""
+        runtime, victim = machine.runtime, machine.victim
+        machine.set_start(1, 100)
+        machine.record(100, victim.pid, 150)
+        machine.set_start(1, 200)
+        machine.set_start(victim.pid, 250)
+
+        assert await runtime.list_sessions() == []
+        assert await runtime.session_logs(self.SID) is None
+        with pytest.raises(FileNotFoundError):
+            await runtime.session_command_logs(self.SID, "c0ffee00")
+        with pytest.raises(FileNotFoundError):
+            await runtime.delete_session(self.SID)
+        assert victim.poll() is None
+
+        await runtime.create_session("bg-ba5eba11ba5e")
+        assert sorted(p.name for p in machine.sessions.iterdir()) == ["run-200"]
+
+    @pytest.mark.asyncio
+    async def test_a_pid_that_names_another_process_reads_as_ended_and_is_not_signalled(
+        self, machine
+    ):
+        """Within a run, a wrapper can die without writing its exit code (the
+        OOM killer), and its pid can then be handed to another process."""
+        runtime, victim = machine.runtime, machine.victim
+        machine.set_start(1, 200)
+        machine.record(200, victim.pid, 250)
+        machine.set_start(victim.pid, 300)
+
+        assert await runtime.list_sessions() == [SessionState(self.SID, running=False)]
+        assert (await runtime.session_logs(self.SID)).exit_code == 137
+        assert (await runtime.session_command_logs(self.SID, "c0ffee00")).exit_code == 137
+        await runtime.delete_session(self.SID)
+        assert victim.poll() is None
+
+    @pytest.mark.asyncio
+    async def test_a_live_wrapper_reads_as_running_and_its_group_is_stopped(self, machine):
+        runtime, victim = machine.runtime, machine.victim
+        machine.set_start(1, 200)
+        machine.record(200, victim.pid, 300)
+        machine.set_start(victim.pid, 300)
+
+        assert await runtime.list_sessions() == [SessionState(self.SID, running=True)]
+        assert (await runtime.session_logs(self.SID)).exit_code is None
+        await runtime.delete_session(self.SID)
+        assert victim.wait(timeout=5) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_finished_commands_leftovers_go_with_its_session(self, machine):
+        """With the wrapper gone, a group by its id whose member carries the
+        command's mark holds what the command left running."""
+        runtime, victim = machine.runtime, machine.victim
+        machine.set_start(1, 200)
+        machine.record(200, victim.pid, 300)
+        machine.add_member(
+            victim.pid, f"PATH=/bin\0LANGALPHA_EXEC={victim.pid}-300\0".encode()
+        )
+
+        await runtime.delete_session(self.SID)
+        assert victim.wait(timeout=5) is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mark", ["", "LANGALPHA_EXEC={pid}-299\0"])
+    async def test_a_group_that_took_a_finished_commands_id_is_not_signalled(
+        self, machine, mark
+    ):
+        """Once the command's group emptied, its id could go to someone else's:
+        a group by that id carrying no mark, or another command's, is not its."""
+        runtime, victim = machine.runtime, machine.victim
+        machine.set_start(1, 200)
+        machine.record(200, victim.pid, 300)
+        machine.add_member(
+            victim.pid, f"PATH=/bin\0{mark.format(pid=victim.pid)}".encode()
+        )
+
+        await runtime.delete_session(self.SID)
+        assert victim.poll() is None
 
 
 # ---------------------------------------------------------------------------
@@ -1192,6 +1455,53 @@ class TestDockerRuntimeUpdatedCapabilities:
 
 
 class TestDockerProviderPreviewConfig:
+    @pytest.mark.asyncio
+    async def test_create_removes_a_container_when_post_start_inspection_fails(self):
+        config = DockerConfig()
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        mock_container.show.side_effect = RuntimeError("inspect unavailable")
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.create = AsyncMock(return_value=mock_container)
+        mock_client.images = MagicMock()
+        mock_client.images.inspect = AsyncMock()
+        provider._client = mock_client
+
+        with pytest.raises(RuntimeError, match="inspect unavailable"):
+            await provider.create()
+
+        mock_container.start.assert_awaited_once()
+        mock_container.delete.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_a_host_without_fuse_runs_the_sandbox_without_the_mount(self):
+        provider = DockerProvider(DockerConfig(), working_dir="/home/workspace")
+        refused = _make_mock_container()
+        refused.start.side_effect = RuntimeError(
+            'error gathering device information while adding custom device "/dev/fuse"'
+        )
+        started = _make_mock_container()
+        sent: list[set[str]] = []
+
+        async def create(*, config, name):
+            sent.append(set(config["HostConfig"]))
+            return refused if len(sent) == 1 else started
+
+        mock_client = MagicMock()
+        mock_client.containers.create = AsyncMock(side_effect=create)
+        mock_client.images.inspect = AsyncMock()
+        provider._client = mock_client
+
+        await provider.create()
+
+        fuse = {"Devices", "CapAdd", "SecurityOpt"}
+        assert fuse <= sent[0]
+        assert not fuse & sent[1]
+        refused.delete.assert_awaited_once_with(force=True)
+        started.start.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_create_publishes_proxy_ports_with_dynamic_host_ports(self):
         """Container creation uses dynamic host ports (HostPort: '') for proxy ports."""
@@ -1360,3 +1670,421 @@ class TestDockerProviderPreviewConfig:
 
         runtime = await provider.get("docker-abc123")
         assert runtime._host_port_map == {13000: 49200, 13001: 49201}
+
+
+# ---------------------------------------------------------------------------
+# DockerProvider, resource tiers
+# ---------------------------------------------------------------------------
+
+_GIB = 1024**3
+
+
+def _make_tier_client(
+    *,
+    applied_host_config: dict | None = None,
+    create_error: Exception | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    """A client whose inspect echoes the HostConfig it was asked to create with.
+
+    That echo is what the elevated-tier check reads, so overriding it is how a
+    daemon that drops a limit is simulated.
+    """
+    container = _make_mock_container()
+    client = MagicMock()
+    client.images = MagicMock()
+    client.images.inspect = AsyncMock()
+    client.containers = MagicMock()
+
+    async def _create(*, config, name):
+        if create_error is not None:
+            raise create_error
+        applied = (
+            applied_host_config
+            if applied_host_config is not None
+            else config["HostConfig"]
+        )
+        container.show = AsyncMock(
+            return_value={
+                "State": {"Status": "running"},
+                "HostConfig": dict(applied),
+                "NetworkSettings": {"Ports": {}},
+            }
+        )
+        return container
+
+    client.containers.create = AsyncMock(side_effect=_create)
+    return client, container
+
+
+def _created_host_config(client: MagicMock) -> dict:
+    return client.containers.create.call_args.kwargs["config"]["HostConfig"]
+
+
+def _created_env(client: MagicMock) -> dict[str, str]:
+    env = client.containers.create.call_args.kwargs["config"].get("Env", [])
+    return dict(entry.split("=", 1) for entry in env)
+
+
+class TestDockerProviderResourceTiers:
+    @pytest.mark.asyncio
+    async def test_default_tier_keeps_the_configured_size(self):
+        """tier=None sizes at the operator's own memory_limit/cpu_count."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="4g", cpu_count=2.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create()
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 4 * _GIB
+        assert host_config["NanoCpus"] == 2_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_elevated_tier_raises_cpu_and_memory(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 8 * _GIB
+        assert host_config["NanoCpus"] == 2_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_performance_tier_sizes_from_the_preset(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="performance")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 4 * _GIB
+        assert host_config["NanoCpus"] == 2_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_tier_never_shrinks_below_the_configured_size(self):
+        """A bigger box stays bigger: the config is a floor, not a default."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="16g", cpu_count=8.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="performance")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 16 * _GIB
+        assert host_config["NanoCpus"] == 8_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_unknown_tier_falls_back_to_the_configured_size(self):
+        """A tier dropped from config must not lock its workspace out."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="4g", cpu_count=2.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="retired-tier")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 4 * _GIB
+        assert host_config["NanoCpus"] == 2_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_custom_tier_preset_is_honoured(self):
+        provider = DockerProvider(
+            DockerConfig(
+                memory_limit="1g",
+                cpu_count=1.0,
+                resource_tiers={
+                    "standard": ResourceTier(cpu=1, memory=1, disk=3),
+                    "wide": ResourceTier(cpu=3, memory=6, disk=8),
+                },
+            ),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="wide")
+
+        host_config = _created_host_config(client)
+        assert host_config["Memory"] == 6 * _GIB
+        assert host_config["NanoCpus"] == 3_000_000_000
+
+    @pytest.mark.asyncio
+    async def test_a_tier_larger_than_other_providers_build_is_honoured(self):
+        """The host is Docker's only ceiling, and the daemon refuses past it."""
+        provider = DockerProvider(
+            DockerConfig(
+                memory_limit="1g",
+                cpu_count=1.0,
+                resource_tiers={
+                    "standard": ResourceTier(cpu=1, memory=1, disk=3),
+                    "huge": ResourceTier(cpu=16, memory=32, disk=100),
+                },
+            ),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="huge")
+
+        host_config = _created_host_config(client)
+        assert host_config["NanoCpus"] == 16 * 1_000_000_000
+        assert host_config["Memory"] == 32 * _GIB
+
+
+class TestDockerProviderTierDisk:
+    @pytest.mark.asyncio
+    async def test_disk_is_applied_when_the_driver_supports_quotas(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0, storage_quota_enabled=True),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        assert _created_host_config(client)["StorageOpt"] == {"size": "10G"}
+
+    @pytest.mark.asyncio
+    async def test_disk_is_skipped_when_not_configured(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        assert "StorageOpt" not in _created_host_config(client)
+
+    @pytest.mark.asyncio
+    async def test_disk_notice_is_logged_once_per_provider(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        with patch.object(docker_provider.logger, "info") as mock_info:
+            await provider.create(tier="max")
+            await provider.create(tier="max")
+
+        notices = [
+            call
+            for call in mock_info.call_args_list
+            if "storage_quota_enabled" in call.args[0]
+        ]
+        assert len(notices) == 1
+
+
+class TestDockerProviderTierFailsLoudly:
+    @pytest.mark.asyncio
+    async def test_daemon_rejecting_the_limits_raises(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client(
+            create_error=Exception("invalid argument: NanoCpus not supported")
+        )
+        provider._client = client
+
+        with pytest.raises(RuntimeError, match="refusing to create a base-sized"):
+            await provider.create(tier="max")
+
+    @pytest.mark.asyncio
+    async def test_default_tier_create_failure_is_not_relabelled(self):
+        """Only an elevated tier turns a create failure into a sizing error."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        boom = ValueError("name already in use")
+        client, _ = _make_tier_client(create_error=boom)
+        provider._client = client
+
+        with pytest.raises(ValueError, match="name already in use"):
+            await provider.create()
+
+    @pytest.mark.asyncio
+    async def test_silently_dropped_limits_raise_and_remove_the_container(self):
+        """A daemon that warns instead of failing must not leave a host-sized box."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, container = _make_tier_client(
+            applied_host_config={"Memory": 0, "NanoCpus": 0}
+        )
+        provider._client = client
+
+        with pytest.raises(RuntimeError, match="refusing to run an elevated tier"):
+            await provider.create(tier="max")
+
+        container.delete.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_cpu_quota_readback_counts_as_applied(self):
+        """NanoCpus and CpuQuota/CpuPeriod are the same limit written two ways."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, container = _make_tier_client(
+            applied_host_config={
+                "Memory": 8 * _GIB,
+                "CpuQuota": 200_000,
+                "CpuPeriod": 100_000,
+            }
+        )
+        provider._client = client
+
+        runtime = await provider.create(tier="max")
+
+        assert runtime.id.startswith("docker-")
+        container.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_default_tier_is_not_verified(self):
+        """The default tier keeps today's best-effort sizing, not a hard gate."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, container = _make_tier_client(applied_host_config={})
+        provider._client = client
+
+        await provider.create()
+
+        container.delete.assert_not_called()
+
+
+class TestDockerProviderThreadPools:
+    @pytest.mark.asyncio
+    async def test_thread_pools_match_the_tier_vcpus(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=1.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="max")
+
+        env = _created_env(client)
+        assert env["OMP_NUM_THREADS"] == "2"
+        assert env["OPENBLAS_NUM_THREADS"] == "2"
+        assert env["MKL_NUM_THREADS"] == "2"
+
+    @pytest.mark.asyncio
+    async def test_thread_pools_follow_the_applied_size_not_the_preset(self):
+        """The floor won, so the pools track the floor rather than the tier."""
+        provider = DockerProvider(
+            DockerConfig(memory_limit="16g", cpu_count=8.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(tier="performance")
+
+        assert _created_env(client)["OMP_NUM_THREADS"] == "8"
+
+    @pytest.mark.asyncio
+    async def test_fractional_cpu_still_gets_one_thread(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=0.5),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create()
+
+        assert _created_env(client)["OMP_NUM_THREADS"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_caller_env_wins_over_the_thread_defaults(self):
+        provider = DockerProvider(
+            DockerConfig(memory_limit="1g", cpu_count=4.0),
+            working_dir="/home/workspace",
+        )
+        client, _ = _make_tier_client()
+        provider._client = client
+
+        await provider.create(env_vars={"OMP_NUM_THREADS": "1", "MY_VAR": "v"})
+
+        env = _created_env(client)
+        assert env["OMP_NUM_THREADS"] == "1"
+        assert env["MKL_NUM_THREADS"] == "4"
+        assert env["MY_VAR"] == "v"
+
+
+class TestReconnectResourceRepair:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("quota", [False, True])
+    async def test_repairs_only_smaller_limits_and_rechecks(self, quota):
+        host = {"Memory": 2 * 1024**3, "MemorySwap": 4 * 1024**3}
+        host.update({"CpuQuota": 100000, "CpuPeriod": 100000} if quota else {"NanoCpus": 1_000_000_000})
+        container = SimpleNamespace(show=AsyncMock(side_effect=[
+            {"Id": "existing", "HostConfig": host},
+            {"HostConfig": {"NanoCpus": 2_000_000_000, "Memory": 8 * 1024**3}},
+        ]), delete=AsyncMock())
+        provider = DockerProvider(DockerConfig(cpu_count=1.0))
+        client = SimpleNamespace(_query_json=AsyncMock())
+        provider._client = client
+        runtime = SimpleNamespace(_container=container, id="existing")
+        await provider.prepare_reconnect(runtime, tier="max")
+        changes = client._query_json.await_args.kwargs["data"]
+        assert changes == {
+            ("CpuQuota" if quota else "NanoCpus"): (200000 if quota else 2_000_000_000),
+            "Memory": 8 * 1024**3, "MemorySwap": 8 * 1024**3,
+        }
+        assert container.show.await_count == 2
+        container.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cpu,memory", [(8_000_000_000, 16 * 1024**3), (0, 0)])
+    async def test_preserves_larger_and_unlimited_resources(self, cpu, memory):
+        provider = DockerProvider(DockerConfig())
+        provider._client = SimpleNamespace(_query_json=AsyncMock())
+        runtime = SimpleNamespace(_container=SimpleNamespace(show=AsyncMock(return_value={
+            "HostConfig": {"NanoCpus": cpu, "Memory": memory}
+        })))
+        await provider.prepare_reconnect(runtime, tier="max")
+        provider._client._query_json.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["refused", "ignored", "dropped"])
+    async def test_failed_repair_never_deletes_container(self, failure):
+        before = {"Id": "existing", "HostConfig": {"NanoCpus": 2_000_000_000, "Memory": 4 * 1024**3}}
+        after = {"HostConfig": {}} if failure == "dropped" else before
+        container = SimpleNamespace(show=AsyncMock(side_effect=[before, after]), delete=AsyncMock())
+        provider = DockerProvider(DockerConfig())
+        provider._client = SimpleNamespace(_query_json=AsyncMock(
+            side_effect=RuntimeError("refused") if failure == "refused" else None
+        ))
+        with pytest.raises(RuntimeError):
+            await provider.prepare_reconnect(SimpleNamespace(_container=container, id="existing"), tier="max")
+        container.delete.assert_not_awaited()

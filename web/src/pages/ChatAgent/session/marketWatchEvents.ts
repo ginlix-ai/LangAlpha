@@ -1,6 +1,6 @@
 /**
- * Market-watch SSE handling: the live watch-chip snapshot. Moves to
- * session/marketWatchEvents.ts with the live-router carve (5.7).
+ * Market-watch SSE handling: the live watch-chip snapshot. A price target's
+ * notice reads as a wakeup's, in `wakeupEvents.ts`.
  */
 
 /**

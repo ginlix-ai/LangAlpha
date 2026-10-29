@@ -1,29 +1,30 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import i18n from '@/i18n';
-import { relativeTime } from '@/lib/format';
+import { clockTime, relativeTime, weekdayMonthDay } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
 import { MessageSquareText, MessagesSquare } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
+import { motion } from '@/lib/framer';
 import ChatInput from '@/components/ui/chat-input';
 import { useChatInput } from '../../hooks/useChatInput';
 import { useUser } from '@/hooks/useUser';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
-import { getWorkspaceThreads } from '@/pages/ChatAgent/utils/api';
-import { queryKeys } from '@/lib/queryKeys';
-import type { Thread, ThreadsResponse } from '@/types/api';
+import { workspaceThreadsQuery } from '@/pages/ChatAgent/utils/threadQueries';
+import type { Thread } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { useWidgetContextExport } from '../framework/contextSnapshot';
 import { wrapWidgetContext } from '../framework/snapshotSerializers';
 import { ConversationConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import './ConversationWidget.css';
+import { STAGGER } from '@/lib/motion';
 
 type ConversationConfig = Record<string, never>;
 
-function greetingKey(): string {
-  const hour = new Date().getHours();
+function greetingKey(now: number): string {
+  const hour = new Date(now).getHours();
   if (hour < 5) return 'dashboard.widgets.conversation.greetingLate';
   if (hour < 12) return 'dashboard.widgets.conversation.greetingMorning';
   if (hour < 17) return 'dashboard.widgets.conversation.greetingAfternoon';
@@ -31,58 +32,47 @@ function greetingKey(): string {
   return 'dashboard.widgets.conversation.greetingStillAtIt';
 }
 
-function formatDateStrip(): string {
-  const now = new Date();
-  const date = now.toLocaleDateString(i18n.language, {
-    weekday: 'long',
-    month: 'short',
-    day: 'numeric',
-  });
-  const time = now.toLocaleTimeString(i18n.language, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-  return `${date} · ${time}`;
+
+function formatDateStrip(now: number, locale: string): string {
+  return `${weekdayMonthDay(now, locale)} · ${clockTime(now, locale)}`;
 }
 
 function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>) {
   const { t } = useTranslation();
+  const locale = useLocale();
+  const now = useNow();
   const navigate = useNavigate();
+  // Focus inside the composer means the user is writing, which warms the
+  // target computer.
+  const [focused, setFocused] = useState(false);
 
   const {
-    mode,
-    setMode,
+    scope,
+    setScope,
     isLoading,
     handleSend,
     workspaces,
     selectedWorkspaceId,
     setSelectedWorkspaceId,
-  } = useChatInput();
+  } = useChatInput({ composing: focused });
 
   const { user } = useUser();
   const greeting = useMemo(() => {
-    const tod = t(greetingKey());
+    const tod = t(greetingKey(now));
     const first = (user?.name || '').trim().split(/\s+/)[0];
     return first ? `${tod}, ${first}.` : `${tod}.`;
-  }, [user?.name, t]);
-  // Computed per render so the strip updates if the dashboard sits open
-  // across midnight. Empty-deps memo would freeze it at mount time.
-  const dateStrip = formatDateStrip();
+  }, [user?.name, t, now]);
+  const dateStrip = formatDateStrip(now, locale);
 
   // Recent threads for the Resume strip — peek at the first workspace.
   // Fetch 100 to match the shared React Query cache key used by useChatInput,
   // RecentThreadsWidget, and WorkspacePickerWidget (single cache entry serves all).
   const { data: wsData } = useWorkspaces({ limit: 100 });
-  const firstWsId = wsData?.workspaces?.[0]?.workspace_id as string | undefined;
+  const firstWsId = wsData?.workspaces?.[0]?.workspace_id;
 
-  const { data: threadsData } = useQuery<ThreadsResponse>({
-    queryKey: firstWsId
-      ? [...queryKeys.threads.byWorkspace(firstWsId), 4, 0]
-      : ['threads', 'noop'],
-    queryFn: () =>
-      getWorkspaceThreads(firstWsId!, 4, 0) as Promise<ThreadsResponse>,
+  const { data: threadsData } = useQuery({
+    ...workspaceThreadsQuery(firstWsId ?? '', 4),
     enabled: !!firstWsId,
-    staleTime: 30_000,
   });
 
   const recentThreads = useMemo<Thread[]>(
@@ -93,10 +83,14 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
   useWidgetContextExport(instance.id, {
     full: () => {
       const selectedWs = workspaces.find((w) => w.workspace_id === selectedWorkspaceId);
-      const lines: string[] = [
-        `Mode: ${mode}`,
-        `Workspace: ${selectedWs?.name ?? '(none)'} (${selectedWorkspaceId ?? 'unset'})`,
-      ];
+      // The Chief of Staff scope ignores the workspace it last selected.
+      const inAllWorkspaces = scope === 'all';
+      const workspaceId = inAllWorkspaces ? null : selectedWorkspaceId;
+      const workspaceName = inAllWorkspaces ? t('agents.chiefOfStaff') : selectedWs?.name;
+      const workspaceLine = inAllWorkspaces
+        ? 'Workspace: Chief of Staff (Home)'
+        : `Workspace: ${selectedWs?.name ?? '(none)'} (${selectedWorkspaceId ?? 'unset'})`;
+      const lines: string[] = [workspaceLine];
       if (recentThreads.length) {
         lines.push('', '**Resume threads:**');
         recentThreads.forEach((th) => {
@@ -106,20 +100,19 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
       }
       const text = wrapWidgetContext(
         'agent.conversation',
-        { mode, workspace_id: selectedWorkspaceId },
+        { workspace_id: workspaceId },
         lines.join('\n'),
       );
       return {
         widget_type: 'agent.conversation',
         widget_id: instance.id,
         label: t('dashboard.widgets.conversation.title'),
-        description: `${mode} · ${selectedWs?.name ?? 'no workspace'}`,
+        description: workspaceName ?? 'no workspace',
         captured_at: new Date().toISOString(),
         text,
         data: {
-          mode,
-          workspace_id: selectedWorkspaceId,
-          workspace_name: selectedWs?.name,
+          workspace_id: workspaceId,
+          workspace_name: workspaceName,
           recent_threads: recentThreads.map((th) => ({
             thread_id: th.thread_id,
             title: th.title,
@@ -143,7 +136,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
         animate="show"
         variants={{
           hidden: {},
-          show: { transition: { staggerChildren: 0.07, delayChildren: 0.04 } },
+          show: { transition: { staggerChildren: STAGGER, delayChildren: STAGGER } },
         }}
       >
         <motion.div
@@ -157,12 +150,16 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
         <motion.div
           className="conversation-widget__stage"
           variants={{ hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } }}
+          onFocus={() => setFocused(true)}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
+          }}
         >
           <ChatInput
             onSend={handleSend}
             disabled={isLoading}
-            mode={mode}
-            onModeChange={setMode}
+            scope={scope}
+            onScopeChange={setScope}
             workspaces={workspaces}
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
@@ -193,7 +190,7 @@ function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>)
                     {thread.title || t('dashboard.widgets.conversation.untitledThread')}
                   </span>
                   <span className="conversation-widget__chip-age">
-                    {relativeTime(thread.updated_at)}
+                    {relativeTime(thread.updated_at, locale, now)}
                   </span>
                 </button>
               ))}

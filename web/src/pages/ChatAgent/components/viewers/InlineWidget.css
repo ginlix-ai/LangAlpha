@@ -20,7 +20,7 @@
      so an eased container lags behind it — clipping or dead space on every
      report, and rubber-banding while a panel-resize streams new heights
      every frame. Snap height; fade only the first reveal. */
-  transition: opacity 0.2s ease;
+  transition: opacity var(--motion-quick) var(--ease-out);
 }
 
 /* Centered in the reserved box until the widget document reports a height. */

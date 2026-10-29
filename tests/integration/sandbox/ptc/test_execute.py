@@ -2,60 +2,61 @@ from __future__ import annotations
 
 import pytest
 
+from ptc_agent.core.sandbox.jobs import Ended
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="class")]
 
 
 class TestExecute:
-    """PTCSandbox.execute() -- Python code execution with full orchestration."""
+    """PTCSandbox.start_code_job() -- Python code run as a job, waited on to its end."""
 
     async def test_execute_simple_code(self, shared_sandbox):
-        result = await shared_sandbox.execute("print('hello world')")
-        assert result.success is True
-        assert "hello world" in result.stdout
+        result = await shared_sandbox.start_code_job("print('hello world')", wait_s=None)
+        assert isinstance(result, Ended) and result.exit_code == 0
+        assert "hello world" in result.output
 
-    async def test_execute_returns_execution_result(self, shared_sandbox):
-        result = await shared_sandbox.execute("x = 42; print(x)")
-        assert result.success is True
-        assert result.execution_id is not None
-        assert result.code_hash is not None
-        assert isinstance(result.duration, float)
+    async def test_execute_returns_a_job_outcome(self, shared_sandbox):
+        result = await shared_sandbox.start_code_job("x = 42; print(x)", wait_s=None)
+        assert isinstance(result, Ended) and result.exit_code == 0
+        assert result.ref.command_id.startswith("bg-")
+        assert result.handle.ran_for() >= 0
 
     async def test_execute_error_code(self, shared_sandbox):
-        result = await shared_sandbox.execute("raise RuntimeError('test failure')")
-        assert result.success is False
+        result = await shared_sandbox.start_code_job(
+            "raise RuntimeError('test failure')", wait_s=None
+        )
+        assert isinstance(result, Ended) and result.exit_code != 0
+        assert "test failure" in result.output
 
     async def test_execute_creates_code_file(self, shared_sandbox):
-        """execute() should save the code to .system/code/ directory."""
-        result = await shared_sandbox.execute("print('saved')")
-        assert result.success is True
-        # Check code dir has files
-        ls_result = await shared_sandbox.runtime.exec(f"ls {shared_sandbox._work_dir}/.system/code/")
+        """With no thread, the code is saved in .system/code/."""
+        result = await shared_sandbox.start_code_job("print('saved')", wait_s=None)
+        assert result.exit_code == 0
+        ls_result = await shared_sandbox.runtime.exec(
+            f"ls {shared_sandbox._work_dir}/.system/code/{result.ref.command_id}.py"
+        )
         assert ls_result.exit_code == 0
 
     async def test_execute_with_thread_id(self, shared_sandbox):
-        result = await shared_sandbox.execute(
-            "print('threaded')", thread_id="test-thread-123"
+        result = await shared_sandbox.start_code_job(
+            "print('threaded')", wait_s=None, thread_id="test-thread-123"
         )
-        assert result.success is True
-        # Check thread dir was created
+        assert result.exit_code == 0
         ls_result = await shared_sandbox.runtime.exec(
             f"test -d {shared_sandbox._work_dir}/.agents/threads/test-thread-123/code && echo OK"
         )
         assert "OK" in ls_result.stdout
 
     async def test_execute_with_file_creation(self, shared_sandbox):
-        """Code that creates files should report files_created."""
-        result = await shared_sandbox.execute(
-            "with open('results/test_output.txt', 'w') as f: f.write('data')"
+        """A write through the sandbox filesystem succeeds and is readable back."""
+        result = await shared_sandbox.start_code_job(
+            "import pathlib; p = pathlib.Path('work/exec_probe'); p.mkdir(parents=True, "
+            "exist_ok=True); (p / 'out.txt').write_text('data'); "
+            "print((p / 'out.txt').read_text())",
+            wait_s=None,
         )
-        assert result.success is True
-
-    async def test_execute_increments_counter(self, shared_sandbox):
-        initial = shared_sandbox.execution_count
-        await shared_sandbox.execute("print(1)")
-        assert shared_sandbox.execution_count == initial + 1
-        await shared_sandbox.execute("print(2)")
-        assert shared_sandbox.execution_count == initial + 2
+        assert result.exit_code == 0
+        assert "data" in result.output
 
     async def test_execute_with_pythonpath(self, shared_sandbox):
         """Verify PYTHONPATH is set so _internal/src imports work."""
@@ -64,8 +65,8 @@ class TestExecute:
             b"INTERNAL_VALUE = 99\n",
             f"{shared_sandbox._work_dir}/_internal/src/test_internal.py",
         )
-        result = await shared_sandbox.execute(
-            "from test_internal import INTERNAL_VALUE; print(INTERNAL_VALUE)"
+        result = await shared_sandbox.start_code_job(
+            "from test_internal import INTERNAL_VALUE; print(INTERNAL_VALUE)", wait_s=None
         )
-        assert result.success is True
-        assert "99" in result.stdout
+        assert result.exit_code == 0
+        assert "99" in result.output

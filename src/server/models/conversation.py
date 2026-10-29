@@ -5,9 +5,11 @@ This module defines response models for workspace thread endpoints that work wit
 the query-response schema (workspaces, thread, query, response).
 """
 
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from src.llms.reasoning import ReasoningLevel
 
 
 # ==================== Workspace Thread Response Models ====================
@@ -32,8 +34,9 @@ class WorkspaceThreadListItem(BaseModel):
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Thread annotations. Known keys: 'origin' — "
-        "{type: 'agent'|'automation'|'system', id?} recording who initiated "
-        "the thread; absent origin = user-initiated.",
+        "{type: 'agent'|'automation'|'system', id?, name?, agent?} recording "
+        "who initiated the thread (name: the automation's; agent: "
+        "'chief_of_staff', the dispatcher); absent origin = user-initiated.",
     )
     is_shared: bool = Field(False, description="Whether thread is publicly shared")
     is_pinned: bool = Field(
@@ -44,10 +47,42 @@ class WorkspaceThreadListItem(BaseModel):
         description="When the thread was archived; NULL = active. Archived "
         "threads are excluded from listings unless explicitly requested.",
     )
+    llm_model: Optional[str] = Field(
+        None,
+        description="The model this thread runs: the last one a client named "
+        "for it. NULL = follows the account default for its mode.",
+    )
+    subagents_allowed: Optional[bool] = Field(
+        None,
+        description="Whether the thread's agent may start or direct subagents "
+        "(the chat input's subagent switch). Off, those calls are refused; "
+        "subagents already running keep going and their results stay "
+        "collectable. NULL = follows the owner's subagents default "
+        "(other_preference.subagents_default; on when unset).",
+    )
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description="The thread's own reasoning effort, picked in its "
+        "composer. NULL = follows the user's Settings (the model's own "
+        "level, else the account default, else the model's).",
+    )
+    fast_mode: Optional[bool] = Field(
+        None,
+        description="The thread's own fast mode, picked in its composer. "
+        "NULL = follows the user's Settings.",
+    )
     turn_count: Optional[int] = Field(
         None,
         description="Number of turns (user queries) in the thread; only the "
         "list queries compute it — other constructor sites omit it.",
+    )
+    summary_handoff: Optional[bool] = Field(
+        None,
+        description="Only on the response to a model change: whether the "
+        "model the thread was on is writing out, for the new one, the "
+        "summary its provider compacted the thread into, which no other "
+        "provider can read. Until it is written the new model reads a plain "
+        "record of the compacted part.",
     )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
@@ -206,15 +241,25 @@ class WorkspaceMessagesResponse(BaseModel):
 class ThreadCreateRequest(BaseModel):
     """Request model for POST /api/v1/threads (pre-creation with auto-title).
 
-    ``workspace_id`` is required for ptc mode; flash mode resolves the shared
-    flash workspace when omitted — mirroring the message-send path so a
-    pre-created thread is indistinguishable from an ensure_thread_exists row.
+    Resolves its workspace as the message-send path does, Home's id included,
+    so a pre-created thread is indistinguishable from an ensure_thread_exists
+    row.
     """
-    workspace_id: Optional[str] = Field(None, description="Target workspace")
+    workspace_id: Optional[str] = Field(
+        None, description="Target workspace; Home's id for the user's Home"
+    )
     first_query: str = Field(
-        ..., min_length=1,
+        "",
         description="The user's first message; stamped as the initial title "
-        "and fed to title generation.",
+        "and fed to title generation. May be empty when `title` is given.",
+    )
+    title: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="The thread's title, stored as given, with no title "
+        "generated after it. For a first turn that opens with no message of "
+        "the user's to title it from.",
     )
 
     @field_validator("first_query")
@@ -224,7 +269,6 @@ class ThreadCreateRequest(BaseModel):
         # 4000 chars of it (title-prompt clip; the title stamp is [:255]).
         # Truncate rather than reject so long pastes don't 422 the fast door.
         return v[:4000]
-    agent_mode: Literal["flash", "ptc"] = Field("ptc")
     # Same contract as ChatRequest.platform (see models/chat.py for the format
     # rationale) — pre-created MarketView threads must carry their tag since
     # ensure_thread_exists never updates platform on an existing row.
@@ -240,25 +284,62 @@ class ThreadCreateRequest(BaseModel):
         description="IANA timezone identifier (e.g., 'America/New_York'); "
         "localizes relative-time resolution during title generation.",
     )
+    subagents_allowed: Optional[bool] = Field(
+        default=None,
+        description="The thread's subagent switch; omitted, or the side the "
+        "user's default (other_preference.subagents_default) is on, the thread "
+        "follows that default until a PATCH switches it.",
+    )
+    reasoning_effort: Optional[ReasoningLevel] = Field(
+        default=None,
+        description="The thread's own reasoning effort; omitted, the thread "
+        "follows the user's Settings until a PATCH sets one.",
+    )
+    fast_mode: Optional[bool] = Field(
+        default=None,
+        description="The thread's own fast mode; omitted, the thread follows "
+        "the user's Settings until a PATCH sets one.",
+    )
+
+    @model_validator(mode="after")
+    def _something_titles_the_thread(self) -> "ThreadCreateRequest":
+        # The row is born with a title: the one named, else the stamp of the
+        # first message. With neither there is nothing to stamp or generate.
+        if self.title is None and not self.first_query:
+            raise ValueError("first_query or title is required")
+        return self
 
 
 class ThreadCreateResponse(BaseModel):
     """201 body of POST /api/v1/threads — the created row.
 
-    ``title`` is the creation-time stamp (the raw first query). The generated
-    title arrives later on the lifecycle feed; it is never awaited here.
+    ``title`` is the creation-time stamp: the title the request named, else
+    the raw first query, whose generated title arrives later on the lifecycle
+    feed; it is never awaited here.
     """
     thread_id: str
     workspace_id: str
     thread_index: int
     title: Optional[str] = None
     msg_type: str
+    subagents_allowed: Optional[bool] = Field(
+        None,
+        description="The switch the create stored; null follows the owner's "
+        "subagents default.",
+    )
+    reasoning_effort: Optional[str] = Field(
+        None, description="The effort the create stored; null follows Settings."
+    )
+    fast_mode: Optional[bool] = Field(
+        None, description="The fast mode the create stored; null follows Settings."
+    )
     created_at: datetime
     updated_at: datetime
 
 
 class ThreadUpdateRequest(BaseModel):
-    """Request model for updating a thread (title, pin, archive).
+    """Request model for updating a thread (title, pin, archive, model,
+    subagent switch, effort, fast mode).
 
     Only fields explicitly present in the request are applied — the endpoint
     reads ``model_fields_set``, so ``{"is_pinned": true}`` cannot clear the
@@ -270,6 +351,34 @@ class ThreadUpdateRequest(BaseModel):
     )
     archived: Optional[bool] = Field(
         None, description="Archive (true) or unarchive (false) the thread"
+    )
+    llm_model: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="The model this thread runs from its next turn. null "
+        "returns it to the account default. A name this user cannot run is "
+        "refused with a 400 of type 'model_unavailable'.",
+    )
+    subagents_allowed: Optional[bool] = Field(
+        None,
+        description="Allow (true) or refuse (false) subagents in this thread, "
+        "from the next model call on, a running turn included. The side the "
+        "user's default is on, or null, leaves the thread following the "
+        "default, so it moves when the default does; the other side is the "
+        "thread's own and stays whatever the default does.",
+    )
+    reasoning_effort: Optional[ReasoningLevel] = Field(
+        None,
+        description="The thread's reasoning effort from its next turn, any "
+        "level of the vocabulary: a turn clamps it to what the thread's model "
+        "offers, since the model can change under it. null returns the thread "
+        "to the user's Settings.",
+    )
+    fast_mode: Optional[bool] = Field(
+        None,
+        description="The thread's fast mode from its next turn. null returns "
+        "the thread to the user's Settings.",
     )
 
     model_config = ConfigDict(json_schema_extra={
@@ -324,6 +433,15 @@ class SharePermissions(BaseModel):
     """Configurable permissions for a shared thread."""
     allow_files: bool = Field(False, description="Allow browsing and reading workspace files")
     allow_download: bool = Field(False, description="Allow downloading raw workspace files")
+    # Absent means the whole workspace, which is what every token minted so far
+    # carries, so adding the field changes nothing about the tokens in the wild.
+    root_path: str = Field(
+        "",
+        description=(
+            "Workspace-relative subtree this token opens. Empty opens the whole "
+            "workspace."
+        ),
+    )
 
     @model_validator(mode="after")
     def download_requires_files(self):

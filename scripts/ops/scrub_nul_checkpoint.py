@@ -23,13 +23,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
+from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
 
 import psycopg
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+# Run as a script, sys.path[0] is scripts/ops, not the repo root the sibling
+# helper is imported from.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.ops._db import build_db_uri  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("scrub_nul_checkpoint")
@@ -94,19 +99,8 @@ def _strip_nul(value: Any) -> tuple[Any, int]:
 
 
 def _build_db_uri() -> str:
-    db_host = os.getenv("MEMORY_DB_HOST", "localhost")
-    db_port = os.getenv("MEMORY_DB_PORT", "5432")
-    db_name = os.getenv("MEMORY_DB_NAME", "postgres")
-    db_user = os.getenv("MEMORY_DB_USER", "postgres")
-    db_password = os.getenv("MEMORY_DB_PASSWORD", "postgres")
-    # Read directly rather than importing src.config: that would pull in the app's
-    # load_dotenv() and silently retarget this script at whatever .env names —
-    # unacceptable for a tool that mutates rows under --apply.
-    sslmode = os.getenv("DB_SSLMODE", "prefer")
-    return (
-        f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}"
-        f"@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"
-    )
+    """The checkpointer's database, from the MEMORY_DB_* vars it uses."""
+    return build_db_uri("MEMORY_DB_")
 
 
 async def _scrub_table(

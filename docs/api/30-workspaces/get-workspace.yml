@@ -51,6 +51,12 @@ docs: |
   - `name`: Workspace name
   - `description`: Workspace description
   - `sandbox_id`: Daytona sandbox ID (null if not yet created)
+  - `dir_name`: The workspace's folder on its computer
+  - `previous_dir_names`: Folders a rename moved the workspace out of, newest first
+  - `root_dir`: The root of the computer the workspace is on, where its folder
+    sits (null on a workspace with no computer)
+  - `previous_root_dirs`: Roots of the computers a move took the workspace off,
+    newest first, so paths written there still resolve
   - `status`: Workspace status (creating, running, stopping, stopped, error, deleted)
   - `created_at`: Creation timestamp
   - `updated_at`: Last update timestamp

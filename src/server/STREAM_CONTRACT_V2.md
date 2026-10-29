@@ -40,10 +40,11 @@ artifacts (`artifact_type: task` — init/resume/status). Task-lane content (mes
 reasoning chunks, tool calls/results, `context_window`, `provenance`, errors,
 interrupts, steering delivery) is delivered exclusively by the task run's channel.
 
-Transitional exception (until the detail view renders them from the task channel):
-task-attributed `model_retry` / `model_fallback` and ui/artifact events still ride the
-main stream. They are discrete and idempotent (`artifact_id`-keyed), so dual delivery is
-harmless; they migrate at mux-v2 cutover.
+A subagent runs detached from the turn that spawned it, so none of its graph's events
+reach the main stream. Its channel carries a fixed allowlist of side-channel events
+besides its chunks and tool frames: `context_window`, `provenance`, and a `file_operation`
+artifact as a path-only ping. Its `model_retry` / `model_fallback` and other ui/artifact
+events are not forwarded; the client renders model resilience for the main agent only.
 
 ## Causal ordering
 
@@ -51,12 +52,16 @@ No cross-lane total order is promised. The promised causal chain per task run:
 
 1. The parent's Task tool call exists (main lane).
 2. `lane_open{task_run_id, task_id, cause, launch_tool_call_id?, description,
-   subagent_type}` becomes visible — it carries enough to create the card, because the
+   subagent_type, model?}` becomes visible. It carries enough to create the card, because the
    Task result artifact may legitimately trail early task output. `launch_tool_call_id`
-   is nullable (a HITL continuation has no fresh Task call).
+   is nullable (a HITL continuation has no fresh Task call). `model` (`{id, provider}`)
+   is present only when the run uses a model other than its launcher's; it is the same
+   value admission writes to the row's `replay_facts.model`, which replay stamps on the
+   task artifact and `/tasks/{id}/status` returns.
 3. Task content begins.
 4. The terminal CAS commits (ledger).
-5. Cursor-bearing `run_end{outcome}` is appended.
+5. Cursor-bearing `run_end{outcome, finished?}` is appended. A task run's writer adds
+   `finished` (its CAS's finalized_at, epoch ms); a main-lane `run_end` has none.
 
 A mux or client must not render task frames before their anchor (2) is delivered or
 present in the snapshot.
@@ -75,8 +80,10 @@ lives inside the stream it announces).
 ## Terminal semantics
 
 - `run_end` is written **only after** the terminal status is durably committed
-  (commit-then-signal), and — on the owning worker — only after the steering sweep, so
-  `steering_returned` frames precede it and nothing follows it. The append is
+  (commit-then-signal), and nothing follows it on the run's stream. A task run's
+  `steering_returned` frames precede it, and so does a main-thread one: the `run_end`
+  writer adds it under the same once-only gate, only for chat-app steers the run
+  returned, read from their outbox rows after the finalize that settled them. The append is
   idempotent by last-frame inspection; recovery finalizers (scanner, admission abort)
   append it together with their CAS. A worker dying between CAS and XADD is healed by
   ledger reconciliation — a terminal row whose stream lacks `run_end` closes the
@@ -133,10 +140,16 @@ sampled transactionally, the snapshot algorithm is a revalidation loop:
 - **Socket control frames** (mux-level, cursorless — distinct from in-stream frames):
   `chan_open{chan, lane, mode, started}` when the mux admits a channel (mode `replay`
   for a live run, `drain` for a settled backlog; `started` = ledger started_at epoch
-  ms, the client orders per-task outcome votes by it), and `chan_close{chan, reason}`
-  when it releases one. `chan_close{reason: terminal, outcome}` carries the ledger
+  ms, the client orders per-task outcome votes by it), `chan_caught_up{chan}` once the
+  channel's cursor reaches the stream head recorded at open (the frames before it are
+  backlog the client presents as already rendered; the ones after arrived live), and
+  `chan_close{chan, reason}` when it releases one. `chan_close{reason: terminal, outcome}` carries the ledger
   row's outcome — it is how a channel closes from row truth when the worker died
-  between the terminal CAS and the `run_end` append. Other reasons:
+  between the terminal CAS and the `run_end` append. On a task lane the row-truth close
+  also carries `finished` (the row's finalized_at, epoch ms), which the missing
+  `run_end` would have; a main-lane close never does, since `conversation_responses`
+  has no finalized_at. A channel its `run_end` closed gets `finished` from that frame,
+  which the mux forwards ahead of the close. Other reasons:
   `resync_required` (cursor gap / aged-out stream) and `transport_error`.
 - Client item identity is `(lane, run_id, item_id)` — never a positional index. Delivery
   is at-least-once: consumers keep a per-run applied-seq high-water mark; no semantic

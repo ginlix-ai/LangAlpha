@@ -1,0 +1,44 @@
+/* The week a schedule lands on: the days it runs in full ink, the rest
+   faded. */
+.automations-week {
+  display: grid;
+  grid-template-columns: repeat(7, 12px);
+  font-size: 0.6875rem;
+  line-height: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.automations-week > span {
+  text-align: center;
+  opacity: 0.45;
+}
+
+.automations-week > .is-on {
+  color: var(--color-text-primary);
+  opacity: 1;
+}
+
+/* The meter's track at the week strip's width, so every cadence mark in the
+   column is the same size. */
+.automations-cadence-track {
+  display: block;
+  width: 84px;
+}
+
+.automations-cadence-unset {
+  position: relative;
+  height: 12px;
+}
+
+.automations-cadence-unset::before {
+  content: '';
+  position: absolute;
+  inset: 5px 0 auto;
+  border-top: 2px dashed var(--color-border-muted);
+}
+
+.automations-cadence-sub {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}

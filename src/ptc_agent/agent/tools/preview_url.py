@@ -7,11 +7,15 @@ import structlog
 from langchain_core.tools import BaseTool, tool
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.agent.tools.utils import mark_sandbox_raised
+from ptc_agent.core.sandbox.runtime import PreviewInfo
+from src.observability import TOOL_CHANNEL, TOOL_PROVIDER
 
 logger = structlog.get_logger(__name__)
 
-# Callback signature: (sandbox_id, port, signed_url) -> None
-OnSignedUrl = Callable[[str, int, str], Awaitable[None]]
+# (sandbox_id, port, preview) -> None. The whole preview rather than its URL,
+# because only the server can tell what a browser may be handed for it.
+OnSignedUrl = Callable[[str, int, PreviewInfo], Awaitable[None]]
 
 
 def create_preview_url_tool(
@@ -25,7 +29,8 @@ def create_preview_url_tool(
     Args:
         backend: SandboxBackend wrapping the sandbox
         workspace_id: Workspace ID for preview URL generation
-        on_signed_url: Optional async callback to cache signed URLs
+        on_signed_url: Optional async callback that records the started
+            preview, so the panel opens it without a second resolve
 
     Returns:
         Configured GetPreviewUrl tool function
@@ -47,12 +52,9 @@ def create_preview_url_tool(
         Args:
             port: Port number (3000-9999) the command will listen on
             command: The shell command to start the server (e.g. "python -m http.server 8080")
-            title: Optional display title for the preview (default: "Port {port}")
+            title: Optional display title for the preview (default: "App on port {port}")
             path: Optional URL path suffix appended to the preview URL
                   (e.g. "/timeline.html" to open a specific file instead of the default index)
-
-        Returns:
-            The signed preview URL that can be used to access the service
         """
         try:
             from langgraph.config import get_stream_writer
@@ -64,15 +66,18 @@ def create_preview_url_tool(
         if not workspace_id:
             return "ERROR: No workspace ID available — cannot generate preview URL", {}
 
+        from src.server.database.share_codes import share_url
+        from src.server.database.share_links import app_display_title, describe_app_link
+
         try:
             # Start the server process and wait for it to be ready
             preview_info = await backend.astart_preview_url(command, port)
-            display_title = title or f"Port {port}"
+            display_title = app_display_title(port, title)
 
-            # Cache the fresh signed URL so frontend resolves it instantly
+            # Record the preview so the frontend resolves it instantly
             if on_signed_url and backend.sandbox_id:
                 try:
-                    await on_signed_url(backend.sandbox_id, port, preview_info.url)
+                    await on_signed_url(backend.sandbox_id, port, preview_info)
                 except Exception:
                     logger.debug("Failed to cache signed URL for port %s", port, exc_info=True)
 
@@ -90,9 +95,6 @@ def create_preview_url_tool(
                 workspace_id=workspace_id,
             )
 
-            # Stable URL: {base}/api/v1/preview/{workspace_id}/{port}[/path]
-            from src.config.env import SERVER_BASE_URL
-
             normalized_path = ""
             if path:
                 # Reject traversal attempts at the tool layer (defense in depth)
@@ -101,11 +103,6 @@ def create_preview_url_tool(
                 # Strip any ".." segments (server-side also independently rejects them)
                 segments = [s for s in clean.split("/") if s and s != ".."]
                 normalized_path = "/" + "/".join(segments) if segments else ""
-
-            stable_url = (
-                f"{SERVER_BASE_URL.rstrip('/')}/api/v1/preview/{workspace_id}/{port}"
-                f"{normalized_path}"
-            )
 
             artifact = {
                 "type": "preview_url",
@@ -123,7 +120,29 @@ def create_preview_url_tool(
                     "payload": artifact,
                 })
 
-            content = f"Preview URL for {display_title}: {stable_url}"
+            # The link the user gets is the item's private ``/a/`` page, which
+            # resolves the signed URL for the signed-in owner. Nothing in it
+            # names the workspace, so it is safe in a reply, a channel relay
+            # and a public replay of this thread. The page rides in the URL:
+            # a later call on this port moves the link's own entry path, and
+            # this reply should keep opening what it announced.
+            entry = normalized_path.lstrip("/") or None
+            try:
+                link = await describe_app_link(
+                    workspace_id, port, title=title, path=entry
+                )
+                content = (
+                    f"Preview URL for {display_title} (opens only for the "
+                    f"owner, signed in): {share_url(link.code, entry)}"
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to create the app link for port %s", port, exc_info=True
+                )
+                content = (
+                    f"Preview for {display_title} is running on port {port} and "
+                    "open in the preview panel; a link could not be created."
+                )
             return content, artifact
 
         except NotImplementedError:
@@ -132,8 +151,17 @@ def create_preview_url_tool(
                 {},
             )
         except Exception as e:
+            mark_sandbox_raised(e)
             error_msg = f"Failed to generate preview URL for port {port}: {e!s}"
             logger.error(error_msg, port=port, error=str(e), exc_info=True)
             return f"ERROR: {error_msg}", {}
 
+    # Every run, as for Bash: a preview is always the sandbox's to serve. With
+    # no workspace each call is refused before it reaches the sandbox, so none
+    # is filed under its provider.
+    if workspace_id:
+        GetPreviewUrl.metadata = {
+            TOOL_PROVIDER: backend.provider,
+            TOOL_CHANNEL: backend.channel,
+        }
     return GetPreviewUrl

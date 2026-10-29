@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-import yfinance as yf
+from .yahoo import yahoo_symbol_search, yahoo_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,11 @@ def _fetch_news(
         if len(articles) >= limit:
             break
         try:
-            news = yf.Ticker(sym).news or []
+            news = yahoo_ticker(sym).news or []
+            if not news:
+                # Yahoo no longer serves the endpoint behind Ticker.news (it
+                # answers 404, which yfinance returns as []); search still does.
+                news = yahoo_symbol_search(sym, news_count=limit, max_results=0).news or []
         except Exception:
             logger.warning("yfinance.news.failed | symbol=%s", sym, exc_info=True)
             continue
@@ -46,7 +50,7 @@ def _fetch_news(
             if not title:
                 continue
 
-            uuid = item.get("id") or content.get("id") or ""
+            uuid = item.get("id") or item.get("uuid") or content.get("id") or ""
             if not uuid or uuid in seen_uuids:
                 continue
             seen_uuids.add(uuid)

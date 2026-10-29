@@ -1,19 +1,10 @@
 /**
- * Skills + model-metadata caches (lazy single-flight; reset on auth change).
+ * Model-metadata cache (lazy single-flight; reset on auth change). Skills
+ * moved to React Query (`useSkills`) — a module-level promise cache can't
+ * invalidate when the user uploads or disables a skill.
  */
 import { api } from '@/api/client';
 import { registerAuthReset } from '@/lib/authResets';
-
-const _skillsPromises: Record<string, Promise<unknown[]>> = {};  // module-level cache keyed by mode
-
-export async function getSkills(mode: string | null = null) {
-  const key = mode || '_all';
-  if (key in _skillsPromises) return _skillsPromises[key];
-  _skillsPromises[key] = api.get('/api/v1/skills', { params: mode ? { mode } : {} })
-    .then(({ data }) => data.skills || [])
-    .catch(() => { delete _skillsPromises[key]; return []; });
-  return _skillsPromises[key];
-}
 
 // --- Model Metadata (eager prefetch at import time — resolved before ChatInput mounts) ---
 
@@ -36,13 +27,12 @@ export function getModelMetadata() {
 }
 
 /**
- * Reset the module-level API caches (skills, model metadata). Module
- * singletons outlive React, so this runs on sign-out and account switch via
- * the authResets registry — otherwise one user's skills/models leak into the
- * next session on a shared tab.
+ * Reset the module-level model-metadata cache. Module singletons outlive
+ * React, so this runs on sign-out and account switch via the authResets
+ * registry — otherwise one user's models leak into the next session on a
+ * shared tab.
  */
 export function resetChatApiCaches() {
-  for (const key of Object.keys(_skillsPromises)) delete _skillsPromises[key];
   _modelMetadataPromise = null;
 }
 

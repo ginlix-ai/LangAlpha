@@ -1,0 +1,67 @@
+.automation-run-meta {
+  margin-top: 3px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.automation-report .automation-run-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0;
+}
+
+/* The start of what a run said, or of its error, cut off after a few
+   lines. */
+.automation-run-excerpt,
+.automation-report-excerpt,
+.automation-run-error {
+  color: var(--color-text-secondary);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.automation-run-excerpt {
+  margin-top: 8px;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  -webkit-line-clamp: 3;
+}
+
+.automation-report-excerpt {
+  margin-top: 10px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  -webkit-line-clamp: 5;
+}
+
+/* A waiting run's promise, or why a run was skipped: prose, but a note
+   beside the report rather than the report. */
+.automation-run-note {
+  margin-top: 8px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+
+.automation-run-error {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+}
+
+.automation-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+}
+
+.automation-run-cause-link {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}

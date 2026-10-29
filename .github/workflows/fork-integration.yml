@@ -4,8 +4,9 @@ name: Fork Integration Tests
 #
 # SECURITY: pull_request_target runs in the base-repo context (so DAYTONA_API_KEY
 # is available) and this job checks out and executes the fork's UNTRUSTED code.
-# `uv sync` builds the root project AND the editable libs/ptc-cli from
-# fork-controlled source, so fork build hooks (pyproject.toml / hatch hooks /
+# `uv sync` builds the root project AND the editable libs/market-protocol from
+# fork-controlled source, and reads libs/ptc-cli to check the lock (a fork can
+# turn that into a build), so fork build hooks (pyproject.toml / hatch hooks /
 # uv.lock / conftest.py) auto-run BEFORE pytest, with the key in the env. The
 # reviewer MUST audit build config + lockfile + libs/, not just the test files.
 # This is only safe because:
@@ -22,6 +23,11 @@ on:
 concurrency:
   group: fork-integration-${{ github.event.pull_request.number }}
   cancel-in-progress: true
+
+# The backend image's Python (deploy/Dockerfile.backend). Left unset, uv
+# downloads the newest release, which a dependency may not ship wheels for yet.
+env:
+  UV_PYTHON: "3.13"
 
 jobs:
   backend-integration-fork:
@@ -89,7 +95,7 @@ jobs:
       - run: sudo apt-get install -y ripgrep
       # Skip docker-provider sandbox tests; they need GHCR auth + buildx
       # and are owned by the sandbox-integration workflow's docker tier.
-      - run: uv run pytest tests/integration/ -v --tb=short -m integration --ignore=tests/integration/sandbox/providers --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
+      - run: uv run pytest tests/integration/ -v --tb=short -m "integration and not yahoo" --ignore=tests/integration/sandbox/providers --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

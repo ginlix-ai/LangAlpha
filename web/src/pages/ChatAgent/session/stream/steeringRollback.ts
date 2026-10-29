@@ -7,9 +7,9 @@
  * filters the assistant message's content segments to keep only those
  * whose `order <= boundary`.
  *
- * Two pure helpers extracted from `useChatMessages.ts` so the boundary
- * read and the destructive-filter guard can be regression-tested without
- * mounting the hook:
+ * Pure helpers extracted from `useChatMessages.ts` so the boundary read,
+ * the destructive-filter guard and the filter itself can be
+ * regression-tested without mounting the hook:
  *
  *   • `computeSteeringBoundary` — read `_eventId` (numeric or coerced
  *     numeric string), fall back to the local counter when absent.
@@ -17,11 +17,14 @@
  *     null boundary would wipe every segment if applied. Real segment
  *     orders are always positive integers, so any other boundary is a
  *     "no rollback" signal.
+ *   • `keepSegmentsThrough`, the filter.
  *
- * Both are called from the primary stream's `steering_delivered` handler
- * AND the secondary stream's `steering_accepted` handler. Keeping them
- * pure means the two call sites cannot drift.
+ * The first two are called from the primary stream's `steering_delivered`
+ * handler AND the secondary stream's `steering_accepted` handler. Keeping
+ * them pure means the two call sites cannot drift.
  */
+import type { ContentSegment } from '@/types/chat';
+import { splitTextAt } from './textChunks';
 
 /**
  * Compute the rollback boundary from a steering_accepted event.
@@ -54,4 +57,15 @@ export function computeSteeringBoundary(
  */
 export function shouldSkipSteeringRollback(boundary: number | null): boolean {
   return boundary === null || !Number.isFinite(boundary) || boundary <= 0;
+}
+
+/**
+ * The segments at or before `boundary`. A live text segment is a run of
+ * chunks, so the one the boundary falls in keeps its chunks up to it.
+ */
+export function keepSegmentsThrough(segments: readonly ContentSegment[], boundary: number): ContentSegment[] {
+  return segments.flatMap((s): ContentSegment[] => {
+    if (s.order > boundary) return [];
+    return s.type === 'text' ? [splitTextAt(s, boundary)?.[0] ?? s] : [s];
+  });
 }

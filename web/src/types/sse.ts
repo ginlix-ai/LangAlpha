@@ -1,4 +1,22 @@
 /** SSE event type union and per-event interfaces */
+import type {
+  OrderAction,
+  OrderFailure,
+  OrderMode,
+  OrderMoney,
+  OrderStatus,
+  OrderSummary,
+} from './orders';
+import type { ReportSource, ThreadOrigin } from './api';
+import type { MarketTargetNotice } from '@/pages/ChatAgent/session/wakeupEvents';
+import type { WakeNotice } from './wakeups';
+
+/**
+ * `error_type` on a task's terminal frame when the credit gate stopped it,
+ * rather than something failing. Mirrors CREDIT_STOP_ERROR_TYPE in
+ * src/server/contracts/status.py by hand — change there first, then here.
+ */
+export const CREDIT_STOP_ERROR_TYPE = 'credit_stop';
 
 export type SSEEventType =
   | 'metadata'
@@ -31,13 +49,21 @@ export interface BaseSSEEvent {
 
 /**
  * First event of every workflow stream. Announces the authoritative
- * ``run_id`` for this turn so the client can latch reconnect/demotion
- * logic onto it. Mirrors the langgraph_sdk SSE ``metadata`` payload.
+ * ``run_id`` for this turn so the client can latch reconnect logic onto
+ * it. Mirrors the langgraph_sdk SSE ``metadata`` payload.
  */
 export interface MetadataEvent extends BaseSSEEvent {
   event: 'metadata';
   run_id: string;
   thread_id: string;
+  /** The turn admission gave the run, the value replay names it by. Absent
+   *  from a backend that predates it, where the view counts the turn itself. */
+  turn_index?: number;
+  // A wake turn's frame also names what woke it, as the turn's query row
+  // keeps it, for the opener row a live attach draws, since no query row
+  // comes with the stream: `wakeup` with its notices, or `market_target` for
+  // a price target set before wakeups. Untrusted, and read only through
+  // `wakeTurnOpener`, so not typed here.
 }
 
 export interface ReasoningSignalEvent extends BaseSSEEvent {
@@ -54,6 +80,8 @@ export interface MessageChunkEvent extends BaseSSEEvent {
   event: 'message_chunk';
   content?: string;
   finish_reason?: string | null;
+  /** OpenAI Responses text-block phase. Absent on every other provider. */
+  phase?: 'commentary' | 'final_answer';
 }
 
 export interface ToolCallData {
@@ -72,6 +100,9 @@ export interface ToolCallResultData {
   content_type: string;
   tool_call_id: string;
   artifact?: unknown;
+  /** The ToolMessage status the backend stamped, 'success' or 'error'. Absent
+   *  only on turns persisted before the field rode the wire. */
+  status?: string;
 }
 
 export interface ToolCallResultEvent extends BaseSSEEvent {
@@ -80,6 +111,7 @@ export interface ToolCallResultEvent extends BaseSSEEvent {
   content: string | unknown;
   content_type?: string;
   artifact?: unknown;
+  status?: string;
 }
 
 export interface ToolCallChunksEvent extends BaseSSEEvent {
@@ -177,7 +209,7 @@ export interface ErrorEvent extends BaseSSEEvent {
   /** Legacy single-field message; newer backends send ``error``/``message``. */
   content?: string;
   error_type?: string;
-  /** Enriched fields from ``streaming_handler.format_error_event``. */
+  /** Enriched fields from ``stream_errors.error_event_data``. */
   error?: string;
   message?: string;
   error_kind?: 'upstream' | 'internal';
@@ -222,12 +254,83 @@ export interface ModelFallbackEvent extends BaseSSEEvent {
   attempts_on_from?: number;
 }
 
+/** A steer the run took in: the user's, or an agent's sent into the turn. */
+export interface DeliveredSteer {
+  content: string;
+  /** Epoch seconds. */
+  timestamp?: number;
+  /** The surface it was sent from, as on a turn's query. */
+  platform?: string;
+  /** The key its send went out under; absent on older checkpoints. */
+  request_key?: string;
+  /** The agent that sent it (the Chief of Staff, Flash); absent when the user did. */
+  origin?: ThreadOrigin;
+  report_source?: never;
+  market_alert?: never;
+  wakeup?: never;
+}
+
+/** A finished task's or analyst's report the run took in, which carries no
+ *  words of the user's. A share drops `report_source`, which leaves an empty
+ *  steer that draws nothing. */
+export interface DeliveredReport {
+  content: '';
+  /** Epoch seconds. */
+  timestamp?: number;
+  report_source: ReportSource;
+  market_alert?: never;
+  wakeup?: never;
+}
+
+/** A price alert on one of the thread's targets that the run took in: one
+ *  notice, as a wake turn's metadata lists them, and no words of the user's. */
+export interface DeliveredMarketAlert {
+  content: '';
+  /** Epoch seconds. */
+  timestamp?: number;
+  market_alert: MarketTargetNotice;
+  report_source?: never;
+  wakeup?: never;
+}
+
+/** A wakeup's notice that the run took in: one per entry, after the reports
+ *  and alerts and ahead of the user's steers. */
+export interface DeliveredWakeup {
+  content: '';
+  /** Epoch seconds. */
+  timestamp?: number;
+  wakeup: WakeNotice;
+  report_source?: never;
+  market_alert?: never;
+}
+
+/** One entry of a delivery. The server lists its reports, alerts and
+ *  wakeups ahead of the user's steers, the order the model reads them. */
+export type SteeringDeliveredEntry = DeliveredSteer | DeliveredReport | DeliveredMarketAlert | DeliveredWakeup;
+
+export function isDeliveredReport(entry: SteeringDeliveredEntry): entry is DeliveredReport {
+  return entry.report_source !== undefined;
+}
+
+/** A wakeup's notice, or a price target's from before wakeups. */
+export type DeliveredNotice = DeliveredMarketAlert | DeliveredWakeup;
+
+/** A notice the run took in, which moved its wakeup on the server and draws
+ *  its row under the notice's own id. */
+export function isDeliveredNotice(entry: SteeringDeliveredEntry): entry is DeliveredNotice {
+  return entry.market_alert !== undefined || entry.wakeup !== undefined;
+}
+
+/** A steer, the user's or an agent's, as against a report or a notice: the
+ *  only entry that claims a steer this view queued, and the only one that
+ *  spends the boundary an acceptance set. */
+export function isDeliveredSteer(entry: SteeringDeliveredEntry): entry is DeliveredSteer {
+  return !isDeliveredReport(entry) && !isDeliveredNotice(entry);
+}
+
 export interface SteeringDeliveredEvent extends BaseSSEEvent {
   event: 'steering_delivered';
-  messages: Array<{
-    content: string;
-    timestamp?: number;
-  }>;
+  messages: SteeringDeliveredEntry[];
 }
 
 export interface TaskSteeringAcceptedEvent extends BaseSSEEvent {
@@ -254,6 +357,84 @@ export interface Attachment {
   [key: string]: unknown;
 }
 
+export type {
+  OrderAction,
+  OrderFailure,
+  OrderInstrument,
+  OrderMode,
+  OrderMoney,
+  OrderStatus,
+  OrderSummary,
+} from './orders';
+
+/**
+ * The order a stopped call would place, as the server summarizes it: the
+ * normalized order plus who would place it and how.
+ *
+ * The interrupt and the receipt are drawn from this one map. Only `action` and
+ * `mode` are guaranteed; every other field is what the vendor's adapter could
+ * normalize out of the arguments, so each is read on its own and a missing one
+ * is simply not drawn. This rides an order path where showing a stale or
+ * invented number is worse than showing none.
+ */
+export interface OrderProposal extends OrderSummary {
+  action: OrderAction;
+  mode: OrderMode;
+  vendor?: string | null;
+  tool?: string | null;
+  /** The vendor account, masked on every surface that draws it. */
+  account_ref?: string | null;
+}
+
+/** What the brokerage answered, mapped onto the attempt lifecycle. */
+export interface OrderOutcome {
+  status: OrderStatus;
+  /** The vendor's own word for the state, kept because ours is a mapping. */
+  raw_status?: string | null;
+  vendor_order_id?: string | null;
+  /**
+   * Where the user has to go to finish this themselves. A staged instruction
+   * only becomes an order once it is opened in the vendor's own client, and
+   * this link is the only way there, so it is the card's primary affordance
+   * whenever the vendor sent one.
+   */
+  action_url?: string | null;
+  /** The tokens a later cancel needs (exchange, market, contract id). */
+  route?: Record<string, string> | null;
+  filled_qty?: string | null;
+  avg_fill_price?: string | null;
+  fees?: OrderMoney | null;
+  failure?: OrderFailure | null;
+  /** The reason a person typed when they rejected the order. The receipt is
+   *  where the settled card reads it back from, so it survives a reload. */
+  decision_message?: string | null;
+  executed_at?: string | null;
+  completed_at?: string | null;
+  /** The ledger's stamp for an order a vendor listing stopped carrying; see
+   *  `vendorNamedEnd`. Absent on a receipt frozen before it was sent. */
+  unlisted_at?: string | null;
+}
+
+/**
+ * The order receipt on a tool result's artifact, under `order_receipt`.
+ *
+ * One attempt's whole story: what was asked (`order`, the same map the
+ * approval card was drawn from) and what came back (`outcome`). It rides the
+ * ToolMessage, so a reload replaying the checkpoint draws the same card. A
+ * rejected, refused or failed attempt carries one too, which is what lets the
+ * card render an order that never reached a brokerage.
+ */
+export interface OrderReceipt {
+  attempt_id: string;
+  vendor?: string | null;
+  tool?: string | null;
+  action?: OrderAction | null;
+  mode?: OrderMode | null;
+  account_ref?: string | null;
+  order?: OrderProposal | null;
+  outcome: OrderOutcome;
+}
+
 export interface ActionRequest {
   type?: string;
   name?: string;
@@ -268,11 +449,25 @@ export interface ActionRequest {
   thread_id?: string;
   report_back?: boolean;
   tool_call_id?: string;
+  /**
+   * The order attempt this request answers for. Its presence is what makes a
+   * request keyed: the resume answers it by this id rather than by its slot,
+   * and history settles its card by this id rather than by position.
+   */
+  attempt_id?: string;
+  /** The order this call would place, or null for a call that places none. */
+  order?: OrderProposal | null;
+  /** credit_pause: the quota service's denial copy, relayed verbatim. */
+  message?: string;
 }
 
 export interface InterruptEvent extends BaseSSEEvent {
   event: 'interrupt';
   interrupt_id?: string;
+  /** `order_approval` for an interrupt raised by the order gate. Its action
+   *  requests still carry the HITL shape, so the card renders the same way;
+   *  the kind is what says the requests are keyed. */
+  kind?: string;
   action_requests?: ActionRequest[];
   thread_id?: string;
   role?: string;

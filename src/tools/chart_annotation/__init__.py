@@ -1,4 +1,5 @@
-"""Chart annotation tools — skill-gated tools for drawing on MarketView charts.
+"""Chart annotation tools for drawing on a stock's price chart. The
+chart-annotation skill is their usage guide.
 
 Tools:
 - draw_chart_annotation: draw an annotation (price line, trendline, marker,

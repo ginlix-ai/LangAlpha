@@ -8,7 +8,10 @@ search tool wrappers.
 import logging
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+from langsmith.run_helpers import tracing_context
+from langsmith.run_trees import RunTree
 
 from src.tools.decorators import (
     ToolUsageTracker,
@@ -58,12 +61,12 @@ class TestGetWebSearchToolRouting:
     """Tests for get_web_search_tool engine selection routing."""
 
     def test_serper_engine_calls_serper_builder(self):
-        """When SELECTED_SEARCH_ENGINE is serper, the serper builder runs."""
+        """When the deployment default is serper, the serper builder runs."""
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
 
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
+            patch("src.tools.web.search.get_search_api", return_value="serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -78,7 +81,7 @@ class TestGetWebSearchToolRouting:
 
     def test_unsupported_engine_raises(self):
         """An unknown deployment-default engine string raises ValueError."""
-        with patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "unknown_engine"):
+        with patch("src.tools.web.search.get_search_api", return_value="unknown_engine"):
             from src.tools.web.search import get_web_search_tool
             with pytest.raises(ValueError, match="Unsupported search engine"):
                 get_web_search_tool(max_search_results=5)
@@ -90,7 +93,7 @@ class TestGetWebSearchToolRouting:
         mock_tool = MagicMock()
 
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
+            patch("src.tools.web.search.get_search_api", return_value="tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool),
         ):
@@ -111,7 +114,7 @@ class TestGetWebSearchToolRouting:
 
 
 class TestGetWebSearchToolProviderOverride:
-    """The ``provider`` arg overrides ``SELECTED_SEARCH_ENGINE`` per request.
+    """The ``provider`` arg overrides the deployment default per request.
 
     A valid engine selects that provider's builder; an unknown string logs a
     warning and falls back to the deployment default; ``None`` is a no-op so
@@ -125,7 +128,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
+            patch("src.tools.web.search.get_search_api", return_value="tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -146,7 +149,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
+            patch("src.tools.web.search.get_search_api", return_value="serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -166,7 +169,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
+            patch("src.tools.web.search.get_search_api", return_value="tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.bocha": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -186,7 +189,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
+            patch("src.tools.web.search.get_search_api", return_value="serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
             caplog.at_level(logging.WARNING, logger="src.tools.web.search"),
@@ -213,7 +216,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_tool = MagicMock()
         builders = {"serper": __import__("src.tools.web.search", fromlist=["x"])._PROVIDER_BUILDERS["serper"]}
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
+            patch("src.tools.web.search.get_search_api", return_value="serper"),
             patch("src.tools.web.search._PROVIDER_BUILDERS", builders),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
@@ -234,7 +237,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
+            patch("src.tools.web.search.get_search_api", return_value="tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -271,7 +274,7 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
+            patch("src.tools.web.search.get_search_api", return_value="tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -287,7 +290,7 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
+            patch("src.tools.web.search.get_search_api", return_value="tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -304,7 +307,7 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
+            patch("src.tools.web.search.get_search_api", return_value="serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -384,6 +387,170 @@ class TestPerRequestBuilders:
         content, artifact = await tool.coroutine(objective="anything")
         assert "error" in artifact
         assert isinstance(content, str)
+
+
+class _NullClient:
+    def create_run(self, **kwargs):
+        return None
+
+    def update_run(self, **kwargs):
+        return None
+
+
+def _exa_status(status):
+    request = httpx.Request("POST", "https://api.exa.example/search")
+    return httpx.HTTPStatusError(
+        "refused", request=request, response=httpx.Response(status, request=request, text="no")
+    )
+
+
+_YMD = "Date must be in YYYY-MM-DD format"
+_ISO = "Date must be ISO 8601"
+
+
+class TestWebSearchOutcome:
+    """Search has no target site to blame, so every failure is the provider's."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raised", "error_class"),
+        [
+            pytest.param(_exa_status(403), "forbidden", id="403"),
+            pytest.param(httpx.ReadTimeout("slow"), "timeout", id="timeout"),
+            pytest.param(None, "ValueError", id="missing-key"),
+        ],
+    )
+    async def test_every_failure_is_an_errored_run(self, monkeypatch, raised, error_class):
+        from src.tools.web.providers import exa
+
+        if raised is None:
+            monkeypatch.delenv("EXA_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("EXA_API_KEY", "test-key")
+
+            async def refuse(self, **kwargs):
+                raise raised
+
+            monkeypatch.setattr(exa.ExaAPI, "search", refuse)
+        from src.tools.web.search import get_web_search_tool
+
+        tool = get_web_search_tool(max_search_results=1, provider="exa")
+        run = RunTree(name="WebSearch", run_type="tool", client=_NullClient())
+
+        with tracing_context(parent=run):
+            _, artifact = await tool.coroutine(query="q")
+
+        assert "error" in artifact
+        assert run.metadata["tool_outcome"] == "error"
+        assert run.metadata["error_class"] == error_class
+        assert run.metadata["tool_provider"] == "exa"
+
+    @pytest.mark.asyncio
+    async def test_a_bocha_failure_is_refused_not_an_empty_result(self, monkeypatch):
+        """Its API wrapper reports a failure as metadata; the model must not
+        read it as a search that found nothing."""
+        from src.tools.web.providers import bocha
+
+        monkeypatch.setenv("BOCHA_API_KEY", "test-key")
+
+        async def failing(self, **kwargs):
+            return [], {"query": "q", "error": "HTTP error 502: upstream"}
+
+        monkeypatch.setattr(bocha.BochaAPI, "web_search", failing)
+        tool = bocha.build_web_search_tool(max_results=1)
+        run = RunTree(name="WebSearch", run_type="tool", client=_NullClient())
+
+        with tracing_context(parent=run):
+            content, artifact = await tool.coroutine(query="q")
+
+        assert content.startswith("Search failed:")
+        assert "HTTP error 502" in artifact["error"]
+        assert run.metadata["tool_outcome"] == "error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider", "kwargs", "message"),
+        [
+            pytest.param("tavily", {"query": "q", "start_date": "last week"}, _YMD, id="tavily"),
+            pytest.param("bocha", {"query": "q", "start_date": "last week"}, _YMD, id="bocha"),
+            pytest.param(
+                "parallel", {"objective": "q", "after_date": "last week"}, _YMD, id="parallel"
+            ),
+            pytest.param(
+                "parallel",
+                {"objective": "q", "after_date": "2025-02-30"},
+                "Invalid date: 2025-02-30",
+                id="parallel-impossible-day",
+            ),
+            pytest.param(
+                "exa", {"query": "q", "start_published_date": "last week"}, _ISO, id="exa-start"
+            ),
+            pytest.param(
+                "exa",
+                {"query": "q", "end_published_date": "2025-13-01"},
+                "Invalid date: 2025-13-01",
+                id="exa-end",
+            ),
+            pytest.param(
+                "exa",
+                {"query": "q", "start_published_date": "2025-13"},
+                "Invalid date: 2025-13",
+                id="exa-month",
+            ),
+        ],
+    )
+    async def test_a_malformed_date_is_the_agents_mistake(
+        self, monkeypatch, provider, kwargs, message
+    ):
+        """Refused before any search runs, so the run carries no outcome."""
+        from importlib import import_module
+
+        module = import_module(f"src.tools.web.providers.{provider}")
+        run = RunTree(name="WebSearch", run_type="tool", client=_NullClient())
+        # A search that reached the provider would fail on this missing key.
+        monkeypatch.delenv(f"{provider.upper()}_API_KEY", raising=False)
+
+        with tracing_context(parent=run):
+            content, artifact = await module.build_web_search_tool(max_results=1).coroutine(**kwargs)
+
+        assert content.startswith(f"Search failed: {message}")
+        assert artifact == {"error": content.removeprefix("Search failed: "), "query": "q"}
+        assert "tool_outcome" not in run.metadata
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider", "kwarg", "value"),
+        [
+            pytest.param("exa", "start_published_date", "2025-01-01", id="exa-date"),
+            pytest.param(
+                "exa", "start_published_date", "2025-01-01T00:00:00Z", id="exa-datetime"
+            ),
+            pytest.param("exa", "end_published_date", "2025-01", id="exa-year-month"),
+            pytest.param("exa", "start_published_date", "", id="exa-empty"),
+            pytest.param("parallel", "after_date", "2025-01-01", id="parallel-date"),
+            pytest.param("parallel", "after_date", "", id="parallel-empty"),
+        ],
+    )
+    async def test_a_valid_date_reaches_the_provider(self, monkeypatch, provider, kwarg, value):
+        from importlib import import_module
+
+        module = import_module(f"src.tools.web.providers.{provider}")
+        monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
+        reached = []
+
+        async def search(self, **kwargs):
+            reached.append(kwargs)
+            return [], {}
+
+        api = module.ExaAPI if provider == "exa" else module.ParallelAPI
+        monkeypatch.setattr(api, "search", search)
+        query = {"objective" if provider == "parallel" else "query": "q"}
+
+        content, artifact = await module.build_web_search_tool(max_results=1).coroutine(
+            **query, **{kwarg: value}
+        )
+
+        assert reached and content == []
 
 
 # ---------------------------------------------------------------------------

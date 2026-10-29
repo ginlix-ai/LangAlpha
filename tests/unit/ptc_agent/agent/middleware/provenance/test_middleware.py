@@ -332,7 +332,7 @@ async def test_market_data_no_symbol_falls_back_to_tool_name(middleware):
     [
         (".agents/user/memo/notes.md", "memo_read"),
         (".agents/user/memory/memory.md", "memory_read"),
-        (".agents/workspace/memory/memory.md", "memory_read"),
+        (".agents/memory/memory.md", "memory_read"),
         ("work/analysis/output.csv", "file_read"),
         # Absolute sandbox paths classify the same as their relative forms (the
         # agent emits absolute paths; the sandbox root is stripped first).
@@ -415,6 +415,93 @@ async def test_file_read_keeps_lookalike_paths(middleware, path):
     assert emitted[0]["identifier"] == path
 
 
+@pytest.fixture
+def renamed_project():
+    """A turn in `New Name`, renamed out of `Old Name`."""
+    from ptc_agent.core import project_context
+    from ptc_agent.core.project_context import ProjectContext, set_project
+
+    token = set_project(
+        ProjectContext(
+            workspace_id="ws-1",
+            dir_name="New Name",
+            sibling_dir_names=("Beta",),
+            previous_dir_names=("Old Name",),
+        )
+    )
+    yield
+    project_context._current.reset(token)
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/home/workspace/New Name/.agents/memory/memory.md", "memory_read"),
+        ("/home/workspace/Old Name/.agents/memory/memory.md", "memory_read"),
+        ("/home/workspace/old name/.agents/user/memo/x.md", "memo_read"),
+        # Only an absolute path carries a folder; a relative one is already in
+        # the cwd, so an `Old Name/` there is a directory inside it.
+        ("Old Name/.agents/memory/memory.md", "file_read"),
+        ("/home/workspace/Beta/.agents/memory/memory.md", "file_read"),
+    ],
+)
+def test_a_renamed_out_folder_classifies_as_the_current_one(
+    renamed_project, path, expected
+):
+    from ptc_agent.agent.middleware.provenance.middleware import (
+        _classify_file_source_type,
+    )
+
+    assert _classify_file_source_type(path) == expected
+
+
+@pytest.mark.parametrize(
+    "path,infra",
+    [
+        ("/home/workspace/Old Name/.agents/skills/x/SKILL.md", True),
+        ("/home/workspace/Beta/.agents/skills/x/SKILL.md", False),
+    ],
+)
+def test_a_renamed_out_folder_skips_infra_like_the_current_one(
+    renamed_project, path, infra
+):
+    from ptc_agent.agent.middleware.provenance.middleware import _is_agent_infra_path
+
+    assert _is_agent_infra_path(path) is infra
+
+
+@pytest.mark.parametrize(
+    "path,source_type,infra",
+    [
+        ("/home/someone/langalpha/New Name/.agents/memory/memory.md", "memory_read", False),
+        ("/home/someone/langalpha/Old Name/.agents/user/memo/x.md", "memo_read", False),
+        ("/home/someone/langalpha/New Name/.agents/skills/x/SKILL.md", "file_read", True),
+        ("/home/someone/langalpha/New Name/results/x.csv", "file_read", False),
+    ],
+)
+def test_a_computer_root_of_its_own_strips_like_the_stock_one(
+    renamed_project, path, source_type, infra
+):
+    """A computer whose user cannot create the stock root keeps its workspaces
+    under another, and the agent's absolute paths start with that one."""
+    from ptc_agent.agent.middleware.provenance.middleware import (
+        _classify_file_source_type,
+        _is_agent_infra_path,
+    )
+
+    root = "/home/someone/langalpha"
+    assert _classify_file_source_type(path, root) == source_type
+    assert _is_agent_infra_path(path, root) is infra
+
+
+def test_a_one_segment_root_does_not_swallow_a_relative_path(renamed_project):
+    from ptc_agent.agent.middleware.provenance.middleware import _is_agent_infra_path
+
+    assert _is_agent_infra_path("/work/.agents/skills/x/SKILL.md", "/work") is True
+    # Relative, so it names a folder called `work` inside the workspace.
+    assert _is_agent_infra_path("work/.agents/skills/x/SKILL.md", "/work") is False
+
+
 @pytest.mark.asyncio
 async def test_glob_not_tracked(middleware):
     """Glob is directory enumeration, not a data access — emits no provenance."""
@@ -443,6 +530,36 @@ async def test_grep_uses_path_arg(middleware):
     assert len(emitted) == 1
     assert emitted[0]["source_type"] == "file_read"
     assert emitted[0]["identifier"] == "work/src"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("Read", {"file_path": "/Users/me/report.md", "computer": "Studio Mac"}),
+        ("Grep", {"pattern": "revenue", "path": "/Users/me", "computer": "Studio Mac"}),
+    ],
+)
+async def test_a_read_on_another_computer_is_no_file_source(middleware, name, args):
+    """The Sources panel opens a file source on the turn's own computer, where
+    that path names another file or none."""
+    emitted = []
+    await _run(middleware, _make_request(name, args), _result(content="revenue"), emitted)
+
+    assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_a_blank_computer_is_still_a_read_here(middleware):
+    emitted = []
+    await _run(
+        middleware,
+        _make_request("Read", {"file_path": "work/report.md", "computer": " "}),
+        _result(content="revenue"),
+        emitted,
+    )
+
+    assert [e["identifier"] for e in emitted] == ["work/report.md"]
 
 
 @pytest.mark.asyncio
@@ -833,102 +950,13 @@ async def test_bash_strips_mcp_trace_from_artifact(middleware):
     assert result.artifact["other"] == "kept"
 
 
-# ----- BashOutput shares the same pipeline (the completion-poll entry point) --
-
-
-@pytest.mark.asyncio
-async def test_bash_output_extracts_mcp_trace_like_execute_code(middleware):
-    # A backgrounded script's MCP calls are harvested on the BashOutput that
-    # observes completion, so BashOutput surfaces the same mcp_trace artifact and
-    # must produce identical mcp_tool provenance, attributed to the BashOutput call.
-    artifact = {
-        "mcp_trace": [
-            {
-                "server": "marketdata",
-                "tool": "quote",
-                "args": {"symbol": "TST"},
-                "result_sha256": "a" * 64,
-                "result_size": 12,
-                "result_snippet": "snip",
-                "timestamp": "2026-01-01T00:00:00+00:00",
-            }
-        ]
-    }
-    emitted = []
-    await _run(
-        middleware,
-        _make_request("BashOutput", {"command_id": "cmd-1"}, tool_call_id="bashout-1"),
-        _result(content="done", artifact=artifact),
-        emitted,
-    )
-    assert len(emitted) == 1
-    assert emitted[0]["identifier"] == "marketdata:quote"
-    assert emitted[0]["source_type"] == "mcp_tool"
-    assert emitted[0]["tool_call_id"] == "bashout-1"
-
-
-@pytest.mark.asyncio
-async def test_bash_output_records_despite_error_content(middleware):
-    # BashOutput is exempt from the error-result skip like Bash/ExecuteCode: the
-    # polled command may have exited non-zero after an MCP call already succeeded.
-    artifact = {
-        "mcp_trace": [
-            {
-                "server": "finance",
-                "tool": "get_prices",
-                "args": {"symbol": "TST"},
-                "result_sha256": "abc",
-                "result_size": 10,
-                "result_snippet": "ok",
-            }
-        ]
-    }
-    emitted = []
-    await _run(
-        middleware,
-        _make_request("BashOutput", {"command_id": "cmd-1"}, tool_call_id="bashout-1"),
-        _result(content="ERROR: Command failed (exit code 1)", artifact=artifact),
-        emitted,
-    )
-    assert len(emitted) == 1
-    assert emitted[0]["source_type"] == "mcp_tool"
-
-
-@pytest.mark.asyncio
-async def test_bash_output_strips_mcp_trace_from_artifact(middleware):
-    """mcp_trace must not survive on the BashOutput artifact either."""
-    artifact = {
-        "mcp_trace": [
-            {
-                "server": "marketdata",
-                "tool": "quote",
-                "args": {"symbol": "TST"},
-                "result_sha256": "a" * 64,
-                "result_size": 12,
-                "result_snippet": "snip",
-            }
-        ],
-        "other": "kept",
-    }
-    result = await _run(
-        middleware,
-        _make_request("BashOutput", {"command_id": "cmd-1"}, tool_call_id="bashout-1"),
-        _result(content="done", artifact=artifact),
-        [],
-    )
-    assert "mcp_trace" not in result.artifact
-    assert result.artifact["other"] == "kept"
-
-
 # ----- host-side caps on the untrusted in-sandbox trace ----------------------
 
 
 @pytest.mark.asyncio
 async def test_execute_code_caps_entries_and_snippet(middleware):
-    from ptc_agent.agent.middleware.provenance.middleware import (
-        _MAX_TRACE_ENTRIES,
-        SNIPPET_MAX_CHARS,
-    )
+    from ptc_agent.agent.provenance import SNIPPET_MAX_CHARS
+    from ptc_agent.agent.provenance.trace import MAX_TRACE_ENTRIES
 
     trace = [
         {
@@ -938,7 +966,7 @@ async def test_execute_code_caps_entries_and_snippet(middleware):
             "result_size": 1,
             "result_snippet": "x" * (SNIPPET_MAX_CHARS + 50),
         }
-        for i in range(_MAX_TRACE_ENTRIES + 25)
+        for i in range(MAX_TRACE_ENTRIES + 25)
     ]
     emitted = []
     await _run(
@@ -947,7 +975,7 @@ async def test_execute_code_caps_entries_and_snippet(middleware):
         _result(content="SUCCESS", artifact={"mcp_trace": trace}),
         emitted,
     )
-    assert len(emitted) == _MAX_TRACE_ENTRIES  # entries capped
+    assert len(emitted) == MAX_TRACE_ENTRIES  # entries capped
     assert all(len(e["result_snippet"]) <= SNIPPET_MAX_CHARS for e in emitted)
 
 
@@ -1060,3 +1088,73 @@ async def test_execute_code_trace_entry_secret_never_leaks(middleware):
     assert emitted[0]["args"]["api_key"] == "[redacted]"
     # The legacy fingerprint is kept alongside the readable redacted args.
     assert set(emitted[0]["args_fingerprint"]) == {"sha256"}
+
+
+# ---------------------------------------------------------------------------
+# Directly bound MCP tools
+# ---------------------------------------------------------------------------
+
+
+def _direct_request(server, tool, args=None, name=None):
+    """A call on a tool the binder stamped, with the alias the model sees."""
+    from ptc_agent.agent.middleware.direct_mcp import METADATA_KEY
+
+    request = _make_request(name or f"mcp__{server}__{tool}", args or {})
+    request.tool = SimpleNamespace(
+        metadata={METADATA_KEY: {"server": server, "tool": tool}}
+    )
+    return request
+
+
+@pytest.mark.asyncio
+async def test_a_direct_tool_call_is_recorded_like_the_sandbox_path(middleware):
+    emitted = []
+    await _run(
+        middleware,
+        _direct_request("moomoo", "get_positions", {"account_id": "9"}),
+        _result(content='{"positions": []}'),
+        emitted,
+    )
+    assert len(emitted) == 1
+    event = emitted[0]
+    assert event["source_type"] == "mcp_tool"
+    assert event["identifier"] == "moomoo:get_positions"
+    assert event["provider"] == "mcp:moomoo"
+    assert event["tool_call_id"] == "call-1"
+    assert event["result_sha256"]
+
+
+@pytest.mark.asyncio
+async def test_a_digest_alias_still_records_the_vendor_names(middleware):
+    """The stamp is read, not the name, which is exactly why it exists."""
+    emitted = []
+    await _run(
+        middleware,
+        _direct_request("desk__prod", "place", name="mcp__desk_prod_3a2b092c__place"),
+        _result(content="{}"),
+        emitted,
+    )
+    assert emitted[0]["identifier"] == "desk__prod:place"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_direct_call_records_nothing(middleware):
+    """The gate's refusal is an error result, and errors are not attested."""
+    emitted = []
+    result = SimpleNamespace(
+        content="Refused: the connection to moomoo does not permit x",
+        artifact=None,
+        status="error",
+    )
+    await _run(middleware, _direct_request("moomoo", "x"), result, emitted)
+    assert emitted == []
+
+
+@pytest.mark.asyncio
+async def test_an_unstamped_tool_is_still_left_alone(middleware):
+    """The fallback keys off the stamp, not off the mcp__ prefix."""
+    emitted = []
+    request = _make_request("mcp__looks__direct", {})
+    request.tool = SimpleNamespace(metadata=None)
+    await _run(middleware, request, _result(content="{}"), emitted)
+    assert emitted == []

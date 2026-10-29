@@ -5,6 +5,7 @@ subagent cards: running requires proven liveness, terminal is the default,
 and stamping must copy — stored/cached event dicts are shared objects.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +16,10 @@ from src.server.services.history.task_status import (
     stamp_replay_task_status,
     stamp_task_artifact_data,
 )
+
+
+def _reason(detail: dict) -> dict:
+    return {key: detail[key] for key in ("status", "error", "error_type")}
 
 
 def _artifact(task_id: str, **extra) -> dict:
@@ -74,10 +79,11 @@ class TestLegacyStatusFallback:
                 "t", ["live1", "canc1", "done1", "gone1"]
             )
         assert details == {
-            "live1": {"status": "running", "error": None},
-            "canc1": {"status": "cancelled", "error": None},
-            "done1": {"status": "completed", "error": None},
-            "gone1": {"status": "completed", "error": None},  # no meta -> terminal default
+            "live1": {"status": "running", "error": None, "error_type": None},
+            "canc1": {"status": "cancelled", "error": None, "error_type": None},
+            "done1": {"status": "completed", "error": None, "error_type": None},
+            # no meta -> terminal default
+            "gone1": {"status": "completed", "error": None, "error_type": None},
         }
 
     @pytest.mark.asyncio
@@ -93,9 +99,9 @@ class TestLegacyStatusFallback:
             details = await resolve_task_details("t", ["run1", "done1", "gone1"])
         # Availability over precision: meta says running, probe unknown.
         assert details == {
-            "run1": {"status": "running", "error": None},
-            "done1": {"status": "completed", "error": None},
-            "gone1": {"status": "completed", "error": None},
+            "run1": {"status": "running", "error": None, "error_type": None},
+            "done1": {"status": "completed", "error": None, "error_type": None},
+            "gone1": {"status": "completed", "error": None, "error_type": None},
         }
 
 
@@ -136,6 +142,39 @@ class TestStamping:
         )
         assert "error" not in stamped["payload"]
 
+    def test_stamp_carries_the_reason_type_with_the_reason(self):
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(
+            data,
+            {
+                "aaa": {
+                    "status": "cancelled",
+                    "error": "Monthly credit limit reached.",
+                    "error_type": "credit_stop",
+                }
+            },
+        )
+        assert stamped["payload"]["error_type"] == "credit_stop"
+
+    def test_status_only_withholds_the_reason_type_too(self):
+        # It classifies failure text, so it travels under the same gate: a
+        # public viewer learns the task stopped, never that money stopped it.
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(
+            data,
+            {
+                "aaa": {
+                    "status": "cancelled",
+                    "error": "Monthly credit limit reached.",
+                    "error_type": "credit_stop",
+                }
+            },
+            status_only=True,
+        )
+        assert stamped["payload"]["status"] == "cancelled"
+        assert "error" not in stamped["payload"]
+        assert "error_type" not in stamped["payload"]
+
     def test_non_task_and_unknown_ids_pass_through_identically(self):
         chunk = {"content_type": "text"}
         details = {"aaa": {"status": "completed", "error": None}}
@@ -172,26 +211,55 @@ class TestResolveTaskDetails:
     @pytest.mark.asyncio
     async def test_error_reason_only_on_error_status(self):
         ledger = {
-            "err1": {"status": "error", "error": "transport_lost: boom"},
-            "done1": {"status": "completed", "error": None},
+            "err1": {
+                "status": "error",
+                "error": "transport_lost: boom",
+                "error_type": "transport_lost",
+                "latest_run_id": "run-1",
+            },
+            "done1": {
+                "status": "completed",
+                "error": None,
+                "error_type": None,
+                "latest_run_id": "run-2",
+            },
         }
         with patch(
             "src.server.database.runs.subagent_runs.get_latest_run_details",
             new=AsyncMock(return_value=ledger),
         ):
             details = await resolve_task_details("t", ["err1", "done1"])
-        assert details["err1"] == {"status": "error", "error": "transport_lost: boom"}
-        assert details["done1"] == {"status": "completed", "error": None}
+        assert _reason(details["err1"]) == {
+            "status": "error",
+            "error": "transport_lost: boom",
+            "error_type": "transport_lost",
+        }
+        assert _reason(details["done1"]) == {
+            "status": "completed",
+            "error": None,
+            "error_type": None,
+        }
 
     @pytest.mark.asyncio
     async def test_interrupted_maps_to_error_without_reason(self):
-        ledger = {"int1": {"status": "interrupted", "error": None}}
+        ledger = {
+            "int1": {
+                "status": "interrupted",
+                "error": None,
+                "error_type": None,
+                "latest_run_id": "run-1",
+            }
+        }
         with patch(
             "src.server.database.runs.subagent_runs.get_latest_run_details",
             new=AsyncMock(return_value=ledger),
         ):
             details = await resolve_task_details("t", ["int1"])
-        assert details["int1"] == {"status": "error", "error": None}
+        assert _reason(details["int1"]) == {
+            "status": "error",
+            "error": None,
+            "error_type": None,
+        }
 
 
 class TestResolveTaskLiveness:
@@ -221,3 +289,244 @@ class TestResolveTaskLiveness:
             new=AsyncMock(return_value=None),
         ):
             assert await resolve_task_liveness("t", ["x"]) is None
+
+
+class TestLedgerReasonCarry:
+    """A terminal that is not ``error`` still carries its failure reason.
+
+    The regression: the projection handed the client a reason only when the
+    status was ``error``. A credit stop settles ``cancelled`` by design, so
+    its denial copy - the entire explanation the user gets - was nulled on
+    every reload, and the card showed a bare "Stopped" chip.
+    """
+
+    @staticmethod
+    def _ledger(rows: dict):
+        return patch(
+            "src.server.database.runs.subagent_runs.get_latest_run_details",
+            new=AsyncMock(return_value=rows),
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancelled_run_keeps_its_reason(self):
+        with self._ledger(
+            {
+                "stopped1": {
+                    "status": "cancelled",
+                    "error": "You are out of credits.",
+                    "error_type": "credit_stop",
+                    "latest_run_id": "run-1",
+                }
+            }
+        ):
+            details = await resolve_task_details("t", ["stopped1"])
+        # The type travels with the message: it is what lets the client offer
+        # the remedy for the one stop that has one, rather than only reporting.
+        assert _reason(details["stopped1"]) == {
+            "status": "cancelled",
+            "error": "You are out of credits.",
+            "error_type": "credit_stop",
+        }
+
+    @pytest.mark.asyncio
+    async def test_completed_run_carries_no_reason(self):
+        with self._ledger(
+            {
+                "done1": {
+                    "status": "completed",
+                    "error": "stale",
+                    "error_type": "stale",
+                    "latest_run_id": "run-1",
+                }
+            }
+        ):
+            details = await resolve_task_details("t", ["done1"])
+        assert _reason(details["done1"]) == {
+            "status": "completed",
+            "error": None,
+            "error_type": None,
+        }
+
+
+class TestLastActivity:
+    """When a task last did anything: what the tray ages it by after a reload,
+    since a task that settles mid-turn leaves no mark in the transcript."""
+
+    SETTLED = datetime(2026, 1, 5, 14, 42, tzinfo=timezone.utc)
+
+    @pytest.mark.asyncio
+    async def test_ledger_time_reaches_the_detail_in_epoch_ms(self):
+        with patch(
+            "src.server.database.runs.subagent_runs.get_latest_run_details",
+            new=AsyncMock(
+                return_value={
+                    "done1": {
+                        "status": "completed",
+                        "error": None,
+                        "error_type": None,
+                        "latest_run_id": "run-1",
+                        "last_activity_at": self.SETTLED,
+                    }
+                }
+            ),
+        ):
+            details = await resolve_task_details("t", ["done1"])
+        assert details["done1"]["last_activity_ms"] == self.SETTLED.timestamp() * 1000
+
+    def test_stamp_carries_it(self):
+        stamped = stamp_task_artifact_data(
+            _artifact("aaa")["data"],
+            {"aaa": {"status": "completed", "error": None, "last_activity_ms": 1.5e12}},
+        )
+        assert stamped["payload"]["last_activity_ms"] == 1.5e12
+
+    def test_status_only_withholds_it(self):
+        # Public replay ships the whitelisted status value and nothing else.
+        stamped = stamp_task_artifact_data(
+            _artifact("aaa")["data"],
+            {"aaa": {"status": "completed", "error": None, "last_activity_ms": 1.5e12}},
+            status_only=True,
+        )
+        assert "last_activity_ms" not in stamped["payload"]
+
+
+class TestRunTimes:
+    """A card's run: the bounds of the run its own launch started, and the
+    model it ran when that was not its launcher's, which a later resume of
+    the task must not overwrite."""
+
+    STARTED = datetime(2026, 1, 5, 14, 40, tzinfo=timezone.utc)
+    SETTLED = datetime(2026, 1, 5, 14, 42, tzinfo=timezone.utc)
+    RESUMED = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
+    MODEL = {"id": "glm-5.3-cn", "provider": "z-ai-cn"}
+
+    def _ledger(self, latest: dict, runs: dict):
+        return (
+            patch(
+                "src.server.database.runs.subagent_runs.get_latest_run_details",
+                new=AsyncMock(return_value=latest),
+            ),
+            patch(
+                "src.server.database.runs.subagent_runs.get_task_run_telemetry",
+                new=AsyncMock(return_value=runs),
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_each_launch_takes_its_own_run_and_the_latest_is_open(self):
+        latest = {
+            "aaa": {
+                "status": "in_progress",
+                "error": None,
+                "error_type": None,
+                "latest_run_id": "run-2",
+                "started_at": self.RESUMED,
+                "finalized_at": None,
+                "model": None,
+            }
+        }
+        runs = {
+            "run-1": {
+                "task_id": "aaa",
+                "started_at": self.STARTED,
+                "finalized_at": self.SETTLED,
+                "model": self.MODEL,
+            },
+        }
+        items = [
+            _artifact("aaa", task_run_id="run-1"),
+            _artifact("aaa", task_run_id="run-2", action="resume"),
+        ]
+        p0, p1 = self._ledger(latest, runs)
+        with p0, p1:
+            await stamp_replay_task_status("t", items)
+
+        # Only the run a resume displaced is read on its own, scoped to the
+        # thread whose artifacts named it: the latest came with the task.
+        assert p1.new.await_args.args == ("t", ["run-1"])
+        first, resumed = (item["data"]["payload"] for item in items)
+        assert first["started_ms"] == self.STARTED.timestamp() * 1000
+        assert first["finished_ms"] == self.SETTLED.timestamp() * 1000
+        assert first["model"] == self.MODEL
+        assert resumed["started_ms"] == self.RESUMED.timestamp() * 1000
+        # Still running: no finish. On its launcher's model: no model at all.
+        assert "finished_ms" not in resumed
+        assert "model" not in resumed
+
+    @pytest.mark.asyncio
+    async def test_a_launch_naming_no_run_takes_the_latest(self):
+        latest = {
+            "aaa": {
+                "status": "completed",
+                "error": None,
+                "error_type": None,
+                "latest_run_id": "run-1",
+                "started_at": self.STARTED,
+                "finalized_at": self.SETTLED,
+                "model": self.MODEL,
+            }
+        }
+        items = [_artifact("aaa")]
+        p0, p1 = self._ledger(latest, {})
+        with p0, p1:
+            await stamp_replay_task_status("t", items)
+        p1.new.assert_not_awaited()
+        payload = items[0]["data"]["payload"]
+        assert payload["started_ms"] == self.STARTED.timestamp() * 1000
+        assert payload["finished_ms"] == self.SETTLED.timestamp() * 1000
+        assert payload["model"] == self.MODEL
+
+    @pytest.mark.asyncio
+    async def test_a_missed_run_read_borrows_no_other_runs_bounds(self):
+        latest = {
+            "aaa": {
+                "status": "completed",
+                "error": None,
+                "error_type": None,
+                "latest_run_id": "run-2",
+                "started_at": self.RESUMED,
+                "finalized_at": self.SETTLED,
+            }
+        }
+        items = [_artifact("aaa", task_run_id="run-1")]
+        with (
+            patch(
+                "src.server.database.runs.subagent_runs.get_latest_run_details",
+                new=AsyncMock(return_value=latest),
+            ),
+            patch(
+                "src.server.database.runs.subagent_runs.get_task_run_telemetry",
+                new=AsyncMock(side_effect=RuntimeError("db down")),
+            ),
+        ):
+            await stamp_replay_task_status("t", items)
+        payload = items[0]["data"]["payload"]
+        assert payload["status"] == "completed"
+        assert "started_ms" not in payload and "finished_ms" not in payload
+        assert "model" not in payload
+
+    def test_status_only_keeps_the_run(self):
+        # A share renders the same row; the bounds and the model carry no
+        # failure text and nothing the transcript beside them does not.
+        stamped = stamp_task_artifact_data(
+            _artifact("aaa", task_run_id="run-1")["data"],
+            {
+                "aaa": {
+                    "status": "error",
+                    "error": "boom",
+                    "runs": {
+                        "run-1": {
+                            "started_ms": 1.0e12,
+                            "finished_ms": 1.1e12,
+                            "model": {"id": "qwen3.8-flash", "provider": "dashscope"},
+                        }
+                    },
+                }
+            },
+            status_only=True,
+        )
+        payload = stamped["payload"]
+        assert "error" not in payload
+        assert payload["started_ms"] == 1.0e12
+        assert payload["finished_ms"] == 1.1e12
+        assert payload["model"] == {"id": "qwen3.8-flash", "provider": "dashscope"}

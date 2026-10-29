@@ -21,10 +21,16 @@ from src.config.settings import (
     is_sse_event_log_enabled,
     get_sse_event_log_level,
 )
+from src.observability.private_errors import DatabaseErrorLogFilter
+from src.observability.private_query import AccessLogQueryFilter
 
 
 # Flag to ensure configuration is only applied once
 _logging_configured = False
+
+# One instance each, so a forced reconfigure does not add them twice.
+_ACCESS_LOG_QUERY_FILTER = AccessLogQueryFilter()
+_SERVER_ERROR_FILTER = DatabaseErrorLogFilter()
 
 
 class _TraceContextFormatter(logging.Formatter):
@@ -73,6 +79,8 @@ LANGCHAIN_LIBRARIES = [
     'langchain_anthropic',
     'langchain_google_genai',
     'langchain_deepseek',
+    'langchain_openrouter',
+    'openrouter',
     'langgraph',
     'langsmith',
 ]
@@ -208,6 +216,12 @@ def configure_logging(force: bool = False) -> None:
             sse_logger.addHandler(sse_handler)
         # Prevent duplicate logs by not propagating to root logger
         sse_logger.propagate = False
+
+    # On the logger, not a handler, so every handler gets the line without
+    # the query. This runs in each worker's lifespan, after uvicorn has
+    # configured its loggers in that process.
+    logging.getLogger("uvicorn.access").addFilter(_ACCESS_LOG_QUERY_FILTER)
+    logging.getLogger("uvicorn.error").addFilter(_SERVER_ERROR_FILTER)
 
     _logging_configured = True
 

@@ -1,155 +1,150 @@
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useId } from 'react';
+import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Ticket, Link2, Code2, Key, Monitor, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Ticket, Key, Monitor, ChevronDown, ChevronRight, ChevronUp, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { WizardStepHeader } from '@/components/ui/wizard';
+import { SetupFooter } from '../SetupFooter';
 import { Loader } from '@/components/ui/loader';
 import { Input } from '@/components/ui/input';
-import { api } from '@/api/client';
+import { redeemInvitation } from '@/api/invitations';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
-import { useConfiguredProviders, type ConfiguredProvider } from '@/hooks/useConfiguredProviders';
+import { SERVER_KEY, useConfiguredProviders, type ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import { useUser } from '@/hooks/useUser';
-import { usePreferences } from '@/hooks/usePreferences';
-import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
-import { deleteUserApiKey, disconnectCodexOAuth, disconnectClaudeOAuth, getCurrentUser } from '@/pages/Dashboard/utils/api';
+import { getCurrentUser } from '@/pages/Dashboard/utils/api';
+import { RemoveAccessDialog } from '@/components/modelAccess/RemoveAccessDialog';
+import { BrandMark } from '@/pages/ChatAgent/components/mcp/BrandMark';
+import { llmProviderArt } from '@/lib/brandArt';
+import { SUBSCRIPTIONS } from '@/api/oauth';
 import type { AccessType } from '@/components/model/types';
 import { isPlatformMode } from '@/config/hostMode';
-import { useAllModels } from '@/hooks/useAllModels';
 
 // ---------------------------------------------------------------------------
-// Method card data
+// Ways to connect
 // ---------------------------------------------------------------------------
 
-const ALL_METHODS: Array<{
-  id: AccessType;
-  icon: typeof Link2;
-  titleKey: string;
-  descKey: string;
-  platformOnly?: boolean;
-  ossOnly?: boolean;
-}> = [
-  {
-    id: 'oauth',
-    icon: Link2,
-    titleKey: 'setup.methodOAuth',
-    descKey: 'setup.methodOAuthDesc',
-  },
-  {
-    id: 'coding_plan',
-    icon: Code2,
-    titleKey: 'setup.methodCodingPlan',
-    descKey: 'setup.methodCodingPlanDesc',
-  },
-  {
-    id: 'api_key',
-    icon: Key,
-    titleKey: 'setup.methodApiKey',
-    descKey: 'setup.methodApiKeyDesc',
-  },
-  {
-    id: 'local',
-    icon: Monitor,
-    titleKey: 'setup.methodLocal',
-    descKey: 'setup.methodLocalDesc',
-    ossOnly: true,
-  },
+type Method = Exclude<AccessType, 'coding_plan'>;
+
+/** A provider's mark, by its own key or the brand it belongs to. */
+const markOf = (p: { provider: string; brand_key?: string | null }) =>
+  llmProviderArt(p.provider) ?? (p.brand_key ? llmProviderArt(p.brand_key) : undefined);
+
+/**
+ * A coding plan is a subscription bought with a key, listed with the
+ * subscriptions, so it is not a way of its own here.
+ */
+const METHODS: Array<{ id: Method; titleKey: string; descKey: string }> = [
+  { id: 'oauth', titleKey: 'setup.methodOAuth', descKey: 'setup.methodOAuthDesc' },
+  { id: 'api_key', titleKey: 'setup.methodApiKey', descKey: 'setup.methodApiKeyDesc' },
+  ...(isPlatformMode ? [] : [{ id: 'local' as const, titleKey: 'setup.methodLocal', descKey: 'setup.methodLocalDesc' }]),
 ];
 
-const METHODS = ALL_METHODS.filter((m) => {
-  if (m.ossOnly && isPlatformMode) return false;
-  if (m.platformOnly && !isPlatformMode) return false;
-  return true;
-});
+function MethodMark({ method }: { method: Method }) {
+  if (method === 'oauth') {
+    return (
+      <span className="flex shrink-0 gap-1">
+        {SUBSCRIPTIONS.map((s) => <BrandMark key={s.provider} name={s.provider} art={llmProviderArt(s.provider)} size="xs" />)}
+      </span>
+    );
+  }
+  const Icon = method === 'local' ? Monitor : Key;
+  return <Icon aria-hidden="true" className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />;
+}
 
 // ---------------------------------------------------------------------------
-// Configured providers banner
+// What is already connected
 // ---------------------------------------------------------------------------
 
-function ConfiguredBanner({
+/**
+ * One line however many providers are connected, so the choices below never
+ * move down the page; the list opens under it to remove one.
+ */
+function ConnectedSummary({
   providers,
-  onSkip,
   onRemove,
 }: {
   providers: ConfiguredProvider[];
-  onSkip: () => void;
   onRemove: (provider: ConfiguredProvider) => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const listId = useId();
 
   if (providers.length === 0) return null;
+
+  // One mark per brand: a ChatGPT sign-in and an OpenAI key are both OpenAI's.
+  const marks = [...new Map(providers.map((p) => [markOf(p)?.src ?? p.provider, p])).values()].slice(0, 6);
 
   return (
     <div
       className="rounded-lg overflow-hidden"
       style={{
-        background: 'var(--color-bg-surface)',
-        border: '1px solid var(--color-border-default)',
+        background: 'var(--color-bg-card)',
+        border: '1px solid var(--color-border-muted)',
       }}
     >
-      {/* Header row */}
-      <div className="flex items-center justify-between p-4">
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-1.5 text-left"
-        >
-          <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: 'var(--color-success)' }} />
-          <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            {t('setup.providersConnected', { count: providers.length })}
-          </span>
-          {expanded
-            ? <ChevronUp className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
-            : <ChevronDown className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
-          }
-        </button>
-        <Button variant="outline" size="sm" onClick={onSkip} className="shrink-0 ml-3">
-          {t('setup.nextStep')}
-        </Button>
-      </div>
-
-      {/* Expandable provider list */}
-      {expanded && (
-        <div
-          className="flex flex-col gap-0"
-          style={{ borderTop: '1px solid var(--color-border-default)' }}
-        >
-          {providers.map((p) => (
-            <div
-              key={p.provider}
-              className="flex items-center justify-between px-4 py-2.5"
-              style={{ borderBottom: '1px solid var(--color-border-default)' }}
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-sm truncate" style={{ color: 'var(--color-text-primary)' }}>
-                  {p.display_name}
-                </span>
-                <span
-                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-medium shrink-0"
-                  style={{
-                    background: p.access_type === 'oauth' ? 'var(--color-accent-soft)' : 'var(--color-bg-page)',
-                    color: p.access_type === 'oauth' ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                    border: p.access_type === 'oauth' ? 'none' : '1px solid var(--color-border-default)',
-                  }}
-                >
-                  {p.access_type === 'oauth' ? t('setup.oauthBadge')
-                    : p.access_type === 'local' ? t('setup.localBadge')
-                    : p.access_type === 'coding_plan' ? t('setup.codingPlanBadge')
-                    : t('setup.apiKeyBadge')}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => onRemove(p)}
-                className="text-xs shrink-0 px-2 py-1 rounded transition-colors hover:opacity-80"
-                style={{ color: 'var(--color-loss)' }}
-              >
-                {p.access_type === 'oauth' ? t('setup.disconnectProvider') : t('setup.removeProvider')}
-              </button>
-            </div>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls={listId}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left"
+      >
+        <span className="flex shrink-0 gap-1">
+          {marks.map((p) => (
+            <BrandMark key={p.provider} name={p.display_name} art={markOf(p)} size="xs" />
           ))}
-        </div>
+        </span>
+        <span className="flex-1 text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
+          {t('setup.providersConnected', { count: providers.length })}
+        </span>
+        <span className="inline-flex items-center gap-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+          {t('modelAccess.manage')}
+          {expanded
+            ? <ChevronUp aria-hidden="true" className="h-3.5 w-3.5" />
+            : <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" />}
+        </span>
+      </button>
+
+      {expanded && (
+        <ul id={listId} style={{ borderTop: '1px solid var(--color-border-muted)' }}>
+          {providers.map((p) => (
+            <li
+              key={p.provider}
+              className="flex items-center gap-3 px-4 py-2.5"
+              style={{ borderBottom: '1px solid var(--color-border-muted)' }}
+            >
+              <BrandMark name={p.display_name} art={markOf(p)} size="sm" className="rounded-md" />
+              <span className="min-w-0 flex-1 truncate text-sm" style={{ color: 'var(--color-text-primary)' }}>
+                {p.display_name}
+              </span>
+              <span
+                className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-medium shrink-0"
+                style={{
+                  background: 'var(--color-bg-tag)',
+                  color: 'var(--color-text-tertiary)',
+                }}
+              >
+                {p.access_type === 'oauth' ? t('setup.oauthBadge')
+                  : p.access_type === 'local' ? t('setup.localBadge')
+                  : p.access_type === 'coding_plan' ? t('setup.codingPlanBadge')
+                  : t('setup.apiKeyBadge')}
+              </span>
+              {/* The deployment's own key or server: nothing of the user's to remove. */}
+              {p.masked_key !== SERVER_KEY && (
+                <button
+                  type="button"
+                  onClick={() => onRemove(p)}
+                  className="text-xs shrink-0 px-2 py-1 rounded transition-colors hover:opacity-80"
+                  style={{ color: 'var(--color-loss)' }}
+                >
+                  {p.access_type === 'oauth' ? t('setup.disconnectProvider') : t('setup.removeProvider')}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -169,11 +164,9 @@ export default function MethodStep() {
   const hasPlatformAccess = (user?.access_tier ?? -1) >= 0 || localRedeemed;
   // Wait for user data before using hasPlatformAccess to avoid flicker
   const canSkip = hasConfigured || (!userLoading && hasPlatformAccess);
-  const { preferences } = usePreferences();
-  const updatePreferences = useUpdatePreferences();
-  const { metadata } = useAllModels();
+  const [removing, setRemoving] = useState<ConfiguredProvider | null>(null);
 
-  const [selected, setSelected] = useState<AccessType | null>(null);
+  const headingId = useId();
 
   // Invitation code state
   const [showInvitation, setShowInvitation] = useState(false);
@@ -181,68 +174,9 @@ export default function MethodStep() {
   const [invitationError, setInvitationError] = useState<string | null>(null);
   const [redeemingInvitation, setRedeemingInvitation] = useState(false);
 
-  const handleRemoveProvider = useCallback(async (provider: ConfiguredProvider) => {
-    try {
-      if (provider.access_type === 'oauth') {
-        if (provider.provider === 'codex-oauth') {
-          await disconnectCodexOAuth();
-          queryClient.invalidateQueries({ queryKey: queryKeys.oauth.codex() });
-        } else if (provider.provider === 'claude-oauth') {
-          await disconnectClaudeOAuth();
-          queryClient.invalidateQueries({ queryKey: queryKeys.oauth.claude() });
-        }
-      } else {
-        // Remove API key
-        await deleteUserApiKey(provider.provider).catch(() => {});
-        // Clean custom_providers, custom_models, and any model preference
-        // fields that reference models from the removed provider.
-        const prefs = preferences as Record<string, unknown> | null;
-        const otherPref = (prefs?.other_preference ?? {}) as Record<string, unknown>;
-        const existingProviders = (otherPref.custom_providers as Array<{ name: string }>) ?? [];
-        const existingModels = (otherPref.custom_models as Array<{ provider: string; name: string }>) ?? [];
-        const isCustom = existingProviders.some(cp => cp.name === provider.provider);
-        const remainingProviders = isCustom ? existingProviders.filter(cp => cp.name !== provider.provider) : existingProviders;
-        const remainingModels = existingModels.filter(cm => cm.provider !== provider.provider);
-        // Collect ALL model names belonging to this provider (custom + built-in)
-        const removedModelNames = new Set([
-          ...existingModels.filter(cm => cm.provider === provider.provider).map(cm => cm.name),
-          ...Object.entries(metadata)
-            .filter(([, meta]) => meta?.provider === provider.provider)
-            .map(([name]) => name),
-        ]);
-        const cleanModelPref = (val: unknown) =>
-          typeof val === 'string' && removedModelNames.has(val) ? null : undefined;
-        const prefUpdate: Record<string, unknown> = {
-          custom_providers: remainingProviders.length > 0 ? remainingProviders : null,
-          custom_models: remainingModels.length > 0 ? remainingModels : null,
-        };
-        // Clear subsidiary/preferred model fields if they reference a removed model
-        if (cleanModelPref(otherPref.compaction_model) === null) prefUpdate.compaction_model = null;
-        if (cleanModelPref(otherPref.summarization_model) === null) prefUpdate.summarization_model = null;
-        if (cleanModelPref(otherPref.fetch_model) === null) prefUpdate.fetch_model = null;
-        if (cleanModelPref(otherPref.preferred_model) === null) prefUpdate.preferred_model = null;
-        if (cleanModelPref(otherPref.preferred_flash_model) === null) prefUpdate.preferred_flash_model = null;
-        // Filter starred and fallback model lists
-        const starred = (otherPref.starred_models as string[]) ?? [];
-        const cleanStarred = starred.filter(m => !removedModelNames.has(m));
-        if (cleanStarred.length !== starred.length) prefUpdate.starred_models = cleanStarred.length > 0 ? cleanStarred : null;
-        const fallback = (otherPref.fallback_models as string[]) ?? [];
-        const cleanFallback = fallback.filter(m => !removedModelNames.has(m));
-        if (cleanFallback.length !== fallback.length) prefUpdate.fallback_models = cleanFallback.length > 0 ? cleanFallback : null;
-
-        await updatePreferences.mutateAsync({ other_preference: prefUpdate });
-      }
-      queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
-    } catch {
-      // Silently fail — user can retry
-    }
-  }, [preferences, updatePreferences, queryClient, metadata]);
-
-  const handleNext = useCallback(() => {
-    if (!selected) return;
-    navigate('/setup/provider', { state: { method: selected } });
-  }, [selected, navigate]);
+  const choose = useCallback((method: Method) => {
+    navigate('/setup/provider', { state: { list: method } });
+  }, [navigate]);
 
   const handleSkipToDefaults = useCallback(() => {
     navigate('/setup/defaults');
@@ -258,7 +192,7 @@ export default function MethodStep() {
     setInvitationError(null);
 
     try {
-      await api.post('/api/auth/invitations/redeem', { code: invitationCode.trim() });
+      await redeemInvitation(invitationCode.trim());
       setLocalRedeemed(true);
       // Bust stale platform tier cache, then refresh user + model access queries
       await getCurrentUser({ refresh_tier: true }).catch(() => {});
@@ -299,105 +233,61 @@ export default function MethodStep() {
   }, [invitationCode, queryClient, navigate, t]);
 
   return (
-    <div className="flex flex-col gap-4 sm:gap-6">
+    <div>
+      <WizardStepHeader
+        titleId={headingId}
+        title={canSkip ? t('setup.addAnotherProviderHeading') : t('setup.methodTitle')}
+        helper={canSkip ? t('setup.addMoreProviders') : t('setup.methodSubtitle')}
+      />
+      <div className="flex flex-col gap-4 sm:gap-6">
       {/* Configured providers banner (visible when looping back) */}
       {hasConfigured && (
-        <ConfiguredBanner
+        <ConnectedSummary
           providers={configuredProviders}
-          onSkip={handleSkipToDefaults}
-          onRemove={handleRemoveProvider}
+          onRemove={setRemoving}
         />
       )}
+      {removing && (
+        <RemoveAccessDialog provider={removing} name={removing.display_name} onClose={() => setRemoving(null)} />
+      )}
 
-      {/* Invitation-redeemed skip banner (when no other providers configured) */}
+      {/* Invitation-redeemed note (when no other providers configured); the
+          way on from it is the footer's skip */}
       {!userLoading && hasPlatformAccess && !hasConfigured && (
         <div
-          className="flex items-center justify-between gap-3 rounded-lg p-4"
+          className="flex items-center gap-2 rounded-lg p-4"
           style={{
-            background: 'var(--color-bg-surface)',
-            border: '1px solid var(--color-border-default)',
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border-muted)',
           }}
         >
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: 'var(--color-profit)' }} />
-            <span className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
-              {t('setup.invitationRedeemed')}
-            </span>
-          </div>
-          <Button variant="outline" size="sm" onClick={handleSkipToDefaults} className="shrink-0 ml-3">
-            {t('setup.nextStep')}
-          </Button>
+          <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: 'var(--color-success)' }} />
+          <span className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
+            {t('setup.invitationRedeemed')}
+          </span>
         </div>
       )}
 
-      {/* Section heading */}
-      <div className="flex flex-col gap-1">
-        <h2
-          className="font-semibold"
-          style={{ fontSize: '1.125rem', color: 'var(--color-text-primary)' }}
-        >
-          {canSkip ? t('setup.addAnotherProviderHeading') : t('setup.methodTitle')}
-        </h2>
-        <p
-          className="text-sm"
-          style={{ color: 'var(--color-text-secondary)' }}
-        >
-          {canSkip
-            ? t('setup.addMoreProviders')
-            : t('setup.methodSubtitle')}
-        </p>
-      </div>
-
-      {/* Method cards */}
-      <div className="flex flex-col gap-3" role="radiogroup" aria-label="Connection method">
-        {METHODS.map((method) => {
-          const Icon = method.icon;
-          const isSelected = selected === method.id;
-          return (
+      {/* Each way goes straight on, as the rows in Settings do. */}
+      <ul aria-labelledby={headingId} className="flex flex-col gap-2">
+        {METHODS.map((method) => (
+          <li key={method.id}>
             <button
-              key={method.id}
               type="button"
-              role="radio"
-              aria-checked={isSelected}
-              onClick={() => setSelected(method.id)}
-              className="flex items-start gap-4 rounded-lg p-4 text-left transition-colors cursor-pointer"
-              style={{
-                border: isSelected
-                  ? '2px solid var(--color-accent-primary)'
-                  : '1px solid var(--color-border-default)',
-                background: isSelected ? 'var(--color-accent-soft)' : undefined,
-                padding: isSelected ? 15 : 16,
-              }}
+              onClick={() => choose(method.id)}
+              className="flex w-full items-center gap-3 rounded-lg px-4 py-3.5 text-left transition-colors hover:bg-(--color-bg-hover)"
+              style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
             >
-              <div
-                className="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 mt-0.5"
-                style={{
-                  background: isSelected
-                    ? 'var(--color-accent-primary)'
-                    : 'var(--color-bg-surface)',
-                  color: isSelected ? '#fff' : 'var(--color-text-secondary)',
-                }}
-              >
-                <Icon className="h-5 w-5" />
-              </div>
-              <div className="flex flex-col gap-0.5">
-                <span
-                  className="text-sm font-medium"
-                  style={{ color: 'var(--color-text-primary)' }}
-                >
-                  {t(method.titleKey)}
-                </span>
-                <span
-                  className="text-xs"
-                  style={{ color: 'var(--color-text-secondary)' }}
-                >
-                  {t(method.descKey)}
-                </span>
-              </div>
+              <span className="flex w-12 shrink-0 justify-center"><MethodMark method={method.id} /></span>
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t(method.titleKey)}</span>
+                <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t(method.descKey)}</span>
+              </span>
+              <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
             </button>
-          );
-        })}
-      </div>
+          </li>
+        ))}
+      </ul>
 
       {/* Invitation code section — hide only when user already has platform access */}
       {(userLoading || !hasPlatformAccess) && (
@@ -406,8 +296,7 @@ export default function MethodStep() {
             <button
               type="button"
               onClick={() => setShowInvitation(true)}
-              className="inline-flex items-center gap-1.5 text-sm font-medium transition-colors self-start"
-              style={{ color: 'var(--color-accent-primary)' }}
+              className="inline-flex items-center gap-1.5 text-sm font-medium transition-colors self-start text-(--color-text-secondary) hover:text-(--color-text-primary)"
             >
               <Ticket className="h-4 w-4" />
               {t('setup.invitationCodeLink')}
@@ -416,8 +305,8 @@ export default function MethodStep() {
             <div
               className="flex flex-col gap-3 rounded-lg p-4"
               style={{
-                background: 'var(--color-bg-surface)',
-                border: '1px solid var(--color-border-default)',
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-muted)',
               }}
             >
               <label
@@ -446,7 +335,7 @@ export default function MethodStep() {
                 >
                   {redeemingInvitation ? (
                     <>
-                      <span aria-hidden="true" className="mr-1.5 flex-shrink-0">
+                      <span aria-hidden="true" className="mr-1.5 shrink-0">
                         <Loader size={16} className="text-current" />
                       </span>
                       {t('setup.redeeming')}
@@ -477,17 +366,12 @@ export default function MethodStep() {
         </>
       )}
 
-      {/* Next button */}
-      <div className="flex justify-end pt-2">
-        <Button
-          variant="default"
-          disabled={!selected}
-          onClick={handleNext}
-          className="min-w-[120px]"
-        >
-          {t('setup.next')}
-        </Button>
       </div>
+
+      <SetupFooter
+        skip={canSkip ? { label: t('setup.skipToModels'), onClick: handleSkipToDefaults } : null}
+        primary={null}
+      />
     </div>
   );
 }

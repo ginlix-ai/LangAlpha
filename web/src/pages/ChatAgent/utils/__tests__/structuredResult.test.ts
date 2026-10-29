@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { humanizeKey, parseResultPreview, parseStructuredResult } from '../structuredResult';
 

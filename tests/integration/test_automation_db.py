@@ -24,14 +24,12 @@ class TestCreateAutomation:
             instruction="Summarize today's market highlights",
             cron_expression="0 9 * * 1-5",
             timezone="America/New_York",
-            agent_mode="flash",
         )
 
         assert auto["name"] == "Daily Market Briefing"
         assert auto["trigger_type"] == "cron"
         assert auto["cron_expression"] == "0 9 * * 1-5"
         assert auto["timezone"] == "America/New_York"
-        assert auto["agent_mode"] == "flash"
         assert auto["status"] == "active"
         assert auto["failure_count"] == 0
         assert auto["max_failures"] == 3
@@ -265,7 +263,6 @@ class TestPriceTriggerAutomation:
             trigger_type="price",
             instruction="Analyze why AAPL dropped below $150",
             trigger_config=trigger_config,
-            agent_mode="flash",
         )
 
         assert auto["name"] == "AAPL Price Alert"
@@ -356,7 +353,6 @@ class TestPriceTriggerAutomation:
     ):
         from src.server.database.automation import (
             create_automation,
-            get_automation,
             update_automation,
         )
 
@@ -393,8 +389,8 @@ class TestExecutionHistory:
     async def test_create_and_list_executions(
         self, seed_user, patched_get_db_connection
     ):
-        from src.server.database.automation import (
-            create_automation,
+        from src.server.database.automation import create_automation
+        from src.server.database.automation_executions import (
             create_execution,
             list_executions,
         )
@@ -415,22 +411,23 @@ class TestExecutionHistory:
 
         assert exec_id is not None
 
-        executions, total = await list_executions(
-            str(auto["automation_id"]), seed_user["user_id"]
+        executions, has_more = await list_executions(
+            seed_user["user_id"], automation_id=str(auto["automation_id"])
         )
-        assert total == 1
+        assert len(executions) == 1
+        assert has_more is False
         assert str(executions[0]["automation_execution_id"]) == exec_id
         assert executions[0]["status"] == "pending"
         assert executions[0]["server_id"] == "server-1"
 
-    async def test_update_execution_status(
+    async def test_transition_execution(
         self, seed_user, patched_get_db_connection
     ):
-        from src.server.database.automation import (
-            create_automation,
+        from src.server.database.automation import create_automation
+        from src.server.database.automation_executions import (
             create_execution,
             list_executions,
-            update_execution_status,
+            transition_execution,
         )
 
         auto = await create_automation(
@@ -447,46 +444,21 @@ class TestExecutionHistory:
             server_id="server-1",
         )
 
-        await update_execution_status(
-            execution_id=exec_id,
-            status="completed",
+        assert await transition_execution(
+            exec_id,
+            from_statuses=("pending",),
+            to="completed",
             started_at=now,
             completed_at=datetime.now(timezone.utc),
         )
+        # Settled once: a second writer is refused and changes nothing.
+        assert await transition_execution(
+            exec_id, from_statuses=("pending", "running"), to="failed",
+        ) is None
 
         executions, _ = await list_executions(
-            str(auto["automation_id"]), seed_user["user_id"]
+            seed_user["user_id"], automation_id=str(auto["automation_id"])
         )
         assert executions[0]["status"] == "completed"
         assert executions[0]["started_at"] is not None
         assert executions[0]["completed_at"] is not None
-
-    async def test_failure_count_and_auto_disable(
-        self, seed_user, patched_get_db_connection
-    ):
-        from src.server.database.automation import (
-            create_automation,
-            get_automation,
-            increment_failure_count,
-        )
-
-        auto = await create_automation(
-            user_id=seed_user["user_id"],
-            name="Failure Test",
-            trigger_type="cron",
-            instruction="will fail",
-            max_failures=2,
-        )
-
-        auto_id = str(auto["automation_id"])
-
-        count1 = await increment_failure_count(auto_id)
-        assert count1 == 1
-
-        # Second failure should trigger auto-disable (max_failures=2)
-        count2 = await increment_failure_count(auto_id)
-        assert count2 == 2
-
-        disabled = await get_automation(auto_id, seed_user["user_id"])
-        assert disabled["status"] == "disabled"
-        assert disabled["next_run_at"] is None

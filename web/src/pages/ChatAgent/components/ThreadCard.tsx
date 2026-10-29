@@ -1,9 +1,13 @@
 import React from 'react';
-import { Trash2, Edit2, Globe, Archive, ArchiveRestore } from 'lucide-react';
+import { Trash2, Edit2, Link2, Archive, ArchiveRestore } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { useLocale } from '@/hooks/useLocale';
 import { useTitleFade } from '@/hooks/useTitleFade';
+import { shortMonthDay } from '@/lib/format';
 import { useThreadFlags } from '@/lib/threadLifecycle/store';
+import { cn } from '@/lib/utils';
+
 
 interface ThreadCardProps {
   thread: Record<string, unknown>;
@@ -27,6 +31,7 @@ interface ThreadCardProps {
  */
 function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchive }: ThreadCardProps) {
   const { t } = useTranslation();
+  const locale = useLocale();
   const isMobile = useIsMobile();
   // Lifecycle indicator: live store state first (updates in place via the
   // user feed), falling back to the row's own enrichment for threads the
@@ -73,35 +78,38 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
         <span
           role="img"
           aria-label="Waiting for your input"
-          className="w-2 h-2 rounded-full flex-shrink-0"
+          className="w-2 h-2 rounded-full shrink-0"
           style={{ border: '1.5px solid var(--color-accent-primary)' }}
         />
       ) : (
         <div
-          className={`w-2 h-2 rounded-full flex-shrink-0${isRunning ? ' animate-pulse' : ''}`}
+          className={`w-2 h-2 rounded-full shrink-0${isRunning ? ' animate-pulse' : ''}`}
           style={{ backgroundColor: dotColor }}
         />
       )}
 
       {/* Thread title and info */}
       <div className="flex-1 min-w-0">
-        <h3 className={`text-sm font-normal truncate${titleFading ? ' animate-fade-in' : ''}`} style={{ color: 'var(--color-text-primary)' }}>
-          {cardTitle}
+        <h3 className={cn('flex items-center gap-1.5 text-sm font-normal', titleFading && 'animate-fade-in')} style={{ color: 'var(--color-text-primary)' }}>
+          <span className="truncate min-w-0">{cardTitle}</span>
+          {!!thread.is_shared && (
+            <span
+              role="img"
+              aria-label={t('share.anyoneWithLink')}
+              title={t('share.anyoneWithLink')}
+              className="inline-flex shrink-0"
+              style={{ color: 'var(--color-accent-primary)' }}
+            >
+              <Link2 className="h-3.5 w-3.5" aria-hidden />
+            </span>
+          )}
         </h3>
         {!!thread.updated_at && (
           <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
-            {new Date(thread.updated_at as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            {shortMonthDay(new Date(thread.updated_at as string), locale)}
           </p>
         )}
       </div>
-
-      {/* Shared indicator */}
-      {!!thread.is_shared && (
-        <Globe
-          className="h-3.5 w-3.5 flex-shrink-0"
-          style={{ color: 'var(--color-accent-primary)' }}
-        />
-      )}
 
       {/* Action icons - Show on hover */}
       {(onRename || onDelete || onArchive || onUnarchive) && (
@@ -121,7 +129,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
           {onArchive && (
             <button
               onClick={(e) => { e.stopPropagation(); onArchive(thread); }}
-              className="p-1.5 rounded-md transition hover:bg-foreground/10 active:scale-90"
+              className="p-1.5 rounded-md press hover:bg-foreground/10"
               style={{ color: 'var(--color-text-tertiary)' }}
               title={t('thread.archive')}
             >
@@ -131,7 +139,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
           {onUnarchive && (
             <button
               onClick={(e) => { e.stopPropagation(); onUnarchive(thread); }}
-              className="p-1.5 rounded-md transition hover:bg-foreground/10 active:scale-90"
+              className="p-1.5 rounded-md press hover:bg-foreground/10"
               style={{ color: 'var(--color-text-tertiary)' }}
               title={t('thread.unarchive')}
             >
@@ -142,7 +150,7 @@ function ThreadCard({ thread, onClick, onDelete, onRename, onArchive, onUnarchiv
           {onDelete && (
             <button
               onClick={handleDeleteClick}
-              className="p-1.5 rounded-md transition-colors hover:bg-[var(--color-danger-hover-bg)]"
+              className="p-1.5 rounded-md transition-colors hover:bg-(--color-danger-hover-bg)"
               style={{ color: 'var(--color-loss)' }}
               title="Delete thread"
             >

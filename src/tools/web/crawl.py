@@ -19,15 +19,24 @@ from urllib.parse import urlparse
 from langchain_core.tools import tool
 
 from src.config.tool_settings import get_crawl_provider
-from src.observability import stamp_run
+from src.observability import TOOL_PROVIDER, stamp_run, stamp_tool_provider
 from src.tools.decorators import create_logged_tool, get_tool_tracker
+from src.tools.web.providers._shared import mark_web_outcome
 from src.tools.web.manifest import (
     CAPABILITY_CRAWL,
     CAPABILITY_MAP,
     get_capability,
     get_web_provider_spec,
 )
-from src.tools.web.types import CrawlPage, CrawlRequest, CrawlState, MapRequest, WebToolError
+from src.tools.web.types import (
+    CrawlPage,
+    CrawlRequest,
+    CrawlState,
+    MapRequest,
+    WebError,
+    WebErrorType,
+    WebToolError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +78,7 @@ def _page_filename(page_url: str, used: set) -> str:
 async def _write_workspace_file(backend: Any, rel_path: str, content: str) -> Optional[str]:
     """Write through the agent filesystem backend; returns an error string on failure."""
     normalized = backend.normalize_path(rel_path)
-    if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized):
+    if backend.filesystem_config.enable_path_validation and not backend.validate_path(rel_path):
         return f"Access denied: {rel_path} is not in allowed directories"
     ok = await backend.awrite_text(normalized, content)
     return None if ok else f"Failed to write {rel_path}"
@@ -152,13 +161,11 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
     ) -> Tuple[str, Dict[str, Any]]:
         """Crawl a website and dump each page as markdown into the workspace.
 
-        Starts an asynchronous crawl at ``url``, follows internal links up to
-        ``limit`` pages, and writes one .md file per page plus an index.jsonl
-        manifest. Read the dumped files with Glob/Read afterwards — page
-        content is never returned inline. Scope a site with WebMap first, and
-        prefer WebFetch when you already know the handful of URLs you need.
-        Crawling bills per delivered page, so keep ``limit`` tight and focus
-        the crawl with include_paths/exclude_paths.
+        Starts an asynchronous crawl at ``url`` and follows internal links up
+        to ``limit`` pages. Scope a site with WebMap first, and prefer WebFetch
+        when you already know the handful of URLs you need. Crawling bills per
+        delivered page, so keep ``limit`` tight and focus the crawl with
+        include_paths/exclude_paths.
 
         Args:
             url: Starting URL; the crawl stays within its site.
@@ -167,11 +174,20 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
             include_paths: URL-pathname regex patterns to include (e.g. ["^/docs/.*"]).
             exclude_paths: URL-pathname regex patterns to exclude.
             max_depth: Max link-discovery depth from the start URL.
-            output_dir: Workspace directory to dump into; pages land in
-                <output_dir>/<host>/. Defaults to work/crawl. Pass your task's
-                work dir (e.g. work/<task>/crawl) when running a task workflow.
+            output_dir: Where to dump, relative to your workspace folder; pages
+                land in <output_dir>/<host>/. Defaults to work/crawl. Pass your
+                task's work dir (e.g. work/<task>/crawl) when running a task
+                workflow.
+
+        Returns:
+            A page count and the paths it wrote, never page content: one .md
+            file per page plus an index.jsonl manifest.
+
+        Glob the directory and Read the pages you need. Never re-crawl what
+        you already dumped.
         """
         stamp_run(crawl_provider=provider)
+        stamp_tool_provider(provider)
         limit_ = max(1, min(int(limit), _MAX_CRAWL_PAGES))
         base_dir = (output_dir or _DEFAULT_OUTPUT_DIR).rstrip("/")
         dest_dir = f"{base_dir}/{_host_dirname(url)}"
@@ -188,6 +204,9 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
         try:
             job = await adapter.start_crawl(req, dict(level.native_params))
         except WebToolError as e:
+            # Starting only queues the job; its one read of the site (robots.txt)
+            # is capped far below our timeout, so a timeout here is the provider's.
+            mark_web_outcome(e, provider_side=e.error.type is WebErrorType.TIMEOUT)
             return f"Crawl failed to start: {e}", {"type": "site_crawl", "url": url, "error": str(e)}
 
         index_entries: List[Dict[str, Any]] = []
@@ -209,6 +228,9 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
                 except WebToolError as e:
                     poll_failures += 1
                     if poll_failures >= _MAX_POLL_FAILURES:
+                        # The status endpoint never touches the site, so a
+                        # failing poll is the provider's whatever its kind.
+                        mark_web_outcome(e, provider_side=True)
                         await adapter.cancel_crawl(job.id)
                         state = CrawlState.CANCELLED
                         note = f"Aborted after repeated status failures: {e}"
@@ -240,11 +262,24 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
                     state = status.state
                     if status.error:
                         note = str(status.error)
+                    # This loop never polls a job it cancelled, so a cancelled
+                    # one was stopped on the provider's side, as a failed one is.
+                    if state is not CrawlState.COMPLETED:
+                        mark_web_outcome(
+                            status.error
+                            or WebError(
+                                type=WebErrorType.PROVIDER_ERROR,
+                                message=f"Crawl job {state.value}",
+                            )
+                        )
                     break
                 if loop.time() >= deadline:
                     await adapter.cancel_crawl(job.id)
                     state = CrawlState.CANCELLED
                     note = f"Stopped at the {int(_CRAWL_TIMEOUT)}s crawl time cap"
+                    # A site too big or slow to crawl in time, as a slow page
+                    # is for WebFetch.
+                    mark_web_outcome(WebError(type=WebErrorType.TIMEOUT, message=note))
                     break
         except asyncio.CancelledError:
             # Turn was cancelled — don't leave the provider job running.
@@ -255,6 +290,7 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
             # cancel the paid remote job rather than leak it, and return what we
             # dumped so far instead of raising an unhandled tool exception.
             logger.error("WebCrawl %s aborted: %r", job.id, e)
+            mark_web_outcome(e, provider_side=True)
             await adapter.cancel_crawl(job.id)
             state = CrawlState.CANCELLED
             note = f"Aborted: {str(e)[:200]}"
@@ -287,19 +323,23 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
     async def web_map(url: str, query: Optional[str] = None, limit: int = 100) -> Tuple[str, Dict[str, Any]]:
         """Discover the URLs of a website without crawling it.
 
-        Maps ``url`` and lists its discovered links, ranked by relevance to
-        ``query`` when given. Fast and cheap — use it to scope a site before
-        deciding which pages to WebFetch or whether a WebCrawl is worth it.
+        Fast and cheap — use it to scope a site before deciding which pages to
+        WebFetch or whether a WebCrawl is worth it.
 
         Args:
             url: Site to map.
-            query: Optional relevance filter/ranking for the returned links.
+            query: Optional relevance filter for the returned links.
             limit: Max links to return (default 100, max 300).
+
+        Returns:
+            URLs with page titles where the site supplies them, ranked by
+            ``query`` when given. No page content is fetched.
         """
         limit_ = max(1, min(int(limit), _MAX_MAP_LINKS))
         try:
             links = await adapter.map_site(MapRequest(url=url, query=query, limit=limit_), {})
         except WebToolError as e:
+            mark_web_outcome(e)
             return f"Site map failed: {e}", {"type": "site_map", "url": url, "error": str(e)}
 
         if not links:
@@ -325,7 +365,7 @@ def create_crawl_tools(filesystem_backend: Any) -> List[Any]:
                 web_map,
                 name="WebMap",
                 tracking_name=map_key,
-                run_metadata={"map_provider": provider},
+                run_metadata={"map_provider": provider, TOOL_PROVIDER: provider},
             )
         )
     else:

@@ -1,7 +1,13 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { HelpCircle, Check, SkipForward, Send, ChevronRight } from 'lucide-react';
+import { motion, AnimatePresence } from '@/lib/framer';
+import { HelpCircle, Check, SkipForward, Send } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { SPRING_INDICATOR, staggerDelay, TWEEN } from '@/lib/motion';
+import { Disclosure } from '@/components/ui/Disclosure';
+import { isImeComposing } from '@/lib/ime';
 import Markdown from './Markdown';
+import { ResolveSwap } from './decisionCardMotion';
+import { SettledStep } from './SettledStep';
 
 interface OptionCheckboxProps {
   id: string;
@@ -18,8 +24,8 @@ function OptionCheckbox({ id, label, checked, onChange, disabled }: OptionCheckb
   return (
     <label
       htmlFor={id}
-      className={`flex items-center gap-3.5 cursor-pointer group py-2.5 px-3 rounded-lg transition-colors duration-200 ${
-        disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[var(--color-border-muted)]'
+      className={`flex items-center gap-3.5 cursor-pointer group py-2.5 px-3 rounded-lg transition-colors ${
+        disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-(--color-border-muted)'
       }`}
     >
       <div className="relative flex items-center justify-center">
@@ -31,35 +37,33 @@ function OptionCheckbox({ id, label, checked, onChange, disabled }: OptionCheckb
           disabled={disabled}
           className="sr-only"
         />
-        <motion.div
+        <div
           className={`
             w-[22px] h-[22px] rounded-md border-2 flex items-center justify-center
-            transition-colors duration-200
+            transition-colors
             ${
               checked
-                ? 'bg-[var(--color-btn-primary-bg)] border-[var(--color-btn-primary-bg)]'
-                : 'bg-transparent border-[var(--color-border-muted)] group-hover:border-[var(--color-border-muted)]'
+                ? 'bg-(--color-btn-primary-bg) border-(--color-btn-primary-bg)'
+                : 'bg-transparent border-(--color-border-muted) group-hover:border-(--color-border-muted)'
             }
           `}
-          whileHover={!disabled ? { scale: 1.08 } : {}}
-          whileTap={!disabled ? { scale: 0.92 } : {}}
         >
-          <AnimatePresence mode="wait">
+          <AnimatePresence initial={false}>
             {checked && (
               <motion.div
-                initial={{ scale: 0, opacity: 0 }}
+                initial={{ scale: 0.6, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0, opacity: 0 }}
-                transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+                exit={{ scale: 0.6, opacity: 0, transition: TWEEN.exit }}
+                transition={SPRING_INDICATOR}
               >
-                <Check className="w-3.5 h-3.5 stroke-[3]" style={{ color: 'var(--color-btn-primary-text)' }} />
+                <Check className="w-3.5 h-3.5 stroke-3" style={{ color: 'var(--color-btn-primary-text)' }} />
               </motion.div>
             )}
           </AnimatePresence>
-        </motion.div>
+        </div>
       </div>
       <span
-        className="text-sm font-medium tracking-wide transition-colors duration-200"
+        className="text-sm font-medium tracking-wide transition-colors"
         style={{ color: checked ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
       >
         {label}
@@ -79,17 +83,15 @@ interface OptionRadioProps {
  */
 function OptionRadio({ label, onClick, disabled }: OptionRadioProps): React.ReactElement {
   return (
-    <motion.button
+    <button
       onClick={onClick}
       disabled={disabled}
-      className={`flex items-center gap-3.5 w-full text-left py-2.5 px-3 rounded-lg transition-colors duration-200 ${
-        disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-[var(--color-border-muted)]'
+      className={`press flex items-center gap-3.5 w-full text-left py-2.5 px-3 rounded-lg ${
+        disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-(--color-border-muted)'
       }`}
-      whileHover={!disabled ? { x: 2 } : {}}
-      whileTap={!disabled ? { scale: 0.99 } : {}}
     >
       <div
-        className="w-[22px] h-[22px] rounded-full border-2 flex items-center justify-center transition-colors duration-200"
+        className="w-[22px] h-[22px] rounded-full border-2 flex items-center justify-center transition-colors"
         style={{ borderColor: 'var(--color-border-muted)' }}
       />
       <span
@@ -98,7 +100,7 @@ function OptionRadio({ label, onClick, disabled }: OptionRadioProps): React.Reac
       >
         {label}
       </span>
-    </motion.button>
+    </button>
   );
 }
 
@@ -116,14 +118,14 @@ function ResolvedOption({ label, isSelected, isMulti }: ResolvedOptionProps): Re
   return (
     <div className="flex items-center gap-3.5 py-1.5 px-3">
       <div
-        className="w-[22px] h-[22px] flex items-center justify-center border-2 transition-colors duration-200"
+        className="w-[22px] h-[22px] flex items-center justify-center border-2 transition-colors"
         style={{
           borderRadius: isMulti ? '6px' : '50%',
           backgroundColor: isSelected ? 'var(--color-btn-primary-bg)' : 'transparent',
           borderColor: isSelected ? 'var(--color-btn-primary-bg)' : 'var(--color-border-muted)',
         }}
       >
-        {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" style={{ color: 'var(--color-btn-primary-text)' }} />}
+        {isSelected && <Check className="w-3.5 h-3.5 stroke-3" style={{ color: 'var(--color-btn-primary-text)' }} />}
       </div>
       <span
         className="text-sm tracking-wide"
@@ -159,10 +161,10 @@ interface UserQuestionCardProps {
  *   skipped   - Collapsed summary, click to expand and see the question + options
  */
 function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardProps): React.ReactElement | null {
+  const { t } = useTranslation();
   // Local state
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [otherText, setOtherText] = useState('');
-  const [expanded, setExpanded] = useState(false);
 
   if (!questionData) return null;
 
@@ -179,84 +181,46 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
   const isCustomAnswer = isAnswered && answer && answeredOptions.size > 0
     && ![...answeredOptions].some((a) => options.includes(a));
 
-  // --- Resolved (answered / skipped): collapsible ---
-  if (isResolved) {
-    return (
-      <div>
-        {/* Collapsed summary row */}
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-2 py-1 group cursor-pointer w-full text-left"
-        >
-          <motion.div
-            animate={{ rotate: expanded ? 90 : 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <ChevronRight
-              className="h-3.5 w-3.5 flex-shrink-0"
-              style={{ color: 'var(--color-icon-muted)' }}
-            />
-          </motion.div>
-          {isAnswered ? (
-            <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-light)' }} />
-          ) : (
-            <SkipForward className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-icon-muted)' }} />
-          )}
-          <span
-            className="text-sm"
-            style={{ color: isAnswered ? 'var(--color-text-tertiary)' : 'var(--color-text-tertiary)' }}
-          >
-            {isAnswered ? `Answered: ${answer || '(no answer)'}` : 'Question skipped'}
-          </span>
-        </button>
-
-        {/* Expanded detail */}
-        <AnimatePresence>
-          {expanded && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-              className="overflow-hidden"
-            >
-              <div className="pt-2 pb-1 pl-6">
-                {/* Question */}
-                <div className="flex items-start gap-2 pb-2">
-                  <HelpCircle className="h-3.5 w-3.5 flex-shrink-0 mt-1" style={{ color: 'var(--color-icon-muted)' }} />
-                  <div className="text-sm min-w-0" style={{ color: 'var(--color-text-tertiary)' }}>
-                    <Markdown variant="compact" content={question} />
-                  </div>
-                </div>
-
-                {/* Options with selection state */}
-                {options.length > 0 && (
-                  <div className="py-0.5">
-                    {options.map((option) => (
-                      <ResolvedOption
-                        key={option}
-                        label={option}
-                        isSelected={answeredOptions.has(option)}
-                        isMulti={allow_multiple}
-                      />
-                    ))}
-                  </div>
-                )}
-
-                {/* Show custom answer if it didn't match any option */}
-                {isCustomAnswer && (
-                  <div className="flex items-center gap-2 pt-1 px-3">
-                    <span className="text-xs" style={{ color: 'var(--color-icon-muted)' }}>Custom:</span>
-                    <span className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{answer}</span>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+  // --- Resolved (answered / skipped): the shared settled row, opening onto
+  // the question and what was picked. A skip is the question declined.
+  const settled = (
+    <SettledStep
+      verdict={isAnswered ? 'approved' : 'rejected'}
+      icon={isSkipped ? <SkipForward className="h-4 w-4 shrink-0" style={{ color: 'var(--color-icon-muted)' }} /> : undefined}
+      label={isAnswered ? t('chat.userQuestion.answered', { answer: answer || t('chat.userQuestion.noAnswer') }) : t('chat.userQuestion.skipped')}
+      testId="user-question-settled"
+    >
+      {/* Question */}
+      <div className="flex items-start gap-2 pb-2">
+        <HelpCircle className="h-3.5 w-3.5 shrink-0 mt-1" style={{ color: 'var(--color-icon-muted)' }} />
+        <div className="text-sm min-w-0" style={{ color: 'var(--color-text-tertiary)' }}>
+          <Markdown variant="compact" content={question} />
+        </div>
       </div>
-    );
-  }
+
+      {/* Options with selection state */}
+      {options.length > 0 && (
+        <div className="py-0.5">
+          {options.map((option) => (
+            <ResolvedOption
+              key={option}
+              label={option}
+              isSelected={answeredOptions.has(option)}
+              isMulti={allow_multiple}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Show custom answer if it didn't match any option */}
+      {isCustomAnswer && (
+        <div className="flex items-center gap-2 pt-1 px-3">
+          <span className="text-xs" style={{ color: 'var(--color-icon-muted)' }}>{t('chat.userQuestion.custom')}</span>
+          <span className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>{answer}</span>
+        </div>
+      )}
+    </SettledStep>
+  );
 
   // --- Pending: full interactive ---
   const handleToggle = (option: string): void => {
@@ -280,39 +244,33 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
   };
 
   const handleOtherKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
       e.preventDefault();
       handleSubmitOther();
     }
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-    >
+    <ResolveSwap resolved={isResolved} settled={settled}>
       {/* Question text */}
       <div className="flex items-start gap-2 pb-2">
-        <HelpCircle className="h-4 w-4 flex-shrink-0 mt-1" style={{ color: 'var(--color-accent-light)' }} />
+        <HelpCircle className="h-4 w-4 shrink-0 mt-1" style={{ color: 'var(--color-accent-light)' }} />
         <div className="text-[0.9375rem] font-medium min-w-0" style={{ color: 'var(--color-text-primary)' }}>
           <Markdown variant="compact" content={question} />
         </div>
       </div>
 
-      {/* Vertical option list */}
+      {/* Vertical option list. The options arrive with the card, a batch
+          read top to bottom, so they stagger in; the card only ever mounts
+          them once. */}
       {options.length > 0 && (
         <div className="py-1">
           {options.map((option, index) => (
             <motion.div
               key={option}
-              initial={{ opacity: 0, x: -8 }}
+              initial={{ opacity: 0, x: -6 }}
               animate={{ opacity: 1, x: 0 }}
-              transition={{
-                delay: 0.1 + index * 0.05,
-                duration: 0.35,
-                ease: [0.22, 1, 0.36, 1],
-              }}
+              transition={{ ...TWEEN.enter, delay: staggerDelay(index) }}
             >
               {allow_multiple ? (
                 <OptionCheckbox
@@ -332,58 +290,61 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
         </div>
       )}
 
-      {/* Multi-select submit button */}
-      {allow_multiple && selected.size > 0 && (
-        <div className="pt-1 pb-2">
-          <motion.button
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            onClick={handleSubmitMulti}
-            className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-md font-medium transition-colors hover:brightness-110"
-            style={{
-              backgroundColor: 'var(--color-btn-primary-bg)',
-              color: 'var(--color-btn-primary-text)',
-            }}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            <Check className="h-3.5 w-3.5 stroke-[2.5]" />
-            Submit ({selected.size})
-          </motion.button>
-        </div>
-      )}
+      {/* Multi-select submit button, folding in with the first pick so the
+          rest of the card is not pushed down in one frame. */}
+      <Disclosure open={allow_multiple && selected.size > 0} className="pt-1 pb-2">
+        <button
+          onClick={handleSubmitMulti}
+          className="press flex items-center gap-1.5 text-sm px-4 py-2 rounded-md font-medium hover:brightness-110"
+          style={{
+            backgroundColor: 'var(--color-btn-primary-bg)',
+            color: 'var(--color-btn-primary-text)',
+          }}
+        >
+          <Check className="h-3.5 w-3.5 stroke-[2.5]" />
+          {t('chat.userQuestion.submitCount', { n: selected.size })}
+        </button>
+      </Disclosure>
 
       {/* "Other" text input */}
       <div className="pt-1 pb-1 flex gap-2 items-center">
         <input
           type="text"
-          placeholder="Or type a custom answer..."
+          placeholder={t('chat.userQuestion.customPlaceholder')}
           value={otherText}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOtherText(e.target.value)}
           onKeyDown={handleOtherKeyDown}
-          className="flex-1 text-sm px-3 py-2 rounded-md outline-none transition-colors duration-200 focus:border-[var(--color-accent-overlay)]"
+          className="flex-1 text-sm px-3 py-2 rounded-md transition-colors focus:border-(--color-accent-overlay)"
           style={{
             backgroundColor: 'var(--color-border-muted)',
             border: '1px solid var(--color-border-muted)',
             color: 'var(--color-text-primary)',
           }}
         />
-        <AnimatePresence>
+        <AnimatePresence initial={false}>
           {otherText.trim() && (
-            <motion.button
+            // The scale and fade sit on a wrapper: the button's own `press`
+            // transition lists opacity, and would trail framer's writes.
+            <motion.span
+              className="flex"
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              onClick={handleSubmitOther}
-              className="p-2 rounded-md transition-colors hover:brightness-110"
-              style={{
-                backgroundColor: 'var(--color-btn-primary-bg)',
-                color: 'var(--color-btn-primary-text)',
-              }}
-              whileTap={{ scale: 0.92 }}
+              exit={{ opacity: 0, scale: 0.8, transition: TWEEN.exit }}
+              transition={TWEEN.quick}
             >
-              <Send className="h-3.5 w-3.5" />
-            </motion.button>
+              <button
+                type="button"
+                onClick={handleSubmitOther}
+                aria-label={t('common.submit')}
+                className="press p-2 rounded-md hover:brightness-110"
+                style={{
+                  backgroundColor: 'var(--color-btn-primary-bg)',
+                  color: 'var(--color-btn-primary-text)',
+                }}
+              >
+                <Send className="h-3.5 w-3.5" />
+              </button>
+            </motion.span>
           )}
         </AnimatePresence>
       </div>
@@ -392,7 +353,7 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
       <div className="pt-1">
         <button
           onClick={() => onSkip?.()}
-          className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md transition-colors"
+          className="press flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md"
           style={{
             backgroundColor: 'transparent',
             color: 'var(--color-icon-muted)',
@@ -407,10 +368,10 @@ function UserQuestionCard({ questionData, onAnswer, onSkip }: UserQuestionCardPr
           }}
         >
           <SkipForward className="h-3.5 w-3.5" />
-          Skip
+          {t('chat.skip')}
         </button>
       </div>
-    </motion.div>
+    </ResolveSwap>
   );
 }
 

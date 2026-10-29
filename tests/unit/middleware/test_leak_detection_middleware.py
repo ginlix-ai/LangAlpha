@@ -14,9 +14,6 @@ from langchain_core.messages import ToolMessage
 from ptc_agent.agent.middleware.tool.leak_detection import LeakDetectionMiddleware
 from ptc_agent.config.core import MCPServerConfig
 
-# Patch target for get_nested_config (imported locally inside __init__)
-_GNC = "src.config.settings.get_nested_config"
-
 
 def _make_server(name: str = "test", env: dict | None = None, enabled: bool = True) -> MCPServerConfig:
     return MCPServerConfig(
@@ -42,22 +39,12 @@ def _make_tool_message(content: str, tool_call_id: str = "call_1") -> ToolMessag
     return ToolMessage(content=content, tool_call_id=tool_call_id)
 
 
-def _disable_github(key, default):
-    """Mock get_nested_config that disables GitHub."""
-    if key == "github.enabled":
-        return False
-    return default
-
-
 class TestSecretDiscovery:
     """Verify that secrets are correctly discovered from MCP config."""
 
     def test_resolves_placeholder_secrets(self):
         server = _make_server(env={"FMP_API_KEY": "${FMP_API_KEY}"})
-        with (
-            patch.dict(os.environ, {"FMP_API_KEY": "fmp_secret_12345"}, clear=False),
-            patch(_GNC, side_effect=_disable_github),
-        ):
+        with patch.dict(os.environ, {"FMP_API_KEY": "fmp_secret_12345"}, clear=False):
             mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert len(mw._secrets) == 1
         assert mw._secrets[0][0] == "FMP_API_KEY"
@@ -65,18 +52,14 @@ class TestSecretDiscovery:
     def test_skips_short_values(self):
         """Values shorter than 8 chars are ignored to avoid false positives."""
         server = _make_server(env={"SHORT_KEY": "${SHORT_KEY}"})
-        with (
-            patch.dict(os.environ, {"SHORT_KEY": "abc"}, clear=False),
-            patch(_GNC, side_effect=_disable_github),
-        ):
+        with patch.dict(os.environ, {"SHORT_KEY": "abc"}, clear=False):
             mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert len(mw._secrets) == 0
 
     def test_literal_env_values(self):
         """Literal (non-placeholder) values are also tracked."""
         server = _make_server(env={"API_KEY": "literal_secret_value"})
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert len(mw._secrets) == 1
         assert mw._secrets[0][1] == "literal_secret_value"
 
@@ -88,8 +71,7 @@ class TestSecretDiscovery:
             "GIT_COMMITTER_NAME": "langalpha-bot",
             "GIT_COMMITTER_EMAIL": "bot@ginlix.ai",
         })
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert len(mw._secrets) == 0
 
     def test_skips_disabled_servers(self):
@@ -97,10 +79,7 @@ class TestSecretDiscovery:
             env={"SECRET": "${SECRET}"},
             enabled=False,
         )
-        with (
-            patch.dict(os.environ, {"SECRET": "disabled_secret_value"}, clear=False),
-            patch(_GNC, side_effect=_disable_github),
-        ):
+        with patch.dict(os.environ, {"SECRET": "disabled_secret_value"}, clear=False):
             mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert len(mw._secrets) == 0
 
@@ -112,7 +91,6 @@ class TestSecretDiscovery:
                 "KEY_A": "secret_value_a",
                 "KEY_B": "secret_value_b",
             }, clear=False),
-            patch(_GNC, side_effect=_disable_github),
         ):
             mw = LeakDetectionMiddleware(mcp_servers=[s1, s2])
         assert len(mw._secrets) == 2
@@ -125,8 +103,7 @@ class TestSecretDiscovery:
             "Authorization": "Bearer inline_bearer_123",
             "X-Api-Key": "inline_apikey_456",
         })
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert sorted(v for _, v in mw._secrets) == [
             "Bearer inline_bearer_123", "inline_apikey_456",
         ]
@@ -138,15 +115,13 @@ class TestSecretDiscovery:
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         })
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert mw._secrets == []
 
     def test_header_vault_refs_are_skipped(self):
         """${vault:NAME} resolves in-sandbox; the vault lane covers its value."""
         server = _make_http_server(headers={"Authorization": "${vault:RH_TOKEN}"})
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert mw._secrets == []
 
     def test_arg_credentials_are_tracked_but_paths_are_not(self):
@@ -163,40 +138,15 @@ class TestSecretDiscovery:
             env={},
             enabled=True,
         )
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert mw._secrets == [("stdio:token", "inline_argtok_123")]
 
-    def test_github_token_from_config(self):
-        """GitHub token is discovered via get_nested_config."""
-        def _enable_github(key, default):
-            return {
-                "github.enabled": True,
-                "github.token_env": "GITHUB_BOT_TOKEN",
-            }.get(key, default)
-
-        with (
-            patch.dict(os.environ, {"GITHUB_BOT_TOKEN": "ghp_1234567890abcdef"}, clear=False),
-            patch(_GNC, side_effect=_enable_github),
-        ):
-            mw = LeakDetectionMiddleware(mcp_servers=[])
-
-        assert any(name == "GITHUB_TOKEN" for name, _ in mw._secrets)
-
-    def test_github_token_skipped_when_disabled(self):
-        """GitHub token is not discovered when github is disabled."""
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[])
-        assert len(mw._secrets) == 0
-
     def test_empty_servers_list(self):
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[])
+        mw = LeakDetectionMiddleware(mcp_servers=[])
         assert mw._secrets == []
 
     def test_none_servers(self):
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=None)
+        mw = LeakDetectionMiddleware(mcp_servers=None)
         assert mw._secrets == []
 
     def test_secrets_sorted_by_length_descending(self):
@@ -205,8 +155,7 @@ class TestSecretDiscovery:
             "SHORT": "abcdefgh",         # 8 chars
             "LONG": "abcdefghijklmnop",  # 16 chars
         })
-        with patch(_GNC, side_effect=_disable_github):
-            mw = LeakDetectionMiddleware(mcp_servers=[server])
+        mw = LeakDetectionMiddleware(mcp_servers=[server])
         assert len(mw._secrets) == 2
         # Longer value first
         assert len(mw._secrets[0][1]) >= len(mw._secrets[1][1])

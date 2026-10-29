@@ -8,7 +8,7 @@ import pytest
 
 from .conftest import assert_error, assert_ok_envelope
 
-_MOD = "mcp_servers.macro_mcp_server"
+_MOD = "plugins.langalpha_market_data.macro_mcp_server"
 
 
 def _make_fmp_client() -> AsyncMock:
@@ -41,7 +41,7 @@ def _make_fmp_client() -> AsyncMock:
 class TestGetEconomicIndicator:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -57,7 +57,7 @@ class TestGetEconomicIndicator:
 
     @pytest.mark.asyncio
     async def test_custom_limit(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -66,8 +66,42 @@ class TestGetEconomicIndicator:
         client.get_economic_indicators.assert_awaited_once_with("CPI", limit=10)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "documented, fmp",
+        [
+            ("federalFundsRate", "federalFunds"),
+            ("nonFarmPayrolls", "totalNonfarmPayroll"),
+        ],
+    )
+    async def test_documented_name_reaches_fmp_under_its_fmp_name(self, documented, fmp):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator(documented)
+
+        client.get_economic_indicators.assert_awaited_once_with(fmp, limit=50)
+        assert_ok_envelope(result, count=2, source="fmp")
+        assert result["indicator"] == documented
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name",
+        ["GDP", "CPI", "unemploymentRate", "inflationRate", "retailSales", "consumerSentiment", "federalFunds"],
+    )
+    async def test_every_other_name_reaches_fmp_as_given(self, name):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
+
+        client = _make_fmp_client()
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_indicator(name, limit=7)
+
+        client.get_economic_indicators.assert_awaited_once_with(name, limit=7)
+        assert result["indicator"] == name
+
+    @pytest.mark.asyncio
     async def test_fmp_init_error(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         with patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
             result = await get_economic_indicator("GDP")
@@ -77,7 +111,7 @@ class TestGetEconomicIndicator:
 
     @pytest.mark.asyncio
     async def test_api_error(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         client = _make_fmp_client()
         client.get_economic_indicators = AsyncMock(side_effect=Exception("timeout at ?apikey=SECRET"))
@@ -95,7 +129,7 @@ class TestGetEconomicIndicator:
 class TestGetEconomicCalendar:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_economic_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -110,7 +144,7 @@ class TestGetEconomicCalendar:
 
     @pytest.mark.asyncio
     async def test_default_dates(self):
-        from mcp_servers.macro_mcp_server import get_economic_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -118,6 +152,48 @@ class TestGetEconomicCalendar:
 
         assert result["from_date"] is None
         assert result["to_date"] is None
+        assert "truncated" not in result
+
+    @pytest.mark.asyncio
+    async def test_truncated_when_provider_cap_reached(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
+
+        client = _make_fmp_client()
+        client.get_economic_calendar = AsyncMock(return_value=[{}] * 4000)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_calendar(from_date="2025-01-01", to_date="2025-12-31")
+
+        assert result["count"] == 4000
+        assert result["truncated"] is True
+        assert "Narrow the date range" in result["note"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool, fetch",
+    [
+        ("get_economic_calendar", "get_economic_calendar"),
+        ("get_treasury_rates", "get_treasury_rates"),
+        ("get_earnings_calendar", "get_earnings_calendar_by_date"),
+    ],
+)
+@pytest.mark.parametrize(
+    "lo, hi, detail",
+    [
+        ("2026-10-16", "2026-10-09", "from is after to"),
+        ("not-a-date", "2026-10-16", "from must be an ISO date, not 'not-a-date'"),
+    ],
+)
+async def test_calendar_bounds_refused_before_fmp(tool, fetch, lo, hi, detail):
+    import plugins.langalpha_market_data.macro_mcp_server as mod
+
+    client = _make_fmp_client()
+    with patch(f"{_MOD}.get_fmp_client", return_value=client):
+        result = await getattr(mod, tool)(from_date=lo, to_date=hi)
+
+    assert_error(result, "invalid_argument")
+    assert result["detail"] == detail
+    getattr(client, fetch).assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +203,7 @@ class TestGetEconomicCalendar:
 class TestGetTreasuryRates:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_treasury_rates
+        from plugins.langalpha_market_data.macro_mcp_server import get_treasury_rates
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -139,7 +215,7 @@ class TestGetTreasuryRates:
 
     @pytest.mark.asyncio
     async def test_with_date_range(self):
-        from mcp_servers.macro_mcp_server import get_treasury_rates
+        from plugins.langalpha_market_data.macro_mcp_server import get_treasury_rates
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -158,7 +234,7 @@ class TestGetTreasuryRates:
 class TestGetMarketRiskPremium:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_market_risk_premium
+        from plugins.langalpha_market_data.macro_mcp_server import get_market_risk_premium
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -170,7 +246,7 @@ class TestGetMarketRiskPremium:
 
     @pytest.mark.asyncio
     async def test_api_error(self):
-        from mcp_servers.macro_mcp_server import get_market_risk_premium
+        from plugins.langalpha_market_data.macro_mcp_server import get_market_risk_premium
 
         client = _make_fmp_client()
         client.get_market_risk_premium = AsyncMock(side_effect=Exception("fail"))
@@ -187,7 +263,7 @@ class TestGetMarketRiskPremium:
 class TestGetEarningsCalendar:
     @pytest.mark.asyncio
     async def test_success(self):
-        from mcp_servers.macro_mcp_server import get_earnings_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
 
         client = _make_fmp_client()
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
@@ -203,7 +279,7 @@ class TestGetEarningsCalendar:
 
     @pytest.mark.asyncio
     async def test_truncated_when_provider_cap_reached(self):
-        from mcp_servers.macro_mcp_server import get_earnings_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
 
         client = _make_fmp_client()
         client.get_earnings_calendar_by_date = AsyncMock(return_value=[{}] * 4000)
@@ -216,7 +292,7 @@ class TestGetEarningsCalendar:
 
     @pytest.mark.asyncio
     async def test_fmp_init_error(self):
-        from mcp_servers.macro_mcp_server import get_earnings_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
 
         with patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
             result = await get_earnings_calendar(from_date="2025-01-01", to_date="2025-01-31")

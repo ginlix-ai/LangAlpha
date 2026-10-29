@@ -26,8 +26,15 @@ from src.server.handlers.chat.xread_tuning import (
 )
 from src.server.services.runs.executor import LocalRunExecutor
 from src.server.services.runs.stream_writer import RUN_END_EVENT_TYPE
+
 from src.utils.cache.redis_cache import get_cache_client, is_pool_exhaustion
 from src.utils.cache import stream_pool
+
+# Emitted once by the main-workflow consumer where the replayed backlog ends
+# and the live tail begins. The client batches everything before it. The
+# ``_EVENT_TYPE`` suffix is what the event-ledger scan keys on, so the type
+# stays visible even though the frame around it is built from the parameter.
+CAUGHT_UP_EVENT_TYPE = "caught_up"
 
 # Same hard-coded logger name request_prep uses — existing log routing keys off it.
 logger = logging.getLogger("src.server.handlers.chat_handler")
@@ -58,6 +65,21 @@ def _is_stream_end_sentinel(raw: str, sentinel_event: str) -> bool:
         and record.get("event") == sentinel_event
         and "seq" not in record
     )
+
+
+def _entry_id_key(entry_id: bytes | str) -> tuple[int, int]:
+    """Order key for a Redis stream ID (``ms-seq``).
+
+    Explicit ``seq-0`` ids and auto ids (epoch ms) share one stream, and the
+    tuple order is the order Redis itself uses, so a cursor compares against
+    the head without caring which kind either one is.
+    """
+    text = entry_id.decode("utf-8") if isinstance(entry_id, bytes) else entry_id
+    ms, _, seq = text.partition("-")
+    try:
+        return (int(ms), int(seq or 0))
+    except ValueError:
+        return (0, 0)
 
 
 def _first_available_seq(entries: list) -> Optional[int]:
@@ -92,6 +114,7 @@ async def _stream_from_redis_log(
     on_detach: Optional[Callable[[], Awaitable[None]]] = None,
     sentinel_event: Optional[str] = None,
     close_event: Optional[str] = None,
+    caught_up_event: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Generic XREAD BLOCK loop yielding SSE strings stored in a Redis Stream.
 
@@ -125,6 +148,15 @@ async def _stream_from_redis_log(
     starting ``event: <name>\\n``) that is YIELDED to the client and then
     ends the stream — the visible ``run_end`` frame, vs the swallowed
     legacy sentinel above.
+
+    ``caught_up_event`` (optional) names a marker frame yielded exactly once,
+    where the cursor first reaches the stream head sampled at attach: what
+    precedes it is backlog the client may apply in one pass, what follows is
+    live. An empty stream marks the boundary at once (nothing to batch); an
+    unreadable head sends no marker at all, and the client's quiet-window and
+    cap timers close the backlog instead. An early marker would have the
+    client present the whole retained backlog live, which is the retype the
+    marker exists to prevent.
     """
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
@@ -177,6 +209,29 @@ async def _stream_from_redis_log(
                 "[stream_from_log] gap probe failed on %s: %s", stream_key, exc
             )
 
+    # Backlog/live boundary: the head at attach time. Read once, up front, so
+    # a producer that keeps writing during the replay cannot push the marker
+    # out indefinitely. An empty stream leaves the zero key, which the first
+    # boundary check below clears; a failed probe drops the marker instead.
+    caught_up_pending = caught_up_event is not None
+    head_key: tuple[int, int] = (0, 0)
+    if caught_up_event is not None:
+        try:
+            tail = await asyncio.wait_for(
+                cache.client.xrevrange(stream_key_bytes, count=1),
+                timeout=xread_wait_timeout_s(),
+            )
+            if tail:
+                head_key = _entry_id_key(tail[0][0])
+        except Exception as exc:
+            caught_up_pending = False
+            logger.warning(
+                "[stream_from_log] head probe failed on %s, no boundary marker: %s",
+                stream_key,
+                exc,
+            )
+    caught_up_frame = f"event: {caught_up_event}\ndata: {{}}\n\n"
+
     attached = False
     try:
         if on_attach is not None:
@@ -184,6 +239,12 @@ async def _stream_from_redis_log(
             attached = True
         terminal_seen = False
         while True:
+            # The boundary, checked once per round before the read: covers
+            # the fresh attach and a batch that ends exactly on the head. A
+            # batch that runs past it emits the marker mid-batch below.
+            if caught_up_pending and _entry_id_key(cursor) >= head_key:
+                caught_up_pending = False
+                yield caught_up_frame
             try:
                 # asyncio.wait_for guards against the underlying redis-py
                 # XREAD hanging past BLOCK if the connection is poisoned.
@@ -233,6 +294,12 @@ async def _stream_from_redis_log(
                 continue
 
             if not result:
+                # Fallback for a head that raced ahead of what is readable:
+                # settle the boundary rather than hold the client's backlog
+                # open until the producer catches up to its own head.
+                if caught_up_pending:
+                    caught_up_pending = False
+                    yield caught_up_frame
                 # BLOCK timed out — emit keepalive comment so proxies and
                 # the browser see liveness, then re-check terminal.
                 yield ":keepalive\n\n"
@@ -245,6 +312,12 @@ async def _stream_from_redis_log(
             # result format: [(stream_key, [(entry_id, {field: value}), ...])]
             for _stream_name, entries in result:
                 for entry_id, fields in entries:
+                    # The boundary inside a batch: the first entry past the
+                    # recorded head is live, so the marker goes ahead of it
+                    # rather than after the whole batch.
+                    if caught_up_pending and _entry_id_key(entry_id) > head_key:
+                        caught_up_pending = False
+                        yield caught_up_frame
                     # Advance the cursor unconditionally before any skip path.
                     # If the *last* entry in a batch hits a continue (missing
                     # ``event`` field, non-UTF8 payload), leaving the cursor
@@ -366,5 +439,6 @@ async def stream_from_log(
         on_detach=on_detach,
         sentinel_event=WORKFLOW_STREAM_END_EVENT,
         close_event=RUN_END_EVENT_TYPE,
+        caught_up_event=CAUGHT_UP_EVENT_TYPE,
     ):
         yield event

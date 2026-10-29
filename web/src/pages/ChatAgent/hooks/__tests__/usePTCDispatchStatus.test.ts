@@ -1,5 +1,5 @@
 /**
- * Poll-cadence decisions for the dispatched-PTC status card. A flash turn can
+ * Poll-cadence decisions for the dispatched-PTC status card. A Chief of Staff turn can
  * show several cards, each polling the full /status, so the cadence must back
  * off once a run is clearly long-lived and must stop entirely for a run that
  * never registers (a continuation rejected by the per-user cap stays 'starting'

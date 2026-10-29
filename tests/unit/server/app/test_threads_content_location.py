@@ -69,7 +69,7 @@ def _resolved_config():
     """Minimal stub for ``resolve_llm_config`` return value."""
     cfg = MagicMock()
     cfg.llm_client = None  # mark request as platform-served, keeps is_byok=False
-    cfg.llm = MagicMock(name="claude-sonnet-4-5", flash="claude-haiku")
+    cfg.llm = MagicMock(name="claude-sonnet-4-5", background="claude-haiku")
     cfg.llm.name = "claude-sonnet-4-5"
     return cfg
 
@@ -106,7 +106,7 @@ class TestContentLocationHeader:
              patch("src.server.services.llm.config.resolve_llm_config", new=AsyncMock(return_value=_resolved_config())), \
              patch("src.server.dependencies.usage_limits.enforce_credit_limit", new=AsyncMock()), \
              patch("src.server.database.conversation.get_thread_by_id", new=AsyncMock(return_value={"workspace_id": "ws-1"})), \
-             patch("src.server.database.workspace.get_workspace", new=AsyncMock(return_value={"user_id": "test-user-123", "status": "running"})), \
+             patch("src.server.database.workspace.get_workspace", new=AsyncMock(return_value={"workspace_id": "ws-1", "user_id": "test-user-123", "status": "running"})), \
              patch("src.server.services.workspace_manager.WorkspaceManager.get_instance", return_value=wm_singleton), \
              patch("src.server.handlers.chat.astream_ptc_workflow", return_value=_empty_async_gen()), \
              patch(f"{THREADS_MOD}.observe_chat_stream", side_effect=lambda gen, **_: gen):
@@ -117,7 +117,6 @@ class TestContentLocationHeader:
                 json={
                     "workspace_id": "ws-1",
                     "messages": [{"role": "user", "content": "hi"}],
-                    "agent_mode": "ptc",
                 },
             ) as resp:
                 assert resp.status_code == 200

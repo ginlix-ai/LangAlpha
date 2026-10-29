@@ -20,7 +20,7 @@ from ptc_agent.config.core import (
     SandboxConfig,
     SecurityConfig,
 )
-from ptc_agent.agent.middleware.compaction.utils import resolve_compaction_client
+from ptc_agent.agent.middleware.compaction.model import resolve_compaction_client
 
 
 @dataclass

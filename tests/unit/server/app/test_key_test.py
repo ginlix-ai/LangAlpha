@@ -60,7 +60,7 @@ def test_non_ascii_key():
 
 def test_sanitize_error_redacts_key_fragments():
     """_sanitize_error strips API key fragments from error messages."""
-    from src.server.app.api_keys import _sanitize_error
+    from src.server.services.llm.key_probe import sanitize_error as _sanitize_error
 
     msg = "Invalid API key: sk-ant-api03-abcdefghijklmn for account"
     sanitized = _sanitize_error(msg)
@@ -73,7 +73,61 @@ def test_sanitize_error_redacts_key_fragments():
 
 def test_sanitize_error_leaves_safe_messages():
     """_sanitize_error leaves messages without key fragments untouched."""
-    from src.server.app.api_keys import _sanitize_error
+    from src.server.services.llm.key_probe import sanitize_error as _sanitize_error
 
     msg = "Connection refused: timeout after 5s"
     assert _sanitize_error(msg) == msg
+
+
+# ---------------------------------------------------------------------------
+# check_key: the model a key is tried with
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["z-ai-coding", "minimax-coding"])
+async def test_a_plan_with_no_rows_of_its_own_is_tried_with_its_brands_model(monkeypatch, provider):
+    # A coding plan serves its brand's models; trying it with another lab's
+    # model reads as a refused key when the key is fine.
+    from src.llms.llm import LLM
+    from src.server.services.llm import key_probe
+
+    mc = LLM.get_model_config()
+    brand_models = mc.manifest["models"].get(mc.get_parent_provider(provider)) or []
+    if mc.manifest["models"].get(provider) or not brand_models:
+        pytest.skip("the manifest no longer has this plan without rows of its own")
+    tried = []
+
+    async def probe(api_key, model, info, base_url, timeout, *, transport=None):
+        tried.append(model)
+        return {"models_found": 0, "model": model}
+
+    monkeypatch.setitem(key_probe._SDK_TEST_DISPATCH, "openai", (probe, "fallback-model"))
+    result = await key_probe.check_key(provider, {"sdk": "openai"}, "sk-test", None)
+
+    assert result["success"] is True
+    assert tried == [brand_models[0]["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_never_echoes_the_tested_key_whatever_its_shape(monkeypatch):
+    # A custom endpoint may echo a key no known prefix matches.
+    import httpx
+
+    from src.server.services.llm import key_probe
+
+    key = "plainTokenWithNoKnownPrefix123"
+
+    async def probe(api_key, model, info, base_url, timeout, *, transport=None):
+        request = httpx.Request("GET", "https://gateway.example/v1/models")
+        raise httpx.HTTPStatusError(
+            "refused", request=request,
+            response=httpx.Response(401, json={"error": f"Bearer {api_key} is not valid"}, request=request),
+        )
+
+    monkeypatch.setitem(key_probe._SDK_TEST_DISPATCH, "openai", (probe, "some-model"))
+    result = await key_probe.check_key("custom-gateway", {"sdk": "openai"}, key, "https://gateway.example/v1")
+
+    assert result["success"] is False
+    assert key not in result["error"]
+    assert "[REDACTED]" in result["error"]

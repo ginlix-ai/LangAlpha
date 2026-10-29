@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { useSyncUserLocale } from '../useSyncUserLocale';
 import { getLocaleCookie, setLocaleCookie } from '../../lib/locale';
 
@@ -18,7 +18,7 @@ import { useTranslation } from 'react-i18next';
 const mockUseUser = useUser as Mock;
 const mockUseTranslation = useTranslation as unknown as Mock;
 
-type I18nStub = { language: string; changeLanguage: Mock };
+type I18nStub = { language: string; changeLanguage: Mock; loadLanguages: Mock; hasResourceBundle: Mock };
 
 function makeI18n(language = 'en-US'): I18nStub {
   const stub: I18nStub = {
@@ -28,6 +28,9 @@ function makeI18n(language = 'en-US'): I18nStub {
       stub.language = lang;
       return Promise.resolve();
     }),
+    // switchLocale loads the catalog before switching; every catalog is in.
+    loadLanguages: vi.fn(() => Promise.resolve()),
+    hasResourceBundle: vi.fn(() => true),
   };
   return stub;
 }
@@ -46,22 +49,22 @@ describe('useSyncUserLocale', () => {
     mockUseTranslation.mockReturnValue({ i18n: mockI18n });
   });
 
-  it('seeds locale from the server on first render (no cookie yet)', () => {
+  it('seeds locale from the server on first render (no cookie yet)', async () => {
     mockUseUser.mockReturnValue({ user: { locale: 'zh-CN' } });
 
     renderHook(() => useSyncUserLocale());
 
-    expect(mockI18n.changeLanguage).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockI18n.changeLanguage).toHaveBeenCalledTimes(1));
     expect(mockI18n.changeLanguage).toHaveBeenCalledWith('zh-CN');
     expect(getLocaleCookie()).toBe('zh-CN');
   });
 
-  it('does not re-apply when user.locale changes after the first sync (regression: locale race)', () => {
+  it('does not re-apply when user.locale changes after the first sync (regression: locale race)', async () => {
     mockUseUser.mockReturnValue({ user: { locale: 'zh-CN' } });
 
     const { rerender } = renderHook(() => useSyncUserLocale());
 
-    expect(mockI18n.changeLanguage).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockI18n.changeLanguage).toHaveBeenCalledTimes(1));
     expect(getLocaleCookie()).toBe('zh-CN');
 
     // Stale /users/me refetch returns the prior server value after a local pick.

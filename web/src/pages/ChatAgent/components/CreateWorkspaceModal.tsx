@@ -1,48 +1,47 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useId } from 'react';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { X, Upload, FileText, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 import { Input } from '../../../components/ui/input';
-import { uploadWorkspaceFile } from '../utils/api';
-import { buildRateLimitError } from '@/utils/rateLimitError';
+import { Select } from '@/components/ui/select';
+import { useLocale } from '@/hooks/useLocale';
+import { formatBytes } from '@/lib/format';
+import type { Computer, Workspace } from '@/types/api';
+import { startWorkspace, uploadWorkspaceFile } from '../utils/api';
+import { createWorkspaceDenialMessage, denialMessage } from '../utils/denialMessage';
+import { clampWorkspaceName } from '../utils/workspaceName';
+import type { NewWorkspace } from '../hooks/useCreateWorkspace';
+import { useComputers } from '../hooks/useComputers';
+import { useComputerSource } from '../hooks/useComputerSource';
+import { isComputerPreparing, liveComputers, takesWorkspaces } from '../utils/computerStatus';
 import './CreateWorkspaceModal.css';
-
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-interface WorkspaceData {
-  name: string;
-  description: string;
-}
-
-interface CreatedWorkspace {
-  workspace_id: string;
-  [key: string]: unknown;
-}
 
 interface CreateWorkspaceModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreate: (data: WorkspaceData) => Promise<CreatedWorkspace>;
-  onComplete?: (workspaceId: string) => void;
+  onCreate: (data: NewWorkspace) => Promise<Workspace>;
+  /** Called with the created workspace once the modal is done with it. */
+  onComplete?: (workspace: Workspace) => void;
 }
 
 type Phase = 'form' | 'progress';
-type CreationStep = 'creating' | 'uploading' | 'done' | 'error';
+type CreationStep = 'uploading' | 'done' | 'error';
 type FileUploadStatus = 'pending' | 'uploading' | 'done' | 'failed';
-type DescMode = 'agent' | 'manual';
 
 /**
- * CreateWorkspaceModal -- two-phase modal:
- *  Phase 1 (form): name, description, file dropzone
- *  Phase 2 (progress): workspace creation -> file uploads -> done
+ * CreateWorkspaceModal.
+ *
+ * Without queued files, creation opens the workspace immediately. Queued
+ * uploads wait for the computer to start and the workspace folder to attach.
+ * With more than one computer the user picks which one the folder goes on;
+ * with one there is nothing to pick and the server uses the primary. A
+ * computer still being prepared takes no workspace, so it cannot be picked,
+ * and the form waits while it is the target.
  */
 function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateWorkspaceModalProps) {
   const { t } = useTranslation();
+  const locale = useLocale();
 
   // Lock body scroll while modal is open
   useEffect(() => {
@@ -55,17 +54,36 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   // Form state
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [descMode, setDescMode] = useState<DescMode>('agent');
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pickedComputerId, setPickedComputerId] = useState<string | null>(null);
+  const computerFieldId = useId();
+
+  // The list the gallery and the computer fan-out already hold, so opening
+  // the modal usually reads the cache rather than the network.
+  const { data: computerData } = useComputers({ enabled: isOpen });
+  const computers = liveComputers(computerData?.computers);
+  const choosesComputer = computers.length > 1;
+  // Each option says what the machine runs on, so a Mac and a cloud sandbox
+  // are told apart here too.
+  const sourceOf = useComputerSource(computers, { enabled: isOpen && choosesComputer });
+  // The machine the workspace would land on, named or not. A pick that has
+  // left the list (deleted elsewhere) falls back to the primary. The fan-out
+  // moves its row to running when the preparation ends, which lifts the hold.
+  const target = computers.find((c) => c.computer_id === pickedComputerId)
+    ?? computers.find((c) => c.is_primary)
+    ?? computers[0]
+    ?? null;
+  const preparingTarget = isComputerPreparing(target) ? target : null;
 
   // Progress state
   const [phase, setPhase] = useState<Phase>('form');
-  const [creationStep, setCreationStep] = useState<CreationStep>('creating');
+  const [creationStep, setCreationStep] = useState<CreationStep>('uploading');
+  const [submitting, setSubmitting] = useState(false);
   const [fileStatuses, setFileStatuses] = useState<Record<string, FileUploadStatus>>({});
   const [currentUploadProgress, setCurrentUploadProgress] = useState(0);
   const [currentUploadName, setCurrentUploadName] = useState('');
-  const [createdWorkspace, setCreatedWorkspace] = useState<CreatedWorkspace | null>(null);
+  const [createdWorkspace, setCreatedWorkspace] = useState<Workspace | null>(null);
   const [progressError, setProgressError] = useState<string | null>(null);
 
   // Drag state
@@ -123,87 +141,23 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
   // ---- Submit ----
 
-  const handleSubmit = async (e: React.FormEvent | Event) => {
-    e.preventDefault();
-    if (!name.trim()) {
-      setError(t('workspace.workspaceNameRequired'));
-      return;
-    }
-
-    setPhase('progress');
-    setCreationStep('creating');
-    setProgressError(null);
-
-    let workspace: CreatedWorkspace;
-    try {
-      workspace = await onCreate({
-        name: name.trim(),
-        description: descMode === 'manual' ? description.trim() : '',
-      });
-      setCreatedWorkspace(workspace);
-    } catch (err: any) { // TODO: type properly
-      setCreationStep('error');
-      if (err.status === 429 && err.rateLimitInfo) {
-        const platformUrl = (import.meta.env.VITE_PLATFORM_URL as string | undefined) || '/account';
-        const { message } = buildRateLimitError(err.rateLimitInfo, platformUrl);
-        setProgressError(message);
-      } else {
-        setProgressError(err.message || t('workspace.failedCreateWorkspace'));
-      }
-      return;
-    }
-
-    // Upload queued files
-    if (queuedFiles.length > 0) {
-      setCreationStep('uploading');
-      const statuses: Record<string, FileUploadStatus> = {};
-      queuedFiles.forEach((f) => { statuses[f.name] = 'pending'; });
-      setFileStatuses({ ...statuses });
-
-      for (const file of queuedFiles) {
-        setCurrentUploadName(file.name);
-        setCurrentUploadProgress(0);
-        setFileStatuses((prev) => ({ ...prev, [file.name]: 'uploading' }));
-
-        try {
-          await uploadWorkspaceFile(workspace.workspace_id, file, null, (pct: number) => {
-            setCurrentUploadProgress(pct);
-          });
-          setFileStatuses((prev) => ({ ...prev, [file.name]: 'done' }));
-        } catch (err: unknown) {
-          setFileStatuses((prev) => ({ ...prev, [file.name]: 'failed' }));
-          const e = err as { response?: { status?: number } };
-          if (e?.response?.status === 413) {
-            const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-            const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-            setProgressError(detail || `${file.name} is too large (${sizeMB} MB). Maximum upload size is 250 MB.`);
-          }
-        }
-      }
-    }
-
-    setCreationStep('done');
-  };
-
-  // ---- Retry (after error) ----
-
-  const handleRetry = () => {
-    if (createdWorkspace) {
-      // Workspace already created, retry uploads
-      retryUploads(createdWorkspace);
-    } else {
-      // Retry from scratch
-      handleSubmit(new Event('submit'));
-    }
-  };
-
-  const retryUploads = async (workspace: CreatedWorkspace) => {
+  const runUploads = async (workspace: Workspace) => {
     setCreationStep('uploading');
     setProgressError(null);
 
     const statuses: Record<string, FileUploadStatus> = {};
     queuedFiles.forEach((f) => { statuses[f.name] = 'pending'; });
     setFileStatuses({ ...statuses });
+    // The blocking start also attaches a new folder on an already-running
+    // computer. Retry must repeat it if the previous start failed.
+    try {
+      await startWorkspace(workspace.workspace_id);
+    } catch (err: unknown) {
+      setProgressError(denialMessage(err, t));
+      setCreationStep('error');
+      return;
+    }
+    let failed = false;
 
     for (const file of queuedFiles) {
       setCurrentUploadName(file.name);
@@ -216,16 +170,68 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
         });
         setFileStatuses((prev) => ({ ...prev, [file.name]: 'done' }));
       } catch (err: unknown) {
+        failed = true;
         setFileStatuses((prev) => ({ ...prev, [file.name]: 'failed' }));
         const e = err as { response?: { status?: number } };
         if (e?.response?.status === 413) {
           const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-          setProgressError(`${file.name} is too large (${sizeMB} MB). Maximum upload size is 250 MB.`);
+          const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+          setProgressError(detail || t('workspace.fileTooLarge', { name: file.name, size: sizeMB }));
+        } else {
+          setProgressError(denialMessage(err, t));
         }
       }
     }
 
-    setCreationStep('done');
+    // The workspace exists either way; 'error' keeps the reason and the
+    // retry on screen instead of a bare failed count.
+    setCreationStep(failed ? 'error' : 'done');
+  };
+
+  const handleSubmit = async (e: React.FormEvent | Event) => {
+    e.preventDefault();
+    if (!name.trim() || submitting || preparingTarget) {
+      if (!name.trim()) setError(t('workspace.workspaceNameRequired'));
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    let workspace: Workspace;
+    try {
+      workspace = await onCreate({
+        name: name.trim(),
+        description: description.trim(),
+        ...(choosesComputer && target ? { computerId: target.computer_id } : {}),
+      });
+    } catch (err: unknown) {
+      // A refusal keeps the user on the form with their input intact. On a 429
+      // the sentence is the quota service's, relayed as it arrived.
+      setSubmitting(false);
+      setError(createWorkspaceDenialMessage(err, t));
+      return;
+    }
+
+    setCreatedWorkspace(workspace);
+    setSubmitting(false);
+
+    // Nothing to provision and nothing to upload: the workspace exists, so
+    // open it rather than showing a progress screen with nothing on it.
+    if (queuedFiles.length === 0) {
+      resetAndClose();
+      onComplete?.(workspace);
+      return;
+    }
+
+    setPhase('progress');
+    await runUploads(workspace);
+  };
+
+  // ---- Retry (after an upload failure) ----
+
+  const handleRetry = () => {
+    if (createdWorkspace) void runUploads(createdWorkspace);
   };
 
   // ---- Reset & close ----
@@ -233,11 +239,12 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   const resetAndClose = () => {
     setName('');
     setDescription('');
-    setDescMode('agent');
     setQueuedFiles([]);
     setError(null);
+    setPickedComputerId(null);
     setPhase('form');
-    setCreationStep('creating');
+    setCreationStep('uploading');
+    setSubmitting(false);
     setFileStatuses({});
     setCurrentUploadProgress(0);
     setCurrentUploadName('');
@@ -247,15 +254,15 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
   };
 
   const handleOpenWorkspace = () => {
-    const wsId = createdWorkspace?.workspace_id;
+    const workspace = createdWorkspace;
     resetAndClose();
-    if (wsId && onComplete) onComplete(wsId);
+    if (workspace) onComplete?.(workspace);
   };
 
   // ---- Computed ----
 
-  const isInProgress = phase === 'progress' && (creationStep === 'creating' || creationStep === 'uploading');
-  const canClose = !isInProgress;
+  const isInProgress = phase === 'progress' && creationStep === 'uploading';
+  const canClose = !isInProgress && !submitting;
 
   const failedCount = Object.values(fileStatuses).filter((s) => s === 'failed').length;
   const doneCount = Object.values(fileStatuses).filter((s) => s === 'done').length;
@@ -270,7 +277,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
           {/* Header */}
           <div className="cwm-header">
             <h2 className="cwm-title">
-              {creationStep === 'done' ? t('workspace.workspaceReady') : t('workspace.creatingWorkspace')}
+              {creationStep === 'done' ? t('workspace.workspaceReady') : t('workspace.uploadingFiles')}
             </h2>
             {canClose && (
               <button className="cwm-close-btn" onClick={handleOpenWorkspace}>
@@ -280,33 +287,16 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
           </div>
 
           <div className="cwm-progress">
-            {/* Steps */}
+            {/* The upload operation includes preparing its destination. */}
             <div className="cwm-steps">
-              {/* Step 1: Initialize */}
               <StepRow
-                label={t('workspace.initializingWorkspace')}
+                label={t('workspace.uploadingFiles')}
                 status={
-                  creationStep === 'creating' ? 'active'
-                    : creationStep === 'error' && !createdWorkspace ? 'error'
-                      : 'done'
+                  creationStep === 'uploading' ? 'active'
+                    : creationStep === 'done' ? (failedCount > 0 ? 'error' : 'done')
+                      : 'error'
                 }
               />
-
-              {/* Step 2: Upload (only if files queued) */}
-              {queuedFiles.length > 0 && (
-                <StepRow
-                  label={t('workspace.uploadingFiles')}
-                  status={
-                    creationStep === 'uploading' ? 'active'
-                      : creationStep === 'done' ? (failedCount > 0 ? 'error' : 'done')
-                        : creationStep === 'creating' ? 'pending'
-                          : creationStep === 'error' && createdWorkspace ? 'error'
-                            : 'pending'
-                  }
-                />
-              )}
-
-              {/* Step 3: Ready */}
               <StepRow
                 label={t('workspace.ready')}
                 status={creationStep === 'done' ? 'done' : 'pending'}
@@ -363,7 +353,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
               )}
               {creationStep === 'error' && (
                 <>
-                  <button className="cwm-btn-cancel" onClick={resetAndClose}>{t('common.cancel')}</button>
+                  <button className="cwm-btn-cancel" disabled={submitting} onClick={resetAndClose}>{t('common.cancel')}</button>
                   <button className="cwm-btn-create" onClick={handleRetry}>{t('common.retry')}</button>
                 </>
               )}
@@ -376,12 +366,12 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
   // =========== FORM PHASE ===========
   return (
-    <div className="cwm-overlay" onClick={resetAndClose}>
+    <div className="cwm-overlay" onClick={() => { if (canClose) resetAndClose(); }}>
       <div className="cwm-modal" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="cwm-header">
           <h2 className="cwm-title">{t('workspace.createNewWorkspace')}</h2>
-          <button className="cwm-close-btn" onClick={resetAndClose}>
+          <button className="cwm-close-btn" disabled={!canClose} onClick={resetAndClose}>
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -396,7 +386,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
             <Input
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => setName(clampWorkspaceName(e.target.value))}
               placeholder={t('workspace.enterWorkspaceName')}
               className="w-full"
               style={{
@@ -408,40 +398,59 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
             />
           </div>
 
-          {/* Description mode toggle */}
           <div className="cwm-field">
             <label className="cwm-label">
               {t('common.description')} <span className="cwm-label-optional">{t('common.optional')}</span>
             </label>
-            <div className="cwm-toggle-group">
-              <button
-                type="button"
-                className={`cwm-toggle-btn ${descMode === 'agent' ? 'cwm-toggle-btn--active' : ''}`}
-                onClick={() => { setDescMode('agent'); setDescription(''); }}
-              >
-                {t('workspace.descModeAgent')}
-              </button>
-              <button
-                type="button"
-                className={`cwm-toggle-btn ${descMode === 'manual' ? 'cwm-toggle-btn--active' : ''}`}
-                onClick={() => setDescMode('manual')}
-              >
-                {t('workspace.descModeManual')}
-              </button>
-            </div>
-            {descMode === 'manual' ? (
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder={t('workspace.enterWorkspaceDesc')}
-                rows={3}
-                className="cwm-textarea"
-                style={{ marginTop: 8 }}
-              />
-            ) : (
-              <div className="cwm-toggle-hint">{t('workspace.descModeAgentHint')}</div>
-            )}
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t('workspace.enterWorkspaceDesc')}
+              rows={3}
+              className="cwm-textarea"
+            />
           </div>
+
+          {choosesComputer && (
+            <div className="cwm-field">
+              <label className="cwm-label" htmlFor={computerFieldId}>
+                {t('computer.computerLabel', 'Computer')}
+              </label>
+              <Select
+                id={computerFieldId}
+                value={target?.computer_id ?? ''}
+                onChange={(e) => setPickedComputerId(e.target.value)}
+                disabled={submitting}
+              >
+                {computers.map((c) => (
+                  <option key={c.computer_id} value={c.computer_id} disabled={!takesWorkspaces(c)}>
+                    {computerOptionLabel(t, c, sourceOf(c))}
+                  </option>
+                ))}
+              </Select>
+              <div className="cwm-field-hint">
+                {t(
+                  'computer.computerHint',
+                  'Workspaces on one computer share its disk and start and stop together.',
+                )}
+              </div>
+            </div>
+          )}
+
+          {preparingTarget && (
+            <div className="cwm-notice" role="status">
+              <span aria-hidden="true" className="cwm-notice-glyph">
+                <Loader size={12} className="text-(--color-accent-primary)" />
+              </span>
+              <span>
+                {t(
+                  'computer.prepare.blocksWorkspace',
+                  "{{name}} is being prepared. You can create a workspace on it once it's ready.",
+                  { name: preparingTarget.name },
+                )}
+              </span>
+            </div>
+          )}
 
           {/* File dropzone */}
           <div className="cwm-dropzone-wrapper">
@@ -478,7 +487,7 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
                   <div key={file.name} className="cwm-file-item">
                     <FileText className="h-4 w-4 cwm-file-icon" />
                     <span className="cwm-file-name">{file.name}</span>
-                    <span className="cwm-file-size">{formatFileSize(file.size)}</span>
+                    <span className="cwm-file-size">{formatBytes(file.size, locale)}</span>
                     <button
                       type="button"
                       className="cwm-file-remove"
@@ -497,11 +506,23 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
 
           {/* Actions */}
           <div className="cwm-actions">
-            <button type="button" className="cwm-btn-cancel" onClick={resetAndClose}>
+            <button type="button" className="cwm-btn-cancel" disabled={submitting} onClick={resetAndClose}>
               {t('common.cancel')}
             </button>
-            <button type="submit" className="cwm-btn-create" disabled={!name.trim()}>
-              {t('common.create')}
+            <button
+              type="submit"
+              className="cwm-btn-create"
+              disabled={!name.trim() || submitting || !!preparingTarget}
+              aria-busy={submitting}
+            >
+              {submitting ? (
+                <>
+                  <Loader size={12} className="text-current" />
+                  {t('workspace.creating', 'Creating...')}
+                </>
+              ) : (
+                t('common.create')
+              )}
             </button>
           </div>
         </form>
@@ -553,3 +574,15 @@ function StepRow({ label, status }: StepRowProps) {
 }
 
 export default CreateWorkspaceModal;
+
+/** A machine as the picker lists it: its name, what it runs on where that tells it apart, and whether it is the primary or still preparing. */
+function computerOptionLabel(t: TFunction, computer: Computer, source: string | null): string {
+  const name = source ? t('computer.nameWithSource', '{{name}} · {{source}}', { name: computer.name, source }) : computer.name;
+  const preparing = isComputerPreparing(computer);
+  if (computer.is_primary) {
+    return preparing
+      ? t('computer.primaryPreparingOption', '{{name}} (Primary, Preparing)', { name })
+      : t('computer.primaryOption', '{{name}} (Primary)', { name });
+  }
+  return preparing ? t('computer.preparingOption', '{{name}} (Preparing)', { name }) : name;
+}

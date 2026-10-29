@@ -9,6 +9,7 @@ these exact strings. This is that guard.
 
 import re
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -27,9 +28,13 @@ LIFECYCLE_TYPES = {
     "run_settled",
     "thread_title",
     "thread_pinned",
+    "thread_subagents",
+    "thread_tuning",
     "thread_deleted",
     "thread_archived",
     "thread_unarchived",
+    "automation_waiting",
+    "automation_waiting_ended",
 }
 
 
@@ -69,6 +74,50 @@ def test_every_pinned_type_builds_the_one_wire_shape(type_name):
         "interrupt_reason",
     }
     assert event["v"] == thread_lifecycle_feed.EVENT_VERSION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting", [True, False])
+async def test_automation_wait_events_name_their_firing(waiting):
+    with patch.object(thread_lifecycle_feed, "publish_user_event", AsyncMock()) as sent:
+        await thread_lifecycle_feed.publish_automation_wait(
+            user_id="user-1",
+            thread_id="t-1",
+            automation_execution_id="exec-1",
+            waiting=waiting,
+        )
+    user_id, event = sent.await_args.args
+    assert user_id == "user-1"
+    assert event["type"] == (
+        "automation_waiting" if waiting else "automation_waiting_ended"
+    )
+    assert event["automation_execution_id"] == "exec-1"
+    assert set(event) == {
+        "v",
+        "type",
+        "thread_id",
+        "workspace_id",
+        "run_id",
+        "run_seq",
+        "status",
+        "interrupt_reason",
+        "automation_execution_id",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False, None])
+async def test_subagent_switch_event_carries_the_switch(allowed):
+    with patch.object(thread_lifecycle_feed, "publish_user_event", AsyncMock()) as sent:
+        await thread_lifecycle_feed.publish_thread_subagents(
+            user_id="user-1", thread_id="t-1", workspace_id="ws-1", allowed=allowed
+        )
+    user_id, event = sent.await_args.args
+    assert user_id == "user-1"
+    assert event["type"] == "thread_subagents"
+    # Present even as null, which tells a tab the thread follows the default.
+    assert "subagents_allowed" in event
+    assert event["subagents_allowed"] is allowed
 
 
 def test_interrupt_reason_is_nulled_off_the_interrupted_status():

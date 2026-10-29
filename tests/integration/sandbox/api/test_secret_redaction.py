@@ -6,13 +6,13 @@ then verifies that read and download endpoints redact them.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from src.server.utils.secret_redactor import SecretRedactor
 
-from .conftest import TEST_WS_ID
+from .conftest import TEST_PROJECT, TEST_WS_ID
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -45,7 +45,7 @@ class TestReadFileRedaction:
         # Write a file containing the secret to the sandbox
         content = f"API_KEY={_SECRET_VALUE}\nother_data=safe"
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/env_leak.txt", content.encode()
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/env_leak.txt", content.encode()
         )
 
         with patch("src.server.app.workspace_files.crud.get_redactor", return_value=mock_redactor):
@@ -67,7 +67,7 @@ class TestReadFileRedaction:
 
         content = "just normal data"
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/normal.txt", content.encode()
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/normal.txt", content.encode()
         )
 
         empty_redactor = SecretRedactor.__new__(SecretRedactor)
@@ -93,7 +93,7 @@ class TestDownloadFileRedaction:
 
         content = f"secret={_SECRET_VALUE}"
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/config.txt", content.encode()
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/config.txt", content.encode()
         )
 
         with patch("src.server.app.workspace_files.crud.get_redactor", return_value=mock_redactor):
@@ -113,7 +113,7 @@ class TestDownloadFileRedaction:
         # even if the bytes happen to contain the secret string
         binary_with_secret = b"\x89PNG" + _SECRET_VALUE.encode()
         await sandbox.aupload_file_bytes(
-            f"{sandbox._work_dir}/data/chart.png", binary_with_secret
+            f"{sandbox.workspace(TEST_PROJECT).workspace}/data/chart.png", binary_with_secret
         )
 
         with patch("src.server.app.workspace_files.crud.get_redactor", return_value=mock_redactor):

@@ -1,0 +1,308 @@
+/* Plugins → Subagents. Cells, the detail page and its side column come from
+   the page's own vocabulary (surface.css, pluginsPage.css); this file holds
+   only what a subagent has that nothing else on the page does: its text
+   fields, its tool switches with the settings nested under them, the
+   Preferred chips, and the Start from grid. */
+
+/* A cell's meta: the model, or the problem. */
+.sa-meta { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.sa-meta .surface-dot { flex-shrink: 0; }
+/* The name is the handle, so it stays whole and the meta takes the cut:
+   shrinking both, however unevenly, still trims the name by a pixel and
+   ends it in an ellipsis. */
+.surface-cell-l1:has(> .surface-cell-meta > .sa-meta) > .surface-cell-open {
+  flex-shrink: 0;
+  max-width: 100%;
+}
+.sa-attn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-warning);
+}
+
+/* A built-in's note above its read-only instructions: body text, since
+   nothing is wrong, with the way to own a copy at its end. */
+.sa-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  font-size: 0.78125rem;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.sa-banner > svg { flex-shrink: 0; width: 14px; height: 14px; margin-top: 2px; color: var(--color-text-tertiary); }
+.sa-banner > p { flex: 1; min-width: 0; margin: 0; }
+.sa-banner-action {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+.sa-banner-action:hover { text-decoration: underline; text-underline-offset: 2px; }
+.sa-banner-action:focus-visible { outline: none; border-radius: 4px; box-shadow: 0 0 0 2px var(--color-focus-ring); }
+@media (max-width: 767px) {
+  .sa-banner { flex-wrap: wrap; }
+  .sa-banner > p { flex-basis: calc(100% - 24px); }
+  .sa-banner-action { margin-left: 24px; }
+}
+
+/* Main column: When to use, Instructions, Save. */
+.sa-fields { display: flex; flex-direction: column; gap: 22px; }
+.sa-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: 8px;
+}
+.sa-field-head > label,
+.sa-field-head > h3 {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.sa-field-aside {
+  min-width: 0;
+  font-size: 0.71875rem;
+  line-height: 1.45;
+  text-align: right;
+  color: var(--color-text-quaternary);
+}
+.sa-field-aside.is-warn { color: var(--color-warning); }
+.sa-field-aside.is-over { color: var(--color-loss); }
+.sa-input {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  font-family: var(--font-content);
+  font-size: 0.84375rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+.sa-input::placeholder { color: var(--color-text-quaternary); }
+.sa-input:disabled { opacity: 0.6; }
+.sa-input.is-code {
+  min-height: 300px;
+  font-family: var(--font-mono);
+  font-size: 0.78125rem;
+  line-height: 1.65;
+}
+.sa-input.is-name { resize: none; font-family: var(--font-mono); font-size: 0.8125rem; }
+.sa-field-error { margin-top: 6px; font-size: 0.75rem; line-height: 1.45; color: var(--color-loss); }
+.sa-savebar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.sa-savebar-note { font-size: 0.75rem; color: var(--color-text-quaternary); }
+.sa-savebar-note.is-warn { color: var(--color-warning); }
+.sa-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-muted);
+  font-size: 0.78125rem;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.sa-conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* A base's read-only instructions. */
+.sa-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.71875rem;
+  color: var(--color-text-quaternary);
+}
+.sa-readonly svg { width: 12px; height: 12px; }
+
+/* Side column */
+.sa-switches { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.sa-nest {
+  display: block;
+  padding: 2px 0 2px 12px;
+  border-left: 1px solid var(--color-border-muted);
+}
+.sa-nest-list { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.sa-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+}
+.sa-search-label { font-size: 0.71875rem; color: var(--color-text-secondary); white-space: nowrap; }
+.sa-search-hint {
+  grid-column: 1 / -1;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: var(--color-text-tertiary);
+}
+.sa-search-hint.is-warn { color: var(--color-warning); }
+.sa-hint { margin: 10px 0 0; font-size: 0.71875rem; line-height: 1.5; color: var(--color-text-tertiary); }
+.sa-hint.is-warn { color: var(--color-warning); }
+.sa-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.sa-link:hover { color: var(--color-text-primary); }
+.sa-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.sa-preset:hover,
+.sa-preset[data-state="open"] { color: var(--color-text-primary); }
+.sa-preset svg { width: 12px; height: 12px; }
+
+/* Preferred */
+.sa-sublabel { margin: 0 0 6px; font-size: 0.71875rem; color: var(--color-text-secondary); }
+.sa-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.sa-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 2px 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  color: var(--color-text-primary);
+}
+.sa-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sa-chip.is-missing > span { color: var(--color-warning); }
+.sa-chip.is-off > span { color: var(--color-text-quaternary); text-decoration: line-through; }
+.sa-chip > button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-text-quaternary);
+  cursor: pointer;
+}
+.sa-chip > button:hover { color: var(--color-text-primary); background: var(--color-bg-elevated); }
+.sa-chip > button svg { width: 12px; height: 12px; }
+.sa-chip-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px dashed var(--color-border-default);
+  background: none;
+  font-size: 0.71875rem;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.sa-chip-add:hover,
+.sa-chip-add[data-state="open"] { color: var(--color-text-primary); }
+.sa-chip-add svg { width: 12px; height: 12px; }
+.sa-add-menu { max-height: 280px; overflow-y: auto; }
+
+.sa-checks { display: flex; flex-direction: column; gap: 8px; font-size: 0.78125rem; color: var(--color-text-primary); }
+
+/* Info: a path is worth reading whole, so it wraps rather than ellipsizes. */
+/* Facts here are lists (tools, who it's available to), which wrap rather
+   than end in an ellipsis. */
+.sa-facts .detail-facts dd { white-space: normal; }
+.sa-file {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.71875rem;
+  line-height: 1.6;
+}
+
+/* New subagent: the Start from grid above the two columns. */
+/* Until it has a name, the heading is a placeholder for one. */
+.sa-new.is-unnamed .detail-head h1 { color: var(--color-text-tertiary); }
+.sa-start-title {
+  margin: 0 0 10px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.sa-start { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 8px; }
+.sa-start-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-muted);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sa-start-card:hover { background: var(--color-bg-subtle); }
+.sa-start-card[aria-checked="true"] {
+  border-color: var(--color-text-tertiary);
+  background: var(--color-bg-subtle);
+}
+.sa-start-text { flex: 1; min-width: 0; }
+.sa-start-l1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.sa-start-name { flex-shrink: 0; font-size: 0.8125rem; font-weight: 500; color: var(--color-text-primary); }
+.sa-start-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.71875rem;
+  color: var(--color-text-quaternary);
+}
+.sa-start-l2 {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.sa-blank-mark {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px dashed var(--color-border-default);
+  color: var(--color-text-tertiary);
+}
+.sa-blank-mark svg { width: 16px; height: 16px; }
+
+@media (max-width: 640px) {
+  .sa-field-head { flex-wrap: wrap; }
+  .sa-field-aside { text-align: left; }
+}

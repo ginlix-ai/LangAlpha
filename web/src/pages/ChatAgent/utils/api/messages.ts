@@ -4,49 +4,135 @@
  */
 import { api } from '@/api/client';
 import type { WorkflowRunStatus } from '@/types/api';
-import type { CancelOutcome } from '../cancelOutcome';
+import type { CancelOutcome, HeldSteer } from '../cancelOutcome';
+import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
 
-export async function replayThreadHistory(threadId: string, onEvent: (event: Record<string, unknown>) => void = () => {}) {
+/**
+ * Which part of the history a replay covers. With neither bound the server
+ * replays the whole thread; with either it opens on a `history_page` event
+ * saying where the page starts and whether older turns remain.
+ */
+export interface ReplayPageRequest {
+  /** The newest this many checkpointed turns (before `beforeTurn` if given). */
+  limit?: number;
+  /** Only turns older than this one: the previous page's first turn. */
+  beforeTurn?: number;
+  signal?: AbortSignal;
+}
+
+export async function replayThreadHistory(
+  threadId: string,
+  onEvent: (event: Record<string, unknown>) => void = () => {},
+  { limit, beforeTurn, signal }: ReplayPageRequest = {},
+) {
   if (!threadId) throw new Error('Thread ID is required');
+  const params = new URLSearchParams();
+  if (limit != null) params.set('limit', String(limit));
+  if (beforeTurn != null) params.set('before_turn', String(beforeTurn));
+  const query = params.toString();
   const authHeaders = await getAuthHeaders();
-  await streamFetch(`/api/v1/threads/${threadId}/messages/replay`, { method: 'GET', headers: { ...authHeaders } }, onEvent);
+  return await streamFetch(
+    `/api/v1/threads/${threadId}/messages/replay${query ? `?${query}` : ''}`,
+    { method: 'GET', headers: { ...authHeaders }, signal },
+    onEvent,
+  );
+}
+
+/**
+ * Thread settings stored on the thread a send creates. A send to an existing
+ * thread leaves them alone: there they change only through PATCH /threads/{id}.
+ */
+export interface SendThreadSettings {
+  subagentsAllowed?: boolean;
+}
+
+type OnStreamEvent = (event: Record<string, unknown>) => void;
+
+/** What a send and a resume both carry besides their message. */
+interface StreamTurnOptions {
+  onEvent?: OnStreamEvent;
+  llmModel?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+  /** Called with the run id from the response headers, before the first
+   *  event, so a disconnect that early still knows which run to rejoin. */
+  onRunIdResolved?: ((runId: string, threadId: string | null) => void) | null;
+  signal?: AbortSignal | null;
+  requestKey?: string | null;
+}
+
+export interface SendChatMessageOptions extends StreamTurnOptions {
+  additionalContext?: Record<string, unknown>[] | string | null;
+  locale?: string;
+  timezone?: string;
+  checkpointId?: string | null;
+  forkFromTurn?: number | null;
+  /** On a fork, the thread's newest run as this view saw it: the server
+   *  refuses the fork as stale when another run came since. */
+  expectedLatestRunId?: string | null;
+  platform?: string | null;
+  threadSettings?: SendThreadSettings;
+  /** Only steer a running turn: with none running the server refuses the
+   *  send as `not_running` instead of starting one. */
+  steerOnly?: boolean;
+}
+
+export type SendHitlResponseOptions = StreamTurnOptions;
+
+// A steer's POST answers once admission decides: at once while a turn runs,
+// but held while a compaction finishes (the server's
+// `admission_compaction_wait_timeout`, 260s by default) or a stopping turn
+// tears down. The bound sits past those so a held steer is not taken for a
+// failed one, and a link that never answers fails it, through the failed
+// path, rather than holding the refused steers queued behind it forever.
+const STEER_ANSWER_TIMEOUT_MS = 300_000;
+
+/** `signal` with a deadline. Rejects as a `TimeoutError`, which no caller reads as a stop. */
+function withDeadline(signal: AbortSignal | null, ms: number): AbortSignal {
+  const deadline = AbortSignal.timeout(ms);
+  if (!signal) return deadline;
+  const either = new AbortController();
+  for (const s of [signal, deadline]) {
+    if (s.aborted) either.abort(s.reason);
+    else s.addEventListener('abort', () => either.abort(s.reason), { once: true });
+  }
+  return either.signal;
 }
 
 export async function sendChatMessageStream(
   message: string,
   workspaceId: string,
   threadId: string | null = null,
-  messageHistory: Array<{ role: string; content: string }> = [],
-  planMode: boolean = false,
-  onEvent: (event: Record<string, unknown>) => void = () => {},
-  additionalContext: Record<string, unknown>[] | string | null = null,
-  agentMode: string = 'ptc',
-  locale: string = 'en-US',
-  timezone: string = 'America/New_York',
-  checkpointId: string | null = null,
-  forkFromTurn: number | null = null,
-  llmModel: string | null = null,
-  reasoningEffort: string | null = null,
-  fastMode: boolean | null = null,
-  platform: string | null = null,
-  onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
-  signal: AbortSignal | null = null,
-  requestKey: string | null = null,
+  {
+    onEvent = () => {},
+    additionalContext = null,
+    locale = 'en-US',
+    timezone = 'America/New_York',
+    checkpointId = null,
+    forkFromTurn = null,
+    expectedLatestRunId = null,
+    llmModel = null,
+    reasoningEffort = null,
+    fastMode = null,
+    platform = null,
+    onRunIdResolved = null,
+    signal = null,
+    requestKey = null,
+    threadSettings = {},
+    steerOnly = false,
+  }: SendChatMessageOptions = {},
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
-  const messages = checkpointId && !message
-    ? []
-    : [...messageHistory, { role: 'user', content: message }];
+  const messages = checkpointId && !message ? [] : [{ role: 'user', content: message }];
   const body: Record<string, unknown> = {
     workspace_id: workspaceId,
     messages,
-    agent_mode: agentMode,
-    plan_mode: planMode,
     locale,
     timezone,
   };
   if (requestKey) body.request_key = requestKey;
+  if (steerOnly) body.steer_only = true;
   if (additionalContext) {
     body.additional_context = additionalContext;
   }
@@ -55,17 +141,23 @@ export async function sendChatMessageStream(
   }
   if (forkFromTurn != null) {
     body.fork_from_turn = forkFromTurn;
+    if (expectedLatestRunId) body.expected_latest_run_id = expectedLatestRunId;
   }
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-  if (fastMode) body.fast_mode = true;
+  if (fastMode != null) body.fast_mode = fastMode;
   if (platform) body.platform = platform;
+  if (threadSettings.subagentsAllowed !== undefined) body.subagents_allowed = threadSettings.subagentsAllowed;
   // Use /threads/{id}/messages for existing thread, /threads/messages for new
   const isNewThread = !threadId || threadId === '__default__';
   const url = isNewThread
     ? '/api/v1/threads/messages'
     : `/api/v1/threads/${threadId}/messages`;
-  return await postSSEStream(url, body, { onEvent, onRunIdResolved, signal });
+  return await postSSEStream(url, body, {
+    onEvent,
+    onRunIdResolved,
+    signal: steerOnly ? withDeadline(signal, STEER_ANSWER_TIMEOUT_MS) : signal,
+  });
 }
 
 /**
@@ -73,7 +165,9 @@ export async function sendChatMessageStream(
  * (v4 attempt chain). The backend validates the target is still the latest
  * attempt and resolves the retry checkpoint itself — no client-side
  * checkpoint fetch, no fork/truncation. Streams the same SSE contract as a
- * normal send.
+ * normal send. `runId` names the failed run, so the server refuses it (409)
+ * rather than retry a different turn's attempt. `additionalContext` is the
+ * failed send's, which the server uses only when that message runs again.
  */
 export async function sendRetryStream(
   workspaceId: string,
@@ -85,17 +179,21 @@ export async function sendRetryStream(
   onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
   signal: AbortSignal | null = null,
   requestKey: string | null = null,
+  runId: string | null = null,
+  additionalContext: Record<string, unknown>[] | null = null,
 ) {
   const body: Record<string, unknown> = { workspace_id: workspaceId };
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
-  if (fastMode) body.fast_mode = true;
+  if (fastMode != null) body.fast_mode = fastMode;
   if (requestKey) body.request_key = requestKey;
+  if (runId) body.run_id = runId;
+  if (additionalContext) body.additional_context = additionalContext;
   return await postSSEStream(`/api/v1/threads/${threadId}/retry`, body, { onEvent, onRunIdResolved, signal });
 }
 
 export { isNoOpCancellation } from '../cancelOutcome';
-export type { CancelNoOpState, CancelOutcome } from '../cancelOutcome';
+export type { CancelNoOpState, CancelOutcome, HeldSteer } from '../cancelOutcome';
 
 /**
  * Hard-cancel the workflow for a thread (stops the main agent AND kills all
@@ -118,7 +216,7 @@ export async function cancelWorkflow(
   runId: string | null = null,
 ): Promise<CancelOutcome> {
   if (!threadId) throw new Error('Thread ID is required');
-  // Bound the request: the shared axios instance sets no global timeout, so a
+  // Bound the request: the shared API client sets no global timeout, so a
   // network-level hang (not a 4xx) would block each stopWorkflow retry until the
   // browser's ~60s default — delaying the "couldn't stop" toast by minutes. 5s
   // is ample for a cancel POST.
@@ -146,8 +244,36 @@ interface ThreadReportBackStatus {
   // Live tail-subagent writers on a PTC thread (producer-undecided signal):
   // a task report-back only becomes `pending` once its subagent completes, so
   // while this list is non-empty an `idle` read must not be taken as drained.
-  // Optional: older backends and the flash slice omit it.
+  // Optional: older backends and a dispatching thread's slice omit it.
   active_tasks?: string[];
+  // The thread's background commands still running. Each one's end can start
+  // a turn of its own, so they keep the watch armed, but owe nothing the tray
+  // names: their rows are there. Optional: older backends omit it.
+  active_commands?: string[];
+  // The dispatched threads still owed, oldest first; null when the read
+  // failed. [] can come with a pending report: a PTC thread's slice names the
+  // analysts its hand-offs went to but not its own subagents, and a thread in
+  // a deleted workspace or another owner's has no label. Optional: older
+  // backends omit it.
+  owed_threads?: ReportBackOwedThread[] | null;
+  // Whose reports are owed, so the tray names what it waits on; null when the
+  // read failed. Optional: older backends omit it.
+  owed_report_kinds?: OwedReportKind[] | null;
+}
+
+/** Whose report a thread is owed: a subagent's, a background command's, or
+ *  an Analyst's. */
+export type OwedReportKind = 'task' | 'command' | 'analyst';
+
+/** What a status read in hand says is owed, which an arm seeds the watch with. */
+export type OwedReportsRead = Pick<Partial<ThreadReportBackStatus>, 'owed_threads' | 'owed_report_kinds'>;
+
+/** A dispatched thread that has yet to report back to the thread that sent it. */
+export interface ReportBackOwedThread {
+  thread_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  title: string | null;
 }
 
 // Decoding lives in a dependency-free module (usable where `./api` is mocked);
@@ -155,6 +281,9 @@ interface ThreadReportBackStatus {
 export { decodeReportBackSignal, shouldArmReportBack } from '../reportBackSignal';
 
 export type { ReportBackSignal } from '../reportBackSignal';
+
+/** Tokens a thread has used, as the server counts them. */
+export type ThreadTokenTotals = { input_tokens: number; output_tokens: number };
 
 /** Full workflow status for a thread (the `/status` response); the report-back
  *  fields are optional here (the full status may omit them). */
@@ -171,17 +300,28 @@ export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
   // older backends. The staleness signal for cached views whose missed run
   // already finished (can_reconnect=false carries no run_id to compare).
   latest_turn_index?: number | null;
+  // Tokens the thread has used, over every model call of every run except the
+  // live one, whose calls the reconnect replays from its stream. null when the
+  // backend's read failed.
+  token_totals?: ThreadTokenTotals | null;
+  // The user's steers an errored turn left queued, oldest first: the next
+  // turn on the thread reads them. Absent on older backends.
+  pending_steers?: HeldSteer[];
   [key: string]: unknown;
 };
 
 /**
  * Get the current status of a workflow for a thread
  * @param {string} threadId - The thread ID to check
+ * @param {number} [options.timeout] - Bound the read; the shared API client sets none
  * @returns {Promise<WorkflowStatusResponse>} Workflow status with can_reconnect, status, etc.
  */
-export async function getWorkflowStatus(threadId: string): Promise<WorkflowStatusResponse> {
+export async function getWorkflowStatus(
+  threadId: string,
+  options: { timeout?: number } = {},
+): Promise<WorkflowStatusResponse> {
   if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.get(`/api/v1/threads/${threadId}/status`);
+  const { data } = await api.get(`/api/v1/threads/${threadId}/status`, { timeout: options.timeout });
   return data;
 }
 
@@ -211,22 +351,93 @@ export interface DispatchLiveness {
   status: string;
   run_id: string | null;
   can_reconnect: boolean;
+  /** ISO start of the thread's latest run, live or settled. */
+  run_started_at?: string | null;
+  /** ISO time that run settled; null while it is live. */
+  run_finished_at?: string | null;
+  /** ISO time the thread's latest turn started or settled, whoever sent it. */
+  last_activity_at?: string | null;
+  /** The thread's title; null until it is named. */
+  title?: string | null;
+  /** The current name of the thread's workspace. */
+  workspace_name?: string | null;
+}
+
+/** A run read by its id beside the threads: one asked for, or the run that
+ *  took in a steer asked for. */
+export interface DispatchRunLiveness {
+  run_id: string;
+  thread_id: string;
+  /** The same public vocabulary as a thread's row. */
+  status: string;
+  run_started_at?: string | null;
+  /** Null while the run is live. */
+  run_finished_at?: string | null;
 }
 
 /**
- * Batched dispatch liveness for a turn's PTC cards: one request resolves the
- * status + run_id of many dispatched threads at once, replacing N per-card
- * `/status` polls. Foreign/unknown/expired ids are omitted from the response.
- * Returns `[]` without a request for an empty id list.
+ * A hand-off's steer into a run already going, read by its id: `taken` by the
+ * run it names, whose view is in `runs` whether it was asked for or not,
+ * `queued` until a run takes it in, or `dropped` once it settled with none.
  */
-export async function getDispatchLiveness(
-  threadIds: string[],
-): Promise<DispatchLiveness[]> {
-  if (!threadIds.length) return [];
-  const { data } = await api.get('/api/v1/threads/dispatches/liveness', {
-    params: { ids: threadIds.join(',') },
-  });
-  return (data?.liveness ?? []) as DispatchLiveness[];
+export interface DispatchSteerLiveness {
+  steer_id: string;
+  thread_id: string;
+  state: 'taken' | 'queued' | 'dropped';
+  /** Set exactly when the steer was taken. */
+  run_id: string | null;
+}
+
+/** One batched read: each thread's latest run, the runs asked for by id with
+ *  the run of each steer taken, and the steers asked for. */
+export interface HandoffLiveness {
+  liveness: DispatchLiveness[];
+  runs: DispatchRunLiveness[];
+  steers: DispatchSteerLiveness[];
+}
+
+/** What one liveness read asks about, by id: threads for their latest run,
+ *  runs on their own, and steers for the run that took each in. */
+export interface LivenessAsk {
+  threads: readonly string[];
+  runs: readonly string[];
+  steers: readonly string[];
+}
+
+/** The most ids of each kind the liveness route reads per request; it drops the rest. */
+const LIVENESS_IDS_PER_REQUEST = 100;
+
+/**
+ * Batched liveness for a turn's hand-offs: one request resolves the latest run
+ * of many dispatched threads, and any runs and steers named by id, at once,
+ * replacing N per-card `/status` polls. Foreign/unknown/expired ids are
+ * omitted from the response. Resolves empty without a request when nothing is
+ * asked.
+ */
+export async function getHandoffLiveness({ threads, runs, steers }: LivenessAsk): Promise<HandoffLiveness> {
+  const batches = Math.ceil(Math.max(threads.length, runs.length, steers.length) / LIVENESS_IDS_PER_REQUEST);
+  const pages = await Promise.all(Array.from({ length: batches }, async (_, i) => {
+    const start = i * LIVENESS_IDS_PER_REQUEST;
+    const page = (all: readonly string[]) => all.slice(start, start + LIVENESS_IDS_PER_REQUEST).join(',');
+    const [ids, runIds, steerIds] = [page(threads), page(runs), page(steers)];
+    const { data } = await api.get('/api/v1/threads/dispatches/liveness', {
+      params: {
+        ...(ids ? { ids } : {}),
+        ...(runIds ? { runs: runIds } : {}),
+        ...(steerIds ? { steers: steerIds } : {}),
+      },
+    });
+    return {
+      liveness: (data?.liveness ?? []) as DispatchLiveness[],
+      runs: (data?.runs ?? []) as DispatchRunLiveness[],
+      steers: (data?.steers ?? []) as DispatchSteerLiveness[],
+    };
+  }));
+  return {
+    liveness: pages.flatMap((p) => p.liveness),
+    runs: pages.flatMap((p) => p.runs),
+    steers: pages.flatMap((p) => p.steers),
+  };
 }
 
 // SSE event name of a report-back wake on GET /threads/{id}/watch. Contract:
@@ -241,7 +452,7 @@ const WATCH_SNAPSHOT_EVENT = 'watch_snapshot';
  * Watch a thread for new workflow activity via SSE (Redis pub/sub backed).
  * Returns an AbortController so the caller can close the connection.
  * Calls onWorkflowStarted(payload) when the backend signals a new workflow;
- * the payload carries the started run_id (e.g. a flash report-back run) so the
+ * the payload carries the started run_id (e.g. a Chief of Staff report-back run) so the
  * caller can attach to that exact run directly.
  * @param {string} threadId - The thread ID to watch
  * @param {Function} onWorkflowStarted - Callback when new workflow is detected
@@ -267,10 +478,20 @@ export function watchThread(
 ): { abort: AbortController } {
   const abort = new AbortController();
   const MAX_RETRIES = 2;
+  // One rotation per subscription, so a token the server keeps refusing cannot
+  // turn the retry budget into a burst of them.
+  let authRetried = false;
 
   (async () => {
     try {
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // The auth rotation below rides this loop but must not be paid for out of
+      // it: spending an iteration on it would leave a genuinely flaky network
+      // one retry instead of `MAX_RETRIES`. `authRetried` caps the extension at
+      // one, so the loop still terminates. Counted as an extra turn rather than
+      // by winding `attempt` back, because `attempt` is also what tells a
+      // re-subscribe from the first one for `onResubscribed`.
+      const lastAttempt = () => MAX_RETRIES + (authRetried ? 1 : 0);
+      for (let attempt = 0; attempt <= lastAttempt(); attempt++) {
         if (abort.signal.aborted) return;
         try {
           const authHeaders = await getAuthHeaders();
@@ -279,6 +500,18 @@ export function watchThread(
             headers: { ...authHeaders },
             signal: abort.signal,
           });
+
+          // `fetch` does not throw on an HTTP status, so an auth failure never
+          // reaches the catch below and never spends a retry -- the loop's
+          // budget is only ever available to network errors. Rotate the token
+          // this request actually carried and re-subscribe with whatever comes
+          // back. When nothing better is available the fall-through below ends
+          // the subscription, and the caller's own paced re-subscribe takes it
+          // from there rather than this loop spinning on a refused token.
+          if (res.status === 401 && !authRetried) {
+            authRetried = true;
+            if (await refreshAccessToken(bearerTokenOf(authHeaders.Authorization))) continue;
+          }
 
           if (!res.ok || !res.body) return;
 
@@ -353,7 +586,7 @@ export function watchThread(
           return; // Backend closed the stream (30-min cap / disconnect).
         } catch (err: unknown) {
           if ((err as Error).name === 'AbortError') return;
-          if (attempt < MAX_RETRIES) {
+          if (attempt < lastAttempt()) {
             await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
           }
         }
@@ -429,6 +662,7 @@ export async function openThreadMuxStream(
   onLine: (line: string) => void,
   signal: AbortSignal,
   sinceAgeS = 0,
+  openTurn = false,
 ): Promise<void> {
   if (!threadId) throw new Error('Thread ID is required');
   const authHeaders = await getAuthHeaders();
@@ -436,6 +670,8 @@ export async function openThreadMuxStream(
   // Knowledge-horizon age: how far the client's snapshot/last-frame lags
   // this connect. The server widens its settled-run catch-up window by it.
   if (sinceAgeS > 0) qs += `&since_age_s=${Math.ceil(sinceAgeS)}`;
+  // Drain the executing turn's settled runs, which no history load holds.
+  if (openTurn) qs += '&open_turn=true';
   const res = await fetch(
     `${baseURL}/api/v1/threads/${threadId}/stream?contract=v2${qs}`,
     {
@@ -470,14 +706,15 @@ export async function openThreadMuxStream(
  * @param {string} threadId - The thread ID
  * @param {string} taskId - The subagent task ID (e.g., 'k7Xm2p')
  * @param {string} content - The instruction to send
- * @returns {Promise<Object>} { success, tool_call_id, display_id, queue_position }
+ * @param {string} inputId - The caller's id for it, echoed by the frame that delivers or returns it
+ * @returns {Promise<Object>} { success, tool_call_id, display_id, queue_position, input_id }
  */
-export async function sendSubagentMessage(threadId: string, taskId: string, content: string) {
+export async function sendSubagentMessage(threadId: string, taskId: string, content: string, inputId: string) {
   if (!threadId) throw new Error('Thread ID is required');
   if (!taskId) throw new Error('Task ID is required');
   const { data } = await api.post(
     `/api/v1/threads/${threadId}/tasks/${taskId}/messages`,
-    { content }
+    { content, input_id: inputId }
   );
   return data;
 }
@@ -491,7 +728,20 @@ export async function sendSubagentMessage(threadId: string, taskId: string, cont
 export async function getSubagentTaskStatus(
   threadId: string,
   taskId: string,
-): Promise<{ task_id: string; status: string | null; error: string | null }> {
+): Promise<{
+  task_id: string;
+  status: string | null;
+  error: string | null;
+  last_activity_ms?: number | null;
+  /** The latest run's id, which its facts are filed under beside the ones
+   *  the stream and replay found. */
+  run_id?: string | null;
+  /** The latest run's ledger bounds (epoch ms); no finish while it runs. */
+  started_ms?: number | null;
+  finished_ms?: number | null;
+  /** That run's model, present only when it was not its launcher's. */
+  model?: { id: string; provider: string };
+}> {
   const { data } = await api.get(
     `/api/v1/threads/${threadId}/tasks/${taskId}/status`,
   );
@@ -544,37 +794,32 @@ export async function listWorkspaceFiles(
 }
 
 /**
- * Send an HITL (Human-in-the-Loop) resume response to continue an interrupted workflow.
- * Used after the agent triggers a plan-mode interrupt and the user approves or rejects.
- *
- * @param {string} workspaceId - The workspace ID
- * @param {string} threadId - The thread ID of the interrupted workflow
- * @param {Object} hitlResponse - The HITL response payload, e.g. { [interruptId]: { decisions: [{ type: "approve" }] } }
- * @param {Function} onEvent - Callback for each SSE event
- * @param {boolean} planMode - Whether plan mode is active (to preserve SubmitPlan tool)
+ * Resume an interrupted workflow with the user's answers (a question, a
+ * proposal, a tool approval, a credit pause), keyed by interrupt id, e.g.
+ * `{ [interruptId]: { decisions: [{ type: 'approve' }] } }`.
  */
 export async function sendHitlResponse(
+  hitlResponse: Record<string, unknown>,
   workspaceId: string,
   threadId: string,
-  hitlResponse: Record<string, unknown>,
-  onEvent: (event: Record<string, unknown>) => void = () => {},
-  planMode: boolean = false,
-  modelOptions: { model?: string; reasoningEffort?: string; fastMode?: boolean } = {},
-  agentMode: string = 'ptc',
-  onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
-  signal: AbortSignal | null = null,
-  requestKey: string | null = null,
+  {
+    onEvent = () => {},
+    llmModel = null,
+    reasoningEffort = null,
+    fastMode = null,
+    onRunIdResolved = null,
+    signal = null,
+    requestKey = null,
+  }: SendHitlResponseOptions = {},
 ) {
   const body: Record<string, unknown> = {
     workspace_id: workspaceId,
     messages: [],
     hitl_response: hitlResponse,
-    plan_mode: planMode,
-    agent_mode: agentMode,
   };
-  if (modelOptions?.model) body.llm_model = modelOptions.model;
-  if (modelOptions?.reasoningEffort) body.reasoning_effort = modelOptions.reasoningEffort;
-  if (modelOptions?.fastMode) body.fast_mode = true;
+  if (llmModel) body.llm_model = llmModel;
+  if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+  if (fastMode != null) body.fast_mode = fastMode;
   if (requestKey) body.request_key = requestKey;
   return await postSSEStream(`/api/v1/threads/${threadId}/messages`, body, { onEvent, onRunIdResolved, signal });
 }

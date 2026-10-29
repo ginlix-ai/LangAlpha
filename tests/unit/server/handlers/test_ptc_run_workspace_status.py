@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.server.services.turn_runtime import TurnRoute
 
 PTC = "src.server.handlers.chat.ptc_run"
 
@@ -51,7 +52,6 @@ def _make_request():
     req.hitl_response = None
     req.checkpoint_id = None
     req.messages = [MagicMock(role="user", content="hi")]
-    req.plan_mode = False
     req.timezone = "UTC"
     req.locale = "en-US"
     req.subagents_enabled = None
@@ -88,11 +88,18 @@ def _make_workspace_manager(
     reconnect callback is never invoked (new sandbox, no pre-existing
     state to observe).
     """
-    wm = MagicMock()
+    from src.server.services.workspace_manager import WorkspaceManager
+
+    wm = MagicMock(spec=WorkspaceManager)
     wm.has_ready_session = MagicMock(return_value=has_ready)
 
     async def _session_with_callback(
-        workspace_id, *, user_id=None, on_state_observed=None
+        workspace_id,
+        *,
+        user_id=None,
+        on_state_observed=None,
+        skills_signature=None,
+        run_id=None,
     ):
         # Fire the callback asynchronously, as the real reconnect does.
         if observed_state is not None and on_state_observed is not None:
@@ -106,7 +113,14 @@ def _make_workspace_manager(
     return wm
 
 
-async def _run_to_sentinel(request, workspace_manager):
+async def _run_to_sentinel(
+    request, workspace_manager, stamps=None, *, named_model=None, begin_run_error=None, keep=None
+):
+    """``stamps``, when given, gets each event's delay from the first pull.
+
+    Timing the events rather than the whole call keeps the lazy app import
+    and the error-path teardown after the sentinel out of the measurement:
+    both depend on state earlier tests leave behind, not on this path."""
     from src.server.handlers.chat.ptc_run import astream_ptc_workflow
 
     sentinel_registry_store = MagicMock()
@@ -128,20 +142,26 @@ async def _run_to_sentinel(request, workspace_manager):
             new_callable=AsyncMock,
             return_value=(True, None),
         ),
-        patch(f"{PTC}._resolve_timezone", return_value="UTC"),
+        patch(
+            f"{PTC}.get_user_profile_for_prompt",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch(f"{PTC}.init_tracking", return_value=(MagicMock(), MagicMock())),
         patch(f"{PTC}.apply_fetch_override"),
         patch(f"{PTC}.WorkspaceManager") as mock_wm_cls,
         patch(f"{PTC}._fire_and_forget"),
         patch(f"{PTC}.update_workspace_activity"),
         patch(f"{PTC}.BackgroundRegistryStore") as mock_reg_store_cls,
-        patch(f"{PTC}.ExecutionTracker"),
+        patch(f"{PTC}.keep_named_model", new=keep or AsyncMock()),
     ):
         mock_setup.agent_config = MagicMock()
         mock_wm_cls.get_instance.return_value = workspace_manager
         mock_reg_store_cls.get_instance.return_value = sentinel_registry_store
         run_handle = MagicMock(run_id="r-1", turn_index=1, finalized=False)
         mock_begin_run.return_value = run_handle
+        if begin_run_error is not None:
+            mock_begin_run.side_effect = begin_run_error
 
         gen = astream_ptc_workflow(
             request=request,
@@ -149,15 +169,20 @@ async def _run_to_sentinel(request, workspace_manager):
             run_id="r-1",
             user_input="hi",
             user_id="u-1",
-            workspace_id="ws-1",
+            route=TurnRoute("ws-1", "analyst"),
             is_byok=False,
             config=_make_config(),
+            named_model=named_model,
         )
 
         collected: list[str] = []
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         try:
             async for event in gen:
                 collected.append(event)
+                if stamps is not None:
+                    stamps.append(loop.time() - started)
         except Exception:
             pass
         finally:
@@ -243,6 +268,31 @@ async def test_recovery_path_callback_never_fires_no_refinement(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_warm_sibling_acquisition_does_not_wait_for_state_callback():
+    req = _make_request()
+    wm = _make_workspace_manager(
+        has_ready=False,
+        observed_state=None,
+        session_delay_s=0.001,
+    )
+
+    stamps: list[float] = []
+    lines = await _run_to_sentinel(req, wm, stamps)
+
+    # Ready arrives on the session, not after the 5 s state-callback wait.
+    # The bound sits halfway to that wait: a CI runner pauses about one test
+    # in a few thousand for over a second (a full garbage collection, landing
+    # wherever the suite's allocations put it), which a tighter bound reads
+    # as the wait.
+    ready = next(i for i, line in enumerate(lines) if '"status": "ready"' in line)
+    assert stamps[ready] < 2.5
+    assert _parse_ws_status_events(lines) == [
+        {"status": "starting", "workspace_id": "ws-1"},
+        {"status": "ready", "workspace_id": "ws-1"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_warm_path_emits_zero_events():
     """has_ready_session=True → no workspace_status events at all."""
     req = _make_request()
@@ -256,7 +306,8 @@ async def test_warm_path_emits_zero_events():
     # cached session, but no callback should flow through because the
     # generator doesn't supply one on the warm branch.
     warm_calls = [
-        c for c in wm.get_session_for_workspace.await_args_list
+        c
+        for c in wm.get_session_for_workspace.await_args_list
         if c.kwargs.get("on_state_observed") is not None
     ]
     assert warm_calls == [], "warm path must not pass on_state_observed"
@@ -286,3 +337,26 @@ async def test_refinement_fires_before_session_completes():
     # Expected order: starting → starting(archived) → ready
     assert statuses == ["starting", "starting", "ready"]
     assert sandbox_states == [None, "archived", None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admitted", [True, False])
+async def test_a_named_model_is_kept_only_once_the_turn_is_admitted(admitted):
+    """A send refused at START leaves the thread on the model it had."""
+    from src.server.services.llm.thread_model import NamedModel
+
+    keep = AsyncMock()
+    named = NamedModel("m-a", seen="m-pin")
+    wm = _make_workspace_manager(has_ready=True, observed_state=None)
+    await _run_to_sentinel(
+        _make_request(),
+        wm,
+        named_model=named,
+        begin_run_error=None if admitted else RuntimeError("refused at START"),
+        keep=keep,
+    )
+
+    if admitted:
+        keep.assert_awaited_once_with("t-1", named)
+    else:
+        keep.assert_not_awaited()

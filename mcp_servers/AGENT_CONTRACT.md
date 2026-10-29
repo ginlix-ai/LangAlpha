@@ -7,16 +7,14 @@ authority for the market-data MCP servers (`price_data`, `options`, `fundamental
 `macro`, `yf_*`). The `x_mcp_server` is exempt (its own conventions predate this and
 are already machine-readable).
 
-**Out of scope — direct LangChain tools.** `src/tools/market_data/tool.py` holds
-`@tool` functions the agent invokes directly and whose result is a **markdown report
-it reads**, not a JSON payload its code parses. They are not codegen'd, so none of the
-envelope shape, the `Returns: dict:` block, or the no-`Example`/`Note` rule below apply
-to them. Their docstring is the tool's prompt description and must stay a call-time
-decision aid — **what it is, what to pass (the `Args:`), and optionally when NOT to
-use it** (only a real constraint, e.g. a US-only tool → "US only, not for non-US
-symbols"). No "for X use tool_Y" cross-references (they duplicate across every tool),
-and no output-shape or formatting detail (no `Returns:` block, no markdown/table/
-currency description). Do not "conform" them to the envelope standard.
+**Direct LangChain tools follow a different `Returns:` rule.** `src/tools/` and
+`src/ptc_agent/agent/tools/` hold `@tool` functions the agent invokes directly, whose
+result is a **markdown report it reads**, not a JSON payload its code parses. Nothing
+below about the envelope, the `Returns: dict:` shape, or the no-`Example`/`Note` rule
+applies to them, and conforming them to the envelope standard is a mistake: their
+`Returns:` is a one-line selection signal, not a machine contract. The docstring rules
+shared by both surfaces are in **`src/tools/AGENTS.md`**, which is the general
+contract; this file is the market-data MCP specialisation of it.
 
 ## Success envelope
 
@@ -42,7 +40,7 @@ Rules:
 - **Timestamps** are exchange-local strings `"YYYY-MM-DD"` or `"YYYY-MM-DD HH:MM:SS"`,
   self-described by the envelope `timezone`.
 - **Prices are major units** of `currency` (pence/GBX converted to pounds, etc.).
-- **Symbols** go through `src.market_protocol.symbology` at the boundary; the echoed
+- **Symbols** go through `market_protocol.symbology` at the boundary; the echoed
   `symbol` is the canonical display spelling, regardless of what the caller passed.
 - **Interval vocab**: `1min|5min|15min|30min|1hour|4hour|1day|1week|1month`.
   Provider-native spellings (`1m`, `1wk`, `daily`, ...) are accepted as input aliases
@@ -107,7 +105,7 @@ Three sections, in order, moderate length (target ≤800 characters total):
 <0-2 lines: hard constraints — symbol formats, interval vocab, limits.>
 
 Args:
-    symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SS".
+    symbol: Ticker — US "AAPL", HK "0700.HK", A-share "600519.SH".
     interval: One of 1min|5min|15min|30min|1hour|4hour|1day.
 
 Returns:
@@ -155,3 +153,22 @@ test with a diff against the locked text. Rules of engagement:
   The pin test itself is read-only by design (it can never self-heal); the
   script is the lock's only writer. Commit the regenerated lock together with
   the docstring change so the diff shows both sides.
+
+## Exported tool list
+
+`mcp_servers/contract/market_data.tools.json` holds the `tools/list` of the four
+market-data servers (`price_data`, `fundamentals`, `macro`, `options`): each
+server's name and every tool's name, description, input schema and output
+schema, exactly as the SDK sends them. A deployment that serves these servers
+over HTTP from another implementation publishes this file as its tool list, so
+skills, prompts and generated wrappers see the same surface on either path.
+That implementation still has to return the envelope and row fields described
+above.
+
+`tests/unit/mcp_servers/test_market_data_tool_export.py` fails when the file no
+longer matches the servers. After an intentional tool change, regenerate it and
+commit it with the change:
+
+```bash
+uv run python scripts/utils/export_market_data_tools.py
+```

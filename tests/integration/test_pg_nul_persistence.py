@@ -6,8 +6,6 @@ pin the contracted behavior:
 
 - `workspace_files.content_text` accepts NUL-bearing input without aborting
   the whole batch (sandbox files can carry `\\x00` in binary-looking text).
-- `conversation_responses.sse_events` JSONB accepts a tool-result event with
-  embedded NUL (defense-in-depth at the persistence layer).
 - `conversation_queries.content` accepts NUL in user-typed input.
 """
 
@@ -90,58 +88,6 @@ class TestWorkspaceFileBulkUpsert:
 
         rows = await get_files_for_workspace(ws_id)
         assert any(r["file_path"] == "work/odd.txt" for r in rows)
-
-
-class TestConversationResponseSseEvents:
-    async def test_sse_events_with_nul_in_tool_result_persists(
-        self, seed_workspace, patched_get_db_connection, seed_response
-    ):
-        """JSONB must accept a tool-result event payload that contains NUL bytes."""
-        from src.server.database.conversation import (
-            create_thread,
-            get_responses_for_thread,
-        )
-
-        ws_id = str(seed_workspace["workspace_id"])
-        thread_id = str(uuid.uuid4())
-        await create_thread(
-            conversation_thread_id=thread_id,
-            workspace_id=ws_id,
-            current_status="in_progress",
-            msg_type="ptc",
-        )
-
-        # Simulates a tool_call_result event whose content slipped past the
-        # middleware (defense-in-depth scenario).
-        sse_events = [
-            {
-                "event": "tool_call_result",
-                "data": {
-                    "tool": "execute_code",
-                    "content": "stdout-line\x00trailing",
-                },
-            }
-        ]
-
-        response_id = str(uuid.uuid4())
-        await seed_response(
-            conversation_response_id=response_id,
-            conversation_thread_id=thread_id,
-            turn_index=0,
-            status="completed",
-            sse_events=sse_events,
-        )
-
-        responses, total = await get_responses_for_thread(thread_id)
-        assert total == 1
-        loaded = responses[0]
-        events = loaded.get("sse_events") or []
-        assert len(events) == 1
-        content = events[0]["data"]["content"]
-        # JSONB round-trip: the \\u0000 escape is stripped at bind time,
-        # so the deserialized string contains no NUL.
-        assert "\x00" not in content
-        assert content == "stdout-linetrailing"
 
 
 class TestConversationQueryUserInput:

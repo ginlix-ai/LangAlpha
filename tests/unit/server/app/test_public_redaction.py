@@ -3,21 +3,20 @@
 Tests the read_shared_file and download_shared_file endpoints with
 mocked DB and patched SecretRedactor.
 
-Note: public.py lazily imports db_get_workspace, FilePersistenceService,
-and WorkspaceManager inside each handler. We patch at source module level
-for those. Top-level imports (_normalize_requested_path, get_redactor)
-are patched in the public module namespace.
+Note: the file routes live in ``share_files`` and resolve the token through
+``share_access``, and both import their collaborators at module level, so
+every patch target below names the module holding the reference rather than
+the module that defines it.
 """
 
 from __future__ import annotations
 
+import base64
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from tests.conftest import create_test_app
 from src.server.utils.secret_redactor import SecretRedactor
 
 pytestmark = pytest.mark.asyncio
@@ -30,13 +29,16 @@ _WORKSPACE_ID = "ws-test-001"
 _THREAD_ID = "thread-001"
 
 # Patch targets
-_THREAD_BY_TOKEN = "src.server.app.public.get_thread_by_share_token"
-_DB_GET_WS = "src.server.database.workspace.get_workspace"
-_FILE_SVC = "src.server.services.persistence.file.FilePersistenceService.get_file_content"
-_NORM_PATH = "src.server.app.public._normalize_requested_path"
-_WORK_DIR = "src.server.app.public._get_work_dir"
-_GET_REDACTOR = "src.server.app.public.get_redactor"
-_PUB_VAULT = "src.server.app.public.get_vault_secrets_for_redaction"
+_THREAD_BY_TOKEN = "src.server.app.share_access.get_thread_by_share_token"
+_DB_GET_WS = "src.server.app.share_access.db_get_workspace"
+_WORK_DIR = "src.server.app.share_access.work_dir_for"
+_FILE_SVC = "src.server.app.share_files.FilePersistenceService.get_file_content"
+# Path normalization moved behind the containment helpers, which the share
+# routes now call instead of normalizing themselves; this is the same
+# function, patched where those helpers reach it.
+_NORM_PATH = "src.server.services.workspace_file_containment.normalize_requested_path"
+_GET_REDACTOR = "src.server.app.share_files.get_redactor"
+_SHARE_VAULT = "src.server.app.share_files.get_vault_secrets_for_redaction"
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +48,7 @@ def _no_vault_secrets():
     instead of silently serving unredacted bytes. These tests exercise the
     global-secret tier, so the vault tier answers empty; a test that wants its
     own vault set patches over this one."""
-    with patch(_PUB_VAULT, AsyncMock(return_value={})):
+    with patch(_SHARE_VAULT, AsyncMock(return_value={})):
         yield
 
 
@@ -66,11 +68,14 @@ def _make_thread(**overrides):
 
 
 def _make_workspace(**overrides):
+    # Stopped by default: the status is what decides whether a route may hold a
+    # warm sandbox at all, so a test about the persisted copy says so in the row
+    # rather than relying on there happening to be no live session.
     ws = {
         "id": _WORKSPACE_ID,
         "user_id": "test-user-123",
         "workspace_id": _WORKSPACE_ID,
-        "status": "running",
+        "status": "stopped",
         "sandbox_id": "sb-123",
     }
     ws.update(overrides)
@@ -93,19 +98,6 @@ def mock_redactor():
     r = SecretRedactor.__new__(SecretRedactor)
     r._secrets = [(_SECRET_NAME, _SECRET_VALUE)]
     return r
-
-
-@pytest_asyncio.fixture
-async def public_client():
-    """httpx client wired to public router."""
-    from src.server.app.public import router
-
-    app = create_test_app(router)
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        yield client
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +161,9 @@ class TestReadSharedFileRedaction:
 class TestDownloadSharedFileRedaction:
     """Verify download_shared_file redacts secrets from text files."""
 
-    async def test_download_redacts_secret_from_text(self, public_client, mock_redactor):
+    async def test_download_redacts_secret_from_text(
+        self, public_client, mock_redactor
+    ):
         text = f"key={_SECRET_VALUE}"
         file_record = _make_file_record(
             content_text=text,
@@ -195,7 +189,9 @@ class TestDownloadSharedFileRedaction:
         assert _SECRET_VALUE not in body
         assert f"[REDACTED:{_SECRET_NAME}]" in body
 
-    async def test_download_skips_redaction_for_binary(self, public_client, mock_redactor):
+    async def test_download_skips_redaction_for_binary(
+        self, public_client, mock_redactor
+    ):
         """Binary files are not redacted even if they contain secret bytes."""
         binary_content = b"\x89PNG" + _SECRET_VALUE.encode()
         file_record = {
@@ -223,7 +219,9 @@ class TestDownloadSharedFileRedaction:
         # Binary should NOT be redacted
         assert _SECRET_VALUE.encode() in resp.content
 
-    async def test_download_redacts_secret_from_json(self, public_client, mock_redactor):
+    async def test_download_redacts_secret_from_json(
+        self, public_client, mock_redactor
+    ):
         """Non-text MIME that is still UTF-8 text (application/json) is redacted —
         a vault secret must not leak just because the file isn't labeled text/*."""
         text = f'{{"api_key": "{_SECRET_VALUE}"}}'
@@ -300,12 +298,12 @@ class TestPublicTraversalGuard:
 # TestServeSharedFile — GET /shared/{token}/files/serve/{path}
 # ---------------------------------------------------------------------------
 
-# serve_workspace_file resolves bytes / work dir / vault secrets from the
-# workspace_files module, while the share endpoint resolves the thread and
-# workspace from the public module. We patch each at its source.
-_PUBLIC_DB_GET_WS = "src.server.app.public.db_get_workspace"
-_WS_DB_GET_WS = "src.server.app.workspace_files.serve.db_get_workspace"
-_WS_WORK_DIR = "src.server.app.workspace_files.serve._get_work_dir"
+# The share route resolves the token in ``share_access`` and hands the
+# workspace row it already read to the serving core, which reads bytes, the
+# work dir and vault secrets out of its own module. The core's own
+# ``db_get_workspace`` is deliberately left unpatched: the row arrives as an
+# argument, so reaching that lookup would mean it had been read twice.
+_WS_WORK_DIR = "src.server.app.workspace_files.serve.work_dir_for"
 _WS_FP = "src.server.app.workspace_files.serve.FilePersistenceService"
 _WS_VAULT = "src.server.app.workspace_files.serve.get_vault_secrets_for_redaction"
 _RENDER = "src.server.services.pdf_render.render_workspace_pdf"
@@ -355,11 +353,16 @@ class TestServeSharedFile:
         html = "<html><head></head><body>shared report</body></html>"
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
-            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_VAULT, AsyncMock(return_value={})),
-            patch(f"{_WS_FP}.get_file_content", AsyncMock(return_value=_serve_text_record(html))),
+            patch(
+                f"{_WS_FP}.get_file_content",
+                AsyncMock(return_value=_serve_text_record(html)),
+            ),
         ):
             resp = await public_client.get(
                 f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html"
@@ -381,14 +384,18 @@ class TestServeSharedFile:
         for value in resp.headers.values():
             assert _WORKSPACE_ID not in value
 
-    async def test_relative_subresource_resolves_under_token_prefix(self, public_client):
+    async def test_relative_subresource_resolves_under_token_prefix(
+        self, public_client
+    ):
         # A relative `charts/x.png` reference from results/report.html resolves to
         # .../serve/results/charts/x.png; the endpoint serves it like any other path.
         png = b"\x89PNG\r\n\x1a\nchart-bytes"
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
-            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_VAULT, AsyncMock(return_value={})),
             patch(
@@ -408,11 +415,16 @@ class TestServeSharedFile:
         html = "<html><head><title>r</title></head><body>x</body></html>"
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
-            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_VAULT, AsyncMock(return_value={})),
-            patch(f"{_WS_FP}.get_file_content", AsyncMock(return_value=_serve_text_record(html))),
+            patch(
+                f"{_WS_FP}.get_file_content",
+                AsyncMock(return_value=_serve_text_record(html)),
+            ),
         ):
             with_theme = await public_client.get(
                 f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html",
@@ -482,10 +494,16 @@ class TestServeSharedFileErrorPage:
 
 
 class TestServeSharedFilePdf:
-    """?format=pdf over a share token — renderer is mocked (no Chromium in CI)."""
+    """?format=pdf over a share token, with the renderer mocked (no Chromium in CI).
 
-    _INTERNAL_URL = f"{_PDF_BASE}/api/v1/wsfiles/{_WORKSPACE_ID}/results/report.html"
-    _SERVE_PREFIX = f"{_PDF_BASE}/api/v1/wsfiles/{_WORKSPACE_ID}/"
+    The render goes through the share route, not the workspace one. Headless
+    Chromium fetches the document and every subresource under it with no
+    credential of its own, so the prefix it is allowed to fetch under is the
+    only thing scoping them to what the token covers.
+    """
+
+    _SERVE_PREFIX = f"{_PDF_BASE}/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/"
+    _INTERNAL_URL = f"{_SERVE_PREFIX}results/report.html"
 
     async def test_format_pdf_renders_html(self, public_client):
         from src.server.services import pdf_render
@@ -494,11 +512,16 @@ class TestServeSharedFilePdf:
         render = AsyncMock(return_value=b"%PDF-1.7 shared")
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
-            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_VAULT, AsyncMock(return_value={})),
-            patch(f"{_WS_FP}.get_file_content", AsyncMock(return_value=_serve_text_record(html))),
+            patch(
+                f"{_WS_FP}.get_file_content",
+                AsyncMock(return_value=_serve_text_record(html)),
+            ),
             patch.object(pdf_render, "render_workspace_pdf", render),
         ):
             resp = await public_client.get(
@@ -521,6 +544,12 @@ class TestServeSharedFilePdf:
             page_numbers=False,
             branding=True,
         )
+        # Read back off the call rather than off the constants above: the prefix
+        # is the whole authorization story for the subresources the renderer
+        # pulls, since it fetches them with no token of its own.
+        serve_prefix = render.await_args.kwargs["workspace_serve_prefix"]
+        assert render.await_args.args[0].startswith(serve_prefix)
+        assert _WORKSPACE_ID not in serve_prefix
 
     async def test_format_pdf_not_permitted_returns_403(self, public_client):
         thread = _make_thread(share_permissions={"allow_files": False})
@@ -538,7 +567,10 @@ class TestServeSharedFilePdf:
 
     async def test_format_pdf_revoked_returns_404(self, public_client):
         render = AsyncMock()
-        with patch(_THREAD_BY_TOKEN, AsyncMock(return_value=None)), patch(_RENDER, render):
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=None)),
+            patch(_RENDER, render),
+        ):
             resp = await public_client.get(
                 "/api/v1/public/shared/revoked-token/files/serve/results/report.html",
                 params={"format": "pdf"},
@@ -551,8 +583,10 @@ class TestServeSharedFilePdf:
         render = AsyncMock()
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
-            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_WORK_DIR, return_value="/home/workspace"),
             patch(_WS_VAULT, AsyncMock(return_value={})),
             patch(
@@ -581,11 +615,17 @@ class TestServeSharedFilePdf:
             render = AsyncMock(side_effect=exc)
             with (
                 patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-                patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
-                patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+                patch(
+                    _DB_GET_WS,
+                    AsyncMock(return_value=_make_workspace(status="stopped")),
+                ),
+                patch(_WORK_DIR, return_value="/home/workspace"),
                 patch(_WS_WORK_DIR, return_value="/home/workspace"),
                 patch(_WS_VAULT, AsyncMock(return_value={})),
-                patch(f"{_WS_FP}.get_file_content", AsyncMock(return_value=_serve_text_record(html))),
+                patch(
+                    f"{_WS_FP}.get_file_content",
+                    AsyncMock(return_value=_serve_text_record(html)),
+                ),
                 patch.object(pdf_render, "render_workspace_pdf", render),
             ):
                 resp = await public_client.get(
@@ -599,10 +639,10 @@ class TestServeSharedFilePdf:
 # TestPublicNoSandboxWake — unauthenticated routes must never wake a sandbox
 # ---------------------------------------------------------------------------
 
-# list/read/download lazily import WorkspaceManager + FilePersistenceService
-# inside the handler, so patch them at their source modules.
-_FP_TREE = "src.server.services.persistence.file.FilePersistenceService.get_file_tree"
-_WSMGR = "src.server.services.workspace_manager.WorkspaceManager"
+# All four file routes reach the manager through ``serve.warm_sandbox``, so
+# that module's reference is the one a test has to displace.
+_FP_TREE = "src.server.app.share_files.FilePersistenceService.get_file_tree"
+_WSMGR = "src.server.app.workspace_files.serve.WorkspaceManager"
 
 
 def _no_warm_manager():
@@ -611,7 +651,9 @@ def _no_warm_manager():
     (it must not be)."""
     from unittest.mock import MagicMock
 
-    mgr = MagicMock()
+    from src.server.services.workspace_manager import WorkspaceManager
+
+    mgr = MagicMock(spec=WorkspaceManager)
     mgr.get_session_if_ready.return_value = None
     mgr.get_session_for_workspace = AsyncMock(
         side_effect=AssertionError("must not wake a sandbox from a public route")
@@ -630,7 +672,9 @@ class TestPublicNoSandboxWake:
         holder, mgr = _no_warm_manager()
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
             patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_NORM_PATH, return_value=""),
             patch(_FP_TREE, AsyncMock(return_value=[])),
@@ -642,6 +686,7 @@ class TestPublicNoSandboxWake:
             )
         assert resp.status_code == 200
         assert resp.json()["files"] == []
+        assert resp.json()["source"] == "database"
         mgr.get_session_for_workspace.assert_not_awaited()
         mgr.get_session_if_ready.assert_called_once()
 
@@ -649,10 +694,11 @@ class TestPublicNoSandboxWake:
         holder, mgr = _no_warm_manager()
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
             patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_NORM_PATH, return_value="data/x.txt"),
-            patch(_PUB_VAULT, AsyncMock(return_value={})),
             patch(_FILE_SVC, AsyncMock(return_value=None)),
             patch(_WSMGR, holder),
         ):
@@ -667,10 +713,11 @@ class TestPublicNoSandboxWake:
         holder, mgr = _no_warm_manager()
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
             patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_NORM_PATH, return_value="data/x.txt"),
-            patch(_PUB_VAULT, AsyncMock(return_value={})),
             patch(_FILE_SVC, AsyncMock(return_value=None)),
             patch(_WSMGR, holder),
         ):
@@ -731,73 +778,205 @@ class TestPublicReadTruncation:
 
 
 # ---------------------------------------------------------------------------
-# TestReplayStripsWorkspaceId — workspace_id is a bearer credential
+# TestPublicSharedBytesPrecedence: one rule about where a shared file's
+# bytes come from, for every file route on the token
 # ---------------------------------------------------------------------------
 
-_QUERIES = "src.server.app.public.get_queries_for_thread"
-_RESPONSES = "src.server.app.public.get_responses_for_thread"
+_RESOLVE_BYTES = "src.server.app.share_files.resolve_file_bytes_or_none"
+# The row a share route re-reads after a live read, to prove the folder the
+# read went to was still this workspace's.
+_FOLDER_RECHECK = "src.server.app.workspace_files._shared.db_get_workspace"
 
 
-def _parse_sse_events(body: str):
-    """Parse an SSE text body into a list of (event, data-dict) tuples."""
-    out = []
-    for block in body.split("\n\n"):
-        event = None
-        data = None
-        for line in block.splitlines():
-            if line.startswith("event: "):
-                event = line[len("event: ") :]
-            elif line.startswith("data: "):
-                import json as _json
+def _warm_manager(
+    content: bytes | None = None,
+    *,
+    resolves: str = "/home/workspace/data/x.txt",
+    listing: list[str] | None = None,
+):
+    """A WorkspaceManager holding a ready session whose sandbox serves ``content``.
 
-                data = _json.loads(line[len("data: ") :])
-        if event and data is not None:
-            out.append((event, data))
-    return out
+    ``resolves`` is what the in-sandbox containment probe answers. The live read
+    is gated on it, so the double has to reply with a canonical path inside the
+    one allowed root, and a directory probe has to answer with the directory.
+    """
+    from unittest.mock import MagicMock
+
+    sandbox = MagicMock()
+    sandbox.working_dir = "/home/workspace"
+    sandbox.validate_and_normalize_path.return_value = (resolves, None)
+    sandbox.virtualize_path.return_value = "data/x.txt"
+    sandbox.adownload_file_bytes = AsyncMock(return_value=content)
+    sandbox.aglob_files = AsyncMock(return_value=listing or [])
+    sandbox.config.filesystem.allowed_directories = ["/home/workspace"]
+
+    async def exec_result(command, **_kwargs):
+        if 'base64 < "$tt"' not in command:
+            return SimpleNamespace(stdout=resolves, stderr="", exit_code=0)
+        if content is None:
+            return SimpleNamespace(stdout="", stderr="", exit_code=2)
+        encoded_path = base64.b64encode(resolves.encode()).decode()
+        encoded_content = base64.b64encode(content).decode()
+        return SimpleNamespace(
+            stdout=f"{encoded_path}\n{encoded_content}\n",
+            stderr="",
+            exit_code=0,
+        )
+
+    sandbox.runtime.exec = AsyncMock(side_effect=exec_result)
+    session = MagicMock()
+    session.sandbox = sandbox
+    mgr = MagicMock()
+    mgr.get_session_if_ready.return_value = session
+    holder = MagicMock()
+    holder.get_instance.return_value = mgr
+    return holder
 
 
-class TestReplayStripsWorkspaceId:
-    """The public replay must not leak workspace_id (the bearer credential for
-    /api/v1/wsfiles/{workspace_id}/{path}) from stored workspace_status events."""
+class TestPublicSharedBytesPrecedence:
+    """A warm, binding-matched sandbox answers; the manifest answers when there
+    is none.
 
-    async def test_replay_strips_workspace_id_from_stored_events(self, public_client):
-        stored = {
-            "turn_index": 0,
-            "conversation_response_id": "resp-1",
-            "sse_events": [
-                {
-                    "event": "workspace_status",
-                    "data": {
-                        "status": "ready",
-                        "workspace_id": _WORKSPACE_ID,
-                        "sandbox_state": "archived",
-                    },
-                },
-                {
-                    "event": "message_chunk",
-                    "data": {"content": "hello"},
-                },
-            ],
-        }
-        # A deep copy guards the assertion that we never mutate the stored object.
-        import copy
+    read, download and list used to read the manifest first and only fall
+    through to a live sandbox, so the file panel and the iframe beside it could
+    answer the same token with different bytes. One rule for all four routes
+    removes the disagreement. The uniform 404 survives it: a manifest row whose
+    bytes are unreachable arrives as the same ``None`` an absent row does.
+    """
 
-        original = copy.deepcopy(stored)
-        query = {"turn_index": 0, "content": "hi", "created_at": "2026-01-01T00:00:00Z"}
+    async def test_read_serves_the_live_copy_over_the_manifest(self, public_client):
+        file_svc = AsyncMock(return_value=_make_file_record("stale copy"))
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
-            patch(_QUERIES, AsyncMock(return_value=([query], 1))),
-            patch(_RESPONSES, AsyncMock(return_value=([stored], 1))),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
+            patch(
+                _FOLDER_RECHECK,
+                AsyncMock(return_value=_make_workspace(status="running")),
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_NORM_PATH, return_value="data/x.txt"),
+            patch(_FILE_SVC, file_svc),
+            patch(_WSMGR, _warm_manager(b"live copy")),
         ):
             resp = await public_client.get(
-                f"/api/v1/public/shared/{_SHARE_TOKEN}/replay"
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/read",
+                params={"path": "data/x.txt"},
             )
         assert resp.status_code == 200
-        events = _parse_sse_events(resp.text)
-        ws_status = [d for e, d in events if e == "workspace_status"]
-        assert ws_status, "expected a replayed workspace_status event"
-        for d in ws_status:
-            assert "workspace_id" not in d
-            assert "sandbox_state" not in d
-        # The stored event object must be untouched (no in-place mutation).
-        assert stored == original
+        assert resp.json()["content"] == "live copy"
+        assert resp.json()["source"] == "sandbox"
+        file_svc.assert_not_awaited()
+
+    async def test_download_serves_the_live_copy_over_the_manifest(self, public_client):
+        file_svc = AsyncMock(return_value=_make_file_record("stale copy"))
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
+            patch(
+                _FOLDER_RECHECK,
+                AsyncMock(return_value=_make_workspace(status="running")),
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_NORM_PATH, return_value="data/x.txt"),
+            patch(_FILE_SVC, file_svc),
+            patch(_WSMGR, _warm_manager(b"live copy")),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/download",
+                params={"path": "data/x.txt"},
+            )
+        assert resp.status_code == 200
+        assert resp.content == b"live copy"
+        file_svc.assert_not_awaited()
+
+    async def test_list_serves_the_live_tree_over_the_manifest(self, public_client):
+        """The live tree wins, and the gate runs on what it actually returned."""
+        file_tree = AsyncMock(return_value=[{"path": "data/gone.txt"}])
+        holder = _warm_manager(
+            resolves="/home/workspace",
+            listing=[
+                "/home/workspace/data/x.txt",
+                "/home/workspace/.agents/user/memory/memory.md",
+            ],
+        )
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
+            patch(
+                _FOLDER_RECHECK,
+                AsyncMock(return_value=_make_workspace(status="running")),
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_FP_TREE, file_tree),
+            patch(_WSMGR, holder),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files",
+                params={"path": "."},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["source"] == "sandbox"
+        assert resp.json()["files"] == ["data/x.txt"]
+        file_tree.assert_not_awaited()
+
+    async def test_read_stops_at_a_warm_sandbox_that_has_no_such_file(
+        self, public_client
+    ):
+        """A live "no such file" ends the read rather than starting a fallback.
+
+        The viewer is looking at the live tree, so a path it has deleted is
+        gone; and the token's visibility gate refuses a path through the same
+        ``None``, so reading on would serve exactly what it just refused.
+        """
+        file_svc = AsyncMock(return_value=_make_file_record("stale copy"))
+        holder = _warm_manager(None)
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_NORM_PATH, return_value="data/x.txt"),
+            patch(_FILE_SVC, file_svc),
+            patch(_WSMGR, holder),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/read",
+                params={"path": "data/x.txt"},
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "File not found"
+        # The miss has to be the sandbox's own, not a denial on the way to it.
+        sandbox = (
+            holder.get_instance.return_value.get_session_if_ready.return_value.sandbox
+        )
+        sandbox.runtime.exec.assert_awaited_once()
+        sandbox.adownload_file_bytes.assert_not_awaited()
+        file_svc.assert_not_awaited()
+
+    async def test_read_stays_a_uniform_404_without_a_warm_sandbox(self, public_client):
+        holder, mgr = _no_warm_manager()
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(
+                _DB_GET_WS, AsyncMock(return_value=_make_workspace(status="running"))
+            ),
+            patch(_WORK_DIR, return_value="/home/workspace"),
+            patch(_NORM_PATH, return_value="data/x.txt"),
+            patch(_FILE_SVC, AsyncMock(return_value=_make_file_record(None))),
+            patch(_RESOLVE_BYTES, AsyncMock(return_value=None)),
+            patch(_WSMGR, holder),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/read",
+                params={"path": "data/x.txt"},
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "File not found"
+        mgr.get_session_for_workspace.assert_not_awaited()

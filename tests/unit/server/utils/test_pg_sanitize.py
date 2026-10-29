@@ -12,6 +12,7 @@ import json
 import time
 
 import pytest
+from psycopg.types.json import JsonbDumper
 
 from src.server.utils.pg_sanitize import (
     SafeJson,
@@ -70,6 +71,17 @@ class TestSafeDumps:
     def test_strips_nul_in_dict_keys(self):
         out = _safe_dumps({"k\x00": 1})
         assert json.loads(out) == {"k": 1}
+
+    @pytest.mark.parametrize("backslashes", range(5))
+    @pytest.mark.parametrize("nul", ["", "\x00"])
+    @pytest.mark.parametrize("after", ["中", "n", '"', "x"])
+    def test_literal_escape_text_survives(self, backslashes, nul, after):
+        # Text that spells out `\u0000` (a JSON file, code, a repr of binary
+        # data) dumps as `\\u0000`. A plain replace cut that escaped backslash
+        # in half and left `\中`, which Postgres rejects, losing the whole turn.
+        text = "a" + "\\" * backslashes + nul + "u0000" + after
+        out = _safe_dumps({"k": text})
+        assert json.loads(out) == {"k": text.replace("\x00", "")}
 
 
 class TestFiniteJsonDumps:
@@ -195,3 +207,30 @@ class TestNormalizeUuid:
     )
     def test_non_uuid_returns_none(self, value):
         assert normalize_uuid(value) is None
+
+
+class TestSafeJsonbArray:
+    @staticmethod
+    def _bound(wrapped) -> bytes:
+        return JsonbDumper(type(wrapped)).dump(wrapped)
+
+    @pytest.mark.asyncio
+    async def test_matches_safe_json_across_slice_boundaries(self, monkeypatch):
+        from src.server.utils import pg_sanitize
+
+        monkeypatch.setattr(pg_sanitize, "_JSON_ARRAY_SLICE", 3)
+        items = [
+            {"i": i, "s": "a\x00b" if i == 2 else "\U0001f600", "f": float("nan") if i == 3 else 1.5}
+            for i in range(8)
+        ]
+
+        bound = self._bound(await pg_sanitize.safe_jsonb_array(items))
+
+        assert bound == SafeJson(items).dumps(items).encode()
+        assert json.loads(bound)[3]["f"] is None
+
+    @pytest.mark.asyncio
+    async def test_empty_list(self):
+        from src.server.utils.pg_sanitize import safe_jsonb_array
+
+        assert self._bound(await safe_jsonb_array([])) == b"[]"

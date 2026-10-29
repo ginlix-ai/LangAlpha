@@ -1,0 +1,10 @@
+{# The skills manifest, rendered into the cached per-thread baseline: byte-
+   deterministic for equal inputs, so no timestamps, no dict iteration, and no
+   guidance fence. The manifest arrives with its own heading and lead-in, which
+   say how to activate a skill, so it is stated verbatim. A build with no skills
+   renders nothing rather than an empty element. #}
+{% if content %}
+<skills>
+{{ content }}
+</skills>
+{% endif %}

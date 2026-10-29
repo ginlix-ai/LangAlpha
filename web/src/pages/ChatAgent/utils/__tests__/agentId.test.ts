@@ -1,5 +1,6 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { isTaskAgentId, taskIdFromAgentId } from '../agentId';
+import { bareTaskId, isTaskAgentId, taskIdFromAgentId } from '../agentId';
 
 describe('taskIdFromAgentId', () => {
   it('reads the task id out of a subagent lane id', () => {
@@ -38,5 +39,18 @@ describe('isTaskAgentId', () => {
     expect(isTaskAgentId('')).toBe(false);
     expect(isTaskAgentId(42)).toBe(false);
     expect(isTaskAgentId({ agent: 'task:x' })).toBe(false);
+  });
+});
+
+describe('bareTaskId', () => {
+  it('reads a display id as the task it names, as the server does', () => {
+    expect(bareTaskId('Task-k7Xm2p')).toBe('k7Xm2p');
+    expect(bareTaskId('  Task-k7Xm2p ')).toBe('k7Xm2p');
+  });
+
+  it('keeps a bare id, and a prefix with too little after it to be a display id', () => {
+    expect(bareTaskId('k7Xm2p')).toBe('k7Xm2p');
+    expect(bareTaskId('Task-a')).toBe('Task-a');
+    expect(bareTaskId('task-k7Xm2p')).toBe('task-k7Xm2p');
   });
 });

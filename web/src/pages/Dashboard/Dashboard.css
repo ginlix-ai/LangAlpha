@@ -5,32 +5,23 @@
 
 .dashboard-container {
   width: 100%;
-  min-height: 100vh;
-  height: 100vh;
+  /* See ChatAgent.css: the content column, not the viewport. */
+  min-height: 100%;
+  height: 100%;
   display: flex;
   flex-direction: row;
   box-sizing: border-box;
   overflow: hidden;
-  background-color: var(--color-bg-canvas);
+  /* The page ground, as on every page: the widgets are unfilled frames, so
+     there is no raised card for a tinted ground to set off. */
+  background-color: var(--color-bg-page);
 }
 
-/* Dashboard-specific scrollbar styling */
-.dashboard-container ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.dashboard-container ::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.dashboard-container ::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 4px;
-}
-
+/* A quieter thumb that stays put under the pointer; its shape is the
+   app-wide one (tokens.css). */
+.dashboard-container ::-webkit-scrollbar-thumb,
 .dashboard-container ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-muted);
+  background-color: var(--color-border-muted);
 }
 
 /* === Monospace utility for financial data === */
@@ -38,17 +29,6 @@
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
-}
-
-/* === Glassmorphism card === */
-.dashboard-glass-card {
-  background: var(--color-bg-card);
-  backdrop-filter: blur(24px);
-  border: 1px solid var(--color-border-muted);
-  border-radius: 1.5rem;
-}
-.dashboard-glass-card:hover {
-  border-color: var(--color-border-default);
 }
 
 /* === Suggestion bubbles above chat input === */
@@ -76,7 +56,7 @@
   cursor: pointer;
   opacity: 0;
   transform: translateY(6px);
-  transition: opacity 0.3s ease, transform 0.3s ease, background-color 0.15s, border-color 0.15s, color 0.15s;
+  transition: opacity var(--motion-enter) var(--ease-out), transform var(--motion-enter) var(--ease-out), background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
 @keyframes dashboard-chip-enter {
   from { opacity: 0; transform: translateY(6px); }
@@ -85,7 +65,7 @@
 .dashboard-suggestion-bubbles.visible .dashboard-suggestion-bubble {
   opacity: 1;
   transform: translateY(0);
-  animation: dashboard-chip-enter 0.3s ease both;
+  animation: dashboard-chip-enter var(--motion-enter) var(--ease-out) both;
 }
 .dashboard-suggestion-bubble:hover,
 .dashboard-suggestion-bubble:active {
@@ -102,11 +82,10 @@
   border: 1px solid var(--color-border-muted);
   border-radius: 9999px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  transition: all 0.3s;
+  transition: all var(--motion-fold) var(--ease-out);
 }
-/* Focus earns a low-alpha accent edge — no glow, resting stays neutral. */
+/* Focus squares the pill off; the edge stays neutral, as the composer's does. */
 .dashboard-floating-chat:focus-within {
-  border-color: var(--color-accent-overlay);
   border-radius: 1rem;
 }
 

@@ -1,14 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Check, ChevronDown, FileStack, FolderOpen, Radar, ScrollText, Zap,
-} from 'lucide-react';
+import { useCallback, useMemo, useRef, useState, type RefObject } from 'react';
+import { Check, ChevronDown, ChevronRight, FolderOpen, Layers, Radar } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import {
-  DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
+  DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
 } from './dropdown-menu';
-import { PillToggle } from './chat-input.parts';
+import { IconToggle, PillToggle, SubagentsGlyph } from './chat-input.parts';
 import type { ToolbarItem } from './chat-input.useToolbarFold';
-import type { Workspace } from './chat-input.types';
+import type { ComposerScope, Workspace } from './chat-input.types';
+import { ALL_WORKSPACES_KEY, WorkspacePicker } from './chat-input.workspacePicker';
 
 /**
  * The composer's foldable toolbar, declared once in PRIORITY order: the first
@@ -19,135 +19,194 @@ import type { Workspace } from './chat-input.types';
  * separators between groups are emitted by the menu loop, never by hand.
  */
 export function useToolbarItems({
-  mode,
-  onModeChange,
-  ptcDisabledReason,
-  planMode,
-  setPlanMode,
+  subagentsAllowed,
+  onToggleSubagents,
   watchMode,
   setWatchMode,
   marketWatchEnabled,
   workspaces,
   selectedWorkspaceId,
   onWorkspaceChange,
+  scope,
+  onScopeChange,
+  emptyWorkspacesHint,
+  menuDirection = 'up',
+  menuContainer = null,
+  draftRef,
 }: {
-  mode?: 'fast' | 'ptc';
-  onModeChange?: (mode: 'fast' | 'ptc') => void;
-  ptcDisabledReason?: string | null;
-  planMode: boolean;
-  setPlanMode: (v: boolean) => void;
+  /** Null while the thread's value is not read, which hides the toggle. */
+  subagentsAllowed: boolean | null;
+  onToggleSubagents: (next: boolean) => void;
   watchMode: boolean;
   setWatchMode: (v: boolean) => void;
   marketWatchEnabled: boolean;
   workspaces?: Workspace[] | null;
   selectedWorkspaceId?: string | null;
   onWorkspaceChange?: ((wsId: string) => void) | null;
+  scope?: ComposerScope;
+  onScopeChange?: ((scope: ComposerScope) => void) | null;
+  emptyWorkspacesHint?: string | null;
+  menuDirection?: 'up' | 'down';
+  /** The composer, which a phone portals the pickers into. */
+  menuContainer?: HTMLElement | null;
+  /** The composer's text field, where a pick made with the pointer leaves focus. */
+  draftRef?: RefObject<HTMLTextAreaElement | null>;
 }): ToolbarItem[] {
   const { t } = useTranslation();
 
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
-  const workspaceMenuRef = useRef<HTMLDivElement>(null);
   const workspaceBtnRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!showWorkspaceMenu) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (workspaceBtnRef.current?.contains(e.target as Node)) return;
-      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(e.target as Node)) {
-        setShowWorkspaceMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showWorkspaceMenu]);
+  // A host that lets the user say where the agent works passes a scope.
+  const hasScopePicker = !!onScopeChange;
 
-  const hasModeToggle = mode !== undefined && onModeChange !== undefined;
-  const showPlanWatchSlot = !hasModeToggle || mode === 'ptc';
-  const showWorkspaceSelector = !!(hasModeToggle && mode === 'ptc' && workspaces && workspaces.length > 0);
-  const ptcBlocked = mode === 'fast' && !!ptcDisabledReason;
-  const selectedWorkspaceName = useMemo(() => {
-    if (!workspaces || !selectedWorkspaceId) return 'Workspace';
-    return workspaces.find((w) => w.workspace_id === selectedWorkspaceId)?.name || 'Workspace';
-  }, [workspaces, selectedWorkspaceId]);
+  const allSelected = scope === 'all';
+  const scopeLabel = allSelected
+    ? t('agents.chiefOfStaff')
+    : workspaces?.find((w) => w.workspace_id === selectedWorkspaceId)?.name || t('nav.workspaceFallback');
+  // Shown in the picker when the host can say why its workspace list is empty.
+  const noWorkspacesHint = !workspaces?.length ? emptyWorkspacesHint : null;
+  const hasSecondSection = !!workspaces?.length || !!noWorkspacesHint;
+  const pickAll = useCallback(() => {
+    if (scope !== 'all') onScopeChange?.('all');
+  }, [scope, onScopeChange]);
+  // Workspace before scope, so a host keyed on the active workspace never
+  // pairs the workspace scope with the previously selected workspace.
+  const pickWorkspace = useCallback((id: string) => {
+    if (id !== selectedWorkspaceId) onWorkspaceChange?.(id);
+    if (scope !== 'workspace') onScopeChange?.('workspace');
+  }, [scope, onScopeChange, selectedWorkspaceId, onWorkspaceChange]);
+
+  const subagentsOn = subagentsAllowed === true;
 
   return useMemo<ToolbarItem[]>(() => [
     {
-      id: 'mode',
+      id: 'scope',
       group: 'agent',
-      visible: hasModeToggle,
-      inline: ({ measureOnly }) => (
-        <PillToggle
-          icon={mode === 'fast' ? Zap : FileStack}
-          label={mode === 'fast' ? 'Flash' : 'PTC'}
-          title={mode === 'fast'
-            ? 'Flash — quick answer using flash model'
-            : 'PTC — full agent with workspace and tools'}
-          disabledReason={ptcBlocked ? ptcDisabledReason : null}
-          aria="none"
-          onToggle={() => onModeChange?.(mode === 'fast' ? 'ptc' : 'fast')}
-          measureOnly={measureOnly}
-        />
+      // The one control that says where a send goes, so it is the last to fold.
+      visible: hasScopePicker,
+      inline: ({ measureOnly }) => {
+        const pill = (
+          <PillToggle
+            active={showWorkspaceMenu}
+            onToggle={() => setShowWorkspaceMenu(!showWorkspaceMenu)}
+            icon={allSelected ? Layers : FolderOpen}
+            label={scopeLabel}
+            title={t('agents.pickWhere')}
+            trailing={<ChevronDown className="h-3 w-3 flex-none" />}
+            aria="expanded"
+            gap={4}
+            className="min-w-0"
+            labelClassName="min-w-0 max-w-[120px] truncate"
+            buttonRef={measureOnly ? undefined : workspaceBtnRef}
+            measureOnly={measureOnly}
+          />
+        );
+        if (measureOnly) return pill;
+        return (
+          <>
+            {pill}
+            <WorkspacePicker
+              triggerRef={workspaceBtnRef}
+              isOpen={showWorkspaceMenu}
+              onOpenChange={setShowWorkspaceMenu}
+              workspaces={workspaces ?? []}
+              selectedKey={allSelected ? ALL_WORKSPACES_KEY : selectedWorkspaceId ?? null}
+              onPick={(key) => (key === ALL_WORKSPACES_KEY ? pickAll() : pickWorkspace(key))}
+              emptyHint={noWorkspacesHint}
+              direction={menuDirection}
+              container={menuContainer}
+              draftRef={draftRef}
+            />
+          </>
+        );
+      },
+      menu: () => (
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            {allSelected ? <Layers className="h-4 w-4 flex-none" /> : <FolderOpen className="h-4 w-4 flex-none" />}
+            <span className="min-w-0 max-w-[120px] truncate">{scopeLabel}</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="max-h-64 overflow-y-auto">
+            <DropdownMenuItem title={t('agents.chiefOfStaffHint')} onSelect={pickAll}>
+              <Layers className="h-4 w-4 shrink-0" />
+              <span className="truncate">{t('agents.chiefOfStaff')}</span>
+              {allSelected && <Check className="ml-auto h-4 w-4 shrink-0" />}
+            </DropdownMenuItem>
+            {hasSecondSection && <DropdownMenuSeparator />}
+            {workspaces?.map((ws) => (
+              <DropdownMenuItem key={ws.workspace_id} onSelect={() => pickWorkspace(ws.workspace_id)}>
+                <FolderOpen className="h-4 w-4 shrink-0" />
+                <span className="truncate">{ws.name}</span>
+                {!allSelected && ws.workspace_id === selectedWorkspaceId && <Check className="ml-auto h-4 w-4 shrink-0" />}
+              </DropdownMenuItem>
+            ))}
+            {noWorkspacesHint && (
+              <DropdownMenuItem disabled>
+                <span className="text-xs">{noWorkspacesHint}</span>
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       ),
+    },
+    {
+      id: 'subagents',
+      group: 'toggle',
+      // Pressed means on, the default, so the ⋯ dot stays off: lit for the
+      // usual state it would never mean anything.
+      visible: subagentsAllowed !== null,
+      inline: ({ measureOnly }) => (
+        <IconToggle
+          active={subagentsOn}
+          onToggle={() => onToggleSubagents(!subagentsOn)}
+          label={t('chat.pills.subagents')}
+          tooltip={t(subagentsOn ? 'chat.pills.subagentsOn' : 'chat.pills.subagentsOff')}
+          measureOnly={measureOnly}
+        >
+          <SubagentsGlyph on={subagentsOn} />
+        </IconToggle>
+      ),
+      // Under the switch, the page that says what each subagent is. Quieter
+      // than the switch and indented to its label, so it reads as part of
+      // the same item rather than a second control.
       menu: () => (
         <>
-          <DropdownMenuItem onSelect={() => { if (mode !== 'fast') onModeChange?.('fast'); }}>
-            <Zap className="h-4 w-4" />
-            <span>Flash</span>
-            {mode === 'fast' && <Check className="ml-auto h-4 w-4" />}
-          </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={ptcBlocked}
-            title={ptcBlocked ? ptcDisabledReason! : undefined}
-            onSelect={() => { if (mode !== 'ptc') onModeChange?.('ptc'); }}
+            onSelect={(e) => { e.preventDefault(); onToggleSubagents(!subagentsOn); }}
           >
-            <FileStack className="h-4 w-4" />
-            <span>PTC</span>
-            {mode === 'ptc' && <Check className="ml-auto h-4 w-4" />}
+            <SubagentsGlyph
+              on={subagentsOn}
+              style={subagentsOn ? { color: 'var(--color-accent-light)' } : undefined}
+            />
+            <span>{t('chat.pills.subagents')}</span>
+            {subagentsOn && <Check className="ml-auto h-4 w-4" style={{ color: 'var(--color-accent-light)' }} />}
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            <Link to="/plugins?tab=subagents">
+              <span className="w-4 flex-none" aria-hidden />
+              <span>{t('chat.pills.manageSubagents')}</span>
+              <ChevronRight className="ml-auto h-3.5 w-3.5" aria-hidden />
+            </Link>
           </DropdownMenuItem>
         </>
       ),
     },
     {
-      id: 'plan',
-      group: 'toggle',
-      // Shown when the host enforces PTC (no mode toggle) or PTC is selected.
-      visible: showPlanWatchSlot,
-      active: planMode,
-      inline: ({ measureOnly }) => (
-        <PillToggle
-          active={planMode}
-          onToggle={() => setPlanMode(!planMode)}
-          icon={ScrollText}
-          label={t('chat.pills.plan')}
-          title={t('chat.pills.planTitle')}
-          measureOnly={measureOnly}
-        />
-      ),
-      menu: () => (
-        <DropdownMenuItem
-          title={t('chat.pills.planTitle')}
-          onSelect={(e) => { e.preventDefault(); setPlanMode(!planMode); }}
-        >
-          <ScrollText className="h-4 w-4" style={planMode ? { color: 'var(--color-accent-light)' } : undefined} />
-          <span>{t('chat.pills.plan')}</span>
-          {planMode && <Check className="ml-auto h-4 w-4" style={{ color: 'var(--color-accent-light)' }} />}
-        </DropdownMenuItem>
-      ),
-    },
-    {
       id: 'watch',
       group: 'toggle',
-      visible: showPlanWatchSlot && marketWatchEnabled,
+      visible: marketWatchEnabled,
       active: watchMode,
       inline: ({ measureOnly }) => (
-        <PillToggle
+        <IconToggle
           active={watchMode}
           onToggle={() => setWatchMode(!watchMode)}
-          icon={Radar}
           label={t('chat.pills.watch')}
-          title={t('chat.pills.watchTitle')}
+          tooltip={t(watchMode ? 'chat.pills.watchOn' : 'chat.pills.watchOff')}
           measureOnly={measureOnly}
-        />
+        >
+          <Radar className="h-4 w-4" />
+        </IconToggle>
       ),
       menu: () => (
         <DropdownMenuItem
@@ -160,77 +219,11 @@ export function useToolbarItems({
         </DropdownMenuItem>
       ),
     },
-    {
-      id: 'workspace',
-      group: 'workspace',
-      // Widest and least-toggled, so it folds first.
-      visible: showWorkspaceSelector,
-      inline: ({ measureOnly }) => {
-        const pill = (
-          <PillToggle
-            active={showWorkspaceMenu}
-            onToggle={() => setShowWorkspaceMenu(!showWorkspaceMenu)}
-            icon={FolderOpen}
-            label={selectedWorkspaceName}
-            title="Select workspace"
-            trailing={<ChevronDown className="h-3 w-3 flex-none" />}
-            aria="expanded"
-            gap={4}
-            className="min-w-0"
-            labelClassName="min-w-0 max-w-[100px] truncate"
-            buttonRef={measureOnly ? undefined : workspaceBtnRef}
-            measureOnly={measureOnly}
-          />
-        );
-        if (measureOnly) return pill;
-        return (
-          <div className="relative flex min-w-0" ref={workspaceMenuRef}>
-            {pill}
-            {showWorkspaceMenu && (
-              <div className="workspace-dropdown workspace-dropdown-up">
-                {workspaces?.map((ws) => (
-                  <div
-                    key={ws.workspace_id}
-                    className={`workspace-dropdown-item ${ws.workspace_id === selectedWorkspaceId ? 'active' : ''}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      onWorkspaceChange?.(ws.workspace_id);
-                      setShowWorkspaceMenu(false);
-                    }}
-                  >
-                    <FolderOpen className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                    <span>{ws.name}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      },
-      menu: () => (
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <FolderOpen className="h-4 w-4 flex-none" />
-            <span className="min-w-0 max-w-[120px] truncate">{selectedWorkspaceName}</span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="max-h-64 overflow-y-auto">
-            {workspaces?.map((ws) => (
-              <DropdownMenuItem
-                key={ws.workspace_id}
-                onSelect={() => onWorkspaceChange?.(ws.workspace_id)}
-              >
-                <span className="truncate">{ws.name}</span>
-                {ws.workspace_id === selectedWorkspaceId && <Check className="ml-auto h-4 w-4 flex-shrink-0" />}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-      ),
-    },
   ], [
-    hasModeToggle, mode, onModeChange, ptcBlocked, ptcDisabledReason,
-    showPlanWatchSlot, planMode, setPlanMode, watchMode, setWatchMode, marketWatchEnabled,
-    showWorkspaceSelector, showWorkspaceMenu, selectedWorkspaceName,
-    workspaces, selectedWorkspaceId, onWorkspaceChange, t,
+    subagentsAllowed, subagentsOn, onToggleSubagents,
+    watchMode, setWatchMode, marketWatchEnabled, showWorkspaceMenu,
+    workspaces, selectedWorkspaceId, t,
+    hasScopePicker, allSelected, scopeLabel, noWorkspacesHint, hasSecondSection,
+    pickAll, pickWorkspace, menuDirection, menuContainer, draftRef,
   ]);
 }

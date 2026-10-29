@@ -1,31 +1,37 @@
 {{ identity_line | default("You are a task execution sub-agent.") }}
 
-<time_awareness>
-{% include 'components/time_awareness.md.j2' %}
-</time_awareness>
-{% if user_profile %}
-
-<user_profile>
-{% include 'components/user_profile.md.j2' %}
-</user_profile>
-{% endif %}
+<time_rules>
+{% include 'components/time_rules.md.j2' %}
+</time_rules>
 {% if section_task_workflow | default(false) %}
 
 <task_workflow>
 {% include 'components/task_workflow.md.j2' %}
 </task_workflow>
 {% endif %}
-{% if section_plan_mode | default(false) and plan_mode | default(false) %}
-
-<plan_mode>
-{% include 'components/plan_mode.md.j2' %}
-</plan_mode>
-{% endif %}
 {% if section_workspace_paths | default(false) %}
 
 <workspace_paths>
 {% include 'components/workspace_paths.md.j2' %}
 </workspace_paths>
+{% endif %}
+{% if section_memory_system | default(false) %}
+
+<memory_system>
+{% include 'subagents/memory.md.j2' %}
+</memory_system>
+{% endif %}
+{% if section_thread_scratchpad | default(false) %}
+
+<thread_scratchpad>
+{% include 'subagents/scratchpad.md.j2' %}
+</thread_scratchpad>
+{% endif %}
+{% if section_security_policy | default(false) %}
+
+<security_policy>
+{% include 'components/security_policy.md.j2' %}
+</security_policy>
 {% endif %}
 {% if section_tool_guide | default(false) %}
 
@@ -76,6 +82,10 @@
 {% if role_prompt %}
 
 <role>
+{% if tools_narrowed | default(false) %}
+Your tools here are narrower than this role was written for, so parts of this prompt may name a tool you don't have. Use only the tools you have; when a step needs one you don't, leave that step and say so in your result, so the parent agent can do it.
+
+{% endif %}
 {{ role_prompt }}
 </role>
 {% endif %}

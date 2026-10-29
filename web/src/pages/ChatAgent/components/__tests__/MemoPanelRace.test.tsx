@@ -36,7 +36,7 @@ vi.mock('../Markdown', () => ({
     onOpenFile,
   }: {
     content: string;
-    onOpenFile?: (href: string, wsId?: string) => void;
+    onOpenFile?: (href: string, wsId?: string, location?: { page?: number }) => void;
   }) => (
     <div data-testid="markdown-content">
       {content}
@@ -58,7 +58,7 @@ vi.mock('../Markdown', () => ({
       <button
         type="button"
         data-testid="md-link-pdf"
-        onClick={() => onOpenFile?.('reports/q1.pdf')}
+        onClick={() => onOpenFile?.('reports/q1.pdf', undefined, { page: 3 })}
       >
         reports/q1.pdf
       </button>
@@ -311,6 +311,7 @@ describe('MemoPanel — body link routing (Fix #6)', () => {
     expect(onOpenFile).toHaveBeenLastCalledWith(
       '.agents/user/memo/siblings.md',
       undefined,
+      undefined,
     );
 
     // `./other.md` → leading `./` stripped, resolved against memo dir.
@@ -318,17 +319,20 @@ describe('MemoPanel — body link routing (Fix #6)', () => {
     expect(onOpenFile).toHaveBeenLastCalledWith(
       '.agents/user/memo/other.md',
       undefined,
+      undefined,
     );
 
     // `reports/q1.pdf` → has a subdir → passes through verbatim.
     await user.click(screen.getByTestId('md-link-pdf'));
-    expect(onOpenFile).toHaveBeenLastCalledWith('reports/q1.pdf', undefined);
+    // A location on the link rides through the rewrite.
+    expect(onOpenFile).toHaveBeenLastCalledWith('reports/q1.pdf', undefined, { page: 3 });
 
     // Bare `attached.pdf` (no subdir) → still resolved against memo dir
     // because PDFs are valid memo entries.
     await user.click(screen.getByTestId('md-link-bare-pdf'));
     expect(onOpenFile).toHaveBeenLastCalledWith(
       '.agents/user/memo/attached.pdf',
+      undefined,
       undefined,
     );
   });

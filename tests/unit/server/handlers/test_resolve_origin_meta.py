@@ -1,6 +1,6 @@
 """Sticky origin-meta resolution (Codex 2.3 round-12 F3).
 
-``_resolve_origin_meta`` is the single source for a run's watching-flash
+``_resolve_origin_meta`` is the single source for a run's watching-thread
 identity AND its dispatch generation: the dispatch POST supplies them,
 follow-up turns (HITL resume, user continuation — public requests with no
 origin fields) inherit them from the previous attempt's durable metadata.
@@ -19,17 +19,17 @@ from src.server.handlers.chat.ptc_run import _resolve_origin_meta
 
 
 def _request(**fields):
-    base = {"origin_flash_thread_id": None, "origin_dispatch_gen": None}
+    base = {"origin_home_thread_id": None, "origin_dispatch_gen": None}
     base.update(fields)
     return SimpleNamespace(**base)
 
 
 @pytest.mark.asyncio
 async def test_dispatch_post_supplies_both_fields():
-    req = _request(origin_flash_thread_id="flash-1", origin_dispatch_gen="g-1")
+    req = _request(origin_home_thread_id="cos-1", origin_dispatch_gen="g-1")
     meta = await _resolve_origin_meta(req, "ptc-1")
     assert meta == {
-        "origin_flash_thread_id": "flash-1",
+        "origin_home_thread_id": "cos-1",
         "origin_dispatch_gen": "g-1",
     }
 
@@ -41,7 +41,7 @@ async def test_public_follow_up_inherits_from_previous_attempt():
     req = _request()
     prev = {
         "metadata": {
-            "origin_flash_thread_id": "flash-1",
+            "origin_home_thread_id": "cos-1",
             "origin_dispatch_gen": "g-1",
         }
     }
@@ -51,7 +51,7 @@ async def test_public_follow_up_inherits_from_previous_attempt():
     ):
         meta = await _resolve_origin_meta(req, "ptc-1")
     assert meta == {
-        "origin_flash_thread_id": "flash-1",
+        "origin_home_thread_id": "cos-1",
         "origin_dispatch_gen": "g-1",
     }
 
@@ -67,6 +67,6 @@ async def test_origin_less_thread_resolves_none():
     ):
         meta = await _resolve_origin_meta(req, "ptc-1")
     assert meta == {
-        "origin_flash_thread_id": None,
+        "origin_home_thread_id": None,
         "origin_dispatch_gen": None,
     }

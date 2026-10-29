@@ -1,17 +1,29 @@
 import http from 'node:http';
 
-// Prevent crashes from unhandled errors
-process.on('uncaughtException', (err) => {
-  console.error('Mock SSE server uncaught exception:', err.message);
-});
-process.on('unhandledRejection', (err) => {
-  console.error('Mock SSE server unhandled rejection:', err);
-});
+/**
+ * Start a mock backend on 127.0.0.1:`port`. Scenario state is per server, so the
+ * Playwright worker that starts one owns its scenarios outright (see fixtures.js).
+ */
+export function startMockServer(port) {
+  const state = { scenarios: {}, requestLog: [] };
+  const server = http.createServer((req, res) => handle(state, req, res));
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve({
+        close: () =>
+          new Promise((done) => {
+            // A response still streaming would hold close() open.
+            server.closeAllConnections();
+            server.close(() => done());
+          }),
+      });
+    });
+  });
+}
 
-let scenarios = {};
-let requestLog = [];
-
-const server = http.createServer(async (req, res) => {
+async function handle({ scenarios, requestLog }, req, res) {
   try {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -35,8 +47,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.url === '/__reset' && req.method === 'POST') {
-    scenarios = {};
-    requestLog = [];
+    for (const k of Object.keys(scenarios)) delete scenarios[k];
+    requestLog.length = 0;
     res.writeHead(200);
     res.end('ok');
     return;
@@ -122,8 +134,11 @@ const server = http.createServer(async (req, res) => {
     lines.push('', '');
     res.write(lines.join('\n'));
 
-    if (i < scenario.events.length - 1 && scenario.delay > 0) {
-      await new Promise((r) => setTimeout(r, scenario.delay));
+    // An event may carry its own `delayAfter` (ms) to shape timing around
+    // a single gap without slowing the whole stream.
+    const wait = ev.delayAfter ?? scenario.delay;
+    if (i < scenario.events.length - 1 && wait > 0) {
+      await new Promise((r) => setTimeout(r, wait));
     }
   }
   res.end();
@@ -134,7 +149,7 @@ const server = http.createServer(async (req, res) => {
     }
     res.end(JSON.stringify({ error: err.message }));
   }
-});
+}
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -151,5 +166,3 @@ function tryParseJSON(str) {
     return str;
   }
 }
-
-server.listen(4100, () => console.log('Mock SSE server on :4100'));

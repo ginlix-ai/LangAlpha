@@ -1,0 +1,9 @@
+{
+  "edition": "oss",
+  "appOrigin": "http://localhost:5173",
+  "platformOrigin": null,
+  "loginPath": "/login",
+  "updateFeed": null,
+  "updateMode": "auto",
+  "downloadPage": null
+}

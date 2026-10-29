@@ -1,0 +1,88 @@
+{
+  "chat": {
+    "modes": {
+      "title": "Two ways to work",
+      "body": "Pick a workspace and its Analyst does the work there, with that workspace's files. Pick your Chief of Staff and it takes it from there: it answers quick questions itself and hands deep work to the right Analyst."
+    },
+    "chiefOfStaff": {
+      "title": "Your Chief of Staff: ask it anything",
+      "body": "Just say what you need, here or from a chat app like Slack or iMessage. Your Chief of Staff answers quick questions, creates workspaces, hands deep work to their Analysts and reports back where you asked, and manages your automations. Its threads are listed under Chief of Staff, and its own files live in Home."
+    },
+    "ptc": {
+      "title": "A workspace: its Analyst does the work",
+      "body": "Each workspace has its own Analyst, and every thread in it shares the same files, data and past work, so research builds on itself. It works through large datasets, runs multi-step workflows, and produces the deliverable: Excel models, Word docs, PDFs, dashboards."
+    },
+    "workspace": {
+      "title": "Meet workspaces",
+      "body": "A workspace is a desk for one project: its threads share the same files, data and results, kept apart from your other work. Each one lives on a computer: Home is on your primary one, and you can add more, including your own Mac by remote control."
+    },
+    "create": {
+      "title": "Give real tasks their own workspace",
+      "body": "If it involves data work or ends in a deliverable, give it a workspace: hit \"New workspace\" and name it after the task, or ask your Chief of Staff to set one up."
+    }
+  },
+  "thread": {
+    "filePanel": {
+      "title": "Every file lands in the file panel",
+      "body": "Word docs, Excel models, PDFs, charts: whatever the agent makes is saved to the workspace. Open the panel from the button at the top right to browse, preview, and download."
+    },
+    "chart": {
+      "title": "Charts open beside the chat",
+      "body": "Open a live chart in the file panel, or click one the agent made. Select a region or a price level to ask about it, and the agent marks the events behind the move right on the chart."
+    },
+    "memory": {
+      "title": "The agent remembers how you work",
+      "body": "It keeps a long-term memory across threads: how you like reports written, your risk limits, the conventions you work by. Say “remember this” to add to it."
+    },
+    "memo": {
+      "title": "Ground it in your own research",
+      "body": "Upload your own research as memos: past theses, notes, models. The agent reads them when they matter, next to the filings and market data it pulls itself."
+    },
+    "share": {
+      "title": "Share a conversation or one file",
+      "body": "Share a conversation as a read-only link, and choose whether visitors can browse and download its files. Or share one file, such as a report or a dashboard, on its own link: the conversation stays private."
+    }
+  },
+  "dashboard": {
+    "overview": {
+      "title": "Your market homepage",
+      "body": "Watchlist, portfolio, news, and live charts in one place, up to date before you ask anything."
+    },
+    "customize": {
+      "title": "Make it yours",
+      "body": "Click the pencil to add, remove, resize, and rearrange widgets."
+    },
+    "attach": {
+      "title": "Clip any widget into chat",
+      "body": "See something worth digging into? Click the paperclip on a row to attach it to the chat, and the agent sees exactly what you're looking at."
+    }
+  },
+  "market": {
+    "ask": {
+      "title": "Ask about what you see",
+      "body": "Pick Region or Price level in the toolbar and mark the chart. The selection goes to the agent in the side panel with the bars behind it, so it reads exactly what you marked."
+    },
+    "draw": {
+      "title": "The agent marks what moved the price",
+      "body": "It answers on the chart too, pinning each event behind a move to the bar where it hit. Click a badge for the story behind it. The drawings stay with the workspace, so its chart tab shows them too."
+    }
+  },
+  "automations": {
+    "trigger": {
+      "title": "On a schedule, or when a price moves",
+      "body": "Start from a template or write the instruction yourself, then set when it runs: every weekday at 8:00, say, or the moment NVDA crosses $190."
+    },
+    "ask": {
+      "title": "Or set it up in chat",
+      "body": "Describe what you want instead. Your agent sums up the schedule and instruction, creates it once you say yes, and can pause, change or delete it the same way."
+    },
+    "feed": {
+      "title": "Every run is a full research run",
+      "body": "The agent works just as it does in chat, and every run is a thread you can open. What it finds lands in the feed, newest first."
+    },
+    "delivery": {
+      "title": "Results come to your chat apps",
+      "body": "Have each run's results sent to Slack, Discord, Telegram, iMessage or Feishu. Set it under More options, along with the workspace the run uses."
+    }
+  }
+}

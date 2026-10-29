@@ -63,8 +63,8 @@ export function CitationMetadataProvider({ toolCallProcesses, children }: Citati
   }, [toolCallProcesses]);
 
   return (
-    <CitationMetadataContext.Provider value={metaMap}>
+    <CitationMetadataContext value={metaMap}>
       {children}
-    </CitationMetadataContext.Provider>
+    </CitationMetadataContext>
   );
 }

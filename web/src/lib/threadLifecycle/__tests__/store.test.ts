@@ -4,18 +4,20 @@
  * are merely "not proven" (the v5 bug this design replaced erased unseen dots
  * that had only been clipped below the unseen cap).
  */
-import { renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyFeedEvent,
   applySnapshot,
   pruneThread,
+  raiseSeenToEffective,
   resetThreadLifecycle,
   setActiveThread,
   type SnapshotEntry,
   type SnapshotFrame,
   useThreadNeedsInput,
   useThreadRunning,
+  useThreadRunStates,
   useThreadRunStatus,
   useThreadUnseen,
 } from '../store';
@@ -265,5 +267,87 @@ describe('threadLifecycleStore — prune', () => {
       unseen: false,
       status: 'idle',
     });
+  });
+});
+
+describe('threadLifecycleStore — run states', () => {
+  it('tells a view when a newer run settles as the last one did', () => {
+    // On the open thread no unseen dot changes, so the run seq is the only news.
+    setActiveThread('t1');
+    feed('t1', 'completed', 5);
+    const { result } = renderHook(() => useThreadRunStates(['t1']));
+    const before = result.current.revision;
+
+    act(() => feed('t1', 'completed', 6));
+
+    expect(result.current.status.get('t1')).toBe('completed');
+    expect(result.current.revision).not.toBe(before);
+  });
+
+  it('reads a live run a snapshot shows is over as unknown, and tells the view', () => {
+    // Its settle never arrived; the next snapshot leaves it out of the live set.
+    feed('t1', 'running', 5);
+    const { result } = renderHook(() => useThreadRunStates(['t1']));
+    const before = result.current.revision;
+
+    act(() => applySnapshot(frame({ as_of_seq: 7 })));
+
+    expect(result.current.status.get('t1')).toBe('idle');
+    expect(result.current.revision).not.toBe(before);
+  });
+});
+
+// The server carries the seen cursor over a quiet wakeup check only when
+// every earlier run was seen, and says so on the settle.
+describe('a quiet wakeup check', () => {
+  const carriedSettle = (threadId: string, runSeq: number) =>
+    applyFeedEvent({
+      type: 'run_settled',
+      thread_id: threadId,
+      run_id: `r-${threadId}-${runSeq}`,
+      run_seq: runSeq,
+      status: 'completed',
+      last_seen_run_seq: runSeq,
+    });
+
+  it('leaves a seen thread seen', () => {
+    feed('t1', 'completed', 5);
+    raiseSeenToEffective('t1');
+    feed('t1', 'running', 6);
+    carriedSettle('t1', 6);
+    expect(read('t1').unseen).toBe(false);
+  });
+
+  it('leaves the dot to a check the server did not carry the cursor over', () => {
+    feed('t1', 'completed', 5);
+    raiseSeenToEffective('t1');
+    feed('t1', 'running', 6);
+    feed('t1', 'completed', 6);
+    expect(read('t1').unseen).toBe(true);
+  });
+
+  it('leaves a thread seen with no earlier run known', () => {
+    carriedSettle('t1', 6);
+    expect(read('t1').unseen).toBe(false);
+  });
+});
+
+describe('a hot reload', () => {
+  it('gives the state an older version of the module built the fields added since', async () => {
+    const anchor = '__langalpha_thread_lifecycle_store__';
+    const global = globalThis as Record<string, unknown>;
+    const current = global[anchor];
+    const { effSeq: _, ...older } = current as Record<string, unknown>;
+    global[anchor] = older;
+    try {
+      vi.resetModules();
+      const reloaded = await import('../store');
+      const { result } = renderHook(() => reloaded.useThreadRunStates(['thread-a']));
+      expect(result.current.status.get('thread-a')).toBe('idle');
+      expect(global[anchor]).toBe(older);
+    } finally {
+      global[anchor] = current;
+      vi.resetModules();
+    }
   });
 });

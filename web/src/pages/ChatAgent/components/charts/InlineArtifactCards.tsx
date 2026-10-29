@@ -1,50 +1,45 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react';
-import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Cell,
-  LabelList,
-} from 'recharts';
-import { useTranslation } from 'react-i18next';
-import { utcMsToETDate } from '@/lib/utils';
-import { useIsMobile } from '@/hooks/useIsMobile';
+import type React from 'react';
+import { readTypedTicker } from '@/lib/marketUtils';
+import type { InlineCardProps } from './cardReaders';
 import { InlineAutomationCard } from './InlineAutomationCards';
 import { InlinePreviewCard } from './InlinePreviewCard';
 import { InlineChartAnnotationCard } from './InlineChartAnnotationCard';
 import { InlineQuoteCard } from './InlineQuoteCard';
+import { InlineStockPriceCard } from './InlineStockPriceCard';
+import { InlineCompanyOverviewCard } from './InlineCompanyOverviewCard';
 import {
-  GREEN,
-  RED,
-  TEXT_COLOR,
-  CARD_BORDER,
-  SIZES_MOBILE,
-  SIZES_DESKTOP,
-  cardStyle,
-  mobileCardStyle,
-  formatPct,
-  formatCompactNumber,
-  MARKET_STATUS_COLORS,
-  extendedHoursLabel,
-  marketStatusLabel,
-  unwrapMarketOverview,
-  type InlineCardProps,
-} from './inlineCardsShared';
+  InlineMarketIndicesCard,
+  InlineMarketOverviewCard,
+  InlineSectorPerformanceCard,
+} from './InlineMarketCards';
+import { InlineStockScreenerCard } from './InlineScreenerCard';
+import { InlineOptionsChainCard } from './InlineOptionsChainCard';
+import { InlineMarketMoversCard } from './InlineMarketMoversCard';
+import { InlineSecFilingCard } from './InlineSecFilingCard';
+import { InlineWebSearchCard } from './InlineWebSearchCard';
+import { OrderReceiptCard } from '../mcp/OrderReceiptCard';
+import { MessageDeliveryCard } from '../messaging/MessageDeliveryCard';
 
 export const INLINE_ARTIFACT_TOOLS = new Set([
   'get_daily_prices',
   'get_stock_daily_prices',
   'get_company_overview',
   'get_quote',
-  // Composite tool — renders InlineMarketOverviewCard, which nests the legacy
+  // Composite tool, renders InlineMarketOverviewCard, which nests the legacy
   // indices + sector cards. Requires the `market_overview` entry in
   // INLINE_ARTIFACT_MAP (ActivityBlock.tsx / MessageList.tsx). Unlike the other
-  // cards, InlineMarketOverviewCard never returns null — a completed
+  // cards, InlineMarketOverviewCard never returns null, a completed
   // get_market_overview call routed here always renders (the unknown-region
   // error path falls back to a minimal region card rather than nothing).
   'get_market_overview',
-  // Legacy names (pre-consolidation) — kept for SSE replay of historical threads
+  // Legacy names (pre-consolidation), kept for SSE replay of historical threads
   'get_market_indices',
   'get_sector_performance',
   'get_sec_filing',
   'screen_stocks',
+  // Both draw a card for an error too, so a failed lookup keeps its place.
+  'get_options_chain',
+  'get_market_movers',
   'check_automations',
   'create_automation',
   'GetPreviewUrl',
@@ -52,1001 +47,17 @@ export const INLINE_ARTIFACT_TOOLS = new Set([
   'draw_chart_annotation',
 ]);
 
-// ─── Helpers ────────────────────────────────────────────────────────
-
-function downsample<T>(arr: T[] | null | undefined, maxPoints = 60): T[] | null | undefined {
-  if (!arr || arr.length <= maxPoints) return arr;
-  const step = arr.length / maxPoints;
-  const result: T[] = [];
-  for (let i = 0; i < maxPoints; i++) {
-    result.push(arr[Math.floor(i * step)]);
-  }
-  // Always include last point
-  if (result[result.length - 1] !== arr[arr.length - 1]) {
-    result.push(arr[arr.length - 1]);
-  }
-  return result;
-}
-
-const ABBREVIATIONS: Record<string, string> = {
-  'Consumer Cyclical': 'Cons. Cyclical',
-  'Consumer Defensive': 'Cons. Defensive',
-  'Communication Services': 'Comm. Services',
-  'Financial Services': 'Financial Svcs',
-  'Basic Materials': 'Basic Materials',
-  'Real Estate': 'Real Estate',
-};
-
-function abbreviateSector(name: string): string {
-  return ABBREVIATIONS[name] || name;
-}
-
-/** Measures container width via ResizeObserver and passes it to children as a render prop.
- *  Replaces ResponsiveContainer to avoid the Recharts width(-1) warning on first render. */
-function MeasuredContainer({ height, children }: { height: number; children: (width: number) => React.ReactNode }): React.ReactElement {
-  const ref = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      const w = Math.round(entry.contentRect.width);
-      setWidth((prev) => (prev !== w ? w : prev));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  return (
-    <div ref={ref} style={{ width: '100%', height, minWidth: 1 }}>
-      {width > 0 && children(width)}
-    </div>
-  );
-}
-
-// ─── InlineStockPriceCard ───────────────────────────────────────────
-
-export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const { symbol, ohlcv, stats } = (artifact || {}) as {
-    symbol?: string;
-    ohlcv?: Record<string, unknown>[];
-    stats?: Record<string, unknown>;
-  };
-
-  const sparkData = useMemo(() => {
-    if (!ohlcv?.length) return [];
-    return (downsample(ohlcv) as Record<string, unknown>[]).map((d) => ({ close: d.close as number }));
-  }, [ohlcv]);
-
-  if (!ohlcv?.length) return null;
-
-  const lastClose = ohlcv[ohlcv.length - 1]?.close as number | undefined;
-  const formatDateLabel = (val: unknown): string => {
-    if (typeof val === 'number') return utcMsToETDate(val);
-    return (val as string) || '';
-  };
-  const firstDate = formatDateLabel(ohlcv[0]?.time ?? ohlcv[0]?.date);
-  const lastDate = formatDateLabel(ohlcv[ohlcv.length - 1]?.time ?? ohlcv[ohlcv.length - 1]?.date);
-  const changePct = stats?.period_change_pct as number | undefined;
-  const isPositive = (changePct ?? 0) >= 0;
-  const color = isPositive ? GREEN : RED;
-  const gradientId = `sparkGrad-${symbol || 'stock'}`;
-
-  // Period label from date range
-  const periodLabel = firstDate && lastDate ? `${firstDate} — ${lastDate}` : '';
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      {/* Header row: symbol + price + change */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: 2 }}>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem' }}>{symbol}</span>
-        {lastClose != null && (
-          <span style={{ color: 'var(--color-text-primary)', fontSize: isMobile ? '0.8125rem' : '0.9375rem', fontWeight: 600 }}>${lastClose.toFixed(2)}</span>
-        )}
-        {changePct != null && (
-          <span style={{ color, fontSize: isMobile ? '0.6875rem' : '0.8125rem', fontWeight: 600 }}>
-            {formatPct(changePct)}
-          </span>
-        )}
-        <span style={{ marginLeft: 'auto', fontSize: sz.labelFs, color: TEXT_COLOR }}>
-          {periodLabel}
-        </span>
-      </div>
-
-      {/* Sparkline */}
-      <MeasuredContainer height={isMobile ? 48 : 64}>
-        {(w) => (
-          <AreaChart width={w} height={isMobile ? 48 : 64} data={sparkData} margin={{ top: 4, right: 2, bottom: 2, left: 2 }}>
-            <defs>
-              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity={0.3} />
-                <stop offset="100%" stopColor={color} stopOpacity={0.02} />
-              </linearGradient>
-            </defs>
-            <YAxis type="number" domain={['dataMin', 'dataMax']} hide />
-            <Area
-              type="monotone"
-              dataKey="close"
-              stroke={color}
-              strokeWidth={1.5}
-              fill={`url(#${gradientId})`}
-              dot={false}
-              isAnimationActive={false}
-            />
-          </AreaChart>
-        )}
-      </MeasuredContainer>
-
-      {/* Footer stats */}
-      {stats && (
-        <div
-          style={{
-            display: 'flex',
-            gap: isMobile ? 8 : 12,
-            marginTop: sz.moreMt,
-            fontSize: sz.labelFs,
-            color: TEXT_COLOR,
-            flexWrap: 'wrap',
-          }}
-        >
-          {(stats.period_high as number | undefined) != null && (
-            <span>{t('toolArtifact.high')}: ${(stats.period_high as number).toFixed(2)}</span>
-          )}
-          {(stats.period_low as number | undefined) != null && (
-            <span>{t('toolArtifact.low')}: ${(stats.period_low as number).toFixed(2)}</span>
-          )}
-          {(stats.avg_volume as number | undefined) != null && (
-            <span>{t('toolArtifact.vol')}: {formatCompactNumber(stats.avg_volume as number)}</span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── InlineCompanyOverviewCard ───────────────────────────────────────
-
-function formatMarketCap(num: number | null | undefined): string {
-  if (num == null) return 'N/A';
-  if (Math.abs(num) >= 1e12) return `$${(num / 1e12).toFixed(2)}T`;
-  if (Math.abs(num) >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
-  if (Math.abs(num) >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
-  return `$${num.toLocaleString()}`;
-}
-
-export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const { symbol, name, quote } = (artifact || {}) as {
-    symbol?: string;
-    name?: string;
-    quote?: Record<string, unknown>;
-  };
-  if (!quote) return null;
-
-  // Resolve display price: snapshot -> regularClose, FMP fallback -> price
-  const displayPrice = (quote.regularClose ?? quote.price) as number | undefined;
-  const displayChange = (quote.regularChange ?? quote.change) as number | undefined;
-  const displayChangePct = (quote.regularChangePct ?? quote.changePct) as number | undefined;
-  const changeColor = (displayChange ?? 0) >= 0 ? GREEN : RED;
-
-  // Extended hours
-  const marketStatus = quote.marketStatus as string | undefined;
-  const isExtended = marketStatus === 'early_trading' || marketStatus === 'late_trading';
-  const extPrice = quote.lastTradePrice as number | undefined;
-  const hasExtPrice = isExtended && extPrice != null && displayPrice != null && extPrice !== displayPrice;
-  const extDiff = hasExtPrice ? extPrice - displayPrice : 0;
-  const extDiffPct = hasExtPrice && displayPrice ? (extDiff / displayPrice * 100) : 0;
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      {/* Company name + symbol + market status */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.sectionMb, flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.875rem' : '1rem', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {name || symbol}
-        </span>
-        {name && (
-          <span style={{ fontSize: isMobile ? '0.6875rem' : '0.8125rem', color: TEXT_COLOR, flexShrink: 0 }}>{symbol}</span>
-        )}
-        {marketStatus && (
-          <span style={{
-            fontSize: sz.badgeFs, fontWeight: 600, padding: '1px 6px', borderRadius: 4,
-            color: MARKET_STATUS_COLORS[marketStatus] || TEXT_COLOR,
-            border: `1px solid ${MARKET_STATUS_COLORS[marketStatus] || TEXT_COLOR}`,
-            whiteSpace: 'nowrap', flexShrink: 0,
-          }}>
-            {marketStatusLabel(t, marketStatus)}
-          </span>
-        )}
-      </div>
-
-      {/* Regular close price + change */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: isMobile ? 8 : 10, marginBottom: hasExtPrice ? 2 : sz.filingMb }}>
-        {displayPrice != null && (
-          <span style={{ fontSize: isMobile ? '1.125rem' : '1.375rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-            ${displayPrice.toFixed(2)}
-          </span>
-        )}
-        {displayChange != null && (
-          <span style={{ fontSize: isMobile ? '0.75rem' : '0.875rem', color: changeColor, fontWeight: 500 }}>
-            {displayChange >= 0 ? '+' : ''}{displayChange.toFixed(2)} ({displayChangePct?.toFixed(2)}%)
-          </span>
-        )}
-      </div>
-
-      {/* Extended-hours price */}
-      {hasExtPrice && (
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.filingMb, fontSize: isMobile ? '0.6875rem' : '0.8125rem' }}>
-          <span style={{ color: TEXT_COLOR }}>
-            {extendedHoursLabel(t, marketStatus, 'long')}
-          </span>
-          <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>
-            ${extPrice.toFixed(2)}
-          </span>
-          <span style={{ color: extDiff >= 0 ? GREEN : RED, fontWeight: 500 }}>
-            {extDiff >= 0 ? '+' : ''}{extDiff.toFixed(2)} ({extDiffPct >= 0 ? '+' : ''}{extDiffPct.toFixed(2)}%)
-          </span>
-        </div>
-      )}
-
-      {/* Key stats grid */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: sz.gridGap,
-          fontSize: sz.rowFs,
-          color: TEXT_COLOR,
-        }}
-      >
-        {(quote.open as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.open')} value={`$${(quote.open as number).toFixed(2)}`} />
-        )}
-        {(quote.previousClose as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.prevClose')} value={`$${(quote.previousClose as number).toFixed(2)}`} />
-        )}
-        {(quote.dayLow as number | undefined) != null && (quote.dayHigh as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.dayRange')} value={`$${(quote.dayLow as number).toFixed(2)} - $${(quote.dayHigh as number).toFixed(2)}`} />
-        )}
-        {(quote.yearLow as number | undefined) != null && (quote.yearHigh as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.52wRange')} value={`$${(quote.yearLow as number).toFixed(2)} - $${(quote.yearHigh as number).toFixed(2)}`} />
-        )}
-        {(quote.volume as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.volume')} value={formatCompactNumber(quote.volume as number)} />
-        )}
-        {(quote.marketCap as number | undefined) != null && (
-          <QuoteRow label={t('toolArtifact.marketCap')} value={formatMarketCap(quote.marketCap as number)} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-interface QuoteRowProps {
-  label: string;
-  value: string;
-}
-
-function QuoteRow({ label, value }: QuoteRowProps): React.ReactElement {
-  const isMobile = useIsMobile();
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: isMobile ? SIZES_MOBILE.rowPad : SIZES_DESKTOP.rowPad }}>
-      <span style={{ opacity: 0.7 }}>{label}</span>
-      <span style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>{value}</span>
-    </div>
-  );
-}
-
-// ─── InlineMarketIndicesCard ────────────────────────────────────────
-
-export function InlineMarketIndicesCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const indices = (artifact as Record<string, unknown> | undefined)?.indices as Record<string, Record<string, unknown>> | undefined;
-  if (!indices || Object.keys(indices).length === 0) return null;
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      <div style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: sz.headerFs, marginBottom: isMobile ? 4 : 8 }}>
-        {t('toolArtifact.marketIndices')}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: sz.listGap }}>
-        {Object.entries(indices).map(([sym, data]) => {
-          const ohlcv = data.ohlcv as Record<string, unknown>[] | undefined;
-          const lastClose = ohlcv?.[ohlcv.length - 1]?.close as number | undefined;
-          const stats = data.stats as Record<string, unknown> | undefined;
-          const changePct = stats?.period_change_pct as number | undefined;
-          const color = (changePct ?? 0) >= 0 ? GREEN : RED;
-          return (
-            <div
-              key={sym}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: sz.rowPad,
-                fontSize: sz.rowFs,
-              }}
-            >
-              <span style={{ color: TEXT_COLOR, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{(data.name as string) || sym}</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: sz.gap, flexShrink: 0 }}>
-                {lastClose != null && (
-                  <span style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>
-                    {lastClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                )}
-                {changePct != null && (
-                  <span style={{ color, fontWeight: 500, minWidth: sz.changeMinW, textAlign: 'right' }}>
-                    {formatPct(changePct)}
-                  </span>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─── InlineSectorPerformanceCard ────────────────────────────────────
-
-export function InlineSectorPerformanceCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const sectors = (artifact as Record<string, unknown> | undefined)?.sectors as Record<string, unknown>[] | undefined;
-  if (!sectors?.length) return null;
-
-  const chartData = sectors
-    .slice()
-    .sort((a, b) => ((b.changePercentage as number) || 0) - ((a.changePercentage as number) || 0))
-    .map((s) => ({
-      name: abbreviateSector((s.sector as string) || 'N/A'),
-      value: (s.changePercentage as number) || 0,
-      fill: ((s.changePercentage as number) || 0) >= 0 ? GREEN : RED,
-      label: formatPct((s.changePercentage as number) || 0),
-    }));
-
-  const barHeight = isMobile ? 18 : 22;
-  const chartHeight = Math.min(chartData.length * barHeight + 20, isMobile ? 220 : 280);
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      <div style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: sz.headerFs, marginBottom: sz.sectionMb }}>
-        {t('toolArtifact.sectorPerformance')}
-      </div>
-      <MeasuredContainer height={chartHeight}>
-        {(w) => (
-          <BarChart
-            width={w}
-            height={chartHeight}
-            data={chartData}
-            layout="vertical"
-            margin={{ left: 0, right: isMobile ? 40 : 50, top: 0, bottom: 0 }}
-          >
-            <XAxis type="number" hide />
-            <YAxis
-              type="category"
-              dataKey="name"
-              width={isMobile ? 80 : 100}
-              tick={{ fill: TEXT_COLOR, fontSize: sz.chartFs }}
-              axisLine={false}
-              tickLine={false}
-            />
-            <Bar dataKey="value" radius={[0, 3, 3, 0]} barSize={isMobile ? 11 : 14} isAnimationActive={false}>
-              {chartData.map((entry, i) => (
-                <Cell key={i} fill={entry.fill} />
-              ))}
-              <LabelList
-                dataKey="label"
-                position="right"
-                style={{ fill: TEXT_COLOR, fontSize: sz.chartFs }}
-              />
-            </Bar>
-          </BarChart>
-        )}
-      </MeasuredContainer>
-    </div>
-  );
-}
-
-// ─── InlineMarketOverviewCard ───────────────────────────────────────
-
-/**
- * Composite card for the consolidated `get_market_overview` tool. It nests the
- * legacy market_indices / sector_performance artifacts (carried verbatim under
- * `indices` / `sectors`) into their existing cards. InlineMarketOverviewCard
- * must never return null — a completed get_market_overview call routed here
- * would otherwise render nothing — so when neither nested card has data it
- * falls back to a minimal region card.
- */
-export function InlineMarketOverviewCard({ artifact, onClick }: InlineCardProps): React.ReactElement {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-
-  // hasIndices / hasSectors mirror the nested cards' own null conditions, so the
-  // composite knows whether either will render content (and the fallback is needed).
-  const { indicesArtifact, sectorsArtifact, hasIndices, hasSectors } = unwrapMarketOverview(artifact);
-
-  if (hasIndices || hasSectors) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: sz.gap }}>
-        {hasIndices && <InlineMarketIndicesCard artifact={indicesArtifact} onClick={onClick} />}
-        {hasSectors && <InlineSectorPerformanceCard artifact={sectorsArtifact} onClick={onClick} />}
-      </div>
-    );
-  }
-
-  // Error / degenerate path (e.g. unknown region): keep the call visible.
-  const region = (artifact as Record<string, unknown> | undefined)?.region as string | undefined;
-  const regionLabel = region ? region.toUpperCase() : '';
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap }}>
-        <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: sz.headerFs }}>
-          {t('toolArtifact.marketOverview')}
-        </span>
-        {regionLabel && (
-          <span style={{ fontSize: sz.labelFs, color: TEXT_COLOR }}>{regionLabel}</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── InlineStockScreenerCard ──────────────────────────────────────
-
-export function InlineStockScreenerCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const { results = [], filters = {}, count = 0 } = (artifact || {}) as {
-    results?: Record<string, unknown>[];
-    filters?: Record<string, unknown>;
-    count?: number;
-  };
-  if (!(results as Record<string, unknown>[]).length) return null;
-
-  const top5 = (results as Record<string, unknown>[]).slice(0, 5);
-  const remaining = (count as number) - top5.length;
-
-  // Build compact filter tags
-  const filterTags = Object.entries(filters as Record<string, unknown>).map(([k, v]) => `${k}: ${v}`);
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      {/* Header: title + count badge */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: sz.gap, marginBottom: sz.sectionMb }}>
-        <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: sz.headerFs }}>
-          {t('toolArtifact.stockScreener')}
-        </span>
-        <span
-          style={{
-            fontSize: sz.labelFs,
-            color: TEXT_COLOR,
-            backgroundColor: 'var(--color-bg-surface)',
-            padding: '1px 6px',
-            borderRadius: 10,
-          }}
-        >
-          {t('toolArtifact.nResults', { count })}
-        </span>
-      </div>
-
-      {/* Filter tags */}
-      {filterTags.length > 0 && (
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: sz.filingMb }}>
-          {filterTags.slice(0, 4).map((tag, i) => (
-            <span
-              key={i}
-              style={{
-                fontSize: sz.badgeFs,
-                padding: '1px 6px',
-                borderRadius: 10,
-                backgroundColor: 'var(--color-accent-soft)',
-                color: 'var(--color-text-tertiary)',
-                border: '1px solid var(--color-border-muted)',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {tag}
-            </span>
-          ))}
-          {filterTags.length > 4 && (
-            <span style={{ fontSize: sz.badgeFs, color: TEXT_COLOR }}>+{filterTags.length - 4}</span>
-          )}
-        </div>
-      )}
-
-      {/* Top 5 results */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 1 : 3 }}>
-        {top5.map((stock, i) => {
-          const change = stock.changes as number | undefined;
-          const changeColor = change != null ? (change >= 0 ? GREEN : RED) : TEXT_COLOR;
-          return (
-            <div
-              key={i}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: sz.gap,
-                fontSize: sz.rowFs,
-                padding: isMobile ? '1px 0' : '2px 0',
-              }}
-            >
-              <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, flexShrink: 0 }}>
-                {stock.symbol as string}
-              </span>
-              <span
-                style={{
-                  color: TEXT_COLOR,
-                  flex: 1,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {stock.companyName as string}
-              </span>
-              <span style={{ color: 'var(--color-text-primary)', fontWeight: 500, flexShrink: 0 }}>
-                {(stock.price as number | undefined) != null ? `$${(stock.price as number).toFixed(2)}` : 'N/A'}
-              </span>
-              {!isMobile && (
-                <span style={{ color: TEXT_COLOR, fontSize: '0.6875rem', flexShrink: 0, textAlign: 'right' }}>
-                  {(stock.marketCap as number | undefined) != null ? formatCompactNumber(stock.marketCap as number) : ''}
-                </span>
-              )}
-              <span style={{ color: changeColor, fontWeight: 500, flexShrink: 0, minWidth: sz.changeMinW, textAlign: 'right' }}>
-                {change != null ? formatPct(change) : ''}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* +N more */}
-      {remaining > 0 && (
-        <div style={{ marginTop: sz.moreMt, fontSize: sz.labelFs, color: TEXT_COLOR }}>
-          {t('toolArtifact.nMoreStocks', { count: remaining })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── InlineSecFilingCard ───────────────────────────────────────────
-
-const ACCENT = 'var(--color-accent-primary)';
-const MAX_INLINE_8K = 3;
-
-export function InlineSecFilingCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
-  if (!artifact || artifact.type !== 'sec_filing') return null;
-
-  if (artifact.filing_type === '8-K') {
-    return <Inline8KCard artifact={artifact} onClick={onClick} />;
-  }
-
-  return <InlineAnnualQuarterlyCard artifact={artifact} onClick={onClick} />;
-}
-
-interface InlineFilingCardProps {
-  artifact: Record<string, unknown>;
-  onClick?: () => void;
-}
-
-function InlineAnnualQuarterlyCard({ artifact, onClick }: InlineFilingCardProps): React.ReactElement {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const { symbol, filing_type, filing_date, period_end, cik, sections_extracted, source_url, has_earnings_call, recent_8k_count } = artifact as {
-    symbol?: string;
-    filing_type?: string;
-    filing_date?: string;
-    period_end?: string;
-    cik?: string;
-    sections_extracted?: number;
-    source_url?: string;
-    has_earnings_call?: boolean;
-    recent_8k_count?: number;
-  };
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      {/* Header: symbol badge + filing type */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: sz.gap, marginBottom: sz.filingMb }}>
-        <span
-          style={{
-            fontSize: sz.labelFs,
-            fontWeight: 700,
-            padding: '2px 6px',
-            borderRadius: 4,
-            backgroundColor: 'var(--color-accent-soft)',
-            color: ACCENT,
-          }}
-        >
-          {symbol}
-        </span>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.75rem' : '0.875rem' }}>
-          {t('toolArtifact.filing', { type: filing_type })}
-        </span>
-      </div>
-
-      {/* Metadata grid */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: sz.gridGap,
-          fontSize: sz.rowFs,
-          color: TEXT_COLOR,
-        }}
-      >
-        {filing_date && <QuoteRow label={t('toolArtifact.filingDate')} value={filing_date} />}
-        {period_end && <QuoteRow label={t('toolArtifact.periodEnd')} value={period_end} />}
-        {cik && <QuoteRow label={t('toolArtifact.cik')} value={cik} />}
-        {sections_extracted != null && <QuoteRow label={t('toolArtifact.sections')} value={String(sections_extracted)} />}
-        {has_earnings_call && <QuoteRow label={t('toolArtifact.earningsCall')} value={t('toolArtifact.included')} />}
-        {recent_8k_count != null && <QuoteRow label={t('toolArtifact.recent8Ks')} value={String(recent_8k_count)} />}
-      </div>
-
-      {/* EDGAR link */}
-      {source_url && (
-        <div style={{ marginTop: sz.filingMb }}>
-          <a
-            href={source_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            style={{ fontSize: sz.labelFs, color: ACCENT, textDecoration: 'none' }}
-          >
-            {t('toolArtifact.viewOnEdgar')}
-          </a>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Inline8KCard({ artifact, onClick }: InlineFilingCardProps): React.ReactElement {
-  const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-  const { symbol, filing_count, filings = [] } = artifact as {
-    symbol?: string;
-    filing_count?: number;
-    filings?: Record<string, unknown>[];
-  };
-  const shown = (filings as Record<string, unknown>[]).slice(0, MAX_INLINE_8K);
-  const remaining = (filing_count as number) - shown.length;
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      {/* Header: symbol badge + title + count */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: sz.gap, marginBottom: sz.filingMb }}>
-        <span
-          style={{
-            fontSize: sz.labelFs,
-            fontWeight: 700,
-            padding: '2px 6px',
-            borderRadius: 4,
-            backgroundColor: 'var(--color-accent-soft)',
-            color: ACCENT,
-          }}
-        >
-          {symbol}
-        </span>
-        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: isMobile ? '0.75rem' : '0.875rem' }}>{t('toolArtifact.8kFilings')}</span>
-        <span
-          style={{
-            fontSize: sz.labelFs,
-            color: TEXT_COLOR,
-            backgroundColor: 'var(--color-bg-surface)',
-            padding: '1px 6px',
-            borderRadius: 10,
-          }}
-        >
-          {filing_count}
-        </span>
-      </div>
-
-      {/* Compact filing list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: sz.listGap }}>
-        {shown.map((f, i) => (
-          <div
-            key={i}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: sz.gap,
-              fontSize: sz.rowFs,
-              padding: sz.rowPad,
-            }}
-          >
-            <span style={{ color: 'var(--color-text-primary)', fontWeight: 500, flexShrink: 0 }}>{f.filing_date as string}</span>
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', flex: 1, overflow: 'hidden' }}>
-              {((f.items as string[]) || []).slice(0, 2).map((item, j) => (
-                <span
-                  key={j}
-                  style={{
-                    fontSize: sz.badgeFs,
-                    padding: '1px 6px',
-                    borderRadius: 10,
-                    backgroundColor: 'var(--color-accent-soft)',
-                    color: 'var(--color-text-tertiary)',
-                    border: '1px solid var(--color-border-muted)',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {item}
-                </span>
-              ))}
-              {((f.items as string[]) || []).length > 2 && (
-                <span style={{ fontSize: sz.badgeFs, color: TEXT_COLOR }}>+{(f.items as string[]).length - 2}</span>
-              )}
-            </div>
-            {!!f.has_press_release && (
-              <span style={{ fontSize: sz.badgeFs, color: GREEN, flexShrink: 0 }}>PR</span>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* +N more */}
-      {remaining > 0 && (
-        <div style={{ marginTop: sz.moreMt, fontSize: sz.labelFs, color: TEXT_COLOR }}>
-          {t('toolArtifact.nMoreFilings', { count: remaining })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Shared favicon helper ──────────────────────────────────────────
-
-/** Build a Google favicon service URL for the given domain. Returns '' if domain is empty. */
-export function googleFaviconUrl(domain: string): string {
-  return domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=32` : '';
-}
-
-/** Favicon <img> with onError fallback to a monogram span. */
-export function FaviconImg({ src, domain, size = 14 }: { src: string; domain: string; size?: number }): React.ReactElement {
-  const [failed, setFailed] = useState(false);
-
-  if (failed || !src) {
-    return (
-      <span
-        style={{
-          width: size,
-          height: size,
-          borderRadius: 2,
-          backgroundColor: 'var(--color-bg-surface)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: Math.round(size * 0.64),
-          fontWeight: 600,
-          color: TEXT_COLOR,
-          flexShrink: 0,
-        }}
-      >
-        {(domain || '?')[0].toUpperCase()}
-      </span>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt=""
-      width={size}
-      height={size}
-      style={{ borderRadius: 2, flexShrink: 0 }}
-      onError={() => setFailed(true)}
-    />
-  );
-}
-
-// ─── InlineWebSearchCard ──────────────────────────────────────────
-
-interface WebSearchResult {
-  title?: string;
-  url?: string;
-  favicon?: string;
-  snippet?: string;
-}
-
-/** Extract domain from a URL, stripping www. prefix. */
-function extractDomain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return '';
-  }
-}
-
-/** Resolve favicon URL: use provided value or fall back to Google favicon service. */
-function resolveFavicon(result: WebSearchResult): string {
-  if (result.favicon) return result.favicon;
-  return googleFaviconUrl(extractDomain(result.url || ''));
-}
-
-const MAX_INLINE_RESULTS = 4;
-
-export function InlineWebSearchCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
-  const isMobile = useIsMobile();
-  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
-
-  const query = (artifact?.query as string) || '';
-  const results = (artifact?.results as WebSearchResult[] | undefined) || [];
-
-  if (!results.length) return null;
-
-  const shown = results.slice(0, MAX_INLINE_RESULTS);
-  const remaining = results.length - shown.length;
-
-  return (
-    <div
-      style={isMobile ? mobileCardStyle : cardStyle}
-      onClick={onClick}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-    >
-      {/* Header: search icon + query + count badge */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: sz.gap, marginBottom: sz.sectionMb }}>
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ width: isMobile ? 13 : 15, height: isMobile ? 13 : 15, flexShrink: 0, color: TEXT_COLOR }}
-        >
-          <circle cx="11" cy="11" r="8" />
-          <line x1="21" y1="21" x2="16.65" y2="16.65" />
-        </svg>
-        <span
-          style={{
-            fontWeight: 600,
-            color: 'var(--color-text-primary)',
-            fontSize: sz.headerFs,
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {query}
-        </span>
-        <span
-          style={{
-            fontSize: sz.labelFs,
-            color: TEXT_COLOR,
-            backgroundColor: 'var(--color-bg-surface)',
-            padding: '1px 6px',
-            borderRadius: 10,
-            flexShrink: 0,
-          }}
-        >
-          {results.length} results
-        </span>
-      </div>
-
-      {/* Result rows */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: sz.listGap }}>
-        {shown.map((result, i) => {
-          const domain = extractDomain(result.url || '');
-          const faviconSrc = resolveFavicon(result);
-          return (
-            <div
-              key={i}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: sz.gap,
-                fontSize: sz.rowFs,
-                padding: sz.rowPad,
-              }}
-            >
-              <FaviconImg src={faviconSrc} domain={domain} />
-              <span
-                style={{
-                  color: 'var(--color-text-primary)',
-                  fontWeight: 500,
-                  flex: 1,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {result.title || domain}
-              </span>
-              <span
-                style={{
-                  color: TEXT_COLOR,
-                  fontSize: sz.labelFs,
-                  flexShrink: 0,
-                  opacity: 0.7,
-                }}
-              >
-                {domain}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* +N more results */}
-      {remaining > 0 && (
-        <div style={{ marginTop: sz.moreMt, fontSize: sz.labelFs, color: TEXT_COLOR }}>
-          +{remaining} more results
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Artifact-type dispatch ─────────────────────────────────────────
 
 /**
  * Maps an artifact `type` to its inline card component. Single source of truth
  * for both the activity timeline (ActivityBlock) and the message list
- * (MessageList) — a new inline card is registered here (plus its tool-name gate
- * in INLINE_ARTIFACT_TOOLS) rather than in each surface separately.
+ * (MessageList), a new inline card is registered here (plus its tool-name gate
+ * in INLINE_ARTIFACT_TOOLS) rather than in each surface separately. Both
+ * surfaces pass the call's arguments as `toolArgs`; a card that needs only its
+ * artifact ignores them.
  */
-export const INLINE_ARTIFACT_MAP: Record<
-  string,
-  React.ComponentType<{ artifact: Record<string, unknown>; onClick?: () => void }>
-> = {
+export const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<InlineCardProps>> = {
   stock_prices: InlineStockPriceCard,
   company_overview: InlineCompanyOverviewCard,
   quote: InlineQuoteCard,
@@ -1055,9 +66,61 @@ export const INLINE_ARTIFACT_MAP: Record<
   market_overview: InlineMarketOverviewCard,
   sec_filing: InlineSecFilingCard,
   stock_screener: InlineStockScreenerCard,
+  options_chain: InlineOptionsChainCard,
+  market_movers: InlineMarketMoversCard,
   automations: InlineAutomationCard,
   preview_url: InlinePreviewCard,
   web_search: InlineWebSearchCard,
   chart_annotation: InlineChartAnnotationCard,
+  order_receipt: OrderReceiptCard,
+  message_delivery: MessageDeliveryCard,
 };
 
+/**
+ * The compact cards whose data is a price, and so read better as the live
+ * chart. An overview is prose and fundamentals: the chart is a neighbour of
+ * that, not a bigger view of it, so its card opens the result itself.
+ */
+const CHART_CARD_TYPES = new Set(['quote', 'stock_prices']);
+
+/** The symbol whose live chart a card opens, or null for a card about no one stock. */
+export function chartSymbolOf(artifact: Record<string, unknown> | null | undefined): string | null {
+  if (!artifact || !CHART_CARD_TYPES.has(artifact.type as string)) return null;
+  // A symbol no chart tab would take falls back to the result, rather than
+  // opening the panel on nothing.
+  return typeof artifact.symbol === 'string' ? readTypedTicker(artifact.symbol) : null;
+}
+
+/**
+ * What a click on a card does: a card about one stock opens that stock's live
+ * chart, and every other card falls back to the raw tool result. Either way the
+ * tool-call row beside the card stays the way to the result itself.
+ */
+export function openCardTarget(
+  artifact: Record<string, unknown> | null | undefined,
+  onOpenChart: ((spec: { symbol: string }) => void) | null | undefined,
+  fallback: () => void,
+): void {
+  const symbol = chartSymbolOf(artifact);
+  if (symbol && onOpenChart) onOpenChart({ symbol });
+  else fallback();
+}
+
+/**
+ * Whether a completed tool call has an artifact this build draws a card for.
+ *
+ * The artifact's own type is asked first, which is what lets a tool nobody can
+ * enumerate register a card: a direct MCP tool is named
+ * `mcp__<server>__<tool>`, one name per user per connection, so the name set
+ * below could never hold it. The name set stays because it is also the gate a
+ * tool passes before its artifact has arrived.
+ */
+export function isInlineArtifactReady(
+  toolName: string | null | undefined,
+  artifact: unknown,
+): boolean {
+  if (!artifact || typeof artifact !== 'object') return false;
+  const type = (artifact as { type?: unknown }).type;
+  if (typeof type === 'string' && INLINE_ARTIFACT_MAP[type]) return true;
+  return INLINE_ARTIFACT_TOOLS.has(toolName || '');
+}

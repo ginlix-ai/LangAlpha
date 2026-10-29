@@ -22,7 +22,7 @@ docs/api/
 ├── 30-workspaces/               # Workspace CRUD & lifecycle
 ├── 35-workspace-files/          # Sandbox file operations
 ├── 37-workspace-sandbox/        # Sandbox stats, packages, previews
-├── 38-vault/                    # Workspace secrets management
+├── 38-vault/                    # Vault secrets management
 ├── 39-sessions/                 # Active session stats
 ├── 50-users/                    # User management & auth sync
 ├── 52-api-keys/                 # BYOK API key management & model listing
@@ -35,9 +35,8 @@ docs/api/
 ├── 74-calendar/                 # Economic & earnings calendar
 ├── 78-insights/                 # AI market insights
 ├── 79-sec-proxy/                # SEC EDGAR document proxy
-├── 80-cache/                    # Cache management
 ├── 85-public/                   # Public shared thread access
-├── 87-skills/                   # Agent skills listing
+├── 87-skills/                   # Agent skills (platform, user and workspace tiers)
 └── 90-websocket/                # Real-time market data WebSocket
 ```
 
@@ -58,8 +57,12 @@ docs/api/
 curl -X POST "http://localhost:8000/api/v1/workspaces" \
   -H "Content-Type: application/json" \
   -H "X-User-Id: user-123" \
-  -d '{"name": "My Project"}'
+  -d '{"name": "My Workspace"}'
 ```
+
+Names are unique per user. Run this twice and the second call answers `409`
+with `detail.code` set to `workspace_name_taken` and `detail.workspace_id` naming
+the workspace that already has the name, which you can use instead.
 
 ### Step 2: Start a Chat
 
@@ -74,7 +77,7 @@ curl -N -X POST "http://localhost:8000/api/v1/threads/messages" \
   }'
 ```
 
-The first SSE frame is `event: metadata` carrying `{thread_id, run_id}` — the canonical per-turn identity. The HTTP response also sets `Content-Location: /api/v1/threads/{thread_id}/messages/stream?run_id={run_id}` so the client knows the exact reconnect URL for this turn.
+The first SSE frame is `event: metadata` carrying `{thread_id, run_id}`, the canonical per-turn identity. A report-back turn's frame also carries `report_source`: the dispatched analyst thread (`{kind: "analyst", thread_id, workspace_id?, workspace_name?}`) or the background task (`{kind: "task", task_id, display_id, description?, failed}`) it reports on. The HTTP response also sets `Content-Location: /api/v1/threads/{thread_id}/messages/stream?run_id={run_id}` so the client knows the exact reconnect URL for this turn.
 
 ### Step 3: Continue the Conversation
 
@@ -100,6 +103,8 @@ curl -N "http://localhost:8000/api/v1/threads/THREAD_ID/messages/stream?run_id=R
 ```bash
 curl "http://localhost:8000/api/v1/threads/THREAD_ID/status"
 ```
+
+Besides the run state, the response reports background work that will post into the thread: `pending_report_back`, `report_back_run_id`, `recent_report_back_run_ids`, and `owed_threads`, the dispatched threads a report is still owed by (`[{thread_id, workspace_id, workspace_name, title}]`, oldest first; `null` when unknown). `?fields=report_back` returns only those fields, skipping the checkpoint read.
 
 ---
 
@@ -146,7 +151,7 @@ User identification is handled via:
 | Workspaces | Workspace CRUD & lifecycle | `/api/v1/workspaces` |
 | Workspace Files | Sandbox file read/write/upload/download | `/api/v1/workspaces/{id}/files` |
 | Workspace Sandbox | Sandbox stats, packages, preview URLs | `/api/v1/workspaces/{id}/sandbox` |
-| Vault | Workspace secrets management | `/api/v1/workspaces/{id}/vault` |
+| Vault | Account secrets for MCP servers and sandbox code | `/api/v1/mcp/vault` |
 | Sessions | Active PTC session stats | `/api/v1/sessions` |
 | Users | User profile & preferences | `/api/v1/users` |
 | API Keys | BYOK key management & model listing | `/api/v1/users/me/api-keys` |
@@ -159,22 +164,21 @@ User identification is handled via:
 | Calendar | Economic & earnings calendar | `/api/v1/calendar` |
 | Insights | AI market insights | `/api/v1/insights` |
 | SEC Proxy | SEC EDGAR document proxy | `/api/v1/sec-proxy` |
-| Cache | Cache stats & management | `/api/v1/cache` |
 | Public | Shared thread access (no auth) | `/api/v1/public` |
-| Skills | Agent skills listing | `/api/v1/skills` |
+| Skills | Agent skills: platform tier plus user/workspace uploads | `/api/v1/skills` |
 | WebSocket | Real-time market data streaming | `/ws/v1/market-data` |
 
 ## SSE Event Types
 
 The streaming endpoints emit Server-Sent Events. Key event types:
-- `metadata` — first frame of every stream, carries `{thread_id, run_id}` for reconnect/steering
+- `metadata` — first frame of every stream, carries `{thread_id, run_id}` for reconnect/steering, plus `report_source` on a report-back turn
 - `message_chunk` / `reasoning_content` / `reasoning_signal` — text + reasoning streaming
 - `tool_calls` / `tool_call_chunks` / `tool_call_result` — tool execution
 - `artifact` — file operations and outputs
 - `provenance` — record of external data the agent accessed (one per source). Flat payload: `record_id`, `source_type`, `identifier`, `title?`, `provider?`, `tool_call_id?`, `args_fingerprint?`, `result_sha256?`, `result_size?`, `result_snippet?`, `timestamp`, plus `agent` (`main`/`task:{id}`, resolved server-side from the LangGraph namespace)
 - `user_message` — echo of user input (including mid-turn steering)
 - `workflow_status` / `thread_created` — lifecycle signals
-- `steering_delivered` / `task_steering_accepted` — steering acknowledgements
+- `steering_delivered` / `task_steering_accepted` — steering acknowledgements. A report that reached a live turn instead of posting its own (a background task or a hand-off that finished while the agent was still working) is a `steering_delivered` entry with empty `content` and the same `report_source` a report-back turn's `metadata` carries. The event's `count` counts the user's messages only
 - `model_retry` — a model call hit a transient error and is being retried: `{model, attempt, max_retries, error, status_code?, delay_seconds, agent}` (`attempt` = calls failed so far). Live/reconnect only — not persisted to history
 - `model_fallback` — a model failed (retries exhausted or non-retryable error) and the run switched to a fallback model: `{from_model, to_model, from_is_primary, error, status_code?, attempts_on_from, agent}`. Persisted and replayed
 - `interrupt` — human-in-the-loop pause

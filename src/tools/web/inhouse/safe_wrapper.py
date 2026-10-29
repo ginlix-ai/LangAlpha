@@ -79,8 +79,10 @@ class CrawlResult:
     title: Optional[str] = None
     error: Optional[str] = None
     # Passthrough of CrawlOutput.failure_kind for failures classified by the
-    # crawler, plus wrapper-level kinds (circuit_open, queue_full, cancelled,
-    # crawl_error) for failures classified at this layer.
+    # crawler, plus wrapper-level kinds (host_circuit_open, circuit_open,
+    # queue_full, cancelled, crawl_error) for failures classified at this layer.
+    # The two breakers report apart: one host's is that host's doing, the
+    # infra one is ours.
     error_type: Optional[str] = None
 
 
@@ -354,7 +356,7 @@ class SafeCrawlerWrapper:
                     return CrawlResult(
                         success=False,
                         error=f"Crawler temporarily unavailable for {netloc} (host breaker open)",
-                        error_type="circuit_open",
+                        error_type="host_circuit_open",
                     )
             await self._infra_breaker.check_state()
             if self._infra_breaker.is_open():

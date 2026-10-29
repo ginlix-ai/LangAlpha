@@ -13,9 +13,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from ptc_agent.config.core import (
-        DaytonaConfig,
         FilesystemConfig,
         LoggingConfig,
         MCPConfig,
@@ -89,7 +90,7 @@ DAYTONA_REQUIRED_FIELDS = [
     "python_version",
 ]
 
-MCP_REQUIRED_FIELDS = ["servers", "tool_discovery_enabled"]
+MCP_REQUIRED_FIELDS = ["tool_discovery_enabled"]
 
 LOGGING_REQUIRED_FIELDS = ["level", "file"]
 
@@ -97,40 +98,6 @@ FILESYSTEM_REQUIRED_FIELDS: list[str] = []  # all fields derive from working_dir
 
 
 # Factory functions for creating config objects from dictionaries
-
-
-def create_daytona_config(data: dict[str, Any]) -> DaytonaConfig:
-    """Create DaytonaConfig from config data dictionary.
-
-    Args:
-        data: Daytona section from agent_config.yaml
-
-    Returns:
-        Configured DaytonaConfig object
-    """
-    import os
-
-    from ptc_agent.config.core import DaytonaConfig
-
-    validate_section_fields(data, DAYTONA_REQUIRED_FIELDS, "daytona")
-    # Optional operator-tunable fields: only forward when present so the
-    # DaytonaConfig defaults (and their validators) apply otherwise.
-    optional_kwargs = {
-        key: data[key] for key in ("default_tier", "resource_tiers") if key in data
-    }
-    return DaytonaConfig(
-        api_key=os.getenv("DAYTONA_API_KEY", ""),
-        secret_namespace=os.getenv("DAYTONA_SECRET_NAMESPACE", ""),
-        base_url=data["base_url"],
-        auto_stop_interval=data["auto_stop_interval"],
-        auto_archive_interval=data["auto_archive_interval"],
-        auto_delete_interval=data["auto_delete_interval"],
-        python_version=data["python_version"],
-        snapshot_enabled=data.get("snapshot_enabled", True),
-        snapshot_name=data.get("snapshot_name"),
-        snapshot_auto_create=data.get("snapshot_auto_create", True),
-        **optional_kwargs,
-    )
 
 
 def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
@@ -147,7 +114,14 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
     """
     import os
 
-    from ptc_agent.config.core import DaytonaConfig, DockerConfig, SandboxConfig
+    from ptc_agent.config.core import (
+        DaytonaConfig,
+        DockerConfig,
+        E2BConfig,
+        SandboxConfig,
+        SSHConfig,
+        detect_provider_kind,
+    )
 
     provider_explicit = False  # True when config file sets the provider
 
@@ -155,24 +129,30 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
         sandbox_data = config_data["sandbox"]
         provider_explicit = "provider" in sandbox_data or "daytona" in sandbox_data
         provider = sandbox_data.get("provider", "daytona")
-        daytona_cfg = (
-            create_daytona_config(sandbox_data["daytona"])
-            if "daytona" in sandbox_data
-            else DaytonaConfig()
+        # Without a section, the credentials still come from the environment:
+        # a deployment on another provider keeps serving its Daytona computers.
+        daytona_cfg = DaytonaConfig.from_section(
+            (sandbox_data["daytona"] or {}) if "daytona" in sandbox_data else None
         )
+        e2b_cfg = E2BConfig.from_section(sandbox_data.get("e2b"))
         docker_cfg = (
             DockerConfig(**sandbox_data["docker"])
             if "docker" in sandbox_data
             else DockerConfig()
         )
+        ssh_cfg = SSHConfig.from_section(sandbox_data.get("ssh"))
         platform_secrets = sandbox_data.get("platform_secrets") or []
+        offered_providers = sandbox_data.get("offered_providers") or []
     elif "daytona" in config_data:
         # Backward compat: top-level "daytona:" key — implicitly daytona provider
         provider_explicit = True
         provider = "daytona"
-        daytona_cfg = create_daytona_config(config_data["daytona"])
+        daytona_cfg = DaytonaConfig.from_section(config_data["daytona"] or {})
+        e2b_cfg = E2BConfig.from_section(None)
         docker_cfg = DockerConfig()
+        ssh_cfg = SSHConfig()
         platform_secrets = []
+        offered_providers = []
     else:
         raise ValueError(
             "Missing required section: either 'sandbox' or 'daytona' must be present "
@@ -180,33 +160,38 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
         )
 
     # SANDBOX_PROVIDER env var always wins.
-    # Auto-detect from DAYTONA_API_KEY only when no explicit provider was configured.
+    # Auto-detect from the API keys only when no explicit provider was
+    # configured.
     env_provider = os.getenv("SANDBOX_PROVIDER", "")
     if env_provider:
         provider = env_provider
-    elif not provider_explicit and not os.getenv("DAYTONA_API_KEY"):
-        provider = "docker"
+    elif not provider_explicit:
+        provider = detect_provider_kind()
 
     sandbox_config = SandboxConfig(
         provider=provider,
+        offered_providers=offered_providers,
         daytona=daytona_cfg,
+        e2b=e2b_cfg,
         docker=docker_cfg,
+        ssh=ssh_cfg,
         platform_secrets=platform_secrets,
     )
 
-    # Docker-specific env var overrides
-    if sandbox_config.provider == "docker":
-        if os.getenv("DOCKER_SANDBOX_IMAGE"):
-            sandbox_config.docker.image = os.environ["DOCKER_SANDBOX_IMAGE"]
-        if os.getenv("DOCKER_SANDBOX_DEV_MODE", "").lower() in ("1", "true"):
-            sandbox_config.docker.dev_mode = True
-        if os.getenv("DOCKER_SANDBOX_HOST_DIR"):
-            sandbox_config.docker.host_work_dir = os.environ["DOCKER_SANDBOX_HOST_DIR"]
-        if os.getenv("DOCKER_SANDBOX_VOLUMES"):
-            # Comma-separated: "/host/a:/container/a:ro,/host/b:/container/b"
-            sandbox_config.docker.volumes = [
-                v.strip() for v in os.environ["DOCKER_SANDBOX_VOLUMES"].split(",") if v.strip()
-            ]
+    # Docker-specific env var overrides, whatever the deployment offers: a
+    # docker computer kept from before docker stopped being offered is rebuilt
+    # from these same settings, and losing its mounts would lose its files.
+    if os.getenv("DOCKER_SANDBOX_IMAGE"):
+        sandbox_config.docker.image = os.environ["DOCKER_SANDBOX_IMAGE"]
+    if os.getenv("DOCKER_SANDBOX_DEV_MODE", "").lower() in ("1", "true"):
+        sandbox_config.docker.dev_mode = True
+    if os.getenv("DOCKER_SANDBOX_HOST_DIR"):
+        sandbox_config.docker.host_work_dir = os.environ["DOCKER_SANDBOX_HOST_DIR"]
+    if os.getenv("DOCKER_SANDBOX_VOLUMES"):
+        # Comma-separated: "/host/a:/container/a:ro,/host/b:/container/b"
+        sandbox_config.docker.volumes = [
+            v.strip() for v in os.environ["DOCKER_SANDBOX_VOLUMES"].split(",") if v.strip()
+        ]
 
     return sandbox_config
 
@@ -221,16 +206,51 @@ def create_mcp_config(data: dict[str, Any]) -> MCPConfig:
         Configured MCPConfig object
     """
     from ptc_agent.config.core import MCPConfig, MCPServerConfig
+    from ptc_agent.config.plugins import bundled_mcp_servers
 
     validate_section_fields(data, MCP_REQUIRED_FIELDS, "mcp")
-    # Built-ins from agent_config.yaml are always source="builtin"; an explicit
-    # ``source`` key in YAML is ignored so a config file can't mark a server as
-    # an (untrusted) workspace server. ``headers`` passes through as a model
-    # field (built-ins may declare http/sse headers too).
-    mcp_servers = [
-        MCPServerConfig(**{k: v for k, v in server.items() if k != "source"})
-        for server in data["servers"]
-    ]
+    # The bundles under plugins/ are where the shipped servers are declared;
+    # what is left in YAML is the operator's own list. A name that appears in
+    # both is an override: the YAML keys are laid over the bundled server and
+    # every key left out keeps the shipped value, so switching one off or
+    # retuning one field costs two lines instead of retyping the entry. The
+    # alternative, replacing the whole server, reads the same in the file and
+    # silently drops the command a partial override never restates.
+    #
+    # The merge is one level deep. ``env`` and ``headers`` are replaced whole
+    # rather than key-merged, because an operator pointing a server somewhere
+    # else needs to be able to take a variable away, and a deep merge has no
+    # way to say that.
+    #
+    # A YAML server is always source="builtin"; an explicit ``source`` key is
+    # ignored so a config file can't mark one as an (untrusted) workspace
+    # server. ``headers`` passes through as a model field (built-ins may
+    # declare http/sse headers too).
+    mcp_servers = bundled_mcp_servers()
+    bundled = len(mcp_servers)
+    overridden = 0
+    index = {s.name: i for i, s in enumerate(mcp_servers)}
+    for server in data.get("servers") or []:
+        fields = {k: v for k, v in server.items() if k != "source"}
+        position = index.get(fields.get("name"))
+        if position is None:
+            config = MCPServerConfig(**fields)
+            index[config.name] = len(mcp_servers)
+            mcp_servers.append(config)
+            continue
+        # Re-validate the merged whole rather than model_copy(update=...),
+        # which would write the YAML values in unchecked.
+        base = mcp_servers[position]
+        mcp_servers[position] = MCPServerConfig(**{**base.model_dump(), **fields})
+        overridden += 1
+        logger.info(
+            "agent_config.yaml overrides bundled MCP server %r: %s",
+            base.name, ", ".join(sorted(k for k in fields if k != "name")) or "nothing",
+        )
+    logger.info(
+        "MCP servers configured: %d (%d bundled, %d added, %d overridden)",
+        len(mcp_servers), bundled, len(mcp_servers) - bundled, overridden,
+    )
     return MCPConfig(
         servers=mcp_servers,
         tool_discovery_enabled=data["tool_discovery_enabled"],
@@ -320,6 +340,17 @@ def configure_structlog(level: str = "INFO") -> None:
             # NOTE: ConsoleRenderer formats exceptions itself; do NOT add
             # structlog.processors.format_exc_info upstream of it or structlog
             # warns about double-processing.
-            structlog.dev.ConsoleRenderer(),
+            #
+            # show_locals defaults to True, which writes every frame local into
+            # the log: a single handled `exc_info=True` becomes ~100 lines, and
+            # the locals go out verbatim — sandbox commands, script bodies,
+            # anything holding a token. Log output never passes through
+            # src/server/utils/secret_redactor.py (that covers user-facing file
+            # content), so this was the one path that could print a credential.
+            structlog.dev.ConsoleRenderer(
+                exception_formatter=structlog.dev.RichTracebackFormatter(
+                    show_locals=False
+                )
+            ),
         ],
     )

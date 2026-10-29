@@ -199,9 +199,16 @@ class ThreadMutationRunner:
     # ------------------------------------------------------------- queries
 
     async def is_mutating(self, thread_id: str) -> bool:
-        if thread_id in self._local:
-            return True
-        return await self._read_op(thread_id) is not None
+        return await self.holding_verb(thread_id) is not None
+
+    async def holding_verb(self, thread_id: str) -> Optional[str]:
+        """The verb of the mutation holding the thread (``compact``,
+        ``handoff``, ...), on any worker, or None."""
+        op = self._local.get(thread_id)
+        if op is not None:
+            return op.verb
+        advertised = await self._read_op(thread_id)
+        return advertised.get("verb", "") if advertised is not None else None
 
     async def wait_until_idle(self, thread_id: str, timeout: float) -> bool:
         """True once no mutation (local or advertised) holds the thread;

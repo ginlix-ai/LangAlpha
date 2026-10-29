@@ -1,6 +1,6 @@
 # pyright: ignore
-"""Config/user-id, result-safety, bar-normalization, and FMP-request helpers
-shared by the market-data tool implementations."""
+"""Config/user-id, result-safety, run-outcome, bar-normalization, and
+FMP-request helpers shared by the market-data tool implementations."""
 
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
@@ -9,7 +9,10 @@ import logging
 from langchain_core.runnables import RunnableConfig
 
 from .utils import finite_or_none
-from src.data_client.market_data_provider import symbol_timezone
+from src.data_client.market_data_provider import MarketNotCovered
+from src.data_client.normalize import symbol_timezone
+from src.observability import mark_tool_failed, mark_tool_unavailable
+from market_protocol import InvalidSymbol
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,34 @@ def _safe_result(result, default=None):
     if isinstance(result, Exception):
         return default
     return result if result is not None else default
+
+
+def _mark_failure(error: BaseException | str) -> None:
+    """Stamp the tool run with the outcome of a market-data call that did not answer.
+
+    A provider's 4xx stays a failure: it cannot tell the agent's bad argument
+    from our own broken request, and an upstream contract break has to reach
+    the alarms.
+    """
+    if isinstance(error, InvalidSymbol):
+        # The agent's mistake, which the error text it gets back tells it.
+        return
+    if isinstance(error, MarketNotCovered):
+        # A market no source covers is the agent asking for what we do not
+        # serve, not a source failing.
+        mark_tool_unavailable(error)
+        return
+    mark_tool_failed(error)
+
+
+def _mark_no_data() -> None:
+    """Stamp a call whose source answered with nothing for the instruments named.
+
+    The instrument had nothing to give (a range before its listing, a ticker
+    no one lists), as an empty page is for WebFetch. A query matching nothing
+    (a screen, a contract filter) is an answer, so it is not marked.
+    """
+    mark_tool_unavailable("no_data")
 
 
 def _normalize_market_bars(

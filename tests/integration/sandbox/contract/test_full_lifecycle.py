@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from ptc_agent.core.sandbox.runtime import RuntimeState
@@ -36,11 +38,13 @@ class TestFullLifecycle:
                 await runtime.upload_file(b"", f"{wd}/sandbox_tools/__init__.py")
 
             # 4. Execute code using the tool
-            async with timed("full_lifecycle", "code_run_with_tool"):
-                result = await runtime.code_run(
+            async with timed("full_lifecycle", "python_with_tool"):
+                code = (
                     "from sandbox_tools.market import get_price; "
-                    "print(f'AAPL: ${get_price(\"AAPL\")}')",
-                    env={"PYTHONPATH": wd},
+                    "print(f'AAPL: ${get_price(\"AAPL\")}')"
+                )
+                result = await runtime.exec(
+                    f"python3 -c {shlex.quote(code)}", env={"PYTHONPATH": wd}
                 )
             assert result.exit_code == 0
             assert "AAPL: $42.0" in result.stdout
@@ -55,21 +59,23 @@ class TestFullLifecycle:
                 await runtime.upload_file(
                     b"col1,col2\n1,2\n3,4\n", f"{wd}/data/input.csv"
                 )
-                result = await runtime.code_run(
+                code = (
                     f"import csv\n"
                     f"with open('{wd}/data/input.csv') as f:\n"
                     f"    rows = list(csv.DictReader(f))\n"
                     f"print(f'Rows: {{len(rows)}}')\n"
                 )
+                result = await runtime.exec(f"python3 -c {shlex.quote(code)}")
             assert result.exit_code == 0
             assert "Rows: 2" in result.stdout
 
             # 7. Generate output
             async with timed("full_lifecycle", "generate_output"):
-                await runtime.code_run(
+                code = (
                     f"with open('{wd}/results/output.txt', 'w') as f: "
                     f"f.write('Analysis complete\\n')"
                 )
+                await runtime.exec(f"python3 -c {shlex.quote(code)}")
             output = await runtime.download_file(f"{wd}/results/output.txt")
             assert b"Analysis complete" in output
 

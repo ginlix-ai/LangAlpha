@@ -1,11 +1,11 @@
 """The egress relay's per-request pipeline: authenticate → authorize → attach
-the vendor bearer → stream the exchange through.
+the vendor credential → stream the exchange through.
 
 Stateless per request (``--workers N`` free): the sandbox proves itself with a
 relay JWT, the grant row authorizes exactly one destination captured at grant
-creation, and the vendor access token is read fresh from Postgres each call —
-rotation and revocation are instant by construction, with zero sandbox
-convergence.
+creation, and the vendor credential is resolved fresh from Postgres each call
+(``credentials.py`` per kind), so rotation and revocation are instant by
+construction, with zero sandbox convergence.
 
 Header discipline is allowlist-both-ways: the sandbox's relay Authorization
 never reaches the vendor; the vendor's Set-Cookie / WWW-Authenticate never
@@ -14,30 +14,51 @@ reach the sandbox.
 
 from __future__ import annotations
 
+import http.cookiejar
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
+from ptc_agent.agent.provenance.types import hash_args
 from src.config.env import EGRESS_RELAY_SECRET
-from src.server.database.egress_grants import fetch_grant_for_relay
-from src.server.services.egress import RelayError, RelayRejection
+from src.server.database.egress_grants import (
+    GRANT_KIND_HEADER_MCP,
+    fetch_grant_for_relay,
+)
+from src.server.database.order_attempts import claim_dispatch, fetch_attempt_status
+from src.server.services.brokerage_capabilities import order_tool
+from src.server.services.brokerage_orders import AttemptStatus
+from src.server.services.brokerages import brokerage_for_url
+from src.server.services.egress import RelayError, RelayRejection, folded_contains
+from src.server.services.egress.credentials import (
+    VendorCredential,
+    resolve_vendor_credential,
+)
+from src.server.services.egress.execution_token import (
+    EXECUTION_HEADER,
+    ExecutionTokenError,
+    parse_execution_token,
+    verify_execution_token,
+)
 from src.server.services.egress.jsonrpc import (
     CanonicalRequest,
     JsonRpcRejected,
     canonicalize_request,
 )
 from src.server.services.egress.relay_jwt import (
+    CALLER_HOST,
     RelayClaims,
     RelayJwtError,
     validate_relay_jwt,
 )
 from src.server.services.mcp_oauth import SERVABLE
+from src.server.services.mcp_oauth.discovery import schedule_catalog_discovery
 from src.server.services.mcp_oauth.lifecycle import (
-    AccessToken,
-    TokenUnavailable,
     current_access_token,
-    ensure_fresh_access_token,
     mark_connection_needs_reauth,
 )
 from src.server.utils.egress_guard import EgressBlockedError, pin_public_url
@@ -51,13 +72,29 @@ WRITE_TIMEOUT_S = 10.0
 READ_IDLE_TIMEOUT_S = 45.0
 WALL_CLOCK_S = 55.0
 
+# Ceiling on one relayed response, mirroring the sandbox client's own
+# ``_REPLY_MAX_BYTES``. The wall clock bounds how LONG a vendor may stream, not
+# how MUCH: 55s of a fast connection is hundreds of megabytes. That was survivable
+# while every terminal consumer sat in a disposable per-user interpreter that
+# capped itself; the host-side direct client reads the whole body into the API
+# worker, where the parsed objects are a multiple of the bytes again and the
+# container's memory limit is shared by every worker. Cut here rather than in
+# either client so both paths and both agents are covered by one bound.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
 # Connection pool. httpx defaults keepalive_expiry to 5s, which is shorter than
 # the model latency between two execute_code blocks — so every burst of MCP
 # calls would re-pay a TCP+TLS handshake (~2 RTT) to the vendor. Holding idle
-# connections across a turn is the whole point of pooling here.
+# connections across a turn is the whole point of pooling here. Holding them
+# longer than a vendor does is safe only over HTTP/1.1; see get_relay_client.
+# Over HTTP/1.1 every call in flight holds a connection of its own, and the
+# pool closes a connection that goes idle while it holds more than the
+# keep-alive cap, so a cap below the connection limit turned every call past
+# it into a fresh handshake. An idle connection costs one descriptor, and the
+# expiry and the close check clear dead ones.
 KEEPALIVE_EXPIRY_S = 300.0
-MAX_KEEPALIVE_CONNECTIONS = 40
 MAX_UPSTREAM_CONNECTIONS = 200
+MAX_KEEPALIVE_CONNECTIONS = MAX_UPSTREAM_CONNECTIONS
 
 # Sandbox → vendor: only what the generated MCP client legitimately sends.
 # mcp-method / mcp-name carry the 2026-07-28 stateless negotiation (server/
@@ -80,12 +117,23 @@ RESPONSE_HEADER_ALLOWLIST = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class OrderFrame:
+    """The attempt an order frame was authorized by, kept for the audit line."""
+
+    attempt_id: str
+    vendor: str
+    tool: str
+    user_id: str
+
+
 @dataclass
 class PreparedRelay:
     claims: RelayClaims
     grant: dict
     canonical: CanonicalRequest
-    token: AccessToken
+    credential: VendorCredential
+    order: OrderFrame | None = None
 
 
 _client: httpx.AsyncClient | None = None
@@ -96,9 +144,21 @@ def get_relay_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
-            http2=True,
+            # HTTP/1.1, because httpcore checks an idle HTTP/1.1 connection
+            # for a server-side close before reusing it and checks an HTTP/2
+            # one only against our own expiry. A vendor edge that drops idle
+            # connections sooner than KEEPALIVE_EXPIRY_S (IBKR's does at about
+            # two minutes) then failed the first call after a quiet spell with
+            # RemoteProtocolError in a millisecond, an order call included.
+            http2=False,
             follow_redirects=False,
             trust_env=False,
+            # Every user's calls share this client, so it has to be stateless:
+            # a jar that accepts no domain keeps one vendor's Set-Cookie from
+            # riding the next user's request to the same host.
+            cookies=http.cookiejar.CookieJar(
+                policy=http.cookiejar.DefaultCookiePolicy(allowed_domains=[])
+            ),
             timeout=httpx.Timeout(
                 connect=CONNECT_TIMEOUT_S,
                 write=WRITE_TIMEOUT_S,
@@ -140,11 +200,142 @@ def authenticate_relay(authorization: str | None) -> RelayClaims:
         raise RelayRejection(401, RelayError.RELAY_AUTH)
 
 
+def _execution_header(headers: Mapping[str, str] | None) -> str:
+    for key, value in (headers or {}).items():
+        if key.lower() == EXECUTION_HEADER.lower():
+            return value or ""
+    return ""
+
+
+async def _authorize_order(
+    canonical: CanonicalRequest,
+    *,
+    claims: RelayClaims,
+    vendor: str,
+    headers: Mapping[str, str] | None,
+) -> OrderFrame:
+    """Let one order frame through, for one attempt, once.
+
+    Everything checked here is derived from the frame or from the row, never
+    taken from the caller's word for it: the arguments are hashed from the body
+    about to be forwarded, the call id comes from the ledger, and the row must
+    already have handed out its single execution. A replayed frame therefore
+    fails on the status, and a re-aimed token fails on the MAC.
+
+    One refusal code for every failure. The caller is either the host, which
+    knows exactly what it sent, or something that should not be here at all.
+    Which check failed is therefore only ever in the log, so every arm logs
+    before it raises; the two that did not sent an operator to the access line
+    for a 403 with no reason beside it.
+    """
+    tool = canonical.tool_name or ""
+    token = _execution_header(headers)
+    if not token:
+        logger.warning(
+            "[egress_relay] order frame refused: tool=%r vendor=%r user=%s "
+            "(no execution header, so nothing authorized this call)",
+            tool, vendor, claims.user_id,
+        )
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED, "order not authorized")
+    args_sha256 = (hash_args(canonical.arguments or {}) or {}).get("sha256") or ""
+    try:
+        attempt_id = parse_execution_token(token).attempt_id
+    except ExecutionTokenError as e:
+        logger.warning(
+            "[egress_relay] order frame refused: tool=%r vendor=%r user=%s "
+            "(execution header did not parse: %s)",
+            tool, vendor, claims.user_id, e,
+        )
+        raise RelayRejection(
+            403, RelayError.EXECUTION_REQUIRED, "order not authorized"
+        ) from None
+    row = await fetch_attempt_status(attempt_id)
+    if (
+        row is None
+        or row.get("user_id") != claims.user_id
+        or (row.get("vendor") or "") != vendor
+        or (row.get("args_sha256") or "") != args_sha256
+    ):
+        logger.warning(
+            "[egress_relay] order frame refused: attempt=%s tool=%r vendor=%r "
+            "user=%s (no matching attempt for these arguments)",
+            attempt_id, tool, vendor, claims.user_id,
+        )
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED, "order not authorized")
+    try:
+        verify_execution_token(
+            EGRESS_RELAY_SECRET or "",
+            token,
+            tool_call_id=str(row.get("tool_call_id") or ""),
+            tool=tool,
+            args_sha256=args_sha256,
+        )
+    except ExecutionTokenError as e:
+        logger.warning(
+            "[egress_relay] order frame refused: attempt=%s tool=%r vendor=%r "
+            "user=%s (%s)",
+            attempt_id, tool, vendor, claims.user_id, e,
+        )
+        raise RelayRejection(
+            403, RelayError.EXECUTION_REQUIRED, "order not authorized"
+        ) from None
+    if row.get("status") != AttemptStatus.SUBMITTING.value:
+        # The row is the idempotency key: an approved attempt is ``submitting``
+        # for exactly the one call it authorized, so anything else here is a
+        # retry, a replay, or a call that never took its grant.
+        logger.warning(
+            "[egress_relay] order frame refused: attempt=%s tool=%r vendor=%r "
+            "user=%s (attempt is %s, not submitting)",
+            attempt_id, tool, vendor, claims.user_id, row.get("status"),
+        )
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED, "order not authorized")
+    return OrderFrame(
+        attempt_id=attempt_id, vendor=vendor, tool=tool, user_id=claims.user_id
+    )
+
+
+def log_order_frame(prepared: PreparedRelay, status: int) -> None:
+    """The relay's one audit line, written where the vendor's answer is known.
+
+    The relay has never logged a success. An order is the one call where the
+    absence of that line is the difference between an account we can explain
+    and one we cannot.
+    """
+    order = prepared.order
+    if order is None:
+        return
+    logger.info(
+        "[egress_relay] order attempt=%s vendor=%s tool=%s user=%s machine=%s status=%s",
+        order.attempt_id, order.vendor, order.tool, order.user_id,
+        prepared.claims.identity or "-", status,
+    )
+
+
+def _grant_is_reachable(grant: Mapping[str, object], claims: RelayClaims) -> bool:
+    """Whether the token's holder is on the machine the grant belongs to.
+
+    One grant row serves every project on a computer, so the machine decides
+    whenever both sides name one, and then it decides alone: falling back to
+    the project after two machines disagree would be two rules at once. That
+    is not a widening, since projects on one computer share the sandbox the
+    credential file lives in and can already read each other's grant ids off
+    disk. A side that names no machine (a row the backfill left unbound, a
+    token minted before its session resolved one) is judged by exact project
+    equality instead, which reaches nothing the old rule did not. The user is
+    compared alongside this either way, so no shape here crosses an account.
+    """
+    grant_machine = grant.get("computer_id")
+    if grant_machine and claims.computer_id:
+        return grant_machine == claims.computer_id
+    return grant["workspace_id"] == claims.workspace_id
+
+
 async def prepare_relay(
     grant_id: str,
     *,
     claims: RelayClaims,
     raw_body: bytes,
+    headers: Mapping[str, str] | None = None,
 ) -> PreparedRelay:
     """Authorize the grant + ready the vendor token (sandbox already authed)."""
     try:
@@ -154,18 +345,25 @@ async def prepare_relay(
 
     grant = await fetch_grant_for_relay(grant_id)
     # Absent, revoked, and wrong-scope all answer the same 404 — the relay is
-    # never an oracle for other users' grant ids. claims.sandbox_id is carried
-    # for audit only, not authorized against: workspace↔sandbox is 1:1, so a
-    # stale sandbox's JWT reaches exactly the same grants its workspace owns.
+    # never an oracle for other users' grant ids.
+    #
+    # A grant is reachable from the machine it was written for (see
+    # ``_grant_is_reachable``) and only by its owner. The user claim is what
+    # fixes the account; the sandbox_id claim is still audit-only, since a
+    # sandbox is one machine's current identity rather than an authority of its
+    # own.
     if (
         grant is None
         or grant["grant_status"] != "active"
-        or grant["workspace_id"] != claims.workspace_id
+        or not _grant_is_reachable(grant, claims)
         or grant["user_id"] != claims.user_id
     ):
         raise RelayRejection(404, RelayError.NOT_FOUND)
 
-    if grant["connection_status"] not in SERVABLE:
+    # A header grant has no connection to be servable: what stands in for this
+    # check is the credential resolution below, which finds no headers to send
+    # the moment the row is deleted, switched off or repointed.
+    if grant["kind"] != GRANT_KIND_HEADER_MCP and grant["connection_status"] not in SERVABLE:
         raise RelayRejection(401, RelayError.NEEDS_REAUTH)
 
     # HTTP-verb grant policy (defaults to ["POST"]). The route is POST-only
@@ -173,24 +371,89 @@ async def prepare_relay(
     if "POST" not in (grant.get("allowed_methods") or []):
         raise RelayRejection(403, RelayError.METHOD_BLOCKED, "POST not in grant policy")
 
-    allowlist = grant.get("tool_allowlist")
-    if (
-        allowlist is not None
-        and canonical.method == "tools/call"
-        and canonical.tool_name not in allowlist
-    ):
-        raise RelayRejection(403, RelayError.TOOL_BLOCKED, "tool not in grant policy")
+    if canonical.method == "tools/call":
+        denylist = grant.get("tool_denylist")
+        # NULL means the denial was never computed, and for a brokerage that is
+        # a bug rather than a state: every shipped broker derives a policy, an
+        # uncurated one deriving the empty list. Under an allowlist NULL served
+        # nothing and was loud; under a denylist it serves everything and looks
+        # healthy, so it has to be refused here rather than trusted. This is the
+        # one place that can see it -- the grant row is written by a sync that
+        # may have failed, been rolled back, or been blanked by a migration,
+        # while the destination is pinned from the address consent was given
+        # for and cannot drift.
+        if denylist is None and brokerage_for_url(grant["destination_url"]):
+            raise RelayRejection(
+                403,
+                RelayError.POLICY_MISSING,
+                "this connection's capability policy has not been computed",
+            )
+        # Membership, not absence from a permitted set. The policy names the
+        # curated tools whose capability group the user declined, so a tool it
+        # does not mention passes: one we never classified is not one they said
+        # no to. Compared case- and width-folded because the denial is exact
+        # strings while the vendor decides what it considers the same name, and
+        # under an allowlist a variant spelling failed shut where here it would
+        # sail through.
+        if denylist and folded_contains(denylist, canonical.tool_name):
+            raise RelayRejection(
+                403,
+                RelayError.TOOL_BLOCKED,
+                "tool refused by this connection's policy",
+            )
+        # A tool bound directly to the model has no sandbox wrapper, and this
+        # is what keeps it that way: the policy middleware gates the direct
+        # call, and a sandbox that could reach the same tool by hand-writing
+        # the frame would have a path around it. The host's own relay calls
+        # carry the claim that lifts this refusal; a token without one is the
+        # sandbox, whatever minted it.
+        direct_only = grant.get("tool_direct_only")
+        if (
+            direct_only
+            and claims.caller != CALLER_HOST
+            and folded_contains(direct_only, canonical.tool_name)
+        ):
+            raise RelayRejection(
+                403,
+                RelayError.TOOL_BLOCKED,
+                "tool is bound directly to the model and is not callable from the sandbox",
+            )
 
-    try:
-        token = await ensure_fresh_access_token(grant["connection_id"])
-    except TokenUnavailable as e:
-        if e.reason == "refresh_in_progress":
-            raise RelayRejection(503, RelayError.REFRESH_IN_PROGRESS)
-        raise RelayRejection(401, RelayError.NEEDS_REAUTH, e.reason)
+    order: OrderFrame | None = None
+    if canonical.method == "tools/call":
+        # The pin is the destination the grant was issued for, never the row's
+        # name, so the vendor whose order map is read here is the one whose
+        # address is about to be dialled.
+        brokerage = brokerage_for_url(grant["destination_url"])
+        vendor = brokerage.name if brokerage else None
+        if order_tool(vendor, canonical.tool_name or "") is not None:
+            order = await _authorize_order(
+                canonical, claims=claims, vendor=vendor or "", headers=headers
+            )
 
     return PreparedRelay(
-        claims=claims, grant=grant, canonical=canonical, token=token
+        claims=claims,
+        grant=grant,
+        canonical=canonical,
+        credential=await resolve_vendor_credential(grant),
+        order=order,
     )
+
+
+def _grant_label(grant: Mapping[str, Any]) -> str:
+    """What a log line calls the grant: the connection for one kind, the row
+    for the other, since a header grant has no connection to name."""
+    return str(grant.get("connection_id") or grant.get("server_name") or "?")
+
+
+def _upstream_reason(e: httpx.HTTPError) -> str:
+    """What the log may repeat about a failed dial.
+
+    A ``LocalProtocolError`` quotes the header it choked on, and every header
+    this path builds carries the vendor credential, so a protocol failure is
+    named by type and nothing else.
+    """
+    return type(e).__name__ if isinstance(e, httpx.ProtocolError) else str(e)
 
 
 def _vendor_headers(
@@ -205,15 +468,84 @@ def _vendor_headers(
     }
     headers.setdefault("accept", "application/json, text/event-stream")
     headers.setdefault("content-type", "application/json")
-    headers["authorization"] = prepared.token.header()
+    # The gate reads the body, so on a gated call the body has to be what the
+    # vendor routes on too. Both headers are agent-writable, and a vendor whose
+    # gateway dispatches on ``Mcp-Name`` would otherwise run a name the policy
+    # never saw. Re-emitted from the canonical frame rather than dropped, so a
+    # header-routing vendor keeps working; only tools/call, because that is the
+    # only method whose name this parser authoritatively knows.
+    if prepared.canonical.method == "tools/call":
+        headers["mcp-method"] = prepared.canonical.method
+        headers["mcp-name"] = prepared.canonical.tool_name or ""
+    # Last, and never merged with what came in: the credential is the one part
+    # of this request the caller has no say in.
+    headers.update(prepared.credential.headers)
     return headers
+
+
+def _is_vendor_redirect(status: int) -> bool:
+    # Every 3xx names elsewhere instead of answering, except 304, which is a
+    # real response (caching passthrough). Relaying any other 3xx is useless to
+    # the sandbox: Location is stripped by the response allowlist, so
+    # raise_for_status there yields a bare "Redirect response" against the
+    # relay's own URL. Deliberately the whole range rather than the
+    # hop-following five — location-less, deprecated (305), reserved (306),
+    # and future codes all land on that same bare error if passed through.
+    return 300 <= status <= 399 and status != 304
+
+
+def _redirect_host(location: str | None) -> str:
+    # A vendor Location is untrusted and may embed signed query parameters or
+    # userinfo; even the host-side log keeps only the hostname.
+    if not location:
+        return "<missing>"
+    try:
+        host = urlsplit(location).hostname
+    except ValueError:
+        return "<unparseable>"
+    return host or "<relative>"
+
+
+async def _claim_order_dispatch(order: OrderFrame) -> None:
+    """Take the one dispatch an order frame gets, right before it is sent.
+
+    The token check reads the row; this writes it. A second copy of the same
+    signed frame, a duplicate on the wire or a retry inside the token's
+    lifetime, finds the claim taken and is refused here rather than executed
+    twice. The 401 retry below re-sends under the claim already taken: a
+    vendor that refused the bearer did not run the order.
+    """
+    if await claim_dispatch(order.attempt_id) is None:
+        logger.warning(
+            "[egress_relay] attempt %s: dispatch already claimed; a second "
+            "frame for tool %r at %s was refused",
+            order.attempt_id, order.tool, order.vendor,
+        )
+        raise RelayRejection(403, RelayError.EXECUTION_REQUIRED)
+
+
+def _schedule_credential_recheck(grant: Mapping[str, Any]) -> None:
+    """Re-probe the catalog row a vendor just turned down, at most once per
+    self-heal interval.
+
+    Header grants only. An OAuth connection has ``needs_reauth`` to carry the
+    same news, and the self-heal the list route runs re-probes only rows that
+    are already unreachable.
+    """
+    if grant.get("kind") != GRANT_KIND_HEADER_MCP:
+        return
+    schedule_catalog_discovery(
+        grant["user_id"], grant["server_name"],
+        reason="relay-rejected", throttle=True,
+    )
 
 
 async def open_upstream(
     prepared: PreparedRelay, incoming_headers: dict[str, str]
 ) -> httpx.Response:
     """Send the canonical body to the pinned destination; one 401 retry when
-    the stored bundle has visibly rotated since we read it."""
+    the stored bundle has visibly rotated since we read it. A vendor redirect
+    is refused rather than followed or relayed on."""
     destination = prepared.grant["destination_url"]
     try:
         target = await pin_public_url(destination, require_https=True)
@@ -223,8 +555,8 @@ async def open_upstream(
         # The reason (which names the vendor host and is a DNS-resolution
         # oracle) stays host-side; the sandbox gets only the X-Relay-Error code.
         logger.warning(
-            "[egress_relay] destination pin failed for connection %s: %s",
-            prepared.grant["connection_id"], e,
+            "[egress_relay] destination pin failed for grant %s: %s",
+            _grant_label(prepared.grant), e,
         )
         raise RelayRejection(502, RelayError.DESTINATION_BLOCKED)
 
@@ -243,15 +575,45 @@ async def open_upstream(
                 content=prepared.canonical.body,
                 extensions=extensions,
             )
-            return await client.send(request, stream=True)
+            response = await client.send(request, stream=True)
         except httpx.HTTPError as e:
             logger.warning(
-                "[egress_relay] upstream unreachable for connection %s: %s",
-                connection_id, e,
+                "[egress_relay] upstream unreachable for grant %s: %s",
+                _grant_label(prepared.grant), _upstream_reason(e),
             )
             raise RelayRejection(502, RelayError.UPSTREAM_UNREACHABLE)
+        if _is_vendor_redirect(response.status_code):
+            # Following the hop would carry the vendor bearer to whatever host
+            # the redirect names, but relaying the 3xx on is worse than useless:
+            # Location is not in RESPONSE_HEADER_ALLOWLIST, so the sandbox would
+            # raise a bare "redirect response" against the RELAY's own URL, with
+            # nothing pointing at the vendor. Name it as its own outcome
+            # instead. Only the target's host is kept even in the host-side
+            # log — a vendor Location can carry signed query parameters or
+            # userinfo, and the sandbox is never told any of it.
+            await response.aclose()
+            logger.warning(
+                "[egress_relay] vendor redirected grant %s to host %s",
+                _grant_label(prepared.grant),
+                _redirect_host(response.headers.get("location")),
+            )
+            raise RelayRejection(502, RelayError.VENDOR_REDIRECT)
+        return response
 
+    if prepared.order is not None:
+        await _claim_order_dispatch(prepared.order)
     response = await _send(headers)
+    if prepared.credential.token is None:
+        # A static credential has no generation to race with, so the vendor's
+        # refusal is its answer and the caller gets it: reporting it as a relay
+        # refusal would hide which side said no. Nothing here can repair it,
+        # but a row nothing re-probes stays healthy on the Plugins page and in
+        # later turns while every call fails, so the relay schedules the probe
+        # that records the refusal as ``credential_rejected`` and the sync that
+        # follows retires the grant.
+        if response.status_code in (401, 403):
+            _schedule_credential_recheck(prepared.grant)
+        return response
     if response.status_code != 401:
         return response
 
@@ -259,7 +621,7 @@ async def open_upstream(
     # stored bundle rotated since our read, retry once with the new token;
     # otherwise the vendor is rejecting a current token → needs_reauth.
     await response.aclose()
-    rejected = prepared.token
+    rejected = prepared.credential.token
     current = await current_access_token(connection_id)
     if current is not None and current.generation > rejected.generation:
         headers["authorization"] = current.header()

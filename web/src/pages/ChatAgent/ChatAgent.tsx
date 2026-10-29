@@ -1,34 +1,25 @@
 import React, { Suspense, useCallback, useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { motion, AnimatePresence } from 'framer-motion';
+import { SwapCell } from '@/components/ui/crossfade';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { queryKeys } from '../../lib/queryKeys';
-import { getThread } from './utils/api';
+import { threadDetailQuery } from './utils/threadQueries';
 import { threadGalleryQuery } from './utils/threadGalleryQuery';
 import { getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
+import { useDeletedThreads } from '@/lib/deletedThreads';
 import { useActiveThreadPublisher } from '@/lib/threadLifecycle/useActiveThreadPublisher';
 import { useWarmWorkspaceSandbox } from './hooks/useWarmWorkspaceSandbox';
+import { useComputerStatusFanout } from './hooks/useComputers';
 import { warmWorkspace } from './utils/warmWorkspace';
 import { isValidUuid } from './utils/uuid';
 import { shouldLeaveThreadRoute } from './utils/threadRouteGuard';
 import ChatView from './components/ChatView';
+import ComputersDialogHost from './components/ComputersDialogHost';
+import { closeComputerSpec, closeComputersPanel } from './hooks/computerPanelStore';
 import './ChatAgent.css';
-
-// View depth for direction-aware transitions: gallery(0) → threads(1) → chat(2)
-function getViewDepth(threadId?: string, workspaceId?: string): number {
-  if (threadId) return 2;
-  if (workspaceId) return 1;
-  return 0;
-}
-
-const desktopFadeVariants = {
-  enter: { opacity: 0 },
-  center: { opacity: 1 },
-  exit: { opacity: 0 },
-};
 
 const WorkspaceGallery = React.lazy(() => import('./components/WorkspaceGallery'));
 const ThreadGallery = React.lazy(() => import('./components/ThreadGallery'));
@@ -42,7 +33,6 @@ interface LocationState {
   workspaceId?: string;
   workspaceName?: string;
   workspaceStatus?: string | null;
-  agentMode?: string;
   initialMessage?: string;
   fromThreadId?: string;
   fromWorkspaceId?: string;
@@ -81,30 +71,13 @@ function ChatAgent(): React.ReactElement | null {
   // opening a finished thread stamps the durable seen cursor.
   useActiveThreadPublisher(threadId);
 
-  // Detect browser-initiated navigation (iOS swipe-back, Android back button).
-  // When popstate triggers navigation, iOS Safari already shows its own page
-  // transition animation. Setting direction=0 tells our variants to skip animation
-  // so we don't get a double-transition flicker.
-  const popstateNavRef = useRef(false);
-  useEffect(() => {
-    const onPopState = () => { popstateNavRef.current = true; };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+  // The Computers dialogs mount with this page, so leaving the section (a
+  // back gesture skips their close) must close them too; left open, they
+  // would come back on the next visit and hold the stale-build reload.
+  useEffect(() => () => {
+    closeComputersPanel();
+    closeComputerSpec();
   }, []);
-
-  // Track navigation direction synchronously (must be computed during render
-  // so AnimatePresence popLayout mode gets the correct custom prop immediately)
-  const prevDepthRef = useRef(getViewDepth(threadId, urlWorkspaceId));
-  const navDirectionRef = useRef(1);
-  const currentDepth = getViewDepth(threadId, urlWorkspaceId);
-  if (currentDepth !== prevDepthRef.current) {
-    navDirectionRef.current = currentDepth > prevDepthRef.current ? 1 : -1;
-    prevDepthRef.current = currentDepth;
-  }
-  // On mobile, use direction=0 for popstate navigations to skip our animations
-  const isPopstateNav = isMobile && popstateNavRef.current;
-  if (popstateNavRef.current) popstateNavRef.current = false;
-  const navDirection = isPopstateNav ? 0 : navDirectionRef.current;
 
   // Session restore: when landing at /chat (gallery) with a saved session,
   // navigate to the deep route. This creates the natural history stack:
@@ -128,52 +101,67 @@ function ChatAgent(): React.ReactElement | null {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Resolve workspaceId: URL param (thread gallery) > location state (navigated from app) > API lookup
+  // The workspace last in view, which a new thread (`__default__`) opens in
+  // when the navigation names none.
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState<string | null>(
     urlWorkspaceId || stateWorkspaceId || null
   );
   const needsThreadLookup = !!threadId && threadId !== '__default__' && !urlWorkspaceId && !stateWorkspaceId;
 
   const { data: resolvedThread, error: threadError } = useQuery({
-    queryKey: queryKeys.threads.detail(threadId!),
-    queryFn: () => getThread(threadId!),
+    ...threadDetailQuery(threadId!),
     enabled: needsThreadLookup,
-    retry: false,
   });
 
   const accessDenied = (threadError as ThreadErrorResponse | null)?.response?.status === 403;
 
-  // Set resolvedWorkspaceId from thread lookup result
   useEffect(() => {
-    if ((resolvedThread as Record<string, unknown> | undefined)?.workspace_id) {
-      setResolvedWorkspaceId((resolvedThread as Record<string, unknown>).workspace_id as string);
-    }
-  }, [resolvedThread]);
-
-  useEffect(() => {
-    if (shouldLeaveThreadRoute(needsThreadLookup, threadError, accessDenied)) {
+    if (shouldLeaveThreadRoute(needsThreadLookup, threadError, accessDenied, !!resolvedThread)) {
       navigate('/chat', { replace: true });
     }
-  }, [needsThreadLookup, threadError, accessDenied, navigate]);
+  }, [needsThreadLookup, threadError, accessDenied, resolvedThread, navigate]);
 
-  // __default__ with lost state — redirect
+  // __default__ with lost state — redirect. The query goes along: a brokerage
+  // connect started on this page comes back to it by a full load, which loses
+  // the state, and its callback params are what the onboarding sheet reads.
   useEffect(() => {
     if (threadId === '__default__' && !resolvedWorkspaceId) {
-      navigate('/chat', { replace: true });
+      navigate({ pathname: '/chat', search: location.search }, { replace: true });
     }
-  }, [threadId, resolvedWorkspaceId, navigate]);
-
-  // Sync resolvedWorkspaceId when URL params or location state change
-  // Use synchronous update to avoid stale workspace on first render after navigation
-  const incomingWsId = urlWorkspaceId || stateWorkspaceId || null;
-  if (incomingWsId && incomingWsId !== resolvedWorkspaceId) {
-    setResolvedWorkspaceId(incomingWsId);
-  }
-
-  const workspaceId = incomingWsId || resolvedWorkspaceId;
+  }, [threadId, resolvedWorkspaceId, navigate, location.search]);
 
   // LRU cache for ChatView instances — keeps up to 5 alive simultaneously
   const cache = useChatViewCache();
+
+  // A thread deleted in this tab: its cached view goes once it is off screen,
+  // and arriving at its route (Back to an entry that still names it) leaves
+  // for its workspace instead of making a view. Only on arrival: the sidebar
+  // moves off a thread it deletes on its own, to the next one.
+  const deletedThreads = useDeletedThreads();
+  const threadDeleted = !!threadId && deletedThreads.has(threadId);
+  useEffect(() => {
+    cache.evict(deletedThreads, threadId);
+  }, [deletedThreads, threadId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A thread belongs to one workspace, so the workspace in view before it is
+  // no stand-in when the navigation names none (back/forward to an entry
+  // without state, a link from outside the chat): a view made under it was a
+  // second view of the thread, which loaded it again and stayed cached. Its
+  // own comes from the navigation, a cached view of it, or the lookup, and
+  // until one of them has it no view is made.
+  const incomingWsId = urlWorkspaceId || stateWorkspaceId || null;
+  const lookedUpWsId = (resolvedThread as Record<string, unknown> | undefined)?.workspace_id as string | undefined;
+  const workspaceId = threadId && threadId !== '__default__'
+    ? incomingWsId || cache.entries.find(e => e.threadId === threadId)?.workspaceId || lookedUpWsId || null
+    : incomingWsId || resolvedWorkspaceId;
+
+  // Use synchronous update to avoid stale workspace on first render after navigation
+  if (workspaceId && workspaceId !== resolvedWorkspaceId) {
+    setResolvedWorkspaceId(workspaceId);
+  }
+  // The workspace on screen: a thread's, or the one whose threads are listed.
+  // The gallery of every workspace shows none, whatever was resolved last.
+  const shownWorkspaceId = (threadId || urlWorkspaceId) ? workspaceId : null;
 
   const queryClient = useQueryClient();
 
@@ -182,6 +170,12 @@ function ChatAgent(): React.ReactElement | null {
   // path also calls warmWorkspace via handleWorkspaceSelect; both share
   // the same in-flight dedupe Map.
   const warmingState = useWarmWorkspaceSandbox(workspaceId);
+
+  // One watch for every machine in flight, mounted above all three surfaces
+  // that can start or stop one (the gallery, the thread gallery's panel, the
+  // file panel's). Each of them arms it the same way, by writing the action's
+  // own status into the cache, so the watch cannot live on one of them.
+  useComputerStatusFanout();
 
   // Track in-progress __default__ → real threadId resolutions. Keyed by workspaceId:
   // at most one such resolution can be in flight per workspace (a fresh __default__
@@ -192,7 +186,7 @@ function ChatAgent(): React.ReactElement | null {
 
   // Ensure cache entry exists before first paint so chatViews is never empty
   // when threadId is set (same setState-during-render pattern as setResolvedWorkspaceId above).
-  if (threadId && workspaceId && !cache.entries.some(e => e.workspaceId === workspaceId && e.threadId === threadId)) {
+  if (threadId && workspaceId && !threadDeleted && !cache.entries.some(e => e.workspaceId === workspaceId && e.threadId === threadId)) {
     // Don't create a duplicate entry if a resolution touches this threadId — either as
     // the target (URL is ahead, cache hasn't renamed yet) or as the source (cache is
     // ahead, URL still points at the old __default__). Without this check, the
@@ -214,6 +208,10 @@ function ChatAgent(): React.ReactElement | null {
   // Before that fire, the set-during-render block above already handles the bridge window.
   useEffect(() => {
     if (!threadId || !workspaceId) return;
+    if (threadDeleted) {
+      navigate(`/chat/${workspaceId}`, { replace: true });
+      return;
+    }
     const pending = resolvingRef.current.get(workspaceId);
     if (pending && pending.newThreadId === threadId) return;
     const cached = queryClient.getQueryData(queryKeys.workspaces.detail(workspaceId)) as Record<string, unknown> | undefined;
@@ -277,11 +275,10 @@ function ChatAgent(): React.ReactElement | null {
     }
   }, [navigate, workspaceId, state, queryClient]);
 
-  const handleThreadSelect = useCallback((selectedWorkspaceId: string, selectedThreadId: string, agentMode?: string | null) => {
+  const handleThreadSelect = useCallback((selectedWorkspaceId: string, selectedThreadId: string) => {
     navigate(`/chat/t/${selectedThreadId}`, {
       state: {
         workspaceId: selectedWorkspaceId,
-        ...(agentMode ? { agentMode } : {}),
         workspaceStatus: state?.workspaceStatus || null,
       },
     });
@@ -345,7 +342,7 @@ function ChatAgent(): React.ReactElement | null {
   ) : null;
 
   // Cached ChatView instances — always rendered, visibility toggled via display
-  const chatViews = cache.entries.map(entry => {
+  const chatViews = cache.mounted.map(entry => {
     const pending = resolvingRef.current.get(entry.workspaceId);
     // Bridge window: cache.updateKey and navigate commit in separate renders.
     // In the intermediate render, either the cache is ahead (entry.threadId is new,
@@ -399,34 +396,44 @@ function ChatAgent(): React.ReactElement | null {
         {!threadId && galleryContent}
         {chatViews}
         {accessDeniedContent}
+        <ComputersDialogHost currentWorkspaceId={shownWorkspaceId} />
       </div>
     );
   }
 
   return (
     <div style={{ height: '100%', position: 'relative' }}>
-      {/* Gallery views — animated transitions (R6: z-index:1 so exit fades above chat) */}
-      <div style={{ position: threadId ? 'absolute' : 'relative', height: threadId ? 0 : '100%', width: '100%', zIndex: 1, overflow: 'hidden' }}>
-        <AnimatePresence mode="wait" custom={navDirection}>
-          {!threadId && (
-            <motion.div
-              key={viewKey}
-              custom={navDirection}
-              variants={desktopFadeVariants}
-              initial="enter"
-              animate="center"
-              exit="exit"
-              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-              style={{ height: '100%' }}
-            >
-              {galleryContent}
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* Gallery views. The outgoing view dissolves over the incoming one in
+          a single grid cell (SwapCell), so a switch never passes through an
+          empty frame. The first view only appears: it draws in its final
+          frame, and a fade on top would only slow it. No
+          z-index on this wrapper: it would make it
+          a stacking context, and every dialog the gallery opens (sandbox
+          settings and the MCP and skill forms inside it) would paint under the
+          app sidebar however high its own layer. */}
+      <div
+        style={{
+          position: threadId ? 'absolute' : 'relative',
+          height: threadId ? 0 : '100%',
+          width: '100%',
+          overflow: 'hidden',
+        }}
+      >
+        <SwapCell
+          as="div"
+          swapKey={threadId ? null : viewKey}
+          className="h-full min-h-0 grid-rows-[minmax(0,1fr)]"
+          layerClassName="h-full min-h-0"
+        >
+          {galleryContent}
+        </SwapCell>
       </div>
       {/* Cached ChatViews — visibility toggled, never unmounted on thread switch */}
       {chatViews}
       {accessDeniedContent}
+      {/* Computer management and change-spec, opened from the gallery, a
+          card's machine line, or a disk warning in any chat. */}
+      <ComputersDialogHost currentWorkspaceId={shownWorkspaceId} />
     </div>
   );
 }

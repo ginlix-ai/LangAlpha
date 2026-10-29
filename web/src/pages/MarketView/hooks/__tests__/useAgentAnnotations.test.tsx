@@ -93,7 +93,7 @@ function makeRefs() {
     setData: vi.fn(),
   } as unknown as ISeriesApi<'Candlestick'>;
   const chart = {
-    addLineSeries: vi.fn(() => ({ setData: vi.fn() })),
+    addSeries: vi.fn(() => ({ setData: vi.fn() })),
     removeSeries: vi.fn(),
   } as unknown as IChartApi;
   const chartRef = createRef<IChartApi | null>() as { current: IChartApi | null };

@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Shared contract for the reasoning-effort step-down clamp.",
+    "Read by tests/unit/llms/test_reasoning_efforts_manifest.py and by",
+    "web/src/lib/__tests__/modelTuning.test.ts, because the rule is implemented",
+    "twice: ModelConfig.resolve_reasoning_effort in Python decides what the server",
+    "actually runs, and resolveEffort in TypeScript decides what the UI labels as",
+    "inherited. A label that disagrees with the request is worse than none, so the",
+    "two read the same table rather than each carrying their own copy."
+  ],
+  "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  "cases": [
+    { "ladder": ["low", "medium", "high"], "requested": "medium", "expected": "medium" },
+    { "ladder": ["low", "medium", "high"], "requested": "max", "expected": "high" },
+    { "ladder": ["low", "medium", "high"], "requested": "xhigh", "expected": "high" },
+    { "ladder": ["none", "high"], "requested": "low", "expected": "none" },
+    { "ladder": ["none", "high"], "requested": "medium", "expected": "none" },
+    { "ladder": ["none", "low", "medium", "high"], "requested": "max", "expected": "high" },
+    { "ladder": ["minimal", "low", "medium", "high"], "requested": "none", "expected": "minimal" },
+    { "ladder": ["low", "medium", "high", "xhigh", "max"], "requested": "minimal", "expected": "low" },
+    { "ladder": [], "requested": "high", "expected": null }
+  ]
+}

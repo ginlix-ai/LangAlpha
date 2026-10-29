@@ -458,83 +458,63 @@ class TestDiscoverAndCachePerServer:
 
 
 def _cfg(name: str = "acme", **kw) -> MCPServerConfig:
-    base = dict(name=name, transport="stdio", command="npx", source="workspace")
+    base = dict(name=name, transport="stdio", command="npx", source="user")
     base.update(kw)
     return MCPServerConfig(**base)
 
 
-def _ws_row(name: str, config: dict) -> dict:
-    return {"name": name, "source": "workspace", "enabled": True, "config": config}
-
-
 @pytest.mark.asyncio
 class TestStaleServerNames:
-    async def test_deleted_edited_and_current_classified(self, monkeypatch):
-        rows = [
-            _ws_row("kept", {"transport": "stdio", "command": "npx"}),
-            _ws_row("edited", {"transport": "stdio", "command": "uvx"}),
-        ]
+    def _catalog(self, monkeypatch, rows):
         monkeypatch.setattr(
-            mcp_discovery.mcp_db, "list_workspace_servers",
+            mcp_discovery.mcp_db, "list_enabled_user_servers",
             AsyncMock(return_value=rows),
         )
-        # Kick-time snapshots: "kept" still matches its row, "edited" was
-        # npx at kick but is uvx now, "deleted" has no row anymore.
+        monkeypatch.setattr(
+            "src.server.database.workspace.get_workspace",
+            AsyncMock(return_value={"workspace_id": "ws", "user_id": "u1"}),
+        )
+
+    async def test_servers_check_the_user_catalog(self, monkeypatch):
+        """Results validate against the owner's Plugins catalog, where every
+        server's config lives. Kick-time snapshots: "kept" still matches its
+        row, "edited" was npx at kick but is uvx now, "deleted" has no row."""
+        self._catalog(monkeypatch, [
+            {"name": "kept", "transport": "stdio", "command": "npx"},
+            {"name": "edited", "transport": "stdio", "command": "uvx"},
+        ])
         stale = await _real_stale_server_names(
             "ws", [_cfg("kept"), _cfg("edited"), _cfg("deleted")]
         )
         assert stale == {"edited", "deleted"}
 
     async def test_malformed_row_counts_as_stale(self, monkeypatch):
-        rows = [_ws_row("bad", {"transport": "nonsense", "bogus_field": 1})]
-        monkeypatch.setattr(
-            mcp_discovery.mcp_db, "list_workspace_servers",
-            AsyncMock(return_value=rows),
-        )
+        self._catalog(monkeypatch, [{"name": "bad", "transport": "nonsense"}])
         stale = await _real_stale_server_names("ws", [_cfg("bad")])
         assert stale == {"bad"}
 
-    async def test_inherited_servers_check_the_user_catalog(self, monkeypatch):
-        """Inherited (source='user') results must validate against the owner's
-        Connectors catalog — the old workspace-only lookup dropped EVERY
-        inherited discovery as "deleted", so they never left pending."""
+    async def test_a_server_outside_the_user_tier_is_stale(self, monkeypatch):
+        """Only the catalog can vouch for a result. A stray source='workspace'
+        row with the same name must not make a non-user server look current."""
+        self._catalog(monkeypatch, [])
         monkeypatch.setattr(
             mcp_discovery.mcp_db, "list_workspace_servers",
-            AsyncMock(return_value=[]),
+            AsyncMock(return_value=[{
+                "name": "acme", "source": "workspace", "enabled": True,
+                "config": {"transport": "stdio", "command": "npx"},
+            }]),
         )
-        monkeypatch.setattr(
-            mcp_discovery.mcp_db, "list_enabled_user_servers",
-            AsyncMock(return_value=[
-                {"name": "kept", "transport": "stdio", "command": "npx"},
-                {"name": "edited", "transport": "stdio", "command": "uvx"},
-            ]),
-        )
-        monkeypatch.setattr(
-            "src.server.database.workspace.get_workspace",
-            AsyncMock(return_value={"workspace_id": "ws", "user_id": "u1"}),
-        )
-        stale = await _real_stale_server_names(
-            "ws",
-            [
-                _cfg("kept", source="user"),
-                _cfg("edited", source="user"),
-                _cfg("deleted", source="user"),
-            ],
-        )
-        assert stale == {"edited", "deleted"}
+        stale = await _real_stale_server_names("ws", [_cfg("acme", source="builtin")])
+        assert stale == {"acme"}
 
-    async def test_inherited_falls_back_stale_without_an_owner(self, monkeypatch):
+    async def test_falls_back_stale_without_an_owner(self, monkeypatch):
         """No workspace row (or no user_id on it) ⇒ the catalog can't be
         checked; dropping the result is the safe arm."""
-        monkeypatch.setattr(
-            mcp_discovery.mcp_db, "list_workspace_servers",
-            AsyncMock(return_value=[]),
-        )
         monkeypatch.setattr(
             "src.server.database.workspace.get_workspace",
             AsyncMock(return_value=None),
         )
-        stale = await _real_stale_server_names("ws", [_cfg("inh", source="user")])
+        stale = await _real_stale_server_names("ws", [_cfg("inh")])
         assert stale == {"inh"}
 
 
@@ -614,7 +594,7 @@ class TestDiscoveryFingerprint:
     another."""
 
     def _srv(self, **kw):
-        base = dict(name="acme", transport="stdio", command="npx", source="workspace")
+        base = dict(name="acme", transport="stdio", command="npx", source="user")
         base.update(kw)
         return MCPServerConfig(**base)
 
@@ -695,7 +675,7 @@ class TestToolSnapshotIndex:
     only, user tier first for inherited servers."""
 
     def _srv(self, name="acme", **kw):
-        base = dict(name=name, transport="stdio", command="npx", source="workspace")
+        base = dict(name=name, transport="stdio", command="npx", source="user")
         base.update(kw)
         return MCPServerConfig(**base)
 
@@ -734,13 +714,25 @@ class TestToolSnapshotIndex:
         )
         assert [t["name"] for t in index.ok(srv)["tools"]] == ["fresh"]
 
-    def test_rejected_user_row_does_not_fall_through_to_the_workspace_tier(self):
-        # The workspace snapshot of an OAuth server is OAuth-blind and can
-        # outlive a disconnect — serving it after the user tier said "error"
-        # is exactly the staleness the precedence exists to prevent.
+    def test_a_rejected_user_row_falls_through_to_the_workspace_tier(self):
+        # Every remote row gets a user-tier row from the host-side probe now,
+        # so a host probe that failed would otherwise hide the snapshot the
+        # sandbox wrote and drop the server from both paths.
         srv = self._srv(source="user")
         index = ToolSnapshotIndex(
-            workspace_rows=[self._row(srv, tools=[_tool("stale")])],
+            workspace_rows=[self._row(srv, tools=[_tool("in_sandbox")])],
+            user_rows=[self._row(srv, status="error")],
+        )
+        assert [t["name"] for t in index.ok(srv)["tools"]] == ["in_sandbox"]
+
+    def test_an_oauth_server_reads_its_user_tier_alone(self):
+        # A user-tier error row on an OAuth server says the token is dead, and
+        # the workspace snapshot under it was taken before the connection
+        # existed (the fingerprint is OAuth-exempt, so it still matches).
+        # Falling through would bind tools no call can reach.
+        srv = self._srv(source="user", oauth_connection_id="conn-1")
+        index = ToolSnapshotIndex(
+            workspace_rows=[self._row(srv, tools=[_tool("in_sandbox")])],
             user_rows=[self._row(srv, status="error")],
         )
         assert index.ok(srv) is None
@@ -753,7 +745,7 @@ class TestToolSnapshotIndex:
         )
         assert [t["name"] for t in index.ok(srv)["tools"]] == ["in_sandbox"]
 
-    def test_workspace_server_never_reads_the_user_tier(self):
-        srv = self._srv()
+    def test_a_builtin_never_reads_the_user_tier(self):
+        srv = self._srv(source="builtin")
         index = ToolSnapshotIndex(user_rows=[self._row(srv, tools=[_tool("x")])])
         assert index.snapshot(srv) is None

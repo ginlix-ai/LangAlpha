@@ -30,7 +30,7 @@ vi.mock('../Markdown', () => ({
     onOpenFile,
   }: {
     content: string;
-    onOpenFile?: (href: string, wsId?: string) => void;
+    onOpenFile?: (href: string, wsId?: string, location?: { page?: number }) => void;
   }) => (
     <div data-testid="markdown-content">
       {content}
@@ -51,7 +51,7 @@ vi.mock('../Markdown', () => ({
       <button
         type="button"
         data-testid="md-link-pdf"
-        onClick={() => onOpenFile?.('reports/q1.pdf')}
+        onClick={() => onOpenFile?.('reports/q1.pdf', undefined, { page: 3 })}
       >
         reports/q1.pdf
       </button>
@@ -233,6 +233,7 @@ describe('MemoryPanel — body link routing (Fix #6)', () => {
     expect(onOpenFile).toHaveBeenLastCalledWith(
       '.agents/user/memory/feedback_visualization_preference.md',
       undefined,
+      undefined,
     );
 
     // `./other-note.md` → leading `./` stripped, then resolved.
@@ -240,20 +241,23 @@ describe('MemoryPanel — body link routing (Fix #6)', () => {
     expect(onOpenFile).toHaveBeenLastCalledWith(
       '.agents/user/memory/other-note.md',
       undefined,
+      undefined,
     );
 
     // `reports/q1.pdf` (non-md) → passes through verbatim, stripped of any `./`.
     await user.click(screen.getByTestId('md-link-pdf'));
-    expect(onOpenFile).toHaveBeenLastCalledWith('reports/q1.pdf', undefined);
+    // A location on the link rides through the rewrite.
+    expect(onOpenFile).toHaveBeenLastCalledWith('reports/q1.pdf', undefined, { page: 3 });
 
     // Bare `attached.pdf` → still passes through (not a memory entry).
     await user.click(screen.getByTestId('md-link-bare-pdf'));
-    expect(onOpenFile).toHaveBeenLastCalledWith('attached.pdf', undefined);
+    expect(onOpenFile).toHaveBeenLastCalledWith('attached.pdf', undefined, undefined);
 
     // Already-qualified `.agents/...` → passes through verbatim.
     await user.click(screen.getByTestId('md-link-qualified'));
     expect(onOpenFile).toHaveBeenLastCalledWith(
       '.agents/skills/foo/skill.md',
+      undefined,
       undefined,
     );
   });

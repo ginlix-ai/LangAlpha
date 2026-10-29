@@ -9,7 +9,13 @@ import pytest
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
-from ptc_agent.agent.middleware.background_subagent.spawn import NamespaceUnfenced
+from ptc_agent.agent.middleware.background_subagent.spawn import (
+    NamespaceUnfenced,
+    RunLedgerUnavailable,
+    SpawnSetupError,
+    SpawnStoppedError,
+    TaskRunRefused,
+)
 from ptc_agent.agent.middleware.background_subagent.workflow import tool as tool_module
 from ptc_agent.agent.middleware.background_subagent.workflow.engine import (
     MAX_DESCRIPTION_CHARS,
@@ -18,7 +24,11 @@ from ptc_agent.agent.middleware.background_subagent.workflow.tool import (
     _script_path_is_unreadable,
     create_run_workflow_tool,
 )
-from ptc_agent.core.paths import MEMO_USER_DIR, MEMORY_USER_DIR
+from ptc_agent.core.paths import (
+    MEMO_USER_DIR,
+    MEMORY_USER_DIR,
+    WorkspaceLayout,
+)
 from src.config.models import WorkflowOrchestrationConfig
 
 from .conftest import FakeBackend, workflow_script
@@ -150,6 +160,72 @@ async def test_exactly_one_script_source_is_required() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_refused_launch_is_stamped_an_error() -> None:
+    """A refusal starts no run, so its reply is the card's only settle signal.
+
+    Every refusal leaves through ``_Refused``, so one launch that cannot
+    resolve a source stands for the whole class.
+    """
+    workflow_tool = _make_tool(FakeBackend())
+
+    message = await workflow_tool.ainvoke(
+        {
+            "name": "RunWorkflow",
+            "type": "tool_call",
+            "id": "tc-refused",
+            "args": {"script": _script(), "workflow": "saved"},
+        }
+    )
+
+    assert "exactly one" in message.content
+    assert message.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_workflow_refusal_is_stamped_an_error() -> None:
+    """The refusal text is built, not a literal, so no static sweep sees it."""
+    workflow_tool = _make_tool(FakeBackend(), prebuilt=FakePrebuilt({"known": _script()}))
+
+    message = await workflow_tool.ainvoke(
+        {
+            "name": "RunWorkflow",
+            "type": "tool_call",
+            "id": "tc-unknown",
+            "args": {"workflow": "nope"},
+        }
+    )
+
+    assert "Unknown workflow 'nope'" in message.content
+    assert message.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_launch_stopped_mid_setup_settles_as_stopped_not_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop that wins the publish fence is a cancellation, not a refusal.
+
+    The run settles cancelled and the reply carries no task artifact, so the
+    card settles from this artifact alone: it reads "Stopped", where an
+    "Error" reply would read "Failed".
+    """
+
+    async def _stopped(mw: Any, task: Any, runner: Any, **kwargs: Any) -> None:
+        raise SpawnStoppedError(f"{task.display_id} was stopped before it started")
+
+    monkeypatch.setattr(tool_module, "spawn_task_writer", _stopped)
+    workflow_tool = _make_tool(FakeBackend())
+
+    message = await workflow_tool.coroutine(script=_script(), tool_call_id="tc-stopped")
+
+    assert message.content.startswith("Workflow run Task-")
+    assert message.content.endswith(" was stopped before it started.")
+    assert message.status == "success"
+    assert message.artifact == {"launch": "cancelled"}
+    assert "task_artifact" not in message.additional_kwargs
+
+
+@pytest.mark.asyncio
 async def test_inline_workflow_snapshots_and_builds_v2_spec() -> None:
     backend = FakeBackend()
     workflow_tool = _make_tool(backend)
@@ -252,9 +328,9 @@ async def test_script_path_guards_path_but_not_javascript_content() -> None:
 @pytest.mark.parametrize(
     "blocked_path",
     [
-        ".agents/user/memory/demo.js",
-        ".agents/workspace/memory/demo.js",
-        ".agents/user/memo/demo.js",
+        f"{MEMORY_USER_DIR}/demo.js",
+        f"{WorkspaceLayout.MEMORY_DIR}/demo.js",
+        f"{MEMO_USER_DIR}/demo.js",
         "work/_internal/demo.js",
     ],
 )
@@ -705,12 +781,158 @@ async def test_a_refused_admission_names_its_reason_and_drops_the_entry() -> Non
 
     message = await workflow_tool.coroutine(script=_script(), tool_call_id="wf-1")
 
-    assert message.startswith("Error: could not start Task-")
-    assert message.endswith(
+    assert message.content.startswith("Error: could not start Task-")
+    assert message.content.endswith(
         "— its checkpoint namespace could not be fenced. Try again."
     )
+    assert message.status == "error"
     assert await dispatcher.registry.get_all_tasks() == []
     assert CapturingDriver.specs == []
+
+
+class _UnreachableBackend(FakeBackend):
+    async def aread_text(self, path: str) -> str:
+        raise ConnectionError("sandbox gone")
+
+
+class _DownStore:
+    async def aget(self, *_: Any) -> Any:
+        raise RuntimeError("store down")
+
+
+def _ledgered(ledger: FakeRunLedger) -> FakeDispatcher:
+    dispatcher = FakeDispatcher()
+    dispatcher.registry.run_ledger = ledger
+    dispatcher.middleware.checkpointer = object()
+    return dispatcher
+
+
+def _admission_raising(refusal: Exception) -> FakeDispatcher:
+    dispatcher = FakeDispatcher()
+
+    async def _refuse(task: Any, **kwargs: Any) -> str:
+        raise refusal
+
+    dispatcher.middleware.admit_task_run = _refuse
+    return dispatcher
+
+
+_TWO_RUNS = [{"task_id": "task_aaa111"}, {"task_id": "task_bbb222"}]
+
+
+@pytest.mark.parametrize(
+    ("make_tool", "args", "marked"),
+    [
+        pytest.param(
+            lambda: _make_tool(FakeBackend()),
+            {"script": "x", "workflow": "alpha"},
+            [],
+            id="two-sources",
+        ),
+        pytest.param(
+            lambda: _make_tool(FakeBackend(), prebuilt=FakePrebuilt({})),
+            {"workflow": "missing"},
+            [],
+            id="unknown-workflow",
+        ),
+        pytest.param(
+            lambda: _make_tool(FakeBackend({"work/empty.js": ""})),
+            {"script_path": "work/empty.js"},
+            [],
+            id="empty-script-path",
+        ),
+        pytest.param(
+            lambda: _make_tool(FakeBackend(), dispatcher=_ledgered(FakeRunLedger(rows=_TWO_RUNS))),
+            {"script": _script()},
+            [],
+            id="cap-reached",
+        ),
+        pytest.param(
+            lambda: _make_tool(
+                FakeBackend(),
+                dispatcher=_admission_raising(TaskRunRefused("slot taken")),
+            ),
+            {"script": _script()},
+            [],
+            id="ledger-rejected-admission",
+        ),
+        pytest.param(
+            lambda: _make_tool(_UnreachableBackend()),
+            {"script_path": "work/run.js"},
+            ["script_read_failed"],
+            id="script-path-read-failed",
+        ),
+        pytest.param(
+            lambda: _make_tool(FakeBackend(), store=_DownStore()),
+            {"workflow": "named"},
+            ["workflow_store_unavailable"],
+            id="store-down",
+        ),
+        pytest.param(
+            lambda: _make_tool(
+                FakeBackend(),
+                dispatcher=_ledgered(FakeRunLedger(error=RuntimeError("db down"))),
+            ),
+            {"script": _script()},
+            ["run_ledger_unavailable"],
+            id="ledger-unreadable",
+        ),
+        pytest.param(
+            lambda: _make_tool(
+                FakeBackend(),
+                dispatcher=_admission_raising(NamespaceUnfenced("could not be fenced")),
+            ),
+            {"script": _script()},
+            ["namespace_unfenced"],
+            id="fence-down",
+        ),
+        pytest.param(
+            lambda: _make_tool(
+                FakeBackend(),
+                dispatcher=_admission_raising(
+                    RunLedgerUnavailable("its run could not be recorded. Try again")
+                ),
+            ),
+            {"script": _script()},
+            ["run_ledger_unavailable"],
+            id="ledger-down-at-admission",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_only_our_infrastructure_failing_marks_the_run_failed(
+    monkeypatch: pytest.MonkeyPatch, make_tool: Any, args: dict[str, Any], marked: list[str]
+) -> None:
+    """Every refusal reads as an error to the model, but most are the agent's
+    own to correct; only the ones where our side did not answer count against
+    the tool's error rate."""
+    marks: list[str] = []
+    monkeypatch.setattr(
+        tool_module, "mark_tool_failed", lambda error_class, *_: marks.append(error_class)
+    )
+
+    reply = await make_tool().coroutine(**args)
+
+    assert _reads_as_a_launch_failure(getattr(reply, "content", reply))
+    assert marks == marked
+
+
+@pytest.mark.asyncio
+async def test_a_writer_that_cannot_spawn_marks_the_run_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _cannot_spawn(*_: Any, **__: Any) -> None:
+        raise SpawnSetupError("setup raised")
+
+    monkeypatch.setattr(tool_module, "spawn_task_writer", _cannot_spawn)
+    marks: list[str] = []
+    monkeypatch.setattr(
+        tool_module, "mark_tool_failed", lambda error_class, *_: marks.append(error_class)
+    )
+
+    await _make_tool(FakeBackend()).coroutine(script=_script())
+
+    assert marks == ["SpawnSetupError"]
 
 
 @pytest.mark.parametrize(

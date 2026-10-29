@@ -46,20 +46,20 @@ const mockSend = sendChatMessageStream as Mock;
 const mockSendHitl = sendHitlResponse as Mock;
 const mockTurns = fetchThreadTurns as Mock;
 
-const planInterrupt = {
+const questionInterrupt = {
   event: 'interrupt',
-  interrupt_id: 'plan-1',
-  action_requests: [{ name: 'SubmitPlan', description: 'Step 1. Do the thing.' }],
+  interrupt_id: 'q-1',
+  action_requests: [{ type: 'ask_user_question', question: 'Which tickers?', options: [], allow_multiple: false }],
 };
 
 const assistantBubbles = (messages: readonly unknown[]): AssistantMessage[] =>
   messages.filter((m): m is AssistantMessage => (m as AssistantMessage).role === 'assistant');
 
-/** Send "make a plan", get a plan_approval interrupt on the main bubble. */
+/** Send a message, get an ask_user_question interrupt on the main bubble. */
 async function sendAndInterrupt() {
   mockSend.mockImplementation(async (...args: unknown[]) => {
-    const onEvent = args[5] as (e: Record<string, unknown>) => void;
-    onEvent(planInterrupt);
+    const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
+    onEvent(questionInterrupt);
     return { disconnected: false };
   });
 
@@ -68,15 +68,15 @@ async function sendAndInterrupt() {
   await settleMountEffect();
 
   await act(async () => {
-    await rendered.result.current.handleSendMessage('make a plan', false);
+    await rendered.result.current.handleSendMessage('compare a few names');
   });
 
-  // The plan card is on screen and pending approval.
+  // The question card is on screen and pending an answer.
   await waitFor(() =>
     expect(
       assistantBubbles(rendered.result.current.messages).flatMap(
         (m) => (m.contentSegments as ContentSegment[] | undefined) || [],
-      ).filter((s) => s.type === 'plan_approval'),
+      ).filter((s) => s.type === 'user_question'),
     ).toHaveLength(1),
   );
   return rendered;
@@ -100,17 +100,17 @@ describe('useChatMessages — empty HITL-resume bubble stays in state (turn inte
   it('an empty resume keeps its bubble in state, settled (render hides it)', async () => {
     const { result } = await sendAndInterrupt();
 
-    // Approve → the resume stream emits NOTHING onto its fresh bubble.
+    // Answer → the resume stream emits NOTHING onto its fresh bubble.
     mockSendHitl.mockImplementation(async () => ({ disconnected: false, aborted: false }));
 
     await act(async () => {
-      result.current.handleApproveInterrupt();
+      result.current.handleAnswerQuestion('AAPL, MSFT', 'q-1', 'q-1');
       await new Promise((r) => setTimeout(r, 0));
     });
     await waitFor(() => expect(mockSendHitl).toHaveBeenCalled());
     await settleMountEffect();
 
-    // TWO assistant bubbles: the plan-card turn AND the resume turn. The
+    // TWO assistant bubbles: the question-card turn AND the resume turn. The
     // resume bubble is empty and settled — MessageList's orphan guard hides
     // it — but it must remain so bubble-count → turn_index stays aligned.
     const assistants = assistantBubbles(result.current.messages);
@@ -128,15 +128,15 @@ describe('useChatMessages — empty HITL-resume bubble stays in state (turn inte
   it('a resume that streamed real content keeps it on its bubble', async () => {
     const { result } = await sendAndInterrupt();
 
-    // Approve → the resume streams a real answer onto its bubble.
+    // Answer → the resume streams a real answer onto its bubble.
     mockSendHitl.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[3] as (e: Record<string, unknown>) => void;
+      const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
       onEvent({ event: 'message_chunk', role: 'assistant', agent: 'main', content_type: 'text', content: 'resumed answer' });
       return { disconnected: false, aborted: false };
     });
 
     await act(async () => {
-      result.current.handleApproveInterrupt();
+      result.current.handleAnswerQuestion('AAPL, MSFT', 'q-1', 'q-1');
       await new Promise((r) => setTimeout(r, 0));
     });
     await waitFor(() => expect(mockSendHitl).toHaveBeenCalled());
@@ -149,7 +149,7 @@ describe('useChatMessages — empty HITL-resume bubble stays in state (turn inte
   it('edit truncation releases truncated interrupt ids so a re-raised id renders a card again', async () => {
     const { result } = await sendAndInterrupt();
 
-    // Edit the original user message: truncation removes the plan card, and the
+    // Edit the original user message: truncation removes the question card, and the
     // forked run re-raises the SAME interrupt_id (LangGraph ids are
     // deterministic). A stale rendered-id entry would suppress the new card and
     // strand the interrupt unanswerable.
@@ -158,21 +158,21 @@ describe('useChatMessages — empty HITL-resume bubble stays in state (turn inte
       retry_checkpoint_id: null,
     });
     mockSend.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[5] as (e: Record<string, unknown>) => void;
-      onEvent(planInterrupt); // same interrupt_id as the truncated card
+      const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
+      onEvent(questionInterrupt); // same interrupt_id as the truncated card
       return { disconnected: false };
     });
 
     const userMsg = result.current.messages.find((m) => m.role === 'user')!;
     await act(async () => {
-      await result.current.handleEditMessage(userMsg.id, 'make a better plan');
+      await result.current.handleEditMessage(userMsg.id, 'compare a few more names');
     });
 
-    // Exactly one plan card — the truncated id was released and re-rendered.
+    // Exactly one question card: the truncated id was released and re-rendered.
     await waitFor(() => {
       const cards = assistantBubbles(result.current.messages).flatMap(
         (m) => (m.contentSegments as ContentSegment[] | undefined) || [],
-      ).filter((s) => s.type === 'plan_approval');
+      ).filter((s) => s.type === 'user_question');
       expect(cards).toHaveLength(1);
     });
   });

@@ -35,7 +35,7 @@ async def _reset_ginlix_singleton():
     """Close and reset the ginlix-data httpx client after each test."""
     yield
     try:
-        import mcp_servers.price_data_mcp_server as mod
+        import plugins.langalpha_market_data.price_data_mcp_server as mod
         if hasattr(mod, "_ginlix_http") and mod._ginlix_http is not None:
             await mod._ginlix_http.aclose()
             mod._ginlix_http = None
@@ -60,7 +60,13 @@ _ALL_TABLES = [
     "workspace_mcp_tool_schemas",
     "workspace_mcp_servers",
     "user_mcp_servers",
+    "user_mcp_builtin_disables",
+    "workspace_skill_disables",
+    "user_skills",
+    "user_plugins",
+    "workspace_file_uploads",
     "workspace_files",
+    "workspace_file_blobs",
     "watchlist_items",
     "watchlists",
     "user_portfolios",
@@ -198,13 +204,18 @@ async def db_conn(test_db_pool):
 
 
 @pytest_asyncio.fixture
-async def patched_get_db_connection(test_db_pool):
+async def patched_get_db_connection(test_db_pool, test_db_uri):
     """Patch get_db_connection to use the test pool instead of production.
 
     This allows database module functions (workspace.py, user.py, etc.)
-    to transparently use the test database.
+    to transparently use the test database. The shared lock session opens on
+    it too, fresh per test so no lock outlives the test that took it.
     """
     from contextlib import asynccontextmanager
+
+    import psycopg
+
+    from src.server.database.session_lock import close_shared_lock_session
 
     @asynccontextmanager
     async def _test_get_db_connection(conn=None):
@@ -216,33 +227,49 @@ async def patched_get_db_connection(test_db_pool):
 
     # Every module that does a module-level `from .pool import
     # get_db_connection` holds its own local reference, so each one needs its
-    # own patch target. The database package is swept dynamically — a
-    # hand-kept list goes stale every time a DB module is added (it silently
-    # missed mcp_tool_schemas). Modules that import lazily inside a function
-    # automatically pick up the source patch on pool.get_db_connection.
+    # own patch. Which modules are already loaded depends on what the session
+    # ran before this test, so a hand-kept list is wrong in both directions
+    # (it once missed mcp_tool_schemas, and later every service a plugin
+    # write goes through). Sweep every loaded module still holding the pool's
+    # function instead. A module first imported during the test takes the
+    # patched source on pool.get_db_connection at import.
     import importlib
     import pkgutil
+    import sys
 
     import src.server.database as _database_pkg
     from src.server.database.pool import get_db_connection as _pool_gdc
 
-    targets = [
-        # Services that hold their own from-import of get_db_connection
-        "src.server.services.user_data_io.get_db_connection",
-        "src.server.services.platform_secret_rollout.get_db_connection",
-    ]
     for _info in pkgutil.walk_packages(
         _database_pkg.__path__, prefix="src.server.database."
     ):
-        _mod = importlib.import_module(_info.name)
-        if getattr(_mod, "get_db_connection", None) is _pool_gdc:
-            targets.append(f"{_info.name}.get_db_connection")
+        importlib.import_module(_info.name)
+    holders = [
+        module
+        for name, module in list(sys.modules.items())
+        if name.startswith(("src.", "ptc_agent."))
+        and getattr(module, "get_db_connection", None) is _pool_gdc
+    ]
     from contextlib import ExitStack
 
+    async def _test_session_connection():
+        return await psycopg.AsyncConnection.connect(
+            test_db_uri, autocommit=True, prepare_threshold=0
+        )
+
     with ExitStack() as stack:
-        for target in targets:
-            stack.enter_context(patch(target, _test_get_db_connection))
-        yield _test_get_db_connection
+        for module in holders:
+            stack.enter_context(
+                patch.object(module, "get_db_connection", _test_get_db_connection)
+            )
+        stack.enter_context(
+            patch("src.server.database.pool.open_session_connection", _test_session_connection)
+        )
+        await close_shared_lock_session()
+        try:
+            yield _test_get_db_connection
+        finally:
+            await close_shared_lock_session()
 
 
 @pytest_asyncio.fixture
@@ -251,10 +278,8 @@ async def seed_response(patched_get_db_connection):
 
     The terminal-immutability trigger rejects INSERTs with a terminal
     status, so seeding inserts ``in_progress`` and finalizes with an
-    UPDATE — the same shape production takes through the lifecycle API,
-    including the ``SafeJson`` bind that strips NULs.
+    UPDATE, the same shape production takes through the lifecycle API.
     """
-    from src.server.utils.pg_sanitize import SafeJson
 
     async def _seed(
         conversation_response_id: str,
@@ -262,7 +287,6 @@ async def seed_response(patched_get_db_connection):
         turn_index: int,
         status: str = "completed",
         execution_time=None,
-        sse_events=None,
     ):
         async with patched_get_db_connection() as conn:
             async with conn.cursor() as cur:
@@ -283,16 +307,10 @@ async def seed_response(patched_get_db_connection):
                     """
                     UPDATE conversation_responses
                     SET status = %s,
-                        execution_time = COALESCE(%s, execution_time),
-                        sse_events = COALESCE(%s::jsonb, sse_events)
+                        execution_time = COALESCE(%s, execution_time)
                     WHERE conversation_response_id = %s
                     """,
-                    (
-                        status,
-                        execution_time,
-                        SafeJson(sse_events) if sse_events is not None else None,
-                        conversation_response_id,
-                    ),
+                    (status, execution_time, conversation_response_id),
                 )
 
     return _seed

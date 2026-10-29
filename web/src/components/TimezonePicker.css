@@ -1,0 +1,23 @@
+/* A zone's row: its name, the city when the name does not already say it,
+   and its offset set flush right, so a column of offsets lines up. */
+.tz-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tz-picker-city {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.tz-picker-offset {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}

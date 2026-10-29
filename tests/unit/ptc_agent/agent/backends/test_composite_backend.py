@@ -9,6 +9,7 @@ sandbox.
 
 from __future__ import annotations
 
+import posixpath
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -223,8 +224,9 @@ class TestSearchFanOut:
         matches = await composite.aglob_paths("*.md", WORKING_DIR)
         # Sandbox-returned matches are included
         assert f"{WORKING_DIR}/work/sandbox_match.md" in matches
-        # Memory-tier matches are included too
-        assert USER_PREFIX + "a.md" in matches
+        # The workspace's memory is included too, but not the user tier's,
+        # whose folder is the file mount's link, which a wildcard passes by
+        assert USER_PREFIX + "a.md" not in matches
         assert WORKSPACE_PREFIX + "b.md" in matches
 
     @pytest.mark.asyncio
@@ -486,3 +488,52 @@ class TestMountTraversalGuard:
                 "work/../.agents/user/memory/note.md"
             )
         sandbox.aread_text.assert_not_awaited()
+
+
+class _ReadOnlyRoute:
+    refuses_writes = True
+    root_prefix = "/home/workspace/.agents/history/"
+
+    def __init__(self):
+        self.aread_text = AsyncMock(return_value="history text")
+        self.awrite_text = AsyncMock(side_effect=PermissionError("read only"))
+
+
+class TestWalkingIntoAReadOnlyRoute:
+    """A route that refuses every write has no copy to shadow, so a `..` may
+    walk into it, as `../.agents/threads.jsonl` does from a workspace folder."""
+
+    @pytest.fixture
+    def route(self):
+        return _ReadOnlyRoute()
+
+    @pytest.fixture
+    def read_only(self, sandbox, route):
+        sandbox.normalize_path.side_effect = lambda p: posixpath.normpath(
+            p if p.startswith("/") else f"{WORKING_DIR}/Home/{p}"
+        )
+        return CompositeFilesystemBackend(sandbox=sandbox, routes=[route])
+
+    @pytest.mark.parametrize(
+        "path",
+        ["work/../../.agents/history/a.jsonl", "../.agents/history/a.jsonl"],
+    )
+    def test_the_path_normalizes(self, read_only, path):
+        assert read_only.normalize_path(path)
+
+    @pytest.mark.asyncio
+    async def test_a_read_reaches_the_route(self, read_only, route, sandbox):
+        text = await read_only.aread_text("../.agents/history/a.jsonl")
+
+        assert text == "history text"
+        sandbox.aread_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_write_still_fails_at_the_route(self, read_only, route, sandbox):
+        with pytest.raises(PermissionError):
+            await read_only.awrite_text("../.agents/history/a.jsonl", "x")
+        sandbox.awrite_text.assert_not_awaited()
+
+    def test_leaving_the_route_by_a_dot_dot_is_still_rejected(self, read_only):
+        with pytest.raises(ValueError, match="Path traversal"):
+            read_only.normalize_path(WORKING_DIR + "/.agents/history/../escaped.jsonl")

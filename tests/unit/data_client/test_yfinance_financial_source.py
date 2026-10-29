@@ -128,3 +128,102 @@ def test_ratio_omitted_when_underlying_metric_missing(missing_metric):
         "Net Income": "netIncomeRatio",
     }[missing_metric]
     assert ratio_key not in result[0]
+
+
+class TestKeyMetricsAndRatiosShape:
+    """yfinance stands in for FMP's stable key-metrics-ttm / ratios-ttm, so its
+    rows carry those names and those units: Yahoo reports debtToEquity and
+    dividendYield as percents (154.0, 0.41) where FMP reports 1.54 and 0.0041.
+    """
+
+    _INFO = {
+        "trailingPE": 38.44,
+        "trailingPegRatio": 2.71,
+        "priceToBook": 57.97,
+        "priceToSalesTrailing12Months": 9.3,
+        "enterpriseToEbitda": 27.3,
+        "enterpriseValue": 3_870_000_000_000,
+        "returnOnEquity": 1.55,
+        "returnOnAssets": 0.30,
+        "grossMargins": 0.467,
+        "profitMargins": 0.243,
+        "operatingMargins": 0.319,
+        "debtToEquity": 154.0,
+        "currentRatio": 0.87,
+        "quickRatio": 0.83,
+        "dividendYield": 0.41,
+        "payoutRatio": 0.155,
+    }
+
+    def _run(self, fn_name, info):
+        from src.data_client.yfinance import financial_source
+
+        with patch("src.data_client.yfinance.financial_source.yf.Ticker") as ticker_cls:
+            ticker = MagicMock()
+            ticker.info = info
+            ticker.fast_info = {"marketCap": 3_500_000_000_000}
+            ticker_cls.return_value = ticker
+            return getattr(financial_source, fn_name)("TEST")[0]
+
+    def test_ratios_use_stable_names_and_fraction_units(self):
+        r = self._run("_get_financial_ratios", self._INFO)
+        assert r["priceToEarningsRatioTTM"] == 38.44
+        assert r["priceToEarningsGrowthRatioTTM"] == 2.71
+        assert r["priceToBookRatioTTM"] == 57.97
+        assert r["netProfitMarginTTM"] == 0.243
+        assert r["debtToEquityRatioTTM"] == pytest.approx(1.54)
+        assert r["dividendYieldTTM"] == pytest.approx(0.0041)
+        assert r["dividendPayoutRatioTTM"] == 0.155
+
+    def test_key_metrics_use_stable_names_and_fraction_units(self):
+        m = self._run("_get_key_metrics", self._INFO)
+        assert m["marketCap"] == 3_500_000_000_000
+        assert m["returnOnEquityTTM"] == 1.55
+        assert m["returnOnAssetsTTM"] == 0.30
+        assert m["evToEBITDATTM"] == 27.3
+        assert m["earningsYieldTTM"] == pytest.approx(1 / 38.44)
+
+    def test_missing_percent_fields_stay_none(self):
+        info = {k: v for k, v in self._INFO.items()
+                if k not in ("debtToEquity", "dividendYield")}
+        r = self._run("_get_financial_ratios", info)
+        assert r["debtToEquityRatioTTM"] is None
+        assert r["dividendYieldTTM"] is None
+
+    def test_missing_peg_stays_none(self):
+        info = {k: v for k, v in self._INFO.items() if k != "trailingPegRatio"}
+        r = self._run("_get_financial_ratios", info)
+        assert r["priceToEarningsGrowthRatioTTM"] is None
+
+
+class TestReportedCurrency:
+    """Statement rows carry the issuer's reporting currency, not the listing's."""
+
+    def _df(self):
+        return _make_income_stmt_df(
+            rows=[("Total Revenue", [100.0]), ("Net Income", [10.0])],
+            dates=["2025-12-31"],
+        )
+
+    def _run(self, fn_name, info):
+        from src.data_client.yfinance import financial_source
+
+        with patch("src.data_client.yfinance.financial_source.yf.Ticker") as ticker_cls:
+            ticker = MagicMock()
+            ticker.quarterly_income_stmt = ticker.income_stmt = self._df()
+            ticker.quarterly_cashflow = ticker.cashflow = _make_income_stmt_df(
+                rows=[("Free Cash Flow", [5.0])], dates=["2025-12-31"]
+            )
+            ticker.info = info
+            ticker_cls.return_value = ticker
+            return getattr(financial_source, fn_name)("0700.HK", "quarter", 4)
+
+    @pytest.mark.parametrize("fn_name", ["_get_income_statements", "_get_cash_flows"])
+    def test_rows_take_financial_currency(self, fn_name):
+        rows = self._run(fn_name, {"currency": "HKD", "financialCurrency": "CNY"})
+        assert rows and all(r["reportedCurrency"] == "CNY" for r in rows)
+
+    @pytest.mark.parametrize("fn_name", ["_get_income_statements", "_get_cash_flows"])
+    def test_unknown_currency_left_absent(self, fn_name):
+        rows = self._run(fn_name, {"currency": "HKD"})
+        assert rows and all("reportedCurrency" not in r for r in rows)

@@ -1,9 +1,12 @@
 """Tests for the credit-gate ``is_byok`` logic in ``_handle_send_message``.
 
 The gate reads ``config.credential_source`` (set by ``resolve_llm_config``) to
-decide which enforcement path to take:
-  - OAUTH or BYOK  → ``enforce_credit_limit(byok=True)``  (negative-balance only)
-  - PLATFORM or NONE → ``enforce_credit_limit(byok=False)`` (daily quota check)
+decide what to report to the quota service:
+  - OAUTH or BYOK  → ``enforce_credit_limit(byok=True)``
+  - PLATFORM or NONE → ``enforce_credit_limit(byok=False)``
+
+The flag is reported, not acted on: which pools apply to a user-owned key is
+the quota service's rule, and this service only relays its verdict.
 
 The regression guard: even when ``config.llm_client`` is set (non-None), a
 PLATFORM credential_source must still produce ``byok=False``.  The old check
@@ -11,6 +14,7 @@ PLATFORM credential_source must still produce ``byok=False``.  The old check
 for a platform-reasoning user whose eager client build set ``llm_client``.
 """
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -87,29 +91,11 @@ _GATE_CASES: list[tuple[CredentialSource, bool, bool]] = [
 ]
 
 
-@pytest.mark.parametrize(
-    "credential_source, llm_client_set, expected_byok",
-    _GATE_CASES,
-    ids=[c[0].value for c in _GATE_CASES],
-)
-@pytest.mark.asyncio
-async def test_credit_gate_byok_arg(
-    threads_client,
-    credential_source: CredentialSource,
-    llm_client_set: bool,
-    expected_byok: bool,
-):
-    """``enforce_credit_limit`` receives the correct ``byok`` kwarg.
-
-    The config stub always carries the given ``credential_source``; when
-    ``llm_client_set=True`` the stub also carries a non-None ``llm_client``
-    to prove the old ``llm_client is not None`` heuristic would have misfired.
-    """
+@contextmanager
+def _gated_route(stub_config, enforce_mock):
+    """The message route with everything past the credit gate stubbed out."""
     from src.server.app import setup as setup_module
 
-    stub_config = _make_config(credential_source, llm_client_set=llm_client_set)
-
-    enforce_mock = AsyncMock()
     wm_singleton = MagicMock()
     wm_singleton.has_ready_session.return_value = True
 
@@ -131,7 +117,11 @@ async def test_credit_gate_byok_arg(
         patch(
             "src.server.database.workspace.get_workspace",
             new=AsyncMock(
-                return_value={"user_id": "usr-placeholder-001", "status": "running"}
+                return_value={
+                    "workspace_id": "ws-placeholder",
+                    "user_id": "usr-placeholder-001",
+                    "status": "running",
+                }
             ),
         ),
         patch(
@@ -152,14 +142,39 @@ async def test_credit_gate_byok_arg(
             new=AsyncMock(),
         ),
     ):
+        yield
+
+
+_MESSAGE = {
+    "workspace_id": "ws-placeholder",
+    "messages": [{"role": "user", "content": "test query"}],
+}
+
+
+@pytest.mark.parametrize(
+    "credential_source, llm_client_set, expected_byok",
+    _GATE_CASES,
+    ids=[c[0].value for c in _GATE_CASES],
+)
+@pytest.mark.asyncio
+async def test_credit_gate_byok_arg(
+    threads_client,
+    credential_source: CredentialSource,
+    llm_client_set: bool,
+    expected_byok: bool,
+):
+    """``enforce_credit_limit`` receives the correct ``byok`` kwarg.
+
+    The config stub always carries the given ``credential_source``; when
+    ``llm_client_set=True`` the stub also carries a non-None ``llm_client``
+    to prove the old ``llm_client is not None`` heuristic would have misfired.
+    """
+    stub_config = _make_config(credential_source, llm_client_set=llm_client_set)
+    enforce_mock = AsyncMock()
+
+    with _gated_route(stub_config, enforce_mock):
         async with threads_client.stream(
-            "POST",
-            "/api/v1/threads/tid-placeholder/messages",
-            json={
-                "workspace_id": "ws-placeholder",
-                "messages": [{"role": "user", "content": "test query"}],
-                "agent_mode": "ptc",
-            },
+            "POST", "/api/v1/threads/tid-placeholder/messages", json=_MESSAGE
         ) as resp:
             assert resp.status_code == 200
 
@@ -171,3 +186,62 @@ async def test_credit_gate_byok_arg(
         f"credential_source={credential_source!r} llm_client_set={llm_client_set}: "
         f"expected enforce_credit_limit(byok={expected_byok}), got byok={actual_byok!r}"
     )
+
+
+@pytest.mark.parametrize("platform", ["slack", "market_view:AAPL", None])
+@pytest.mark.asyncio
+async def test_credit_gate_is_told_the_surface_as_sent(threads_client, platform):
+    """The request's ``platform`` reaches the gate unchanged, and a turn that
+    names none passes None: what a surface means is the auth service's call."""
+    enforce_mock = AsyncMock()
+    body = {**_MESSAGE, **({"platform": platform} if platform else {})}
+
+    with _gated_route(_make_config(CredentialSource.PLATFORM), enforce_mock):
+        async with threads_client.stream(
+            "POST", "/api/v1/threads/tid-placeholder/messages", json=body
+        ) as resp:
+            assert resp.status_code == 200
+
+    enforce_mock.assert_awaited_once()
+    assert enforce_mock.await_args.kwargs["surface"] == platform
+
+
+CREATE_MOD = "src.server.app.threads.create"
+
+
+@pytest.mark.parametrize("platform", ["telegram", None])
+@pytest.mark.asyncio
+async def test_thread_create_tells_the_gate_the_surface_too(threads_client, platform):
+    """The create door reports what the message door does, so the same turn
+    gets the same verdict whichever door it comes through first."""
+    from src.server.services.turn_runtime import TurnRoute
+    from tests.unit.server.app.test_threads_subagents_allowed import _row
+
+    enforce_mock = AsyncMock()
+    body = {
+        "workspace_id": "ws-1",
+        "first_query": "hello",
+        **({"platform": platform} if platform else {}),
+    }
+    with (
+        patch(f"{CREATE_MOD}.HOST_MODE", "platform"),
+        patch("src.server.database.api_keys.is_byok_active", new=AsyncMock(return_value=False)),
+        patch("src.server.database.oauth_tokens.has_any_oauth_token", new=AsyncMock(return_value=True)),
+        patch("src.server.dependencies.usage_limits.enforce_credit_limit", new=enforce_mock),
+        patch(
+            f"{CREATE_MOD}.requested_workspace",
+            new=AsyncMock(return_value={"workspace_id": "ws-1", "status": "active"}),
+        ),
+        patch(
+            f"{CREATE_MOD}.turn_route",
+            return_value=TurnRoute("ws-1", "analyst"),
+        ),
+        patch(f"{CREATE_MOD}.create_thread", new=AsyncMock(return_value=_row())),
+        patch(f"{CREATE_MOD}.schedule_title_generation", return_value=None),
+    ):
+        resp = await threads_client.post("/api/v1/threads", json=body)
+
+    assert resp.status_code == 201
+
+    enforce_mock.assert_awaited_once()
+    assert enforce_mock.await_args.kwargs == {"byok": True, "surface": platform}

@@ -1,47 +1,46 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { ArrowRight, Search } from 'lucide-react';
+import { X } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { TermDivider, TermTag } from '@/pages/ChatAgent/components/charts/TermCard';
+import '@/pages/ChatAgent/components/charts/termCard.css';
+import '@/pages/ChatAgent/components/charts/termCardStyles.css';
+import '../../components/dashWindow.css';
 import { listWidgets, listWidgetsByCategory } from './WidgetRegistry';
 import type { WidgetCategory, WidgetDefinition, WidgetInstance } from '../types';
 
-type CategoryMeta = { labelKey: string; blurbKey: string; order: number; dot: string };
+type CategoryMeta = { labelKey: string; blurbKey: string; order: number };
 
 const CATEGORY_META: Record<WidgetCategory, CategoryMeta> = {
   markets: {
     labelKey: 'dashboard.widgets.addDialog.category.marketsLabel',
     blurbKey: 'dashboard.widgets.addDialog.category.marketsBlurb',
     order: 1,
-    dot: '#E0B341',
   },
   intel: {
     labelKey: 'dashboard.widgets.addDialog.category.intelligenceLabel',
     blurbKey: 'dashboard.widgets.addDialog.category.intelligenceBlurb',
     order: 2,
-    dot: '#5BA47F',
   },
   personal: {
     labelKey: 'dashboard.widgets.addDialog.category.personalLabel',
     blurbKey: 'dashboard.widgets.addDialog.category.personalBlurb',
     order: 3,
-    dot: '#C4A36B',
   },
   agent: {
     labelKey: 'dashboard.widgets.addDialog.category.agentLabel',
     blurbKey: 'dashboard.widgets.addDialog.category.agentBlurb',
     order: 4,
-    dot: '#C4574F',
   },
   workspace: {
     labelKey: 'dashboard.widgets.addDialog.category.workspaceLabel',
     blurbKey: 'dashboard.widgets.addDialog.category.workspaceBlurb',
     order: 5,
-    dot: '#5DA372',
   },
 };
 
@@ -128,235 +127,95 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && selectedDef && !selectedDisabled) {
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT') return;
+      // Enter on any other control does what that control does: it would
+      // otherwise add the widget picked earlier, not the one in focus.
+      const control = (e.target as HTMLElement).closest('button, input, a, select, textarea');
+      if (control && !control.matches('[aria-pressed="true"]')) return;
       e.preventDefault();
       handleAdd(selectedDef.type);
     }
   };
 
+  const cardFor = (def: WidgetDefinition<unknown>) => (
+    <WidgetTile
+      key={def.type}
+      def={def}
+      disabled={!!def.singleton && existingTypes.has(def.type)}
+      selected={selectedType === def.type}
+      onSelect={() => setSelectedType(def.type)}
+      onAdd={() => handleAdd(def.type)}
+    />
+  );
+  const categoryLabel = (cat: WidgetCategory) => (CATEGORY_META[cat]?.labelKey ? t(CATEGORY_META[cat].labelKey) : cat);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="!max-w-[1080px] w-[96vw] h-[86vh] !max-h-[86vh] !p-0 !gap-0 grid grid-cols-[280px_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] !overflow-hidden [&>button.absolute]:hidden"
-        style={{
-          backgroundColor: 'var(--color-bg-card)',
-          borderColor: 'var(--color-border-muted)',
-          borderRadius: 20,
-        }}
+        className="dash-window dash-window--radix dash-gallery max-w-[1080px]! w-[96vw] h-[86vh] max-h-[86vh]! p-0! gap-0! overflow-hidden! [&>button.absolute]:hidden"
         onKeyDown={handleKey}
       >
-        {/* Left rail */}
-        <aside
-          className="flex flex-col gap-5 p-6 min-w-0 min-h-0 overflow-y-auto"
-          style={{
-            backgroundColor: 'var(--color-bg-subtle)',
-            borderRight: '1px solid var(--color-border-muted)',
-          }}
-        >
-          <div>
-            <div
-              className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em]"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            >
-              {t('dashboard.widgets.addDialog.eyebrow')}
-            </div>
-            <DialogTitle
-              className="title-font mt-1.5 text-[1.625rem] leading-tight tracking-tight"
-              style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
-            >
-              {t('dashboard.widgets.addDialog.title')}
-            </DialogTitle>
-          </div>
-
-          <label
-            className="flex items-center gap-2 px-3 py-2 rounded-full border text-sm"
-            style={{
-              backgroundColor: 'var(--color-bg-card)',
-              borderColor: 'var(--color-border-muted)',
-              color: 'var(--color-text-tertiary)',
-            }}
-          >
-            <Search size={14} />
-            <input
-              type="text"
-              autoFocus
-              placeholder={t('dashboard.widgets.addDialog.searchPlaceholder')}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="flex-1 min-w-0 bg-transparent outline-none"
-              style={{ color: 'var(--color-text-primary)' }}
-            />
-          </label>
-
-          <nav className="flex flex-col gap-1">
-            {categoriesSorted.map((cat) => {
-              const meta = CATEGORY_META[cat];
-              const count = grouped[cat]?.length ?? 0;
-              const active = !searchActive && cat === activeCat;
-              return (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => {
-                    setActiveCat(cat);
-                    setSearch('');
-                  }}
-                  className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm transition-colors"
-                  style={{
-                    backgroundColor: active ? 'var(--color-text-primary)' : 'transparent',
-                    color: active ? 'var(--color-bg-card)' : 'var(--color-text-primary)',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!active) e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!active) e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                >
-                  <span className="flex items-center gap-2.5 min-w-0">
-                    <span
-                      className="inline-block rounded-full flex-shrink-0"
-                      style={{ width: 8, height: 8, backgroundColor: meta?.dot ?? '#999' }}
-                    />
-                    <span className="font-medium truncate">{meta?.labelKey ? t(meta.labelKey) : cat}</span>
-                  </span>
-                  <span
-                    className="text-xs tabular-nums flex-shrink-0"
-                    style={{
-                      color: active ? 'var(--color-bg-card)' : 'var(--color-text-tertiary)',
-                      opacity: active ? 0.7 : 1,
-                    }}
-                  >
-                    {count}
-                  </span>
-                </button>
-              );
-            })}
+        <aside className="dash-gallery-nav">
+          <div className="dash-gallery-eyebrow term-t3">{t('dashboard.widgets.addDialog.eyebrow')}</div>
+          <DialogTitle className="dash-gallery-h">{t('dashboard.widgets.addDialog.title')}</DialogTitle>
+          <input
+            type="text"
+            autoFocus
+            className="dash-gallery-search"
+            aria-label={t('dashboard.widgets.addDialog.searchPlaceholder')}
+            placeholder={t('dashboard.widgets.addDialog.searchPlaceholder')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <nav className="dash-gallery-cats">
+            {categoriesSorted.map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                className="dash-gallery-cat"
+                aria-current={!searchActive && cat === activeCat ? 'true' : undefined}
+                onClick={() => {
+                  setActiveCat(cat);
+                  setSearch('');
+                }}
+              >
+                <span className="truncate">{categoryLabel(cat)}</span>
+                <span className="term-t3">{grouped[cat]?.length ?? 0}</span>
+              </button>
+            ))}
           </nav>
-
-          <div className="flex-1" />
-
-          <div
-            className="rounded-xl p-3 text-xs"
-            style={{
-              backgroundColor: 'var(--color-bg-card)',
-              border: '1px solid var(--color-border-muted)',
-            }}
-          >
-            <span
-              className="inline-block text-[0.625rem] font-semibold lowercase px-2 py-0.5 rounded-full mb-2"
-              style={{
-                backgroundColor: 'var(--color-profit-soft)',
-                color: 'var(--color-profit)',
-                letterSpacing: '0.05em',
-              }}
-            >
-              {t('dashboard.widgets.addDialog.tip')}
-            </span>
-            <div style={{ color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-              {t('dashboard.widgets.addDialog.tipBody')}
-            </div>
-          </div>
         </aside>
 
-        {/* Right content */}
-        <div className="flex flex-col min-w-0 min-h-0" style={{ backgroundColor: 'var(--color-bg-card)' }}>
-          <div className="flex items-start justify-between gap-6 px-8 pt-8 pb-5">
-            <div className="flex-1 min-w-0">
-              {searchActive ? (
-                <>
-                  <div
-                    className="title-font text-[1.625rem] leading-tight tracking-tight"
-                    style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
-                  >
-                    {t('dashboard.widgets.addDialog.results')}
-                  </div>
-                  <DialogDescription
-                    className="mt-1 text-sm"
-                    style={{ color: 'var(--color-text-secondary)' }}
-                  >
-                    {t('dashboard.widgets.addDialog.resultCount', {
-                      count: matches?.length ?? 0,
-                      search,
-                    })}
-                  </DialogDescription>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-baseline gap-3">
-                    <div
-                      className="title-font text-[1.625rem] leading-tight tracking-tight"
-                      style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
-                    >
-                      {CATEGORY_META[activeCat]?.labelKey
-                        ? t(CATEGORY_META[activeCat].labelKey)
-                        : activeCat}
-                    </div>
-                    <DialogDescription
-                      className="text-sm"
-                      style={{ color: 'var(--color-text-secondary)' }}
-                    >
-                      {CATEGORY_META[activeCat]?.blurbKey
-                        ? t(CATEGORY_META[activeCat].blurbKey)
-                        : ''}
-                    </DialogDescription>
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <span
-                className="text-[0.6875rem] px-2.5 py-1 rounded-full whitespace-nowrap"
-                style={{
-                  backgroundColor: 'var(--color-bg-subtle)',
-                  color: 'var(--color-text-tertiary)',
-                }}
-              >
-                {t('dashboard.widgets.addDialog.totalCount', { count: allWidgets.length })}
-              </span>
-              <button
-                type="button"
-                onClick={() => onOpenChange(false)}
-                className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
-                style={{ color: 'var(--color-text-tertiary)' }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
-                  e.currentTarget.style.color = 'var(--color-text-primary)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.color = 'var(--color-text-tertiary)';
-                }}
-                aria-label={t('dashboard.widgets.addDialog.closeAria')}
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
-                  <path d="M3 3L11 11M11 3L3 11" />
-                </svg>
-              </button>
-            </div>
+        <div className="dash-gallery-main">
+          <div className="dash-gallery-head">
+            <span className="dash-gallery-title">
+              {searchActive ? t('dashboard.widgets.addDialog.results') : categoryLabel(activeCat)}
+            </span>
+            <DialogDescription className="dash-gallery-blurb term-t3">
+              {searchActive
+                ? t('dashboard.widgets.addDialog.resultCount', { count: matches?.length ?? 0, search })
+                : CATEGORY_META[activeCat]?.blurbKey
+                  ? t(CATEGORY_META[activeCat].blurbKey)
+                  : ''}
+            </DialogDescription>
+            <span className="term-push term-t3 whitespace-nowrap">
+              {t('dashboard.widgets.addDialog.totalCount', { count: allWidgets.length })}
+            </span>
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="dash-window-x self-center"
+              aria-label={t('dashboard.widgets.addDialog.closeAria')}
+            >
+              <X size={16} />
+            </button>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-8 pb-6">
+          <div className="dash-gallery-scroll">
             {searchActive ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {(matches ?? []).map((def) => (
-                  <WidgetCard
-                    key={def.type}
-                    def={def}
-                    disabled={!!def.singleton && existingTypes.has(def.type)}
-                    selected={selectedType === def.type}
-                    onSelect={() => setSelectedType(def.type)}
-                    onAdd={() => handleAdd(def.type)}
-                  />
-                ))}
+              <div className="dash-gallery-grid">
+                {(matches ?? []).map(cardFor)}
                 {(matches?.length ?? 0) === 0 && (
-                  <div
-                    className="col-span-full py-12 text-center text-sm"
-                    style={{ color: 'var(--color-text-tertiary)' }}
-                  >
-                    {t('dashboard.widgets.addDialog.noMatches')}
-                  </div>
+                  <div className="dash-gallery-empty term-t3">{t('dashboard.widgets.addDialog.noMatches')}</div>
                 )}
               </div>
             ) : (
@@ -364,99 +223,35 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                 const items = grouped[cat] ?? [];
                 if (items.length === 0) return null;
                 return (
-                  <section key={cat} className={i === 0 ? '' : 'mt-8'}>
-                    {i !== 0 && (
-                      <div className="flex items-center gap-4 mb-4">
-                        <div
-                          className="flex-1 h-px"
-                          style={{ backgroundColor: 'var(--color-border-muted)' }}
-                        />
-                        <div
-                          className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em]"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        >
-                          {CATEGORY_META[cat]?.labelKey ? t(CATEGORY_META[cat].labelKey) : cat}
-                        </div>
-                        <div
-                          className="flex-1 h-px"
-                          style={{ backgroundColor: 'var(--color-border-muted)' }}
-                        />
-                      </div>
-                    )}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {items.map((def) => (
-                        <WidgetCard
-                          key={def.type}
-                          def={def}
-                          disabled={!!def.singleton && existingTypes.has(def.type)}
-                          selected={selectedType === def.type}
-                          onSelect={() => setSelectedType(def.type)}
-                          onAdd={() => handleAdd(def.type)}
-                        />
-                      ))}
-                    </div>
+                  <section key={cat} className="dash-gallery-section">
+                    {i !== 0 && <TermDivider>{categoryLabel(cat)}</TermDivider>}
+                    <div className="dash-gallery-grid">{items.map(cardFor)}</div>
                   </section>
                 );
               })
             )}
           </div>
 
-          <div
-            className="flex items-center justify-between gap-4 px-8 py-4"
-            style={{ borderTop: '1px solid var(--color-border-muted)' }}
-          >
-            <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+          <div className="dash-gallery-foot">
+            <span className="term-t3">
               <Trans
                 i18nKey="dashboard.widgets.addDialog.hintAddSentence"
-                components={{
-                  enter: (
-                    <span
-                      className="inline-flex items-center justify-center px-1.5 min-w-[18px] h-[18px] rounded border text-[0.625rem] align-middle"
-                      style={{
-                        borderColor: 'var(--color-border-muted)',
-                        backgroundColor: 'var(--color-bg-subtle)',
-                        color: 'var(--color-text-secondary)',
-                      }}
-                    >
-                      ↵
-                    </span>
-                  ),
-                }}
+                components={{ enter: <span className="dash-gallery-key">↵</span> }}
               />
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => onOpenChange(false)}
-                className="px-4 py-2 text-sm rounded-lg border transition-colors"
-                style={{
-                  borderColor: 'var(--color-border-muted)',
-                  color: 'var(--color-text-primary)',
-                  backgroundColor: 'var(--color-bg-card)',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)')}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-bg-card)')}
-              >
-                {t('dashboard.widgets.addDialog.cancel')}
-              </button>
-              <button
-                type="button"
-                disabled={!selectedDef || selectedDisabled}
-                onClick={() => selectedDef && !selectedDisabled && handleAdd(selectedDef.type)}
-                className="px-4 py-2 text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-40"
-                style={{
-                  backgroundColor: 'var(--color-text-primary)',
-                  color: 'var(--color-bg-card)',
-                }}
-              >
-                {selectedDef && !selectedDisabled
-                  ? t('dashboard.widgets.addDialog.addNamed', {
-                      title: t(selectedDef.titleKey),
-                    })
-                  : t('dashboard.widgets.addDialog.addWidget')}
-                <ArrowRight size={14} />
-              </button>
-            </div>
+            </span>
+            <button type="button" className="dash-gallery-btn term-push" onClick={() => onOpenChange(false)}>
+              {t('dashboard.widgets.addDialog.cancel')}
+            </button>
+            <button
+              type="button"
+              className="dash-gallery-btn dash-gallery-btn--primary"
+              disabled={!selectedDef || selectedDisabled}
+              onClick={() => selectedDef && !selectedDisabled && handleAdd(selectedDef.type)}
+            >
+              {selectedDef && !selectedDisabled
+                ? t('dashboard.widgets.addDialog.addNamed', { title: t(selectedDef.titleKey) })
+                : t('dashboard.widgets.addDialog.addWidget')}
+            </button>
           </div>
         </div>
       </DialogContent>
@@ -464,7 +259,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
   );
 }
 
-interface WidgetCardProps {
+interface WidgetTileProps {
   def: WidgetDefinition<unknown>;
   disabled: boolean;
   selected: boolean;
@@ -472,90 +267,39 @@ interface WidgetCardProps {
   onAdd: () => void;
 }
 
-function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProps) {
+/** A widget as a card: its name in the edge, its kind beside it, its default
+ *  size at the far end. A button so the whole face selects; the head is drawn
+ *  in spans, since a button holds phrasing content only. */
+function WidgetTile({ def, disabled, selected, onSelect, onAdd }: WidgetTileProps) {
   const { t } = useTranslation();
-  const Icon = def.icon;
-  const isSingleton = !!def.singleton;
   const { w, h } = def.defaultSize;
-
   return (
     <button
       type="button"
+      className="term-card dash-gallery-tile"
+      data-scale="panel"
+      aria-pressed={selected}
+      disabled={disabled}
       onClick={onSelect}
       onDoubleClick={() => !disabled && onAdd()}
-      disabled={disabled}
-      className="group text-left p-4 rounded-xl border transition-all disabled:cursor-not-allowed"
-      style={{
-        backgroundColor: selected ? 'var(--color-bg-subtle)' : 'var(--color-bg-card)',
-        borderColor: selected ? 'var(--color-text-primary)' : 'var(--color-border-muted)',
-        opacity: disabled ? 0.55 : 1,
-        boxShadow: selected ? '0 0 0 1px var(--color-text-primary)' : 'none',
-      }}
-      onMouseEnter={(e) => {
-        if (!selected && !disabled) e.currentTarget.style.borderColor = 'var(--color-border-default)';
-      }}
-      onMouseLeave={(e) => {
-        if (!selected) e.currentTarget.style.borderColor = 'var(--color-border-muted)';
-      }}
     >
-      <div className="flex items-start gap-4">
-        <div
-          className="flex-shrink-0 w-20 h-14 rounded-lg flex items-center justify-center"
-          style={{
-            backgroundColor: 'var(--color-bg-subtle)',
-            color: 'var(--color-text-tertiary)',
-            border: '1px solid var(--color-border-muted)',
-          }}
-        >
-          <Icon size={20} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-              {t(def.titleKey)}
-            </span>
-            <span
-              className="text-[0.625rem] px-2 py-0.5 rounded-full lowercase"
-              style={{
-                backgroundColor: isSingleton ? 'var(--color-profit-soft)' : 'var(--color-bg-subtle)',
-                color: isSingleton ? 'var(--color-profit)' : 'var(--color-text-tertiary)',
-                letterSpacing: '0.02em',
-              }}
-            >
-              {isSingleton ? t('dashboard.widgets.addDialog.badgeSingleton') : t('dashboard.widgets.addDialog.badgeMulti')}
-            </span>
-            {def.source === 'tradingview' && (
-              <span
-                className="text-[0.5625rem] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold"
-                style={{
-                  backgroundColor: 'var(--color-accent-soft)',
-                  color: 'var(--color-accent-primary)',
-                  letterSpacing: '0.08em',
-                }}
-              >
-                {t('dashboard.widgets.addDialog.badgeTradingView')}
-              </span>
-            )}
-          </div>
-          {def.descriptionKey && (
-            <div
-              className="text-[0.75rem] leading-snug mb-2"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
-              {t(def.descriptionKey)}
-            </div>
-          )}
-          <div
-            className="text-[0.6875rem] dashboard-mono"
-            style={{ color: 'var(--color-text-tertiary)' }}
-          >
-            {w}w × {h}h · {def.settingsComponent
-              ? t('dashboard.widgets.addDialog.metaConfigurable')
-              : t('dashboard.widgets.addDialog.metaNoSettings')}
-            {disabled && ' ' + t('dashboard.widgets.addDialog.metaOnDashboard')}
-          </div>
-        </div>
-      </div>
+      <span className="term-card-head" data-keep="title">
+        <span className="term-card-title">
+          <span className="term-bracket" aria-hidden="true">[</span>
+          <span className="term-card-title-text">{t(def.titleKey)}</span>
+          <span className="term-bracket" aria-hidden="true">]</span>
+        </span>
+        <span className="term-card-sub">
+          {def.singleton ? t('dashboard.widgets.addDialog.badgeSingleton') : t('dashboard.widgets.addDialog.badgeMulti')}
+        </span>
+        <span className="term-card-meta">{`${w}w × ${h}h`}</span>
+      </span>
+      {def.descriptionKey && <span className="dash-gallery-desc">{t(def.descriptionKey)}</span>}
+      <span className="dash-gallery-tags">
+        {def.source === 'tradingview' && <TermTag>{t('dashboard.widgets.addDialog.badgeTradingView')}</TermTag>}
+        {def.settingsComponent && <TermTag>{t('dashboard.widgets.addDialog.tagSettings')}</TermTag>}
+        {disabled && <TermTag>{t('dashboard.widgets.addDialog.tagOnDashboard')}</TermTag>}
+      </span>
     </button>
   );
 }

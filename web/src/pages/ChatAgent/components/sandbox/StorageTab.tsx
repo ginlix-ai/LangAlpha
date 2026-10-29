@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { ListEmpty } from '../mcp/McpPrimitives';
+import { ListEmpty } from '@/components/mcp/McpPrimitives';
 import type { SandboxStats } from './sandboxTypes';
 
 interface StorageTabProps {
@@ -71,7 +71,7 @@ export function StorageTab({ stats, showDirBreakdown, onToggleBreakdown }: Stora
                   style={{ backgroundColor: 'var(--color-bg-card)' }}
                 >
                   <span className="font-mono truncate" style={{ color: 'var(--color-text-primary)' }}>{d.path}/</span>
-                  <span className="flex-shrink-0 ml-4" style={{ color: 'var(--color-text-tertiary)' }}>{d.size}</span>
+                  <span className="shrink-0 ml-4" style={{ color: 'var(--color-text-tertiary)' }}>{d.size}</span>
                 </div>
               ))}
             </div>

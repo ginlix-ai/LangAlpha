@@ -9,9 +9,31 @@ from typing import Any, Callable
 import structlog
 from langchain_core.tools import tool
 
-from ptc_agent.agent.backends import FilesystemBackend, ReadOnlyStoreError
-from ptc_agent.core.paths import MEMO_USER_DIR
-from src.server.services.user_data_io import UserDataValidationError
+from ptc_agent.agent.backends import (
+    FilesystemBackend,
+    ReadOnlyStoreError,
+    StoreContentInvalidError,
+    StoreContentTooLargeError,
+)
+from ptc_agent.agent.backends.read_window import (
+    DEFAULT_READ_LINES,
+    MAX_READ_CHARS,
+    READ_CLIPPED_NOTE,
+    READ_FULL_WINDOW_NOTE,
+    format_cat_n,
+)
+from ptc_agent.agent.tools.context_file_policy import (
+    CappedFile,
+    capped_file,
+    fill_note,
+    over_cap_refusal,
+)
+from ptc_agent.agent.tools.utils import mark_sandbox_raised, stamp_sandbox_served
+from ptc_agent.core.paths import MEMO_USER_DIR, logged_path
+from ptc_agent.agent.backends.db_json_route import UserDataValidationError
+from ptc_agent.agent.transcript.reading import READ_CHARS as TRANSCRIPT_READ_CHARS
+from ptc_agent.agent.transcript.reading import cut_window, is_segment
+from src.observability.private_errors import failure
 
 logger = structlog.get_logger(__name__)
 
@@ -55,46 +77,45 @@ def is_memo_text_path(file_path: str) -> bool:
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
 
-# Read tool defaults. The line cap covers the common case; the char cap is the
-# floor that catches files with very long lines (OCR markdown, minified JSON)
-# that would otherwise sneak past the line cap. The char cap matches
-# `LargeResultEvictionMiddleware`'s 40k-token/~160KB budget so a Read result
-# can never single-handedly bust the context window the eviction middleware
-# is otherwise responsible for protecting.
-_DEFAULT_READ_LIMIT = 2000
-_MAX_READ_CHARS = 160_000
-
-
 def create_filesystem_tools(
     backend: FilesystemBackend,
     operation_callback: OperationCallback | None = None,
+    *,
+    refuse_over_cap: bool = False,
 ) -> tuple:
     """Create the Read, Write, and Edit tools bound to ``backend``.
 
     ``backend`` is either a plain ``SandboxBackend`` or a
     ``CompositeFilesystemBackend`` that adds store-backed memory/memo routing;
-    the tools see a uniform interface either way.
+    the tools see a uniform interface either way. ``refuse_over_cap`` turns the
+    fill note on the capped context files into a hard refusal for a Write that
+    would land past the cap.
     """
 
-    def _format_cat_n(lines: list[str], *, start_line_number: int) -> str:
-        return "\n".join(f"{i:6}\t{line}" for i, line in enumerate(lines, start=start_line_number))
+    def _capped(normalized_path: str) -> CappedFile | None:
+        return capped_file(
+            normalized_path,
+            workspace_dir=backend.workspace_dir,
+            computer_root=backend.computer_root,
+        )
 
     @tool("Read")
     async def read_file(file_path: str, offset: int | None = None, limit: int | None = None) -> str:
-        """Read a file with line numbers (cat -n format). Also supports images (PNG, JPG, GIF, WebP), PDFs, and URLs.
-
-        Output is capped to protect the context window: at most ``limit`` lines
-        (default 2000) and at most ~160k characters of formatted output. If
-        either cap fires, the result ends with a marker telling you how to
-        continue with a follow-up Read.
+        """Read a file. Also supports images (PNG, JPG, GIF, WebP), PDFs and URLs.
 
         Args:
-            file_path: Path to file (relative or absolute), or image/PDF URL.
-            offset: Line offset (0-indexed). Default: 0. Ignored for images/PDFs.
-            limit: Maximum number of lines. Default: 2000. Ignored for images/PDFs.
+            file_path: Path to file (relative or absolute), or an image/PDF URL.
+            offset: Line offset (0-indexed), or for a PDF the number of pages to skip. Default 0. Ignored for images.
+            limit: Maximum number of lines (default 2000), or of PDF pages (default and maximum 20). Ignored for images.
 
         Returns:
-            File contents with line numbers, document loading confirmation, or ERROR.
+            File contents prefixed with line numbers (cat -n format), capped at
+            `limit` lines and ~160k characters. If a cap fires the output ends with
+            a marker giving the offset to resume from. A PDF comes back as the
+            requested pages, with a marker giving the offset of the next ones.
+
+        Strip the line-number prefix before passing text to Edit.
+        For a long PDF, extract or search its text with code first, then Read only the pages you need.
         """
         try:
             # Middleware injects the actual content; this return is just a sentinel.
@@ -110,11 +131,15 @@ def create_filesystem_tools(
             if suffix in VISUAL_EXTENSIONS and not is_memo_text_path(file_path):
                 # Validate the path exists before returning acknowledgment
                 normalized_path = backend.normalize_path(file_path)
-                logger.info("Loading image file", file_path=file_path, normalized_path=normalized_path)
+                logger.info(
+                    "Loading image file",
+                    file_path=logged_path(file_path),
+                    normalized_path=logged_path(normalized_path),
+                )
 
-                if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+                if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                     error_msg = f"Access denied: {file_path} is not in allowed directories"
-                    logger.error(error_msg, file_path=file_path)
+                    logger.error("Access denied: path outside the allowed directories", file_path=logged_path(file_path))
                     return f"ERROR: {error_msg}"
 
                 file_type = "image" if suffix in IMAGE_EXTENSIONS else "document"
@@ -122,21 +147,28 @@ def create_filesystem_tools(
 
             # Standard text file handling
             normalized_path = backend.normalize_path(file_path)
-            logger.info("Reading file", file_path=file_path, normalized_path=normalized_path, offset=offset, limit=limit)
+            logger.info(
+                "Reading file",
+                file_path=logged_path(file_path),
+                normalized_path=logged_path(normalized_path),
+                offset=offset,
+                limit=limit,
+            )
 
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
-                logger.error(error_msg, file_path=file_path)
+                logger.error("Access denied: path outside the allowed directories", file_path=logged_path(file_path))
                 return f"ERROR: {error_msg}"
 
             start_offset = offset or 0
-            max_lines = limit or _DEFAULT_READ_LIMIT
+            max_lines = limit or DEFAULT_READ_LINES
 
+            stamp_sandbox_served(backend, normalized_path)
             content = await backend.aread_range(normalized_path, start_offset, max_lines)
 
             if content is None:
                 error_msg = f"File not found: {file_path}"
-                logger.warning(error_msg, file_path=file_path)
+                logger.warning("File not found", file_path=logged_path(file_path))
                 return f"ERROR: {error_msg}"
 
             # Visual extensions (.png, .pdf, etc) routed above. This catches
@@ -150,13 +182,22 @@ def create_filesystem_tools(
                     f"to identify the type, or `xxd '{file_path}' | head` "
                     f"to inspect as hex."
                 )
-                logger.info("Binary file rejected", file_path=file_path)
+                logger.info("Binary file rejected", file_path=logged_path(file_path))
                 return f"ERROR: {error_msg}"
 
             lines = content.splitlines()
-            formatted = _format_cat_n(lines, start_line_number=start_offset + 1)
+            if not lines and start_offset > 0:
+                return f"[{file_path} has no lines from offset {start_offset}; it is shorter than that.]"
+            # A transcript is read an event at a time: a window cuts each long
+            # field and stops sooner, and a single line comes whole.
+            segment = is_segment(normalized_path)
+            cap = MAX_READ_CHARS
+            if segment and max_lines > 1:
+                lines = await cut_window(lines, start_offset)
+                cap = TRANSCRIPT_READ_CHARS
+            formatted = format_cat_n(lines, start_line_number=start_offset + 1)
 
-            if len(formatted) > _MAX_READ_CHARS:
+            if len(formatted) > cap:
                 # Reserve room for the truncation marker. The single-line
                 # overflow path embeds ``file_path`` three times (narrative +
                 # head -c + sed -n), so the budget has to cover ~200 chars of
@@ -164,7 +205,7 @@ def create_filesystem_tools(
                 # which is past the POSIX 255-char limit for any realistic
                 # filesystem.
                 marker_budget = 1200
-                content_budget = max(_MAX_READ_CHARS - marker_budget, 0)
+                content_budget = max(cap - marker_budget, 0)
 
                 # Clip to the last newline boundary inside the budget so we
                 # report a line range the agent actually saw end-to-end. If
@@ -196,54 +237,111 @@ def create_filesystem_tools(
                     # would include any trailing lines that fit after the
                     # huge first line and overstate the agent's slice target.
                     line_size = len(lines[0]) if lines else 0
-                    slice_budget = _MAX_READ_CHARS // 20  # ~8 KB chunks
-                    marker = (
-                        f"\n\n[Read truncated: line {start_offset + 1} of '{file_path}' "
-                        f"is ~{line_size} characters, exceeds the {_MAX_READ_CHARS}-character "
-                        f"context budget. Read won't help here (it's line-based). Use bash to "
-                        f"slice the file, e.g. `head -c {slice_budget} '{file_path}'` or "
-                        f"`sed -n '{start_offset + 1}p' '{file_path}' | head -c {slice_budget}`.]"
-                    )
+                    slice_budget = MAX_READ_CHARS // 20  # ~8 KB chunks
+                    if segment:
+                        # Bash may not reach the file: the file tools can serve
+                        # a transcript where no file mount shows it.
+                        marker = (
+                            f"{READ_CLIPPED_NOTE}: line {start_offset + 1} of '{file_path}' "
+                            f"is ~{line_size} characters, exceeds the {cap}-character "
+                            "context budget. Grep a phrase from it, with this file as "
+                            "`path`, to see the part you need.]"
+                        )
+                    else:
+                        marker = (
+                            f"{READ_CLIPPED_NOTE}: line {start_offset + 1} of '{file_path}' "
+                            f"is ~{line_size} characters, exceeds the {MAX_READ_CHARS}-character "
+                            f"context budget. Read won't help here (it's line-based). Use bash to "
+                            f"slice the file, e.g. `head -c {slice_budget} '{file_path}'` or "
+                            f"`sed -n '{start_offset + 1}p' '{file_path}' | head -c {slice_budget}`.]"
+                        )
                 else:
                     marker = (
-                        f"\n\n[Read truncated at {_MAX_READ_CHARS} characters to protect the context window. "
+                        f"{READ_CLIPPED_NOTE} at {cap} characters to protect the context window. "
                         f"You saw lines {start_offset + 1}..{next_line}. "
                         f"Call Read(file_path='{file_path}', offset={next_line}, limit={max_lines}) "
                         "to continue, or pass a smaller limit to keep each chunk shorter.]"
                     )
                 formatted = clipped + marker
+            elif len(lines) == max_lines:
+                # The backend returns at most ``max_lines``, so a full window
+                # may be the whole file or its first page; say how to go on.
+                next_line = start_offset + max_lines
+                formatted += (
+                    f"{READ_FULL_WINDOW_NOTE}{max_lines}-line limit (lines {start_offset + 1}..{next_line}). "
+                    f"The file may continue: Read(file_path='{file_path}', offset={next_line}) for more.]"
+                )
 
             return formatted
 
         except Exception as e:
+            mark_sandbox_raised(e)
             error_msg = f"Failed to read file: {e!s}"
-            logger.exception(error_msg, file_path=file_path)
+            fields, trace = failure(e)
+            logger.error("Failed to read file", file_path=logged_path(file_path), exc_info=trace, **fields)
             return f"ERROR: {error_msg}"
 
     @tool("Write")
     async def write_file(file_path: str, content: str) -> str:
-        """Write content to a file. Overwrites existing."""
+        """Write content to a file. Overwrites existing.
+
+        Args:
+            file_path: Path to the file, relative to the workspace.
+            content: The complete file contents. There is no append mode — to add to
+                a file, Read it and write back the full text.
+        """
         try:
             normalized_path = backend.normalize_path(file_path)
-            logger.info("Writing file", file_path=file_path, normalized_path=normalized_path, size=len(content))
+            logger.info(
+                "Writing file",
+                file_path=logged_path(file_path),
+                normalized_path=logged_path(normalized_path),
+                size=len(content),
+            )
 
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
-                logger.error(error_msg, file_path=file_path)
+                logger.error("Access denied: path outside the allowed directories", file_path=logged_path(file_path))
                 return f"ERROR: {error_msg}"
 
+            capped = _capped(normalized_path)
+            if capped is not None and refuse_over_cap:
+                refusal = over_cap_refusal(capped.name, len(content), capped.cap)
+                if refusal is not None:
+                    logger.info(
+                        "Write refused past its context cap",
+                        file_path=logged_path(file_path),
+                        size=len(content),
+                        cap=capped.cap,
+                    )
+                    return refusal
+
+            stamp_sandbox_served(backend, normalized_path)
             try:
-                success = await backend.awrite_text(normalized_path, content)
+                result = await backend.awrite_text(normalized_path, content)
             except ReadOnlyStoreError as exc:
                 logger.info(
                     "write rejected on read-only path",
-                    file_path=file_path,
+                    file_path=logged_path(file_path),
+                )
+                return f"ERROR: {exc}"
+            except (StoreContentTooLargeError, StoreContentInvalidError) as exc:
+                logger.info(
+                    "store write refused",
+                    file_path=logged_path(file_path),
+                    error_type=type(exc).__name__,
                 )
                 return f"ERROR: {exc}"
             except UserDataValidationError as exc:
-                logger.info("user-data write rejected", file_path=file_path, error=str(exc))
+                # The refusal's text quotes what it refused (a holding, an
+                # automation's name or status), so the log keeps its type.
+                logger.info(
+                    "user-data write rejected",
+                    file_path=logged_path(file_path),
+                    error_type=exc.error_type,
+                )
                 return f"ERROR: {exc}"
-            if not success:
+            if not result:
                 return "ERROR: Write operation failed"
 
             if operation_callback:
@@ -258,33 +356,50 @@ def create_filesystem_tools(
                 except Exception as cb_err:
                     logger.warning("Operation callback failed", error=str(cb_err))
 
-            bytes_written = len(content.encode("utf-8"))
-            virtual_path = backend.virtualize_path(normalized_path)
-            return f"Wrote {bytes_written} bytes to {virtual_path}"
+            if isinstance(result, dict) and result.get("message"):
+                message = str(result["message"])
+            else:
+                bytes_written = len(content.encode("utf-8"))
+                virtual_path = backend.virtualize_path(normalized_path)
+                message = f"Wrote {bytes_written} bytes to {virtual_path}"
+            note = fill_note(capped.name, len(content), capped.cap) if capped else None
+            return f"{message}\n\n{note}" if note else message
 
         except Exception as e:
+            mark_sandbox_raised(e)
             error_msg = f"Failed to write file: {e!s}"
-            logger.error(error_msg, file_path=file_path, error=str(e), exc_info=True)
+            fields, trace = failure(e)
+            logger.error("Failed to write file", file_path=logged_path(file_path), exc_info=trace, **fields)
             return f"ERROR: {error_msg}"
 
     @tool("Edit")
     async def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
-        """Replace exact string in a file. Must Read file first."""
+        """Replace exact string in a file. Must Read file first.
+
+        Args:
+            file_path: Path to the file.
+            old_string: Text to replace. Must match the file exactly, including
+                indentation, and must be unique unless replace_all is set.
+            new_string: Replacement text.
+            replace_all: Replace every occurrence instead of requiring a unique
+                match. Default False.
+        """
         try:
             normalized_path = backend.normalize_path(file_path)
             logger.info(
                 "Editing file",
-                file_path=file_path,
-                normalized_path=normalized_path,
-                old_string_preview=old_string[:50],
+                file_path=logged_path(file_path),
+                normalized_path=logged_path(normalized_path),
+                old_string_length=len(old_string),
                 replace_all=replace_all,
             )
 
-            if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
+            if backend.filesystem_config.enable_path_validation and not backend.validate_path(file_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
-                logger.error(error_msg, file_path=file_path)
+                logger.error("Access denied: path outside the allowed directories", file_path=logged_path(file_path))
                 return f"ERROR: {error_msg}"
 
+            stamp_sandbox_served(backend, normalized_path)
             result = await backend.aedit_text(normalized_path, old_string, new_string, replace_all=replace_all)
             if not result.get("success", False):
                 error_msg = result.get("error", "Edit operation failed")
@@ -306,11 +421,20 @@ def create_filesystem_tools(
                 except Exception as cb_err:
                     logger.warning("Operation callback failed", error=str(cb_err))
 
-            return str(result.get("message", "File edited successfully"))
+            message = str(result.get("message", "File edited successfully"))
+            capped = _capped(normalized_path)
+            size = result.get("size")
+            if capped is not None and isinstance(size, int):
+                note = fill_note(capped.name, size, capped.cap)
+                if note is not None:
+                    return f"{message}\n\n{note}"
+            return message
 
         except Exception as e:
+            mark_sandbox_raised(e)
             error_msg = f"Failed to edit file: {e!s}"
-            logger.error(error_msg, file_path=file_path, error=str(e), exc_info=True)
+            fields, trace = failure(e)
+            logger.error("Failed to edit file", file_path=logged_path(file_path), exc_info=trace, **fields)
             return f"ERROR: {error_msg}"
 
     return read_file, write_file, edit_file

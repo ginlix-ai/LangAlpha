@@ -1,7 +1,8 @@
 """Token lifecycle: refresh single-flight, disconnect, status transitions.
 
-The hot path takes NO lock while the access token has >10 minutes left. When
-due, ``pg_try_advisory_lock`` (never blocking) elects one refresher across all
+The hot path takes NO lock while the access token has >10 minutes left, or
+more than half its lifetime for a token that lives under 20 minutes. When due,
+``pg_try_advisory_lock`` (never blocking) elects one refresher across all
 workers; losers use the still-valid old token immediately, or briefly poll the
 row near expiry. The commit is a ``token_generation`` CAS so a stale winner
 can never clobber a newer bundle — and so is every failure status, because a
@@ -18,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -38,8 +41,8 @@ from src.server.database.mcp_oauth import (
     mark_status_if_generation,
 )
 from src.server.database.egress_grants import revoke_grants_for_connection
+from src.server.database.sql_fences import advisory_key
 from src.server.services.mcp_config import same_consented_url
-from src.server.services.writer_guard import advisory_key
 from src.server.services.mcp_oauth.tokens import (
     TokenExchangeError,
     TokenFailure,
@@ -49,7 +52,8 @@ from src.server.services.mcp_oauth.tokens import (
 
 logger = logging.getLogger(__name__)
 
-# No lock while more than this much validity remains.
+# No lock while more than this much validity remains; a token that lives under
+# twice this is due at half its lifetime instead.
 REFRESH_MARGIN_SECONDS = 600
 # A loser may keep using the old token down to this floor.
 OLD_TOKEN_FLOOR_SECONDS = 60
@@ -83,13 +87,32 @@ class AccessToken:
         return f"{self.token_type} {self.access_token}"
 
 
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def _expiry_seconds(row: ConnectionSummary) -> float | None:
-    expires_at = row.expires_at
-    if expires_at is None:
+    if row.expires_at is None:
         return None  # non-expiring token
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    return (expires_at - datetime.now(timezone.utc)).total_seconds()
+    return (_as_utc(row.expires_at) - datetime.now(timezone.utc)).total_seconds()
+
+
+def _refresh_margin(row: ConnectionSummary) -> float:
+    """Validity left at which a token is due: half its lifetime, capped.
+
+    A fixed margin longer than a vendor's token lifetime puts every fresh token
+    inside it, so every relayed call refreshes and rotates the refresh token
+    (IBKR's five-minute tokens did exactly that). Only a refresh stamps
+    ``last_refresh_at``, so a token from a connect has no lifetime on record, or
+    an overstated one from the stamp a reconnect keeps, and gets the ceiling:
+    at most one early refresh.
+    """
+    if row.expires_at is None or row.last_refresh_at is None:
+        return REFRESH_MARGIN_SECONDS
+    lifetime = (_as_utc(row.expires_at) - _as_utc(row.last_refresh_at)).total_seconds()
+    if lifetime <= 0:
+        return REFRESH_MARGIN_SECONDS
+    return min(REFRESH_MARGIN_SECONDS, lifetime / 2)
 
 
 def _usable(row: ConnectionSummary, *, floor: float = 0.0) -> bool:
@@ -123,7 +146,7 @@ async def ensure_fresh_access_token(connection_id: str) -> AccessToken:
         raise TokenUnavailable(str(row.status))
 
     remaining = _expiry_seconds(row)
-    if remaining is None or remaining > REFRESH_MARGIN_SECONDS:
+    if remaining is None or remaining > _refresh_margin(row):
         return _token_view(row)
     if not row.has_refresh_token or row.status == ConnectionStatus.REFRESH_AMBIGUOUS:
         # Nothing to refresh with, or nothing we may retry (an ambiguous refresh
@@ -243,7 +266,7 @@ async def _refresh_single_flight(
                 # spend the refresh token against a surrendered grant.
                 raise TokenUnavailable(str(current.status))
             fresh_remaining = _expiry_seconds(current)
-            if fresh_remaining is None or fresh_remaining > REFRESH_MARGIN_SECONDS:
+            if fresh_remaining is None or fresh_remaining > _refresh_margin(current):
                 return _token_view(current)
             if (
                 not current.refresh_token
@@ -412,7 +435,11 @@ async def disconnect_server(user_id: str, server_name: str) -> bool:
     from src.server.database.mcp_tool_schemas import (
         delete_user_and_workspace_tool_schemas_and_bump,
     )
+    from src.server.database.order_attempts import (
+        refuse_attempts_on_connection_change,
+    )
     from src.server.database.pool import get_db_connection
+    from src.server.services.mcp_descriptions.jobs import own_description_scope
 
     row = await get_connection(user_id, server_name)
     if row is None:
@@ -427,19 +454,80 @@ async def disconnect_server(user_id: str, server_name: str) -> bool:
                 row.connection_id, ConnectionStatus.REVOKED, conn=conn
             )
             await revoke_grants_for_connection(row.connection_id, conn=conn)
+            # The next connect on this row may be another brokerage login.
+            await refuse_attempts_on_connection_change(
+                user_id, server_name, conn=conn
+            )
             # Both snapshot tiers, plus the fan-out bump. The per-workspace
             # snapshot's fingerprint is OAuth-blind, so a surviving workspace
             # row keeps publishing the connected tool set while the resolved
             # config no longer carries a connection — the sandbox would dial
             # the vendor directly, with no relay in front of it.
+            # And the description written from them, which a job still
+            # running for the given-up account must not land again.
             await delete_user_and_workspace_tool_schemas_and_bump(
-                user_id, [server_name], conn=conn
+                user_id,
+                [server_name],
+                description_scopes=await own_description_scope(
+                    user_id, server_name, conn=conn
+                ),
+                conn=conn,
             )
     logger.info(
         "[mcp_oauth] disconnected user=%s server=%s connection=%s",
         user_id, server_name, row.connection_id,
     )
     return True
+
+
+@asynccontextmanager
+async def oauth_fence(user_id: str, names: Sequence[str]):
+    """Disconnect ``names`` on both sides of a catalog-row drop.
+
+    Deleting a catalog row on its own orphans the server's OAuth connection:
+    there is no catalog FK, so the refresh sweeper keeps renewing the token
+    forever and a same-name recreate silently reuses it. Disconnecting only
+    beforehand is not enough either — the drop is a separate transaction, so a
+    callback landing in the gap leaves a live connection behind a row that no
+    longer exists. Closing the fence on exit is what makes the second pass
+    impossible to forget. Idempotent throughout: no connection is a no-op, and
+    revoked-on-revoked is an accepted write.
+    """
+    for name in names:
+        await disconnect_server(user_id, name)
+    try:
+        yield
+    finally:
+        # Also on the failure path: a drop that half happened is exactly when
+        # an orphaned live token can be left behind.
+        for name in names:
+            await disconnect_server(user_id, name)
+
+
+async def revoke_live_grants(user_id: str, names: Sequence[str]) -> None:
+    """Cut egress for servers that just went inert, without disconnecting them.
+
+    Taking a server out of delivery has to bite now, not at next acquire: an
+    idle sandbox holds its grant_id and a relay JWT for hours, and the relay
+    checks the grant and the connection but never the catalog row. Weaker than
+    ``oauth_fence`` on purpose — the connection survives, so re-enabling
+    self-heals when the next acquire's grant sync re-activates via its upsert
+    arm. Safe against a concurrent re-mint: the caller's version bump fails the
+    sync's CAS.
+    """
+    from src.server.database.egress_grants import revoke_grants_for_connection
+    from src.server.database.mcp_oauth import get_connection
+
+    for name in names:
+        try:
+            connection = await get_connection(user_id, name)
+            if connection is not None:
+                await revoke_grants_for_connection(connection.connection_id)
+        except Exception:
+            # One unreachable row must not strand the rest. Whatever made these
+            # servers inert is already committed, so aborting the loop cuts the
+            # servers before the failure and leaves the ones after it live.
+            logger.exception("failed to revoke live grants for %s", name)
 
 
 async def revoke_if_consent_moved(

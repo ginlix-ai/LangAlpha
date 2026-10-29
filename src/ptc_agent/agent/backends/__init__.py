@@ -13,12 +13,18 @@ from typing import Union
 from .composite import CompositeFilesystemBackend
 from .langgraph_store import (
     InvalidStoreKeyError,
+    StoreContentInvalidError,
     StoreContentTooLargeError,
     NamespaceFactory,
     ReadOnlyStoreError,
     StoreBackend,
     lock_for_namespace,
+    memo_namespace,
+    namespace_write_lock,
+    store_label,
+    user_memory_namespace,
     validate_store_key,
+    workspace_memory_namespace,
 )
 from .sandbox import SandboxBackend
 from .store_cache import RequestScopedStoreCache
@@ -39,6 +45,7 @@ __all__ = [
     "DaytonaBackend",
     "FilesystemBackend",
     "InvalidStoreKeyError",
+    "StoreContentInvalidError",
     "StoreContentTooLargeError",
     "NamespaceFactory",
     "PREBUILT_READ_ONLY_ERROR",
@@ -48,7 +55,12 @@ __all__ = [
     "StoreBackend",
     "WorkflowsBackend",
     "lock_for_namespace",
+    "memo_namespace",
+    "namespace_write_lock",
     "prebuilt_workflow_backend",
+    "store_label",
+    "user_memory_namespace",
     "validate_store_key",
     "workflow_namespace",
+    "workspace_memory_namespace",
 ]

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useStableHandler } from '@/hooks/useStableHandler';
+import { useLatestRef } from '@/hooks/useLatestRef';
 import { useStableArray } from '@/hooks/useStableArray';
 import { countToolCalls } from '../../session/subagents/subagentMetrics';
 import {
@@ -18,6 +19,7 @@ import {
   type SubagentDataLike,
   type SubagentHistoryLike,
 } from '../../session/subagents/resolveSubagentTelemetry';
+import { taskRunFromWire } from '../../session/subagents/taskRuns';
 import {
   resolveWorkflowRun as resolveWorkflowRunPure,
   type WorkflowRunState,
@@ -31,6 +33,7 @@ import type { AgentInfo, SubagentInfo, SubagentMessage, SubagentUpdateData } fro
 
 type CardStateAPI = ReturnType<typeof useCardState>;
 type ChatMessagesAPI = ReturnType<typeof useChatMessages>;
+type HistoryView = NonNullable<ReturnType<ChatMessagesAPI['getSubagentHistory']>>;
 
 /** Subagent tab registry (carved out of ChatView, 5.9c): the sidebar agents
  * list, active-tab switching with URL sync, card refresh/hydration on open,
@@ -44,12 +47,13 @@ export function useSubagentTabs({
   setActiveAgentId,
   cards,
   updateSubagentCard,
+  sendSubagentInstruction,
   getSubagentHistory,
+  getTaskRuns,
+  putTaskRun,
   resolveSubagentIdToAgentId,
   hydrateTaskTranscript,
   saveScrollPosition,
-  scrollPositionsRef,
-  skipSubagentAutoScrollRef,
   activeAgentIdRef,
   resolvedThreadIdRef,
 }: {
@@ -61,12 +65,13 @@ export function useSubagentTabs({
   setActiveAgentId: Dispatch<SetStateAction<string>>;
   cards: CardStateAPI['cards'];
   updateSubagentCard: CardStateAPI['updateSubagentCard'];
+  sendSubagentInstruction: ChatMessagesAPI['sendSubagentInstruction'];
   getSubagentHistory: ChatMessagesAPI['getSubagentHistory'];
+  getTaskRuns: ChatMessagesAPI['getTaskRuns'];
+  putTaskRun: ChatMessagesAPI['putTaskRun'];
   resolveSubagentIdToAgentId: ChatMessagesAPI['resolveSubagentIdToAgentId'];
   hydrateTaskTranscript: ChatMessagesAPI['hydrateTaskTranscript'];
   saveScrollPosition: () => void;
-  scrollPositionsRef: { current: Record<string, number> };
-  skipSubagentAutoScrollRef: { current: boolean };
   activeAgentIdRef: { current: string };
   resolvedThreadIdRef: { current: string };
 }) {
@@ -81,10 +86,6 @@ export function useSubagentTabs({
     if (newAgentId === activeAgentIdRef.current) return;
     const wasMain = activeAgentIdRef.current === 'main';
     saveScrollPosition();
-    // If destination has a saved position, skip auto-scroll so restore wins
-    if (scrollPositionsRef.current[newAgentId] != null) {
-      skipSubagentAutoScrollRef.current = true;
-    }
     setActiveAgentId(newAgentId);
 
     // Sync URL with active agent
@@ -100,7 +101,7 @@ export function useSubagentTabs({
       // browser back should return to the parent view just left.
       navigate(`/chat/t/${tid}/${taskSlug}`, { replace: !wasMain && !opts?.push, state: { workspaceId } });
     }
-  }, [saveScrollPosition, threadId, workspaceId, navigate, activeAgentIdRef, scrollPositionsRef, skipSubagentAutoScrollRef, resolvedThreadIdRef, setActiveAgentId]);
+  }, [saveScrollPosition, threadId, workspaceId, navigate, activeAgentIdRef, resolvedThreadIdRef, setActiveAgentId]);
 
   // Ensure new active agents are visible (remove from hidden list)
   useEffect(() => {
@@ -129,9 +130,13 @@ export function useSubagentTabs({
       .filter(([cardId]) => cardId.startsWith('subagent-'))
       .map(([cardId, card]): AgentInfo => {
         const sd = card.subagentData;
+        const id = cardId.replace('subagent-', '');
+        // Only the live stream stamps a display id; a card opened from history
+        // has none, and its id still names the task.
+        const taskId = taskIdFromAgentId(id);
         return {
-          id: cardId.replace('subagent-', ''),
-          name: sd?.displayId || t('chat.worker'),
+          id,
+          name: sd?.displayId || (taskId ? `Task-${taskId}` : t('chat.worker')),
           taskId: sd?.taskId || sd?.agentId || '',
           description: sd?.description || '',
           prompt: sd?.prompt || '',
@@ -177,8 +182,10 @@ export function useSubagentTabs({
     const card = cards[`subagent-${resolveSubagentIdToAgentId(subagentId)}`];
     const sd = card?.subagentData as SubagentDataLike | undefined;
     const history = getSubagentHistory?.(subagentId) as SubagentHistoryLike | undefined;
-    return resolveSubagentTelemetryPure(sd, history);
-  }, [cards, resolveSubagentIdToAgentId, getSubagentHistory]);
+    // The segment's id is the Task call it stands for, which names the run
+    // its row draws when the task was resumed.
+    return resolveSubagentTelemetryPure(sd, history, getTaskRuns?.(subagentId) ?? [], subagentId);
+  }, [cards, resolveSubagentIdToAgentId, getSubagentHistory, getTaskRuns]);
 
   // Same closure shape for workflow-run progress: the inline WorkflowRunCard
   // subscribes at the leaf and reads the live card's reduced state, falling
@@ -226,37 +233,27 @@ export function useSubagentTabs({
     : null;
 
   // Callback: user sent an instruction to the active subagent via the status bar.
-  // Immediately insert a pending user message (breathing animation) into the card.
-  const handleSubagentInstruction = useCallback((content: string) => {
-    if (!activeAgent) return;
-    const agentId = activeAgent.id;
-    const cardId = `subagent-${agentId}`;
-    const card = cards[cardId];
-    const existingMessages = card?.subagentData?.messages || [];
-
-    const pendingMessage = {
-      id: `pending-instruction-${Date.now()}`,
-      role: 'user',
-      content,
-      contentSegments: [{ type: 'text', content, order: 0 }],
-      reasoningProcesses: {},
-      toolCallProcesses: {},
-      isPending: true,
-    };
-
-    updateSubagentCard(agentId, {
-      messages: [...existingMessages, pendingMessage],
-    });
-  }, [activeAgent, cards, updateSubagentCard]);
+  // The agent is fixed at send time, so a tab switch while the request is out
+  // cannot misroute the take-back of a failed send.
+  const handleSubagentInstruction = useCallback(async (content: string) => {
+    const agentId = activeAgent?.id;
+    if (!agentId) return;
+    await sendSubagentInstruction(threadId, agentId, content);
+  }, [activeAgent, threadId, sendSubagentInstruction]);
 
   // Refresh subagent card with latest data from history or inline status.
   // Ensures status/currentTool are accurate regardless of stale streaming data.
   // agentId: stable agent_id (already resolved from toolCallId if needed)
   // overrides: optional { description, type, status } from inline card click
-  const refreshSubagentCard = useCallback((agentId: string, overrides: Partial<SubagentInfo> = {}) => {
+  // landedHistory: an entry that landed after this render's history snapshot
+  const refreshSubagentCard = useCallback((
+    agentId: string,
+    overrides: Partial<SubagentInfo> = {},
+    landedHistory?: HistoryView,
+  ) => {
     if (!updateSubagentCard || !agentId) return;
 
-    const history = getSubagentHistory ? getSubagentHistory(agentId) : null;
+    const history = landedHistory ?? (getSubagentHistory ? getSubagentHistory(agentId) : null);
     // Preserve existing card description/type. Priority:
     // 1. History description (most authoritative — from replay)
     // 2. Existing card description (set during spawn — must not be overwritten
@@ -284,6 +281,7 @@ export function useSubagentTabs({
       ? existingStatus!
       : (history?.status || overrides.status || 'completed');
     const finalError = history?.error || overrides.error;
+    const finalErrorType = history?.errorType || overrides.errorType;
 
     // Check if card is currently live (active with an open stream). A card
     // whose own status already settled is not live however its flag reads.
@@ -313,6 +311,7 @@ export function useSubagentTabs({
       updateData.status = finalStatus;
       updateData.currentTool = '';
       if (finalError) updateData.error = finalError;
+      if (finalErrorType) updateData.errorType = finalErrorType;
     }
     if (history) {
       updateData.messages = (history.messages || []) as SubagentMessage[];
@@ -356,11 +355,15 @@ export function useSubagentTabs({
       const s = normalizeWireStatus(res?.status);
       if (!isTerminalStatus(s)) return;
       const existing = cards[`subagent-${agentId}`]?.subagentData;
+      // The task's latest run, which the stream may never have opened here.
+      if (res.run_id) putTaskRun?.(res.run_id, { taskId: agentId, ...taskRunFromWire(res) });
       updateSubagentCard(agentId, {
         agentId,
         taskId: agentId,
         status: s,
         ...(res.error ? { error: res.error } : {}),
+        // It settled unseen: age it from the ledger's time, not this click.
+        ...(typeof res.last_activity_ms === 'number' ? { lastActivityMs: res.last_activity_ms } : {}),
         // Ride along the existing content so the inactive-card guard admits
         // this authoritative terminal update.
         messages: (existing?.messages as SubagentMessage[]) || [],
@@ -370,12 +373,15 @@ export function useSubagentTabs({
       // Best-effort: a failed hydration leaves the card as-is (a full thread
       // reload still corrects it via replay stamping).
     }
-  }, [threadId, getSubagentHistory, cards, updateSubagentCard]);
+  }, [threadId, getSubagentHistory, cards, updateSubagentCard, putTaskRun]);
 
   // Lazy transcript hydration for tasks replay never projects as lanes
   // (workflow children have no Task-tool launch artifact in the main
   // transcript): fetch the checkpoint transcript on demand, then re-refresh
-  // the card so the landed history entry populates it.
+  // the card with the landed entry. The refresh goes through the latest
+  // commit's closure, since the cards may have moved during the fetch, and
+  // takes the entry explicitly, since no render has published it yet.
+  const refreshSubagentCardRef = useLatestRef(refreshSubagentCard);
   const hydrateTranscriptThenRefresh = useCallback(
     (agentId: string, overrides: Partial<SubagentInfo> = {}) => {
       if (!hydrateTaskTranscript) return;
@@ -386,10 +392,10 @@ export function useSubagentTabs({
         type: overrides.type,
         status: overrides.status,
       }).then((landed) => {
-        if (landed) refreshSubagentCard(agentId, overrides);
+        if (landed) refreshSubagentCardRef.current(agentId, overrides, landed);
       });
     },
-    [hydrateTaskTranscript, getSubagentHistory, refreshSubagentCard],
+    [hydrateTaskTranscript, getSubagentHistory, refreshSubagentCardRef],
   );
 
   // Handle sidebar agent selection — refresh card data, then switch tab.
@@ -449,12 +455,9 @@ export function useSubagentTabs({
     const urlAgentId = initialTaskId ? `task:${initialTaskId}` : 'main';
     if (urlAgentId !== activeAgentIdRef.current) {
       saveScrollPosition();
-      if (scrollPositionsRef.current[urlAgentId] != null) {
-        skipSubagentAutoScrollRef.current = true;
-      }
       setActiveAgentId(urlAgentId);
     }
-  }, [initialTaskId, saveScrollPosition, activeAgentIdRef, scrollPositionsRef, skipSubagentAutoScrollRef, setActiveAgentId]);
+  }, [initialTaskId, saveScrollPosition, activeAgentIdRef, setActiveAgentId]);
 
   // Refresh subagent card data on deep link / browser forward (guarded to run once per taskId)
   const lastRefreshedTaskRef = useRef<string | undefined>(undefined);

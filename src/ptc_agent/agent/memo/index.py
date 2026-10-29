@@ -204,7 +204,7 @@ async def rebuild_memo_index(
         "created_at": existing_created,
         "modified_at": now,
         "state_hash": state_hash,
-        # Read by MemoAwarenessMiddleware on every model call to skip a full
+        # Read by the runtime-context baseline at the turn boundary to skip a full
         # asearch fan-out. Refreshed in lockstep with state_hash.
         "memo_count": len(items),
     }

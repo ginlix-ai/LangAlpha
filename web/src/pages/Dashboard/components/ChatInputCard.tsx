@@ -4,6 +4,7 @@ import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-inp
 import { useChatInput } from '../hooks/useChatInput';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileFabChat } from '@/components/ui/mobile-fab-chat';
+import { staggerDelay } from '@/lib/motion';
 
 /**
  * Floating chat input wrapper for dashboard.
@@ -12,15 +13,21 @@ import { MobileFabChat } from '@/components/ui/mobile-fab-chat';
  */
 function ChatInputCard() {
   const { t } = useTranslation();
+  const [focused, setFocused] = useState(false);
+  const chatInputRef = useRef<ChatInputHandle>(null);
+  const isMobile = useIsMobile();
+  const [chatExpanded, setChatExpanded] = useState(false);
+  // The mobile composer mounts only while expanded, and the desktop one is
+  // focused while the user writes: either way, they are composing.
   const {
-    mode,
-    setMode,
+    scope,
+    setScope,
     isLoading,
     handleSend,
     workspaces,
     selectedWorkspaceId,
     setSelectedWorkspaceId,
-  } = useChatInput();
+  } = useChatInput({ composing: isMobile ? chatExpanded : focused });
 
   const SUGGESTION_CHIPS = useMemo<string[]>(
     () => [
@@ -31,11 +38,6 @@ function ChatInputCard() {
     ],
     [t],
   );
-
-  const [focused, setFocused] = useState(false);
-  const chatInputRef = useRef<ChatInputHandle>(null);
-  const isMobile = useIsMobile();
-  const [chatExpanded, setChatExpanded] = useState(false);
 
   const handleMobileSend = (...args: Parameters<typeof handleSend>) => {
     handleSend(...args);
@@ -56,8 +58,8 @@ function ChatInputCard() {
             ref={chatInputRef}
             onSend={handleMobileSend}
             disabled={isLoading}
-            mode={mode}
-            onModeChange={setMode}
+            scope={scope}
+            onScopeChange={setScope}
             workspaces={workspaces}
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
@@ -73,7 +75,7 @@ function ChatInputCard() {
     // Insets to the content column, not the viewport: fixed positioning ignores
     // <main>'s sidebar padding, so centering across the full width would park
     // the composer half a sidebar left of the grid it floats over.
-    <div className="dashboard-floating-chat-wrapper sidebar-tracking fixed bottom-8 left-[var(--sidebar-width)] right-0 z-40 flex justify-center pointer-events-none">
+    <div className="dashboard-floating-chat-wrapper sidebar-tracking fixed bottom-8 left-(--sidebar-width) right-0 z-40 flex justify-center pointer-events-none">
       <div className="pointer-events-auto w-full max-w-2xl px-4">
         {/* Suggestion bubbles — above the input, outside focus container.
             Only mount when focused so they stay out of the DOM, a11y tree,
@@ -86,7 +88,7 @@ function ChatInputCard() {
                 type="button"
                 data-testid="dashboard-suggestion-bubble"
                 className="dashboard-suggestion-bubble"
-                style={{ animationDelay: `${i * 60}ms` }}
+                style={{ animationDelay: `${staggerDelay(i)}s` }}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => chatInputRef.current?.setValue(label)}
               >
@@ -108,8 +110,8 @@ function ChatInputCard() {
             ref={chatInputRef}
             onSend={handleSend}
             disabled={isLoading}
-            mode={mode}
-            onModeChange={setMode}
+            scope={scope}
+            onScopeChange={setScope}
             workspaces={workspaces}
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}

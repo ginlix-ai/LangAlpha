@@ -5,9 +5,24 @@ import JumpToLatestPill from '../JumpToLatestPill';
 // Compact icon-circle affordance: no visible label — the accessible name lives
 // in aria-label; the only visible text is the new-message count.
 describe('JumpToLatestPill', () => {
-  it('renders nothing when not visible', () => {
-    const { container } = render(<JumpToLatestPill visible={false} hasNew={false} onJump={() => {}} />);
-    expect(container.firstChild).toBeNull();
+  // Kept mounted so it can leave with an exit; closed, nothing can reach it.
+  it('stays mounted but closed and unreachable when not visible', () => {
+    const { container } = render(<JumpToLatestPill visible={false} hasNew onJump={() => {}} newCount={2} />);
+    const pill = container.querySelector('button')!;
+    expect(pill).toHaveAttribute('data-state', 'closed');
+    expect(pill).toHaveAttribute('inert');
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(pill.textContent).toBe('');
+  });
+
+  it('opens in place when it becomes visible', () => {
+    const { container, rerender } = render(<JumpToLatestPill visible={false} hasNew={false} onJump={() => {}} />);
+    const pill = container.querySelector('button')!;
+    rerender(<JumpToLatestPill visible hasNew={false} onJump={() => {}} />);
+    expect(container.querySelector('button')).toBe(pill);
+    expect(pill).toHaveAttribute('data-state', 'open');
+    expect(pill).not.toHaveAttribute('inert');
+    expect(screen.getByRole('button')).toBe(pill);
   });
 
   it('renders icon-only (no visible text) when visible without new messages', () => {

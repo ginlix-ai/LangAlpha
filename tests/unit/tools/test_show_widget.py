@@ -457,15 +457,18 @@ class TestAttachWidgetData:
         assert "data_ref" not in artifact
 
     @pytest.mark.asyncio
-    async def test_upload_failure_attaches_neither(self, monkeypatch):
+    async def test_upload_failure_inlines_the_data(self, monkeypatch):
+        # The artifact is the only copy replay reads: a pointer to an object
+        # that was never written, or no data at all, reloads the widget empty.
         monkeypatch.setattr(_mod, "is_storage_enabled", lambda: True)
         monkeypatch.setattr(_mod, "upload_bytes", lambda *a: False)
         monkeypatch.setattr(_mod, "_INLINE_ARTIFACT_CAP", 10)
         artifact = {"type": "html_widget"}
+        data = {"data.json": "x" * 100}
 
-        await _attach_widget_data(artifact, {"data.json": "x" * 100})
+        await _attach_widget_data(artifact, data)
 
-        assert "data" not in artifact
+        assert artifact["data"] == data
         assert "data_ref" not in artifact
 
     def test_widget_data_storage_key_thread_scoping(self):

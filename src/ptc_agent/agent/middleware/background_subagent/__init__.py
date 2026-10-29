@@ -6,6 +6,7 @@ allowing the main agent to continue working while subagents run.
 
 from ptc_agent.agent.middleware.background_subagent.event_capture import (
     SubagentEventCaptureMiddleware,
+    SubagentToolResultCaptureMiddleware,
 )
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     BackgroundSubagentMiddleware,
@@ -33,6 +34,7 @@ __all__ = [
     "BackgroundTaskRegistry",
     "SubagentSteeringMiddleware",
     "SubagentEventCaptureMiddleware",
+    "SubagentToolResultCaptureMiddleware",
     "create_task_output_tool",
     "current_background_agent_id",
     "current_background_tool_call_id",

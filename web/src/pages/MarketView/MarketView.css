@@ -1,16 +1,14 @@
 .market-center-container {
   width: 100%;
-  height: 100vh;
-  max-height: 100vh;
+  /* See ChatAgent.css: the content column, not the viewport. */
+  height: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
 }
 
-@media (max-width: 767px) {
-  .market-center-container { height: 100%; max-height: 100%; }
-}
 
 .market-content-wrapper {
   flex: 1;
@@ -36,6 +34,33 @@
   overflow: hidden;
 }
 
+.market-titlebar {
+  flex-shrink: 0;
+  background-color: var(--color-bg-card);
+}
+
+/* First rows sit at the shared page depth (--page-top, tokens.css) in every
+   build: the offsets below are what each panel's own first row needs on top of
+   its normal padding to centre at --page-top + 14px. */
+@media (min-width: 768px) {
+  .market-titlebar .stock-header {
+    padding-top: calc(var(--page-top) - 1px);
+  }
+}
+
+.market-content-wrapper > .market-right-panel {
+  padding-top: calc(var(--page-top) - 7px);
+}
+
+/* The watchlist / portfolio tab strip and the collapsed strip's toggle. */
+.market-content-wrapper > .market-sidebar {
+  padding-top: calc(var(--page-top) - 6px);
+}
+
+.market-content-wrapper > .market-sidebar--collapsed {
+  padding-top: calc(var(--page-top) - 3px);
+}
+
 .market-right-panel {
   flex-shrink: 0;
   display: flex;
@@ -53,7 +78,7 @@
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
-  transition: background 0.15s;
+  transition: background var(--motion-quick) var(--ease-out);
   position: relative;
 }
 
@@ -140,7 +165,7 @@ body.col-resizing * {
   text-align: left;
   cursor: pointer;
   backdrop-filter: blur(8px);
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
 }
 
 .market-quick-query-card:hover {
@@ -160,7 +185,7 @@ body.col-resizing * {
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  transition: background var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
 }
 
 .market-quick-query-shuffle:hover {
@@ -169,23 +194,13 @@ body.col-resizing * {
   color: var(--color-text-primary);
 }
 
-/* Scrollbar styling consistent with Dashboard */
-.market-center-container::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.market-center-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+/* The Dashboard's quieter thumb; its shape is the app-wide one (tokens.css). */
 .market-center-container::-webkit-scrollbar-thumb {
-  background: var(--color-border-muted);
-  border-radius: 4px;
+  background-color: var(--color-border-muted);
 }
 
 .market-center-container::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-default);
+  background-color: var(--color-border-default);
 }
 
 /* Mobile layout */
@@ -213,10 +228,13 @@ body.col-resizing * {
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   -webkit-tap-highlight-color: transparent;
+  transition: scale var(--motion-press) var(--ease-out);
 }
 
-.market-mobile-fab:active {
-  transform: scale(0.95);
+@media (prefers-reduced-motion: no-preference) {
+  .market-mobile-fab:active {
+    scale: var(--press-scale);
+  }
 }
 
 /* Floating chat input at bottom */

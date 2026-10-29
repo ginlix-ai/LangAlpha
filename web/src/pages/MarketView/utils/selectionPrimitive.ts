@@ -16,9 +16,9 @@
  */
 
 import type {
-  ISeriesPrimitivePaneView,
-  ISeriesPrimitivePaneRenderer,
-  SeriesPrimitivePaneViewZOrder,
+  IPrimitivePaneView,
+  IPrimitivePaneRenderer,
+  PrimitivePaneViewZOrder,
   Time,
   IChartApiBase,
 } from 'lightweight-charts';
@@ -141,14 +141,14 @@ export class SelectionPrimitive {
 
   updateAllViews(): void {}
 
-  paneViews(): ISeriesPrimitivePaneView[] {
+  paneViews(): IPrimitivePaneView[] {
     const source = this;
     return [
       {
-        zOrder(): SeriesPrimitivePaneViewZOrder {
+        zOrder(): PrimitivePaneViewZOrder {
           return 'top';
         },
-        renderer(): ISeriesPrimitivePaneRenderer {
+        renderer(): IPrimitivePaneRenderer {
           return {
             draw(target: CanvasRenderingTarget2D): void {
               source._draw(target);

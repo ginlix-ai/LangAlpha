@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Locks the failed-Task-spawn terminalization. A background Task tool returns
  * immediately: on success ("Task-N started in background") the result is NOT

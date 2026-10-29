@@ -320,7 +320,7 @@ class TestNewsDataSourceContract:
 @skip_no_fmp
 class TestFundamentalsMcpContract:
     async def test_get_financial_statements_income(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         result = await get_financial_statements(SYMBOL, statement_type="income", limit=3)
         assert "error" not in result, result.get("error")
@@ -330,7 +330,7 @@ class TestFundamentalsMcpContract:
         assert "revenue" in row
 
     async def test_get_financial_statements_balance(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         result = await get_financial_statements(SYMBOL, statement_type="balance", limit=2)
         assert "error" not in result, result.get("error")
@@ -339,7 +339,7 @@ class TestFundamentalsMcpContract:
         assert "totalAssets" in row
 
     async def test_get_financial_statements_cash(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         result = await get_financial_statements(SYMBOL, statement_type="cash", limit=2)
         assert "error" not in result, result.get("error")
@@ -348,7 +348,7 @@ class TestFundamentalsMcpContract:
         assert has_any(row, "operatingCashFlow", "netCashProvidedByOperatingActivities")
 
     async def test_get_financial_statements_all(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_statements
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
         result = await get_financial_statements(SYMBOL, statement_type="all", limit=1)
         assert "error" not in result, result.get("error")
@@ -357,7 +357,7 @@ class TestFundamentalsMcpContract:
         assert result["count"]["cash_flow"] >= 1
 
     async def test_get_financial_ratios(self):
-        from mcp_servers.fundamentals_mcp_server import get_financial_ratios
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_ratios
 
         result = await get_financial_ratios(SYMBOL, limit=2)
         assert "error" not in result, result.get("error")
@@ -365,7 +365,7 @@ class TestFundamentalsMcpContract:
         assert result["count"]["ratios"] > 0
 
     async def test_get_growth_metrics(self):
-        from mcp_servers.fundamentals_mcp_server import get_growth_metrics
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_growth_metrics
 
         result = await get_growth_metrics(SYMBOL, limit=3)
         assert "error" not in result, result.get("error")
@@ -376,7 +376,7 @@ class TestFundamentalsMcpContract:
         assert result["count"]["income_statement_growth"] > 0
 
     async def test_get_historical_valuation(self):
-        from mcp_servers.fundamentals_mcp_server import get_historical_valuation
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_historical_valuation
 
         result = await get_historical_valuation(SYMBOL, limit=2)
         assert "error" not in result, result.get("error")
@@ -384,14 +384,14 @@ class TestFundamentalsMcpContract:
         assert "enterprise_value" in result["data"]
 
     async def test_get_insider_trades(self):
-        from mcp_servers.fundamentals_mcp_server import get_insider_trades
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_insider_trades
 
         result = await get_insider_trades(SYMBOL, limit=5)
         assert "error" not in result, result.get("error")
         assert result["data_type"] == "insider_trades"
 
     async def test_get_dividends_and_splits(self):
-        from mcp_servers.fundamentals_mcp_server import get_dividends_and_splits
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_dividends_and_splits
 
         result = await get_dividends_and_splits(SYMBOL)
         assert "error" not in result, result.get("error")
@@ -400,7 +400,7 @@ class TestFundamentalsMcpContract:
         assert result["count"]["dividends"] > 0
 
     async def test_get_shares_float(self):
-        from mcp_servers.fundamentals_mcp_server import get_shares_float
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_shares_float
 
         result = await get_shares_float(SYMBOL)
         assert "error" not in result, result.get("error")
@@ -409,14 +409,14 @@ class TestFundamentalsMcpContract:
         assert has_any(row, "floatShares", "outstandingShares", "freeFloat")
 
     async def test_get_key_executives(self):
-        from mcp_servers.fundamentals_mcp_server import get_key_executives
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_key_executives
 
         result = await get_key_executives(SYMBOL)
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     async def test_get_technical_indicator_rsi(self):
-        from mcp_servers.fundamentals_mcp_server import get_technical_indicator
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_technical_indicator
 
         result = await get_technical_indicator(SYMBOL, indicator="rsi", period=14)
         assert "error" not in result, result.get("error")
@@ -436,7 +436,7 @@ class TestFundamentalsMcpContract:
 @skip_no_fmp
 class TestMacroMcpContract:
     async def test_economic_indicator_gdp(self):
-        from mcp_servers.macro_mcp_server import get_economic_indicator
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_indicator
 
         result = await get_economic_indicator("GDP", limit=3)
         assert "error" not in result, result.get("error")
@@ -444,7 +444,7 @@ class TestMacroMcpContract:
         assert "date" in result["data"][0] and "value" in result["data"][0]
 
     async def test_treasury_rates(self):
-        from mcp_servers.macro_mcp_server import get_treasury_rates
+        from plugins.langalpha_market_data.macro_mcp_server import get_treasury_rates
 
         result = await get_treasury_rates(
             from_date="2025-03-01", to_date="2025-03-05",
@@ -453,7 +453,7 @@ class TestMacroMcpContract:
         assert result["count"] > 0
 
     async def test_earnings_calendar(self):
-        from mcp_servers.macro_mcp_server import get_earnings_calendar
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
 
         result = await get_earnings_calendar(
             from_date="2025-01-27", to_date="2025-01-31",
@@ -476,7 +476,7 @@ class TestPriceDataMcpContract:
     """
 
     async def test_get_stock_data_daily(self):
-        from mcp_servers.price_data_mcp_server import get_stock_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_stock_data
 
         result = await get_stock_data(SYMBOL, interval="1day")
         assert "error" not in result, result.get("error")
@@ -487,14 +487,14 @@ class TestPriceDataMcpContract:
             assert key in row
 
     async def test_get_asset_data_commodity(self):
-        from mcp_servers.price_data_mcp_server import get_asset_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_asset_data
 
         result = await get_asset_data("GCUSD", asset_type="commodity")
         assert "error" not in result, result.get("error")
         assert result["count"] > 0
 
     async def test_get_asset_data_crypto(self):
-        from mcp_servers.price_data_mcp_server import get_asset_data
+        from plugins.langalpha_market_data.price_data_mcp_server import get_asset_data
 
         result = await get_asset_data("BTCUSD", asset_type="crypto")
         assert "error" not in result, result.get("error")

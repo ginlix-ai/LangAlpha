@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 import httpx
 from langchain_core.tools import tool
 
+from src.tools.utils.validation_utils import validate_iso_8601
 from src.tools.web.providers._shared import (
     SNIPPET_MAX,
     assemble_results,
@@ -22,6 +23,8 @@ from src.tools.web.providers._shared import (
     report_or_empty,
     request_json,
     result_card,
+    search_failed,
+    search_refusal,
     time_range_to_start_date,
 )
 from src.tools.web.types import (
@@ -369,6 +372,14 @@ def build_web_search_tool(
             include_domains: Restrict results to these domains (e.g. ['sec.gov'])
         """
         try:
+            # An empty string is an unset date, as it is below.
+            validate_iso_8601(start_published_date or None)
+            validate_iso_8601(end_published_date or None)
+        except ValueError as e:
+            # A malformed date is the agent's mistake, not a failed search.
+            return search_refusal(e, query)
+
+        try:
             api = _get_api_wrapper()
             start = start_published_date or time_range_to_start_date(
                 default_time_range, fmt="%Y-%m-%dT%H:%M:%S.000Z", provider="Exa"
@@ -394,15 +405,8 @@ def build_web_search_tool(
             )
             return [r.as_dict() for r in results], metadata
 
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code if e.response is not None else "unknown"
-            body = e.response.text if e.response is not None else "no response body"
-            logger.error(f"Exa API HTTP {status}: {body}")
-            error_message = f"Search failed (HTTP {status}): {body}"
-            return error_message, {"error": error_message, "query": query}
         except (httpx.HTTPError, ValueError) as e:
             logger.error(f"Exa search failed: {e}", exc_info=True)
-            error_message = f"Search failed: {str(e)}"
-            return error_message, {"error": str(e), "query": query}
+            return search_failed(e, query, quote_http_body=True)
 
     return web_search

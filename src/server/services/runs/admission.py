@@ -16,7 +16,8 @@ idempotent under the ownership flag.
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, Literal, Optional
+from functools import partial
+from typing import Any, Awaitable, Callable, Dict, Literal, NamedTuple, Optional
 
 from fastapi import HTTPException
 
@@ -42,12 +43,19 @@ class RunScope:
         self._user_id = user_id
         self._burst_slot_id = burst_slot_id
         self._slot_owned = True
+        self._handed_off = False
         self._admission_lock: Optional[asyncio.Lock] = None
         self._run_handle: Any = None
 
     @property
     def slot_owned(self) -> bool:
         return self._slot_owned
+
+    @property
+    def handed_off(self) -> bool:
+        """The executor holds the run: an error from here on is the
+        reader's, not the run's."""
+        return self._handed_off
 
     @property
     def owned_run_handle(self) -> Any:
@@ -70,22 +78,48 @@ class RunScope:
             self._admission_lock.release()
             self._admission_lock = None
 
+    def hold_admission_until(self, task: asyncio.Future) -> None:
+        """Hand the admission lock to ``task``, released once it is done.
+
+        For a START that goes on after its request was cancelled: until it
+        commits and is settled, the next send's admission would read the
+        thread as idle and race it for the slot.
+        """
+        lock, self._admission_lock = self._admission_lock, None
+        if lock is not None:
+            task.add_done_callback(lambda _done: lock.release())
+
     async def release_slot(self) -> None:
-        """Release the burst lease at most once from in-process paths."""
+        """Release the burst lease at most once from in-process paths.
+
+        Detached and never suspending: error paths release first and settle
+        after, often on a stream task a disconnect is cancelling, so this
+        must give that cancellation no await to land on. The release itself
+        still lands, since the lease spans the user's every thread."""
         if not self._slot_owned:
             return
         self._slot_owned = False
-        await usage_limits.release_burst_slot(self._user_id, self._burst_slot_id)
+        from src.server.services.runs.coordinator import spawn_protected
+
+        spawn_protected(
+            usage_limits.release_burst_slot(self._user_id, self._burst_slot_id),
+            "burst-slot-release",
+        )
 
     def transfer_to_executor(self) -> None:
         """Executor's done-callback is armed — it owns cleanup from here."""
         self._slot_owned = False
+        self._handed_off = True
 
     async def fail_open(self, reason: str, *, status: str = "cancelled") -> None:
         """Death-path teardown: release the lease and settle the open run.
 
-        fail_open_run shields its write internally, so a second cancel on an
-        already-cancelled stream task cannot abort it.
+        The caller is usually a stream task a client disconnect cancelled,
+        and that cancellation is level-triggered: every await in its handler
+        is cancelled again at once. So both steps start before the first
+        suspension, side by side: the release never suspends, and
+        ``fail_open_run`` settles in a protected task. A run left unsettled
+        here keeps its thread's fence and 409s every later turn.
         """
         run_handle = self.owned_run_handle
         await self.release_slot()
@@ -111,6 +145,10 @@ ADMISSION_TEARDOWN_MARGIN_S = 2.0
 # guard's Event after the call returns or times out.
 COMPACTION_ADMISSION_MARGIN_S = 20.0
 
+# The answers of ``wait_for_admission`` that mean a turn or a mutation holds
+# the thread. Each is also the code of the 409 a caller that may not steer
+# gets (``admission_gate``), which is how an automation knows to wait.
+BUSY_STATES = frozenset({"running", "stopping", "compacting"})
 
 async def wait_for_admission(
     thread_id: str,
@@ -208,23 +246,128 @@ async def wait_for_admission(
     return "stopping", row
 
 
-async def dedup_retransmit_or_raise(request: ChatRequest) -> None:
-    """Resolve a retransmitted request_key to its existing run — or pass.
+class KeyedRun(NamedTuple):
+    """The run that took a key's message. ``steered`` when the message went
+    into it as a steer: its turn is another message's, so a client must not
+    retry or adopt it as the send's own."""
+
+    run: Dict[str, Any]
+    steered: bool
+
+
+def steer_idempotency_key(request_key: str) -> str:
+    """A user steer's outbox key, which START's idempotency check matches."""
+    return f"steer:{request_key}"
+
+
+def steer_job_run_id(job: Dict[str, Any]) -> tuple[Optional[str], bool]:
+    """The run a steer job names, and whether the message went into it as a
+    steer: the turn it became (its own input, so not steered), else the run
+    holding it, else the run it was sent into."""
+    payload = job.get("payload") or {}
+    if payload.get("dispatched_run_id"):
+        return str(payload["dispatched_run_id"]), False
+    run_id = payload.get("steered_run_id") or job.get("run_id")
+    return (str(run_id) if run_id else None), True
+
+
+async def run_named_by_key(
+    thread_id: str, request_key: str, *, except_job_id: Optional[str] = None
+) -> Optional[KeyedRun]:
+    """The run that took this key's message: the one it started, else the
+    one its steer job names. None when the key reached no run.
+
+    ``except_job_id`` is the steer job a server-posted turn carries, which
+    names that turn's own message rather than a copy of it.
+    """
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.database.runs import outbox as outbox_db
+
+    existing = await tl_db.find_run_by_request_key(request_key)
+    if existing is not None:
+        return KeyedRun(existing, steered=False)
+    job = await outbox_db.get_steer_job(steer_idempotency_key(request_key))
+    if job is None or (except_job_id and str(job["id"]) == str(except_job_id)):
+        return None
+    run_id, steered = steer_job_run_id(job)
+    run = await tl_db.get_run(run_id) if run_id else None
+    return KeyedRun(run, steered=steered) if run is not None else None
+
+
+async def refuse_copy_read_as_steer(
+    thread_id: str, request_key: str, conn, *, except_job_id: Optional[str] = None
+) -> None:
+    """START's last check of its key, with the thread's slot already held.
+
+    Another copy of this send can have gone into a turn as a steer after this
+    copy's admission read found the thread idle. A steer is admitted only
+    into an in_progress run, and this START holds the thread's slot, so no
+    steer with this key can be admitted after the read: it is final. Read on
+    ``conn``, START's own connection, so it waits on no second pool slot
+    under START's locks.
+    """
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.database.runs import outbox as outbox_db
+
+    if not await outbox_db.steer_key_taken(
+        conn, request_key, except_job_id=except_job_id
+    ):
+        return
+    job = await outbox_db.get_steer_job(steer_idempotency_key(request_key), conn=conn)
+    run_id, steered = steer_job_run_id(job) if job else (None, True)
+    run = await tl_db.get_run_brief(conn, run_id) if run_id else None
+    raise tl_db.DuplicateRequestError(
+        run
+        or {
+            "conversation_response_id": run_id,
+            "conversation_thread_id": thread_id,
+            "request_key": request_key,
+            "status": None,
+        },
+        steered=steered,
+    )
+
+
+async def claim_steer_or_refuse(conn, steer_job_id: str, run_id: str) -> None:
+    """Take the parked steer a server-posted turn carries, in START's
+    transaction, or refuse the turn: a running turn already read it, or
+    another turn took it."""
+    from src.server.database.runs import outbox as outbox_db
+
+    if not await outbox_db.claim_steer_for_turn(conn, steer_job_id, run_id):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "steer_taken",
+                "message": "This message was already delivered.",
+            },
+        )
+
+
+async def dedup_retransmit_or_raise(
+    thread_id: str,
+    request_key: Optional[str],
+    *,
+    except_job_id: Optional[str] = None,
+) -> None:
+    """Resolve a retransmitted request_key to the run that took it, or pass.
 
     Must run under the admission lock BEFORE any steering, fork, or retry
     path can act on the duplicate: steering would inject the retransmit
     into the live run as a new message; a fork retransmit would truncate
-    the very rows holding the key. START's unique index remains the
-    race-safe backstop for keys that haven't produced a row yet.
+    the very rows holding the key. START's unique index and its steer check
+    remain the race-safe backstop for keys that haven't produced a row yet,
+    and the steer job's unique key for keys that haven't produced a steer.
     """
-    if not request.request_key:
+    if not request_key:
         return
-    from src.server.database.runs import lifecycle as tl_db
     from src.server.services.runs.coordinator import DuplicateRequestError
 
-    existing = await tl_db.find_run_by_request_key(request.request_key)
-    if existing is not None:
-        raise DuplicateRequestError(existing)
+    keyed = await run_named_by_key(
+        thread_id, request_key, except_job_id=except_job_id
+    )
+    if keyed is not None:
+        raise DuplicateRequestError(keyed.run, steered=keyed.steered)
 
 
 async def resolve_retry_of(request: ChatRequest, thread_id: str):
@@ -296,9 +439,9 @@ async def resolve_retry_of(request: ChatRequest, thread_id: str):
 async def begin_run(
     request: "ChatRequest",
     *,
+    scope: RunScope,
     thread_id: str,
     run_id: str,
-    msg_type: str,
     workspace_id: Optional[str],
     user_id: Optional[str],
     is_byok: bool,
@@ -315,51 +458,190 @@ async def begin_run(
     checkpoint replays pin their turn and reuse the preserved query row,
     everything else allocates MAX+1 — so the derivation can never drift
     between agent modes. ``fork`` (a ForkSpec) executes its truncation +
-    checkpoint pin inside the same transaction."""
+    checkpoint pin inside the same transaction.
+
+    The run goes to ``scope``, even when START raised once its row had
+    committed: no executor ever takes that run, so the turn's error path
+    settles it, as the failed attempt ``/retry`` chains onto.
+
+    A keyed START refuses, before it commits, a key another copy of the send
+    already steered with (``refuse_copy_read_as_steer``), and a START posted
+    for a parked steer claims that job in the same transaction
+    (``claim_steer_or_refuse``). START runs in a task of its own, which a
+    client leaving mid-START does not cancel: the run of a START whose
+    request was cancelled is settled as stopped, message kept, once START
+    is done."""
     from uuid import uuid4
 
-    from src.server.services.runs.coordinator import QuerySpec, RunCoordinator
+    from src.server.services.runs.coordinator import (
+        QuerySpec,
+        RunCoordinator,
+        spawn_protected,
+    )
+    from src.server.services.runs.pending_input import executor_input_stamp
 
     retry_of = await resolve_retry_of(request, thread_id)
-    return await RunCoordinator.get_instance().start_run(
+    identity = dict(
         thread_id=thread_id,
-        run_id=run_id,
-        msg_type=msg_type,
-        request_key=request.request_key,
         workspace_id=workspace_id,
         user_id=user_id,
         is_byok=is_byok,
-        query=(
-            None
-            if is_checkpoint_replay
-            else QuerySpec(
-                query_id=str(uuid4()),
-                content=query_content,
-                query_type=query_type,
-                feedback_action=feedback_action,
-                metadata=query_metadata,
+    )
+    started: list = []
+    start = spawn_protected(
+        RunCoordinator.get_instance().start_run(
+            thread_id=thread_id,
+            run_id=run_id,
+            request_key=request.request_key,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            is_byok=is_byok,
+            # A retry is another attempt at a turn whose first attempt wrote the
+            # query row; rewriting it would let a retry change what was asked.
+            query=(
+                None
+                if is_checkpoint_replay or retry_of is not None
+                else QuerySpec(
+                    query_id=str(uuid4()),
+                    content=query_content,
+                    query_type=query_type,
+                    feedback_action=feedback_action,
+                    metadata=query_metadata,
+                )
+            ),
+            fork=fork,
+            run_horizon=request.resume_run_horizon if request.hitl_response else None,
+            turn_index=(
+                retry_of["turn_index"]
+                if retry_of is not None
+                else request.fork_from_turn
+                if (fork is not None and is_checkpoint_replay)
+                else None
+            ),
+            attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),
+            retry_of_run_id=(
+                str(retry_of["conversation_response_id"])
+                if retry_of is not None
+                else None
+            ),
+            # Durable on the row so the startup sweep can enqueue this run's
+            # terminal hooks (burst release, watch clear) without any in-process
+            # context surviving the crash.
+            run_metadata={
+                "user_id": user_id,
+                "burst_slot_id": request.burst_slot_id,
+                # /retry builds its attempt from the row, and a retry body
+                # carries only the per-attempt model choices.
+                **(
+                    {"subagents_enabled": request.subagents_enabled}
+                    if request.subagents_enabled is not None
+                    else {}
+                ),
+                **(extra_run_metadata or {}),
+            },
+            pending_input=executor_input_stamp(request),
+            on_started=started.append,
+            before_commit=(
+                partial(_start_checks, request, thread_id=thread_id, run_id=run_id)
+                if request.request_key or request.steer_job_id
+                else None
+            ),
+        ),
+        f"start-{run_id}",
+        log_failure=False,
+    )
+    try:
+        handle = await asyncio.shield(start)
+    except Exception:
+        committed = started[0] if started else await _committed_start(
+            run_id, **identity
+        )
+        if committed is not None:
+            scope.attach_run(committed)
+        raise
+    except BaseException:
+        # A cancel lands again on every await here, so a detached task waits
+        # for START and settles its run.
+        scope.hold_admission_until(
+            spawn_protected(
+                _settle_after_start(start, started, run_id, **identity),
+                f"start-settle-{run_id}",
             )
-        ),
-        fork=fork,
-        turn_index=(
-            retry_of["turn_index"]
-            if retry_of is not None
-            else request.fork_from_turn
-            if (fork is not None and is_checkpoint_replay)
-            else None
-        ),
-        attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),
-        retry_of_run_id=(
-            str(retry_of["conversation_response_id"])
-            if retry_of is not None
-            else None
-        ),
-        # Durable on the row so the startup sweep can enqueue this run's
-        # terminal hooks (burst release, watch clear) without any in-process
-        # context surviving the crash.
-        run_metadata={
-            "user_id": user_id,
-            "burst_slot_id": request.burst_slot_id,
-            **(extra_run_metadata or {}),
-        },
+        )
+        raise
+    scope.attach_run(handle)
+    return handle
+
+
+async def _start_checks(
+    request: "ChatRequest", conn, *, thread_id: str, run_id: str
+) -> None:
+    if request.request_key:
+        await refuse_copy_read_as_steer(
+            thread_id, request.request_key, conn, except_job_id=request.steer_job_id
+        )
+    if request.steer_job_id:
+        await claim_steer_or_refuse(conn, request.steer_job_id, run_id)
+
+
+async def _settle_after_start(
+    start: asyncio.Task, started: list, run_id: str, **identity: Any
+) -> None:
+    """Settle as stopped the run of a START whose request was cancelled.
+
+    Waits for START itself, since a single read of the ledger can come before
+    its COMMIT and leave the run open to fence the thread until recovery."""
+    from src.server.services.runs.coordinator import RunCoordinator
+
+    try:
+        committed = await start
+    except Exception:
+        committed = started[0] if started else await _committed_start(
+            run_id, **identity
+        )
+    if committed is not None:
+        await RunCoordinator.get_instance().fail_open_run(
+            committed, "client disconnected during START", status="cancelled"
+        )
+
+
+async def _committed_start(
+    run_id: str,
+    *,
+    thread_id: str,
+    workspace_id: Optional[str],
+    user_id: Optional[str],
+    is_byok: bool,
+):
+    """The run a failed START left open on the ledger, if its row committed.
+
+    A commit whose acknowledgement was lost, or was still awaited when the
+    request was cancelled, leaves an in_progress row that the request holding
+    it cannot see from its own state."""
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.services.runs.coordinator import RunHandle
+    from src.server.services.runs.pending_input import read_untaken_input
+
+    try:
+        row = await tl_db.get_run(run_id)
+    except Exception:
+        logger.warning(
+            f"[START] Could not read run={run_id} after its START failed; "
+            "the recovery scanner settles it if it committed",
+            exc_info=True,
+        )
+        return None
+    if row is None or row["status"] != "in_progress":
+        return None
+    return RunHandle(
+        run_id=run_id,
+        thread_id=thread_id,
+        turn_index=row["turn_index"],
+        attempt_no=row["attempt_no"],
+        workspace_id=workspace_id,
+        user_id=user_id,
+        is_byok=is_byok,
+        started_at=row["created_at"],
+        # A disconnect settles this run as stopped, from the stamp START kept.
+        pending_input=read_untaken_input(row),
     )

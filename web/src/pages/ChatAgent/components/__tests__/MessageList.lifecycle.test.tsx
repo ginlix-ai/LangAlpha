@@ -1,24 +1,24 @@
 /**
  * Partition-timing coverage for the live → accordion lifecycle in
- * MessageContentSegments (textOnly mode).
+ * MessageContentSegments.
  *
  * The partition memo in MessageList.tsx decides whether each reasoning /
  * tool-call item renders in the live zone (`active` / `completing` /
  * `failed`) or folds into the accordion (`completed`):
  *
  *  - Stream end overrides the age-based cooldown: when `isStreaming` flips
- *    false, everything folds immediately — no timer advancement required.
+ *    false, everything folds immediately, no timer advancement required.
  *    This also guarantees history/replay items (isStreaming always false)
  *    never enter the live zone.
  *  - While streaming, a just-completed item lingers in the live zone for
  *    the MIN_LIVE_EXPOSURE_MS cooldown, then folds when the internal tick
  *    timer fires.
  *  - Inline-artifact tools with a ready artifact render as compact artifact
- *    blocks — never in the live zone, never in the accordion timeline.
+ *    blocks, never in the live zone, never in the accordion timeline.
  *
  * Driven through the public `MessageContentSegments` export with fake
  * timers. framer-motion is stubbed so AnimatePresence unmounts exiting
- * nodes synchronously — these tests assert partition output, not animation.
+ * nodes synchronously, these tests assert partition output, not animation.
  * All data is neutral placeholder data.
  */
 import React from 'react';
@@ -35,14 +35,14 @@ import { MessageContentSegments } from '../MessageList';
 // stripped), AnimatePresence is a passthrough (exits unmount synchronously),
 // `animate` (used by useAnimatedText) is a no-op. `motion.create` mirrors the
 // real API used by TextShimmer.
-vi.mock('framer-motion', async () => {
+vi.mock('@/lib/framer', async () => {
   const React = await vi.importActual<typeof import('react')>('react');
   const FRAMER_ONLY_PROPS = new Set([
     'initial', 'animate', 'exit', 'transition', 'variants',
     'whileHover', 'whileTap', 'whileInView', 'layout', 'layoutId',
     'onAnimationComplete', 'onAnimationStart',
   ]);
-  // Loosened createElement signature — the stub forwards arbitrary tag names
+  // Loosened createElement signature, the stub forwards arbitrary tag names
   // and components without modeling their prop types.
   const createEl = React.createElement as (type: unknown, props?: unknown, ...children: unknown[]) => React.ReactElement;
   const make = (Comp: React.ElementType | string) =>
@@ -60,6 +60,10 @@ vi.mock('framer-motion', async () => {
     AnimatePresence: ({ children }: { children?: React.ReactNode }) =>
       React.createElement(React.Fragment, null, children),
     animate: () => ({ stop: () => {} }),
+    useMotionValue: (v: number) => ({ get: () => v, set: () => {}, jump: () => {}, getVelocity: () => 0, on: () => () => {} }),
+    useIsPresent: () => true,
+    PresenceContext: React.createContext(null),
+    useReducedMotion: () => false,
   };
 });
 
@@ -93,7 +97,10 @@ vi.mock('../charts/InlineArtifactCards', async () => {
   const InlineStockPriceCard = () => React.createElement('div', { 'data-testid': 'inline-chart' });
   const NullCard = () => null;
   return {
+    chartSymbolOf: () => null,
     INLINE_ARTIFACT_TOOLS: new Set<string>(['fetch_sample_chart']),
+    isInlineArtifactReady: (name: string, artifact: unknown) =>
+      !!artifact && name === 'fetch_sample_chart',
     InlineStockPriceCard,
     InlineCompanyOverviewCard: NullCard,
     InlineMarketIndicesCard: NullCard,
@@ -102,7 +109,7 @@ vi.mock('../charts/InlineArtifactCards', async () => {
     InlineSecFilingCard: NullCard,
     InlineStockScreenerCard: NullCard,
     InlineWebSearchCard: NullCard,
-    // MessageList imports the dispatch map from this module — a ready
+    // MessageList imports the dispatch map from this module, a ready
     // `stock_prices` artifact must resolve to the inline-chart card above.
     INLINE_ARTIFACT_MAP: { stock_prices: InlineStockPriceCard },
   };
@@ -127,12 +134,7 @@ const baseProps = {
   toolCallProcesses: {},
   todoListProcesses: {},
   subagentTasks: {},
-  hasError: false,
-  isAssistant: true,
-  textOnly: true,
 } satisfies Partial<SegmentsProps>;
-
-const SUMMARY_BUTTON_RE = /toolArtifact/i;
 
 function completedToolProc(createdAt: number, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -160,7 +162,7 @@ afterEach(() => {
 // Immediate fold on stream end
 // ---------------------------------------------------------------------------
 
-describe('MessageContentSegments — immediate fold on stream end', () => {
+describe('MessageContentSegments, immediate fold on stream end', () => {
   it('folds completing items into the accordion as soon as isStreaming flips false, with no timer advance', () => {
     const now = Date.now();
     const props: SegmentsProps = {
@@ -180,12 +182,12 @@ describe('MessageContentSegments — immediate fold on stream end', () => {
 
     // Both items just completed → inside the exposure window → live zone.
     expect(view.container.querySelector('.nrow')).not.toBeNull();
-    expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeNull();
 
-    // Stream ends. No timers advanced — the fold must be immediate.
+    // Stream ends. No timers advanced, the fold must be immediate.
     view.rerender(<MessageContentSegments {...props} isStreaming={false} />);
 
-    expect(screen.getByRole('button', { name: SUMMARY_BUTTON_RE })).toBeInTheDocument();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeInTheDocument();
     expect(view.container.querySelector('.nrow')).toBeNull();
   });
 });
@@ -194,7 +196,7 @@ describe('MessageContentSegments — immediate fold on stream end', () => {
 // Always-live tools survive stream end while still in progress
 // ---------------------------------------------------------------------------
 
-describe('MessageContentSegments — always-live in-progress tools', () => {
+describe('MessageContentSegments, always-live in-progress tools', () => {
   it('keeps an in-progress TaskOutput in the live zone after isStreaming flips false (subagent still running)', () => {
     const now = Date.now();
     const props: SegmentsProps = {
@@ -203,7 +205,7 @@ describe('MessageContentSegments — always-live in-progress tools', () => {
       toolCallProcesses: {
         // TaskOutput is in ALWAYS_LIVE_TOOLS. In-progress = the agent is waiting
         // on a background subagent. The main stream may end before the subagent
-        // finishes — the indicator must stay visible, not fold into the accordion.
+        // finishes, the indicator must stay visible, not fold into the accordion.
         'tc-task': {
           toolName: 'TaskOutput',
           toolCall: { args: {} },
@@ -220,14 +222,14 @@ describe('MessageContentSegments — always-live in-progress tools', () => {
 
     // Streaming: live row present, no accordion.
     expect(view.container.querySelector('.nrow')).not.toBeNull();
-    expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeNull();
 
     // Main stream ends but the tool is still in progress (subagent running).
-    // It must STAY in the live zone — not fold into the accordion.
+    // It must STAY in the live zone, not fold into the accordion.
     view.rerender(<MessageContentSegments {...props} isStreaming={false} />);
 
     expect(view.container.querySelector('.nrow')).not.toBeNull();
-    expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeNull();
 
     // When the subagent finishes, the tool completes → it folds to the accordion.
     const completedProps: SegmentsProps = {
@@ -243,7 +245,7 @@ describe('MessageContentSegments — always-live in-progress tools', () => {
     view.rerender(<MessageContentSegments {...completedProps} />);
 
     expect(view.container.querySelector('.nrow')).toBeNull();
-    expect(screen.getByRole('button', { name: SUMMARY_BUTTON_RE })).toBeInTheDocument();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeInTheDocument();
   });
 });
 
@@ -251,9 +253,9 @@ describe('MessageContentSegments — always-live in-progress tools', () => {
 // Cooldown boundary while streaming
 // ---------------------------------------------------------------------------
 
-describe('MessageContentSegments — live-zone cooldown while streaming', () => {
+describe('MessageContentSegments, live-zone cooldown while streaming', () => {
   it('keeps a just-completed item in the live zone through the cooldown, then folds it when the window elapses', () => {
-    // Item completed 1000ms ago — still inside the exposure window. The ages
+    // Item completed 1000ms ago, still inside the exposure window. The ages
     // below track MIN_LIVE_EXPOSURE_MS (currently 1800ms): first advance stays
     // inside the window, second crosses the boundary. Adjust both together if
     // the constant is tuned.
@@ -269,16 +271,16 @@ describe('MessageContentSegments — live-zone cooldown while streaming', () => 
 
     // Inside the window: live row, no accordion.
     expect(view.container.querySelector('.nrow')).not.toBeNull();
-    expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeNull();
 
-    // Still inside the window — nothing folds.
+    // Still inside the window, nothing folds.
     act(() => { vi.advanceTimersByTime(600); });
     expect(view.container.querySelector('.nrow')).not.toBeNull();
-    expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeNull();
 
     // Crossing the boundary fires the tick timer and folds the item.
     act(() => { vi.advanceTimersByTime(1000); });
-    expect(screen.getByRole('button', { name: SUMMARY_BUTTON_RE })).toBeInTheDocument();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeInTheDocument();
     expect(view.container.querySelector('.nrow')).toBeNull();
   });
 });
@@ -287,8 +289,8 @@ describe('MessageContentSegments — live-zone cooldown while streaming', () => 
 // Inline-artifact tools never flash through live zone or accordion
 // ---------------------------------------------------------------------------
 
-describe('MessageContentSegments — inline-artifact tools', () => {
-  it('renders a ready artifact as a compact chart block, never in the live zone or accordion — streaming and after stream end', () => {
+describe('MessageContentSegments, inline-artifact tools', () => {
+  it('renders a ready artifact as a compact chart block, never in the live zone or accordion, streaming and after stream end', () => {
     const now = Date.now();
     const props: SegmentsProps = {
       ...baseProps,
@@ -309,13 +311,13 @@ describe('MessageContentSegments — inline-artifact tools', () => {
 
     expect(screen.getByTestId('inline-chart')).toBeInTheDocument();
     expect(view.container.querySelector('.nrow')).toBeNull();
-    expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeNull();
 
     // Same invariants after the stream ends.
     view.rerender(<MessageContentSegments {...props} isStreaming={false} />);
 
     expect(screen.getByTestId('inline-chart')).toBeInTheDocument();
     expect(view.container.querySelector('.nrow')).toBeNull();
-    expect(screen.queryByRole('button', { name: SUMMARY_BUTTON_RE })).toBeNull();
+    expect(view.container.querySelector('[id^="activity-summary-"]')).toBeNull();
   });
 });

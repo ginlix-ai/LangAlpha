@@ -30,7 +30,7 @@ class SkillContext(AdditionalContextBase):
     """Context requesting skill instructions to be loaded for the agent."""
 
     type: Literal["skills"] = "skills"
-    name: str = Field(..., description="Skill name (e.g., 'user-profile')")
+    name: str = Field(..., description="Skill name (e.g., 'onboarding')")
     instruction: Optional[str] = Field(
         None,
         description="Additional instruction for the skill (e.g., 'Help the user with first time onboarding')"

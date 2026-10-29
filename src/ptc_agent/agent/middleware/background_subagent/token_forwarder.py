@@ -4,26 +4,31 @@ import time
 from typing import Any
 
 import structlog
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage
 
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
+from ptc_agent.agent.middleware.background_subagent.outcomes import Outcome
 from src.llms.content_utils import extract_reasoning_summary_index
 from src.server.utils.content_normalizer import normalize_text_content
 
 logger = structlog.get_logger(__name__)
 
 
-# Custom-mode SSE events we actually want forwarded from a subagent's
-# astream. Anything else (file_operations, todo_operations, show_widget,
-# etc. payloads) is dropped to keep the per-task buffer focused on
-# telemetry and to close protocol-injection vectors against the frontend's
-# subagent SSE handler.
-# ``provenance`` is forwarded so a subagent's data-access records (web/file/
-# MCP sources) reach the main turn; ``forward_custom`` stamps them with the
-# ``task:{task_id}`` agent_id for correct subagent attribution.
+# Custom-mode events forwarded from a subagent's astream as-is, keyed on
+# ``type``. ``provenance`` is forwarded so a subagent's data-access records
+# (web/file/MCP sources) reach the main turn; ``forward_custom`` stamps them
+# with the ``task:{task_id}`` agent_id for correct subagent attribution.
 _ALLOWED_CUSTOM_EVENT_TYPES = frozenset({"context_window", "provenance"})
+
+# Artifacts forwarded from a subagent's astream, keyed on ``artifact_type``,
+# with the payload keys each keeps. A file_operation is a path-only ping: the
+# client only needs which path changed to refresh its file panel and
+# memory/memo views, and the written content would bloat the per-task buffer.
+_FORWARDED_ARTIFACT_PAYLOAD_KEYS = {
+    "file_operation": ("operation", "file_path", "sandbox_path", "error"),
+}
 
 
 class _SubagentTokenForwarder:
@@ -35,9 +40,9 @@ class _SubagentTokenForwarder:
     on transition to text content or message_id change. Without this, the
     frontend's reasoning UI never opens (it gates on the start signal).
 
-    Tool-call/tool-call-result events still come from
-    ``SubagentEventCaptureMiddleware.awrap_*_call`` — those are post-call
-    discrete signals, not stream-able token deltas.
+    Tool-call/tool-call-result events still come from the capture
+    middleware in ``event_capture.py``: those are post-call discrete
+    signals, not stream-able token deltas.
     """
 
     def __init__(
@@ -57,6 +62,9 @@ class _SubagentTokenForwarder:
         # section's prose. Mirrors RunSSEProducer's main-agent path.
         self._reasoning_block_index: int | None = None
         self._reasoning_separator_pending = False
+        # Whitespace-only reasoning deltas seen before the reasoning section
+        # opened, held until visible reasoning follows.
+        self._reasoning_whitespace_held = ""
 
     def _signal_record(self, msg_id: str, content: str) -> dict[str, Any]:
         return {
@@ -109,30 +117,34 @@ class _SubagentTokenForwarder:
     ) -> None:
         # Drop tool-node inner LLM chunks (e.g. WebFetch's extraction model):
         # the tool's user-facing output arrives via the tool_call_result event
-        # written separately by ``SubagentEventCaptureMiddleware`` (see
+        # written separately by ``SubagentToolResultCaptureMiddleware`` (see
         # ``event_capture.py``). Forwarding the inner model's AI chunks would
         # leak the extraction prompt's CoT to the per-task channel.
         #
-        # No isinstance(AIMessageChunk) discriminant here: this forwarder's
-        # input universe is narrower than ``sse_producer``'s. The caller
-        # at ``_arun_subagent_streaming`` only invokes ``forward`` for chunks
-        # streamed via ``stream_mode=["messages"]`` from inside the
-        # subagent's own subgraph — which carries inner-LLM AI chunks but
-        # NOT the ToolMessage returns (those land on the separate
-        # event-capture path). So an unconditional drop on
+        # The caller at ``_arun_subagent_streaming`` only invokes ``forward``
+        # for chunks streamed via ``stream_mode=["messages"]`` from inside the
+        # subagent's own subgraph, whose ToolMessage returns land on the
+        # separate event-capture path. So an unconditional drop on
         # ``langgraph_node == "tools"`` is correct here, where in
         # ``sse_producer`` it would clobber ToolMessage content.
         if metadata is not None and metadata.get("langgraph_node") == "tools":
+            return
+        # Only the subagent's own model output is prose. langchain answers a
+        # malformed tool call from the model node itself, so that error
+        # ToolMessage, and the RemoveMessage rewriting the history around it,
+        # reach this stream tagged ``model``.
+        if not isinstance(message_chunk, AIMessage):
             return
 
         msg_id = message_chunk.id or f"sg-{self.tool_call_id}"
 
         # A new assistant message begins a fresh reasoning stream — drop any
-        # carried-over section index / pending separator so the first chunk of
-        # the new message isn't falsely prefixed with a blank line.
+        # carried-over section index / pending separator / held whitespace so
+        # the first chunk of the new message isn't falsely prefixed.
         if self._last_msg_id is not None and msg_id != self._last_msg_id:
             self._reasoning_block_index = None
             self._reasoning_separator_pending = False
+            self._reasoning_whitespace_held = ""
 
         # Detect reasoning summary_text index transitions (mirror of the main
         # streaming handler): when the OpenAI summary index changes (0→1) a new
@@ -173,6 +185,17 @@ class _SubagentTokenForwarder:
             )
             self._reasoning_active = False
 
+        # Whitespace alone never opens a reasoning section (the client would
+        # render an empty thought), but it is still text: hold it until visible
+        # reasoning follows, and drop it if the reply turns to text instead.
+        if text:
+            held, self._reasoning_whitespace_held = self._reasoning_whitespace_held, ""
+            if content_type == "reasoning":
+                text = held + text
+                if not self._reasoning_active and not text.strip():
+                    self._reasoning_whitespace_held = text
+                    text = None
+
         if text and content_type:
             # Inline reasoning lifecycle — start on first reasoning chunk,
             # complete on transition to text.
@@ -203,33 +226,47 @@ class _SubagentTokenForwarder:
         self._last_msg_id = msg_id
 
     async def forward_custom(self, data: Any) -> None:
-        """Forward a ``custom``-mode event from inside the subagent's astream
-        into the per-task captured-event buffer.
+        """Forward a whitelisted ``custom``-mode event to the per-task buffer.
 
-        Compaction middleware emits ``context_window`` events (token_usage,
-        summarize, offload) via ``get_stream_writer``. Without ``custom`` in
-        the subagent's ``stream_mode``, those would die at the astream
-        boundary. We tag with the stable ``task:{task_id}`` agent_id so the
-        per-task SSE consumer and frontend can route the event.
-
-        Other middleware (file_operations, todo_operations, show_widget) also
-        emits via the same writer with potentially large payloads. We
-        whitelist the event types we actually want to forward to avoid
-        bloating the per-task buffer / Redis stream and to close a protocol
-        injection path — without the whitelist, a custom payload with
-        ``type: "message_chunk"`` would spoof a real subagent SSE event on
-        the frontend.
+        Only the shapes ``_ALLOWED_CUSTOM_EVENT_TYPES`` and
+        ``_FORWARDED_ARTIFACT_PAYLOAD_KEYS`` name pass, each stamped with the
+        stable ``task:{task_id}`` agent_id so the per-task consumer and
+        frontend can route it. Everything else (todo_operations, show_widget
+        and the like) drops: it would bloat the per-task buffer and Redis
+        stream, and a payload with ``type: "message_chunk"`` would spoof a real
+        subagent SSE event on the frontend.
         """
         if not isinstance(data, dict):
             return
-        event_type = data.get("type")
-        if event_type not in _ALLOWED_CUSTOM_EVENT_TYPES:
+        kind = data.get("artifact_type")
+        if isinstance(kind, str) and kind in _FORWARDED_ARTIFACT_PAYLOAD_KEYS:
+            payload = data.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+            event = "artifact"
+            body = {
+                "artifact_type": kind,
+                "artifact_id": data.get("artifact_id"),
+                "agent": self.agent_id,
+                "timestamp": data.get("timestamp"),
+                "status": data.get("status"),
+                "payload": {
+                    k: payload[k]
+                    for k in _FORWARDED_ARTIFACT_PAYLOAD_KEYS[kind]
+                    if k in payload
+                },
+            }
+        elif (event := data.get("type")) in _ALLOWED_CUSTOM_EVENT_TYPES:
+            # Nothing shows a subagent's summary count, so the buffer never
+            # keeps it.
+            if data.get("action") == "summary_progress":
+                return
+            body = {k: v for k, v in data.items() if k != "type"}
+            body["agent"] = self.agent_id
+        else:
             return
-        payload = {k: v for k, v in data.items() if k != "type"}
-        payload["agent"] = self.agent_id
         await self.registry.append_captured_event(
-            self.tool_call_id,
-            {"event": event_type, "data": payload, "ts": time.time()},
+            self.tool_call_id, {"event": event, "data": body, "ts": time.time()}
         )
 
     async def forward_error(self, exc: BaseException) -> None:
@@ -247,7 +284,9 @@ class _SubagentTokenForwarder:
         try:
             await self.registry.append_captured_event(
                 self.tool_call_id,
-                self._error_record(str(exc) or repr(exc), type(exc).__name__),
+                self._error_record(
+                    str(exc) or repr(exc), Outcome.from_exception(exc).error_type
+                ),
             )
         except Exception:
             logger.warning(

@@ -62,17 +62,34 @@ set_llm_null() {
     ' "$CONFIG" > "${CONFIG}.tmp.$$" && mv "${CONFIG}.tmp.$$" "$CONFIG"
 }
 
+# Rename a field under the top-level llm: block in place, unless the new name
+# is already there. set_llm_field only rewrites a line that exists, so a file
+# still on the old name would otherwise never get the new one.
+rename_llm_field() {
+    local old="$1" new="$2"
+    awk -v o="$old" -v n="$new" '
+        FNR == 1 { in_llm=0 }
+        /^llm:/ { in_llm=1 }
+        /^[a-z]/ && !/^llm:/ { in_llm=0 }
+        NR == FNR { if (in_llm && $0 ~ "^  "n":") has_new=1; next }
+        in_llm && !has_new && $0 ~ "^  "o":" { sub("^  "o":", "  "n":") }
+        { print }
+    ' "$CONFIG" "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+}
+
 ensure_llm_block() {
     # If llm is currently "llm: null", expand to a full block so set_llm_field works.
     if grep -q '^llm: null' "$CONFIG" 2>/dev/null; then
         local tmp="${CONFIG}.tmp.$$"
         sed 's/^llm: null$/llm:\
   name: ""\
-  flash: ""\
+  background: ""\
   compaction: ""\
   fetch: ""\
   fallback: []/' "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
     fi
+    # llm.flash is the Background model's old name.
+    rename_llm_field "flash" "background"
 }
 
 set_search_api() {
@@ -201,7 +218,7 @@ fi
 # ---------------------------------------------------------------------------
 header "LLM Provider"
 printf "  How will you access LLM models?\n\n"
-printf "  ${BOLD}1${NC}) OAuth — connect your Claude or ChatGPT subscription in the UI\n"
+printf "  ${BOLD}1${NC}) Subscription or coding plan — connect it in the web UI after starting\n"
 printf "  ${BOLD}2${NC}) API key — choose from available providers\n"
 printf "  ${BOLD}3${NC}) Skip — configure models later in the web UI\n\n"
 info "You can change models later in agent_config.yaml (see models.json for all options)."
@@ -210,31 +227,10 @@ llm=$(prompt_choice "Choice" "1")
 
 case $llm in
     1)
-        ensure_llm_block
-        printf "\n"
-        printf "  Which subscription will you connect?\n"
-        printf "    ${BOLD}a${NC}) Claude (Anthropic)\n"
-        printf "    ${BOLD}b${NC}) ChatGPT (OpenAI Codex)\n"
-        printf "\n"
-        sub=$(prompt_choice "Sub-choice" "a")
-        case $sub in
-            b)
-                set_llm_field "name" "gpt-5.6-sol-oauth"
-                set_llm_field "flash" "gpt-5.6-terra-oauth"
-                # compaction/fetch left blank → inherit the flash model
-                set_llm_field "compaction" ""
-                set_llm_field "fetch" ""
-                success "ChatGPT OAuth — connect your subscription in the UI after starting"
-                ;;
-            *)
-                set_llm_field "name" "claude-opus-4-8-oauth"
-                set_llm_field "flash" "claude-sonnet-5-oauth"
-                # compaction/fetch left blank → inherit the flash model
-                set_llm_field "compaction" ""
-                set_llm_field "fetch" ""
-                success "Claude OAuth — connect your subscription in the UI after starting"
-                ;;
-        esac
+        # The web wizard signs in or takes the plan's key, then picks the models
+        # that connection serves.
+        set_llm_null
+        success "Connect your subscription or coding plan in the setup wizard on first launch."
         ;;
     2)
         ensure_llm_block
@@ -270,8 +266,8 @@ case $llm in
             info "No models found for $_sel_display — edit agent_config.yaml manually."
         elif [ ${#_models[@]} -eq 1 ]; then
             set_llm_field "name" "${_models[0]}"
-            set_llm_field "flash" "${_models[0]}"
-            # compaction/fetch left blank → inherit the flash model
+            set_llm_field "background" "${_models[0]}"
+            # compaction blank → the turn's model; fetch blank → the background model
             set_llm_field "compaction" ""
             set_llm_field "fetch" ""
             success "$_sel_display — ${_models[0]}"
@@ -283,16 +279,16 @@ case $llm in
             printf "\n"
 
             main_idx=$(prompt_choice "Main model" "1")
-            flash_idx=$(prompt_choice "Flash/light model" "${#_models[@]}")
+            background_idx=$(prompt_choice "Background model" "${#_models[@]}")
             main_model="${_models[$((main_idx-1))]}"
-            flash_model="${_models[$((flash_idx-1))]}"
+            background_model="${_models[$((background_idx-1))]}"
 
             set_llm_field "name" "$main_model"
-            set_llm_field "flash" "$flash_model"
-            # compaction/fetch left blank → inherit the flash model
+            set_llm_field "background" "$background_model"
+            # compaction blank → the turn's model; fetch blank → the background model
             set_llm_field "compaction" ""
             set_llm_field "fetch" ""
-            success "$_sel_display — $main_model (main), $flash_model (flash)"
+            success "$_sel_display — $main_model (main), $background_model (background)"
         fi
         printf "\n"
         info "Tip: edit agent_config.yaml to add fallback models, or switch models in the web UI."
@@ -349,6 +345,7 @@ esac
 header "Sandbox (Code Execution)"
 printf "  ${BOLD}1${NC}) Docker — local containers, no signup needed\n"
 printf "  ${BOLD}2${NC}) Daytona — cloud sandboxes with persistent workspaces\n"
+printf "  ${BOLD}3${NC}) E2B: cloud sandboxes that pause when idle and resume in about a second\n"
 printf "\n"
 sandbox=$(prompt_choice "Choice" "1")
 
@@ -376,6 +373,21 @@ case $sandbox in
         set_env "DAYTONA_SECRET_NAMESPACE" "$namespace"
         set_env "SANDBOX_PROVIDER" "daytona"
         success "Daytona configured — namespace: $namespace"
+        ;;
+    3)
+        key=$(prompt_secret "E2B_API_KEY")
+        [ -n "$key" ] && set_env "E2B_API_KEY" "$key"
+        # E2B Secrets are shared by every deployment on one account, so the
+        # namespace gets the same machine + checkout default as Daytona's.
+        namespace_default="langalpha-local-$(printf '%s' "$(hostname)-$REPO_ROOT" | cksum | awk '{print $1}')"
+        while true; do
+            namespace=$(prompt_choice "E2B_SECRET_NAMESPACE" "$namespace_default")
+            printf '%s' "$namespace" | grep -Eq '^[A-Za-z_][A-Za-z0-9_-]{0,62}$' && break
+            printf "  Invalid namespace: must match ^[A-Za-z_][A-Za-z0-9_-]{0,62}\$ (letters/digits/_/-, max 63 chars)\n" >&2
+        done
+        set_env "E2B_SECRET_NAMESPACE" "$namespace"
+        set_env "SANDBOX_PROVIDER" "e2b"
+        success "E2B configured, namespace: $namespace. Templates build on first use, or run 'make e2b-templates' to prebuild them"
         ;;
     *)
         info "Skipping sandbox config."

@@ -14,8 +14,10 @@ import '@testing-library/jest-dom';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/test/utils';
 
-vi.mock('framer-motion', async () => {
+vi.mock('@/lib/framer', async () => {
   const ReactActual = await vi.importActual<typeof import('react')>('react');
+  // The real curve: the transcript's scroll engine lands on it.
+  const { cubicBezier } = await vi.importActual<typeof import('@/lib/framer')>('@/lib/framer');
   const FRAMER_ONLY_PROPS = new Set([
     'initial', 'animate', 'exit', 'transition', 'variants',
     'whileHover', 'whileTap', 'whileInView', 'layout', 'layoutId',
@@ -50,11 +52,13 @@ vi.mock('framer-motion', async () => {
     useMotionValue: (v: unknown) => ({ get: () => v, set: () => {}, on: () => () => {}, onChange: () => () => {} }),
     useTransform: () => ({ get: () => 0, set: () => {}, on: () => () => {} }),
     useSpring: (v: unknown) => ({ get: () => v, set: () => {}, on: () => () => {} }),
+    useReducedMotion: () => false,
+    cubicBezier,
   };
 });
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en-US', resolvedLanguage: 'en-US' } }),
 }));
 
 vi.mock('@/lib/supabase', () => ({ supabase: null }));
@@ -89,11 +93,14 @@ vi.mock('../../hooks/useChatMessages', async (importOriginal) => ({
     isLoading: false,
     hasActiveSubagents: true,
     awaitingReportBack: false,
+    reportBackOwed: false,
     workspaceStarting: false,
+    turnHeld: null,
     isCompacting: false,
     setIsCompacting: vi.fn(),
     queuedSend: null,
     isLoadingHistory: false,
+    olderHistory: { status: 'end', load: vi.fn() },
     isReconnecting: false,
     modelStatus: null,
     fallbackSuggestion: null,
@@ -105,7 +112,6 @@ vi.mock('../../hooks/useChatMessages', async (importOriginal) => ({
     stopWorkflow: vi.fn(),
     stopCompaction: vi.fn(),
     pendingInterrupt: null,
-    pendingRejection: null,
     handleApproveInterrupt: vi.fn(),
     handleRejectInterrupt: vi.fn(),
     handleAnswerQuestion: vi.fn(),
@@ -121,7 +127,6 @@ vi.mock('../../hooks/useChatMessages', async (importOriginal) => ({
     tokenUsage: null,
     threadId: THREAD_ID,
     threadModels: [],
-    lastThreadModel: null,
     marketWatch: null,
     isShared: false,
     insertNotification: vi.fn(),
@@ -131,8 +136,10 @@ vi.mock('../../hooks/useChatMessages', async (importOriginal) => ({
     handleThumbUp: vi.fn(),
     handleThumbDown: vi.fn(),
     getFeedbackForMessage: vi.fn().mockReturnValue(null),
-    reconnectIfStaleRun: vi.fn().mockResolvedValue(undefined),
+    reconnectIfStaleRun: vi.fn<() => Promise<boolean>>().mockResolvedValue(true),
+    isOwnRun: () => false,
     getSubagentHistory: vi.fn().mockReturnValue(null),
+    subagentHistoryEntries: {},
     resolveSubagentIdToAgentId: vi.fn((id: string) => id),
     hydrateTaskTranscript: vi.fn().mockResolvedValue(false),
   }),

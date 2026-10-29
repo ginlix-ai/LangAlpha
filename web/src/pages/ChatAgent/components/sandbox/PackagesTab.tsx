@@ -64,7 +64,7 @@ export function PackagesTab({ workspaceId, packages, defaultPackages, onInstalle
           value={pkgSearch}
           onChange={e => setPkgSearch(e.target.value)}
           placeholder="Filter packages..."
-          className="w-full pl-9 pr-3 py-2 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
+          className="w-full pl-9 pr-3 py-2 text-sm rounded-md bg-transparent"
           style={{
             color: 'var(--color-text-primary)',
             border: '1px solid var(--color-border-muted)',
@@ -124,7 +124,7 @@ export function PackagesTab({ workspaceId, packages, defaultPackages, onInstalle
             onChange={e => setInstallInput(e.target.value)}
             placeholder="Package names (e.g. torch transformers>=4.0)"
             onKeyDown={e => e.key === 'Enter' && !installing && handleInstall()}
-            className="flex-1 px-3 py-2 text-sm rounded-md bg-transparent outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent-primary)]"
+            className="flex-1 px-3 py-2 text-sm rounded-md bg-transparent"
             style={{
               color: 'var(--color-text-primary)',
               border: '1px solid var(--color-border-muted)',

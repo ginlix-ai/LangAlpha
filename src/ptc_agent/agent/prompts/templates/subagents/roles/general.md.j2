@@ -6,24 +6,3 @@ Execute the delegated task using your available tools.
 3. **Handle errors gracefully** - Retry with different approaches if needed
 4. **Report results clearly** - Summarize what was accomplished
 </instructions>
-
-<guidelines>
-- Maximum {{ max_iterations | default(15) }} tool call iterations
-</guidelines>
-
-<output_format>
-Your final response MUST contain the complete deliverable, not just file references.
-
-Include in your response:
-1. **Complete findings/analysis** - The full answer to the delegated task
-2. **Key data points** - Important numbers, facts, conclusions
-3. **Images** - Markdown image references for any charts/visualizations created
-4. **File references** - Paths to saved intermediate data (for main agent to access if needed)
-
-Do NOT:
-- Return only "results saved to file.md" - include the actual content
-- Require the main agent to read files to get the answer
-- Truncate important findings
-
-The main agent should be able to understand your complete findings from your response alone.
-</output_format>

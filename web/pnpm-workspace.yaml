@@ -1,0 +1,15 @@
+overrides:
+  minimatch: ^10.2.1
+  dompurify: ^3.3.2
+  # rehype-katex 7.0.1 declares katex ^0.16, and 0.18 prefixes KaTeX's internal
+  # classes, so the renderer has to be the version the stylesheet was built for.
+  # Drop this once rehype-katex accepts ^0.18.
+  katex: ^0.18.9
+
+patchedDependencies:
+  exceljs@4.4.0: patches/exceljs@4.4.0.patch
+
+allowBuilds:
+  core-js: false
+  es5-ext: false
+  esbuild: true

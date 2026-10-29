@@ -53,6 +53,17 @@ describe('useSetupGate', () => {
     expect(result.current.needsSetup).toBe(false);
   });
 
+  it('lets a self-hosted user through when the deployment key runs the default model', () => {
+    mockUseUser.mockReturnValue({
+      user: { user_id: 'u-oss', email: 'o@s.s', has_api_key: false, has_oauth_token: false, access_tier: -1, deployment_serves: true },
+      isLoading: false,
+    });
+
+    const { result } = renderHookWithProviders(() => useSetupGate());
+
+    expect(result.current.needsSetup).toBe(false);
+  });
+
   it('returns needsSetup=true when user has none of the three', () => {
     mockUseUser.mockReturnValue({
       user: { user_id: 'u-3', email: 'c@d.com', has_api_key: false, has_oauth_token: false, access_tier: -1 },

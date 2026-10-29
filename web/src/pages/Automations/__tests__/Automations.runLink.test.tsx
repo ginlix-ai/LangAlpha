@@ -1,0 +1,229 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useLocation } from 'react-router';
+import i18n from '@/i18n';
+import { renderWithProviders } from '@/test/utils';
+import type { Automation, AutomationExecution, AutomationRun } from '@/types/automation';
+import * as api from '../utils/api';
+import Automations from '../Automations';
+
+vi.mock('@/hooks/useHomeTimezone', () => ({ useHomeTimezone: () => 'America/New_York' }));
+vi.mock('@/hooks/useWorkspaces', () => ({ useWorkspaces: () => ({ data: { workspaces: [] } }) }));
+
+vi.mock('../utils/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/api')>()),
+  listAutomations: vi.fn(),
+  listExecutions: vi.fn(),
+  listRecentRuns: vi.fn(),
+  dismissRun: vi.fn(),
+}));
+
+afterEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
+});
+
+function execution(id: string, day: number, excerpt: string): AutomationExecution {
+  const at = `2026-09-${day}T13:00:00Z`;
+  return {
+    automation_execution_id: id,
+    automation_id: 'auto-1',
+    status: 'completed',
+    conversation_thread_id: null,
+    scheduled_at: at,
+    started_at: at,
+    completed_at: `2026-09-${day}T13:02:00Z`,
+    error_message: null,
+    skip_reason: null,
+    failure_reason: null,
+    delivery_result: null,
+    created_at: at,
+    excerpt,
+    dismissed_at: null,
+  };
+}
+
+const NEWEST = execution('exec-new', 25, 'Stocks rose on the jobs report.');
+const OLDER = execution('exec-old', 24, 'Stocks fell on rate worries.');
+
+const AUTOMATION: Automation = {
+  automation_id: 'auto-1',
+  user_id: 'user-1',
+  name: 'Morning briefing',
+  description: null,
+  trigger_type: 'cron',
+  cron_expression: '0 9 * * 1-5',
+  timezone: 'America/New_York',
+  trigger_config: null,
+  next_run_at: '2026-09-26T13:00:00Z',
+  last_run_at: NEWEST.completed_at,
+  instruction: 'Summarize the market.',
+  workspace_id: 'ws-1',
+  llm_model: null,
+  thread_strategy: 'new',
+  conversation_thread_id: null,
+  status: 'active',
+  max_failures: 3,
+  failure_count: 0,
+  delivery_config: null,
+  created_at: '2026-09-01T00:00:00Z',
+  updated_at: '2026-09-01T00:00:00Z',
+  last_execution: NEWEST,
+};
+
+const asFeed = (e: AutomationExecution): AutomationRun => ({
+  ...e,
+  automation_name: AUTOMATION.name,
+  trigger_type: 'cron',
+  workspace_id: 'ws-1',
+});
+
+function serve(newest = NEWEST) {
+  const automation = { ...AUTOMATION, last_execution: newest };
+  vi.mocked(api.listAutomations).mockResolvedValue({ data: { automations: [automation], total: 1, has_more: false } } as never);
+  vi.mocked(api.listExecutions).mockResolvedValue({ data: { executions: [newest, OLDER], total: 2, has_more: false } } as never);
+  vi.mocked(api.listRecentRuns).mockResolvedValue({ data: { executions: [newest, OLDER].map(asFeed), total: 2, has_more: false } } as never);
+}
+
+let search = '';
+function Location() {
+  search = useLocation().search;
+  return null;
+}
+
+function renderAt(route: string, newest?: AutomationExecution) {
+  serve(newest);
+  renderWithProviders(
+    <>
+      <Automations />
+      <Location />
+    </>,
+    { route },
+  );
+}
+
+const params = () => Object.fromEntries(new URLSearchParams(search));
+const label = (key: string) => i18n.t(key);
+
+describe('a link to one run', () => {
+  it('reports that run in its automation', async () => {
+    renderAt('/automations?id=auto-1&run=exec-old');
+
+    expect(await screen.findByText(OLDER.excerpt!)).toBeInTheDocument();
+    expect(screen.getByText(label('automation.selectedRun'))).toBeInTheDocument();
+    expect(screen.queryByText(NEWEST.excerpt!)).not.toBeInTheDocument();
+  });
+
+  it('finds the automation of a newest run from the run alone', async () => {
+    renderAt('/automations?run=exec-new');
+
+    expect(await screen.findByText(NEWEST.excerpt!)).toBeInTheDocument();
+    expect(screen.getByText(label('automation.latestRun'))).toBeInTheDocument();
+  });
+
+  it('shows the newest, and says so, for a run past the history', async () => {
+    renderAt('/automations?id=auto-1&run=exec-gone');
+
+    expect(await screen.findByText(label('automation.runNotFound'))).toBeInTheDocument();
+    expect(screen.getByText(NEWEST.excerpt!)).toBeInTheDocument();
+  });
+
+  it('says a run it cannot place is not in the list', async () => {
+    renderAt('/automations?run=exec-unknown');
+
+    expect(await screen.findByText(label('automation.runLinkNotFound'))).toBeInTheDocument();
+  });
+
+  it('puts a run opened from the history into the link', async () => {
+    renderAt('/automations?id=auto-1');
+    const table = await screen.findByRole('table');
+    // The newest is what the report shows, so it is the current one.
+    await within(table).findByRole('button', { current: true });
+    const [older] = within(table).getAllByRole('button', { current: false });
+
+    fireEvent.click(older);
+
+    await waitFor(() => expect(params()).toMatchObject({ view: 'manage', id: 'auto-1', run: 'exec-old' }));
+    expect(await screen.findByText(OLDER.excerpt!)).toBeInTheDocument();
+  });
+
+  it('offers Dismiss only while the failed run it dismisses is the one shown', async () => {
+    const failed: AutomationExecution = { ...NEWEST, status: 'failed', error_message: 'The model call failed.', excerpt: null };
+    renderAt('/automations?id=auto-1', failed);
+    const inspector = (await screen.findByRole('heading', { level: 2, name: AUTOMATION.name })).closest('article')!;
+    const dismiss = () => within(inspector).queryByRole('button', { name: label('automation.dismiss') });
+    await waitFor(() => expect(dismiss()).toBeInTheDocument());
+
+    const table = await within(inspector).findByRole('table');
+    const [older] = within(table).getAllByRole('button', { current: false });
+    fireEvent.click(older);
+
+    expect(await within(inspector).findByText(OLDER.excerpt!)).toBeInTheDocument();
+    expect(dismiss()).not.toBeInTheDocument();
+  });
+
+  it('opens a feed entry on its own run', async () => {
+    renderAt('/automations?view=feed');
+    const entry = (await screen.findByText(OLDER.excerpt!)).closest('article')!;
+
+    fireEvent.click(within(entry).getByRole('button', { name: AUTOMATION.name }));
+
+    await waitFor(() => expect(params()).toMatchObject({ view: 'manage', id: 'auto-1', run: 'exec-old' }));
+    expect(await screen.findByText(label('automation.selectedRun'))).toBeInTheDocument();
+  });
+});
+
+describe('the automation standing in with no choice made', () => {
+  // Two automations needing attention, the newer failure first; dismissing
+  // it answers with the list as the server then holds it.
+  function twoFailures() {
+    const failed = (a: Automation, id: string, day: number): Automation => ({
+      ...a,
+      last_execution: { ...execution(id, day, ''), automation_id: a.automation_id, status: 'failed', error_message: 'The model call failed.', excerpt: null },
+    });
+    const morning = failed(AUTOMATION, 'exec-a', 25);
+    const closing = failed({ ...AUTOMATION, automation_id: 'auto-2', name: 'Closing summary' }, 'exec-b', 24);
+    const listed = (...automations: Automation[]) => ({ data: { automations, total: automations.length, has_more: false } }) as never;
+    const noRuns = { data: { executions: [], total: 0, has_more: false } } as never;
+    vi.mocked(api.listAutomations).mockResolvedValue(listed(morning, closing));
+    vi.mocked(api.listExecutions).mockResolvedValue(noRuns);
+    vi.mocked(api.listRecentRuns).mockResolvedValue(noRuns);
+    vi.mocked(api.dismissRun).mockImplementation(async () => {
+      const dismissed = { ...morning, last_execution: { ...morning.last_execution!, dismissed_at: '2026-09-26T12:00:00Z' } };
+      vi.mocked(api.listAutomations).mockResolvedValue(listed(dismissed, closing));
+      return { data: dismissed } as never;
+    });
+    return { morning, closing };
+  }
+
+  it('stays in the pane when dismissing its failure moves it to another group', async () => {
+    const { morning, closing } = twoFailures();
+    renderWithProviders(<Automations />, { route: '/automations?view=manage' });
+
+    // Both need attention, and the newer failure is first.
+    const inspector = (await screen.findByRole('heading', { level: 2, name: morning.name })).closest('article')!;
+    const dismiss = () => within(inspector).queryByRole('button', { name: label('automation.dismiss') });
+    fireEvent.click(await waitFor(() => dismiss()!));
+
+    // Out of Needs attention the other one is first, and the pane stays put
+    // rather than hand its Dismiss to the pointer that just clicked.
+    await waitFor(() => expect(dismiss()).not.toBeInTheDocument());
+    expect(api.dismissRun).toHaveBeenCalledWith('auto-1', 'exec-a');
+    expect(inspector).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 2, name: closing.name })).not.toBeInTheDocument();
+  });
+
+  it('is the first row when the pane opens, not the one first on the page\'s load', async () => {
+    const { morning, closing } = twoFailures();
+    renderWithProviders(<Automations />, { route: '/automations?view=feed' });
+
+    // Set the first failure aside from the feed, then open the pane.
+    fireEvent.click((await screen.findAllByRole('button', { name: label('automation.dismiss') }))[0]);
+    await waitFor(() => expect(api.dismissRun).toHaveBeenCalledWith('auto-1', 'exec-a'));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: label('automation.dismiss') })).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: label('automation.viewManage') }));
+
+    expect(await screen.findByRole('heading', { level: 2, name: closing.name })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 2, name: morning.name })).not.toBeInTheDocument();
+  });
+});

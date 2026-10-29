@@ -8,10 +8,12 @@ Covers:
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+
+from src.server.utils.checkpoint_helpers import FORK_ROOT_CHECKPOINT_ID
 
 
 # ---------------------------------------------------------------------------
@@ -24,18 +26,75 @@ def _make_cp_tuple(
     parent_checkpoint_id: str | None = None,
     source: str = "loop",
     pending_writes: list | None = None,
+    turn_index: int | None = None,
 ):
-    """Build a minimal checkpoint tuple matching the structure used by LangGraph."""
+    """Build a minimal checkpoint tuple matching the structure used by LangGraph.
+
+    ``turn_index`` is the stamp a run's config metadata leaves on every
+    checkpoint it writes.
+    """
     config = {"configurable": {"checkpoint_id": checkpoint_id}}
     parent_config = None
     if parent_checkpoint_id:
         parent_config = {"configurable": {"checkpoint_id": parent_checkpoint_id}}
+    metadata = {"source": source}
+    if turn_index is not None:
+        metadata["turn_index"] = turn_index
     return SimpleNamespace(
         config=config,
         parent_config=parent_config,
-        metadata={"source": source},
+        metadata=metadata,
         pending_writes=pending_writes or [],
     )
+
+
+@pytest.fixture(autouse=True)
+def persisted_turns():
+    """The thread's persisted turn_indexes; contiguous unless a test says not."""
+    with patch(
+        "src.server.handlers.checkpoint_handler.queries_db.get_query_turn_indexes",
+        new=AsyncMock(return_value=list(range(10))),
+    ) as read:
+        yield read
+
+
+def _checkpointer(*newest_first):
+    checkpointer = AsyncMock()
+
+    async def alist(config):
+        for cp in newest_first:
+            yield cp
+
+    checkpointer.alist = alist
+    return checkpointer
+
+
+async def _turns(checkpointer):
+    from src.server.handlers.checkpoint_handler import get_thread_turns
+
+    with patch(
+        "src.server.handlers.checkpoint_handler.get_checkpointer",
+        return_value=checkpointer,
+    ):
+        return await get_thread_turns("t1")
+
+
+# A thread whose turn 1 ran and failed before its first checkpoint: turns 0, 2
+# and 3 have boundaries, and turn 2 is interrupted and answered by turn 3.
+_DEAD_TURN_THEN_RESUME = (
+    _make_cp_tuple("cp-6", "cp-5", source="loop", turn_index=3),
+    _make_cp_tuple(
+        "cp-5",
+        "cp-4",
+        source="loop",
+        turn_index=2,
+        pending_writes=[("task-1", "__resume__", {"decisions": [{"type": "approve"}]})],
+    ),
+    _make_cp_tuple("cp-4", "cp-3", source="input", turn_index=2),
+    _make_cp_tuple("cp-3", "cp-2", source="loop", turn_index=0),
+    _make_cp_tuple("cp-2", "cp-1", source="loop", turn_index=0),
+    _make_cp_tuple("cp-1", source="input", turn_index=0),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +106,8 @@ class TestGetThreadTurns:
     """Tests for get_thread_turns."""
 
     @pytest.mark.asyncio
-    async def test_empty_checkpoints_returns_empty_response(self):
+    async def test_empty_checkpoints_returns_empty_response(self, persisted_turns):
+        persisted_turns.return_value = []
         mock_checkpointer = AsyncMock()
 
         async def empty_alist(config):
@@ -75,8 +135,9 @@ class TestGetThreadTurns:
         assert result.retry_checkpoint_id is None
 
     @pytest.mark.asyncio
-    async def test_single_input_turn(self):
+    async def test_single_input_turn(self, persisted_turns):
         """One source=input checkpoint should produce one turn."""
+        persisted_turns.return_value = [0]
         cp1 = _make_cp_tuple("cp-1", source="input")  # Turn 0
 
         mock_checkpointer = AsyncMock()
@@ -103,11 +164,15 @@ class TestGetThreadTurns:
         assert len(result.turns) == 1
         assert result.turns[0].turn_index == 0
         assert result.turns[0].regenerate_checkpoint_id == "cp-1"
+        # The first input builds on no saved checkpoint; an edit of it forks
+        # from the empty root, which the route writes before START.
+        assert result.turns[0].edit_checkpoint_id == FORK_ROOT_CHECKPOINT_ID
         assert result.retry_checkpoint_id == "cp-1"
 
     @pytest.mark.asyncio
-    async def test_multiple_turns_with_loop_checkpoints(self):
+    async def test_multiple_turns_with_loop_checkpoints(self, persisted_turns):
         """Two input checkpoints with loop checkpoints in between."""
+        persisted_turns.return_value = [0, 1]
         # Newest first (as alist returns)
         cp4 = _make_cp_tuple("cp-4", parent_checkpoint_id="cp-3", source="loop")
         cp3 = _make_cp_tuple("cp-3", parent_checkpoint_id="cp-2", source="input")
@@ -146,8 +211,9 @@ class TestGetThreadTurns:
         assert result.retry_checkpoint_id == "cp-4"
 
     @pytest.mark.asyncio
-    async def test_hitl_resume_detected_as_turn(self):
+    async def test_hitl_resume_detected_as_turn(self, persisted_turns):
         """A checkpoint with __resume__ in pending_writes is treated as a turn boundary."""
+        persisted_turns.return_value = [0, 1]
         cp2 = _make_cp_tuple(
             "cp-2",
             parent_checkpoint_id="cp-1",
@@ -244,6 +310,250 @@ class TestGetThreadTurns:
         assert result.retry_checkpoint_id == "cp-2"
 
 
+class TestResumeRegenerate:
+    """A resume turn regenerates from where its answer was applied. At the
+    boundary itself langgraph drops the answer and asks again, while the
+    turn's answer row stays and keeps the old card answered."""
+
+    _RESUME = [("task-1", "__resume__", {"decisions": [{"type": "approve"}]})]
+
+    @pytest.mark.asyncio
+    async def test_an_answered_resume_regenerates_after_its_answered_step(
+        self, persisted_turns
+    ):
+        persisted_turns.return_value = [0, 1]
+        result = await _turns(
+            _checkpointer(
+                _make_cp_tuple("cp-4", "cp-3", source="loop"),
+                _make_cp_tuple("cp-3", "cp-2", source="loop", pending_writes=self._RESUME),
+                _make_cp_tuple("cp-2", "cp-1", source="loop"),
+                _make_cp_tuple("cp-1", source="input"),
+            )
+        )
+
+        assert [(t.turn_index, t.regenerate_checkpoint_id) for t in result.turns] == [
+            (0, "cp-1"),
+            (1, "cp-4"),
+        ]
+        assert result.turns[1].edit_checkpoint_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_resume_whose_step_never_finished_regenerates_at_its_boundary(
+        self,
+    ):
+        """A stop's flush or a new message after the answer: no checkpoint
+        holds the answered step, so there is nowhere past the boundary."""
+        for after in ("update", "input"):
+            result = await _turns(
+                _checkpointer(
+                    _make_cp_tuple("cp-3", "cp-2", source=after),
+                    _make_cp_tuple(
+                        "cp-2", "cp-1", source="loop", pending_writes=self._RESUME
+                    ),
+                    _make_cp_tuple("cp-1", source="input"),
+                )
+            )
+
+            assert result.turns[1].regenerate_checkpoint_id == "cp-2", after
+
+    @pytest.mark.asyncio
+    async def test_an_answered_step_that_asked_again_regenerates_at_its_boundary(
+        self, persisted_turns
+    ):
+        """cp-3 finished turn 1's answered step and holds turn 2's answer. A
+        fork there would delete turn 2 and leave its answer on cp-3, read
+        later as a turn nothing stored, so turn 1 keeps its boundary."""
+        persisted_turns.return_value = [0, 1, 2]
+        result = await _turns(
+            _checkpointer(
+                _make_cp_tuple("cp-4", "cp-3", source="loop"),
+                _make_cp_tuple("cp-3", "cp-2", source="loop", pending_writes=self._RESUME),
+                _make_cp_tuple("cp-2", "cp-1", source="loop", pending_writes=self._RESUME),
+                _make_cp_tuple("cp-1", source="input"),
+            )
+        )
+
+        assert [(t.turn_index, t.regenerate_checkpoint_id) for t in result.turns] == [
+            (0, "cp-1"),
+            (1, "cp-2"),
+            (2, "cp-4"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_message_turn_regenerates_at_its_message_even_when_answered(
+        self, persisted_turns
+    ):
+        """An interrupt on the message's own checkpoint (a pause before the
+        first model call) answers inside the message's turn."""
+        persisted_turns.return_value = [0]
+        result = await _turns(
+            _checkpointer(
+                _make_cp_tuple("cp-2", "cp-1", source="loop"),
+                _make_cp_tuple("cp-1", source="input", pending_writes=self._RESUME),
+            )
+        )
+
+        assert [t.regenerate_checkpoint_id for t in result.turns] == ["cp-1"]
+
+
+class TestTurnNumbers:
+    """``turn_index`` is the turn's persisted number, which the client matches
+    against the turn its bubble replayed under."""
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_no_checkpoint_keeps_its_number(self, persisted_turns):
+        persisted_turns.return_value = [0, 1, 2, 3]
+
+        result = await _turns(_checkpointer(*_DEAD_TURN_THEN_RESUME))
+
+        assert [(t.turn_index, t.regenerate_checkpoint_id) for t in result.turns] == [
+            (0, "cp-1"),
+            (2, "cp-4"),
+            (3, "cp-6"),
+        ]
+        assert result.turns[1].edit_checkpoint_id == "cp-3"
+        assert result.turns[2].edit_checkpoint_id is None
+
+    @pytest.mark.asyncio
+    async def test_unstamped_turns_take_the_persisted_turns_in_order(
+        self, persisted_turns
+    ):
+        """Threads from before the stamp: each boundary names the next
+        persisted turn, and one with none left to name is not offered."""
+        persisted_turns.return_value = [0, 1]
+        cp3 = _make_cp_tuple("cp-3", "cp-2", source="input")
+        cp2 = _make_cp_tuple("cp-2", "cp-1", source="input")
+        cp1 = _make_cp_tuple("cp-1", source="input")
+
+        result = await _turns(_checkpointer(cp3, cp2, cp1))
+
+        assert [(t.turn_index, t.regenerate_checkpoint_id) for t in result.turns] == [
+            (0, "cp-1"),
+            (1, "cp-2"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_turns_that_never_checkpointed_fork_from_the_empty_root(
+        self, persisted_turns
+    ):
+        """A first message whose run failed before its first step: nothing
+        on any branch, so its edit and regenerate start from the empty
+        state."""
+        persisted_turns.return_value = [0]
+
+        result = await _turns(_checkpointer())
+
+        assert [
+            (t.turn_index, t.edit_checkpoint_id, t.regenerate_checkpoint_id)
+            for t in result.turns
+        ] == [(0, FORK_ROOT_CHECKPOINT_ID, FORK_ROOT_CHECKPOINT_ID)]
+
+    @pytest.mark.asyncio
+    async def test_turns_past_the_root_alone_fork_from_it(self, persisted_turns):
+        """A failed first-message edit pinned the root, which is the whole
+        branch."""
+        persisted_turns.return_value = [0]
+        root = _make_cp_tuple(FORK_ROOT_CHECKPOINT_ID, source="fork")
+
+        result = await _turns(_checkpointer(root))
+
+        assert [
+            (t.turn_index, t.edit_checkpoint_id, t.regenerate_checkpoint_id)
+            for t in result.turns
+        ] == [(0, FORK_ROOT_CHECKPOINT_ID, FORK_ROOT_CHECKPOINT_ID)]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_row_read_fails_the_listing(self, persisted_turns):
+        persisted_turns.side_effect = RuntimeError("db down")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _turns(_checkpointer(*_DEAD_TURN_THEN_RESUME))
+        assert exc_info.value.status_code == 500
+
+
+class TestResolveForkTurn:
+    """The turn a fork replaces comes from the checkpoint it forks at."""
+
+    async def _point(self, checkpoint_id, *, regenerate, requested=None):
+        from src.server.database.conversation.threads_read import ThreadBranchRead
+        from src.server.handlers.checkpoint_handler import resolve_fork_turn
+
+        with (
+            patch(
+                "src.server.handlers.checkpoint_handler.get_checkpointer",
+                return_value=_checkpointer(*_DEAD_TURN_THEN_RESUME),
+            ),
+            patch(
+                "src.server.handlers.checkpoint_handler.threads_read.get_thread_branch_read",
+                new=AsyncMock(return_value=ThreadBranchRead("cp-6", 9)),
+            ),
+        ):
+            return await resolve_fork_turn(
+                "t1", checkpoint_id, regenerate=regenerate, requested=requested
+            )
+
+    async def _resolve(self, checkpoint_id, *, regenerate, requested=None):
+        point = await self._point(
+            checkpoint_id, regenerate=regenerate, requested=requested
+        )
+        return point.turn_index
+
+    @pytest.mark.asyncio
+    async def test_the_turn_travels_with_the_tip_it_was_read_off(self, persisted_turns):
+        """START holds the fork to this tip and the run horizon read with it,
+        so the tip must be the one the branch walk started from."""
+        persisted_turns.return_value = [0, 1, 2, 3]
+
+        point = await self._point("cp-3", regenerate=False)
+
+        assert (point.branch_tip, point.run_horizon) == ("cp-6", 9)
+
+    @pytest.mark.asyncio
+    async def test_an_edit_replaces_the_turn_after_its_checkpoint(self, persisted_turns):
+        persisted_turns.return_value = [0, 1, 2, 3]
+
+        assert await self._resolve("cp-3", regenerate=False) == 2
+
+    @pytest.mark.asyncio
+    async def test_an_edit_may_name_a_failed_turn_before_the_forked_one(
+        self, persisted_turns
+    ):
+        """Turn 1 never checkpointed, so editing its message forks where
+        turn 2 forks; the client's number decides between the two, and any
+        number that would delete kept turn 0 or keep turn 2 does not."""
+        persisted_turns.return_value = [0, 1, 2, 3]
+
+        assert await self._resolve("cp-3", regenerate=False, requested=1) == 1
+        assert await self._resolve("cp-3", regenerate=False, requested=0) == 2
+        assert await self._resolve("cp-3", regenerate=False, requested=3) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_regenerate_replaces_the_turn_at_its_checkpoint(
+        self, persisted_turns
+    ):
+        persisted_turns.return_value = [0, 1, 2, 3]
+
+        assert await self._resolve("cp-4", regenerate=True) == 2
+        assert await self._resolve("cp-6", regenerate=True) == 3
+        # A regenerate keeps its turn's question, so no other turn will do.
+        assert await self._resolve("cp-4", regenerate=True, requested=1) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_checkpoint_that_forks_no_turn_is_refused(self, persisted_turns):
+        persisted_turns.return_value = [0, 1, 2, 3]
+
+        for checkpoint_id, regenerate in (
+            ("cp-4", False),  # a boundary is no edit point
+            ("cp-3", True),  # an edit point is no boundary
+            ("cp-5", True),  # an answered resume reruns past its boundary
+            ("cp-off-branch", False),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await self._resolve(checkpoint_id, regenerate=regenerate)
+            assert exc_info.value.status_code == 409
+            assert exc_info.value.detail["code"] == "stale_fork"
+
+
 # ---------------------------------------------------------------------------
 # get_retry_checkpoint
 # ---------------------------------------------------------------------------
@@ -312,6 +622,11 @@ class TestGetRetryCheckpoint:
                 "src.server.handlers.checkpoint_handler.build_checkpoint_config",
                 return_value={"configurable": {"thread_id": "t1"}},
             ),
+            # The branch ends at the newest checkpoint.
+            patch(
+                "src.server.handlers.checkpoint_handler.turn_base_checkpoint_id",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             from src.server.handlers.checkpoint_handler import get_retry_checkpoint
 
@@ -332,6 +647,11 @@ class TestGetRetryCheckpoint:
             patch(
                 "src.server.handlers.checkpoint_handler.build_checkpoint_config",
                 return_value={"configurable": {"thread_id": "t1"}},
+            ),
+            # The branch ends at the newest checkpoint.
+            patch(
+                "src.server.handlers.checkpoint_handler.turn_base_checkpoint_id",
+                new=AsyncMock(return_value=None),
             ),
         ):
             from src.server.handlers.checkpoint_handler import get_retry_checkpoint

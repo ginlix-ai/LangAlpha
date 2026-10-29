@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLatestRef } from '@/hooks/useLatestRef';
 import { getCompletedRowTitle } from '../toolDisplayConfig';
+import type { MessageRecord } from './types';
 
 /** Screen-reader announcer for tool-call completions (carved out of ChatView,
- * 5.9c). Returns the string for ChatView's polite aria-live region. */
-export function useToolCallAnnouncer(messages: unknown[]): string {
+ * 5.9c). Returns the string for ChatView's polite aria-live region. `root` is
+ * the computer's, which a path-aware title reads its paths under. */
+export function useToolCallAnnouncer(messages: readonly MessageRecord[], root?: string | null): string {
   const { t } = useTranslation();
 
   // --- Aria-live announcement for screen readers ---
@@ -20,11 +23,11 @@ export function useToolCallAnnouncer(messages: unknown[]): string {
 
   // Drain the announcement queue one item at a time. Each announcement is
   // displayed for 1500ms, followed by ~80ms of silence before the next so
-  // screen readers treat each as a fresh utterance. Stable identity (no
-  // deps) — uses tRef for fresh translations.
-  const tRef = useRef(t);
-  tRef.current = t;
-  const pumpAnnouncements = useCallback(() => {
+  // screen readers treat each as a fresh utterance. Stable identity: it reads
+  // tRef for fresh translations, and is named so the timer can re-arm it
+  // without reading the const it is being assigned to.
+  const tRef = useLatestRef(t);
+  const pumpAnnouncements = useCallback(function pump() {
     if (announcementClearTimerRef.current) return;
     const next = announcementQueueRef.current.shift();
     if (!next) return;
@@ -37,10 +40,10 @@ export function useToolCallAnnouncer(messages: unknown[]): string {
       announcementClearTimerRef.current = null;
       setRecentlyCompletedAnnouncement('');
       if (announcementQueueRef.current.length > 0) {
-        setTimeout(pumpAnnouncements, 80);
+        setTimeout(pump, 80);
       }
     }, 1500);
-  }, []);
+  }, [tRef]);
 
   // Aria-live announcements for tool call completion. Watches assistant
   // messages for tool-call processes that have transitioned out of
@@ -51,7 +54,7 @@ export function useToolCallAnnouncer(messages: unknown[]): string {
     const seen = announcedToolCallIdsRef.current;
     let enqueued = 0;
 
-    for (const m of messages as unknown as Array<Record<string, unknown>>) {
+    for (const m of messages) {
       if (m?.role !== 'assistant') continue;
       const procs = m.toolCallProcesses as Record<string, Record<string, unknown>> | undefined;
       if (!procs) continue;
@@ -68,14 +71,15 @@ export function useToolCallAnnouncer(messages: unknown[]): string {
         seen.add(id);
         const toolName = (proc.toolName as string) || '';
         const toolCall = proc.toolCall as { args?: Record<string, unknown> } | undefined;
-        const baseTitle = getCompletedRowTitle(toolName, toolCall, t);
+        const artifact = (proc.toolCallResult as { artifact?: unknown } | undefined)?.artifact;
+        const baseTitle = getCompletedRowTitle(toolName, toolCall, t, { artifact, root });
         announcementQueueRef.current.push({ label: baseTitle, failed: isFailed });
         enqueued++;
       }
     }
 
     if (enqueued > 0) pumpAnnouncements();
-  }, [messages, t, pumpAnnouncements]);
+  }, [messages, t, root, pumpAnnouncements]);
 
   // Clear announcement timer + queue on unmount.
   useEffect(() => {

@@ -2,8 +2,7 @@
  * Portfolio CRUD API.
  * GET /api/v1/users/me/portfolio, POST, PUT /:id, DELETE /:id
  */
-import type { AxiosError } from 'axios';
-import { api } from '@/api/client';
+import { api, type ApiError } from '@/api/client';
 
 export interface PortfolioHoldingPayload {
   symbol: string;
@@ -36,7 +35,7 @@ export async function addPortfolioHolding(payload: PortfolioHoldingPayload): Pro
     const { data } = await api.post('/api/v1/users/me/portfolio', payload);
     return data;
   } catch (e) {
-    const err = e as AxiosError;
+    const err = e as ApiError;
     console.error(
       '[api] addPortfolioHolding failed:',
       err.response?.status,

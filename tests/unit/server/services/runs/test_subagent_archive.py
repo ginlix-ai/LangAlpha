@@ -1,4 +1,4 @@
-"""Tests for ``iter_subagent_events_full`` XRANGE-based collector helper.
+"""Tests for the subagent archive: the XRANGE read-back and the turn write.
 
 Covers:
 - Reads the per-task Redis Stream via XRANGE and decodes the ``b"record"`` field
@@ -8,6 +8,8 @@ Covers:
 - Surfaces a ``subagent_history_truncated`` warning when the stream is shorter
   than ``captured_event_seq``
 - No-ops when Redis is disabled or the cache client raises
+- Write side: each collected batch is written until it lands, and the
+  capture streams retire only once nothing replayed is left unwritten
 """
 
 from __future__ import annotations
@@ -410,3 +412,104 @@ async def test_retire_without_a_run_id_stamps_nothing_extra():
     )
 
     cache.client.expire.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Write side: persist_collected_events and ArchiveBuffer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persist_reports_a_write_that_never_lands(monkeypatch) -> None:
+    """Both attempts failing returns False, so callers keep the capture
+    streams: after a failed write they are the lanes' only copy."""
+    from src.server.services.runs import subagent_archive
+
+    monkeypatch.setattr(
+        subagent_archive,
+        "replace_lane_provenance",
+        AsyncMock(side_effect=RuntimeError("db down")),
+    )
+    monkeypatch.setattr(subagent_archive.asyncio, "sleep", AsyncMock())
+
+    ok = await subagent_archive.persist_collected_events(
+        [{"event": "message_chunk", "data": {"agent": "task:abc"}}],
+        "resp-1", "t-x", "ws",
+    )
+
+    assert ok is False
+
+
+def _batch(agent: str) -> list[dict]:
+    return [{"event": "message_chunk", "data": {"agent": agent}}]
+
+
+@pytest.mark.asyncio
+async def test_archive_buffer_writes_each_batch_until_it_lands(monkeypatch) -> None:
+    """A landed batch is never sent again and a failed one rides the next
+    write; once that write lands the buffer is complete again, since it
+    carried the failed batch too."""
+    from src.server.services.runs import subagent_archive
+
+    sent: list[list[dict]] = []
+    outcomes = iter([True, False, True])
+
+    async def persist(events, *args, **kwargs):
+        sent.append(list(events))
+        return next(outcomes)
+
+    monkeypatch.setattr(subagent_archive, "persist_collected_events", persist)
+    buf = subagent_archive.ArchiveBuffer("resp-1", "t-x", "ws", "u", None)
+    a, b, c = _batch("task:a"), _batch("task:b"), _batch("task:c")
+
+    buf.unwritten.extend(a)
+    await buf.flush()
+    assert buf.complete
+
+    buf.unwritten.extend(b)
+    await buf.flush()
+    assert not buf.complete
+
+    buf.unwritten.extend(c)
+    await buf.flush()
+
+    assert sent == [a, b, b + c]
+    assert buf.unwritten == []
+    assert buf.complete
+
+
+@pytest.mark.asyncio
+async def test_archive_buffer_with_a_withheld_replay_never_completes(
+    monkeypatch,
+) -> None:
+    """A withheld replay never entered the buffer, so no later write covers
+    it: the capture streams stay its only copy."""
+    from src.server.services.runs import subagent_archive
+
+    monkeypatch.setattr(
+        subagent_archive, "persist_collected_events", AsyncMock(return_value=True)
+    )
+    buf = subagent_archive.ArchiveBuffer("resp-1", "t-x", "ws", "u", None)
+    buf.withheld = True
+    buf.unwritten.extend(_batch("task:a"))
+
+    await buf.flush()
+
+    assert buf.unwritten == []
+    assert not buf.complete
+
+
+@pytest.mark.asyncio
+async def test_archive_buffer_with_nothing_to_write_skips_the_write(
+    monkeypatch,
+) -> None:
+    from src.server.services.runs import subagent_archive
+
+    persist = AsyncMock(return_value=True)
+    monkeypatch.setattr(subagent_archive, "persist_collected_events", persist)
+    buf = subagent_archive.ArchiveBuffer("resp-1", "t-x", "ws", "u", None)
+
+    await buf.flush()
+
+    persist.assert_not_awaited()
+    assert buf.complete

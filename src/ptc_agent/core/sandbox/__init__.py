@@ -1,8 +1,6 @@
 """PTC Sandbox package — backward-compatible re-exports."""
 
 from ptc_agent.core.sandbox._shared import (
-    ChartData,
-    ExecutionResult,
     SyncResult,
     _hash_dict,
     _resolve_local_path,
@@ -17,8 +15,6 @@ _DaytonaRetryPolicy = RetryPolicy
 
 __all__ = [
     "PTCSandbox",
-    "ChartData",
-    "ExecutionResult",
     "SyncResult",
     "SandboxGoneError",
     "SandboxTransientError",

@@ -4,9 +4,9 @@ When a dispatched background generator raises, the crash branch hands the
 orphaned run to ``RunCoordinator.reconcile_orphaned_dispatch`` — every
 generator is primed past START (2.4c), so a ledger row always exists and the
 reconcile (or the real owner's finalize) enqueues any watch_clear on the
-flash ordering chain. The consumer itself never touches report-back state:
-an off-chain clear can drain a summary admission's just-claimed pointer
-mid-flight (round-19 P1).
+dispatching thread's ordering chain. The consumer itself never touches
+report-back state: an off-chain clear can drain a summary admission's
+just-claimed pointer mid-flight (round-19 P1).
 """
 
 from unittest.mock import AsyncMock, patch
@@ -15,7 +15,7 @@ import pytest
 
 from src.server.app.threads.messaging import _consume_background_gen
 
-POINTER_MOD = "src.server.services.report_back.flash.pointer"
+POINTER_MOD = "src.server.services.report_back.handoff.pointer"
 
 
 async def _crashing_gen():
@@ -48,7 +48,7 @@ def _patched(cache, clear):
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
         ),
         patch(
-            f"{POINTER_MOD}.clear_flash_report_back", clear
+            f"{POINTER_MOD}.clear_handoff_report_back", clear
         ),
         # Default: no ledger row — keeps tests hermetic (no DB). The
         # ledger-focused tests below re-patch get_run inside this scope.
@@ -60,7 +60,7 @@ def _patched(cache, clear):
 async def test_crash_never_clears_report_back_off_chain():
     """Round-19 P1, 2.4d form: the crash path performs NO direct report-back
     teardown — regardless of ledger state, pair teardown belongs to the
-    durable watch_clear on the flash ordering chain (enqueued by reconcile
+    durable watch_clear on the dispatching thread's ordering chain (enqueued by reconcile
     or the owner's finalize). An off-chain clear here can drain a summary
     admission's just-claimed pointer mid-flight."""
     from src.server.database.runs import lifecycle as tl_db
@@ -78,7 +78,7 @@ async def test_crash_never_clears_report_back_off_chain():
             tl_db, "get_run", AsyncMock(side_effect=ConnectionError("db down"))
         ),
     ):
-        cache = _FakeCache({"ptc_origin:ptc-1": {"flash_thread_id": "flash-1"}})
+        cache = _FakeCache({"ptc_origin:ptc-1": {"home_thread_id": "cos-1"}})
         clear = AsyncMock()
         p1, p2, _default = _patched(cache, clear)
         finalize = patch.object(
@@ -280,7 +280,7 @@ async def test_live_btm_executor_blocks_last_resort_finalize():
         is_run_live = LocalRunExecutor.is_run_live
 
     fake_manager = _FakeManager()
-    cache = _FakeCache({"ptc_origin:ptc-1": {"flash_thread_id": "flash-1"}})
+    cache = _FakeCache({"ptc_origin:ptc-1": {"home_thread_id": "cos-1"}})
     finalize = AsyncMock()
     clear = AsyncMock()
     p1, p2, p0 = _patched(cache, clear)

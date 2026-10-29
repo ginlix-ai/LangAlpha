@@ -6,10 +6,10 @@ exactly one of
 - **checkpoint-projected** — rebuilt from LangGraph checkpoint state,
 - **table-sourced** — rebuilt from an authoritative DB table,
 - **live-only** — transient signal never replayed (its durable content, if
-  any, reaches the client another way),
-- **stored-events-only** — replayable ONLY via persisted ``sse_events``
-  (must be re-homed or explicitly accepted-lost before the dual-write stops;
-  cutover step 5 blocks on this set).
+  any, reaches the client another way).
+
+A type with none of these sources is lost on replay; an older row's legacy
+facts only add to what these rebuild.
 
 This test scans the chat/replay emit surface for event-type literals and
 fails when an emitted type is missing from the ledger (add the type to the
@@ -40,10 +40,16 @@ CHECKPOINT_PROJECTED = {
     "tool_calls",
     "tool_call_result",
     "artifact",
-    "context_window",
-    "steering_delivered",
+    "context_window",  # compaction state deltas; a manual compact or offload
+    # is the `context_window` ui record its own state write carries
+    "steering_delivered",  # the payload rides the injected steering
+    # message's additional_kwargs (request_key and origin included), and a
+    # resumed task run's opening input
     "interrupt",
-    "model_fallback",  # ui-channel record pushed by ModelResilienceMiddleware
+    "model_fallback",  # ui-channel record pushed by ModelResilienceMiddleware;
+    # a stopped or failed run's last step never commits its own, which the
+    # response row's replay_facts keep (recovery rebuilds them from the
+    # frames of a run whose worker died)
     "workflow_lifecycle",  # ui-channel `workflow_run` snapshot upserted by
     # the workflow driver at terminal; frames re-emitted verbatim on replay
 }
@@ -53,25 +59,34 @@ TABLE_SOURCED = {
     "provenance",  # provenance_records
     "credit_usage",  # conversation_usages
     "error",  # conversation_responses.errors + metadata (terminal event)
+    "steering_returned",  # subagent_runs.replay_facts, written in the
+    # transaction that settles the task's outbox steers: undelivered steering
+    # has no checkpoint twin by design (nothing was injected into the graph);
+    # a run settled before those facts has it in its turn's legacy facts. The
+    # main thread's hands chat-app steers back to their gateway on the run's
+    # own stream, which resubmits them as its next turn; nothing replays it.
 }
 
 LIVE_ONLY = {
-    "metadata",  # per-run header, accumulate=False
+    "metadata",  # per-run header
     "workspace_status",  # sandbox bring-up progress
+    "turn_held",  # a send waiting behind a thread mutation, before admission
     "warning",
     "retry",  # recoverable-error notice, run restarts
-    "steering_accepted",  # only on the steering POST's own stream
-    "model_retry",  # transient, accumulate=False
+    "steering_accepted",  # only on the steering POST's own stream; the
+    # steer's durable twin is its steering_delivered or steering_returned
+    "model_retry",  # transient
     "tool_call_chunks",  # replay's consolidated tool_calls carries full args
     "compaction_chunk",  # summarize context_window carries summary_text
     "subagent_stream_end",  # reconnect-stream sentinel
     "stream_gap",  # reconnect trim notice (Last-Event-ID < stream head)
     "run_end",  # post-CAS terminal frame closing the run stream (I6)
     "replay_done",  # replay sentinel
+    "history_page",  # paged replay header: oldest turn sent, older remain
     "snapshot",  # read-time cursors for the runs replay could not project;
     # recomputed from ledger+Redis on every load, never replayed from a store
-    "market_watch_update",  # transient stamp notice, accumulate=False; the
-    # durable watchlist re-seeds the chip via GET /{thread}/market-watch on replay
+    "market_watch_update",  # transient stamp notice; the durable watchlist
+    # re-seeds the chip via GET /{thread}/market-watch on replay
     "thread_created",  # legacy creation SSE branch (POST /threads with
     # Accept: text/event-stream), never on the run wire; the row itself is the
     # durable truth (GET /threads/{id}). ⚠️ Deletes together with that branch.
@@ -82,34 +97,39 @@ LIVE_ONLY = {
     "chan_close",  # mux channel lifecycle (thread_stream_mux)
     "transport_error",  # mux whole-socket retryable close
     "timeout",  # watch/mux max-duration autoclose (predates mux; single-quoted emit sites evaded the scan)
-}
-
-# KNOWN GAP: survives replay only through persisted sse_events. Before
-# sse_events writes stop (cutover step 5) each entry here must move to a
-# category above or be explicitly accepted as not replayed.
-STORED_EVENTS_ONLY: set[str] = {
-    "steering_returned",  # undelivered-steering drain at run end; no
-    # checkpoint twin by design (nothing was injected into the graph), so
-    # the collected stored copy is its only durable home
+    "caught_up",  # backlog/live boundary marker on the run stream, emitted at
+    # the head sampled when a consumer attaches. Transient by construction: it
+    # marks where a batch of replayed events ends, so replaying it would be
+    # meaningless.
+    "chan_caught_up",  # the same boundary per mux channel (thread_stream_mux_v2)
+    "attached",  # mux: the attach served the open-turn drain a fresh page
+    # asked for; a socket-level acknowledgement, nothing to replay
+    "resync_required",  # mux: a channel's cursor fell off its stream, reload
+    # from history; a socket-level instruction, nothing to replay
 }
 
 _CATEGORIES = {
     "checkpoint": CHECKPOINT_PROJECTED,
     "table": TABLE_SOURCED,
     "live-only": LIVE_ONLY,
-    "stored-events-only": STORED_EVENTS_ONLY,
 }
 
 _EMIT_PATTERNS = (
-    # _format_sse_event("type", ...) — possibly line-wrapped
-    re.compile(r'_format_sse_event\(\s*"([a-z_]+)"'),
+    # _format_sse_event("type", ...) / _build_sse_event("type", ...), possibly
+    # line-wrapped
+    re.compile(r'_(?:format|build)_sse_event\(\s*"([a-z_]+)"'),
     # _sse("type", ...) — the per-module frame helpers
     re.compile(r'_sse\(\s*"([a-z_]+)"'),
+    # _control("type", ...) — the mux's socket-level control frames
+    re.compile(r'_control\(\s*"([a-z_]+)"'),
     # yield f"event: type\n..." and plain "event: type"
     re.compile(r'"(?:id: [^"]*?\\n)?event: ([a-z_]+)'),
     # replay item dicts: {"event": "type", ...}
     re.compile(r'\{"event": "([a-z_]+)"'),
     re.compile(r'"event": "([a-z_]+)",'),
+    # NAME_EVENT_TYPE = "type": a wire type named by a constant, where the
+    # frame around it is assembled somewhere the patterns above cannot see.
+    re.compile(r'^_?[A-Z][A-Z0-9_]*_EVENT_TYPE\s*=\s*"([a-z_]+)"', re.M),
 )
 
 
@@ -160,16 +180,10 @@ def test_every_ledger_entry_still_exists_in_source():
     )
 
 
-def test_replay_transition_rules_cover_the_replayable_set():
-    """The replay module's passthrough/stored-preferred tuples must stay
-    inside the replayable ledger (a stored-preferred type outside the ledger
-    would silently vanish post-cutover)."""
-    from src.server.services.history.replay.stored_merge import (
-        _PASSTHROUGH_EVENTS,
-        _STORED_PREFERRED_EVENTS,
-    )
+def test_stored_preferred_types_stay_in_the_replayable_set():
+    """A turn with legacy facts places these types from its facts in place of
+    its projected copies. Every other turn has only the projected copies, so
+    each type needs a replay source in the ledger."""
+    from src.server.services.history.replay.legacy import STORED_PREFERRED_EVENTS
 
-    replayable = CHECKPOINT_PROJECTED | TABLE_SOURCED
-    assert set(_STORED_PREFERRED_EVENTS) <= replayable
-    # Passthrough may additionally carry the stored-events-only legacy set.
-    assert set(_PASSTHROUGH_EVENTS) <= replayable | STORED_EVENTS_ONLY
+    assert set(STORED_PREFERRED_EVENTS) <= CHECKPOINT_PROJECTED | TABLE_SOURCED

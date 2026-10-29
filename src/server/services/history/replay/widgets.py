@@ -20,10 +20,11 @@ async def _resolve_widget_data_refs(turn_items: list[dict[str, Any]]) -> None:
     """Inline widget data referenced by a content-addressed ``data_ref``.
 
     ShowWidget offloads large resolved data to object storage and checkpoints
-    only ``data_ref {key, sha256, size}``. Runs after the stored-payload merge,
-    so a widget already carrying ``data`` (stored event, or small inlined
-    payload) skips the storage read. Unresolvable refs are left in place — the
-    frontend renders the widget without its data files.
+    only ``data_ref {key, sha256, size}``. Runs after legacy facts place their
+    archived payloads, so a widget already carrying ``data`` (an archived
+    payload, or a small inlined one) skips the storage read. Unresolvable refs
+    are left in place, and the frontend renders the widget without its
+    data files.
     """
     pending: list[tuple[dict[str, Any], dict[str, Any]]] = []  # (payload, data_ref)
     for item in turn_items:

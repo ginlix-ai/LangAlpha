@@ -1,6 +1,6 @@
 """Guards the hand-mirrored sandbox dependency list.
 
-``DEFAULT_DEPENDENCIES`` drives the Daytona snapshot and the no-snapshot
+``DEFAULT_DEPENDENCIES`` drives the Daytona snapshot, the E2B template and the no-snapshot
 install; ``Dockerfile.sandbox`` re-spells the same list because a Docker build
 cannot import Python. Nothing enforced the mirror, so the two images could
 drift into different toolchains for the same workspace — the failure surfaces
@@ -15,16 +15,33 @@ from pathlib import Path
 
 import pytest
 
-from ptc_agent.core.sandbox._defaults import DEFAULT_DEPENDENCIES
+from ptc_agent.core.sandbox._defaults import (
+    DEFAULT_DEPENDENCIES,
+    SANDBOX_PLAYWRIGHT_VERSION,
+)
 
 _ROOT = Path(__file__).resolve().parents[4]
 _DOCKERFILE = _ROOT / "Dockerfile.sandbox"
 _MCP_SETUP = _ROOT / "src" / "ptc_agent" / "core" / "sandbox" / "mcp_setup.py"
-_DAYTONA = _ROOT / "src" / "ptc_agent" / "core" / "sandbox" / "providers" / "daytona.py"
+_IMAGE_RECIPE = (
+    _ROOT / "src" / "ptc_agent" / "core" / "sandbox" / "providers" / "_image_recipe.py"
+)
 
 # `echo '<spec>' > /tmp/…overrides.txt` — the uv --override file, written
 # inline by every install path.
 _OVERRIDE_RE = re.compile(r"echo '([^']+)' > /tmp/[\w.]*overrides\.txt")
+
+_ARG_RE = re.compile(r"^ARG\s+(\w+)=(\S+)", re.MULTILINE)
+_SUBST_RE = re.compile(r"\$\{(\w+)\}")
+
+
+def _dockerfile_args() -> dict[str, str]:
+    """``ARG NAME=default`` declarations, which the install lines interpolate."""
+    return dict(_ARG_RE.findall(_DOCKERFILE.read_text()))
+
+
+def _expand(text: str, args: dict[str, str]) -> str:
+    return _SUBST_RE.sub(lambda m: args.get(m.group(1), m.group(0)), text)
 
 
 def _logical_lines(text: str) -> list[str]:
@@ -48,7 +65,7 @@ def _dockerfile_install_packages() -> list[str]:
     command = next(
         line for line in _logical_lines(_DOCKERFILE.read_text()) if "uv pip install" in line
     )
-    tokens = shlex.split(command)
+    tokens = shlex.split(_expand(command, _dockerfile_args()))
     start = tokens.index("install") + 1
     end = tokens.index("&&", start)
     packages: list[str] = []
@@ -69,7 +86,23 @@ def test_dockerfile_mirrors_default_dependencies():
     assert len(packages) == len(set(packages)), "duplicate package in Dockerfile.sandbox"
 
 
-@pytest.mark.parametrize("path", [_DOCKERFILE, _MCP_SETUP, _DAYTONA])
+def test_both_playwright_ports_ride_one_version():
+    """Each language port resolves its browser revision from its own version
+    number, so a drift between the npm and Python pins bakes a second Chromium
+    (plus a second headless shell) into the image instead of sharing one."""
+    args = _dockerfile_args()
+    assert args["PLAYWRIGHT_VERSION"] == SANDBOX_PLAYWRIGHT_VERSION
+    assert f"playwright=={SANDBOX_PLAYWRIGHT_VERSION}" in DEFAULT_DEPENDENCIES
+
+    npm_line = next(
+        line
+        for line in _logical_lines(_DOCKERFILE.read_text())
+        if "npm install -g" in line
+    )
+    assert f"playwright@{SANDBOX_PLAYWRIGHT_VERSION}" in _expand(npm_line, args)
+
+
+@pytest.mark.parametrize("path", [_DOCKERFILE, _MCP_SETUP, _IMAGE_RECIPE])
 def test_curl_cffi_override_is_spelled_identically(path: Path):
     """yfinance caps curl_cffi below what scrapling[all] needs; every install
     path resolves it with the same override, or one image ships a resolver

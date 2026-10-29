@@ -4,7 +4,7 @@ This module contains the ``astream_ptc_workflow`` async generator, refactored
 from the monolithic ``chat_handler.py``.  Request preparation, persistence,
 error handling, and streaming logic is delegated to ``request_prep`` and
 ``services.runs.admission``; PTC-specific concerns (workspace session,
-sandbox, plan mode, background subagent orchestration, completion callback)
+sandbox, background subagent orchestration, completion callback)
 remain inline.
 """
 
@@ -15,12 +15,22 @@ import contextlib
 import json
 import time
 from datetime import datetime
+from functools import partial
 
 from fastapi import HTTPException
 from langgraph.types import Command
 
+from ptc_agent.core.project_context import ProjectContext, run_with_project
+from src.config.settings import get_sse_keepalive_interval
 from src.server.app import setup
+from src.server.database.conversation.threads_read import (
+    read_thread_subagents_allowed,
+)
+from src.server.database.user import get_user_profile_for_prompt
 from src.server.database.workspace import update_workspace_activity
+from src.server.services.commands.mirror import mirror_computer
+from src.server.services.computer_disk import TURN_MEASURE_MIN_INTERVAL_SECONDS
+from src.server.services.history.window import runs_held
 from src.server.services.runs.sse_producer import RunSSEProducer
 from src.server.models.chat import (
     ChatRequest,
@@ -47,66 +57,81 @@ from src.server.utils.chart_selection_context import (
     parse_chart_selection_contexts,
     serialize_chart_selections_for_metadata,
 )
-from src.llms.llm import get_input_modalities
+from src.server.utils.credit_resume_context import build_credit_resume_update
 from src.server.utils.multimodal_context import (
     build_attachment_metadata,
-    build_file_reminder,
-    build_unsupported_reminder,
-    filter_multimodal_by_capability,
-    inject_multimodal_context,
     parse_multimodal_contexts,
-    upload_to_sandbox,
 )
-from src.utils.tracking import ExecutionTracker
 
 from ptc_agent.agent.graph import build_ptc_graph_with_session
+from ptc_agent.agent.middleware.credit_gate import run_with_credit_gate
 
 from .request_prep import (
     DISPATCH_STARTED_MARKER,
-    _append_to_last_user_message,
-    _is_plan_interrupt_pending,
     _resolve_fork,
-    _resolve_timezone,
-    apply_fetch_override,
     build_graph_config,
+    build_turn_context,
+    turn_start_checkpoint_id,
+    read_disk_notice,
     ensure_thread,
+    keep_named_model,
     init_tracking,
     inject_inline_reminders,
     logger,
     normalize_request_messages,
     prepare_skill_contexts,
     process_hitl_response,
+    provenance_metadata,
+    retried_on_its_surface,
     serialize_context_metadata,
-    setup_steering_tracking,
+    surface_stamp,
+    turn_skill_names,
+    turn_surface,
+    user_skill_commands,
 )
+from src.server.contracts.turn_kinds import announced
+from src.server.services import automation_delivery
+from src.server.services.credit_gate_port import build_run_credit_gate
+from src.server.services.report_back.handoff import carry
+from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
 from src.server.services.runs.admission import (
     RunScope,
     begin_run,
     dedup_retransmit_or_raise,
 )
-from src.config.settings import get_ptc_recursion_limit
+from src.server.services.turn_runtime import TurnRoute
 
-from .admission_gate import wait_or_steer
+from .admission_gate import agent_steer_of, steer_allowed, wait_or_steer
+from .attachments import attach_request_files
 from .error_handling import handle_workflow_error
-from src.server.services.llm.config import resolve_llm_config
-from .steering import drain_steering_return_event
+from .agent_change import cancel_tool_calls_it_lacks
+from src.server.services.llm.clients import is_own_key_turn
+from src.server.services.llm.config import apply_fetch_override, resolve_llm_config
+from src.server.services.llm.thread_model import NamedModel
+from .steering import open_with_steers_ahead
 from .run_stream_reader import stream_from_log
 from .detached import fire_and_forget as _fire_and_forget
 
 
+def _turn_held(data: dict) -> str:
+    """A ``turn_held`` frame. Id 0 like ``workspace_status``: it comes before
+    the run has a stream to resume, so no cursor counts it."""
+    return f"id: 0\nevent: turn_held\ndata: {json.dumps(data)}\n\n"
+
+
 async def _resolve_origin_meta(request, thread_id: str) -> dict:
-    """The watching flash thread (+ dispatch generation) for this run's hooks.
+    """The watching Chief of Staff thread (+ dispatch generation) for this run's hooks.
 
     The dispatch POST carries them; follow-up turns (HITL resume, user
     continuation) inherit them from the previous attempt — the origin is a
     THREAD property, so the stamp must stay sticky or later completions
-    would fall out of the flash thread's serialization chain (and their
+    would fall out of the Chief of Staff thread's serialization chain (and their
     gen-fenced teardowns out of their dispatch incarnation).
     """
-    supplied = getattr(request, "origin_flash_thread_id", None)
+    supplied = getattr(request, "origin_home_thread_id", None)
     if supplied:
         return {
-            "origin_flash_thread_id": supplied,
+            ORIGIN_THREAD_META: supplied,
             "origin_dispatch_gen": getattr(request, "origin_dispatch_gen", None),
         }
     from src.server.database.runs import lifecycle as tl_db
@@ -114,13 +139,35 @@ async def _resolve_origin_meta(request, thread_id: str) -> dict:
     # A read failure must PROPAGATE (failing the turn start): stamping None
     # on a transient error wouldn't just mis-key this run — inheritance is
     # sticky, so every later turn would inherit the None and the thread
-    # would fall out of its flash chain permanently.
+    # would fall out of its report-back chain permanently.
     prev = await tl_db.get_latest_attempt(thread_id)
     meta = (prev.get("metadata") or {}) if prev is not None else {}
+    if not meta.get(ORIGIN_THREAD_META):
+        # Only a thread a dispatch started has an origin. A generation without
+        # one is a report-back's, stamped by the summary turn that answered it
+        # (in Home, or by the retired Flash agent before it), and is that
+        # pair's, not the thread's.
+        meta = {}
     return {
-        "origin_flash_thread_id": meta.get("origin_flash_thread_id"),
+        ORIGIN_THREAD_META: meta.get(ORIGIN_THREAD_META),
         "origin_dispatch_gen": meta.get("origin_dispatch_gen"),
     }
+
+
+def _artifact_hook(session, *, thread_id: str, project: ProjectContext | None):
+    """The finalize's pre-terminal hook: upload the sandbox images the turn's
+    saved messages still name, returning each one's URL for its row."""
+
+    async def capture_artifacts(image_paths) -> dict[str, str]:
+        if not (session and session.sandbox):
+            return {}
+        from src.server.services.persistence.image_capture import capture_images
+
+        return await capture_images(
+            image_paths, session.sandbox, thread_id, project=project
+        )
+
+    return capture_artifacts
 
 
 async def astream_ptc_workflow(
@@ -129,10 +176,15 @@ async def astream_ptc_workflow(
     run_id: str,
     user_input: str,
     user_id: str,
-    workspace_id: str,
+    route: TurnRoute,
     is_byok: bool = False,
     config=None,
     dispatched: bool = False,
+    from_server: bool = False,
+    steerable: bool = True,
+    run_metadata: dict | None = None,
+    extra_configurable: dict | None = None,
+    named_model: NamedModel | None = None,
 ):
     """Async generator that streams PTC agent workflow events.
 
@@ -142,16 +194,29 @@ async def astream_ptc_workflow(
     on the same thread share no cross-turn state by construction.
 
     ``dispatched`` marks the call as an X-Dispatch=background invocation
-    whose BTM placeholder was created upstream in ``threads.py``. The
-    handler skips ``wait_or_steer`` in that case.
+    whose BTM placeholder was created upstream in ``threads.py``. It, a retry
+    and ``steerable=False`` all make a running turn a 409 instead of a
+    steer; see ``steer_allowed``. ``run_metadata`` is the caller's own START
+    stamp on the run row, which the run's finalize hooks read.
+    ``extra_configurable`` joins the graph config's ``configurable``, where
+    the turn's tools read it.
+    ``from_server`` says the server sent the request (its service token, or an
+    automation firing in process), so the trace believes the origin it names.
+
+    ``named_model`` is the model a client named for this thread, kept on it
+    once the turn is admitted; automations never pass one. ``route`` comes
+    from ``turn_route`` and has no default, so routing decides the workspace
+    and the role in one place and no caller runs Home as an analyst by
+    leaving one out.
     """
+    workspace_id = route.workspace_id
     start_time = time.time()
     handler = None
     run_handle = None
     token_callback = None
     tool_tracker = None
     ptc_graph = None
-    timezone_str = None
+    turn_context = None
 
     # Phase timing — collects wall-clock durations for each hot-path phase.
     # Emits a single structured summary line when the workflow starts.
@@ -163,8 +228,6 @@ async def astream_ptc_workflow(
         now = time.time()
         _phase_times[name] = (now - _phase_t0) * 1000  # ms
         _phase_t0 = now
-
-    ExecutionTracker.start_tracking()
 
     # Owns the burst lease, admission lock, and open START row until the
     # executor's done-callback is armed (transfer_to_executor below).
@@ -194,13 +257,15 @@ async def astream_ptc_workflow(
         # request_key resolves to its existing run HERE, before the steering
         # or fork paths below can act on the duplicate (raises
         # DuplicateRequestError → structured duplicate_request SSE).
-        await dedup_retransmit_or_raise(request)
+        await dedup_retransmit_or_raise(
+            thread_id, request.request_key, except_job_id=request.steer_job_id
+        )
 
         # =====================================================================
         # Early steering routing
         # =====================================================================
         # If a workflow is already running for this thread, route this POST
-        # through the steering queue *before* any DB write. Detecting steering
+        # into it as a steer *before* any turn row is written. Detecting steering
         # here keeps ``conversation_queries`` clean — a steering message is
         # neither a run nor a turn (v4 identity model); its content is archived
         # on the owning response's metadata at finalize.
@@ -212,20 +277,52 @@ async def astream_ptc_workflow(
         # registered anywhere yet; its row commits at START, below).
         if needs_startup:
             await manager.cancel_stale_workflow(thread_id)
+        from src.server.services.thread_mutation import ThreadMutationRunner
+
+        # A send held behind a thread mutation (a /compact, the hand-off at a
+        # model switch) is told why it waits, as a cold start is. Not a
+        # dispatch's primer or a steer probe, which read the first frame as
+        # their answer.
+        held_by = (
+            None
+            if dispatched or request.steer_only
+            else await ThreadMutationRunner.get_instance().holding_verb(thread_id)
+        )
         # Admit a fresh turn, steer the running one, or 409 — see
-        # ``wait_or_steer``. Dispatched flows pass ``can_steer=False``: any
-        # in-flight run is a hard conflict, never a steer. Foreground turns
-        # steer. Retries are never steerable either: a /retry that finds
-        # another live run is a hard conflict, not an (empty) steering
-        # message into that run.
-        ready, steering_event = await wait_or_steer(
+        # ``wait_or_steer``; who may steer at all is ``steer_allowed``.
+        admit = partial(
+            wait_or_steer,
             manager,
             thread_id,
             user_input,
             user_id,
             steer_only=request.steer_only,
-            can_steer=not dispatched and request.retry_of_run_id is None,
+            platform=request.platform,
+            request_key=request.request_key,
+            workspace_id=workspace_id,
+            steer_job_id=request.steer_job_id,
+            # A hand-off into a running turn answers the dispatch primer
+            # with ``HandOffSteered``: that run's id and the steer's.
+            agent=agent_steer_of(request, dispatched=dispatched, run_id=run_id),
+            can_steer=steer_allowed(
+                request, dispatched=dispatched, steerable=steerable
+            ),
         )
+        if held_by is None:
+            ready, steering_event = await admit()
+        else:
+            yield _turn_held({"status": "held", "reason": held_by})
+            waiting = asyncio.ensure_future(admit())
+            try:
+                # The wait can outlast an edge proxy's idle cutoff, so the
+                # stream shows it is alive until the turn is admitted.
+                beat = get_sse_keepalive_interval()
+                while not (await asyncio.wait({waiting}, timeout=beat))[0]:
+                    yield ":keepalive\n\n"
+                ready, steering_event = waiting.result()
+            finally:
+                waiting.cancel()
+            yield _turn_held({"status": "released"})
         if not ready:
             await scope.release_slot()
             # Release admission immediately — no workflow will register
@@ -240,62 +337,106 @@ async def astream_ptc_workflow(
         # Database Persistence Setup
         # =====================================================================
 
-        await ensure_thread(
-            request, thread_id, workspace_id, user_id, msg_type="ptc",
+        prior_thread = await ensure_thread(
+            request,
+            thread_id,
+            workspace_id,
+            user_id,
             initial_query=user_input,
         )
+        # /retry builds its attempt with no surface: it runs where the
+        # attempt it retries did, under the same rules.
+        request, inherits_rules = await retried_on_its_surface(request)
+        disk_free_mb, disk_known = await read_disk_notice(workspace_id)
+        user_profile = await get_user_profile_for_prompt(user_id) if user_id else None
+        turn_context = build_turn_context(
+            request,
+            prior_thread,
+            user_profile=user_profile,
+            disk_free_mb=disk_free_mb,
+            disk_known=disk_known,
+            inherits_rules=inherits_rules,
+        )
 
-        query_type, fork = _resolve_fork(request=request)
+        query_type, fork = _resolve_fork(request=request, thread_id=thread_id)
         is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
+
+        # Resolve LLM config (pre-resolved by the route handler, fallback for
+        # standalone use). Ahead of the metadata below on purpose: that block
+        # records the model and the detected slash command, and both are read
+        # off this config. Resolved late, the standalone path would stamp a
+        # skill the turn then refuses, because activation gates on the
+        # resolved registry while the metadata had nothing to gate on. The
+        # route already resolves before this generator runs, so this only
+        # moves the standalone path onto the ordering production has.
+        if config is None:
+            config = await resolve_llm_config(
+                setup.agent_config,
+                user_id,
+                request.llm_model,
+                is_byok,
+                reasoning_effort=getattr(request, "reasoning_effort", None),
+                fast_mode=getattr(request, "fast_mode", None),
+                thread_id=thread_id,
+                enabled_subagents=request.subagents_enabled,
+                workspace_id=workspace_id,
+                role=route.role,
+            )
 
         # Persist query start
         feedback_action = None
         query_content = user_input
         effective_model = config.llm.name if config and config.llm else None
+        # Off the resolved credential, not off ``is_byok``: that flag answers
+        # which ladder to try, and an automation with only an OAuth token
+        # passes it false while still paying its own vendor bill.
+        own_key = is_own_key_turn(config)
         query_metadata = {
-            "workspace_id": request.workspace_id,
-            "msg_type": "ptc",
+            # The resolved one: a request may name a former Home row.
+            "workspace_id": workspace_id,
         }
         if effective_model:
             query_metadata["llm_model"] = effective_model
-        if request.origin:
-            # Per-turn initiator, mirroring the thread-level metadata['origin']
-            # (threads go mixed: a pinned automation thread also takes manual
-            # user follow-ups, which carry no origin).
-            query_metadata["origin"] = request.origin.model_dump(exclude_none=True)
+        query_metadata.update(provenance_metadata(request))
 
         # Extract attachment and context metadata for display in history
-        # (PTC skips this block for HITL resumes — contrast with Flash)
+        # (skipped for HITL resumes)
         widget_ctxs = parse_widget_contexts(request.additional_context)
         chart_selections = parse_chart_selection_contexts(request.additional_context)
         if request.additional_context and not request.hitl_response:
             multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
-            if multimodal_ctxs:
+            # A retry writes no query row, so a second upload would be
+            # stored for nothing.
+            if multimodal_ctxs and not request.retry_of_run_id:
                 query_metadata["attachments"] = await build_attachment_metadata(
                     multimodal_ctxs, thread_id
                 )
             if widget_ctxs:
-                query_metadata["widget_contexts"] = serialize_widget_contexts_for_metadata(
-                    widget_ctxs
+                query_metadata["widget_contexts"] = (
+                    serialize_widget_contexts_for_metadata(widget_ctxs)
                 )
             if chart_selections:
-                query_metadata["chart_selections"] = serialize_chart_selections_for_metadata(
-                    chart_selections
+                query_metadata["chart_selections"] = (
+                    serialize_chart_selections_for_metadata(chart_selections)
                 )
 
         # Persist lightweight additional_context + slash command fallback
         # (serialize_context_metadata's slash-command branch already guards
         # on `not request.hitl_response`, so this is safe to call always.)
         if not request.hitl_response:
-            serialize_context_metadata(request, query_metadata, user_input, mode="ptc")
+            serialize_context_metadata(
+                request,
+                query_metadata,
+                user_input,
+                extra_commands=user_skill_commands(config),
+                allowed_skills=turn_skill_names(config),
+            )
 
         if request.hitl_response:
-            feedback_action, query_content, hitl_answers, interrupt_ids = (
-                process_hitl_response(request)
-            )
-            query_metadata["hitl_interrupt_ids"] = interrupt_ids
-            if hitl_answers:
-                query_metadata["hitl_answers"] = hitl_answers
+            prepared = process_hitl_response(request)
+            feedback_action = prepared.feedback_action
+            query_content = prepared.query_content
+            query_metadata.update(prepared.metadata)
 
         # =====================================================================
         # START txn (v4): query row + in_progress run row + thread projection
@@ -307,11 +448,18 @@ async def astream_ptc_workflow(
         # while re-marking the tracker with None would make a live admitted
         # run read as unadmitted to the fenced-teardown probe.
         origin_meta = await _resolve_origin_meta(request, thread_id)
+        carried = await carry.carried_pair(request, thread_id)
+        # A resume or a retry names no automation run of its own: it sends for
+        # the one the turn it continues sent for.
+        if automation_delivery.delivery_of_turn(extra_configurable or {}) is None:
+            sends_for = await carry.carried_delivery(request, thread_id)
+            if sends_for:
+                extra_configurable = {**(extra_configurable or {}), **sends_for}
         run_handle = await begin_run(
             request,
+            scope=scope,
             thread_id=thread_id,
             run_id=run_id,
-            msg_type="ptc",
             workspace_id=workspace_id,
             user_id=user_id,
             is_byok=is_byok,
@@ -321,9 +469,16 @@ async def astream_ptc_workflow(
             query_metadata=query_metadata,
             fork=fork,
             is_checkpoint_replay=is_checkpoint_replay,
-            extra_run_metadata=origin_meta,
+            extra_run_metadata={
+                **origin_meta,
+                **carried,
+                **surface_stamp(
+                    request, prior_thread, inherits_rules=turn_context.inherits_rules
+                ),
+                **automation_delivery.turn_metadata(extra_configurable),
+                **(run_metadata or {}),
+            },
         )
-        scope.attach_run(run_handle)
         if not is_checkpoint_replay:
             logger.debug(
                 f"[PTC_CHAT] Run started: workspace_id={workspace_id} "
@@ -337,11 +492,7 @@ async def astream_ptc_workflow(
             # above has committed. The marker never reaches the SSE stream.
             yield DISPATCH_STARTED_MARKER
 
-        # =====================================================================
-        # Timezone and Locale Validation
-        # =====================================================================
-
-        timezone_str = _resolve_timezone(request.timezone, request.locale)
+        await keep_named_model(thread_id, named_model)
 
         # =====================================================================
         # Token and Tool Tracking
@@ -349,29 +500,40 @@ async def astream_ptc_workflow(
 
         token_callback, tool_tracker = init_tracking(thread_id)
 
+        # Runtime credit gate (None when platform gating is inactive): the
+        # run's spend meter, lease, and refresher. Admission above is its
+        # seed verdict; the stream wrapper below owns its lifetime.
+        credit_gate = build_run_credit_gate(
+            user_id,
+            run_id,
+            token_callback,
+            tool_tracker,
+            effective_model,
+            is_byok=own_key,
+        )
+
         _mark_phase("db_setup")
 
         # =====================================================================
         # Session and Graph Setup
         # =====================================================================
 
-        # Resolve LLM config (pre-resolved by route handler, fallback for standalone use)
-        if config is None:
-            config = await resolve_llm_config(
-                setup.agent_config, user_id, request.llm_model, is_byok, mode="ptc",
-                reasoning_effort=getattr(request, "reasoning_effort", None),
-                fast_mode=getattr(request, "fast_mode", None),
-                thread_id=thread_id,
-                enabled_subagents=request.subagents_enabled,
-            )
-
         # Propagate fetch model override to tool context
         apply_fetch_override(config)
 
         _mark_phase("pre_session")
 
-        subagents = request.subagents_enabled or config.subagents.enabled
         sandbox_id = None
+
+        # The turn's skill state, folded to one value so the acquire can tell
+        # a warm sandbox its skills moved (upload/delete/disable) without any
+        # extra read — the bundle behind these fields was already loaded by
+        # the config resolve above.
+        from src.server.services.user_skills import skills_delivery_signature
+
+        skills_signature = skills_delivery_signature(
+            config.user_skill_dir, config.disabled_skills
+        )
 
         # ``workspace_manager`` and ``needs_startup`` were resolved above for
         # the pre-steering stale-cancel hook. Reuse them — recomputing here
@@ -384,7 +546,10 @@ async def astream_ptc_workflow(
         # session in memory). The extra "starting/ready" SSE pair is harmless.
         if not needs_startup:
             session = await workspace_manager.get_session_for_workspace(
-                workspace_id, user_id=user_id
+                workspace_id,
+                user_id=user_id,
+                skills_signature=skills_signature,
+                run_id=run_id,
             )
         else:
             yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'starting', 'workspace_id': workspace_id})}\n\n"
@@ -393,8 +558,8 @@ async def astream_ptc_workflow(
             # through session init → PTCSandbox.reconnect. The callback
             # fires once with the state string as soon as reconnect reads
             # it (before runtime.start() is invoked). We coordinate via
-            # asyncio.Event + wait_for — no FIRST_COMPLETED race loop,
-            # session_task is untouched by the wait_for timeout.
+            # asyncio.Event and the acquisition race each other so a warm sibling
+            # does not wait for a reconnect callback it can never emit.
             state_event = asyncio.Event()
             state_box: dict[str, str | None] = {"value": None}
 
@@ -407,17 +572,35 @@ async def astream_ptc_workflow(
                     workspace_id,
                     user_id=user_id,
                     on_state_observed=_on_state,
+                    skills_signature=skills_signature,
+                    run_id=run_id,
                 )
             )
 
             try:
-                # Wait up to 5s for reconnect to observe the sandbox state.
-                # On the recovery path (new sandbox) the callback never fires;
-                # we time out, skip the refinement, and proceed.
+
+                async def _wait_for_session():
+                    return await asyncio.shield(session_task)
+
+                state_waiter = asyncio.create_task(state_event.wait())
+                session_waiter = asyncio.create_task(_wait_for_session())
                 try:
-                    await asyncio.wait_for(state_event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+                    done, pending = await asyncio.wait(
+                        {state_waiter, session_waiter},
+                        timeout=5.0,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                except BaseException:
+                    state_waiter.cancel()
+                    session_waiter.cancel()
+                    await asyncio.gather(
+                        state_waiter, session_waiter, return_exceptions=True
+                    )
+                    raise
+                for waiter in pending:
+                    waiter.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
                 logger.info(
                     "[WS_STATUS] state observation",
@@ -430,7 +613,11 @@ async def astream_ptc_workflow(
                 if state_box["value"] == "archived":
                     yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'starting', 'workspace_id': workspace_id, 'sandbox_state': 'archived'})}\n\n"
 
-                session = await session_task
+                session = (
+                    await session_waiter
+                    if session_waiter in done
+                    else await session_task
+                )
                 yield f"id: 0\nevent: workspace_status\ndata: {json.dumps({'status': 'ready', 'workspace_id': workspace_id})}\n\n"
             except BaseException:
                 # Client disconnect / GeneratorExit / any error during the
@@ -444,25 +631,19 @@ async def astream_ptc_workflow(
 
         _mark_phase("session")
 
+        if route.role == "chief_of_staff":
+            # Home is often the workspace whose turn recreated the sandbox,
+            # and its agent reads and edits the other workspaces' folders.
+            await workspace_manager.restore_sibling_folders(session, workspace_id)
+
         # Fire-and-forget: update workspace activity (conditional SQL, skip if <60s)
         _fire_and_forget(
             update_workspace_activity(workspace_id),
             name=f"update_activity_{workspace_id[:8]}",
         )
 
-        # Post-session setup — parallelize when HITL (registry + plan interrupt check)
         registry_store = BackgroundRegistryStore.get_instance()
-        if request.plan_mode:
-            effective_plan_mode = True
-            background_registry = await registry_store.get_or_create_registry(thread_id)
-        elif request.hitl_response:
-            background_registry, effective_plan_mode = await asyncio.gather(
-                registry_store.get_or_create_registry(thread_id),
-                _is_plan_interrupt_pending(thread_id),
-            )
-        else:
-            effective_plan_mode = False
-            background_registry = await registry_store.get_or_create_registry(thread_id)
+        background_registry = await registry_store.get_or_create_registry(thread_id)
 
         # Stamp the current turn's run_id on the registry so newly-registered
         # subagents inherit it (spawned_run_id). The collector filters by this
@@ -470,14 +651,35 @@ async def astream_ptc_workflow(
         background_registry.current_run_id = run_id
 
         # Build graph with the workspace's session
-        # Note: agent.md is injected dynamically by WorkspaceContextMiddleware
+        # Note: agent.md is injected by the runtime-context baseline middleware
         # on every model call, ensuring it's always the latest content.
-        from src.server.app.workspace_sandbox import _set_cached_signed_url
+        from src.server.services.egress.direct_tools import order_ledger_for_turn
+        from src.server.services.thread_agent import AgentInputs
+        from src.server.services.wakeups.cancel_notice import ThreadCancelNotices
 
+        # What shapes the prompt and the tools, read as a call between turns
+        # reads it. Its project is resolved once and used three times: the
+        # agent build mounts the workspace's memory off it, the post-turn
+        # reconcile materialises that folder's skills, and the run's own task
+        # binds it for the path layer.
+        inputs = await AgentInputs.read(
+            session,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            thread_id=thread_id,
+            role=route.role,
+            user_profile=user_profile,
+        )
+        project = inputs.project
+        # One relay session per directly bound server, held for the run.
+        direct_mcp = inputs.direct_mcp
+
+        # The user's other computers this turn's calls run on, which its end
+        # backs up beside its own.
+        reached_computers: set[str] = set()
         ptc_graph = await build_ptc_graph_with_session(
             session=session,
             config=config,
-            subagent_names=subagents,
             # Optional structural gate: builds the agent without
             # Task/TaskOutput. Task report-back turns don't set it (they
             # need TaskOutput to fetch the result); their re-announce
@@ -492,14 +694,39 @@ async def astream_ptc_workflow(
             # each background subagent takes exclusive N(thread, task:id) on
             # the run's pinned session before it may write.
             namespace_owner=run_handle.guard,
-            user_id=user_id,
-            plan_mode=effective_plan_mode,
-            thread_id=thread_id,
-            store=setup.store,
-            on_signed_url=_set_cached_signed_url,
+            **inputs.build_kwargs(),
+            order_ledger=order_ledger_for_turn(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+                run_id=run_id,
+                turn_index=run_handle.turn_index,
+            ),
+            turn_context=turn_context,
+            # A port, not a value: the switch can flip mid-turn from any
+            # worker, so the agent re-reads the row on every call.
+            subagent_switch=partial(read_thread_subagents_allowed, thread_id),
+            window_coverage=partial(runs_held, thread_id),
+            cancel_notices=ThreadCancelNotices(thread_id, turn_context.tool_timezone),
+            reached_computers=reached_computers,
         )
 
         _mark_phase("graph_build")
+
+        base_checkpoint_id = await turn_start_checkpoint_id(
+            thread_id, request, getattr(ptc_graph, "checkpointer", None)
+        )
+        cancelled_calls = []
+        if (
+            route.role == "chief_of_staff"
+            and request.hitl_response
+            and not request.checkpoint_id
+        ):
+            # A Home thread the retired Flash agent ran may be waiting on a
+            # step only Flash had. A resume has no base: the route refused one
+            # whose pause is off the branch, so the newest checkpoint is the
+            # pause it answers.
+            cancelled_calls = await cancel_tool_calls_it_lacks(ptc_graph, thread_id)
 
         if session.sandbox:
             sandbox_id = getattr(session.sandbox, "sandbox_id", None)
@@ -520,91 +747,25 @@ async def astream_ptc_workflow(
         # Only set on normal turns: HITL resumes and checkpoint replays carry no new
         # user message, so the middleware must not inject (mirrors the prior guard).
         if not request.hitl_response and not is_checkpoint_replay:
-            skill_contexts = prepare_skill_contexts(messages, request, mode="ptc")
+            skill_contexts = prepare_skill_contexts(
+                messages,
+                request,
+                extra_commands=user_skill_commands(config),
+                allowed_skills=turn_skill_names(config),
+            )
         else:
             skill_contexts = None
         skill_dirs = (
-            [local_dir for local_dir, _ in config.skills.local_skill_dirs_with_sandbox()]
+            config.skills.local_skill_dirs()
+            + ([config.user_skill_dir] if config.user_skill_dir else [])
             if skill_contexts
             else None
         )
 
         # Multimodal Context Injection
-        # All attachments are uploaded to sandbox (when available) so the
-        # agent always has file access.  Model-supported modalities also get
-        # native content blocks merged into the user message.
-        multimodal_contexts = parse_multimodal_contexts(request.additional_context)
-        if multimodal_contexts and not request.hitl_response:
-            # 1. Upload ALL files to sandbox
-            file_paths: list = []
-            if session and session.sandbox:
-                file_paths = await upload_to_sandbox(
-                    multimodal_contexts, session.sandbox
-                )
-                logger.info(
-                    f"[PTC_CHAT] Uploaded {len(multimodal_contexts)} attachment(s) to sandbox"
-                )
-
-            # 2. Filter by model capability for native content blocks
-            modalities = get_input_modalities(effective_model, custom_modalities=config.input_modalities) if effective_model else ["text"]
-            supported, unsupported, file_only = filter_multimodal_by_capability(
-                multimodal_contexts, modalities
-            )
-
-            # 3. Inject supported as native content blocks (merged into user message)
-            if supported:
-                supported_paths = [
-                    file_paths[i]
-                    for i, ctx in enumerate(multimodal_contexts)
-                    if ctx in supported
-                ] if file_paths else None
-                messages = inject_multimodal_context(
-                    messages, supported, file_paths=supported_paths
-                )
-                logger.info(
-                    f"[PTC_CHAT] Multimodal context injected: "
-                    f"{len(supported)} supported attachment(s)"
-                )
-
-            # Helper to build per-file path notes
-            def _file_note(ctx, idx):
-                desc = ctx.description or "file"
-                data = ctx.data
-                mime = data.split(":")[1].split(";")[0] if ":" in data else "unknown"
-                fpath = file_paths[idx] if file_paths and idx < len(file_paths) else None
-                if fpath:
-                    return (
-                        f"The user attached a file ({desc}, {mime}). "
-                        f"It has been saved to {fpath}. "
-                        f"Use Python to process it."
-                    )
-                return f"The user attached a file ({desc}, {mime})."
-
-            # 4. Unsupported image/PDF: "cannot view" warning + file paths
-            if unsupported:
-                notes = [
-                    _file_note(ctx, i)
-                    for i, ctx in enumerate(multimodal_contexts)
-                    if ctx in unsupported
-                ]
-                _append_to_last_user_message(
-                    messages, build_unsupported_reminder(notes)
-                )
-
-            # 5. File-only (xlsx, csv, etc.): path notes only, no "cannot view"
-            if file_only:
-                notes = [
-                    _file_note(ctx, i)
-                    for i, ctx in enumerate(multimodal_contexts)
-                    if ctx in file_only
-                ]
-                _append_to_last_user_message(
-                    messages, build_file_reminder(notes)
-                )
-                logger.info(
-                    f"[PTC_CHAT] {len(file_only)} file-only attachment(s) "
-                    f"uploaded to sandbox for {effective_model}"
-                )
+        messages = await attach_request_files(
+            messages, request, session, effective_model, config, project=project
+        )
 
         # Build input state or resume command
         if request.hitl_response:
@@ -612,7 +773,12 @@ async def astream_ptc_workflow(
             # Pydantic validates this into HITLResponse models, but LangChain's
             # HumanInTheLoopMiddleware expects plain dicts (subscriptable).
             resume_payload = serialize_hitl_response_map(request.hitl_response)
-            input_state = Command(resume=resume_payload)
+            input_state = Command(
+                resume=resume_payload,
+                # None for a resume that was not credit-paused, which is what
+                # ``update`` defaults to anyway.
+                update=await build_credit_resume_update(thread_id, run_id),
+            )
             logger.info(
                 f"[PTC_RESUME] thread_id={thread_id} "
                 f"hitl_response keys={list(request.hitl_response.keys())}"
@@ -631,30 +797,6 @@ async def astream_ptc_workflow(
                 "current_agent": "ptc",  # For FileOperationMiddleware SSE events
             }
             # Skill tools auto-load via SkillsMiddleware (sets loaded_skills in state).
-
-        # =====================================================================
-        # Plan Mode Injection
-        # =====================================================================
-        # When plan_mode is enabled, inject a reminder for the agent to create
-        # a plan and submit it for approval before executing any changes.
-        if effective_plan_mode and not request.hitl_response:
-            plan_mode_reminder = (
-                "\n\n<system-reminder>\n"
-                "[PLAN MODE ENABLED]\n"
-                "Before making any changes, you MUST:\n"
-                "1. Explore the codebase to understand the current state\n"
-                "2. Create a detailed plan describing what you intend to do\n"
-                "3. Call the `SubmitPlan` tool with your plan description\n"
-                "4. Wait for user approval before proceeding with execution\n"
-                "Do NOT execute any write operations until the plan is approved.\n"
-                "</system-reminder>"
-            )
-            # Append reminder to the last user message
-            if isinstance(input_state, dict) and input_state.get("messages"):
-                _append_to_last_user_message(
-                    input_state["messages"], plan_mode_reminder
-                )
-            logger.info(f"[PTC_CHAT] Plan mode enabled for thread_id={thread_id}")
 
         # =====================================================================
         # Inline Context Injection (directive + widget + chart selection)
@@ -682,11 +824,15 @@ async def astream_ptc_workflow(
         # =====================================================================
         # Save user request to system thread directory (non-critical)
         # =====================================================================
-        if not request.hitl_response and session.sandbox:
+        if not request.hitl_response and session.sandbox and project:
             short_id = thread_id[:8]
             try:
-                request_path = session.sandbox.normalize_path(
-                    f".agents/threads/{short_id}/request.md"
+                # The project is passed explicitly: this runs on the request
+                # task, before ``run_with_project`` binds the turn's, so there
+                # is no bound project for the sandbox to resolve against.
+                request_path = (
+                    f"{session.sandbox.workspace(project).thread_dir(short_id)}"
+                    "/request.md"
                 )
                 _fire_and_forget(
                     session.sandbox.awrite_file_text(request_path, user_input),
@@ -703,23 +849,28 @@ async def astream_ptc_workflow(
             thread_id=thread_id,
             user_id=user_id,
             workspace_id=workspace_id,
-            mode="ptc",
-            timezone_str=timezone_str,
+            timezone_str=turn_context.tool_timezone,
             token_callback=token_callback,
             request=request,
             effective_model=effective_model,
-            is_byok=is_byok,
-            recursion_limit=get_ptc_recursion_limit(),
-            plan_mode=effective_plan_mode,
             skill_contexts=skill_contexts,
             skill_dirs=skill_dirs,
             run_id=run_id,
             turn_index=run_handle.turn_index,
+            surface=turn_surface(request, prior_thread),
+            extra_configurable=extra_configurable,
+            base_checkpoint_id=base_checkpoint_id,
+            from_server=from_server,
         )
         # Propagate run_id to LangGraph via the top-level config key; it
         # lands on ExecutionInfo.run_id and CheckpointMetadata.run_id so
         # LangSmith / checkpoint inspection can correlate by this UUID.
         graph_config["run_id"] = run_id
+        steer_input_id = await open_with_steers_ahead(
+            thread_id, run_id, request, input_state
+        )
+        if steer_input_id:
+            graph_config["configurable"]["steer_input_message_id"] = steer_input_id
 
         handler = RunSSEProducer(
             thread_id=thread_id,
@@ -727,10 +878,9 @@ async def astream_ptc_workflow(
             token_callback=token_callback,
             tool_tracker=tool_tracker,
             agent_config=config,
+            turn_index=run_handle.turn_index,
+            announced=announced(query_metadata),
         )
-
-        # Track steering messages injected mid-workflow for post-completion backfill
-        setup_steering_tracking(handler)
 
         # =====================================================================
         # Background Execution with Completion Callback
@@ -741,50 +891,77 @@ async def astream_ptc_workflow(
         # already ran there (gated on ``needs_startup``) so steering routed
         # against live state.
 
-        # Pre-finalize artifact hook: capture sandbox images -> upload to
-        # cloud storage -> rewrite storage URLs in the events about to be
-        # archived. Runs inside _finalize_run, before the terminal txn.
-        async def capture_artifacts(sse_events):
-            if session and session.sandbox:
-                from src.server.services.persistence.image_capture import (
-                    capture_and_rewrite_images,
-                )
-
-                await capture_and_rewrite_images(
-                    sse_events, session.sandbox, thread_id=thread_id,
-                )
+        # Runs inside _finalize_run, before the terminal txn that records
+        # what it captured.
+        capture_artifacts = _artifact_hook(
+            session, thread_id=thread_id, project=project
+        )
 
         # Post-finalize side effects only (v4): the durable terminal write —
         # response row, usage, projection — already happened in BTM's
         # _finalize_run before this callback fires. A failure here is logged
         # by the caller and never changes the run's outcome.
         async def on_background_workflow_complete(task_info):
-            # Flash report-back moved to the hook outbox (1.7): finalize
+            # Report-back moved to the hook outbox (1.7): finalize
             # enqueues a durable report_back job, so a crash right here can
             # no longer drop the dispatch. This callback keeps only
             # best-effort sandbox housekeeping.
 
-            # Post-completion sandbox housekeeping (parallel)
+            # Post-completion sandbox housekeeping. Reconcile BEFORE the
+            # backup — the reconcile mutates the skills ledger and dirs, and
+            # the file backup should capture the converged state.
             ws_manager = WorkspaceManager.get_instance()
-            housekeeping = [ws_manager._backup_files_to_db(request.workspace_id)]
             if session and session.sandbox:
-                housekeeping.append(session.sandbox.sync_skills_lock())
-            results = await asyncio.gather(*housekeeping, return_exceptions=True)
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    task_name = "file backup" if i == 0 else "lock sync"
-                    logger.warning(
-                        f"[PTC_COMPLETE] {task_name} failed for {thread_id}: {result}"
-                    )
+                # The run is terminal, so a settle may move the folder now: the
+                # pass reads it under the folder hold, not from the turn start.
+                await ws_manager.reconcile_skills_if_running(
+                    workspace_id, user_id, source="post_turn"
+                )
+            try:
+                # Any project on the machine may have changed, not only this
+                # one: the sweep finds which, and mirrors those.
+                await ws_manager.backup_changed_projects(
+                    workspace_id, session=session
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[PTC_COMPLETE] file backup failed for {thread_id}: {e}"
+                )
+            # What the Chief of Staff wrote on another computer has no turn of
+            # that computer's own to sweep it, so the mirror is owed until one
+            # succeeds, as a command's end there owes it.
+            for computer_id in sorted(reached_computers):
+                await mirror_computer(computer_id)
+            # A turn is what fills the shared disk, so its end is when the
+            # reading the warning and the next turn's context rely on moves.
+            if session and session.computer_id:
+                await ws_manager.refresh_computer_disk(
+                    session.computer_id,
+                    min_age_s=TURN_MEASURE_MIN_INTERVAL_SECONDS,
+                )
 
         # Start workflow in background with event buffering
         await manager.start_run(
             thread_id=thread_id,
             run_id=run_id,
-            workflow_generator=handler.stream_workflow(
-                graph=ptc_graph,
-                input_state=input_state,
-                config=graph_config,
+            # The project is bound outermost, in the run's own task: a graph
+            # node runs in a task created from the caller's context, so a
+            # ContextVar set inside the graph would not reach the next node.
+            workflow_generator=run_with_project(
+                project,
+                run_with_credit_gate(
+                    credit_gate,
+                    # Relay sessions for direct tools open and close with the
+                    # run, in the run's task, not with this request's generator.
+                    direct_mcp.drive(
+                        handler.stream_workflow(
+                            graph=ptc_graph,
+                            input_state=input_state,
+                            config=graph_config,
+                            settled_results=cancelled_calls,
+                        )
+                    ),
+                ),
             ),
             metadata={
                 "workspace_id": workspace_id,
@@ -793,11 +970,10 @@ async def astream_ptc_workflow(
                 "sandbox": session.sandbox if session else None,
                 "started_at": datetime.now().isoformat(),
                 "start_time": start_time,
-                "msg_type": "ptc",
                 "is_byok": is_byok,
                 "burst_slot_id": request.burst_slot_id,
                 "locale": request.locale,
-                "timezone": timezone_str,
+                "timezone": turn_context.tool_timezone,
                 "handler": handler,
                 "token_callback": token_callback,
                 "run_handle": run_handle,
@@ -805,8 +981,9 @@ async def astream_ptc_workflow(
             },
             completion_callback=on_background_workflow_complete,
             graph=ptc_graph,
+            # Manager owns burst slot release from registration on
+            on_registered=scope.transfer_to_executor,
         )
-        scope.transfer_to_executor()  # Manager owns burst slot release from here
         # Admission complete — release the lock so concurrent POSTs can
         # see the new RUNNING LocalRunExecution via ``wait_or_steer`` and route
         # to steering instead of contending here.
@@ -817,8 +994,11 @@ async def astream_ptc_workflow(
         phases = " ".join(f"{k}={v:.0f}ms" for k, v in _phase_times.items())
         llm_def = config.llm_definition
         model_tag = (
-            f"{llm_def.provider}/{llm_def.model_id}" if llm_def
-            else config.llm.name if config.llm else "unknown"
+            f"{llm_def.provider}/{llm_def.model_id}"
+            if llm_def
+            else config.llm.name
+            if config.llm
+            else "unknown"
         )
         logger.info(
             f"[PTC_TIMING] thread_id={thread_id} model={model_tag} total={total_ms:.0f}ms ({phases})"
@@ -843,24 +1023,13 @@ async def astream_ptc_workflow(
         async for event in stream_from_log(thread_id, run_id, last_event_id=None):
             yield event
 
-        # After the workflow ends, return any unconsumed steering messages so
-        # the client can re-render them as locally-queued context for the next
-        # turn instead of losing them silently.
-        steering_event = await drain_steering_return_event(thread_id)
-        if steering_event:
-            logger.info(
-                f"[PTC_CHAT] Returning unconsumed steering message(s) "
-                f"to client: thread_id={thread_id}"
-            )
-            yield steering_event
-
     except (asyncio.CancelledError, GeneratorExit):
         if scope.slot_owned:
-            await scope.fail_open("client disconnected during setup")
             logger.warning(
                 f"[PTC_CHAT] Generator cancelled before workflow started: "
                 f"thread_id={thread_id} workspace_id={workspace_id}"
             )
+            await scope.fail_open("client disconnected during setup")
         else:
             logger.warning(
                 f"[PTC_CHAT] Generator cancelled (client disconnect?): "
@@ -893,9 +1062,7 @@ async def astream_ptc_workflow(
             start_time=start_time,
             request=request,
             is_byok=is_byok,
-            msg_type="ptc",
-            log_prefix="PTC_CHAT",
-            timezone_str=timezone_str,
+            turn_context=turn_context,
         ):
             yield event
 
@@ -905,5 +1072,3 @@ async def astream_ptc_workflow(
         # Backstop for any error path that bypassed the normal release
         # (e.g., exception before start_run); idempotent on the scope.
         scope.release_admission()
-        # Always stop execution tracking to prevent memory leaks and context pollution
-        ExecutionTracker.stop_tracking()

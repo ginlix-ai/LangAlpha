@@ -10,7 +10,11 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from src.utils.cache.stream_quota import StreamQuota
+    from src.utils.stream_coalescing import DeltaCoalescer
 
 TerminalStatus = Literal[
     "completed", "error", "cancelled", "timeout", "never_started"
@@ -19,11 +23,40 @@ TerminalStatus = Literal[
 
 Deliberately not the durable ledger's vocabulary: this is one task's local
 view, the ledger's terminal CAS is the durable truth, and ``run_executor``
-maps between them (a timeout, for instance, is a cancel to the ledger). The
+maps between them (a timeout, for instance, is a cancel to the ledger when the
+workflow driver kills a child, and an error when a run outruns its own clock,
+so that one still reports back). The
 ledger's ``interrupted`` has no in-memory counterpart — an interrupt leaves
 the task pending, and ``never_started`` has none either — a run that never
 spawned either has no row or already settled its own as ``error``.
 """
+
+# The same values as a set, for the one caller that has to ask whether a
+# string a writer handed it is one of them.
+_TERMINAL_STATUSES = frozenset(
+    ("completed", "error", "cancelled", "timeout", "never_started")
+)
+
+# Shared by ``BackgroundTask.display_id`` and its inverse, ``bare_task_id``,
+# so the name the agent is shown is always one it can pass back.
+_DISPLAY_PREFIX = "Task-"
+
+
+def bare_task_id(task_id: str | None) -> str | None:
+    """The task id the agent means, from either name it is shown.
+
+    Launch results and reports name a task by its display id
+    (``Task-k7Xm2p``), so that is what the agent passes back as often as the
+    bare id. A minted id is six characters, so none is long enough to carry
+    the prefix itself.
+    """
+    if task_id is None:
+        return None
+    task_id = task_id.strip()
+    if task_id.startswith(_DISPLAY_PREFIX) and len(task_id) > 6:
+        return task_id.removeprefix(_DISPLAY_PREFIX)
+    return task_id
+
 
 WORKFLOW_SUBAGENT_TYPE = "workflow"
 """The ``subagent_type`` a workflow run's task carries.
@@ -86,7 +119,7 @@ class BackgroundTask:
     by reading the old boolean as success."""
 
     result_seen: bool = False
-    """Whether the agent has seen this task's result (via task_output, wait, or notification)."""
+    """Whether the agent has seen this task's result (via TaskOutput or a notification)."""
 
     # Tool call tracking
     tool_call_counts: dict[str, int] = field(default_factory=dict)
@@ -97,12 +130,6 @@ class BackgroundTask:
 
     current_tool: str = ""
     """Name of the tool currently being executed."""
-
-    last_checked_at: float = field(default_factory=time.time)
-    """Epoch seconds. Bumped whenever the agent inspects this task via the
-    Task tool (status/list/update/resume/cancel actions) or via TaskOutput.
-    Surfaced to the LLM so it can gauge how recently it polled, independent
-    of whether anything changed."""
 
     last_updated_at: float = field(default_factory=time.time)
     """Epoch seconds. Bumped only on meaningful transitions:
@@ -117,6 +144,14 @@ class BackgroundTask:
     are deliberately excluded — they're high-volume pacing noise. The
     OrphanCollector liveness check falls back to ``cur_events > prev_events``
     for tool-only progression, so idle detection still works."""
+
+    alive_at: float = field(default_factory=time.time)
+    """Epoch seconds of the last stream heartbeat, which beats only while a
+    model call runs. The OrphanCollector reads it as progress too: a model
+    can go ``STREAM_CHUNK_TIMEOUT_S`` without a chunk, on each of two
+    attempts, and a task with no event for the collector's idle timeout
+    reads as abandoned and loses the claim that bills it and keeps its
+    events."""
 
     agent_id: str = ""
     """Stable unique identity: '{subagent_type}:{uuid4}'."""
@@ -145,6 +180,15 @@ class BackgroundTask:
     """Sticky circuit-break: a failed spill permanently stops this task's Redis
     writes, and the run ends as ``error(transport_lost)`` rather than degrading
     to the in-memory tail — a gap in the replay archive is not recoverable."""
+
+    stream_quota: StreamQuota | None = field(default=None, repr=False)
+    """This task's stream budget, made at its first spill. Unlike
+    ``captured_event_bytes`` it follows the stream, not the round, like the
+    sequence: a resume that keeps the stream keeps what it charged."""
+
+    delta_coalescer: DeltaCoalescer | None = field(default=None, repr=False)
+    """The registry's coalescer holding this task's unsent delta, created on
+    the first append."""
 
     spawned_turn_index: int = 0
     """The turn_index of the parent turn that spawned this subagent."""
@@ -216,7 +260,16 @@ class BackgroundTask:
             return self.result
         self.result = result
         failed = isinstance(result, dict) and result.get("success") is False
-        self.terminal_status = "error" if failed else "completed"
+        # A writer that settled on a specific terminal says so in its payload.
+        # ``success: False`` alone reads as a failure, which is wrong for a
+        # stop that was neutral by design: the ledger row for a credit stop
+        # says "cancelled", and an in-memory "error" here would contradict
+        # every other surface and steer the model off the resumable path.
+        declared = result.get("status") if isinstance(result, dict) else None
+        if failed and declared in _TERMINAL_STATUSES:
+            self.terminal_status = declared
+        else:
+            self.terminal_status = "error" if failed else "completed"
         self.last_updated_at = time.time()
         return result
 
@@ -284,7 +337,7 @@ class BackgroundTask:
     @property
     def display_id(self) -> str:
         """Return Task-<id> format for display."""
-        return f"Task-{self.task_id}"
+        return f"{_DISPLAY_PREFIX}{self.task_id}"
 
     @property
     def is_pending(self) -> bool:
@@ -296,10 +349,25 @@ class BackgroundTask:
         return not self.asyncio_task.done()
 
     @property
+    def live_writers(self) -> list[asyncio.Task]:
+        """The writer handles still running, whatever the terminal status says.
+
+        Both count: a cancelled wrapper can return while its shielded handler
+        keeps checkpointing, and a kill stamps ``terminal_status`` before
+        either has unwound, so neither the status nor one handle says the task
+        has stopped writing.
+        """
+        return [
+            writer
+            for writer in (self.asyncio_task, self.handler_task)
+            if writer is not None and not writer.done()
+        ]
+
+    @property
     def is_turn_visible(self) -> bool:
-        """Visible to turn-level machinery (notifications, wait-all, TaskOutput
-        aggregates). Workflow-owned children are driver-scoped instead — but a
-        workflow run task itself IS turn-visible: it's what the agent awaits."""
+        """Visible to turn-level machinery (notifications, wait-all).
+        Workflow-owned children are driver-scoped instead — but a workflow run
+        task itself IS turn-visible: it's what the agent awaits."""
         return self.owner_task_id is None
 
     def force_cancel(

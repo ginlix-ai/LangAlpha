@@ -13,6 +13,7 @@ from src.server.utils.multimodal_context import (
     build_attachment_metadata,
     inject_multimodal_context,
     parse_multimodal_contexts,
+    pdf_page_counts,
 )
 from src.utils.storage import sanitize_storage_key
 
@@ -304,6 +305,15 @@ class TestInjectMultimodalContext:
         # Original text is last
         assert blocks[-1] == {"type": "text", "text": "describe this"}
 
+    def test_a_message_with_no_words_gets_no_empty_text_block(self):
+        """The onboarding kickoff opens with images and no text of the user's;
+        an empty text block is one some providers refuse."""
+        msgs = [{"role": "user", "content": ""}]
+        ctx = MultimodalContext(type="image", data="data:image/png;base64,abc", description="positions")
+        blocks = inject_multimodal_context(msgs, [ctx])[0]["content"]
+        assert any(b.get("type") == "image_url" for b in blocks)
+        assert all(b.get("text", "x").strip() for b in blocks if b.get("type") == "text")
+
     def test_pdf_merges_file_block(self):
         msgs = [{"role": "user", "content": "summarize"}]
         ctx = MultimodalContext(type="image", data="data:application/pdf;base64,abc", description="report")
@@ -327,3 +337,40 @@ class TestInjectMultimodalContext:
         assert isinstance(result[3]["content"], list)
         # First user message untouched
         assert result[1]["content"] == "first"
+
+
+class TestPdfPageCounts:
+    @pytest.mark.asyncio
+    async def test_a_request_counts_its_pdfs_in_one_thread(self):
+        """A thread per PDF would hold as many of the shared executor's workers
+        as one request carries PDFs."""
+        import base64
+        import io
+        import threading
+        import time
+
+        import pypdf
+
+        def pdf(pages: int) -> str:
+            writer = pypdf.PdfWriter()
+            for _ in range(pages):
+                writer.add_blank_page(width=612, height=792)
+            out = io.BytesIO()
+            writer.write(out)
+            return "data:application/pdf;base64," + base64.b64encode(out.getvalue()).decode()
+
+        contexts = [
+            *(MultimodalContext(type="pdf", data=pdf(n)) for n in (1, 2, 3)),
+            MultimodalContext(type="image", data="data:image/png;base64,abc"),
+        ]
+        threads = set()
+        real = pypdf.PdfReader
+
+        def reader(stream, *args, **kwargs):
+            threads.add(threading.current_thread())
+            time.sleep(0.02)  # long enough that a parse per thread would overlap
+            return real(stream, *args, **kwargs)
+
+        with patch.object(pypdf, "PdfReader", reader):
+            assert await pdf_page_counts(contexts) == [1, 2, 3, None]
+        assert len(threads) == 1 and threading.main_thread() not in threads

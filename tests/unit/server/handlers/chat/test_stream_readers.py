@@ -28,12 +28,19 @@ from src.server.handlers.chat.run_stream_reader import (
 
 
 def _make_cache(xread_returns: list[Any]) -> MagicMock:
-    """A cache mock whose client.xread iterates through the given sequence."""
+    """A cache mock whose client.xread iterates through the given sequence.
+
+    ``xrevrange`` answers empty by default: the head probe is awaited on every
+    ``caught_up``-carrying attach, and a bare MagicMock attribute there fails
+    the await and silently exercises the probe's error path instead of the
+    empty-stream one every non-caught_up test means to be on.
+    """
     cache = MagicMock()
     cache.enabled = True
     redis = MagicMock()
     cache.client = redis
     redis.xread = AsyncMock(side_effect=xread_returns)
+    redis.xrevrange = AsyncMock(return_value=[])
     return cache
 
 
@@ -797,7 +804,12 @@ async def test_stream_from_log_main_path_closes_on_sentinel(monkeypatch):
 
     out = [ev async for ev in stream_from_log("t-sent", last_event_id=None)]
 
-    assert out == [real_bytes.decode("utf-8")]
+    # Empty head probe → the boundary is already reached at attach, so the
+    # marker leads and the backlog behind it is empty.
+    assert out == [
+        "event: caught_up\ndata: {}\n\n",
+        real_bytes.decode("utf-8"),
+    ]
     assert cache.client.xread.await_count == 1
     fake_manager.decrement_connection.assert_awaited_once_with("t-sent", "r-1")
 
@@ -862,3 +874,214 @@ async def test_disabled_cache_returns_empty_immediately():
             )
         ]
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# caught_up marker (backlog / live boundary)
+# ---------------------------------------------------------------------------
+
+
+def _entries(*seqs: int) -> list:
+    return [
+        (
+            b"workflow:stream:t1",
+            [(f"{s}-0".encode(), {b"event": f"id: {s}\nevent: x\ndata: {s}\n\n".encode()}) for s in seqs],
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_caught_up_marks_the_head_at_attach_then_live_events_follow():
+    cache = _make_cache([_entries(1, 2), _entries(3), [], []])
+    cache.client.xrevrange = AsyncMock(return_value=[(b"2-0", {b"event": b"..."})])
+
+    async def terminal() -> bool:
+        return True
+
+    with patch(
+        "src.server.handlers.chat.run_stream_reader.get_cache_client",
+        return_value=cache,
+    ):
+        out = [
+            ev
+            async for ev in _stream_from_redis_log(
+                stream_key="workflow:stream:t1",
+                terminal_check=terminal,
+                last_event_id=None,
+                caught_up_event="caught_up",
+            )
+        ]
+
+    frames = [ev for ev in out if ev != ":keepalive\n\n"]
+    assert [f.split("\n")[0] for f in frames] == ["id: 1", "id: 2", "event: caught_up", "id: 3"]
+    assert frames.count("event: caught_up\ndata: {}\n\n") == 1
+
+
+@pytest.mark.asyncio
+async def test_caught_up_lands_inside_a_batch_that_straddles_the_head():
+    # The producer appended entry 3 between the head probe and the read, so
+    # one batch carries backlog and live entries: the marker goes ahead of
+    # the first live one, never after the batch.
+    cache = _make_cache([_entries(1, 2, 3), [], []])
+    cache.client.xrevrange = AsyncMock(return_value=[(b"2-0", {b"event": b"..."})])
+
+    async def terminal() -> bool:
+        return True
+
+    with patch(
+        "src.server.handlers.chat.run_stream_reader.get_cache_client",
+        return_value=cache,
+    ):
+        out = [
+            ev
+            async for ev in _stream_from_redis_log(
+                stream_key="workflow:stream:t1",
+                terminal_check=terminal,
+                last_event_id=None,
+                caught_up_event="caught_up",
+            )
+        ]
+
+    frames = [ev for ev in out if ev != ":keepalive\n\n"]
+    assert [f.split("\n")[0] for f in frames] == ["id: 1", "id: 2", "event: caught_up", "id: 3"]
+    assert frames.count("event: caught_up\ndata: {}\n\n") == 1
+
+
+@pytest.mark.asyncio
+async def test_caught_up_is_immediate_on_an_empty_stream():
+    cache = _make_cache([[], []])
+    cache.client.xrevrange = AsyncMock(return_value=[])
+
+    async def terminal() -> bool:
+        return True
+
+    with patch(
+        "src.server.handlers.chat.run_stream_reader.get_cache_client",
+        return_value=cache,
+    ):
+        out = [
+            ev
+            async for ev in _stream_from_redis_log(
+                stream_key="workflow:stream:t1",
+                terminal_check=terminal,
+                caught_up_event="caught_up",
+            )
+        ]
+
+    assert out[0] == "event: caught_up\ndata: {}\n\n"
+
+
+@pytest.mark.asyncio
+async def test_caught_up_after_an_empty_round_when_head_raced_ahead():
+    # Head says 3 but the producer's entry 3 is not readable yet: the first
+    # empty round settles it rather than holding the client's backlog open.
+    cache = _make_cache([_entries(1, 2), [], _entries(3), [], []])
+    cache.client.xrevrange = AsyncMock(return_value=[(b"3-0", {b"event": b"..."})])
+
+    async def terminal() -> bool:
+        return True
+
+    with patch(
+        "src.server.handlers.chat.run_stream_reader.get_cache_client",
+        return_value=cache,
+    ):
+        out = [
+            ev
+            async for ev in _stream_from_redis_log(
+                stream_key="workflow:stream:t1",
+                terminal_check=terminal,
+                caught_up_event="caught_up",
+            )
+        ]
+
+    frames = [ev for ev in out if ev != ":keepalive\n\n"]
+    assert [f.split("\n")[0] for f in frames] == ["id: 1", "id: 2", "event: caught_up", "id: 3"]
+
+
+@pytest.mark.asyncio
+async def test_no_marker_without_a_caught_up_event():
+    cache = _make_cache([_entries(1), [], []])
+
+    async def terminal() -> bool:
+        return True
+
+    with patch(
+        "src.server.handlers.chat.run_stream_reader.get_cache_client",
+        return_value=cache,
+    ):
+        out = [
+            ev
+            async for ev in _stream_from_redis_log(
+                stream_key="workflow:stream:t1",
+                terminal_check=terminal,
+            )
+        ]
+
+    assert not any("caught_up" in ev for ev in out)
+
+
+@pytest.mark.asyncio
+async def test_head_probe_failure_sends_no_marker():
+    """With no head to compare against there is no boundary to announce: the
+    client's quiet-window and cap timers close the backlog on their own, and
+    an early marker would have it present the whole backlog live instead."""
+    cache = _make_cache([_entries(1), [], []])
+    cache.client.xrevrange = AsyncMock(side_effect=RuntimeError("down"))
+
+    async def terminal() -> bool:
+        return True
+
+    with patch(
+        "src.server.handlers.chat.run_stream_reader.get_cache_client",
+        return_value=cache,
+    ):
+        out = [
+            ev
+            async for ev in _stream_from_redis_log(
+                stream_key="workflow:stream:t1",
+                terminal_check=terminal,
+                caught_up_event="caught_up",
+            )
+        ]
+
+    frames = [ev for ev in out if ev != ":keepalive\n\n"]
+    assert [f.split("\n")[0] for f in frames] == ["id: 1"]
+    assert not any("caught_up" in ev for ev in out)
+
+
+@pytest.mark.asyncio
+async def test_stream_from_log_marks_the_boundary_after_the_backlog(monkeypatch):
+    """The main consumer wires ``caught_up`` through with a real head: the
+    marker lands between the replayed backlog and the first live batch."""
+    from src.server.handlers.chat import run_stream_reader as rsr_mod
+    from src.server.services.runs.executor import (
+        LocalRunExecutor,
+        LocalRunStatus,
+    )
+
+    cache = _make_cache([_entries(1, 2), _entries(3), [], []])
+    cache.client.xrevrange = AsyncMock(return_value=[(b"2-0", {b"event": b"..."})])
+    monkeypatch.setattr(rsr_mod, "get_cache_client", lambda: cache)
+
+    fake_task = MagicMock()
+    fake_task.run_id = "r-1"
+    fake_task.status = LocalRunStatus.COMPLETED
+
+    fake_manager = MagicMock()
+    fake_manager.executions = {("t-head", "r-1"): fake_task}
+    fake_manager._find_latest_for_thread = MagicMock(return_value=fake_task)
+    fake_manager.increment_connection = AsyncMock(return_value=True)
+    fake_manager.decrement_connection = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        LocalRunExecutor, "get_instance", classmethod(lambda cls: fake_manager)
+    )
+
+    out = [ev async for ev in stream_from_log("t-head", last_event_id=None)]
+
+    frames = [ev for ev in out if ev != ":keepalive\n\n"]
+    assert [f.split("\n")[0] for f in frames] == [
+        "id: 1",
+        "id: 2",
+        f"event: {rsr_mod.CAUGHT_UP_EVENT_TYPE}",
+        "id: 3",
+    ]

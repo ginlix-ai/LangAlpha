@@ -3,15 +3,15 @@
 import { ChevronDown } from "lucide-react"
 import {
   Button as AriaButton,
-  ButtonProps as AriaButtonProps,
+  type ButtonProps as AriaButtonProps,
   ListBox as AriaListBox,
-  ListBoxProps as AriaListBoxProps,
-  PopoverProps as AriaPopoverProps,
+  type ListBoxProps as AriaListBoxProps,
+  type PopoverProps as AriaPopoverProps,
   Select as AriaSelect,
-  SelectProps as AriaSelectProps,
+  type SelectProps as AriaSelectProps,
   SelectValue as AriaSelectValue,
-  SelectValueProps as AriaSelectValueProps,
-  ValidationResult as AriaValidationResult,
+  type SelectValueProps as AriaSelectValueProps,
+  type ValidationResult as AriaValidationResult,
   composeRenderProps,
   Text,
 } from "react-aria-components"
@@ -44,9 +44,9 @@ const SelectValue = <T extends object>({
   <AriaSelectValue
     className={composeRenderProps(className, (className) =>
       cn(
-        "line-clamp-1 data-[placeholder]:text-muted-foreground",
+        "line-clamp-1 data-placeholder:text-muted-foreground",
         /* Description */
-        "[&>[slot=description]]:hidden",
+        "*:[[slot=description]]:hidden",
         className
       )
     )}
@@ -58,13 +58,14 @@ const SelectTrigger = ({ className, children, ...props }: AriaButtonProps) => (
   <AriaButton
     className={composeRenderProps(className, (className) =>
       cn(
-        "flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background",
+        /* The field fill and hairline every text input carries */
+        "flex h-9 w-full items-center justify-between gap-2 rounded-md border border-(--color-border-muted) bg-input px-3 py-2 text-left text-sm ring-offset-background",
         /* Disabled */
-        "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50",
+        "data-disabled:cursor-not-allowed data-disabled:opacity-50",
         /* Focused */
-        "data-[focus-visible]:outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-ring data-[focus-visible]:ring-offset-2",
+        "data-focus-visible:outline-hidden data-focus-visible:ring-2 data-focus-visible:ring-ring data-focus-visible:ring-offset-2",
         /* Resets */
-        "focus-visible:outline-none",
+        "focus-visible:outline-hidden",
         className
       )
     )}
@@ -73,16 +74,18 @@ const SelectTrigger = ({ className, children, ...props }: AriaButtonProps) => (
     {composeRenderProps(children, (children) => (
       <>
         {children}
-        <ChevronDown aria-hidden="true" className="size-4 opacity-50" />
+        <ChevronDown aria-hidden="true" className="size-4 shrink-0 opacity-50" />
       </>
     ))}
   </AriaButton>
 )
 
+// Never narrower than the trigger, and wider when an option needs it, so a
+// compact trigger does not fold its options onto two lines.
 const SelectPopover = ({ className, ...props }: AriaPopoverProps) => (
   <Popover
     className={composeRenderProps(className, (className) =>
-      cn("w-[--trigger-width]", className)
+      cn("w-max min-w-(--trigger-width) max-w-[calc(100vw-32px)]", className)
     )}
     {...props}
   />
@@ -95,7 +98,7 @@ const SelectListBox = <T extends object>({
   <AriaListBox
     className={composeRenderProps(className, (className) =>
       cn(
-        "max-h-[inherit] overflow-auto p-1 outline-none [clip-path:inset(0_0_0_0_round_calc(var(--radius)-2px))]",
+        "max-h-[inherit] overflow-auto p-1 outline-hidden [clip-path:inset(0_0_0_0_round_calc(var(--radius)-2px))]",
         className
       )
     )}

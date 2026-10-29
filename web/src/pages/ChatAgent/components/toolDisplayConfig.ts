@@ -3,13 +3,18 @@ import {
   TrendingUp, Building2, BarChart3, PieChart, Search, Globe,
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
-  Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye,
+  Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye, Plug, Send, Contact, AlarmClock, Activity,
+  Layers, ArrowUpDown,
 } from 'lucide-react';
-import { classifyAgentPath, topicFromMemoryKey, type AgentPathInfo } from '../utils/agentPaths';
+import {
+  classifyAgentPath, topicFromMemoryKey, type AgentPathInfo, type UserDataEntity,
+} from '../utils/agentPaths';
+import { directToolDisplayName, parseDirectToolName, summarizeDirectToolArgs } from '../utils/directTools';
 import { INTERVAL_LABEL } from '@/lib/bars';
-
-/** Translation function signature compatible with i18next's t() */
-type TFn = (key: string, opts?: Record<string, unknown>) => string;
+import { LARGE_TOOL_RESULTS_PREFIX } from './filePanel/fileMeta';
+import { messagingAppName, platformOf } from './messaging/messageDelivery';
+import { quietArg, wakeupArgListed } from '../session/wakeupArgs';
+import type { TFn } from '@/lib/elapsed';
 
 interface ToolDisplayEntry {
   displayName: string;
@@ -61,8 +66,12 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   get_market_indices:       { displayName: 'Market Indices',       i18nKey: 'marketIndices',       icon: BarChart3 },
   get_sector_performance:   { displayName: 'Sector Performance',   i18nKey: 'sectorPerformance',   icon: PieChart },
   screen_stocks:            { displayName: 'Stock Screener',       i18nKey: 'stockScreener',       icon: Search },
+  get_options_chain:        { displayName: 'Options Chain',        i18nKey: 'optionsChain',        icon: Layers },
+  get_market_movers:        { displayName: 'Market Movers',        i18nKey: 'marketMovers',        icon: ArrowUpDown },
   // Market watch (live price injection) — one tool, action="watch"/"unwatch"
   watch_market:             { displayName: 'Watch Market',         i18nKey: 'watchMarket',         icon: Eye },
+  // The agent's own follow-ups: set, cancel or list them, or end a check quietly
+  schedule_wakeup:          { displayName: 'Wakeups',              i18nKey: 'scheduleWakeup',      icon: AlarmClock },
   // SEC
   get_sec_filing:           { displayName: 'SEC Filing',           i18nKey: 'secFiling',           icon: FileBarChart },
   // Web search / news
@@ -76,7 +85,7 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   // Price Data (MCP)
   get_stock_data:           { displayName: 'Stock Data',           i18nKey: 'stockData',           icon: TrendingUp },
   get_asset_data:           { displayName: 'Asset Data',           i18nKey: 'assetData',           icon: TrendingUp },
-  // User Data
+  // User Data: retired tools, kept so threads that called them still render
   get_user_data:            { displayName: 'User Data',            i18nKey: 'userData',            icon: User },
   update_user_data:         { displayName: 'Update Data',          i18nKey: 'updateData',          icon: User },
   remove_user_data:         { displayName: 'Remove Data',          i18nKey: 'removeData',          icon: User },
@@ -93,6 +102,9 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   think_tool:               { displayName: 'Thinking',             i18nKey: 'thinking',            icon: Brain },
   // Background subagent management
   TaskOutput:               { displayName: 'Task Output',          i18nKey: 'taskOutput',          icon: ClipboardList },
+  // What will report back to the thread; it replaced BashOutput, whose calls
+  // in older threads keep the generic row they always had.
+  ThreadStatus:             { displayName: 'Thread Status',        i18nKey: 'threadStatus',        icon: Activity },
   // Automations
   check_automations:        { displayName: 'Automations',          i18nKey: 'automations',         icon: Clock },
   create_automation:        { displayName: 'Create Automation',    i18nKey: 'createAutomation',    icon: Zap },
@@ -100,6 +112,9 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   // Chart annotation
   draw_chart_annotation:    { displayName: 'Annotate Chart',       i18nKey: 'annotateChart',       icon: PenLine },
   manage_chart_annotations: { displayName: 'Manage Annotations',   i18nKey: 'manageAnnotations',   icon: Settings },
+  // Messaging
+  send_message:             { displayName: 'Send Message',         i18nKey: 'sendMessage',         icon: Send },
+  list_message_targets:     { displayName: 'Message Targets',      i18nKey: 'messageTargets',      icon: Contact },
 };
 
 // Single source of truth for "what tool name indicates a file
@@ -111,16 +126,30 @@ const FILE_READ_TOOLS = new Set(['Read']);
 const FILE_PATH_TOOLS = new Set([...FILE_WRITE_TOOLS, ...FILE_READ_TOOLS]);
 
 /** Classifies the file_path arg for Read/Write/Edit. Returns null for all other tools. */
-function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined): AgentPathInfo | null {
+function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined, root?: string | null): AgentPathInfo | null {
   if (!args) return null;
   if (!FILE_PATH_TOOLS.has(toolName)) return null;
   const fp = (args.file_path || args.filePath) as string | undefined;
   if (!fp) return null;
-  return classifyAgentPath(fp);
+  return classifyAgentPath(fp, root);
 }
 
-export function getDisplayName(rawToolName: string, t?: TFn, args?: ToolCallArgs): string {
-  const info = classifyFromArgs(rawToolName, args);
+/**
+ * What a title reads beyond the call's own args: the result's artifact, which
+ * carries a direct tool's vendor names, and the computer root its paths start with.
+ */
+export interface ToolTitleContext {
+  artifact?: unknown;
+  root?: string | null;
+}
+
+export function getDisplayName(
+  rawToolName: string,
+  t?: TFn,
+  args?: ToolCallArgs,
+  { artifact, root }: ToolTitleContext = {},
+): string {
+  const info = classifyFromArgs(rawToolName, args, root);
   if (info) {
     if (info.kind === 'skill') {
       return t ? t('toolArtifact.tool.skill') : 'Skill';
@@ -133,25 +162,33 @@ export function getDisplayName(rawToolName: string, t?: TFn, args?: ToolCallArgs
     if (info.kind === 'memo') {
       return t ? t('toolArtifact.tool.memo') : 'Memo';
     }
-    if (info.kind === 'user-profile') {
-      // entity is 'portfolio' | 'watchlist' | 'preference' — i18n key per entity.
+    if (info.kind === 'user-data') {
       return t ? t(`toolArtifact.tool.${info.entity}`) : entityLabel(info.entity);
     }
   }
+  const direct = directToolDisplayName(rawToolName, artifact);
+  if (direct) return direct;
   const config = TOOL_DISPLAY_CONFIG[rawToolName];
   if (t && config?.i18nKey) return t(`toolArtifact.tool.${config.i18nKey}`);
   return config?.displayName || rawToolName;
 }
 
 /** Title-case fallback when no `t` is supplied (tests, server-rendered logs). */
-function entityLabel(entity: 'portfolio' | 'watchlist' | 'preference'): string {
+function entityLabel(entity: UserDataEntity): string {
   if (entity === 'portfolio') return 'Portfolio';
   if (entity === 'watchlist') return 'Watchlist';
+  if (entity === 'automations') return 'Automations';
+  if (entity === 'user') return 'Account';
   return 'Preference';
 }
 
-export function getToolIcon(rawToolName: string, args?: ToolCallArgs): LucideIcon {
-  const info = classifyFromArgs(rawToolName, args);
+/** A subagent spawn, under either spelling the stream has used for it. */
+export function isTaskTool(toolName: string | undefined): boolean {
+  return toolName === 'Task' || toolName === 'task';
+}
+
+export function getToolIcon(rawToolName: string, args?: ToolCallArgs, root?: string | null): LucideIcon {
+  const info = classifyFromArgs(rawToolName, args, root);
   if (info) {
     if (info.kind === 'skill') return Sparkles;
     if (info.kind === 'memory') return BookMarked;
@@ -161,18 +198,21 @@ export function getToolIcon(rawToolName: string, args?: ToolCallArgs): LucideIco
       // though current backend rules make this read-only by design).
       return FILE_WRITE_TOOLS.has(rawToolName) ? BookPlus : BookText;
     }
-    if (info.kind === 'user-profile') return User;
+    // Automations take the glyph check_automations uses, so the file and the
+    // tool read as one surface.
+    if (info.kind === 'user-data') return info.entity === 'automations' ? Clock : User;
   }
+  if (parseDirectToolName(rawToolName)) return Plug;
   return TOOL_DISPLAY_CONFIG[rawToolName]?.icon || Wrench;
 }
 
-export function getInProgressText(rawToolName: string, toolCall: ToolCall | undefined, t?: TFn): string {
+export function getInProgressText(rawToolName: string, toolCall: ToolCall | undefined, t?: TFn, root?: string | null): string {
   const args = toolCall?.args;
   const tr = t ? (key: string, opts?: Record<string, unknown>) => t(`toolArtifact.inProgress.${key}`, opts) : null;
 
   // Path-aware variants for store-backed paths. These short-circuit the
   // generic Read/Write/Edit branches below.
-  const info = classifyFromArgs(rawToolName, args);
+  const info = classifyFromArgs(rawToolName, args, root);
   if (info) {
     if (info.kind === 'skill' && rawToolName === 'Read') {
       return info.name
@@ -229,16 +269,23 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
         return tr?.('updatingMemoSlug', { slug: info.key }) ?? `updating memo ${info.key}...`;
       }
     }
-    if (info.kind === 'user-profile') {
-      // Write and Edit both surface as "updating" — UserDataBackend treats
-      // either as an upsert against the canonical DB row(s), so the user-
-      // facing verb is the same.
-      const entity = info.entity;
+    if (info.kind === 'user-data') {
+      const { entity } = info;
+      // Write and Edit both surface as "updating": UserDataBackend and
+      // AutomationsBackend apply either as changes to the canonical DB rows,
+      // so the user-facing verb is the same.
       if (rawToolName === 'Read') {
         return tr?.(`reading_${entity}`) ?? `reading ${entity}...`;
       }
       return tr?.(`updating_${entity}`) ?? `updating ${entity}...`;
     }
+  }
+
+  const direct = parseDirectToolName(rawToolName);
+  if (direct) {
+    return direct.server
+      ? (tr?.('callingServer', { server: direct.server }) ?? `calling ${direct.server}...`)
+      : (tr?.('processing') ?? 'processing...');
   }
 
   switch (rawToolName) {
@@ -267,10 +314,30 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       return tr?.('fetchingSectorData') ?? 'fetching sector data...';
     case 'screen_stocks':
       return tr?.('screeningStocks') ?? 'screening stocks...';
-    case 'watch_market':
-      return args?.action === 'unwatch'
-        ? (tr?.('unwatchingMarket') ?? 'stopping market watch...')
-        : (tr?.('watchingMarket') ?? 'starting market watch...');
+    case 'get_options_chain':
+      return args?.underlying
+        ? (tr?.('fetchingSymbolOptions', { symbol: args.underlying }) ?? `fetching ${args.underlying} options...`)
+        : (tr?.('fetchingOptions') ?? 'fetching options...');
+    case 'get_market_movers':
+      if (args?.direction === 'losers') return tr?.('fetchingLosers') ?? 'fetching top losers...';
+      return tr?.('fetchingGainers') ?? 'fetching top gainers...';
+    case 'watch_market': {
+      if (args?.action === 'unwatch') return tr?.('unwatchingMarket') ?? 'stopping market watch...';
+      if (args?.action === 'cancel') return tr?.('cancellingPriceTargets') ?? 'cancelling price targets...';
+      // Targets stand apart from the watch, so a call that sets only targets
+      // starts no watch, and one with neither only reads the state.
+      const has = (key: string) => { const v = args?.[key]; return Array.isArray(v) && v.length > 0; };
+      if (has('symbols')) return tr?.('watchingMarket') ?? 'starting market watch...';
+      if (has('targets')) return tr?.('settingPriceTargets') ?? 'setting price targets...';
+      return tr?.('checkingMarketWatch') ?? 'checking market watch...';
+    }
+    case 'schedule_wakeup': {
+      const tw = (key: string, fallback: string) => (t ? t(`chat.wakeups.${key}`) : fallback);
+      if (quietArg(args)) return tw('endingQuietly', 'ending the check...');
+      if (wakeupArgListed(args, 'triggers')) return tw('settingWakeups', 'setting wakeups...');
+      if (wakeupArgListed(args, 'cancel')) return tw('cancellingWakeups', 'cancelling wakeups...');
+      return tw('checkingWakeups', 'checking wakeups...');
+    }
     case 'get_sec_filing':
       return args?.symbol
         ? (tr?.('fetchingSymbolFiling', { symbol: args.symbol }) ?? `fetching ${args.symbol} filing...`)
@@ -334,6 +401,8 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
         : (tr?.('fetchingTaskOutput') ?? 'fetching task output...');
     case 'check_automations':
       return tr?.('checkingAutomations') ?? 'checking automations...';
+    case 'ThreadStatus':
+      return tr?.('checkingThreadStatus') ?? 'checking what is running...';
     case 'create_automation':
       return args?.name
         ? (tr?.('creatingName', { name: args.name }) ?? `creating ${args.name}...`)
@@ -346,6 +415,14 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       return tr?.('annotatingChart') ?? 'annotating chart...';
     case 'manage_chart_annotations':
       return tr?.('updatingAnnotations') ?? 'updating annotations...';
+    case 'send_message': {
+      const app = messagingAppName(platformOf(args?.target));
+      return app
+        ? (tr?.('sendingTo', { app }) ?? `sending to ${app}...`)
+        : (tr?.('sendingMessage') ?? 'sending message...');
+    }
+    case 'list_message_targets':
+      return tr?.('listingMessageTargets') ?? 'listing message targets...';
     default:
       return tr?.('processing') ?? 'processing...';
   }
@@ -357,12 +434,12 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
  * doesn't need localization today, but the param keeps call sites symmetric
  * and reserves space for future translated variants.
  */
-export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, _t?: TFn): string | null {
+export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, _t?: TFn, root?: string | null): string | null {
   const args = toolCall?.args;
   if (!args) return null;
   // Path-aware summaries: emit just the meaningful object (skill name, topic,
   // memo slug). The verb is carried by getDisplayName / row label.
-  const info = classifyFromArgs(toolName, args);
+  const info = classifyFromArgs(toolName, args, root);
   if (info) {
     if (info.kind === 'skill') return info.name || null;
     if (info.kind === 'memory') {
@@ -375,10 +452,11 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
       if (info.isIndex) return null;
       return info.key || null;
     }
-    if (info.kind === 'user-profile') {
-      // Row title already says "Read portfolio" / "Updated watchlist" — no
-      // extra pill needed (would duplicate the entity name).
-      return null;
+    if (info.kind === 'user-data') {
+      // A profile row's title already names its file ("Read portfolio").
+      // Automations are one file each, so the pill says which one.
+      if (info.entity !== 'automations') return null;
+      return info.rawPath.split('/').pop()?.replace(/\.json$/, '') || null;
     }
   }
   // Annotation steps: headline reads "NVDA · 1D" — the chart instance the draw
@@ -389,6 +467,11 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
     const tf = (args.timeframe as string) || '1day';
     return `${String(args.symbol).toUpperCase()} · ${INTERVAL_LABEL[tf] ?? tf}`;
   }
+  // Direct MCP tools: the collapsed line masks account ids; the detail view does not.
+  if (parseDirectToolName(toolName)) return summarizeDirectToolArgs(args);
+  // The app a send was addressed to. With no target it went to the turn's own
+  // conversation, which the call alone does not name.
+  if (toolName === 'send_message') return messagingAppName(platformOf(args.target));
   if (args.description) return args.description;
   if (args.symbol) return args.symbol;
   if (args.query) return args.query;
@@ -413,15 +496,15 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
  * noun; for generic tools we fall back to the historic
  * `${displayName} ${progressText}` concat.
  */
-export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined, t?: TFn): string {
+export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined, t?: TFn, root?: string | null): string {
   const args = toolCall?.args;
-  const info = classifyFromArgs(toolName, args);
+  const info = classifyFromArgs(toolName, args, root);
   if (info && info.kind !== 'file') {
     // getInProgressText already produces the full phrase for path-aware paths.
-    return getInProgressText(toolName, toolCall, t);
+    return getInProgressText(toolName, toolCall, t, root);
   }
-  const dn = getDisplayName(toolName, t, args);
-  const pt = getInProgressText(toolName, toolCall, t);
+  const dn = getDisplayName(toolName, t, args, { root });
+  const pt = getInProgressText(toolName, toolCall, t, root);
   return pt ? `${dn} ${pt}` : dn;
 }
 
@@ -429,10 +512,19 @@ export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined,
  * Title for completed timeline rows. Returns the past-tense verb phrase for
  * path-aware tools ("Read memory", "Added memory", "Activated skill") and the
  * generic displayName otherwise.
+ *
+ * The result's artifact is optional because a row is only completed once, and
+ * a direct tool's vendor names ride on it: without it the title falls back to
+ * parsing the model-facing name, which is lossy for an aliased one.
  */
-export function getCompletedRowTitle(toolName: string, toolCall: ToolCall | undefined, t?: TFn): string {
+export function getCompletedRowTitle(
+  toolName: string,
+  toolCall: ToolCall | undefined,
+  t?: TFn,
+  context: ToolTitleContext = {},
+): string {
   const args = toolCall?.args;
-  const info = classifyFromArgs(toolName, args);
+  const info = classifyFromArgs(toolName, args, context.root);
   if (info) {
     if (info.kind === 'skill' && toolName === 'Read') {
       return t ? t('toolArtifact.completed.activatedSkill') : 'Activated skill';
@@ -464,15 +556,15 @@ export function getCompletedRowTitle(toolName: string, toolCall: ToolCall | unde
         return t ? t('toolArtifact.completed.updatedMemo') : 'Updated memo';
       }
     }
-    if (info.kind === 'user-profile') {
-      const entity = info.entity;
+    if (info.kind === 'user-data') {
+      const { entity } = info;
       if (toolName === 'Read') {
         return t ? t(`toolArtifact.completed.read_${entity}`) : `Read ${entity}`;
       }
       return t ? t(`toolArtifact.completed.updated_${entity}`) : `Updated ${entity}`;
     }
   }
-  return getDisplayName(toolName, t, args);
+  return getDisplayName(toolName, t, args, context);
 }
 
 /**
@@ -491,8 +583,10 @@ export type ToolCategory =
                   // surface modifications distinctly so any future regression
                   // is visible to the user instead of being hidden behind the
                   // generic "read N memos" framing.)
-  | 'profileRead'   // Read on .agents/user/profile/{portfolio,watchlist,preference}.json
+  | 'profileRead'   // Read on .agents/user/profile/{user,portfolio,watchlist,preference}.json
   | 'profileWrite'  // Write/Edit on the same paths
+  | 'automationsRead'   // Read on an automation's file in .agents/user/automations/
+  | 'automationsWrite'  // Write/Edit on the same paths
   | 'code'
   | 'web'
   | 'search'      // Glob, Grep
@@ -500,9 +594,9 @@ export type ToolCategory =
   | 'fileEdit'    // Write/Edit/Save on a non-store path
   | 'generic';    // anything else (TaskOutput, MCP tools without artifacts, ...)
 
-export function categorizeTool(toolName: string, toolCall: ToolCall | undefined): ToolCategory {
+export function categorizeTool(toolName: string, toolCall: ToolCall | undefined, root?: string | null): ToolCategory {
   const args = toolCall?.args;
-  const info = classifyFromArgs(toolName, args);
+  const info = classifyFromArgs(toolName, args, root);
   if (info) {
     if (info.kind === 'skill') return 'skill';
     if (info.kind === 'memory') {
@@ -511,8 +605,10 @@ export function categorizeTool(toolName: string, toolCall: ToolCall | undefined)
     if (info.kind === 'memo') {
       return FILE_WRITE_TOOLS.has(toolName) ? 'memoWrite' : 'memo';
     }
-    if (info.kind === 'user-profile') {
-      return FILE_WRITE_TOOLS.has(toolName) ? 'profileWrite' : 'profileRead';
+    if (info.kind === 'user-data') {
+      const write = FILE_WRITE_TOOLS.has(toolName);
+      if (info.entity === 'automations') return write ? 'automationsWrite' : 'automationsRead';
+      return write ? 'profileWrite' : 'profileRead';
     }
     // info.kind === 'file' (a known file tool but path is generic) falls
     // through to the per-tool bucketing below.
@@ -554,6 +650,10 @@ export function getPreparingText(toolName: string, argsLength: number, t?: TFn):
       return tr?.('preparingRequest') ?? 'preparing request...';
     case 'Grep':
       return tr?.('buildingSearchPattern') ?? 'building search pattern...';
+    case 'send_message':
+      return tr?.('composingMessage', { size: sizeLabel }) ?? `composing message${sizeLabel}...`;
+    case 'list_message_targets':
+      return tr?.('preparingRequest') ?? 'preparing request...';
     default:
       return tr?.('generating', { size: sizeLabel }) ?? `generating${sizeLabel}...`;
   }
@@ -569,7 +669,8 @@ export function parseTruncatedResult(content: string | null | undefined): ParseT
   if (!content.startsWith('Tool result too large')) return { isTruncated: false };
 
   // Extract the filesystem path
-  const pathMatch = content.match(/saved in the filesystem at this path:\s*(\/large_tool_results\/\S+)/);
+  const prefix = LARGE_TOOL_RESULTS_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pathMatch = content.match(new RegExp(`saved in the filesystem at this path:\\s*(${prefix}\\S+)`));
   const filePath = pathMatch?.[1] || null;
 
   // Extract the preview (everything after the "head and tail" intro line)

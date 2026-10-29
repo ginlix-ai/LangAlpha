@@ -77,9 +77,9 @@ class TestTarMode:
         downloaded = await runtime.download_file(dest)
         assert downloaded == content
 
-    async def test_code_run_basic(self, runtime: DockerRuntime):
-        """code_run should execute Python and return stdout."""
-        result = await runtime.code_run("print('hello from docker')")
+    async def test_python_exec_basic(self, runtime: DockerRuntime):
+        """exec should run Python and return stdout."""
+        result = await runtime.exec("python3 -c \"print('hello from docker')\"")
         assert result.exit_code == 0
         assert "hello from docker" in result.stdout
 
@@ -95,14 +95,11 @@ class TestTarMode:
         state = await runtime.get_state()
         assert state == RuntimeState.RUNNING
 
-    async def test_capabilities(self, runtime: DockerRuntime):
-        """Docker runtime should have exec, code_run, file_io but not archive/snapshot."""
-        caps = runtime.capabilities
-        assert "exec" in caps
-        assert "code_run" in caps
-        assert "file_io" in caps
-        assert "archive" not in caps
-        assert "snapshot" not in caps
+    async def test_runtime_facts(self, runtime: DockerRuntime):
+        """A container cannot archive, update its env in place, or stop itself."""
+        assert not runtime.archives
+        assert not runtime.updates_env
+        assert not runtime.autostops
 
 
 # ---------------------------------------------------------------------------
@@ -159,86 +156,12 @@ class TestBindMountMode:
         assert result.exit_code == 0
         assert "I am visible" in result.stdout
 
-    async def test_code_run_in_bind_mode(self, runtime_and_dir):
-        """code_run should work in bind-mount mode."""
+    async def test_python_exec_in_bind_mode(self, runtime_and_dir):
+        """exec should run Python in bind-mount mode."""
         runtime, _ = runtime_and_dir
-        result = await runtime.code_run("print(2 + 2)")
+        result = await runtime.exec("python3 -c 'print(2 + 2)'")
         assert result.exit_code == 0
         assert "4" in result.stdout
-
-
-# ---------------------------------------------------------------------------
-# Chart capture integration
-# ---------------------------------------------------------------------------
-
-
-class TestChartCapture:
-    """Test matplotlib chart capture in Docker containers.
-
-    Requires the sandbox image to have matplotlib installed.
-    """
-
-    @pytest_asyncio.fixture(scope="class", loop_scope="class")
-    async def runtime(self):
-        provider = DockerProvider(DockerConfig(
-            image=os.environ.get("DOCKER_SANDBOX_IMAGE", "langalpha-sandbox:latest"),
-            dev_mode=False,
-        ))
-        rt = await provider.create()
-        yield rt
-        try:
-            await rt.delete()
-        except Exception:
-            pass
-        await provider.close()
-
-    async def test_chart_capture_produces_artifact(self, runtime: DockerRuntime):
-        """code_run with plt.show() should produce a chart artifact."""
-        code = """\
-import matplotlib.pyplot as plt
-plt.figure()
-plt.plot([1, 2, 3], [1, 4, 9])
-plt.title("Test Chart")
-plt.show()
-print("done")
-"""
-        result = await runtime.code_run(code)
-        assert result.exit_code == 0
-        assert "done" in result.stdout
-        assert len(result.artifacts) == 1
-        assert result.artifacts[0].type == "image/png"
-        assert result.artifacts[0].name == "chart_1.png"
-        # Artifact data should be non-empty base64
-        assert len(result.artifacts[0].data) > 100
-
-    async def test_multiple_charts(self, runtime: DockerRuntime):
-        """Multiple plt.show() calls should produce multiple artifacts."""
-        code = """\
-import matplotlib.pyplot as plt
-
-plt.figure()
-plt.plot([1, 2], [1, 2])
-plt.show()
-
-plt.figure()
-plt.bar([1, 2], [3, 4])
-plt.show()
-
-print("two charts")
-"""
-        result = await runtime.code_run(code)
-        assert result.exit_code == 0
-        assert "two charts" in result.stdout
-        assert len(result.artifacts) == 2
-        assert result.artifacts[0].name == "chart_1.png"
-        assert result.artifacts[1].name == "chart_2.png"
-
-    async def test_no_matplotlib_no_crash(self, runtime: DockerRuntime):
-        """Code that does not use matplotlib should work fine."""
-        result = await runtime.code_run("print('no charts here')")
-        assert result.exit_code == 0
-        assert "no charts here" in result.stdout
-        assert result.artifacts == []
 
 
 # ---------------------------------------------------------------------------
@@ -288,10 +211,6 @@ class TestPreviewUrl:
         info = await runtime.get_preview_link(8080)
         assert info.url.startswith("http")
 
-    async def test_capabilities_include_preview(self, runtime: DockerRuntime):
-        """Docker runtime should report preview_url capability."""
-        assert "preview_url" in runtime.capabilities
-
 
 # ---------------------------------------------------------------------------
 # Session support
@@ -316,15 +235,19 @@ class TestSessions:
         await provider.close()
 
     async def test_session_lifecycle(self, runtime: DockerRuntime):
-        """Create a session, run a sync command, check logs, delete."""
+        """Create a session, run a command, read its logs, delete."""
+        import asyncio
+
         await runtime.create_session("test-session")
 
-        # Sync execute
-        result = await runtime.session_execute(
-            "test-session", "echo hello-from-session", run_async=False
-        )
-        assert result.exit_code == 0
-        assert "hello-from-session" in result.stdout
+        cmd_id = await runtime.session_execute("test-session", "echo hello-from-session")
+        for _ in range(50):
+            logs = await runtime.session_command_logs("test-session", cmd_id)
+            if logs.exit_code is not None:
+                break
+            await asyncio.sleep(0.1)
+        assert logs.exit_code == 0
+        assert "hello-from-session" in logs.stdout
 
         # Delete
         await runtime.delete_session("test-session")
@@ -335,25 +258,18 @@ class TestSessions:
 
         await runtime.create_session("async-test")
 
-        result = await runtime.session_execute(
-            "async-test",
-            "echo async-output && sleep 0.5 && echo done",
-            run_async=True,
+        cmd_id = await runtime.session_execute(
+            "async-test", "echo async-output && sleep 0.5 && echo done"
         )
-        assert result.exit_code is None  # async, no exit code yet
-        assert result.cmd_id  # should have a command ID
+        assert cmd_id  # should have a command ID
 
         # Wait for the command to finish
         await asyncio.sleep(2)
 
         # Check logs
-        logs = await runtime.session_command_logs("async-test", result.cmd_id)
+        logs = await runtime.session_command_logs("async-test", cmd_id)
         assert logs.exit_code == 0
         assert "async-output" in logs.stdout
         assert "done" in logs.stdout
 
         await runtime.delete_session("async-test")
-
-    async def test_capabilities_include_sessions(self, runtime: DockerRuntime):
-        """Docker runtime should report sessions capability."""
-        assert "sessions" in runtime.capabilities

@@ -6,11 +6,14 @@
  * regression letting the agent mutate memos doesn't render as "Read memo".
  */
 import { describe, it, expect } from 'vitest';
+import { Clock, Contact, Send, User, Wrench } from 'lucide-react';
 import {
   categorizeTool,
   getCompletedRowTitle,
   getCompletedSummary,
+  getDisplayName,
   getInProgressText,
+  getPreparingText,
   getToolIcon,
 } from '../toolDisplayConfig';
 
@@ -60,6 +63,13 @@ describe('categorizeTool — memo classification', () => {
     expect(
       categorizeTool('Edit', { args: { file_path: '.agents/user/profile/portfolio.json' } })
     ).toBe('profileWrite');
+  });
+
+  it('classifies automations reads + writes into automationsRead / automationsWrite buckets', () => {
+    const file_path = '.agents/user/automations/morning-brief.json';
+    expect(categorizeTool('Read', { args: { file_path } })).toBe('automationsRead');
+    expect(categorizeTool('Write', { args: { file_path } })).toBe('automationsWrite');
+    expect(categorizeTool('Edit', { args: { file_path } })).toBe('automationsWrite');
   });
 
   it('does not change file/memory categorization', () => {
@@ -181,7 +191,7 @@ describe('chart annotation — symbol + interval headline', () => {
   });
 });
 
-describe('user-profile — entity-aware labels for portfolio/watchlist/preference', () => {
+describe('user-data — entity-aware labels for portfolio/watchlist/preference', () => {
   const ENTITIES = ['portfolio', 'watchlist', 'preference'] as const;
 
   for (const entity of ENTITIES) {
@@ -211,5 +221,89 @@ describe('user-profile — entity-aware labels for portfolio/watchlist/preferenc
       const out = getInProgressText('Write', { args: { file_path: filePath } }, tIdentity);
       expect(out).toBe(`toolArtifact.inProgress.updating_${entity}`);
     });
+
+    it(`uses the User icon for ${entity}.json`, () => {
+      expect(getToolIcon('Read', { file_path: filePath })).toBe(User);
+      expect(getToolIcon('Write', { file_path: filePath })).toBe(User);
+    });
   }
+});
+
+describe('automations: entity-aware labels for an automation file', () => {
+  const call = { args: { file_path: '.agents/user/automations/morning-brief.json' } };
+
+  it('titles a completed Read "read_automations" and a Write or Edit "updated_automations"', () => {
+    expect(getCompletedRowTitle('Read', call, tIdentity)).toBe('toolArtifact.completed.read_automations');
+    expect(getCompletedRowTitle('Write', call, tIdentity)).toBe('toolArtifact.completed.updated_automations');
+    expect(getCompletedRowTitle('Edit', call, tIdentity)).toBe('toolArtifact.completed.updated_automations');
+  });
+
+  it('emits "reading_automations" / "updating_automations" in-progress phrases', () => {
+    expect(getInProgressText('Read', call, tIdentity)).toBe('toolArtifact.inProgress.reading_automations');
+    expect(getInProgressText('Edit', call, tIdentity)).toBe('toolArtifact.inProgress.updating_automations');
+  });
+
+  it('names the automation file in the summary pill, since the title does not', () => {
+    expect(getCompletedSummary('Read', call)).toBe('morning-brief');
+    expect(getCompletedSummary('Edit', { args: { file_path: '/home/workspace/.agents/user/automations/aapl.json' } })).toBe('aapl');
+  });
+
+  it('carries no pill for a profile file, whose title names it', () => {
+    expect(getCompletedSummary('Read', { args: { file_path: '.agents/user/profile/portfolio.json' } })).toBeNull();
+  });
+
+  it('uses the Clock icon check_automations uses', () => {
+    expect(getToolIcon('Read', call.args)).toBe(Clock);
+    expect(getToolIcon('Edit', call.args)).toBe(Clock);
+  });
+
+  it('falls back to English without a translator', () => {
+    expect(getCompletedRowTitle('Read', call)).toBe('Read automations');
+    expect(getInProgressText('Write', call)).toBe('updating automations...');
+  });
+});
+
+describe('messaging tools: a named step, not a bare wrench', () => {
+  const send = (args: Record<string, unknown>) => ({ args: { text: 'hi', ...args } });
+
+  it('draws each tool with its own icon', () => {
+    expect(getToolIcon('send_message')).toBe(Send);
+    expect(getToolIcon('list_message_targets')).toBe(Contact);
+    expect(getToolIcon('send_message')).not.toBe(Wrench);
+    expect(getToolIcon('list_message_targets')).not.toBe(Wrench);
+  });
+
+  it('names both tools, translated and not', () => {
+    expect(getDisplayName('send_message', tIdentity)).toBe('toolArtifact.tool.sendMessage');
+    expect(getDisplayName('list_message_targets', tIdentity)).toBe('toolArtifact.tool.messageTargets');
+    expect(getDisplayName('send_message')).toBe('Send Message');
+    expect(getCompletedRowTitle('list_message_targets', { args: {} })).toBe('Message Targets');
+  });
+
+  it('summarizes a send by the app its target names', () => {
+    expect(getCompletedSummary('send_message', send({ target: 'telegram:-100123' }))).toBe('Telegram');
+    expect(getCompletedSummary('send_message', send({ target: 'slack:T1/C2' }))).toBe('Slack');
+    expect(getCompletedSummary('send_message', send({ target: 'imessage' }))).toBe('iMessage');
+    expect(getCompletedSummary('send_message', send({ target: 'Discord:G/C' }))).toBe('Discord');
+    expect(getCompletedSummary('send_message', send({ target: 'matrix:!room' }))).toBe('Matrix');
+  });
+
+  it('carries no summary for a send to the turn\'s own conversation', () => {
+    expect(getCompletedSummary('send_message', send({}))).toBeNull();
+    expect(getCompletedSummary('send_message', send({ target: '' }))).toBeNull();
+  });
+
+  it('says where a send is going while it runs', () => {
+    expect(getInProgressText('send_message', send({ target: 'discord:G/C' }))).toBe('sending to Discord...');
+    expect(getInProgressText('send_message', send({}))).toBe('sending message...');
+    expect(getInProgressText('send_message', send({ target: 'slack:T/C' }), tIdentity)).toBe('toolArtifact.inProgress.sendingTo');
+    expect(getInProgressText('list_message_targets', { args: {} })).toBe('listing message targets...');
+    expect(getInProgressText('list_message_targets', { args: {} }, tIdentity)).toBe('toolArtifact.inProgress.listingMessageTargets');
+  });
+
+  it('says what is being prepared before the call is written', () => {
+    expect(getPreparingText('send_message', 10)).toBe('composing message...');
+    expect(getPreparingText('send_message', 2400)).toBe('composing message (~2.4 KB)...');
+    expect(getPreparingText('list_message_targets', 0)).toBe('preparing request...');
+  });
 });

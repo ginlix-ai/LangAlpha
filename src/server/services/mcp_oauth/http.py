@@ -20,6 +20,7 @@ from src.server.utils.egress_guard import (
     EgressBlockedError,
     PinnedTarget,
     pin_public_url,
+    strip_reserved_headers,
 )
 
 # One ladder for every OAuth hop: these are interactive, user-facing calls.
@@ -130,11 +131,9 @@ async def pinned_send(
 ) -> httpx2.Response:
     """Re-issue an SDK-built request through the pinned path."""
     body = request.read()
-    headers = {
-        k: v
-        for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length")
-    }
+    # The request is reframed below, so the framing the SDK wrote is dropped
+    # with it and the pin supplies the Host.
+    headers = strip_reserved_headers(dict(request.headers))
     return await pinned_request(
         client,
         request.method,
@@ -216,15 +215,32 @@ class _CappedByteStream(httpx2.AsyncByteStream):
         await self._inner.aclose()
 
 
-def pinned_discovery_client(
-    target: PinnedTarget, *, headers: dict[str, str] | None = None
+def pinned_stream_client(
+    target: PinnedTarget,
+    *,
+    max_bytes: int,
+    headers: dict[str, str] | None = None,
 ) -> httpx2.AsyncClient:
-    """SDK-compatible client for host-side discovery: pinned, bounded, no
-    redirects, no env proxies (a proxy would re-resolve past the pin)."""
+    """A pinned, byte-bounded client: no redirects, no env proxies (a proxy
+    would re-resolve past the pin). The general form behind discovery and the
+    plugin archive fetch — callers pick the byte budget for their payload."""
     return httpx2.AsyncClient(
-        transport=PinnedSessionTransport(target, max_bytes=DISCOVERY_MAX_BYTES),
+        transport=PinnedSessionTransport(target, max_bytes=max_bytes),
         follow_redirects=False,
         trust_env=False,
         timeout=DEFAULT_TIMEOUT,
-        headers={"User-Agent": USER_AGENT, **(headers or {})},
+        # The transport owns Host, the SNI pin and the framing headers
+        # RESERVED_REQUEST_HEADERS names; a caller header spelling one of those
+        # belongs to nobody but the framing.
+        headers={"User-Agent": USER_AGENT, **strip_reserved_headers(headers)},
+    )
+
+
+def pinned_discovery_client(
+    target: PinnedTarget, *, headers: dict[str, str] | None = None
+) -> httpx2.AsyncClient:
+    """SDK-compatible client for host-side discovery: the stream client at
+    the discovery byte budget."""
+    return pinned_stream_client(
+        target, max_bytes=DISCOVERY_MAX_BYTES, headers=headers
     )

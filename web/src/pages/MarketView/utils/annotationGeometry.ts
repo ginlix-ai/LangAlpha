@@ -3,9 +3,9 @@
  * drawable data (time-snapping, primitive items, markers, trendline points).
  *
  * Kept free of React so they can be shared by ``useAgentAnnotations`` (the
- * live MarketView chart) and ``InlineChartAnnotationCard`` (the one-shot
- * mini chart rendered in the chat transcript). Times are unix seconds,
- * prices are raw y-values — the primitive / series do pixel conversion.
+ * live MarketView chart) and ``InlineChartAnnotationCard`` (the chat card,
+ * which names each annotation). Times are unix seconds, prices are raw
+ * y-values — the primitive / series do pixel conversion.
  */
 
 import { LineStyle, type SeriesMarker, type Time } from 'lightweight-charts';
@@ -124,47 +124,20 @@ export function isEvent(a: StoredAnnotation): a is EventAnnotation {
   return a.type === 'event';
 }
 
-// --- Compact visual summary -----------------------------------------------
+// --- Compact summary -------------------------------------------------------
 
-export interface AnnotationVisual {
-  /** Display label — the agent's label/text/title, or a per-type fallback. */
-  label: string;
-  /** Accent color — the agent's color, or the per-type default. */
-  color: string;
-  /** Human-readable kind ("Price line", "Trendline", …). */
-  kind: string;
-  /** Optional value detail ("$317.40"); empty when not applicable. */
-  detail: string;
-}
-
-function formatPrice(n: number): string {
-  if (!Number.isFinite(n)) return '';
-  return `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
-}
-
-/**
- * Resolve one annotation to label / color / kind / detail for compact UIs —
- * the chat card's legend, swatches and schematic thumbnail. Pure; mirrors the
- * per-type default colors used when the agent omits one.
- */
-export function describeAnnotationVisual(a: StoredAnnotation): AnnotationVisual {
-  if (isPriceLine(a))
-    return { label: a.label || 'Price line', color: a.color || DEFAULT_LINE_COLOR, kind: 'Price line', detail: formatPrice(a.price) };
-  if (isTrendline(a))
-    return { label: a.label || 'Trendline', color: a.color || DEFAULT_TRENDLINE_COLOR, kind: 'Trendline', detail: '' };
-  if (isMarker(a))
-    return { label: a.text || 'Marker', color: a.color || DEFAULT_MARKER_COLOR, kind: 'Marker', detail: '' };
-  if (isVerticalLine(a))
-    return { label: a.label || 'Time marker', color: a.color || DEFAULT_VLINE_COLOR, kind: 'Vertical line', detail: '' };
-  if (isRectangle(a))
-    return { label: a.label || 'Zone', color: a.color || DEFAULT_RECT_COLOR, kind: 'Zone', detail: '' };
-  if (isText(a))
-    return { label: a.text || 'Note', color: a.color || DEFAULT_TEXT_COLOR, kind: 'Note', detail: '' };
-  if (isEvent(a))
-    return { label: a.title || 'Event', color: a.color || DEFAULT_EVENT_COLOR, kind: 'Event', detail: '' };
-  if (isFib(a))
-    return { label: a.label || 'Fib retracement', color: a.color || DEFAULT_FIB_COLOR, kind: 'Fib retracement', detail: '' };
-  return { label: 'Annotation', color: DEFAULT_LINE_COLOR, kind: 'Annotation', detail: '' };
+/** The name a compact UI gives one annotation: the agent's label/text/title,
+ *  or the kind when the agent gave none. */
+export function annotationLabel(a: StoredAnnotation): string {
+  if (isPriceLine(a)) return a.label || 'Price line';
+  if (isTrendline(a)) return a.label || 'Trendline';
+  if (isMarker(a)) return a.text || 'Marker';
+  if (isVerticalLine(a)) return a.label || 'Time marker';
+  if (isRectangle(a)) return a.label || 'Zone';
+  if (isText(a)) return a.text || 'Note';
+  if (isEvent(a)) return a.title || 'Event';
+  if (isFib(a)) return a.label || 'Fib retracement';
+  return 'Annotation';
 }
 
 /**
@@ -216,14 +189,11 @@ export function resolveTrendlineData(
  * skipped.
  *
  * ``event`` annotations are interactive DOM badges on the live chart
- * (``AgentEventOverlay``), so they're omitted here by default. The inline chat
- * mini-chart has no DOM overlay, so it passes ``eventsAsText: true`` to render
- * the event title as a non-interactive canvas chip instead.
+ * (``AgentEventOverlay``), so they're omitted here.
  */
 export function buildPrimitiveData(
   annotations: StoredAnnotation[],
   chartData: ChartDataPoint[] | null,
-  opts?: { eventsAsText?: boolean },
 ): AgentAnnotationsData {
   const rects: RectItem[] = [];
   const vlines: VLineItem[] = [];
@@ -287,20 +257,9 @@ export function buildPrimitiveData(
         levels,
         color: ann.color ?? DEFAULT_FIB_COLOR,
       });
-    } else if (isEvent(ann) && opts?.eventsAsText) {
-      // Inline chat card only: no DOM overlay there, so surface the event
-      // title as a canvas chip. The live chart renders an interactive badge.
-      const t = resolveBarTime(chartData, ann.time);
-      if (t == null) continue;
-      texts.push({
-        time: t,
-        price: ann.price,
-        text: ann.title,
-        color: ann.color ?? DEFAULT_EVENT_COLOR,
-      });
     } else if (isTrendline(ann) && ann.label) {
       if (!ann.point1 || !ann.point2) continue;
-      // The line itself is drawn natively (addLineSeries); only its label
+      // The line itself is drawn natively (addSeries(LineSeries)); only its label
       // becomes a chip, anchored at the chronologically-later endpoint so it
       // sits at the end of the drawn line instead of stranded on the price
       // axis (LWC's native series `title` floats it to the right gutter).

@@ -15,28 +15,33 @@ import asyncio
 import base64
 import io
 import os
-import re
 import shlex
 import tarfile
+import time
 import uuid
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import structlog
 
-from ptc_agent.config.core import DockerConfig
-from ptc_agent.core.sandbox.providers._chart_capture import (
-    build_code_wrapper,
-    extract_artifacts,
+from ptc_agent.config.core import DockerConfig, PlatformSecretDefinition
+from ptc_agent.core.sandbox._defaults import sandbox_thread_env
+from ptc_agent.core.sandbox.providers._exec_sessions import ExecSessionRuntime
+from ptc_agent.core.sandbox.providers._tiers import (
+    TierSizing,
+    applied_cpus,
+    container_sizing,
+    resolve_tier,
 )
 from ptc_agent.core.sandbox.runtime import (
-    CodeRunResult,
     ExecResult,
     PreviewInfo,
     RuntimeState,
     SandboxProvider,
-    SandboxRuntime,
+    SandboxGoneError,
+    SandboxFailureKind,
     SandboxTransientError,
-    SessionCommandResult,
+    STREAM_CHUNK_BYTES,
 )
 
 logger = structlog.get_logger(__name__)
@@ -56,13 +61,6 @@ _DOCKER_STATE_MAP: dict[str, RuntimeState] = {
 
 
 # ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -78,16 +76,34 @@ def _parse_proxy_port_range(range_str: str) -> list[int]:
     return list(range(start, end + 1))
 
 
-def _parse_memory(limit_str: str) -> int:
-    """Convert a human-friendly memory string (e.g. ``"4g"``) to bytes."""
-    limit_str = limit_str.strip().lower()
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([kmgt])?b?", limit_str)
-    if not match:
-        raise ValueError(f"Cannot parse memory limit: {limit_str!r}")
-    value = float(match.group(1))
-    suffix = match.group(2) or ""
-    multipliers = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
-    return int(value * multipliers[suffix])
+# The file mount (livefs) is FUSE, mounted by root through a root-only exec.
+# The capabilities reach root processes only; the sandbox's own user runs
+# without them. SYS_PTRACE lets that root daemon read a command's environment,
+# which names the command a save belongs to; without it every save runs for no
+# conversation. Docker's default AppArmor profile refuses every mount, so the
+# container runs unconfined, and that applies to its user too.
+_FUSE_HOST_CONFIG: dict[str, Any] = {
+    "Devices": [
+        {
+            "PathOnHost": "/dev/fuse",
+            "PathInContainer": "/dev/fuse",
+            "CgroupPermissions": "rwm",
+        }
+    ],
+    "CapAdd": ["SYS_ADMIN", "SYS_PTRACE"],
+    "SecurityOpt": ["apparmor=unconfined"],
+}
+
+
+async def _remove_quietly(container: Any, name: str) -> None:
+    try:
+        await container.delete(force=True)
+    except Exception as cleanup_error:
+        logger.warning(
+            "Failed to remove container after a failed start",
+            container_name=name,
+            error=str(cleanup_error),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +111,7 @@ def _parse_memory(limit_str: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-class DockerRuntime(SandboxRuntime):
+class DockerRuntime(ExecSessionRuntime):
     """Runtime that wraps a single Docker container."""
 
     def __init__(
@@ -121,6 +137,7 @@ class DockerRuntime(SandboxRuntime):
         self._host_port_map: dict[int, int] = host_port_map or {}
         self._port_map: dict[int, int] = {}  # agent port → container proxy port
         self._forwarder_pids: dict[int, str] = {}  # container proxy port → socat PID
+        self._owner_id_cache: tuple[int, int] | None = None  # uid/gid inside the container
 
     # -- Properties --
 
@@ -161,11 +178,29 @@ class DockerRuntime(SandboxRuntime):
 
     # -- Execution --
 
-    async def exec(self, command: str, timeout: int = 60) -> ExecResult:
+    async def exec(
+        self, command: str, timeout: int = 60, *, env: dict[str, str] | None = None
+    ) -> ExecResult:
+        return await self._exec(command, timeout, env=env)
+
+    async def exec_as_root(
+        self, command: str, timeout: int = 60, env: dict[str, str] | None = None
+    ) -> ExecResult:
+        return await self._exec(command, timeout, user="root", env=env)
+
+    async def _exec(
+        self,
+        command: str,
+        timeout: int,
+        user: str = "",
+        env: dict[str, str] | None = None,
+    ) -> ExecResult:
         try:
             exec_obj = await self._container.exec(
                 cmd=["bash", "-c", command],
                 workdir=self._working_dir,
+                user=user,
+                environment=env,
             )
             # Read all output from the multiplexed stream
             stdout_parts: list[str] = []
@@ -193,72 +228,6 @@ class DockerRuntime(SandboxRuntime):
             if _is_container_gone(e):
                 raise SandboxTransientError(str(e)) from e
             return ExecResult(stdout="", stderr=str(e), exit_code=-1)
-
-    async def code_run(
-        self,
-        code: str,
-        env: dict[str, str] | None = None,
-        timeout: int = 300,
-    ) -> CodeRunResult:
-        wrapper = build_code_wrapper(code)
-        encoded = base64.b64encode(wrapper.encode("utf-8")).decode("ascii")
-
-        script_name = f"_exec_{uuid.uuid4().hex[:8]}.py"
-        script_path = f"{self._working_dir}/{script_name}"
-
-        # Write script via exec (avoids tar overhead for a single small file)
-        write_cmd = (
-            f"python3 -c \"import base64,sys; "
-            f"sys.stdout.buffer.write(base64.b64decode('{encoded}'))\" "
-            f"> {script_path}"
-        )
-        write_result = await self.exec(write_cmd, timeout=15)
-        if write_result.exit_code != 0:
-            return CodeRunResult(
-                stdout="",
-                stderr=f"Failed to write script: {write_result.stderr or write_result.stdout}",
-                exit_code=write_result.exit_code,
-                artifacts=[],
-            )
-
-        # Build environment exports
-        env_prefix = ""
-        if env:
-            exports = " ".join(f"{k}={_shell_escape(v)}" for k, v in env.items())
-            env_prefix = f"export {exports} && "
-
-        stderr_path = f"{self._working_dir}/_stderr_{uuid.uuid4().hex[:8]}.txt"
-        run_cmd = f"{env_prefix}python3 {script_path} 2>{stderr_path}"
-
-        # Run the code — we parse combined stdout for artifacts
-        exec_result = await self.exec(run_cmd, timeout=timeout)
-
-        # Extract chart artifacts from stdout markers
-        artifacts, clean_stdout = extract_artifacts(exec_result.stdout)
-
-        # Read stderr from temp file only on failure (avoids extra exec round-trip
-        # on the happy path — the consumer only needs stderr for auto-install detection)
-        stderr = ""
-        if exec_result.exit_code != 0:
-            try:
-                cat_result = await self.exec(f"cat {stderr_path} 2>/dev/null", timeout=5)
-                if cat_result.exit_code == 0:
-                    stderr = cat_result.stdout
-            except Exception:
-                pass
-
-        # Cleanup temp files (best-effort)
-        try:
-            await self.exec(f"rm -f {script_path} {stderr_path}", timeout=5)
-        except Exception:
-            pass
-
-        return CodeRunResult(
-            stdout=clean_stdout,
-            stderr=stderr,
-            exit_code=exec_result.exit_code,
-            artifacts=artifacts,
-        )
 
     # -- File I/O --
 
@@ -292,27 +261,27 @@ class DockerRuntime(SandboxRuntime):
         # create them anyway, but this avoids permission issues).
         if parent_dirs:
             mkdir_cmd = "mkdir -p " + " ".join(
-                f"'{d}'" for d in sorted(parent_dirs)
+                shlex.quote(d) for d in sorted(parent_dirs)
             )
             await self.exec(mkdir_cmd, timeout=30)
 
-        # Build one tar archive with full absolute paths.
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tar:
-            for data, dest_path in prepared:
-                tar_name = dest_path.lstrip("/")
-                info = tarfile.TarInfo(name=tar_name)
-                info.size = len(data)
-                info.mode = 0o644
-                tar.addfile(info, io.BytesIO(data))
-        buf.seek(0)
-
-        await self._container.put_archive("/", buf.read())
+        uid, gid = await self._owner_ids()
+        await self._container.put_archive("/", _upload_tar(prepared, uid, gid))
 
     async def download_file(self, path: str) -> bytes:
         if self._dev_mode and self._host_work_dir:
             return self._host_read(path)
         return await self._exec_download(path)
+
+    async def download_file_stream(self, path: str) -> AsyncIterator[bytes]:
+        if not (self._dev_mode and self._host_work_dir):
+            async for chunk in super().download_file_stream(path):
+                yield chunk
+            return
+        host_path = self._host_resolve(path)
+        with open(host_path, "rb") as f:
+            while chunk := await asyncio.to_thread(f.read, STREAM_CHUNK_BYTES):
+                yield chunk
 
     async def list_files(self, directory: str) -> list[dict[str, Any]]:
         resolved = directory if os.path.isabs(directory) else f"{self._working_dir}/{directory}"
@@ -468,105 +437,7 @@ class DockerRuntime(SandboxRuntime):
             cls._server_side_host = "http://localhost"
         return cls._server_side_host
 
-    # -- Sessions --
-
-    async def create_session(self, session_id: str) -> None:
-        if not _SESSION_ID_RE.match(session_id):
-            raise ValueError(f"Invalid session_id: {session_id!r}")
-        check = await self.exec(f"test -d /tmp/.sessions/{session_id}", timeout=5)
-        if check.exit_code == 0:
-            raise RuntimeError(f"Session already exists: {session_id}")
-        await self.exec(f"mkdir -p /tmp/.sessions/{session_id}", timeout=5)
-
-    async def session_execute(
-        self,
-        session_id: str,
-        command: str,
-        *,
-        run_async: bool = False,
-        timeout: int = 60,
-    ) -> SessionCommandResult:
-        if not _SESSION_ID_RE.match(session_id):
-            raise ValueError(f"Invalid session_id: {session_id!r}")
-        cmd_id = uuid.uuid4().hex[:8]
-        session_dir = f"/tmp/.sessions/{session_id}"
-
-        if run_async:
-            encoded = base64.b64encode(command.encode()).decode("ascii")
-            # Use setsid to create a new process group so delete_session
-            # can kill the entire tree (not just the wrapper).
-            # Note: there is a sub-millisecond window between exec returning
-            # and the .pid file being written. delete_session called in that
-            # window would miss the PID. In practice this is not an issue
-            # because sessions are long-lived (preview servers, etc.).
-            wrapped = (
-                f"nohup setsid bash -c '"
-                f"echo $$ > {session_dir}/{cmd_id}.pid; "
-                f"eval \"$(echo {encoded} | base64 -d)\"; "
-                f"echo $? > {session_dir}/{cmd_id}.exit"
-                f"' > {session_dir}/{cmd_id}.stdout 2> {session_dir}/{cmd_id}.stderr &"
-            )
-            await self.exec(wrapped, timeout=10)
-            return SessionCommandResult(cmd_id=cmd_id, exit_code=None, stdout="", stderr="")
-
-        result = await self.exec(command, timeout=timeout)
-        return SessionCommandResult(
-            cmd_id=cmd_id,
-            exit_code=result.exit_code,
-            stdout=result.stdout,
-            stderr=result.stderr,
-        )
-
-    async def session_command_logs(
-        self, session_id: str, command_id: str
-    ) -> SessionCommandResult:
-        if not _SESSION_ID_RE.match(session_id):
-            raise ValueError(f"Invalid session_id: {session_id!r}")
-        if not _SESSION_ID_RE.match(command_id):
-            raise ValueError(f"Invalid command_id: {command_id!r}")
-        session_dir = f"/tmp/.sessions/{session_id}"
-        # Single exec round-trip: emit all three files separated by a null byte
-        _SEP = "\\x00"
-        result = await self.exec(
-            f"cat {session_dir}/{command_id}.stdout 2>/dev/null; "
-            f"printf '{_SEP}'; "
-            f"cat {session_dir}/{command_id}.stderr 2>/dev/null; "
-            f"printf '{_SEP}'; "
-            f"cat {session_dir}/{command_id}.exit 2>/dev/null",
-            timeout=5,
-        )
-        parts = result.stdout.split("\x00", 2)
-        stdout = parts[0] if len(parts) > 0 else ""
-        stderr = parts[1] if len(parts) > 1 else ""
-        exit_str = parts[2].strip() if len(parts) > 2 else ""
-        exit_code = int(exit_str) if exit_str.isdigit() else None
-        return SessionCommandResult(
-            cmd_id=command_id,
-            exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
-        )
-
-    async def delete_session(self, session_id: str) -> None:
-        if not _SESSION_ID_RE.match(session_id):
-            raise ValueError(f"Invalid session_id: {session_id!r}")
-        session_dir = f"/tmp/.sessions/{session_id}"
-        # Kill the entire process group (negative PID) so child processes
-        # spawned by the session command are also terminated.
-        await self.exec(
-            f"for f in {session_dir}/*.pid; do "
-            f"  pid=$(cat \"$f\" 2>/dev/null | tr -cd '0-9'); "
-            f"  [ -n \"$pid\" ] && kill -- -\"$pid\" 2>/dev/null; "
-            f"  [ -n \"$pid\" ] && kill \"$pid\" 2>/dev/null; "
-            f"done; rm -rf {session_dir}",
-            timeout=10,
-        )
-
     # -- Capabilities & metadata --
-
-    @property
-    def capabilities(self) -> set[str]:
-        return {"exec", "code_run", "file_io", "preview_url", "sessions"}
 
     async def archive(self) -> None:
         raise NotImplementedError("Docker provider does not support archive")
@@ -598,6 +469,27 @@ class DockerRuntime(SandboxRuntime):
 
     # -- Internal: tar-based file I/O --
 
+    async def _owner_ids(self) -> tuple[int, int]:
+        """The uid/gid the container runs as, cached for the runtime's life.
+
+        ``put_archive`` extracts with each tar entry's ownership, and an entry
+        built here defaults to root. A file the container's own user does not
+        own can be read but never chmod'd or utime'd, which is exactly what
+        placing a restored workspace file has to do.
+        """
+        if self._owner_id_cache is None:
+            res = await self.exec("id -u; id -g", timeout=10)
+            try:
+                uid, gid = (int(x) for x in res.stdout.split()[:2])
+            except ValueError:
+                logger.warning(
+                    "Could not read the container's uid/gid; uploading as root",
+                    runtime_id=self._id,
+                )
+                uid, gid = 0, 0
+            self._owner_id_cache = (uid, gid)
+        return self._owner_id_cache
+
     async def _tar_upload(self, dest_path: str, content: bytes) -> None:
         """Upload a single file into the container via a tar archive.
 
@@ -608,16 +500,10 @@ class DockerRuntime(SandboxRuntime):
         if parent:
             await self.exec(f"mkdir -p {shlex.quote(parent)}", timeout=10)
 
-        buf = io.BytesIO()
-        tar_name = dest_path.lstrip("/")
-        with tarfile.open(fileobj=buf, mode="w") as tar:
-            info = tarfile.TarInfo(name=tar_name)
-            info.size = len(content)
-            info.mode = 0o644
-            tar.addfile(info, io.BytesIO(content))
-        buf.seek(0)
-
-        await self._container.put_archive("/", buf.read())
+        uid, gid = await self._owner_ids()
+        await self._container.put_archive(
+            "/", _upload_tar([(content, dest_path)], uid, gid)
+        )
 
     async def _exec_download(self, path: str) -> bytes:
         """Download a file via exec + base64 (avoids Docker archive API issues)."""
@@ -663,12 +549,33 @@ class DockerRuntime(SandboxRuntime):
 class DockerProvider(SandboxProvider):
     """Provider that manages sandboxes as Docker containers."""
 
-    def __init__(self, config: DockerConfig, working_dir: str | None = None) -> None:
+    label = "Docker"
+    runs_remote = False
+    default_computer_name = "Local computer"
+    # Commands run as the image's user, but a write goes through the daemon as
+    # root, and in bind-mount mode a path outside the root lands in the host
+    # folder rather than the container.
+    files_as_command_user = False
+
+    @classmethod
+    def reports_own_disk(cls, settings: Any) -> bool:
+        # Without a storage quota a container's disk is the host's.
+        return bool(settings.storage_quota_enabled)
+
+    def __init__(
+        self,
+        config: DockerConfig,
+        working_dir: str | None = None,
+        *,
+        # A container holds no platform Secrets, so the catalog is not needed.
+        platform_secrets: Sequence[PlatformSecretDefinition] = (),
+    ) -> None:
         self._config = config
         # filesystem.working_directory is the single source of truth;
         # fall back to DockerConfig.working_dir only if not provided.
         self._working_dir = working_dir or config.working_dir
         self._client: Any | None = None  # aiodocker.Docker (lazy)
+        self._storage_quota_notice_shown = False
 
     async def _get_client(self) -> Any:
         """Return the aiodocker client, creating it lazily."""
@@ -680,13 +587,109 @@ class DockerProvider(SandboxProvider):
 
     # -- SandboxProvider interface --
 
+    def _resolve_tier(self, tier: str | None) -> TierSizing:
+        """Resolve a tier name to this daemon's container limits."""
+        return container_sizing(
+            resolve_tier(
+                tier,
+                default_tier=self._config.default_tier,
+                resource_tiers=self._config.resource_tiers,
+            ),
+            floor_cpus=self._config.cpu_count,
+            floor_memory_limit=self._config.memory_limit,
+        )
+
+    def _apply_disk_quota(
+        self, host_config: dict[str, Any], sizing: TierSizing
+    ) -> None:
+        """Size the container's writable layer when the storage driver allows it."""
+        if sizing.disk_gib is None:
+            return
+        if self._config.storage_quota_enabled:
+            host_config["StorageOpt"] = {"size": f"{sizing.disk_gib}G"}
+            return
+        # Per provider instance, not per process: a module flag is shared by
+        # every runtime in the worker, so the second daemon's operator never
+        # sees the notice.
+        if not self._storage_quota_notice_shown:
+            self._storage_quota_notice_shown = True
+            logger.info(
+                "Tier disk size not applied; enable docker.storage_quota_enabled "
+                "on a daemon whose storage driver supports per-container quotas",
+                tier=sizing.tier,
+                disk_gib=sizing.disk_gib,
+            )
+
+    async def _verify_tier_applied(
+        self, container_obj: Any, info: dict[str, Any], sizing: TierSizing
+    ) -> None:
+        """Fail an elevated tier whose limits the daemon dropped.
+
+        Docker answers a limit its kernel cannot enforce with a warning on the
+        create response rather than an error, so an unverified container can run
+        at host size while the workspace is billed for a tier. Mirrors the Daytona
+        provider's refusal to hand back a base-sized sandbox for an elevated tier.
+        """
+        host_config = info.get("HostConfig") or {}
+        applied = applied_cpus(host_config)
+        applied_memory = int(host_config.get("Memory") or 0)
+        want_cpus = int(sizing.cpus * 1e9) / 1e9
+
+        if (
+            applied is not None
+            and abs(applied - want_cpus) < 0.01
+            and applied_memory == sizing.memory_bytes
+        ):
+            return
+
+        raise RuntimeError(
+            f"Docker did not apply the {sizing.tier!r} tier limits "
+            f"(asked {want_cpus} vCPU / {sizing.memory_bytes} bytes, "
+            f"got {applied} vCPU / {applied_memory} bytes); "
+            "refusing to run an elevated tier at host size"
+        )
+
+    async def _start_new(
+        self, client: Any, config: dict[str, Any], name: str, sizing: TierSizing
+    ) -> Any:
+        """Create and start a container; one that fails to start is removed."""
+        try:
+            container = await client.containers.create(config=config, name=name)
+        except Exception as e:
+            if sizing.elevated:
+                host_config = config["HostConfig"]
+                disk_note = (
+                    f", {sizing.disk_gib}G disk" if "StorageOpt" in host_config else ""
+                )
+                raise RuntimeError(
+                    f"Docker rejected the {sizing.tier!r} tier limits "
+                    f"({sizing.cpus} vCPU, {sizing.memory_bytes} bytes{disk_note}): "
+                    f"{e}; refusing to create a base-sized container for an elevated tier"
+                ) from e
+            raise
+        try:
+            await container.start()
+        except BaseException:
+            await _remove_quietly(container, name)
+            raise
+        return container
+
     async def create(
         self,
         *,
         env_vars: dict[str, str] | None = None,
         mcp_packages: list[str] | None = None,
+        tier: str | None = None,
         **kwargs: Any,
     ) -> DockerRuntime:
+        """Create a sandbox container sized for ``tier``.
+
+        Args:
+            env_vars: Environment injected at creation time; wins over the thread
+                pool defaults this method sets.
+            mcp_packages: npm packages installed into the container after start.
+            tier: Resource tier name. ``None`` resolves to the configured default.
+        """
         client = await self._get_client()
         await self._ensure_image(client)
 
@@ -696,14 +699,18 @@ class DockerProvider(SandboxProvider):
         # Parse proxy port pool for preview URL support
         proxy_ports = _parse_proxy_port_range(self._config.preview_proxy_ports)
 
+        sizing = self._resolve_tier(tier)
+
         # Build container config
         host_config: dict[str, Any] = {
-            "Memory": _parse_memory(self._config.memory_limit),
-            "NanoCpus": int(self._config.cpu_count * 1e9),
+            "Memory": sizing.memory_bytes,
+            "NanoCpus": int(sizing.cpus * 1e9),
             "NetworkMode": self._config.network_mode,
             "AutoRemove": False,  # We manage removal ourselves
             "Init": True,  # tini as PID 1 for zombie reaping
+            **_FUSE_HOST_CONFIG,
         }
+        self._apply_disk_quota(host_config, sizing)
 
         # host.docker.internal resolves natively on Docker Desktop but not on
         # Linux bridge networks; pin it so the egress relay's default base URL
@@ -741,33 +748,59 @@ class DockerProvider(SandboxProvider):
         if proxy_ports:
             container_config["ExposedPorts"] = {f"{p}/tcp": {} for p in proxy_ports}
 
-        if env_vars:
-            container_config["Env"] = [f"{k}={v}" for k, v in env_vars.items()]
+        env = {
+            **sandbox_thread_env(int(sizing.cpus)),
+            **(env_vars or {}),
+        }
+        container_config["Env"] = [f"{k}={v}" for k, v in env.items()]
 
-        container_obj = await client.containers.create(
-            config=container_config,
-            name=container_name,
-        )
-        await container_obj.start()
-
-        # Read actual host port mappings (dynamic ports picked by Docker)
-        host_port_map: dict[int, int] = {}
-        if proxy_ports:
-            info = await container_obj.show()
-            port_bindings = (
-                info.get("NetworkSettings", {})
-                .get("Ports", {})
+        try:
+            container_obj = await self._start_new(
+                client, container_config, container_name, sizing
             )
-            for cp in proxy_ports:
-                bindings = port_bindings.get(f"{cp}/tcp", [])
-                if bindings and bindings[0].get("HostPort"):
-                    host_port_map[cp] = int(bindings[0]["HostPort"])
+        except Exception as e:
+            if "/dev/fuse" not in str(e):
+                raise
+            # A host without FUSE still runs sandboxes, without the file
+            # mount: the file tools reach the server-held files in process.
+            logger.warning(
+                "Docker host has no /dev/fuse; sandbox runs without the file mount",
+                container_name=container_name,
+                error=str(e),
+            )
+            for key in _FUSE_HOST_CONFIG:
+                del host_config[key]
+            container_obj = await self._start_new(
+                client, container_config, container_name, sizing
+            )
+        try:
+            info = await container_obj.show()
+            if sizing.elevated:
+                await self._verify_tier_applied(container_obj, info, sizing)
+
+            # Read actual host port mappings (dynamic ports picked by Docker)
+            host_port_map: dict[int, int] = {}
+            if proxy_ports:
+                port_bindings = info.get("NetworkSettings", {}).get("Ports", {})
+                for cp in proxy_ports:
+                    bindings = port_bindings.get(f"{cp}/tcp", [])
+                    if bindings and bindings[0].get("HostPort"):
+                        host_port_map[cp] = int(bindings[0]["HostPort"])
+        except BaseException:
+            # No runtime/provider reference exists yet, so this method is the
+            # only owner capable of removing a container that started but could
+            # not be inspected or validated.
+            await _remove_quietly(container_obj, container_name)
+            raise
 
         logger.info(
             "Docker container started",
             container_name=container_name,
             runtime_id=runtime_id,
             image=self._config.image,
+            tier=sizing.tier,
+            cpus=sizing.cpus,
+            memory_bytes=sizing.memory_bytes,
             host_port_map=host_port_map or None,
         )
 
@@ -784,7 +817,7 @@ class DockerProvider(SandboxProvider):
 
         # Install MCP npm packages if needed (mirrors Daytona snapshot behavior)
         if mcp_packages:
-            pkgs = " ".join(mcp_packages)
+            pkgs = " ".join(shlex.quote(pkg) for pkg in mcp_packages)
             logger.info("Installing MCP packages in Docker container", packages=pkgs)
             result = await runtime.exec(f"npm install -g {pkgs}", timeout=120)
             if result.exit_code != 0:
@@ -803,9 +836,11 @@ class DockerProvider(SandboxProvider):
         try:
             container_obj = await client.containers.get(container_name)
         except Exception as e:
-            raise RuntimeError(
-                f"Docker container not found: {container_name}"
-            ) from e
+            from aiodocker.exceptions import DockerError
+
+            if isinstance(e, DockerError) and e.status == 404:
+                raise SandboxGoneError(sandbox_id, "Docker container was removed") from e
+            raise
 
         info = await container_obj.show()
         mounts = info.get("Mounts", [])
@@ -839,6 +874,52 @@ class DockerProvider(SandboxProvider):
             preview_base_url=self._config.preview_base_url,
         )
 
+    async def prepare_reconnect(
+        self, runtime: DockerRuntime, *, tier: str | None = None
+    ) -> None:
+        """Raise legacy limits to the selected tier without replacing its disk.
+
+        Unlimited or larger limits stay untouched. Inspect again after updating:
+        the daemon may accept an unsupported setting without enforcing it.
+        """
+        sizing = self._resolve_tier(tier)
+        info = await runtime._container.show()
+        host = info.get("HostConfig") or {}
+        cpus = applied_cpus(host)
+        memory = int(host.get("Memory") or 0)
+        changes: dict[str, int] = {}
+        if cpus is not None and 0 < cpus < sizing.cpus - 0.01:
+            if int(host.get("CpuQuota") or 0) > 0:
+                period = int(host.get("CpuPeriod") or 100000)
+                changes["CpuQuota"] = int(sizing.cpus * period)
+            else:
+                changes["NanoCpus"] = int(sizing.cpus * 1e9)
+        if 0 < memory < sizing.memory_bytes:
+            changes["Memory"] = sizing.memory_bytes
+            swap = int(host.get("MemorySwap") or 0)
+            if 0 < swap < sizing.memory_bytes:
+                changes["MemorySwap"] = sizing.memory_bytes
+        if not changes:
+            return
+
+        client = await self._get_client()
+        # aiodocker has no container.update wrapper; use its JSON transport.
+        await client._query_json(
+            f"containers/{info['Id']}/update", method="POST", data=changes
+        )
+        repaired = (await runtime._container.show()).get("HostConfig") or {}
+        actual_cpus = applied_cpus(repaired)
+        actual_memory = int(repaired.get("Memory") or 0)
+        cpu_changed = "NanoCpus" in changes or "CpuQuota" in changes
+        if (
+            cpu_changed and (actual_cpus is None or actual_cpus < sizing.cpus - 0.01)
+        ) or ("Memory" in changes and actual_memory < sizing.memory_bytes):
+            raise RuntimeError(
+                f"Docker did not apply the {sizing.tier!r} CPU/RAM repair; "
+                "the existing container and its files have been retained"
+            )
+        logger.info("Repaired Docker limits on reconnect", runtime_id=runtime.id, tier=sizing.tier)
+
     async def close(self) -> None:
         if self._client is not None:
             try:
@@ -847,6 +928,11 @@ class DockerProvider(SandboxProvider):
                 logger.debug("Failed to close Docker client", error=str(e))
             finally:
                 self._client = None
+
+    def classify_error(self, exc: Exception) -> SandboxFailureKind:
+        if isinstance(exc, SandboxGoneError):
+            return SandboxFailureKind.SANDBOX_GONE
+        return super().classify_error(exc)
 
     def is_transient_error(self, exc: Exception) -> bool:
         msg = str(exc).lower()
@@ -954,6 +1040,27 @@ def _read_source(source: bytes | str) -> bytes:
         with open(source, "rb") as f:
             return f.read()
     return source
+
+
+def _upload_tar(entries: Sequence[tuple[bytes, str]], uid: int, gid: int) -> bytes:
+    """A ``put_archive`` tar of ``(content, absolute path)`` stamped with now.
+
+    Extraction applies each entry's mtime, which ``TarInfo`` leaves at 0, so
+    every upload landed at the epoch and a same-size rewrite changed neither
+    half of the ``(mtime, size)`` stamp the sandbox detects changes by. A float
+    mtime is written as a PAX record, which keeps its sub-second part.
+    """
+    now = time.time()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for data, dest_path in entries:
+            info = tarfile.TarInfo(name=dest_path.lstrip("/"))
+            info.size = len(data)
+            info.mode = 0o644
+            info.uid, info.gid = uid, gid
+            info.mtime = now
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
 
 
 def _shell_escape(value: str) -> str:

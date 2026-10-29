@@ -1,5 +1,6 @@
 import React, { useRef, useCallback, useState, useEffect } from 'react';
-import { motion, useMotionValue, useAnimationControls, type PanInfo } from 'framer-motion';
+import { motion, useMotionValue, useAnimationControls, type PanInfo } from '@/lib/framer';
+import { SPRING_DRAG, TWEEN } from '@/lib/motion';
 
 interface LangAlphaFabProps {
   onClick: () => void;
@@ -7,8 +8,6 @@ interface LangAlphaFabProps {
 
 const FAB_SIZE = 52;
 const EDGE_MARGIN = 12;
-const SNAP_STIFFNESS = 300;
-const SNAP_DAMPING = 28;
 
 /**
  * Draggable floating action button with the LangAlpha logo.
@@ -22,9 +21,10 @@ function LangAlphaFab({ onClick }: LangAlphaFabProps) {
   const isDragging = useRef(false);
   const [bounds, setBounds] = useState({ top: 0, left: 0, right: 0, bottom: 0 });
 
-  // Appear animation on mount
+  // Appear animation on mount. A tween: framer's default for scale is an
+  // underdamped spring, which overshoots.
   useEffect(() => {
-    controls.start({ scale: 1, opacity: 1 });
+    controls.start({ scale: 1, opacity: 1, transition: TWEEN.enter });
   }, [controls]);
 
   // Compute drag bounds: lower half of viewport, above bottom tab bar
@@ -65,7 +65,7 @@ function LangAlphaFab({ onClick }: LangAlphaFabProps) {
 
     controls.start({
       x: targetX,
-      transition: { type: 'spring', stiffness: SNAP_STIFFNESS, damping: SNAP_DAMPING },
+      transition: SPRING_DRAG,
     });
 
     // Small delay so the click handler can check isDragging
@@ -92,7 +92,7 @@ function LangAlphaFab({ onClick }: LangAlphaFabProps) {
       animate={controls}
       style={{ x, y }}
       initial={{ scale: 0.6, opacity: 0 }}
-      exit={{ scale: 0.6, opacity: 0 }}
+      exit={{ scale: 0.6, opacity: 0, transition: TWEEN.exit }}
       className="langalpha-fab"
       aria-label="Open chat"
     >

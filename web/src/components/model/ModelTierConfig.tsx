@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { motion, AnimatePresence } from "framer-motion"
-import { ChevronRight, Lightbulb, Search, Pin } from "lucide-react"
+import { motion, AnimatePresence } from "@/lib/framer"
+import { ChevronRight, Lightbulb } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { TWEEN } from "@/lib/motion"
+import { BACKGROUND_AUTO } from "@/lib/modelPreferences"
 import { ModelSelector } from "./ModelSelector"
+import { useModelSlotCopy } from "./useModelSlotCopy"
 import type { ProviderModelsData } from "./types"
-import type { ModelAccess } from "@/types/platform"
-import type { CompactionProfileCatalog, CompactionProfileName } from "@/hooks/useAllModels"
+import type { Payer } from "@/lib/modelPayer"
+import type { ModelMetadataEntry } from "@/hooks/useFilteredModels"
 
 export interface ModelTierConfigProps {
   /** Available models grouped by provider */
@@ -16,360 +19,22 @@ export interface ModelTierConfigProps {
   /** Current primary model selection */
   primaryModel: string
   onPrimaryModelChange: (model: string) => void
-  /** Current flash model selection */
-  flashModel: string
-  onFlashModelChange: (model: string) => void
+  /** Current Background model selection */
+  backgroundModel: string
+  onBackgroundModelChange: (model: string) => void
   /** Whether to show the "Two ways to research" explainer */
   showExplainer?: boolean
-  /** Whether to show the Advanced section (compaction, fetch, fallback) */
-  showAdvanced?: boolean
-  /** Advanced model selections (optional, for Settings page) */
-  advancedModels?: {
-    compactionModel?: string
-    fetchModel?: string
-    fallbackModels?: string[]
-    /** Empty string = use system default; otherwise a named profile */
-    compactionProfile?: CompactionProfileName | ""
-  }
-  onAdvancedModelsChange?: (models: {
-    compactionModel?: string
-    fetchModel?: string
-    fallbackModels?: string[]
-    compactionProfile?: CompactionProfileName | ""
-  }) => void
-  /** System defaults for fallback */
-  systemDefaults?: {
-    default_model?: string
-    flash_model?: string
-    compaction_model?: string
-    fetch_model?: string
-    fallback_models?: string[]
-  }
-  /** Compaction profile catalog (from the models endpoint). */
-  compactionProfiles?: CompactionProfileCatalog | null
-  /** Optional access map: model name → access type for badge display */
-  modelAccess?: Record<string, ModelAccess>
-}
-
-// ---------------------------------------------------------------------------
-// Fallback models picker — add/remove from accessible models
-// ---------------------------------------------------------------------------
-
-function FallbackModelsPicker({
-  selected,
-  onChange,
-  models,
-  filterProviders,
-}: {
-  selected: string[]
-  onChange: (models: string[]) => void
-  models: Record<string, ProviderModelsData>
-  filterProviders?: string[]
-}) {
-  const [showAdd, setShowAdd] = useState(false)
-  const [search, setSearch] = useState("")
-  const containerRef = useRef<HTMLDivElement>(null)
-
-  // Close on click outside
-  useEffect(() => {
-    if (!showAdd) return
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setShowAdd(false)
-      }
-    }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
-  }, [showAdd])
-
-  const selectedSet = useMemo(() => new Set(selected), [selected])
-
-  const handleToggle = useCallback(
-    (model: string) => {
-      if (selectedSet.has(model)) {
-        onChange(selected.filter((m) => m !== model))
-      } else {
-        onChange([...selected, model])
-      }
-    },
-    [selected, selectedSet, onChange],
-  )
-
-  const handleRemove = useCallback(
-    (model: string) => onChange(selected.filter((m) => m !== model)),
-    [selected, onChange],
-  )
-
-  // Filter providers for the grouped dropdown
-  const filteredGroups = useMemo(() => {
-    const query = search.toLowerCase()
-    const groups: { provider: string; displayName: string; models: string[] }[] = []
-    for (const [provider, pd] of Object.entries(models)) {
-      if (filterProviders && !filterProviders.includes(provider)) continue
-      const provModels = pd.models ?? []
-      const filtered = query
-        ? provModels.filter((m) => m.toLowerCase().includes(query))
-        : provModels
-      if (filtered.length > 0) {
-        groups.push({
-          provider,
-          displayName: pd.display_name ?? provider.charAt(0).toUpperCase() + provider.slice(1),
-          models: filtered,
-        })
-      }
-    }
-    return groups
-  }, [models, filterProviders, search])
-
-  return (
-    <div ref={containerRef} className="flex flex-col gap-1.5">
-      <label
-        className="text-sm font-medium"
-        style={{ color: "var(--color-text-primary)" }}
-      >
-        Fallback Models
-      </label>
-      <p
-        className="text-xs leading-relaxed"
-        style={{ color: "var(--color-text-tertiary)" }}
-      >
-        Tried in order when your primary or flash model is unavailable. Only add models you have access to. If none selected, no fallback is used.
-      </p>
-
-      {/* Selected chips with remove */}
-      <div className="flex flex-wrap gap-1.5 mt-1">
-        {selected.map((m) => (
-          <span
-            key={m}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs"
-            style={{
-              background: "var(--color-bg-surface)",
-              border: "1px solid var(--color-border-default)",
-              color: "var(--color-text-secondary)",
-            }}
-          >
-            {m}
-            <button
-              type="button"
-              onClick={() => handleRemove(m)}
-              className="ml-0.5 hover:opacity-70"
-              style={{ color: "var(--color-text-tertiary)" }}
-              aria-label={`Remove ${m}`}
-            >
-              &times;
-            </button>
-          </span>
-        ))}
-
-        {/* Add button */}
-        <button
-          type="button"
-          onClick={() => { setShowAdd((v) => !v); setSearch("") }}
-          className="inline-flex items-center px-2 py-1 rounded text-xs font-medium"
-          style={{
-            border: "1px dashed var(--color-border-default)",
-            color: "var(--color-accent-primary)",
-          }}
-        >
-          + Add
-        </button>
-      </div>
-
-      {/* Grouped searchable picker */}
-      {showAdd && (
-        <div
-          className="rounded-lg mt-1 overflow-hidden"
-          style={{
-            border: "1px solid var(--color-border-muted)",
-            background: "var(--color-bg-card)",
-          }}
-        >
-          {/* Search */}
-          <div className="px-3 pt-3 pb-2">
-            <div className="relative">
-              <Search
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5"
-                style={{ color: "var(--color-text-tertiary)" }}
-              />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search"
-                className="w-full rounded-md pl-8 pr-3 py-1.5 text-xs"
-                style={{
-                  backgroundColor: "var(--color-bg-elevated)",
-                  border: "1px solid var(--color-border-muted)",
-                  color: "var(--color-text-primary)",
-                }}
-                autoFocus
-              />
-            </div>
-          </div>
-          {/* Provider groups */}
-          <div className="px-1 pb-1 max-h-[280px] overflow-y-auto">
-            {filteredGroups.map(({ provider, displayName, models: groupModels }) => (
-              <div key={provider} className="mb-1">
-                <div
-                  className="px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-wider"
-                  style={{ color: "var(--color-text-tertiary)" }}
-                >
-                  {displayName}
-                </div>
-                {groupModels.map((m) => {
-                  const isSelected = selectedSet.has(m)
-                  return (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => handleToggle(m)}
-                      className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs transition-colors"
-                      style={{
-                        color: isSelected
-                          ? "var(--color-accent-light)"
-                          : "var(--color-text-primary)",
-                        backgroundColor: isSelected
-                          ? "var(--color-accent-soft)"
-                          : "transparent",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!isSelected) e.currentTarget.style.backgroundColor = "var(--color-bg-elevated)"
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isSelected) e.currentTarget.style.backgroundColor = "transparent"
-                      }}
-                    >
-                      <span>{m}</span>
-                      {isSelected && (
-                        <Pin
-                          className="h-3 w-3 flex-shrink-0"
-                          style={{ color: "var(--color-accent-primary)" }}
-                        />
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-            ))}
-            {filteredGroups.length === 0 && (
-              <p className="px-3 py-2 text-xs" style={{ color: "var(--color-text-tertiary)" }}>
-                No models found
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Compaction Profile picker — bundles token_threshold, keep_messages, and
-// truncate_args_trigger_messages into three named presets.
-// ---------------------------------------------------------------------------
-
-const COMPACTION_PROFILE_ORDER: CompactionProfileName[] = [
-  "aggressive",
-  "moderate",
-  "extended",
-  "relaxed",
-]
-
-function CompactionProfilePicker({
-  value,
-  onChange,
-  profiles,
-}: {
-  value: CompactionProfileName | ""
-  onChange: (v: CompactionProfileName | "") => void
-  profiles: CompactionProfileCatalog | null | undefined
-}) {
-  const { t } = useTranslation()
-  const available = useMemo(
-    () => COMPACTION_PROFILE_ORDER.filter((name) => profiles?.[name]),
-    [profiles],
-  )
-
-  if (!profiles || available.length === 0) return null
-
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-col gap-1">
-        <label
-          className="text-sm font-medium"
-          style={{ color: "var(--color-text-primary)" }}
-        >
-          {t("settings.compactionProfile")}
-        </label>
-        <p className="text-xs" style={{ color: "var(--color-text-tertiary)" }}>
-          {t("settings.compactionProfileDesc")}
-        </p>
-      </div>
-
-      <div
-        role="radiogroup"
-        aria-label={t("settings.compactionProfile")}
-        className="grid gap-2"
-        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
-      >
-        {available.map((name) => {
-          const preset = profiles[name]
-          const selected = value === name
-          return (
-            <button
-              key={name}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              onClick={() => onChange(selected ? "" : name)}
-              className={cn(
-                "flex flex-col items-start rounded-md p-3 text-left transition-colors",
-                "hover:border-[var(--color-border-elevated)]",
-              )}
-              style={{
-                background: selected
-                  ? "var(--color-bg-tag)"
-                  : "var(--color-bg-surface)",
-                border: `1px solid ${selected ? "var(--color-text-primary)" : "var(--color-border-default)"}`,
-                color: "var(--color-text-primary)",
-              }}
-            >
-              <span className="text-sm font-medium">
-                {t(`settings.compactionProfiles.${name}.label`)}
-              </span>
-              <span
-                className="mt-0.5 text-[0.6875rem]"
-                style={{ color: "var(--color-text-tertiary)" }}
-              >
-                {t(`settings.compactionProfiles.${name}.description`)}
-              </span>
-              <span
-                className="mt-2 text-[0.6875rem] tabular-nums"
-                style={{ color: "var(--color-text-secondary, var(--color-text-tertiary))" }}
-              >
-                {t("settings.compactionProfilePreset", {
-                  tokens: Math.round(preset.token_threshold / 1000),
-                  keep: preset.keep_messages,
-                  trim: preset.truncate_args_trigger_messages,
-                })}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-
-      {value !== "" && (
-        <button
-          type="button"
-          onClick={() => onChange("")}
-          className="self-start text-xs underline-offset-2 hover:underline"
-          style={{ color: "var(--color-text-tertiary)" }}
-        >
-          {t("settings.compactionProfileUseDefault")}
-        </button>
-      )}
-    </div>
-  )
+  /** Who pays for each model, shown beside its name */
+  payers?: Record<string, Payer>
+  /** Optional model metadata, for display names */
+  metadata?: Record<string, ModelMetadataEntry>
+  /** Settings, where both slots are account defaults and may stay unset: the
+   *  models Auto runs, the deployment's primary and Background, each as printed and
+   *  absent when the deployment names none. An unset primary is Auto; an unset
+   *  Background follows the primary once one is saved, with Auto (`BACKGROUND_AUTO`)
+   *  beside it, and is Auto before. Setup leaves this off: a first run fills
+   *  both. */
+  auto?: { primary?: string; background?: string }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,81 +46,20 @@ export function ModelTierConfig({
   filterProviders,
   primaryModel,
   onPrimaryModelChange,
-  flashModel,
-  onFlashModelChange,
+  backgroundModel,
+  onBackgroundModelChange,
   showExplainer = false,
-  showAdvanced = false,
-  advancedModels,
-  onAdvancedModelsChange,
-  modelAccess,
-  compactionProfiles,
+  payers,
+  metadata,
+  auto,
 }: ModelTierConfigProps) {
+  const { t } = useTranslation()
   const [explainerOpen, setExplainerOpen] = useState(true)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-
-  // Auto-default flash model: pick the first model from the same provider as
-  // the primary model, or the first model in the list if provider doesn't match.
-  const autoDefaultFlashModel = useMemo(() => {
-    if (flashModel) return undefined // Already set, no auto-default needed
-
-    // Find which provider the primary model belongs to
-    let primaryProvider: string | null = null
-    for (const [provider, pd] of Object.entries(models)) {
-      if (filterProviders && !filterProviders.includes(provider)) continue
-      if (pd.models?.includes(primaryModel)) {
-        primaryProvider = provider
-        break
-      }
-    }
-
-    // Try same provider first
-    if (primaryProvider) {
-      const providerModels = models[primaryProvider]?.models ?? []
-      // Pick first model that isn't the primary (or just the first one)
-      const candidate =
-        providerModels.find((m) => m !== primaryModel) ?? providerModels[0]
-      if (candidate) return candidate
-    }
-
-    // Fallback: first model from any available provider
-    const entries = Object.entries(models)
-    for (const [provider, pd] of entries) {
-      if (filterProviders && !filterProviders.includes(provider)) continue
-      if (pd.models && pd.models.length > 0) return pd.models[0]
-    }
-    return undefined
-  }, [flashModel, primaryModel, models, filterProviders])
-
-  // When primary model changes, if flash is empty, suggest auto-default
-  const handlePrimaryChange = useCallback(
-    (model: string) => {
-      onPrimaryModelChange(model)
-      // If flash model is empty and we can auto-default, do so
-      if (!flashModel && autoDefaultFlashModel) {
-        // We'll let the parent decide via the auto-default mechanism
-      }
-    },
-    [onPrimaryModelChange, flashModel, autoDefaultFlashModel],
-  )
-
-  // When flash model is empty but we have an auto-default, apply it
-  // on first render or when conditions change
-  useEffect(() => {
-    if (!flashModel && autoDefaultFlashModel && primaryModel) {
-      onFlashModelChange(autoDefaultFlashModel)
-    }
-  }, [autoDefaultFlashModel, primaryModel, flashModel, onFlashModelChange])
-
-  const handleAdvancedChange = useCallback(
-    (field: string, value: string | string[] | CompactionProfileName | "") => {
-      if (!onAdvancedModelsChange || !advancedModels) return
-      onAdvancedModelsChange({
-        ...advancedModels,
-        [field]: value,
-      })
-    },
-    [onAdvancedModelsChange, advancedModels],
-  )
+  const copy = useModelSlotCopy()
+  const autoLabel = (model: string | undefined) =>
+    model ? t("settings.autoModel", { model }) : undefined
+  const primaryAuto = autoLabel(auto?.primary)
+  const backgroundAuto = autoLabel(auto?.background)
 
   return (
     <div className="flex flex-col" style={{ gap: "24px" }}>
@@ -483,11 +87,11 @@ export function ModelTierConfig({
               style={{ color: "var(--color-accent-primary)" }}
             />
             <span className="text-sm font-medium flex-1">
-              Two agent modes
+              {copy.explainerTitle}
             </span>
             <ChevronRight
               className={cn(
-                "h-4 w-4 shrink-0 transition-transform duration-200",
+                "h-4 w-4 shrink-0 transition-transform duration-fold",
                 explainerOpen && "rotate-90",
               )}
               style={{ color: "var(--color-text-tertiary)" }}
@@ -500,7 +104,7 @@ export function ModelTierConfig({
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: "auto", opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2, ease: "easeInOut" }}
+                transition={TWEEN.fold}
                 className="overflow-hidden"
               >
                 <div className="px-4 pb-4 flex flex-col gap-3">
@@ -509,15 +113,13 @@ export function ModelTierConfig({
                       className="text-xs font-semibold"
                       style={{ color: "var(--color-text-primary)" }}
                     >
-                      PTC Mode (Primary)
+                      {copy.default.explainerTitle}
                     </span>
                     <span
                       className="text-xs leading-relaxed"
                       style={{ color: "var(--color-text-tertiary)" }}
                     >
-                      The full agent with a sandboxed environment for code
-                      execution, charts, and data analysis. Powered by your
-                      primary model.
+                      {copy.default.explainerBody}
                     </span>
                   </div>
                   <div className="flex flex-col gap-1">
@@ -525,14 +127,13 @@ export function ModelTierConfig({
                       className="text-xs font-semibold"
                       style={{ color: "var(--color-text-primary)" }}
                     >
-                      Flash Mode
+                      {copy.background.explainerTitle}
                     </span>
                     <span
                       className="text-xs leading-relaxed"
                       style={{ color: "var(--color-text-tertiary)" }}
                     >
-                      A lightweight agent for quick answers without a sandbox.
-                      Powered by your flash model for speed.
+                      {copy.background.explainerBody}
                     </span>
                   </div>
                 </div>
@@ -544,103 +145,37 @@ export function ModelTierConfig({
 
       {/* Primary Model selector */}
       <ModelSelector
-        label="Primary Model"
-        description="For deep research with code execution and data analysis"
+        label={copy.default.label}
+        description={copy.default.description}
         value={primaryModel}
-        onChange={handlePrimaryChange}
+        onChange={onPrimaryModelChange}
         models={models}
         filterProviders={filterProviders}
-        placeholder="Select primary model..."
-        required
-        modelAccess={modelAccess}
+        placeholder={primaryAuto ?? copy.default.placeholder}
+        required={!primaryAuto}
+        payers={payers}
+        metadata={metadata}
       />
 
-      {/* Flash Model selector */}
+      {/* Background model selector */}
       <ModelSelector
-        label="Flash Model"
-        description="For quick answers without a sandbox"
-        value={flashModel}
-        onChange={onFlashModelChange}
+        label={copy.background.label}
+        description={copy.background.description}
+        value={backgroundModel}
+        onChange={onBackgroundModelChange}
         models={models}
         filterProviders={filterProviders}
-        placeholder="Select flash model..."
-        required
-        modelAccess={modelAccess}
+        placeholder={auto && primaryModel
+          ? copy.backgroundSameAsDefault
+          : (auto && backgroundAuto) || copy.background.placeholder}
+        autoOption={auto && primaryModel && backgroundAuto
+          ? { value: BACKGROUND_AUTO, label: backgroundAuto }
+          : undefined}
+        required={!auto}
+        payers={payers}
+        metadata={metadata}
       />
 
-      {/* Advanced section */}
-      {showAdvanced && advancedModels && onAdvancedModelsChange && (
-        <div>
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((v) => !v)}
-            className="inline-flex items-center gap-1 text-xs font-medium transition-colors"
-            style={{ color: "var(--color-text-tertiary)" }}
-            aria-expanded={advancedOpen}
-          >
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 transition-transform duration-200",
-                advancedOpen && "rotate-90",
-              )}
-            />
-            Advanced
-          </button>
-
-          <AnimatePresence initial={false}>
-            {advancedOpen && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2, ease: "easeInOut" }}
-                className="overflow-hidden"
-              >
-                <div
-                  className="flex flex-col pt-4"
-                  style={{ gap: "24px" }}
-                >
-                  <ModelSelector
-                    label="Web Fetch Model"
-                    description="Used for web page extraction"
-                    value={advancedModels.fetchModel ?? ""}
-                    onChange={(v) => handleAdvancedChange("fetchModel", v)}
-                    models={models}
-                    filterProviders={filterProviders}
-                    placeholder="Defaults to flash model"
-                    modelAccess={modelAccess}
-                  />
-
-                  <ModelSelector
-                    label="Compaction Model"
-                    description="Used for compacting long conversation context"
-                    value={advancedModels.compactionModel ?? ""}
-                    onChange={(v) => handleAdvancedChange("compactionModel", v)}
-                    models={models}
-                    filterProviders={filterProviders}
-                    placeholder="Defaults to flash model"
-                    modelAccess={modelAccess}
-                  />
-
-                  <CompactionProfilePicker
-                    value={advancedModels.compactionProfile ?? ""}
-                    onChange={(v) => handleAdvancedChange("compactionProfile", v)}
-                    profiles={compactionProfiles}
-                  />
-
-                  {/* Fallback models (editable) */}
-                  <FallbackModelsPicker
-                    selected={advancedModels.fallbackModels ?? []}
-                    onChange={(list) => handleAdvancedChange("fallbackModels", list)}
-                    models={models}
-                    filterProviders={filterProviders}
-                  />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
     </div>
   )
 }

@@ -4,10 +4,13 @@ import logging
 from typing import Dict, List
 
 import pytest
+from langsmith.run_helpers import tracing_context
+from langsmith.run_trees import RunTree
 
 import src.tools.web.router as router_module
 from src.tools.decorators import start_tool_tracking, stop_tool_tracking
 from src.tools.web.manifest import CapabilitySpec, LevelSpec, WebProviderSpec
+from src.tools.web.providers._shared import http_status_error
 from src.tools.web.router import FetchRouter
 from src.tools.web.types import (
     FetchRequest,
@@ -107,14 +110,14 @@ class TestAttemptOutcome:
         dead_target = self._failed("dns_error", provider_fault=False)
         our_capacity = self._failed("queue_full", provider_fault=True)
 
-        assert str(router_module._attempt_outcome("inhouse", [dead_target])) == "inhouse:dns_error"
-        assert str(router_module._attempt_outcome("inhouse", [our_capacity])) == "inhouse:queue_full"
+        assert str(router_module._attempt_outcome("inhouse", [dead_target])[0]) == "inhouse:dns_error"
+        assert str(router_module._attempt_outcome("inhouse", [our_capacity])[0]) == "inhouse:queue_full"
 
     def test_falls_back_to_the_normalized_type(self):
         """Providers whose taxonomy is already granular carry no native kind."""
         timed_out = self._failed(None, provider_fault=False, etype=WebErrorType.TIMEOUT)
 
-        assert str(router_module._attempt_outcome("exa", [timed_out])) == "exa:timeout"
+        assert str(router_module._attempt_outcome("exa", [timed_out])[0]) == "exa:timeout"
 
 
 @pytest.mark.asyncio
@@ -544,6 +547,112 @@ class TestChainSemantics:
 
         resp = await router.fetch(FetchRequest(urls=[URL_A]))
         assert resp.provider == "inhouse"
+        assert not router._chain[0].breaker.is_open()
+
+
+class _RecordingClient:
+    def __init__(self):
+        self.created = []
+
+    def create_run(self, **kwargs):
+        self.created.append(kwargs)
+
+    def update_run(self, **kwargs):
+        return None
+
+
+@pytest.mark.asyncio
+class TestProviderAttemptRuns:
+    """The in-house fallback turns a dead primary into an ok WebFetch, so
+    each provider attempt is its own run for a per-provider alarm to read."""
+
+    @pytest.mark.parametrize(("status", "opens"), [(401, True), (402, True), (403, False)])
+    async def test_a_rejected_key_opens_the_breaker_but_a_site_refusal_does_not(
+        self, make_router, status, opens
+    ):
+        primary = FakeAdapter("primary", {URL_A: http_status_error(status, "refused")})
+        router = make_router([primary, FakeAdapter("inhouse", {})])
+        router._chain[0].breaker.failure_threshold = 1
+
+        resp = await router.fetch(FetchRequest(urls=[URL_A]))
+
+        assert resp.provider == "inhouse"
+        assert router._chain[0].breaker.is_open() is opens
+
+    async def test_each_provider_attempt_is_its_own_run(self, make_router):
+        client = _RecordingClient()
+        # The tool run's own outcome must not leak onto its attempts.
+        tool_run = RunTree(
+            name="WebFetch", run_type="tool", client=client,
+            extra={"metadata": {"tool_outcome": "error", "error_class": "stale"}},
+        )
+        primary = FakeAdapter("primary", {URL_A: http_status_error(401, "bad key")})
+        router = make_router([primary, FakeAdapter("inhouse", {})])
+        router._chain[0].breaker.failure_threshold = 1
+
+        with tracing_context(parent=tool_run):
+            await router.fetch(FetchRequest(urls=[URL_A]))
+            await router.fetch(FetchRequest(urls=[URL_A]))  # primary's breaker now open
+
+        attempts = [c for c in client.created if c["name"] == "web_provider_attempt"]
+        rows = [
+            (
+                c["extra"]["metadata"]["tool_provider"],
+                c["extra"]["metadata"]["attempt_outcome"],
+                c["extra"]["metadata"].get("error_class"),
+                bool(c.get("error")),
+            )
+            for c in attempts
+        ]
+        assert rows == [
+            ("primary", "forbidden", "forbidden", True),
+            ("inhouse", "ok", None, False),
+            ("primary", "circuit_open", "circuit_open", True),
+            ("inhouse", "ok", None, False),
+        ]
+        for c in attempts:
+            assert c["parent_run_id"] == tool_run.id
+            assert c["extra"]["metadata"]["capability"] == "fetch"
+            assert "tool_outcome" not in c["extra"]["metadata"]
+
+    async def test_a_target_side_failure_is_an_unerrored_attempt(self, make_router):
+        client = _RecordingClient()
+        tool_run = RunTree(name="WebFetch", run_type="tool", client=client)
+        primary = FakeAdapter("primary", {URL_A: WebErrorType.TIMEOUT})
+        router = make_router([primary, FakeAdapter("inhouse", {})])
+
+        with tracing_context(parent=tool_run):
+            await router.fetch(FetchRequest(urls=[URL_A]))
+
+        first = next(c for c in client.created if c["name"] == "web_provider_attempt")
+        assert first["extra"]["metadata"]["attempt_outcome"] == "timeout"
+        assert first.get("error") is None
+
+    @pytest.mark.parametrize(
+        ("native_kind", "errored"), [("circuit_open", True), ("host_circuit_open", False)]
+    )
+    async def test_the_inhouse_crawlers_own_open_breakers(
+        self, make_router, native_kind, errored
+    ):
+        """Its infra breaker is ours though it leaves the router's breaker
+        alone; its breaker for one host is that host's."""
+        client = _RecordingClient()
+        tool_run = RunTree(name="WebFetch", run_type="tool", client=client)
+        open_breaker = WebError(
+            type=WebErrorType.CIRCUIT_OPEN,
+            message="crawler breaker open",
+            provider_fault=False,
+            native_kind=native_kind,
+        )
+        router = make_router([FakeAdapter("inhouse", {URL_A: open_breaker})])
+        router._chain[0].breaker.failure_threshold = 1
+
+        with tracing_context(parent=tool_run):
+            await router.fetch(FetchRequest(urls=[URL_A]))
+
+        (attempt,) = [c for c in client.created if c["name"] == "web_provider_attempt"]
+        assert bool(attempt.get("error")) is errored
+        assert (attempt["extra"]["metadata"].get("error_class") == "circuit_open") is errored
         assert not router._chain[0].breaker.is_open()
 
 

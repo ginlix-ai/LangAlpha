@@ -7,6 +7,12 @@
   margin-bottom: 6px;
 }
 
+/* The row stays mounted so its last pill can fade out; once that has gone it
+   takes no room, and no gap in the column. */
+.mention-pills:empty {
+  display: none;
+}
+
 .mention-pill {
   display: inline-flex;
   align-items: center;
@@ -40,7 +46,7 @@
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
-  transition: color 0.15s, background-color 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 
 .mention-pill-remove:hover {
@@ -88,8 +94,6 @@
   margin-left: auto;
 }
 
-/* ====== Plan Mode toggle — low-profile active state (no glow) ====== */
-
 /* ====== Autocomplete dropdown ====== */
 
 .mention-autocomplete {
@@ -105,6 +109,8 @@
   overflow-y: auto;
   z-index: 100;
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
+  /* It opens above the composer, so it grows out of the composer's edge. */
+  transform-origin: bottom center;
 }
 
 .mention-autocomplete-empty {
@@ -119,7 +125,7 @@
   gap: 8px;
   padding: 8px 14px;
   cursor: pointer;
-  transition: background-color 0.1s;
+  transition: background-color var(--motion-quick) var(--ease-out);
 }
 
 .mention-autocomplete-item:hover,
@@ -144,222 +150,58 @@
   margin-left: auto;
 }
 
-/* ====== Workspace dropdown ====== */
-
-.workspace-dropdown {
-  position: absolute;
-  left: 0;
-  width: 220px;
-  background-color: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-muted);
-  border-radius: 8px;
-  max-height: 200px;
-  overflow-y: auto;
-  z-index: 100;
-  opacity: 1;
-  isolation: isolate;
-}
-
-.workspace-dropdown-up {
-  bottom: 100%;
-  margin-bottom: 4px;
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
-}
-
-.workspace-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  color: var(--color-text-primary);
-  transition: background-color 0.1s;
-}
-
-.workspace-dropdown-item:hover,
-.workspace-dropdown-item.active {
-  background-color: var(--color-accent-soft);
-}
-
 /* ====== Model selector trigger (Radix data-state) ====== */
 
 .model-selector-trigger {
   color: var(--color-text-muted, #8b8fa3);
 }
 
-.model-selector-trigger:hover:not([data-state=open]) {
+/* Open reads as the hover held, not as a selection: the pill names a
+   setting, and an accent fill and edge made it look like the active control. */
+.model-selector-trigger:hover:not(:disabled),
+.model-selector-trigger[data-state=open] {
   background: var(--color-border-muted);
 }
 
 .model-selector-trigger[data-state=open] {
-  background: var(--color-accent-soft);
-  color: var(--color-text-primary);
-  border-color: var(--color-accent-overlay);
-}
-
-/* ====== Model selector controls (inside Radix DropdownMenuContent) ====== */
-
-.model-effort-section {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  gap: 8px;
-}
-
-.model-effort-label {
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  white-space: nowrap;
-}
-
-.model-effort-toggle {
-  display: flex;
-  gap: 2px;
-  background-color: var(--color-bg-card);
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.model-effort-btn {
-  padding: 3px 10px;
-  border: none;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  transition: background-color 0.15s, color 0.15s;
-}
-
-.model-effort-btn:hover {
   color: var(--color-text-primary);
 }
 
-.model-effort-btn.active {
-  background-color: var(--color-accent-soft);
-  color: var(--color-accent-light);
-}
+/* ====== Send / stop button (quiet ink) ====== */
 
-.fast-mode-switch {
-  position: relative;
-  width: 36px;
-  height: 20px;
-  border-radius: 10px;
-  border: none;
-  background-color: var(--color-bg-card);
-  cursor: pointer;
-  padding: 0;
-  transition: background-color 0.2s ease;
-  flex-shrink: 0;
-}
-
-.fast-mode-switch:hover {
-  background-color: var(--color-border-default);
-}
-
-.fast-mode-switch.active {
-  background-color: var(--color-accent-light);
-}
-
-.fast-mode-switch-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background-color: #fff;
-  transition: transform 0.2s ease;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-}
-
-.fast-mode-switch.active .fast-mode-switch-thumb {
-  transform: translateX(16px);
-}
-
-.fast-mode-help-wrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  margin-left: 3px;
-  vertical-align: middle;
-}
-
-.fast-mode-help-icon {
-  width: 12px;
-  height: 12px;
-  color: var(--color-text-quaternary, #aaa);
-  cursor: help;
-}
-
-.fast-mode-help-wrap:hover .fast-mode-help-icon {
-  color: var(--color-text-secondary);
-}
-
-.fast-mode-help-tooltip {
-  display: none;
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  /* Same surface as components/ui/tooltip.tsx. The border is load-bearing in
-     light theme, where bg-elevated is a near-white on a white composer. */
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border-muted);
-  color: var(--color-text-primary);
-  font-size: 0.6875rem;
-  font-weight: 400;
-  line-height: 1.4;
-  padding: 6px 10px;
-  border-radius: 6px;
-  white-space: nowrap;
-  z-index: 100;
-  pointer-events: none;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.fast-mode-help-wrap:hover .fast-mode-help-tooltip {
-  display: block;
-}
-
-/* ====== Mobile responsive dropdowns ====== */
-@media (max-width: 767px) {
-  .workspace-dropdown {
-    width: calc(100vw - 32px);
-    max-width: 280px;
-  }
-}
-
-/* ====== Stop button (quiet ink) ====== */
-
-/* Wears the send button's face — the square glyph alone says stop. Red is
- * reserved for hover intent so a running stream never shows an alarm slab. */
-.stop-button {
-  background: var(--color-btn-primary-bg);
+/* One button for both, so a turn starting or ending changes its face in place
+ * (the `press` utility fades the fill) rather than swapping the control under
+ * the pointer. Stop wears the send button's face — the square glyph alone says
+ * stop. Red is reserved for hover intent so a running stream never shows an
+ * alarm slab. */
+.send-button {
+  background-color: var(--color-btn-primary-bg);
   color: var(--color-btn-primary-text);
 }
 
-.stop-button:hover:not(:disabled) {
-  background: var(--color-btn-stop-hover-bg);
+.send-button[data-mode='send']:disabled {
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text-quaternary);
+}
+
+.send-button[data-mode='stop']:hover:not(:disabled) {
+  background-color: var(--color-btn-stop-hover-bg);
   color: var(--color-btn-stop-hover-fg);
 }
 
-.stop-button:disabled {
+.send-button[data-mode='stop']:disabled {
   opacity: 0.7;
 }
 
 /* ====== Voice Input (Mic) ====== */
 
-.mic-button {
-  transition: all 0.2s ease;
-}
-
+/* The pulse, the overlay's breathing and the waveform are the live
+   "listening" state, not decoration: they run only while the microphone is
+   open, and the reduced-motion block in animations.css stills them. */
 .mic-button.recording {
   background-color: var(--color-btn-danger) !important;
   color: white !important;
+  /* motion-exempt: a live listening state; the pulse's period is its own */
   animation: mic-pulse 1.5s ease-in-out infinite;
 }
 
@@ -379,15 +221,19 @@
 
 /* ====== Recording State for Container ====== */
 
+/* The composer's edge changes only for recording: its red edge and glow come
+ * in over quick and go over exit. Focus leaves the edge neutral. The caret
+ * already says where typing goes, and an accent edge would compete with the
+ * menus its pills open against it. */
 .chat-input-container {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
+  transition:
+    border-color var(--motion-exit) var(--ease-out),
+    box-shadow var(--motion-exit) var(--ease-out);
 }
 
-/* Resting border stays neutral; focus is an intentional-action moment, so it
- * earns a full-strength accent edge (never a fill or a glow). */
-.chat-input-container:focus-within:not(.recording) {
-  border-color: var(--color-accent-primary);
+.chat-input-container.recording {
+  transition-duration: var(--motion-quick);
 }
 
 .chat-input-container.recording {
@@ -405,7 +251,8 @@
   background: linear-gradient(to right, rgba(239, 68, 68, 0.05), transparent 20%, transparent 80%, rgba(239, 68, 68, 0.05));
   pointer-events: none;
   z-index: 5;
-  border-radius: 16px;
+  border-radius: 22px;
+  /* motion-exempt: a live listening state; the overlay breathes on its own period */
   animation: overlay-pulse 2s ease-in-out infinite;
 }
 
@@ -450,7 +297,9 @@
   height: 100%;
   background-color: var(--color-btn-danger);
   border-radius: 3px;
-  animation: waveform-anim 1.2s ease-in-out infinite;
+  /* motion-exempt: a live listening state; the wave's period, and each bar
+     (`--bar`, set where they render) a step behind the last, are its shape */
+  animation: waveform-anim 1.2s ease-in-out calc(var(--bar, 0) * 0.1s) infinite;
 }
 
 @keyframes waveform-anim {
@@ -463,39 +312,6 @@
   50% {
     height: 100%;
   }
-}
-
-/* Staggered animation for bars */
-.waveform-bar:nth-child(1) {
-  animation-delay: 0.0s;
-}
-
-.waveform-bar:nth-child(2) {
-  animation-delay: 0.1s;
-}
-
-.waveform-bar:nth-child(3) {
-  animation-delay: 0.2s;
-}
-
-.waveform-bar:nth-child(4) {
-  animation-delay: 0.3s;
-}
-
-.waveform-bar:nth-child(5) {
-  animation-delay: 0.4s;
-}
-
-.waveform-bar:nth-child(6) {
-  animation-delay: 0.5s;
-}
-
-.waveform-bar:nth-child(7) {
-  animation-delay: 0.6s;
-}
-
-.waveform-bar:nth-child(8) {
-  animation-delay: 0.7s;
 }
 /* === WIDGET CONTEXT DECK === */
 .widget-deck-rail {
@@ -586,9 +402,9 @@
   border-radius: 999px;
   flex-shrink: 0;
   transition:
-    background 120ms cubic-bezier(0.16, 1, 0.3, 1),
-    color 120ms cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+    background var(--motion-quick) var(--ease-out),
+    color var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out);
 }
 
 .widget-deck-show-less:hover {
@@ -598,11 +414,14 @@
 
 .widget-deck-stack {
   position: relative;
-  transition: height 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: height var(--motion-fold) var(--ease-out);
 }
 
 .widget-deck-card {
   position: absolute;
+  /* The whole offset rides `transform`, which is what the transition below
+     animates; a card moved by `top` would jump to its fanned slot. */
+  top: 0;
   left: 0;
   right: 0;
   display: grid;
@@ -615,10 +434,10 @@
   padding: 10px 12px;
   box-shadow: 0 1px 2px rgba(20, 20, 23, 0.04);
   transition:
-    transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1);
-  animation: widgetDeckCardIn 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    transform var(--motion-fold) var(--ease-out),
+    opacity var(--motion-fold) var(--ease-out),
+    box-shadow var(--motion-quick) var(--ease-out);
+  animation: widgetDeckCardIn var(--motion-enter) var(--ease-out);
 }
 
 @keyframes widgetDeckCardIn {
@@ -692,9 +511,9 @@
   padding: 0;
   opacity: 0;
   transition:
-    opacity 120ms cubic-bezier(0.16, 1, 0.3, 1),
-    background 120ms cubic-bezier(0.16, 1, 0.3, 1),
-    color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+    opacity var(--motion-quick) var(--ease-out),
+    background var(--motion-quick) var(--ease-out),
+    color var(--motion-quick) var(--ease-out);
 }
 
 .widget-deck-card-remove:hover {
@@ -721,17 +540,38 @@
   pointer-events: none;
   opacity: 0.6;
   z-index: 100;
-  transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity var(--motion-quick) var(--ease-out);
 }
 
 .widget-deck-stack.fanned .widget-deck-fan-hint {
   opacity: 0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .widget-deck-card,
-  .widget-deck-stack {
-    transition: none;
-    animation: none;
-  }
+/* ====== ChatInput — subagents glyph ======
+   Turning on sends an agent out of the core to each seat, one after another;
+   turning off brings them back together. The offsets are set per node. */
+
+.subagents-glyph {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.subagents-glyph-node {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: translate(var(--dx), var(--dy)) scale(0.2);
+  opacity: 0;
+  transition:
+    transform var(--motion-fold) var(--ease-out),
+    opacity var(--motion-exit) var(--ease-out);
+}
+
+/* Going out takes longer than coming back, and each agent leaves a stagger
+   after the one before (`--seat`, set per node). */
+.subagents-glyph[data-on='true'] .subagents-glyph-node {
+  transform: none;
+  opacity: 1;
+  transition-duration: var(--motion-enter), var(--motion-quick);
+  transition-delay: calc(var(--motion-stagger) * var(--seat, 0));
 }

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { AlertTriangle } from 'lucide-react';
 import {
   Dialog,
@@ -6,6 +7,15 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { CheckboxChoice } from '@/components/ui/choice';
+
+/** A workspace's folder on a machine the user brought, which a delete leaves unless asked. */
+export interface OwnMachineFolder {
+  /** The folder as its owner would find it, e.g. `~/langalpha/Research`. */
+  folder: string;
+  /** The computer's name. */
+  computer: string;
+}
 
 interface DeleteConfirmModalProps {
   isOpen: boolean;
@@ -15,6 +25,10 @@ interface DeleteConfirmModalProps {
   isDeleting: boolean;
   error?: string | null;
   itemType?: 'workspace' | 'thread';
+  /** Set for a workspace on the user's own machine, where its files stay unless `deleteFiles`. */
+  ownMachine?: OwnMachineFolder | null;
+  deleteFiles?: boolean;
+  onDeleteFilesChange?: (deleteFiles: boolean) => void;
 }
 
 /**
@@ -23,9 +37,22 @@ interface DeleteConfirmModalProps {
  * Confirmation dialog for deleting a workspace or thread.
  * Bottom-sheet on mobile, centered on desktop.
  */
-function DeleteConfirmModal({ isOpen, workspaceName, onConfirm, onCancel, isDeleting, error, itemType = 'workspace' }: DeleteConfirmModalProps) {
+function DeleteConfirmModal({
+  isOpen,
+  workspaceName,
+  onConfirm,
+  onCancel,
+  isDeleting,
+  error,
+  itemType = 'workspace',
+  ownMachine = null,
+  deleteFiles = false,
+  onDeleteFilesChange,
+}: DeleteConfirmModalProps) {
+  const { t } = useTranslation();
   const itemLabel = itemType === 'thread' ? 'thread' : 'workspace';
   const itemLabelCapitalized = itemType === 'thread' ? 'Thread' : 'Workspace';
+  const kept = itemType === 'workspace' ? ownMachine : null;
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onCancel(); }}>
@@ -38,7 +65,7 @@ function DeleteConfirmModal({ isOpen, workspaceName, onConfirm, onCancel, isDele
         {/* Warning icon + title */}
         <div className="flex items-center gap-3">
           <div
-            className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+            className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
             style={{ backgroundColor: 'rgba(255, 56, 60, 0.2)' }}
           >
             <AlertTriangle className="h-5 w-5" style={{ color: 'var(--color-loss)' }} />
@@ -57,11 +84,42 @@ function DeleteConfirmModal({ isOpen, workspaceName, onConfirm, onCancel, isDele
             <p className="text-base font-medium mb-4" style={{ color: 'var(--color-text-primary)' }}>
               &ldquo;{workspaceName}&rdquo;?
             </p>
-            <p className="text-xs" style={{ color: 'var(--color-loss)', opacity: 0.8 }}>
-              This action cannot be undone. All data in this {itemLabel} will be permanently deleted.
-            </p>
+            {kept ? (
+              <>
+                <p className="text-xs mb-2" style={{ color: 'var(--color-loss)', opacity: 0.8 }}>
+                  {t('workspace.deleteOwnMachine.cannotUndo', "The workspace and its threads are deleted, and this can't be undone.")}
+                </p>
+                <p className="text-xs break-words" style={{ color: 'var(--color-text-secondary)' }}>
+                  {t(
+                    'workspace.deleteOwnMachine.filesStay',
+                    'Its files are in {{folder}} on {{computer}}, and they stay there.',
+                    { folder: kept.folder, computer: kept.computer },
+                  )}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs" style={{ color: 'var(--color-loss)', opacity: 0.8 }}>
+                This action cannot be undone. All data in this {itemLabel} will be permanently deleted.
+              </p>
+            )}
           </div>
         </DialogDescription>
+
+        {/* Outside the description, which a screen reader reads as one sentence. */}
+        {kept && (
+          <CheckboxChoice
+            checked={deleteFiles}
+            onCheckedChange={(checked) => onDeleteFilesChange?.(checked)}
+            disabled={isDeleting}
+            className="items-start gap-2 rounded-md text-xs"
+            markClassName="mt-0.5"
+            style={{ color: 'var(--color-text-primary)' }}
+          >
+            <span className="min-w-0 break-words">
+              {t('workspace.deleteOwnMachine.alsoDeleteFiles', 'Also delete {{folder}} from this machine', { folder: kept.folder })}
+            </span>
+          </CheckboxChoice>
+        )}
 
         {/* Error message */}
         {error && (

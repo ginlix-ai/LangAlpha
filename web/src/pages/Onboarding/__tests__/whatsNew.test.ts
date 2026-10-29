@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { compareReleaseVersions, latestReleaseVersion, unseenReleases } from '../engine/whatsNew';
 import { emptyOnboardingPrefs } from '../onboardingPrefsSchema';

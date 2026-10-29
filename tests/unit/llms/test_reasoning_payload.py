@@ -3,7 +3,12 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from src.llms.reasoning_payload import strip_all_reasoning, strip_reasoning
+from src.llms.reasoning_payload import (
+    pad_tool_turn,
+    strip_all_reasoning,
+    strip_item_ids,
+    strip_reasoning,
+)
 
 TEXT = {"type": "text", "text": "answer"}
 TOOL_USE = {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {}}
@@ -95,6 +100,14 @@ class TestStripReasoning:
         )
         assert strip_reasoning(msg).additional_kwargs == {"keep": 1}
 
+    def test_openrouter_reasoning_details_are_stripped(self):
+        """ChatOpenRouter sends them back as the upstream's signed blocks."""
+        msg = AIMessage(
+            content=[TEXT],
+            additional_kwargs={"reasoning_details": [{"type": "reasoning.text", "signature": "s"}]},
+        )
+        assert strip_reasoning(msg).additional_kwargs == {}
+
 
 class TestStripAllReasoning:
     def test_drops_every_origin(self):
@@ -115,3 +128,66 @@ class TestStripAllReasoning:
         """Identity is the caller's signal that a retry would be pointless."""
         msgs = [HumanMessage("q"), AIMessage(content=[TEXT])]
         assert strip_all_reasoning(msgs) is msgs
+
+
+class TestStripItemIds:
+    def test_function_call_loses_its_item_id_but_keeps_the_call_id(self):
+        call = {
+            "type": "function_call",
+            "id": "msg_1",
+            "call_id": "tu_1",
+            "name": "lookup",
+        }
+        msg = AIMessage(content=[call], tool_calls=[TOOL_CALL])
+        out = strip_item_ids(msg)
+        assert out.content == [
+            {"type": "function_call", "call_id": "tu_1", "name": "lookup"}
+        ]
+        assert out.tool_calls == msg.tool_calls
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "plain",
+            [TOOL_USE],  # tool_use.id is the call id itself
+            [{"type": "function_call", "call_id": "tu_1", "name": "lookup"}],
+        ],
+    )
+    def test_nothing_to_drop_keeps_identity(self, content):
+        msg = AIMessage(content=content)
+        assert strip_item_ids(msg) is msg
+
+
+class TestPadToolTurn:
+    PLACEHOLDER = {"type": "thinking", "thinking": ""}
+
+    def test_tool_turn_without_reasoning_gets_the_placeholder_first(self):
+        msg = AIMessage(content=[TEXT, TOOL_USE], tool_calls=[TOOL_CALL])
+        out = pad_tool_turn(msg)
+        assert out.content == [self.PLACEHOLDER, TEXT, TOOL_USE]
+        assert out.tool_calls == msg.tool_calls
+
+    def test_a_turn_whose_only_call_failed_to_parse_is_padded(self):
+        broken = {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {}}
+        invalid = {"name": "lookup", "args": "{", "id": "tu_1", "error": None}
+        msg = AIMessage(content=[broken], invalid_tool_calls=[invalid])
+        assert pad_tool_turn(msg).content == [self.PLACEHOLDER, broken]
+
+    @pytest.mark.parametrize(
+        ("content", "expected_rest"),
+        [("checking", [{"type": "text", "text": "checking"}]), ("", [])],
+    )
+    def test_string_content(self, content, expected_rest):
+        out = pad_tool_turn(AIMessage(content=content, tool_calls=[TOOL_CALL]))
+        assert out.content == [self.PLACEHOLDER, *expected_rest]
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            AIMessage(content=[THINKING, TOOL_USE], tool_calls=[TOOL_CALL]),
+            AIMessage(content=[TEXT]),
+        ],
+        ids=["has-reasoning", "no-tool-calls"],
+    )
+    def test_left_alone(self, msg):
+        assert pad_tool_turn(msg) is msg

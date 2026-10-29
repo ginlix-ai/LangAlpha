@@ -100,9 +100,7 @@ describe('sendChatMessageStream — AbortError handling', () => {
 
     const controller = new AbortController();
     const result = await sendChatMessageStream(
-      'hi', 'ws-1', 't-1', [], false, () => {}, null, 'ptc',
-      'en-US', 'America/New_York', null, null, null, null, null, null, null,
-      controller.signal,
+      'hi', 'ws-1', 't-1', { onEvent: () => {}, signal: controller.signal },
     );
 
     expect(result).toMatchObject({ aborted: true, disconnected: false });
@@ -114,9 +112,7 @@ describe('sendChatMessageStream — AbortError handling', () => {
 
     const controller = new AbortController();
     const result = await sendChatMessageStream(
-      'hi', 'ws-1', 't-1', [], false, () => {}, null, 'ptc',
-      'en-US', 'America/New_York', null, null, null, null, null, null, null,
-      controller.signal,
+      'hi', 'ws-1', 't-1', { onEvent: () => {}, signal: controller.signal },
     );
 
     expect(result).toMatchObject({ aborted: true });
@@ -136,7 +132,7 @@ describe('sendChatMessageStream — AbortError handling', () => {
     }) as unknown as typeof fetch;
 
     await expect(
-      sendChatMessageStream('hi', 'ws-1', 't-1', [], false, () => {}),
+      sendChatMessageStream('hi', 'ws-1', 't-1', { onEvent: () => {} }),
     ).rejects.toThrow('kaboom');
   });
 });

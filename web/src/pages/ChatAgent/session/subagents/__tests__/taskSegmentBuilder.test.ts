@@ -1,6 +1,7 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { applyTaskSegment, deriveTaskSegment } from '../taskSegmentBuilder';
+import { applyLaunchReply, applyTaskSegment, deriveTaskSegment } from '../taskSegmentBuilder';
 import type { SubagentTaskRecord } from '@/types/chat';
 import { WORKFLOW_TASK_TYPE } from '../workflowRunState';
 
@@ -64,6 +65,17 @@ describe('deriveTaskSegment', () => {
     expect(derived?.stacks).toBe(true);
     expect(derived?.segment.resumeTargetId).toBe('task:abc');
     expect(derived?.record.action).toBe('resume');
+  });
+
+  it('points a resume by display id at the task\'s card', () => {
+    // The server resumes `Task-k7Xm2p` as `k7Xm2p`, and cards key on the bare id.
+    const derived = deriveTaskSegment(
+      { name: 'Task', args: { action: 'resume', task_id: 'Task-k7Xm2p' } },
+      'tc-2',
+      1
+    );
+    expect(derived?.segment.resumeTargetId).toBe('task:k7Xm2p');
+    expect(derived?.record.resumeTargetId).toBe('task:k7Xm2p');
   });
 
   it('leaves an already-prefixed target id alone', () => {
@@ -206,5 +218,41 @@ describe('applyTaskSegment', () => {
 
     expect(segments).toHaveLength(1);
     expect(tasks['tc-3'].type).toBe(WORKFLOW_TASK_TYPE);
+  });
+});
+
+describe('applyLaunchReply', () => {
+  const spawn = (): SubagentTaskRecord => deriveTaskSegment(
+    { name: 'Task', args: { description: 'Pull filings', subagent_type: 'research' } },
+    'tc-1',
+    0,
+  )!.record;
+  const REFUSED = 'Refused: the user has turned subagents off for this thread. Do the work yourself.';
+
+  it('settles a refused launch as a failure the record marks as never having run', () => {
+    // Nothing else will settle it: a refused launch opens no run and no channel.
+    const record = applyLaunchReply(spawn(), { content: REFUSED, status: 'error' });
+    expect(record).toMatchObject({ status: 'error', launchFailed: true, result: REFUSED });
+  });
+
+  it('keeps a refusal the user can be told about in their own words', () => {
+    const record = applyLaunchReply(spawn(), {
+      content: REFUSED,
+      status: 'error',
+      artifact: { launch: 'subagents_off' },
+    });
+    expect(record).toMatchObject({ status: 'error', launchFailed: true, launchRefusal: 'subagents_off' });
+  });
+
+  it('leaves a launch that started to its own settle', () => {
+    const record = applyLaunchReply(spawn(), { content: 'Task-A1b2C3 started in the background.' });
+    expect(record.status).toBe('running');
+    expect(record.launchFailed).toBeUndefined();
+  });
+
+  it('settles a launch a stop refused as stopped, not failed', () => {
+    const record = applyLaunchReply(spawn(), { content: 'Stopped.', artifact: { launch: 'cancelled' } });
+    expect(record.status).toBe('cancelled');
+    expect(record.launchFailed).toBeUndefined();
   });
 });

@@ -29,6 +29,32 @@ def validate_date_format(date_str: Optional[str]) -> Optional[str]:
         raise ValueError(f"Invalid date: {date_str}. {str(e)}")
     return date_str
 
+
+_ISO_8601 = re.compile(
+    r"^\d{4}(-\d{2}(-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?)?)?$"
+)
+
+
+def validate_iso_8601(value: Optional[str]) -> Optional[str]:
+    """Validate an ISO 8601 date or datetime, returning it unchanged (None passes).
+
+    For an API that takes any ISO 8601 form, where ``validate_date_format``
+    would refuse a datetime or a year-month it accepts.
+    """
+    if value is None:
+        return None
+    if not _ISO_8601.match(value):
+        raise ValueError(
+            f"Date must be ISO 8601 (e.g. 2025-01-31 or 2025-01-31T00:00:00Z), got: {value}"
+        )
+    padded = {4: f"{value}-01-01", 7: f"{value}-01"}.get(len(value), value)
+    try:
+        datetime.fromisoformat(padded)
+    except ValueError as e:
+        raise ValueError(f"Invalid date: {value}. {str(e)}")
+    return value
+
+
 # OpenAI Vision API supported image formats
 # Reference: https://platform.openai.com/docs/guides/vision
 OPENAI_SUPPORTED_FORMATS = {

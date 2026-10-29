@@ -2,24 +2,23 @@ import React, { useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { ArrowRight, ChevronRight, ExternalLink, FileText } from 'lucide-react';
-import { stripLineNumbers, parseTruncatedResult } from './toolDisplayConfig';
-import {
-  StockPriceChart,
-  CompanyOverviewCard,
-  MarketIndicesChart,
-  SectorPerformanceChart,
-  StockScreenerTable,
-} from './charts/MarketDataCharts';
-import SecFilingViewer from './charts/SecFilingViewer';
-import { FaviconImg, googleFaviconUrl } from './charts/InlineArtifactCards';
-import { unwrapMarketOverview } from './charts/inlineCardsShared';
-import AutomationDetailPanel from './charts/AutomationDetailPanel';
+import { cn } from '@/lib/utils';
+import { ArrowRight, ArrowUpRight, ChevronRight, FileText } from 'lucide-react';
+import { isTaskTool, parseTruncatedResult, stripLineNumbers } from './toolDisplayConfig';
+import { FaviconImg } from './charts/FaviconImg';
+import { TermCard } from './charts/TermCard';
+import { TermPanel } from './charts/TermPanel';
+import { hostOf, readWebSearch, text } from './charts/cardReaders';
+import { artifactPanel } from './charts/panelArtifacts';
 import Markdown, { CodeBlock } from './Markdown';
 import { TaskStatusChip, taskCardStatusKind } from './taskStatusUi';
 import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import { parseDisplayableResults, buildRichResultMap, resolveSnippet } from './webSearchUtils';
+import { isDirectToolName } from '../utils/directTools';
+import { DirectToolDetail } from './mcp/DirectToolDetail';
+import { ToolCallCommandState } from './commands/CommandState';
+import { isCommandTool } from './commands/commandWords';
 
 // --- Public types ---
 
@@ -76,38 +75,27 @@ export default function ToolCallDetailView({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const toolName = toolCallProcess.toolName || '';
-  const isTaskTool = toolName === 'Task' || toolName === 'task';
+  const isTask = isTaskTool(toolName);
   const artifact = toolCallProcess.toolCallResult?.artifact;
   const content = toolCallProcess.toolCallResult?.content;
 
-  const subagentType = isTaskTool ? ((toolCallProcess.toolCall?.args?.subagent_type as string) || 'general-purpose') : '';
-  const subagentDescription = isTaskTool ? ((toolCallProcess.toolCall?.args?.description as string) || '') : '';
-  const subagentId = isTaskTool ? toolCallProcess.toolCall?.id ?? null : null;
+  const subagentType = isTask ? ((toolCallProcess.toolCall?.args?.subagent_type as string) || 'general-purpose') : '';
+  const subagentDescription = isTask ? ((toolCallProcess.toolCall?.args?.description as string) || '') : '';
+  const subagentId = isTask ? toolCallProcess.toolCall?.id ?? null : null;
+  const fetchedUrl = toolName === 'WebFetch' || toolName === 'web_fetch'
+    ? (toolCallProcess.toolCall?.args?.url as string | undefined)
+    : undefined;
 
   return (
     <>
-      {(toolName === 'WebFetch' || toolName === 'web_fetch') && (toolCallProcess.toolCall?.args?.url as string | undefined) && (
-        <a
-          href={toolCallProcess.toolCall!.args!.url as string}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 px-4 py-2 text-xs truncate flex-shrink-0 transition-colors hover:bg-foreground/5"
-          style={{
-            color: 'var(--color-accent-primary)',
-            borderBottom: '1px solid var(--color-border-muted)',
-          }}
-        >
-          <ExternalLink className="h-3 w-3 flex-shrink-0" />
-          <span className="truncate">{toolCallProcess.toolCall!.args!.url as string}</span>
-        </a>
-      )}
+      {fetchedUrl && <FetchedUrlBar url={fetchedUrl} />}
 
+      {/* On a phone the sheet scrolls; a panel that fills (termPanel.css) lays out in this height either way. */}
       <div
         ref={scrollContainerRef}
-        className={`${isMobile && artifact?.type !== 'sec_filing' ? '' : 'flex-1'} px-4 py-4 overflow-x-hidden ${artifact?.type === 'sec_filing' ? 'flex flex-col overflow-hidden' : (isMobile ? '' : 'overflow-y-auto')}`}
-        style={isMobile && artifact?.type !== 'sec_filing' ? undefined : { minHeight: 0 }}
+        className={cn('term-panel-scroller px-4 py-4 overflow-x-hidden', !isMobile && 'flex-1 min-h-0 overflow-y-auto')}
       >
-        {isTaskTool ? (
+        {isTask ? (
           <TaskToolContent
             description={subagentDescription}
             type={subagentType}
@@ -127,6 +115,31 @@ export default function ToolCallDetailView({
         )}
       </div>
     </>
+  );
+}
+
+// --- FetchedUrlBar ---
+
+/** `https://` / `www.reuters.com` / `/technology/…`: the host is what a reader checks. */
+function splitUrl(url: string): { scheme: string; host: string; rest: string } {
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)(.*)$/i.exec(url);
+  return m ? { scheme: m[1], host: m[2], rest: m[3] } : { scheme: '', host: '', rest: url };
+}
+
+/** The page a fetch read, held above what it read, and the way out to it. */
+function FetchedUrlBar({ url }: { url: string }): React.ReactElement {
+  const { scheme, host, rest } = splitUrl(url);
+  const domain = hostOf(url);
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className="term-fetch-url" title={url}>
+      {domain && <FaviconImg domain={domain} size={12} />}
+      <span className="term-fetch-url-text">
+        <span className="term-t3">{scheme}</span>
+        <span>{host}</span>
+        <span className="term-t2">{rest}</span>
+      </span>
+      <ArrowUpRight className="term-link-mark" aria-hidden="true" />
+    </a>
   );
 }
 
@@ -169,7 +182,9 @@ function TaskToolContent({ description, type, subagentId, subagentStatus, onOpen
   const isRunning = taskCardStatusKind(subagentStatus) === 'running';
 
   return (
-    <div className="space-y-4">
+    // sibling-space-y, not space-y: the chip is inline, so space-y's margin
+    // would sit inside its line box instead of below it.
+    <div className="sibling-space-y-4">
       <TaskStatusChip
         kind={taskCardStatusKind(subagentStatus)}
         rawStatus={subagentStatus ?? undefined}
@@ -202,7 +217,7 @@ function TaskToolContent({ description, type, subagentId, subagentStatus, onOpen
             border: '1px solid var(--color-border-elevated)',
           }}
         >
-          <img src={isRunning ? iconRoboSing : iconRobo} alt="Subagent" className="w-5 h-5 flex-shrink-0" />
+          <img src={isRunning ? iconRoboSing : iconRobo} alt="Subagent" className="w-5 h-5 shrink-0" />
           <div className="flex flex-col gap-0.5 min-w-0 flex-1 text-left">
             <span className="text-xs font-medium" style={{ color: 'var(--color-text-primary)' }}>
               {t('toolArtifact.goToSubagentTab')}
@@ -213,7 +228,7 @@ function TaskToolContent({ description, type, subagentId, subagentStatus, onOpen
               </span>
             )}
           </div>
-          <ArrowRight className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+          <ArrowRight className="h-4 w-4 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
         </button>
       )}
     </div>
@@ -271,12 +286,16 @@ function CodeToolDisplay({ toolName, toolCallProcess, rawContent }: CodeToolDisp
   const { t } = useTranslation();
   const [inputExpanded, setInputExpanded] = useState(false);
   const input = formatToolInput(toolName, toolCallProcess.toolCall?.args);
+  const toolCallId = toolCallProcess.toolCall?.id;
 
   let displayContent = rawContent || t('toolArtifact.noResultContent');
   if (toolName === 'ExecuteCode') displayContent = displayContent.replace(/^SUCCESS\n?/, '');
 
   return (
     <div className="space-y-4">
+      {/* The output of a call that moved to the background says only that
+          it did; where its command stands now leads the card. */}
+      {isCommandTool(toolName) && toolCallId && <ToolCallCommandState toolCallId={toolCallId} className="px-1" />}
       {input && (
         <div>
           <button
@@ -284,7 +303,7 @@ function CodeToolDisplay({ toolName, toolCallProcess, rawContent }: CodeToolDisp
             className="flex items-center gap-1.5 mb-2 px-1 group"
           >
             <ChevronRight
-              className="h-3 w-3 flex-shrink-0 transition-transform duration-200"
+              className="h-3 w-3 shrink-0 transition-transform duration-fold"
               style={{
                 color: 'var(--color-text-tertiary)',
                 transform: inputExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
@@ -327,42 +346,11 @@ interface ArtifactOrMarkdownProps {
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
-function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOpenFile, scrollContainerRef }: ArtifactOrMarkdownProps): React.ReactElement {
+function ArtifactOrMarkdown(props: ArtifactOrMarkdownProps): React.ReactElement {
+  const { content, toolName, toolCallProcess, onOpenFile } = props;
   const { t } = useTranslation();
-  if (artifact?.type) {
-    switch (artifact.type) {
-      case 'stock_prices':
-        return <StockPriceChart data={artifact} />;
-      case 'company_overview':
-        return <CompanyOverviewCard data={artifact} scrollContainerRef={scrollContainerRef} />;
-      case 'market_indices':
-        return <MarketIndicesChart data={artifact} />;
-      case 'sector_performance':
-        return <SectorPerformanceChart data={artifact} />;
-      case 'market_overview': {
-        // Composite artifact: legacy market_indices / sector_performance
-        // artifacts nested verbatim under `indices` / `sectors`.
-        const { indicesArtifact, sectorsArtifact, hasIndices, hasSectors } = unwrapMarketOverview(artifact);
-        if (hasIndices || hasSectors) {
-          return (
-            <div className="flex flex-col gap-4">
-              {hasIndices && <MarketIndicesChart data={indicesArtifact!} />}
-              {hasSectors && <SectorPerformanceChart data={sectorsArtifact!} />}
-            </div>
-          );
-        }
-        // Error-path artifact ({type, region} only) — fall through to the
-        // raw content/markdown rendering below.
-        break;
-      }
-      case 'stock_screener':
-        return <StockScreenerTable data={artifact} />;
-      case 'sec_filing':
-        return <SecFilingViewer data={artifact} />;
-      case 'automations':
-        return <AutomationDetailPanel data={artifact} />;
-    }
-  }
+  const panel = panelBody(props, t);
+  if (panel) return <TermPanel>{panel}</TermPanel>;
 
   const rawContent = typeof content === 'string' ? content : content ? String(content) : '';
   const truncated = parseTruncatedResult(rawContent);
@@ -374,13 +362,6 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
         onOpenFile={onOpenFile}
       />
     );
-  }
-
-  if (toolName === 'WebSearch' || toolName === 'web_search') {
-    const parsed = parseWebSearchResults(toolCallProcess, t);
-    if (parsed) {
-      return <WebSearchCards data={parsed} />;
-    }
   }
 
   if (toolName === 'ExecuteCode' || toolName === 'Bash' || toolName === 'Glob' || toolName === 'Grep') {
@@ -397,6 +378,33 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
   return <Markdown variant="panel" content={displayContent || ''} className="text-sm" />;
 }
 
+/**
+ * What the panel frames, when the call has one: its artifact's view, a direct
+ * tool's call and answer, or a search's results (whose text a cut-off result
+ * never parses as).
+ */
+function panelBody(
+  { artifact, content, toolName, toolCallProcess, onOpenFile, scrollContainerRef }: ArtifactOrMarkdownProps,
+  t: TFunction,
+): React.ReactNode {
+  const args = toolCallProcess.toolCall?.args;
+  const Panel = artifactPanel(artifact, args);
+  if (Panel) return <Panel data={artifact!} toolArgs={args} onOpenFile={onOpenFile} scrollContainerRef={scrollContainerRef} />;
+
+  // An order call lands here too, with no receipt above it: the receipt is the
+  // card this panel was opened from, still in the thread beside it, and a
+  // second copy of it reads as a second order.
+  if (isDirectToolName(toolName)) {
+    return <DirectToolDetail toolName={toolName} args={args} content={content} artifact={artifact} isFailed={toolCallProcess.isFailed} />;
+  }
+
+  if (toolName === 'WebSearch' || toolName === 'web_search') {
+    const parsed = parseWebSearchResults(toolCallProcess, t);
+    if (parsed) return <WebSearchPanel data={parsed} />;
+  }
+  return null;
+}
+
 // --- parseWebSearchResults ---
 
 interface WebSearchResultItem {
@@ -410,7 +418,7 @@ interface WebSearchResultItem {
 }
 
 interface WebSearchData {
-  answer: string | null;
+  answer?: string;
   query: string;
   results: WebSearchResultItem[];
 }
@@ -422,14 +430,13 @@ function parseWebSearchResults(proc: ToolCallProcessRecord, t: TFunction): WebSe
   const displayableResults = parseDisplayableResults(raw);
   if (!displayableResults) return null;
 
-  const artifact = proc.toolCallResult?.artifact as Record<string, unknown> | undefined;
+  const artifact = proc.toolCallResult?.artifact;
   const richResultByUrl = buildRichResultMap(artifact);
-  const answerBox = artifact?.answer_box as Record<string, unknown> | undefined;
-  const knowledgeGraph = artifact?.knowledge_graph as Record<string, unknown> | undefined;
+  const { query, answer } = readWebSearch(artifact);
 
   return {
-    answer: (artifact?.answer as string) || answerBox?.answer as string || answerBox?.snippet as string || knowledgeGraph?.description as string || null,
-    query: (artifact?.query as string) || (proc.toolCall?.args?.query as string) || '',
+    answer,
+    query: query ?? text(proc.toolCall?.args?.query) ?? '',
     results: displayableResults.map((item) => {
       const itemUrl = (item.url as string) || '';
       const rich = richResultByUrl.get(itemUrl);
@@ -439,117 +446,64 @@ function parseWebSearchResults(proc: ToolCallProcessRecord, t: TFunction): WebSe
         favicon: (rich?.favicon as string) || '',
         snippet: resolveSnippet(item, rich),
         date: (item.date as string) || (item.publish_time as string) || '',
-        domain: (() => {
-          try { return new URL(itemUrl).hostname.replace(/^www\./, ''); } catch { return ''; }
-        })(),
+        domain: hostOf(itemUrl),
         source: (item.source as string) || (item.site_name as string) || undefined,
       };
     }),
   };
 }
 
-// --- WebSearchCards ---
+// --- WebSearchPanel ---
 
-interface WebSearchCardsProps {
-  data: WebSearchData;
-}
-
-function WebSearchCards({ data }: WebSearchCardsProps): React.ReactElement {
+/**
+ * The search its card shows, a size up: the query, then each result with its
+ * site and date in the card's type, and its title and snippet set as prose.
+ * The title is the way out to the page.
+ */
+function WebSearchPanel({ data }: { data: WebSearchData }): React.ReactElement {
   const { t } = useTranslation();
   const { answer, query, results } = data;
 
   return (
-    <div className="space-y-3">
-      {answer && (
-        <div
-          className="rounded-lg px-4 py-3"
-          style={{
-            backgroundColor: 'var(--color-bg-elevated)',
-            border: '1px solid var(--color-border-default)',
-          }}
-        >
-          <p className="text-sm" style={{ color: 'var(--color-text-primary)', lineHeight: 1.6 }}>
-            {answer}
-          </p>
-        </div>
-      )}
-
+    <TermCard
+      title={t('toolArtifact.tool.webSearch')}
+      meta={t('toolArtifact.nResults', { count: results.length })}
+    >
       {query && (
-        <div
-          className="text-xs font-medium uppercase tracking-wider px-1"
-          style={{ color: 'var(--color-text-tertiary)' }}
-        >
-          {t('toolArtifact.nSearchResults', { count: results.length, query })}
+        <div className="term-web-query term-t2">
+          <span className="term-t3">{'> '}</span>&quot;<span>{query}</span>&quot;
         </div>
       )}
-
-      {results.map((item, i) => (
-        <a
-          key={i}
-          href={item.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block rounded-lg px-4 py-3 group"
-          style={{
-            backgroundColor: 'var(--color-bg-surface)',
-            border: '1px solid var(--color-border-muted)',
-            textDecoration: 'none',
-            transition: 'border-color 0.15s, background-color 0.15s',
-          }}
-          onMouseEnter={(e: React.MouseEvent<HTMLAnchorElement>) => {
-            e.currentTarget.style.borderColor = 'var(--color-border-elevated)';
-            e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
-          }}
-          onMouseLeave={(e: React.MouseEvent<HTMLAnchorElement>) => {
-            e.currentTarget.style.borderColor = 'var(--color-border-muted)';
-            e.currentTarget.style.backgroundColor = 'var(--color-bg-surface)';
-          }}
-        >
-          <div className="flex items-center justify-between mb-1.5">
-            <div className="flex items-center gap-1.5 min-w-0">
-              {(item.favicon || item.domain) && (
-                <FaviconImg
-                  src={item.favicon || googleFaviconUrl(item.domain)}
-                  domain={item.domain}
-                />
-              )}
-              <span className="text-xs truncate" style={{ color: 'var(--color-text-tertiary)' }}>
-                {item.source || item.domain}
-              </span>
+      {answer && <p className="term-prose term-web-answer">{answer}</p>}
+      <ol className="term-web-results">
+        {results.map((item, i) => (
+          <li key={i}>
+            <span className="term-web-index">{String(i + 1).padStart(2, '0')}</span>
+            <div className="term-web-result">
+              <div className="term-web-site">
+                {(item.favicon || item.domain) && (
+                  <span className="term-web-favicon">
+                    <FaviconImg domain={item.domain} icon={item.favicon} size={12} />
+                  </span>
+                )}
+                <span className="term-web-host">{item.source || item.domain}</span>
+                {item.date && (
+                  <>
+                    <span className="term-kv-leader" aria-hidden="true" />
+                    <span className="term-web-date">{item.date}</span>
+                  </>
+                )}
+              </div>
+              <a className="term-prose term-web-title" href={item.url} target="_blank" rel="noopener noreferrer">
+                {item.title}
+                <ArrowUpRight className="term-link-mark" aria-hidden="true" />
+              </a>
+              {item.snippet && <p className="term-prose term-web-snippet">{item.snippet}</p>}
             </div>
-            <ExternalLink
-              className="h-3 w-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-              style={{ color: 'var(--color-text-tertiary)' }}
-            />
-          </div>
-
-          <div className="text-sm font-medium mb-1 leading-snug" style={{ color: 'var(--color-text-primary)' }}>
-            {item.title}
-          </div>
-
-          {item.snippet && (
-            <div
-              className="text-xs leading-relaxed"
-              style={{
-                color: 'var(--color-text-tertiary)',
-                display: '-webkit-box',
-                WebkitLineClamp: 3,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-              }}
-            >
-              {item.snippet}
-            </div>
-          )}
-
-          {item.date && (
-            <div className="text-xs mt-1.5" style={{ color: 'var(--color-icon-muted)' }}>
-              {item.date}
-            </div>
-          )}
-        </a>
-      ))}
-    </div>
+          </li>
+        ))}
+      </ol>
+    </TermCard>
   );
 }
 
@@ -573,7 +527,7 @@ function TruncatedResultMessage({ filePath, preview, onOpenFile }: TruncatedResu
         }}
       >
         <div className="flex items-start gap-3">
-          <FileText className="h-5 w-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-accent-primary)' }} />
+          <FileText className="h-5 w-5 shrink-0 mt-0.5" style={{ color: 'var(--color-accent-primary)' }} />
           <div className="space-y-2 min-w-0">
             <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
               {t('toolArtifact.resultTooLarge')}

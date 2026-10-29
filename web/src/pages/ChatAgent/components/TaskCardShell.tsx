@@ -78,7 +78,7 @@ export function TaskCardShell({
         overflow: 'hidden',
         cursor: onOpen ? 'pointer' : 'default',
         fontFamily: MONO_STACK,
-        transition: 'border-color 0.15s',
+        transition: 'border-color var(--motion-quick) var(--ease-out)',
       }}
     >
       {/* Rule: type · status · affordance */}

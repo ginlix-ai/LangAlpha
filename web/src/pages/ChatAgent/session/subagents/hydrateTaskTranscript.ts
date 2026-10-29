@@ -10,6 +10,7 @@ import { taskIdFromAgentId } from '../../utils/agentId';
 import type { SSEEvent } from '../types';
 import type { SubagentRuntime } from '../runtime';
 import { projectSubagentHistory } from './projectHistory';
+import { resolveHistoryAgentId, type SubagentHistoryView } from './historyStore';
 import { isTerminalStatus } from './subagentStatus';
 import { deriveChildIdentity, findWorkflowChildOwner } from './workflowRunState';
 
@@ -17,19 +18,22 @@ export interface TaskTranscriptMeta {
   description?: string;
   type?: string;
   status?: string;
+  /** Re-asked once the transcript arrives: false when the run the caller
+   * hydrates for is no longer the task's latest (a resume landed meanwhile). */
+  stillCurrent?: () => boolean;
 }
 
-/** Resolves true when an entry landed in the history ref. */
+/** Resolves to the entry in the history, or null when none landed. */
 export async function hydrateTaskTranscript(
-  rt: SubagentRuntime,
+  rt: Pick<SubagentRuntime, 't' | 'subagentHistory' | 'subagentStateRefsRef'>,
   threadId: string,
   subagentId: string,
   meta?: TaskTranscriptMeta,
-): Promise<boolean> {
-  const agentId = rt.toolCallIdToTaskIdMapRef.current.get(subagentId) || subagentId;
-  if (!threadId || threadId === '__default__') return false;
-  const prior = rt.subagentHistoryRef.current?.[agentId];
-  if (prior?.messages?.length) return true;
+): Promise<SubagentHistoryView | null> {
+  const agentId = resolveHistoryAgentId(rt.subagentHistory.get().agentIdByToolCallId, subagentId);
+  if (!threadId || threadId === '__default__') return null;
+  const prior = rt.subagentHistory.get().entries[agentId];
+  if (prior?.messages?.length) return { ...prior, agentId };
   const shortId = taskIdFromAgentId(agentId) ?? agentId;
 
   // A state ref with content is a live stream's write surface — never stomp
@@ -38,7 +42,7 @@ export async function hydrateTaskTranscript(
   // child that hasn't emitted yet; only a terminal task is safe to re-read
   // from the checkpoint, since terminal means no live writer.
   const stateRef = rt.subagentStateRefsRef.current[agentId];
-  if (stateRef?.messages?.length) return false;
+  if (stateRef?.messages?.length) return null;
 
   let status: string | undefined = [meta?.status, prior?.status].find(isTerminalStatus);
   // Applies with or without a lane: a deep link to a still-running child has
@@ -49,13 +53,13 @@ export async function hydrateTaskTranscript(
       const res = await getSubagentTaskStatus(threadId, shortId);
       if (isTerminalStatus(res?.status)) status = res.status as string;
     } catch { /* unreachable ledger reads as non-terminal */ }
-    if (!status) return false;
+    if (!status) return null;
   }
 
   // A workflow child is anonymous in its own transcript — the dispatching
   // run's reduced state is the only place its label, type and owner exist,
   // and a one-entry projection can never reach it on its own.
-  const owner = findWorkflowChildOwner(rt.subagentHistoryRef.current, shortId);
+  const owner = findWorkflowChildOwner(rt.subagentHistory.get().entries, shortId);
   const identity = deriveChildIdentity(owner?.child, {
     description: meta?.description || prior?.description,
     type: meta?.type || prior?.type,
@@ -66,7 +70,13 @@ export async function hydrateTaskTranscript(
     const events = (res?.items || []).map(
       (item) => ({ ...(item.data || {}), event: item.event }),
     ) as SSEEvent[];
-    if (!events.length) return false;
+    if (!events.length) return null;
+    // The checks above ran before the fetch: a task resumed meanwhile has a
+    // successor writing its lane, possibly still empty, which this terminal
+    // checkpoint must not overwrite.
+    if (rt.subagentStateRefsRef.current[agentId]?.messages?.length) return null;
+    if (rt.subagentHistory.get().entries[agentId]?.messages?.length) return null;
+    if (meta?.stillCurrent && !meta.stillCurrent()) return null;
     projectSubagentHistory(
       rt,
       new Map([
@@ -78,19 +88,16 @@ export async function hydrateTaskTranscript(
             description: identity.description,
             type: identity.type,
             status,
+            // The transcript alone never names it; the ghost lane learned it
+            // from workflow lifecycle.
+            ownerTaskId: prior?.ownerTaskId || owner?.ownerTaskId,
           },
         ],
       ]),
     );
-    const entry = rt.subagentHistoryRef.current?.[agentId];
-    // Re-projection rebuilds the entry from transcript events alone; restore
-    // identity the ghost lane learned from workflow lifecycle.
-    const ownerTaskId = prior?.ownerTaskId || owner?.ownerTaskId;
-    if (entry && !entry.ownerTaskId && ownerTaskId) {
-      entry.ownerTaskId = ownerTaskId;
-    }
-    return !!entry;
+    const landed = rt.subagentHistory.get().entries[agentId];
+    return landed ? { ...landed, agentId } : null;
   } catch {
-    return false;
+    return null;
   }
 }

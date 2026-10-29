@@ -159,6 +159,28 @@ class TestRelayBoundEmission:
         assert entry["untrusted"] is False
 
 
+class TestDataTokenEmission:
+    def test_builtin_http_entry_carries_auth_and_never_its_headers(self):
+        gen = ToolFunctionGenerator()
+        server = MCPServerConfig(
+            name="data_srv",
+            transport="http",
+            url="https://data.example/mcp",
+            auth="data_token",
+            headers={"Authorization": "Bearer ${HOST_DISCOVERY_TOKEN}"},
+        )
+        entry = gen.generate_client_config([server])["servers"]["data_srv"]
+        # The headers are the host's discovery credential; the sandbox
+        # presents its own token instead.
+        assert entry == {
+            "transport": "http",
+            "untrusted": False,
+            "url": "https://data.example/mcp",
+            "auth": "data_token",
+        }
+        assert "HOST_DISCOVERY_TOKEN" not in gen.generate_mcp_client_code([server])
+
+
 class TestRelayResolution:
     def test_resolves_relay_url_and_bearer_from_credential_file(self, tmp_path):
         workdir = _write_relay_creds(

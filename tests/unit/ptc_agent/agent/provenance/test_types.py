@@ -193,7 +193,7 @@ def test_build_event_has_full_key_set():
 
 def test_build_event_never_carries_result_body():
     """The transient ``result_body`` is consumed live by the middleware and must
-    NEVER ride the SSE event — that keeps ``sse_events`` gaining 0 bytes. The
+    NEVER ride the SSE event, which keeps the stream gaining 0 bytes. The
     event key set stays exactly the pre-body shape even when the source carries
     a large body."""
     source = ProvenanceSource(

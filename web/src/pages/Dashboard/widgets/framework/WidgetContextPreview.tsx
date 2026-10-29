@@ -7,6 +7,9 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import Markdown from '@/pages/ChatAgent/components/Markdown';
+import { useTranslation } from 'react-i18next';
+import { useLocale } from '@/hooks/useLocale';
+import { createDateFormatter } from '@/lib/format';
 import type { WidgetContextSnapshot } from './contextSnapshot';
 
 /**
@@ -47,12 +50,20 @@ function humanizeKey(k: string): string {
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})/;
+const formatTimestamp = createDateFormatter({
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+});
 
 /** Recursively render a JSON-ish value as a human-friendly tree. URLs become
  *  links, ISO timestamps become localized dates, scalar arrays become inline
  *  comma-joined lists, and deeply-nested branches collapse to a code dump
  *  past `maxDepth` so the modal stays bounded. */
-function renderStructuredValue(v: unknown, depth: number, maxDepth = 4): React.ReactNode {
+function renderStructuredValue(v: unknown, depth: number, locale: string, emptyLabel: string, maxDepth = 4): React.ReactNode {
   if (v === null || v === undefined || v === '') {
     return <span style={{ color: 'var(--color-text-tertiary)' }}>—</span>;
   }
@@ -73,14 +84,14 @@ function renderStructuredValue(v: unknown, depth: number, maxDepth = 4): React.R
     if (ISO_DATE_RE.test(v)) {
       const d = new Date(v);
       if (!Number.isNaN(d.getTime())) {
-        return <span title={v}>{d.toLocaleString()}</span>;
+        return <span title={v}>{formatTimestamp(d, locale)}</span>;
       }
     }
-    return <span className="break-words whitespace-pre-wrap">{v}</span>;
+    return <span className="wrap-break-word whitespace-pre-wrap">{v}</span>;
   }
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   if (Array.isArray(v)) {
-    if (v.length === 0) return <span style={{ color: 'var(--color-text-tertiary)' }}>(empty)</span>;
+    if (v.length === 0) return <span style={{ color: 'var(--color-text-tertiary)' }}>{emptyLabel}</span>;
     const allScalar = v.every(
       (x) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean',
     );
@@ -89,7 +100,7 @@ function renderStructuredValue(v: unknown, depth: number, maxDepth = 4): React.R
     return (
       <ol className="list-decimal pl-5 space-y-3">
         {v.map((x, i) => (
-          <li key={i}>{renderStructuredValue(x, depth + 1, maxDepth)}</li>
+          <li key={i}>{renderStructuredValue(x, depth + 1, locale, emptyLabel, maxDepth)}</li>
         ))}
       </ol>
     );
@@ -97,7 +108,7 @@ function renderStructuredValue(v: unknown, depth: number, maxDepth = 4): React.R
   if (typeof v === 'object') {
     if (depth >= maxDepth) return <code className="text-xs">{JSON.stringify(v)}</code>;
     const entries = Object.entries(v as Record<string, unknown>);
-    if (entries.length === 0) return <span style={{ color: 'var(--color-text-tertiary)' }}>(empty)</span>;
+    if (entries.length === 0) return <span style={{ color: 'var(--color-text-tertiary)' }}>{emptyLabel}</span>;
     return (
       <dl className="space-y-1.5">
         {entries.map(([k, val]) => (
@@ -108,8 +119,8 @@ function renderStructuredValue(v: unknown, depth: number, maxDepth = 4): React.R
             >
               {humanizeKey(k)}
             </dt>
-            <dd className="break-words text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-              {renderStructuredValue(val, depth + 1, maxDepth)}
+            <dd className="wrap-break-word text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+              {renderStructuredValue(val, depth + 1, locale, emptyLabel, maxDepth)}
             </dd>
           </div>
         ))}
@@ -124,7 +135,9 @@ function renderStructuredValue(v: unknown, depth: number, maxDepth = 4): React.R
  *  objects and arrays render as nested fields/lists rather than a JSON
  *  dump. New snapshots emit `text` and use the Markdown path instead. */
 function StructuredDataFallback({ data }: { data: unknown }) {
-  return <div className="text-sm">{renderStructuredValue(data, 0)}</div>;
+  const locale = useLocale();
+  const { t } = useTranslation();
+  return <div className="text-sm">{renderStructuredValue(data, 0, locale, t('dashboard.widgets.contextPreview.empty'))}</div>;
 }
 
 /**
@@ -144,6 +157,7 @@ export function WidgetContextPreview({
   snapshot: WidgetContextPreviewShape | null;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const open = snapshot !== null;
   const markdownBody = useMemo(() => {
     if (!snapshot?.text) return '';
@@ -183,7 +197,7 @@ export function WidgetContextPreview({
             <StructuredDataFallback data={snapshot.data} />
           ) : (
             <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              (no preview content)
+              {t('dashboard.widgets.contextPreview.noContent')}
             </p>
           )}
         </div>

@@ -52,20 +52,13 @@ class TestRuntimeStateMachine:
 
 
 class TestStoppedRuntimeErrors:
-    """Verify that exec/code_run/file_io raise when the runtime is stopped."""
+    """Verify that exec/file_io raise when the runtime is stopped."""
 
     async def test_exec_on_stopped_runtime_raises(self, sandbox_runtime, timed):
         await sandbox_runtime.stop()
         async with timed("lifecycle", "exec_on_stopped"):
             with pytest.raises(Exception):
                 await sandbox_runtime.exec("echo hello")
-        await sandbox_runtime.start()
-
-    async def test_code_run_on_stopped_runtime_raises(self, sandbox_runtime, timed):
-        await sandbox_runtime.stop()
-        async with timed("lifecycle", "code_run_on_stopped"):
-            with pytest.raises(Exception):
-                await sandbox_runtime.code_run("print('hello')")
         await sandbox_runtime.start()
 
     async def test_file_io_on_stopped_runtime_raises(self, sandbox_runtime, timed):

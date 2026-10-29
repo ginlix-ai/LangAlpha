@@ -18,7 +18,7 @@ class InsightNewsItem(BaseModel):
 
 
 class InsightOutputSchema(BaseModel):
-    """Schema for structured extraction from flash agent output."""
+    """Schema for structured extraction from the research agent's output."""
 
     headline: str = Field(description="Concise headline capturing the dominant market theme (max 120 chars)")
     summary: str = Field(description="2-3 sentence overview of the most important developments")

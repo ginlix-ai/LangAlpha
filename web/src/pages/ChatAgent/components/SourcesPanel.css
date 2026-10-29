@@ -7,15 +7,18 @@
  * state); these rules supply only the transitions and the entrance animation. */
 .source-deck-stack {
   position: relative;
-  transition: height 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: height var(--motion-fold) var(--ease-out);
 }
 
 .source-deck-card {
+  /* The whole offset rides `transform`, which is what the transition below
+     animates; a card moved by `top` would jump to its fanned slot. */
+  top: 0;
   transition:
-    transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1);
-  animation: sourceDeckCardIn 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    transform var(--motion-fold) var(--ease-out),
+    opacity var(--motion-fold) var(--ease-out),
+    box-shadow var(--motion-quick) var(--ease-out);
+  animation: sourceDeckCardIn var(--motion-enter) var(--ease-out);
 }
 
 @keyframes sourceDeckCardIn {
@@ -43,16 +46,16 @@
  * that snaps the inner column ~15px narrower then back. Opacity never touches
  * layout, so the reveal can't trigger that resize. */
 .source-detail-body > * {
-  animation: sourceDetailIn 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: sourceDetailIn var(--motion-enter) var(--ease-out) both;
 }
 .source-detail-body > *:nth-child(1) {
-  animation-delay: 30ms;
+  animation-delay: var(--motion-stagger);
 }
 .source-detail-body > *:nth-child(2) {
-  animation-delay: 90ms;
+  animation-delay: calc(2 * var(--motion-stagger));
 }
 .source-detail-body > *:nth-child(3) {
-  animation-delay: 150ms;
+  animation-delay: calc(3 * var(--motion-stagger));
 }
 
 @keyframes sourceDetailIn {

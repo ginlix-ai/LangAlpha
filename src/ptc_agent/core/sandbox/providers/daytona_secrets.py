@@ -1,20 +1,80 @@
 """Daytona organization-Secret reconciliation, split from the provider proper."""
 
-import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Iterator
 from typing import Any
 
 import structlog
 from daytona import CreateSecretParams, UpdateSecretParams
 
 from ptc_agent.core.sandbox.platform_secrets import (
-    PlatformSecretConfigurationError,
+    PlatformSecretReconciler,
     PlatformSecretReconciliationError,
     ReconciledPlatformSecret,
     ResolvedPlatformSecret,
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def daytona_error_status(exc: Exception) -> int | None:
+    """Extract an HTTP status through SDK wrapper exception chains."""
+
+    return _walk_chain_attrs(exc, ("status", "status_code"))
+
+
+def daytona_error_code(exc: Exception) -> str | None:
+    """Extract the SDK's machine-readable ``code`` through wrapper chains.
+
+    Structured and stable where the message text is not — it is what separates a
+    per-path ``FILE_NOT_FOUND`` from a sandbox-level ``NOT_FOUND``, both of which
+    arrive as HTTP 404. Only a string counts: ``code`` is a common attribute
+    name, and an integer on some wrapped exception is not an SDK envelope.
+    """
+
+    return _walk_chain_attrs(exc, ("code",))
+
+
+def _chain(exc: BaseException) -> Iterator[BaseException]:
+    """Each exception of the ``__cause__``/``__context__`` chain once, outermost first."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _walk_chain_attrs(exc: Exception, attrs: tuple[str, ...]) -> Any | None:
+    """First truthy *attrs* value found walking the ``__cause__``/``__context__`` chain."""
+
+    for current in _chain(exc):
+        for attr in attrs:
+            value = getattr(current, attr, None)
+            if attr in ("status", "status_code"):
+                if isinstance(value, int):
+                    return value
+            elif attr == "code":
+                # ``code`` is a common name; an integer on an outer wrapper
+                # (HTTPError, SystemExit) must not hide the SDK's string.
+                if isinstance(value, str) and value:
+                    return value
+            elif value:
+                return value
+    return None
+
+
+def is_daytona_host_unavailable(exc: Exception) -> bool:
+    """A start Daytona refused because the sandbox's host is recovering.
+
+    A 503 alone is any overload, so the wording is the only thing that tells
+    this one apart. If Daytona rewords it, nothing matches and the start stays
+    an ordinary failure, which never replaces a sandbox.
+    """
+
+    if daytona_error_status(exc) != 503:
+        return False
+    return any("host recovers" in str(current).lower() for current in _chain(exc))
 
 
 def is_transient_daytona_error(exc: Exception) -> bool:
@@ -58,24 +118,18 @@ def is_transient_daytona_error(exc: Exception) -> bool:
     return any(marker in message for marker in transient_markers)
 
 
-class DaytonaSecretReconciler:
+class DaytonaSecretReconciler(PlatformSecretReconciler):
     """Creates or updates organization-scoped Daytona Secrets idempotently."""
+
+    label = "Daytona"
+    key_error_statuses = frozenset({403})
+    key_error_message = (
+        "Daytona API key is missing the manage:secrets permission required "
+        "for platform Secret reconciliation"
+    )
 
     def __init__(self, client: Any) -> None:
         self._client = client
-
-    async def reconcile(
-        self, secrets: Sequence[ResolvedPlatformSecret]
-    ) -> tuple[ReconciledPlatformSecret, ...]:
-        reconciled: list[ReconciledPlatformSecret] = []
-        for secret in secrets:
-            reconciled.append(
-                await self._call_with_retry(
-                    secret.name,
-                    lambda secret=secret: self._reconcile_one(secret),
-                )
-            )
-        return tuple(reconciled)
 
     async def _reconcile_one(
         self, secret: ResolvedPlatformSecret
@@ -98,7 +152,7 @@ class DaytonaSecretReconciler:
                 )
                 return self._reconciled_secret(secret, created_secret)
             except Exception as exc:
-                status = self._exception_status(exc)
+                status = self._status(exc)
                 if status not in (None, 409):
                     raise
                 # A 409 means another worker won the create. A status-less
@@ -157,64 +211,15 @@ class DaytonaSecretReconciler:
             if cursor is None:
                 return None
 
-    async def _call_with_retry(
-        self,
-        secret_name: str,
-        operation: Callable[[], Awaitable[Any]],
-    ) -> Any:
-        """Retry 429/5xx and status-less transient failures without logging bodies."""
+    def _status(self, exc: Exception) -> int | None:
+        return daytona_error_status(exc)
 
-        delay_s = 0.25
-        for attempt in range(1, 4):
-            try:
-                return await operation()
-            except Exception as exc:
-                status = self._exception_status(exc)
-                retryable = (
-                    status == 429
-                    or (status is not None and 500 <= status <= 599)
-                    # Transport failures (connection reset, timeout, closed
-                    # client) carry no status; classify them by message so a
-                    # first-boot network blip doesn't hard-fail reconciliation.
-                    or (status is None and is_transient_daytona_error(exc))
-                )
-                logger.warning(
-                    "Daytona platform Secret reconciliation failed",
-                    secret_name=secret_name,
-                    attempt=attempt,
-                    status=status,
-                    error_type=type(exc).__name__,
-                    retrying=retryable and attempt < 3,
-                )
-                if not retryable or attempt == 3:
-                    if status == 403:
-                        # Operator misconfiguration, not provider availability:
-                        # must fail boot loudly, never fall back to a previous
-                        # rollout identity.
-                        raise PlatformSecretConfigurationError(
-                            "Daytona API key is missing the manage:secrets "
-                            "permission required for platform Secret reconciliation"
-                        ) from None
-                    status_text = str(status) if status is not None else "unknown"
-                    raise PlatformSecretReconciliationError(
-                        "Failed to reconcile Daytona platform Secret "
-                        f"{secret_name!r} (status={status_text}, "
-                        f"error_type={type(exc).__name__})"
-                    ) from None
-                await asyncio.sleep(delay_s)
-                delay_s *= 2
-
-    @staticmethod
-    def _exception_status(exc: Exception) -> int | None:
-        """Extract an HTTP status through SDK wrapper exception chains."""
-
-        current: BaseException | None = exc
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            seen.add(id(current))
-            for attr in ("status", "status_code"):
-                status = getattr(current, attr, None)
-                if isinstance(status, int):
-                    return status
-            current = current.__cause__ or current.__context__
-        return None
+    def _retryable(self, exc: Exception, status: int | None) -> bool:
+        return (
+            status == 429
+            or (status is not None and 500 <= status <= 599)
+            # Transport failures (connection reset, timeout, closed client)
+            # carry no status; classify them by message so a first-boot
+            # network blip doesn't hard-fail reconciliation.
+            or (status is None and is_transient_daytona_error(exc))
+        )

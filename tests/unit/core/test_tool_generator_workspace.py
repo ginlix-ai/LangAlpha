@@ -1,4 +1,4 @@
-"""Tests for user (workspace) MCP server codegen in tool_generator.
+"""Tests for user MCP server codegen in tool_generator.
 
 Covers vault-only secret resolution (no os.environ fallback), per-server env
 scoping, http/sse header injection, the discover() output shape, no-vault
@@ -115,9 +115,9 @@ class TestTrustFailsClosed:
 
 
 class TestVaultOnlyResolution:
-    """Workspace servers resolve secrets vault-only, no host-env fallback."""
+    """User servers resolve secrets vault-only, no host-env fallback."""
 
-    def test_no_os_environ_fallback_for_workspace_secret(self, tmp_path):
+    def test_no_os_environ_fallback_for_user_secret(self, tmp_path):
         workdir = _write_vault(tmp_path, {"USER_TOKEN": "resolved-secret"})
         gen = ToolFunctionGenerator()
         server = MCPServerConfig(
@@ -131,7 +131,7 @@ class TestVaultOnlyResolution:
                 "LEAK": "${PLATFORM_TOKEN}",
                 "LITERAL": "plain",
             },
-            source="workspace",
+            source="user",
         )
         code = gen.generate_mcp_client_code([server], working_dir=workdir)
         ns = _exec_client(code)
@@ -157,7 +157,7 @@ class TestVaultOnlyResolution:
             command="npx",
             args=["x"],
             env={"TOKEN": "${vault:NEEDED_NAME}"},
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         with pytest.raises(RuntimeError) as exc:
@@ -174,7 +174,7 @@ class TestVaultOnlyResolution:
             transport="stdio",
             command="npx",
             args=["-y", "@scope/pkg", "--api-key=${vault:API_KEY}"],
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         resolved = ns["_resolve_cmd_args"](ns["_SERVER_CONFIGS"]["user_srv"])
@@ -188,7 +188,7 @@ class TestVaultOnlyResolution:
             transport="stdio",
             command="npx",
             args=["--token=${vault:NEEDED_ARG_SECRET}"],
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         with pytest.raises(RuntimeError) as exc:
@@ -205,7 +205,7 @@ class TestVaultOnlyResolution:
             transport="stdio",
             command="npx",
             args=["--api-key=${vault:API_KEY}"],
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         out = ns["_resolve_cmd_args"](
@@ -215,7 +215,7 @@ class TestVaultOnlyResolution:
 
 
 class TestPerServerScoping:
-    """Workspace stdio env is minimal — never the full os.environ."""
+    """User stdio env is minimal, never the full os.environ."""
 
     def test_env_scoped_to_declared_values(self, tmp_path):
         workdir = _write_vault(tmp_path, {"USER_TOKEN": "s"})
@@ -226,7 +226,7 @@ class TestPerServerScoping:
             command="npx",
             args=["x"],
             env={"TOKEN": "${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
 
@@ -248,7 +248,7 @@ class TestPerServerScoping:
 
 
 class TestHeaderInjection:
-    """Workspace sse/http servers send vault-resolved headers."""
+    """User sse/http servers send vault-resolved headers."""
 
     def test_url_and_headers_resolved(self, tmp_path):
         workdir = _write_vault(tmp_path, {"USER_TOKEN": "abc123"})
@@ -258,7 +258,7 @@ class TestHeaderInjection:
             transport="http",
             url="https://example.test/${vault:USER_TOKEN}",
             headers={"Authorization": "Bearer ${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         url, headers = ns["_resolve_http"](ns["_SERVER_CONFIGS"]["user_http"])
@@ -280,7 +280,7 @@ class TestNoVaultDiscovery:
             command="npx",
             args=["x"],
             env={"TOKEN": "${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         env = ns["_build_proc_env"](
@@ -298,13 +298,16 @@ class TestNoVaultDiscovery:
             transport="http",
             url="https://example.test/mcp",
             headers={"Authorization": "Bearer ${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         _url, headers = ns["_resolve_http"](
             ns["_SERVER_CONFIGS"]["user_http"], discovery=True
         )
-        assert headers["Authorization"] == "Bearer "
+        # Trailing space trimmed with the rest of the value rule: a placeholder
+        # header still has to be one HTTP can frame, so the secret-less probe
+        # reaches the server and reads its 401.
+        assert headers["Authorization"] == "Bearer"
 
 
 class TestDiscoveryUsesSecrets:
@@ -322,7 +325,7 @@ class TestDiscoveryUsesSecrets:
             command="npx",
             args=["x"],
             env={"TOKEN": "${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         env = ns["_build_proc_env"](
@@ -344,7 +347,7 @@ class TestDiscoveryUsesSecrets:
             command="npx",
             args=["x"],
             env={"TOKEN": "${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
             discovery_uses_secrets=True,
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
@@ -365,7 +368,7 @@ class TestDiscoveryUsesSecrets:
             transport="http",
             url="https://example.test/mcp",
             headers={"Authorization": "Bearer ${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         _url, headers = ns["_resolve_http"](
@@ -384,7 +387,7 @@ class TestDiscoveryUsesSecrets:
             transport="http",
             url="https://example.test/mcp",
             headers={"Authorization": "Bearer ${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
             discovery_uses_secrets=True,
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
@@ -393,7 +396,7 @@ class TestDiscoveryUsesSecrets:
         )
         assert headers["Authorization"] == "Bearer real-secret"
 
-    def test_flag_embedded_in_workspace_config(self, tmp_path):
+    def test_flag_embedded_in_user_config(self, tmp_path):
         workdir = _write_vault(tmp_path, {})
         gen = ToolFunctionGenerator()
         server = MCPServerConfig(
@@ -401,14 +404,14 @@ class TestDiscoveryUsesSecrets:
             transport="stdio",
             command="npx",
             args=["x"],
-            source="workspace",
+            source="user",
             discovery_uses_secrets=True,
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         assert ns["_SERVER_CONFIGS"]["user_srv"].discovery_uses_secrets is True
 
     def test_remote_vault_header_auto_enables_discovery_secrets(self, tmp_path):
-        """A workspace remote server whose header references a vault secret is
+        """A user remote server whose header references a vault secret is
         authenticated, so the generated client resolves secrets during discovery
         even though the stored flag is the default (False)."""
         workdir = _write_vault(tmp_path, {"USER_TOKEN": "real-secret"})
@@ -418,7 +421,7 @@ class TestDiscoveryUsesSecrets:
             transport="http",
             url="https://example.test/mcp",
             headers={"Authorization": "Bearer ${vault:USER_TOKEN}"},
-            source="workspace",
+            source="user",
             # NOT set — defaults to False; the vault-ref header forces it on.
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
@@ -452,7 +455,7 @@ class TestDiscoveryUsesSecrets:
 class TestDiscoverEntrypoint:
     """discover() shape + presence."""
 
-    def test_discover_present_and_compiles_for_workspace(self, tmp_path):
+    def test_discover_present_and_compiles_for_user(self, tmp_path):
         workdir = _write_vault(tmp_path, {})
         gen = ToolFunctionGenerator()
         server = MCPServerConfig(
@@ -460,7 +463,7 @@ class TestDiscoverEntrypoint:
             transport="stdio",
             command="npx",
             args=["x"],
-            source="workspace",
+            source="user",
         )
         code = gen.generate_mcp_client_code([server], working_dir=workdir)
         assert "def discover(" in code
@@ -487,16 +490,16 @@ class TestGeneratedRegexMirrorsConstant:
             transport="stdio",
             command="npx",
             args=["x"],
-            source="workspace",
+            source="user",
         )
         ns = _exec_client(gen.generate_mcp_client_code([server], working_dir=workdir))
         assert ns["_VAULT_REF_RE"].pattern == VAULT_REF_RE.pattern
 
 
-class TestWorkspaceToolTextSanitized:
-    """Workspace tool text is sanitized in wrappers; builtins unchanged."""
+class TestUserToolTextSanitized:
+    """User tool text is sanitized in wrappers; builtins unchanged."""
 
-    def test_workspace_docstring_neutralizes_breakout(self):
+    def test_user_docstring_neutralizes_breakout(self):
         from ptc_agent.core.mcp_registry import MCPToolInfo
 
         evil_desc = 'desc """ injected """ tail'
@@ -624,7 +627,7 @@ class TestParamNameInjection:
         # The salvageable param survives under its sanitized identifier.
         assert "ok_name" in module
 
-    def test_workspace_arg_dict_key_is_repr(self):
+    def test_user_arg_dict_key_is_repr(self):
         from ptc_agent.core.mcp_registry import MCPToolInfo
 
         tool = MCPToolInfo(

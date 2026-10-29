@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import pytest
 
-from mcp_servers.yf_fundamentals_mcp_server import (
+from plugins.yfinance.yf_fundamentals_mcp_server import (
     compare_financials,
     compare_valuations,
     get_balance_sheet,
@@ -94,7 +94,7 @@ def mock_earnings_history_df():
 
 
 class TestGetIncomeStatement:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success_quarterly(self, mock_ticker_cls, mock_financial_df):
         mock_stock = Mock()
         mock_stock.quarterly_income_stmt = mock_financial_df
@@ -105,7 +105,7 @@ class TestGetIncomeStatement:
         assert result["quarterly"] is True
         assert "Total Revenue" in result["data"]
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success_annual(self, mock_ticker_cls, mock_financial_df):
         mock_stock = Mock()
         mock_stock.income_stmt = mock_financial_df
@@ -115,7 +115,7 @@ class TestGetIncomeStatement:
         assert result["quarterly"] is False
         assert "Total Revenue" in result["data"]
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_empty_is_not_found(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.quarterly_income_stmt = pd.DataFrame()
@@ -124,7 +124,7 @@ class TestGetIncomeStatement:
         result = get_income_statement("AAPL")
         assert_error(result, "not_found", symbol="AAPL")
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_exception_is_sanitized(self, mock_ticker_cls):
         mock_ticker_cls.side_effect = Exception("API error")
         result = get_income_statement("AAPL")
@@ -137,7 +137,7 @@ class TestGetIncomeStatement:
 
 
 class TestGetBalanceSheet:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_financial_df):
         mock_stock = Mock()
         mock_stock.quarterly_balance_sheet = mock_financial_df
@@ -147,7 +147,7 @@ class TestGetBalanceSheet:
         assert_ok_envelope(result, symbol="AAPL")
         assert "Total Revenue" in result["data"]
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_empty(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.quarterly_balance_sheet = pd.DataFrame()
@@ -156,7 +156,7 @@ class TestGetBalanceSheet:
         result = get_balance_sheet("AAPL")
         assert_error(result, "not_found")
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_exception(self, mock_ticker_cls):
         mock_ticker_cls.side_effect = Exception("Network error")
         result = get_balance_sheet("AAPL")
@@ -169,7 +169,7 @@ class TestGetBalanceSheet:
 
 
 class TestGetCashFlow:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_financial_df):
         mock_stock = Mock()
         mock_stock.quarterly_cashflow = mock_financial_df
@@ -178,7 +178,7 @@ class TestGetCashFlow:
         result = get_cash_flow("MSFT")
         assert_ok_envelope(result, symbol="MSFT")
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_empty(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.quarterly_cashflow = pd.DataFrame()
@@ -194,7 +194,7 @@ class TestGetCashFlow:
 
 
 class TestGetCompanyInfo:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_info):
         mock_stock = Mock()
         mock_stock.info = mock_info
@@ -206,7 +206,7 @@ class TestGetCompanyInfo:
         # None values should be stripped
         assert "emptyField" not in result["data"]
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_empty_info(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.info = {}
@@ -215,7 +215,7 @@ class TestGetCompanyInfo:
         result = get_company_info("AAPL")
         assert_error(result, "not_found")
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_currency_omitted_when_yahoo_declares_none(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.info = {"shortName": "Placeholder Inc."}  # no currency field
@@ -225,7 +225,7 @@ class TestGetCompanyInfo:
         # No declared currency and no ref-currency guess → key omitted.
         assert "currency" not in result
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_declared_minor_unit_currency_label_preserved(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.info = {"shortName": "Placeholder Inc.", "currency": "GBp"}
@@ -236,7 +236,7 @@ class TestGetCompanyInfo:
         # declared minor unit rather than guessing a major code.
         assert_ok_envelope(result, currency="GBp")
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_exception(self, mock_ticker_cls):
         mock_ticker_cls.side_effect = Exception("Timeout")
         result = get_company_info("AAPL")
@@ -249,7 +249,7 @@ class TestGetCompanyInfo:
 
 
 class TestGetEarningsDates:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_earnings_dates_df):
         mock_stock = Mock()
         mock_stock.earnings_dates = mock_earnings_dates_df
@@ -262,7 +262,7 @@ class TestGetEarningsDates:
         assert "reported_eps" in record
         assert "surprise_pct" in record
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_empty(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.earnings_dates = pd.DataFrame()
@@ -278,7 +278,7 @@ class TestGetEarningsDates:
 
 
 class TestGetEarningsData:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_earnings_history_df):
         mock_stock = Mock()
         mock_stock.earnings_history = mock_earnings_history_df
@@ -292,7 +292,7 @@ class TestGetEarningsData:
         assert "epsdifference" in record
         assert "surprisepercent" in record
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_empty(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.earnings_history = pd.DataFrame()
@@ -301,7 +301,7 @@ class TestGetEarningsData:
         result = get_earnings_data("AAPL")
         assert_error(result, "not_found")
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_none(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.earnings_history = None
@@ -310,7 +310,7 @@ class TestGetEarningsData:
         result = get_earnings_data("AAPL")
         assert_error(result, "not_found")
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_exception(self, mock_ticker_cls):
         mock_ticker_cls.side_effect = Exception("API down")
         result = get_earnings_data("AAPL")
@@ -323,7 +323,7 @@ class TestGetEarningsData:
 
 
 class TestCompareFinancials:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_financial_df):
         mock_stock = Mock()
         mock_stock.quarterly_income_stmt = mock_financial_df
@@ -336,7 +336,7 @@ class TestCompareFinancials:
         assert "MSFT" in result["data"]
         assert result["successful_tickers"] == ["AAPL", "MSFT"]
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_partial_failure(self, mock_ticker_cls, mock_financial_df):
         def side_effect(ticker):
             mock_stock = Mock()
@@ -366,7 +366,7 @@ class TestCompareFinancials:
 
 
 class TestCompareValuations:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_info):
         mock_stock = Mock()
         mock_stock.info = mock_info
@@ -378,7 +378,7 @@ class TestCompareValuations:
         assert "trailing_p_e" in result["data"]["AAPL"]
         assert result["data"]["AAPL"]["current_price"] == 195.0
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_empty_info(self, mock_ticker_cls):
         mock_stock = Mock()
         mock_stock.info = {}
@@ -388,7 +388,7 @@ class TestCompareValuations:
         assert result["data"] == {}
         assert result["errors"][0]["error"] == "not_found"
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_exception(self, mock_ticker_cls):
         mock_ticker_cls.side_effect = Exception("Timeout")
         result = compare_valuations(["AAPL"])
@@ -401,7 +401,7 @@ class TestCompareValuations:
 
 
 class TestGetMultipleStocksEarnings:
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_earnings_history_df):
         mock_stock = Mock()
         mock_stock.earnings_history = mock_earnings_history_df
@@ -416,7 +416,7 @@ class TestGetMultipleStocksEarnings:
         assert "epsestimate" in record
         assert "epsactual" in record
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_partial_failure(self, mock_ticker_cls, mock_earnings_history_df):
         def side_effect(ticker):
             mock_stock = Mock()
@@ -433,7 +433,7 @@ class TestGetMultipleStocksEarnings:
         assert "BAD" not in result["data"]
         assert result["errors"][0]["symbol"] == "BAD"
 
-    @patch("mcp_servers.yf_fundamentals_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_fundamentals_mcp_server.yf.Ticker")
     def test_exception(self, mock_ticker_cls):
         mock_ticker_cls.side_effect = Exception("Network error")
         result = get_multiple_stocks_earnings(["AAPL"])

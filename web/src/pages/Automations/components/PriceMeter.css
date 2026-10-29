@@ -1,0 +1,62 @@
+.automation-meter {
+  margin-top: 10px;
+}
+
+.automation-meter-track {
+  position: relative;
+  height: 12px;
+}
+
+.automation-meter-track::before {
+  content: '';
+  position: absolute;
+  inset: 5px 0 auto;
+  height: 2px;
+  border-radius: 1px;
+  background-color: var(--color-border-muted);
+}
+
+/* The distance still to travel, drawn as the part of the track that is
+   not yet covered. */
+.automation-meter-gap {
+  position: absolute;
+  top: 5px;
+  height: 0;
+  border-top: 2px dotted var(--color-text-tertiary);
+}
+
+.automation-meter-threshold {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background-color: var(--color-accent-primary);
+}
+
+.automation-meter-dot {
+  position: absolute;
+  top: 2px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background-color: var(--color-text-primary);
+  /* Knocked out of whatever it sits on, so the track stops short of it. The
+     ground is the page unless a host names another; a host that tints over
+     its ground (a hovered chip) names the tint, drawn over the ground here
+     as it is there. */
+  box-shadow:
+    0 0 0 2px var(--automation-meter-wash, transparent),
+    0 0 0 2px var(--automation-meter-ground, var(--color-bg-page));
+}
+
+.automation-meter-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}

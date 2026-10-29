@@ -18,8 +18,10 @@
  * `hr`/`td`, which also reveals the table wrapper and row rules — those carry
  * only the var, so they were invisible in every export, not just the fallback.
  */
+import { A4_PAGE_RULE } from '@/lib/pageGeometry';
+
 export const PRINT_PAGE_STYLE = `
-  @page { size: A4 !important; margin: 15mm !important; }
+  ${A4_PAGE_RULE}
   html, body { color-scheme: light !important; background: #ffffff !important; }
   html {
     --color-text-primary: #1a1a1a !important;

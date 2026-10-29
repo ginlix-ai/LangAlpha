@@ -4,9 +4,9 @@
 Proves the two halves of the web-provider work against a live stack and live
 upstreams, driven by the real agent rather than by mocks:
 
-  1. Agent turns (flash and ptc, both by default): each turn is told to run a
-     web search and fetch a page, so WebSearch/WebFetch run inside a real
-     traced turn.
+  1. Agent turns (in Home and in a workspace, both by default): each turn is
+     told to run a web search and fetch a page, so WebSearch/WebFetch run
+     inside a real traced turn.
   2. LangSmith attribution: the runs those turns produced — correlated by
      thread id, since several stacks can share one project — must carry the
      provider that actually served them — ``search_engine``/``search_depth``
@@ -30,7 +30,7 @@ does skip with an observation when it is absent.
 Usage:
   uv run python scripts/e2e/web_provider_pass.py --user local-dev-user \
       [--workspace <ws_id>] [--base http://localhost:8000] \
-      [--agents flash,ptc] [--model <model>] [--turn-timeout 420]
+      [--places home,workspace] [--model <model>] [--turn-timeout 420]
 
 Auth: X-Service-Token from INTERNAL_SERVICE_TOKEN (repo .env or environment),
 user id via --user or E2E_USER_ID. Threads are kept for visual inspection.
@@ -90,10 +90,9 @@ ATTEMPT_RE = re.compile(r"^[a-z0-9_]+:[a-z0-9_]+$")
 # ---------------------------------------------------------------------------
 
 
-def run_turn(env: Env, agent_mode: str, workspace_id: str, model: str | None) -> str | None:
+def run_turn(env: Env, place: str, workspace_id: str, model: str | None) -> str | None:
     """Post one turn and drain it. Returns the thread id (kept for inspection)."""
     body: dict = {
-        "agent_mode": agent_mode,
         "workspace_id": workspace_id,
         "messages": [{"role": "user", "content": TURN_PROMPT}],
     }
@@ -106,7 +105,7 @@ def run_turn(env: Env, agent_mode: str, workspace_id: str, model: str | None) ->
         with c.stream("POST", "/api/v1/threads/messages", json=body) as resp:
             if resp.status_code != 200:
                 resp.read()
-                check(f"{agent_mode}: turn accepted", False, f"HTTP {resp.status_code}: {resp.text[:200]}")
+                check(f"{place}: turn accepted", False, f"HTTP {resp.status_code}: {resp.text[:200]}")
                 return None
             for fr in iter_frames(resp):
                 frames += 1
@@ -122,7 +121,7 @@ def run_turn(env: Env, agent_mode: str, workspace_id: str, model: str | None) ->
                     break
 
     check(
-        f"{agent_mode}: turn ran to completion",
+        f"{place}: turn ran to completion",
         outcome == "completed",
         f"outcome={outcome} frames={frames} thread={thread_id}",
     )
@@ -413,6 +412,14 @@ def quiet_log_check(container: str, since: datetime) -> None:
 # ---------------------------------------------------------------------------
 
 
+def home_workspace(env: Env) -> str:
+    """The user's Home, where a turn runs as the Chief of Staff."""
+    with env.client() as c:
+        r = c.post("/api/v1/workspaces/home")
+        r.raise_for_status()
+        return str(r.json()["workspace_id"])
+
+
 def pick_workspace(env: Env) -> str:
     with env.client() as c:
         r = c.get("/api/v1/workspaces")
@@ -430,7 +437,7 @@ def main() -> int:
     ap.add_argument("--user", default=os.environ.get("E2E_USER_ID"), help="user id (or E2E_USER_ID)")
     ap.add_argument("--base", default=f"http://localhost:{envf.get('BACKEND_PORT', '8000')}")
     ap.add_argument("--workspace", default=None)
-    ap.add_argument("--agents", default="flash,ptc", help="comma-separated: flash,ptc")
+    ap.add_argument("--places", default="home,workspace", help="comma-separated: home,workspace")
     ap.add_argument("--model", default=None)
     ap.add_argument("--turn-timeout", type=float, default=420.0)
     ap.add_argument("--project", default=os.environ.get("LANGSMITH_PROJECT") or envf.get("LANGSMITH_PROJECT"))
@@ -450,15 +457,15 @@ def main() -> int:
     # A minute of slack: container clocks and the LangSmith window both drift.
     started = datetime.now(timezone.utc) - timedelta(seconds=60)
     env = Env(base=args.base, token=token, user_id=args.user or "", turn_timeout=args.turn_timeout)
-    agents = [a.strip() for a in args.agents.split(",") if a.strip()]
+    places = [a.strip() for a in args.places.split(",") if a.strip()]
     threads: list[str] = []
 
     if not args.skip_turns:
         ws = args.workspace or pick_workspace(env)
-        print(f"base={env.base} user={env.user_id} workspace={ws} agents={agents}")
-        for mode in agents:
-            print(f"\n== turn: {mode} agent — search + fetch ==")
-            tid = run_turn(env, mode, ws, args.model)
+        print(f"base={env.base} user={env.user_id} workspace={ws} places={places}")
+        for place in places:
+            print(f"\n== turn: in {place}: search + fetch ==")
+            tid = run_turn(env, place, home_workspace(env) if place == "home" else ws, args.model)
             if tid:
                 threads.append(tid)
 

@@ -1,4 +1,5 @@
-"""Regression: manual-parse fallback must accept content_blocks list."""
+"""Regression: manual-parse fallback must accept content_blocks list, and a call
+only ever switches tracing off."""
 
 from __future__ import annotations
 
@@ -6,6 +7,8 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from langchain_core.messages import AIMessage
+from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel
 
 from src.llms.api_call import make_api_call
@@ -92,3 +95,27 @@ async def test_fallback_still_rejects_truly_empty_list() -> None:
 
     # The error should be about JSON extraction, not type rejection.
     assert "Response is not a string" not in str(exc_info.value)
+
+
+class _TracingProbe:
+    async def ainvoke(self, *_args: Any, **_kwargs: Any) -> AIMessage:
+        self.enabled = get_tracing_context()["enabled"]
+        return AIMessage(content="ok")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ambient", "disable_tracing", "seen"),
+    [
+        pytest.param(None, False, None, id="unconfigured-stays-unconfigured"),
+        pytest.param(True, False, True, id="traced-caller-stays-traced"),
+        pytest.param(True, True, False, id="opt-out"),
+    ],
+)
+async def test_a_call_never_switches_tracing_on(ambient, disable_tracing, seen) -> None:
+    llm = _TracingProbe()
+
+    with tracing_context(enabled=ambient):
+        await make_api_call(llm, "sys", "user", disable_tracing=disable_tracing)
+
+    assert llm.enabled is seen

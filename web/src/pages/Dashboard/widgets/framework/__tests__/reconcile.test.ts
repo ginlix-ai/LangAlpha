@@ -50,12 +50,12 @@ describe('reconcileLayouts', () => {
   });
 
   it('clamps stored w/h to the widget definition [min, max] range', () => {
-    // markets.overview has maxH=11 and minW=3; a legacy record with h=33 and w=2
-    // should snap down to h=11 and up to w=3 so the widget doesn't render huge.
+    // markets.overview has maxH=12 and minW=3; a legacy record with h=33 and w=2
+    // should snap down to h=12 and up to w=3 so the widget doesn't render huge.
     const widgets = [{ id: 'w1', type: 'markets.overview', config: {} }];
     const layouts = { lg: [{ i: 'w1', x: 0, y: 0, w: 2, h: 33 }] };
     const out = reconcileLayouts(widgets, layouts);
-    expect(out.lg?.[0].h).toBe(11);
+    expect(out.lg?.[0].h).toBe(12);
     expect(out.lg?.[0].w).toBe(3);
   });
 

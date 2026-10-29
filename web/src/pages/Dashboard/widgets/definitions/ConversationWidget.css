@@ -1,16 +1,10 @@
-/* ConversationWidget — hero chat module for chat-centered dashboards. */
+/* ConversationWidget: the hero chat module for chat-centered dashboards. The
+   widget frame draws its card, so the module draws no edge or fill of its own. */
 
 .conversation-widget {
   position: relative;
   height: 100%;
-  border-radius: 24px;
   overflow: hidden;
-  border: 1px solid var(--color-border-muted);
-  background: var(--color-bg-card);
-  box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
-    0 2px 4px rgba(0, 0, 0, 0.04),
-    0 12px 40px rgba(0, 0, 0, 0.06);
   isolation: isolate;
 }
 
@@ -161,10 +155,10 @@
   flex-shrink: 0;
   cursor: pointer;
   transition:
-    transform 0.15s ease,
-    border-color 0.15s ease,
-    background-color 0.15s ease,
-    color 0.15s ease;
+    transform var(--motion-quick) var(--ease-out),
+    border-color var(--motion-quick) var(--ease-out),
+    background-color var(--motion-quick) var(--ease-out),
+    color var(--motion-quick) var(--ease-out);
 }
 
 .conversation-widget__chip:hover {
@@ -175,7 +169,7 @@
 }
 
 .conversation-widget__chip:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
   border-color: var(--color-accent-overlay);
   color: var(--color-text-primary);

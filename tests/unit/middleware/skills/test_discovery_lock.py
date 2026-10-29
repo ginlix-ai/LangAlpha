@@ -95,6 +95,33 @@ class TestDiscoverSkillsWithLock:
         assert any("skills-lock.json" in p for p in downloaded_paths)
 
     @pytest.mark.asyncio
+    async def test_hidden_directory_is_not_a_skill(self):
+        """The sync's `.staging` dir sits under the skills root; it is never listed."""
+        backend = AsyncMock()
+        backend.als = AsyncMock(
+            return_value=LsResult(
+                entries=[
+                    {"path": f"{SKILLS_PATH}/.staging", "is_dir": True},
+                    {"path": f"{SKILLS_PATH}/my-skill", "is_dir": True},
+                ]
+            )
+        )
+        lock_json = _make_lock_json({"my-skill": _make_lock_entry("my-skill")})
+        backend.adownload_files = AsyncMock(
+            return_value=[_make_download_response(lock_json.encode("utf-8"))]
+        )
+
+        results = await adiscover_skills(backend, SKILLS_PATH, known_skills={})
+
+        assert [r["name"] for r in results] == ["my-skill"]
+        downloaded = [
+            p
+            for call in backend.adownload_files.call_args_list
+            for p in call[0][0]
+        ]
+        assert not any(".staging" in p for p in downloaded)
+
+    @pytest.mark.asyncio
     async def test_cache_miss_falls_back_to_skill_md(self):
         """Unknown skill dir + no lock entry + no lock file -> downloads SKILL.md."""
         skill_md_content = (

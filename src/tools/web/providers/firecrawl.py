@@ -53,6 +53,30 @@ _DEFAULT_MAX_AGE_SECONDS = 900
 _STATUS_OVERRIDES = {408: WebErrorType.TIMEOUT}
 
 
+def _scrape_error(e: httpx.HTTPError) -> WebError:
+    """Map a failed /scrape call, which carries one URL.
+
+    A 400 whose every complaint names the ``url`` field is Firecrawl refusing
+    the URL itself (malformed, no top-level domain): the agent's input, which
+    must not open the breaker every URL shares. Still retryable, as every
+    provider-API failure is, since another provider's rules may differ.
+    """
+    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 400:
+        try:
+            body = e.response.json()
+        except ValueError:
+            body = None
+        details = body.get("details") if isinstance(body, dict) else None
+        if details and all(isinstance(d, dict) and d.get("path") == ["url"] for d in details):
+            return WebError(
+                type=WebErrorType.UNSUPPORTED_URL,
+                message=clip_error(e.response.text),
+                http_status=400,
+                retryable=True,
+            )
+    return error_from_httpx(e, status_overrides=_STATUS_OVERRIDES)
+
+
 def _target_status_error(status: int) -> Optional[WebError]:
     """Map the *scraped page's* HTTP status (data.metadata.statusCode)."""
     if status in (404, 410):
@@ -152,7 +176,7 @@ class FirecrawlFetchAdapter:
         try:
             data = await api.scrape(url, proxy=proxy, max_age_seconds=req.max_age_seconds)
         except httpx.HTTPError as e:
-            return FetchResult(url=url, error=error_from_httpx(e, status_overrides=_STATUS_OVERRIDES))
+            return FetchResult(url=url, error=_scrape_error(e))
 
         if not data.get("success", False):
             # A 200 with success=false reports the outcome of scraping THIS url

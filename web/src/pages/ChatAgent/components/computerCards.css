@@ -1,0 +1,328 @@
+/* The Computers dialog: tall cards on a rail, one in the middle at a time,
+   its neighbours either side and faded back. The drawing sits in an ArtFrame
+   (machineArt.css). */
+.computer-rail {
+  position: relative;
+  --computer-card-w: 300px;
+  display: flex;
+  gap: 14px;
+  /* Out to the dialog's edges, so a neighbour is cut by the dialog, not the
+     padding: the 20px is ModalShell's form density (px-5). */
+  margin-inline: -20px;
+  padding: 2px calc(50% - var(--computer-card-w) / 2) 4px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.computer-rail::-webkit-scrollbar { display: none; }
+@media (max-width: 600px) {
+  .computer-rail { --computer-card-w: 272px; }
+}
+
+.computer-card {
+  flex: 0 0 var(--computer-card-w);
+  scroll-snap-align: center;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity var(--motion-fold) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+.computer-card:hover { opacity: 0.7; }
+.computer-card.is-active { opacity: 1; cursor: default; }
+.computer-card.is-active:hover { border-color: var(--color-border-elevated); }
+
+.computer-card > .art-frame {
+  height: 256px;
+  border-bottom: 1px solid var(--color-border-muted);
+}
+@media (max-width: 600px) {
+  .computer-card > .art-frame { height: 210px; }
+}
+.computer-card > .art-frame.is-openable { cursor: pointer; }
+
+.computer-card-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 16px 16px;
+}
+.computer-card-name {
+  font-family: var(--font-ui);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--color-text-primary);
+}
+.computer-card-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+.computer-card-note {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-tertiary);
+}
+
+/* Why the last start failed: the alert glyph and words, never a bar. */
+.computer-card-failure {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--color-text-secondary);
+}
+.computer-card-failure-glyph {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-top: 2.5px;
+  color: var(--color-icon-danger);
+}
+.computer-card-failure-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.computer-card-failure-lead {
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+/* A card holds a few lines of it; the details hold all of it. */
+.computer-card-body .computer-card-failure-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.computer-card-spec {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+.computer-card-spec > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 20px;
+}
+.computer-card-spec dt {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.computer-card-spec dd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--color-text-primary);
+}
+.computer-card-storage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.computer-card-link {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  border-radius: 4px;
+}
+.computer-card-link:hover:not(:disabled) { color: var(--color-text-primary); }
+.computer-card-link:disabled { opacity: 0.5; cursor: default; }
+
+.computer-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 16px;
+}
+
+/* The last card adds one. */
+.computer-card.is-add { border-style: dashed; background: transparent; }
+.computer-card.is-add .art-frame {
+  background: transparent;
+  border-bottom-style: dashed;
+}
+.computer-card.is-add .art-frame-figure { inset: 0; align-items: center; }
+.computer-card-plus {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  color: var(--color-text-secondary);
+}
+
+.computer-rail-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+}
+.computer-rail-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+.computer-rail-arrow {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 50%;
+  background: var(--color-bg-card);
+  color: var(--color-text-primary);
+  transition: border-color var(--motion-quick) var(--ease-out), opacity var(--motion-quick) var(--ease-out);
+}
+.computer-rail-arrow:hover:not(:disabled) { border-color: var(--color-border-elevated); }
+.computer-rail-arrow:disabled { opacity: 0.35; cursor: default; }
+
+/* One machine's details, in the rail's place: the drawing filling its column
+   beside groups of what can be read and changed, and every action on one line
+   under both. As tall as the rail it replaced, so the dialog keeps its size
+   both ways and as the storage list loads in; what does not fit scrolls in
+   its column. */
+.computer-details {
+  display: flex;
+  flex-direction: column;
+  height: var(--computer-view-h, 440px);
+}
+@media (max-width: 600px) {
+  .computer-details { height: auto; }
+}
+.computer-details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.computer-details-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: -4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.computer-details-back:hover { color: var(--color-text-primary); }
+.computer-details-grid {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: 250px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 22px;
+}
+.computer-details-main {
+  max-height: 100%;
+  overflow-y: auto;
+  /* The scrollbar's room is kept, so the column does not narrow under the
+     reader when the storage list arrives and makes it scroll. */
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+@media (max-width: 600px) {
+  .computer-details-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; gap: 16px; }
+  .computer-details-main { max-height: none; overflow: visible; }
+}
+/* The card's own drawing, at the card's height, so the machine stays put
+   between the rail and its details; what it is and what can be done to it
+   stack under it, from the top, so a hint arriving below moves nothing. */
+.computer-details-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+.computer-details-side .art-frame {
+  flex: none;
+  height: 256px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+}
+@media (max-width: 600px) {
+  .computer-details-side .art-frame { height: 210px; }
+}
+.computer-details-machine { margin-top: 0; padding: 0 2px; }
+.computer-details-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.computer-details-actions > button:first-child,
+.computer-details-actions > [data-computer-power] { width: 100%; }
+.computer-details-rarer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.computer-details-hint {
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: right;
+  color: var(--color-text-tertiary);
+}
+.computer-details-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid var(--color-border-muted);
+}
+.computer-details-group:first-child { padding-top: 0; margin-top: 0; border-top: 0; }
+.computer-details-group .computer-card-spec:first-child { margin-top: 0; }
+.computer-details-title {
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+/* Scrolls with its column, so a machine with many workspaces keeps the dialog's size. */
+.computer-details-storage {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+.computer-details-storage li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

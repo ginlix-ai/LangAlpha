@@ -4,7 +4,7 @@
  * cap that protects high-signal slots (memoWrite, memoryUpdated) from being
  * truncated when many tool categories are present.
  *
- * Failed tool calls are rendered per-row only — the folded summary intentionally
+ * Failed tool calls are rendered per-row only, the folded summary intentionally
  * does NOT include a "{N} failed" fragment. The negative assertions below
  * lock that contract in.
  *
@@ -21,7 +21,7 @@ import '@testing-library/jest-dom';
 import ActivityBlock from '../ActivityBlock';
 
 // ---------------------------------------------------------------------------
-// Mocks — keep the component mountable in jsdom and surface i18n keys.
+// Mocks, keep the component mountable in jsdom and surface i18n keys.
 // ---------------------------------------------------------------------------
 
 vi.mock('react-i18next', () => ({
@@ -47,9 +47,10 @@ vi.mock('../Markdown', () => ({
 }));
 
 // Inline artifact cards aren't used by these test items but are imported by
-// ActivityBlock — stub them so the module graph stays light.
+// ActivityBlock, stub them so the module graph stays light.
 vi.mock('../charts/InlineArtifactCards', () => ({
   INLINE_ARTIFACT_TOOLS: new Set<string>(),
+  isInlineArtifactReady: () => false,
   InlineStockPriceCard: () => null,
   InlineCompanyOverviewCard: () => null,
   InlineMarketIndicesCard: () => null,
@@ -72,22 +73,23 @@ vi.mock('../charts/InlinePreviewCard', () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-type ActivityItem = Parameters<typeof ActivityBlock>[0]['items'][number];
+type ActivityItem = Extract<Parameters<typeof ActivityBlock>[0]['items'][number], { type: 'tool_call' }>;
 
 function completedTool(toolName: string, opts: Partial<ActivityItem> = {}): ActivityItem {
   return {
     type: 'tool_call',
     id: opts.id ?? `${toolName}-${Math.random().toString(36).slice(2, 8)}`,
+    toolCallId: opts.id ?? 'test-call',
     toolName,
     toolCall: opts.toolCall ?? { args: {} },
     isComplete: true,
     _liveState: 'completed',
     ...opts,
-  } as ActivityItem;
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Failed tool calls — per-row rendering, no summary fragment
+// Failed tool calls, per-row rendering, no summary fragment
 // ---------------------------------------------------------------------------
 
 // `summaryLabel` is title-cased before render (charAt(0).toUpperCase()), so
@@ -95,7 +97,7 @@ function completedTool(toolName: string, opts: Partial<ActivityItem> = {}): Acti
 // case-insensitive regex when looking up the toggle by name.
 const SUMMARY_BUTTON_RE = /toolArtifact/i;
 
-describe('ActivityBlock — failed tool calls', () => {
+describe('ActivityBlock, failed tool calls', () => {
   it('does NOT add a failed fragment to the folded accordion summary when an item is failed', () => {
     const items: ActivityItem[] = [
       completedTool('Read', {
@@ -107,7 +109,7 @@ describe('ActivityBlock — failed tool calls', () => {
 
     render(<ActivityBlock items={items} isStreaming={false} />);
 
-    // Folded summary intentionally omits the failed count — failure
+    // Folded summary intentionally omits the failed count, failure
     // visibility lives on the per-row badge instead.
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
     expect(summary).not.toHaveTextContent(/toolArtifact\.categoryCount\.failed/i);
@@ -197,7 +199,7 @@ describe('ActivityBlock — failed tool calls', () => {
 // Memo write/edit classification in the summary
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — memo write/edit fragment', () => {
+describe('ActivityBlock, memo write/edit fragment', () => {
   it('emits a memoWrite fragment when the agent writes a memo', () => {
     const items: ActivityItem[] = [
       completedTool('Write', {
@@ -232,10 +234,10 @@ describe('ActivityBlock — memo write/edit fragment', () => {
 // Priority fragments survive the FOLDED_MAX cap
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — priority fragments survive the cap', () => {
+describe('ActivityBlock, priority fragments survive the cap', () => {
   it('keeps memoryWrite visible even with 4+ categories present', () => {
     const items: ActivityItem[] = [
-      // A memory write — the high-signal fragment we don't want to hide.
+      // A memory write, the high-signal fragment we don't want to hide.
       completedTool('Write', {
         id: 'mw-1',
         toolCall: { args: { file_path: '.agents/user/memory/risk.md' } },
@@ -260,7 +262,7 @@ describe('ActivityBlock — priority fragments survive the cap', () => {
 // Accordion accessibility
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — accordion a11y', () => {
+describe('ActivityBlock, accordion a11y', () => {
   it('toggles aria-expanded on the summary button', () => {
     const items: ActivityItem[] = [
       completedTool('Read', { id: 'r-1', toolCall: { args: { file_path: 'work/scratch.md' } } }),
@@ -291,5 +293,24 @@ describe('ActivityBlock — accordion a11y', () => {
     expect(region!.getAttribute('aria-labelledby')).toBe(summary.id);
     // The timeline region holds at least one row.
     expect(within(region as HTMLElement).getAllByRole('listitem').length).toBeGreaterThan(0);
+  });
+});
+
+
+describe('file row destinations', () => {
+  it.each(['.agents/user/memory/memory.md', '.agents/user/memo/memo.md'])('opens %s from its canonical title without a redundant index pill', (path) => {
+    const onOpenFile = vi.fn();
+    const { container } = render(<ActivityBlock items={[completedTool('Read', { toolCall: { args: { file_path: path } } })]} isStreaming={false} presentation="expanded" onOpenFile={onOpenFile} />);
+    expect(container.querySelector('.obj')).toBeNull();
+    fireEvent.click(container.querySelector('.titem-title-button')!);
+    expect(onOpenFile).toHaveBeenCalledWith(path);
+  });
+
+  it('opens tool details when the host cannot open files', () => {
+    const item = completedTool('Read', { toolCall: { args: { file_path: 'work/notes.md' } } });
+    const onToolCallClick = vi.fn();
+    const { container } = render(<ActivityBlock items={[item]} isStreaming={false} presentation="expanded" onToolCallClick={onToolCallClick} />);
+    fireEvent.click(container.querySelector('.obj')!);
+    expect(onToolCallClick).toHaveBeenCalledWith(item);
   });
 });

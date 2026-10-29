@@ -24,7 +24,10 @@ def _build_codex_llm(default_headers: dict | None = None) -> LLM:
     llm.use_previous_response_id = False
     llm.parameters = {}
     llm.extra_body = {}
+    llm.profile_overrides = {}
     llm.model = "gpt-5.6-luna"
+    llm.custom_model_name = llm.model
+    llm.resolved_reasoning_effort = None
     llm.api_key_override = "dummy-token"
     llm.prompt_cache_key_enabled = False
     return llm
@@ -44,7 +47,10 @@ def _build_openai_llm(
     llm.use_previous_response_id = False
     llm.parameters = dict(parameters or {})
     llm.extra_body = {}
+    llm.profile_overrides = {}
     llm.model = "gpt-4o-mini"
+    llm.custom_model_name = llm.model
+    llm.resolved_reasoning_effort = None
     llm.api_key_override = "dummy-token"
     llm.prompt_cache_key_enabled = False
     return llm
@@ -64,7 +70,10 @@ def _build_anthropic_llm(
     llm.use_previous_response_id = False
     llm.parameters = dict(parameters or {})
     llm.extra_body = {}
+    llm.profile_overrides = {}
     llm.model = "claude-test-model"
+    llm.custom_model_name = llm.model
+    llm.resolved_reasoning_effort = None
     llm.api_key_override = "dummy-token"
     llm.prompt_cache_key_enabled = False
     return llm

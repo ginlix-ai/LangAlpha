@@ -709,12 +709,12 @@ class TestSweepOrphanBodies:
 
 class TestLeanIndexWriterHasNoResultFull:
     def test_insert_columns_has_no_result_full(self):
-        # The index writer was reverted to the lean 16-column shape — no
-        # result_full join column (the regression that started the rewrite).
+        # The index writer was reverted to the lean shape — no result_full
+        # join column (the regression that started the rewrite).
         from src.server.database.provenance import _INSERT_COLUMNS
 
         assert "result_full" not in _INSERT_COLUMNS
-        assert len(_INSERT_COLUMNS) == 16
+        assert len(_INSERT_COLUMNS) == 17
 
     def test_no_result_full_helpers_on_module(self):
         # The join helpers/const that populated result_full are gone too.

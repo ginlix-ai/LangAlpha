@@ -11,13 +11,49 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from market_protocol import AssetClass, to_canonical
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from src.server.database.pool import get_db_connection
+from src.server.database.user_lock import lock_user_profile
+from src.server.models.user import normalize_symbol
 from src.server.utils.db import UpdateQueryBuilder
 
 logger = logging.getLogger(__name__)
+
+
+class HoldingCurrencyMismatch(ValueError):
+    """A write into an existing holding named a currency other than the holding's.
+
+    Merging would average two costs in different currencies, so the write is
+    refused. A distinct type so a caller answers it as a conflict without
+    reading every ValueError as one.
+    """
+
+
+# The holding types the protocol reads as something other than a listed
+# security: BTC-EUR held as crypto is priced in euros, not a US ticker in
+# dollars. Every other type is a listed security, and the equity hint keeps a
+# ticker such as HSI from reading as the index.
+_ASSET_CLASS_OF_TYPE = {
+    "index": AssetClass.INDEX,
+    "crypto": AssetClass.CRYPTO,
+    "currency": AssetClass.FX,
+}
+
+
+def default_holding_currency(symbol: str, instrument_type: str) -> str:
+    """The currency a holding is written in when the writer names none.
+
+    The one its quotes are in, since the average cost is read against them. A
+    symbol the protocol cannot read is still stored, in USD as before.
+    """
+    hint = _ASSET_CLASS_OF_TYPE.get(instrument_type, AssetClass.EQUITY)
+    try:
+        return to_canonical(symbol, asset_class=hint).price_currency
+    except ValueError:
+        return "USD"
 
 
 async def get_user_portfolio(user_id: str) -> List[Dict[str, Any]]:
@@ -133,8 +169,9 @@ async def update_portfolio_holding(
         returning_columns=returning_columns,
     )
 
-    async with get_db_connection() as conn:
+    async with get_db_connection() as conn, conn.transaction():
         async with conn.cursor(row_factory=dict_row) as cur:
+            await lock_user_profile(cur, user_id)
             await cur.execute(query, params)
 
             result = await cur.fetchone()
@@ -154,7 +191,7 @@ async def upsert_portfolio_holding(
     exchange: Optional[str] = None,
     name: Optional[str] = None,
     average_cost: Optional[Decimal] = None,
-    currency: str = "USD",
+    currency: Optional[str] = None,
     account_name: Optional[str] = None,
     notes: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -174,7 +211,8 @@ async def upsert_portfolio_holding(
         exchange: Exchange name
         name: Full instrument name
         average_cost: Average cost per unit
-        currency: Currency code
+        currency: Currency code. Omitted, a new holding takes its listing's
+            (``default_holding_currency``) and a merge keeps the holding's.
         account_name: Account name (e.g., 'Robinhood')
         notes: User notes
         metadata: Additional metadata
@@ -184,6 +222,10 @@ async def upsert_portfolio_holding(
         Tuple of (holding dict, merge_details dict or None).
         merge_details is None for fresh creates, or a dict with previous/added/result
         when an existing position was merged.
+
+    Raises:
+        HoldingCurrencyMismatch: ``currency`` names another currency than the
+            existing holding's.
     """
     _returning = """
         RETURNING
@@ -191,11 +233,13 @@ async def upsert_portfolio_holding(
             name, quantity, average_cost, currency, account_name,
             notes, metadata, first_purchased_at, created_at, updated_at
     """
+    symbol = normalize_symbol(symbol)
 
     async with get_db_connection() as conn:
         # Explicit transaction for atomicity (autocommit is ON by default)
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
+                await lock_user_profile(cur, user_id)
                 # FOR UPDATE locks the row to prevent concurrent merge races
                 await cur.execute("""
                     SELECT
@@ -211,6 +255,15 @@ async def upsert_portfolio_holding(
                 existing = await cur.fetchone()
 
                 if existing:
+                    held_in = existing["currency"]
+                    if currency and held_in and currency.upper() != held_in.upper():
+                        where = f" ({account_name})" if account_name else ""
+                        raise HoldingCurrencyMismatch(
+                            f"{symbol}{where} is held in {held_in.upper()}, so a cost in "
+                            f"{currency.upper()} cannot be averaged into it. Give the cost "
+                            f"in {held_in.upper()}, or change the holding's currency first."
+                        )
+
                     existing_qty = existing["quantity"] or Decimal("0")
                     total_qty = existing_qty + quantity
 
@@ -277,6 +330,7 @@ async def upsert_portfolio_holding(
 
                 else:
                     user_portfolio_id = str(uuid4())
+                    currency = currency or default_holding_currency(symbol, instrument_type)
                     await cur.execute(f"""
                         INSERT INTO user_portfolios (
                             user_portfolio_id, user_id, symbol, instrument_type, exchange,
@@ -312,8 +366,9 @@ async def delete_portfolio_holding(user_portfolio_id: str, user_id: str) -> bool
     Returns:
         True if holding was deleted, False if not found
     """
-    async with get_db_connection() as conn:
+    async with get_db_connection() as conn, conn.transaction():
         async with conn.cursor() as cur:
+            await lock_user_profile(cur, user_id)
             await cur.execute("""
                 DELETE FROM user_portfolios
                 WHERE user_portfolio_id = %s AND user_id = %s

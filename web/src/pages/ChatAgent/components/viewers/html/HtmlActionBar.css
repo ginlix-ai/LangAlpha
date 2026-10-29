@@ -14,7 +14,7 @@
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), background var(--motion-quick) var(--ease-out);
 }
 
 .html-action-btn:hover {
@@ -22,8 +22,15 @@
   background: var(--color-bg-hover);
 }
 
+.html-action-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: transparent;
+  color: var(--color-text-tertiary);
+}
+
 .html-action-btn:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
 }
 
@@ -40,5 +47,5 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--motion-quick) var(--ease-out);
 }

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mcp_servers.yf_price_mcp_server import (
+from plugins.yfinance.yf_price_mcp_server import (
     get_dividends_and_splits,
     get_multiple_stocks_dividends,
     get_multiple_stocks_history,
@@ -72,7 +72,7 @@ def empty_df():
 
 
 class TestGetStockHistory:
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_history_df):
         mock_ticker_cls.return_value.history.return_value = mock_history_df
         result = get_stock_history("AAPL")
@@ -90,7 +90,7 @@ class TestGetStockHistory:
             period="1y", interval="1d"
         )
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_canonical_interval_input(self, mock_ticker_cls, mock_history_df):
         """Canonical vocab in → canonical echo out, mapped to yfinance spelling."""
         mock_ticker_cls.return_value.history.return_value = mock_history_df
@@ -101,7 +101,7 @@ class TestGetStockHistory:
             period="1y", interval="1mo"
         )
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_custom_params(self, mock_ticker_cls, mock_history_df):
         mock_ticker_cls.return_value.history.return_value = mock_history_df
         result = get_stock_history("MSFT", period="6mo", interval="1wk")
@@ -112,7 +112,7 @@ class TestGetStockHistory:
             period="6mo", interval="1wk"
         )
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_native_only_interval_passthrough(self, mock_ticker_cls, mock_history_df):
         """yfinance-native granularity (3mo) passes through and echoes natively."""
         mock_ticker_cls.return_value.history.return_value = mock_history_df
@@ -123,7 +123,7 @@ class TestGetStockHistory:
             period="1y", interval="3mo"
         )
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_unsupported_interval(self, mock_ticker_cls):
         result = get_stock_history("AAPL", interval="4hour")
 
@@ -131,7 +131,7 @@ class TestGetStockHistory:
         assert "supported" in result
         mock_ticker_cls.assert_not_called()
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_symbol_canonicalized(self, mock_ticker_cls, mock_history_df):
         """HK symbol echoes canonical display spelling and its currency."""
         mock_ticker_cls.return_value.history.return_value = mock_history_df
@@ -140,7 +140,7 @@ class TestGetStockHistory:
         assert_ok_envelope(result, symbol="0700.HK", currency="HKD")
         mock_ticker_cls.assert_called_once_with("0700.HK")
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_intraday_includes_time_and_timezone(self, mock_ticker_cls):
         import pytz
 
@@ -169,14 +169,14 @@ class TestGetStockHistory:
             "2024-01-15 09:40:00",
         ]
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_empty_data_is_not_found(self, mock_ticker_cls, empty_df):
         mock_ticker_cls.return_value.history.return_value = empty_df
         result = get_stock_history("INVALID")
 
         assert_error(result, "not_found", symbol="INVALID")
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_exception_is_sanitized_upstream_error(self, mock_ticker_cls):
         mock_ticker_cls.return_value.history.side_effect = Exception("Network error")
         result = get_stock_history("AAPL")
@@ -199,7 +199,7 @@ class TestNaNBarHandling:
     around LSE hours). NaN is not valid JSON and a priceless bar is not a real
     observation, so such rows must be dropped before serialization."""
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_trailing_nan_bar_dropped(self, mock_ticker_cls):
         dates = pd.date_range("2024-01-01", periods=4, freq="D")
         df = pd.DataFrame(
@@ -220,7 +220,7 @@ class TestNaNBarHandling:
         assert all(isinstance(c, float) and c == c for c in closes)  # no NaN
         assert result["data"][-1]["close"] == 153.0  # last surviving bar is real
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_all_nan_bars_is_not_found(self, mock_ticker_cls):
         dates = pd.date_range("2024-01-01", periods=2, freq="D")
         df = pd.DataFrame(
@@ -239,7 +239,7 @@ class TestNaNBarHandling:
         # Every bar dropped → same as an empty frame → not_found, never a crash.
         assert_error(result, "not_found", symbol="AAPL")
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_nan_volume_on_valid_price_bar_coerced(self, mock_ticker_cls):
         """A priced bar with a missing volume is kept (volume → 0), not dropped
         and not crashed on int(NaN)."""
@@ -261,7 +261,7 @@ class TestNaNBarHandling:
         assert result["data"][1]["close"] == 152.0
         assert result["data"][1]["volume"] == 0
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_multi_history_drops_nan_bars(self, mock_ticker_cls):
         dates = pd.date_range("2024-01-01", periods=3, freq="D")
         df = pd.DataFrame(
@@ -289,7 +289,7 @@ class TestNaNBarHandling:
 
 
 class TestGetMultipleStocksHistory:
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_history_df):
         mock_ticker_cls.return_value.history.return_value = mock_history_df
         result = get_multiple_stocks_history(["AAPL", "MSFT"])
@@ -303,7 +303,7 @@ class TestGetMultipleStocksHistory:
         assert len(result["data"]["AAPL"]["data"]) == 5
         assert "errors" not in result
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_partial_failure(self, mock_ticker_cls, mock_history_df):
         def side_effect(ticker):
             m = Mock()
@@ -323,7 +323,7 @@ class TestGetMultipleStocksHistory:
         assert result["errors"][0]["error"] == "upstream_error"
         assert result["errors"][0]["symbol"] == "BAD"
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_unsupported_interval(self, mock_ticker_cls):
         result = get_multiple_stocks_history(["AAPL", "MSFT"], interval="4hour")
 
@@ -331,7 +331,7 @@ class TestGetMultipleStocksHistory:
         assert "supported" in result
         mock_ticker_cls.assert_not_called()
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_all_empty(self, mock_ticker_cls, empty_df):
         mock_ticker_cls.return_value.history.return_value = empty_df
         result = get_multiple_stocks_history(["X", "Y"])
@@ -347,7 +347,7 @@ class TestGetMultipleStocksHistory:
 
 
 class TestGetDividendsAndSplits:
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_dividends_series, mock_splits_series):
         mock_obj = mock_ticker_cls.return_value
         mock_obj.dividends = mock_dividends_series
@@ -368,7 +368,7 @@ class TestGetDividendsAndSplits:
         assert len(splits) == 2
         assert splits[0]["ratio"] == 4.0
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_empty(self, mock_ticker_cls, empty_series):
         mock_obj = mock_ticker_cls.return_value
         mock_obj.dividends = empty_series
@@ -381,7 +381,7 @@ class TestGetDividendsAndSplits:
         assert result["data"]["dividends"] == []
         assert result["data"]["splits"] == []
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_exception(self, mock_ticker_cls):
         mock_ticker_cls.side_effect = Exception("API down")
         result = get_dividends_and_splits("AAPL")
@@ -397,7 +397,7 @@ class TestGetDividendsAndSplits:
 
 
 class TestGetMultipleStocksDividends:
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_success(self, mock_ticker_cls, mock_dividends_series):
         mock_ticker_cls.return_value.dividends = mock_dividends_series
         result = get_multiple_stocks_dividends(["AAPL", "MSFT"])
@@ -409,7 +409,7 @@ class TestGetMultipleStocksDividends:
         assert result["data"]["AAPL"]["currency"] == "USD"
         assert "errors" not in result
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_partial_failure(self, mock_ticker_cls, mock_dividends_series):
         def side_effect(ticker):
             m = Mock()
@@ -431,7 +431,7 @@ class TestGetMultipleStocksDividends:
         assert result["errors"][0]["error"] == "upstream_error"
         assert result["errors"][0]["symbol"] == "BAD"
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_all_empty(self, mock_ticker_cls, empty_series):
         mock_ticker_cls.return_value.dividends = empty_series
         result = get_multiple_stocks_dividends(["X", "Y"])
@@ -465,7 +465,7 @@ def pence_history_df():
 
 
 class TestMinorUnitConversion:
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_history_pence_converted_to_pounds(self, mock_ticker_cls, pence_history_df):
         stock = mock_ticker_cls.return_value
         stock.history.return_value = pence_history_df
@@ -480,7 +480,7 @@ class TestMinorUnitConversion:
         assert result["data"][1]["dividends"] == 0.5  # 50 pence → £0.50
         assert result["data"][0]["volume"] == 1000000  # volume NOT scaled
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_conversion_keyed_on_declared_not_symbol(
         self, mock_ticker_cls, mock_history_df
     ):
@@ -494,7 +494,7 @@ class TestMinorUnitConversion:
         assert_ok_envelope(result, currency="GBP")
         assert result["data"][0]["close"] == 1.51  # 151.0 / 100
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_no_conversion_when_declared_major(self, mock_ticker_cls, mock_history_df):
         """A non-minor-unit declared currency leaves values untouched."""
         stock = mock_ticker_cls.return_value
@@ -506,7 +506,7 @@ class TestMinorUnitConversion:
         assert_ok_envelope(result, currency="USD")
         assert result["data"][0]["close"] == 151.0  # untouched, 2 decimals
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_fast_info_currency_fallback(self, mock_ticker_cls, mock_history_df):
         """When history_metadata is absent, fast_info.currency drives conversion."""
         stock = mock_ticker_cls.return_value
@@ -519,7 +519,7 @@ class TestMinorUnitConversion:
         assert_ok_envelope(result, currency="GBP")
         assert result["data"][0]["close"] == 1.51
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_multi_history_per_entry_conversion(self, mock_ticker_cls, pence_history_df):
         stock = mock_ticker_cls.return_value
         stock.history.return_value = pence_history_df
@@ -531,7 +531,7 @@ class TestMinorUnitConversion:
         assert entry["currency"] == "GBP"
         assert entry["data"][0]["close"] == 98.9025
 
-    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    @patch("plugins.yfinance.yf_price_mcp_server.yf.Ticker")
     def test_dividends_pence_converted_splits_untouched(self, mock_ticker_cls):
         div_dates = pd.date_range("2023-01-15", periods=2, freq="QE")
         split_dates = pd.DatetimeIndex(["2020-08-31"])

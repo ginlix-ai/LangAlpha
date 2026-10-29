@@ -1,15 +1,17 @@
 /**
  * The one place a task's status becomes an icon and a color.
  *
- * Two vocabularies live here because the surfaces genuinely speak two: inline
- * cards read `TaskCardStatusKind` (which carries the update/resume verbs a
- * card header shows), while the nav tree and the status bar read a subagent's
- * `SubagentDisplayStatus` (which distinguishes "spawned but silent" from
- * "running"). Each vocabulary has exactly one table; a surface that needs its
- * own treatment declares an override rather than restating the ladder.
+ * Three vocabularies live here because the surfaces genuinely speak three.
+ * `STATUS_UI` serves the task-card chip: a workflow run's card and its
+ * detail header, and a task's tool-call detail. `SUBAGENT_STATUS_UI` serves
+ * the nav tree and the status bar, which tell "spawned but silent" from
+ * "running". `SUBAGENT_ROW_UI` serves the reply's subagent rows, which need
+ * both of those plus a launch that never ran and the verbs of a follow-up.
+ * Each vocabulary has exactly one table; a surface that needs its own
+ * treatment declares an override rather than restating the ladder.
  *
  * Liveness is the shared ascii Loader (`live: true`), never a spinning lucide
- * glyph — the same treatment as the running-thread rows in the nav tree.
+ * glyph, the same treatment as the running-thread rows in the nav tree.
  */
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -19,15 +21,11 @@ import {
 } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
 import type { SubagentDisplayStatus } from '../session/subagents/subagentStatus';
+// Types only: the nav tree loads this module on first paint, and the row kit
+// pulls in framer, so the row status is drawn with the row (`SubagentRow`).
+import type { RunGlyphKind } from './messageList/runCard';
 
-export type TaskCardStatusKind =
-  | 'running'
-  | 'completed'
-  | 'cancelled'
-  | 'error'
-  | 'updated'
-  | 'resumed'
-  | 'unknown';
+export type TaskCardStatusKind = 'running' | 'completed' | 'cancelled' | 'error' | 'unknown';
 
 interface TaskCardStatusUi {
   /** i18n key for the status word; `null` renders the raw wire status instead. */
@@ -39,12 +37,10 @@ interface TaskCardStatusUi {
 }
 
 /**
- * Per-status presentation for every inline task card. Subagent spawns and
- * workflow runs read this one table, so a status can never render amber on one
- * card and red on the other. Updated/Resumed share the warning amber with
- * Running because those are all "in flight or just changed"; Cancelled is
- * terminal-neutral (the run was stopped), Failed is the danger token — not
- * `--color-loss`, which belongs to market P&L.
+ * Per-status presentation for every task card, so a status can never render
+ * amber on one card and red on another. Cancelled is terminal-neutral (the
+ * run was stopped); Failed is the danger token, not `--color-loss`, which
+ * belongs to market P&L.
  */
 export const STATUS_UI: Record<TaskCardStatusKind, TaskCardStatusUi> = {
   running: {
@@ -68,16 +64,6 @@ export const STATUS_UI: Record<TaskCardStatusKind, TaskCardStatusUi> = {
     color: 'var(--color-icon-danger)',
     Icon: AlertCircle,
   },
-  updated: {
-    labelKey: 'chat.taskCard.statusUpdated',
-    color: 'var(--color-warning)',
-    Icon: RefreshCw,
-  },
-  resumed: {
-    labelKey: 'chat.taskCard.statusResumed',
-    color: 'var(--color-warning)',
-    Icon: RotateCw,
-  },
   unknown: {
     labelKey: null,
     color: 'var(--color-text-tertiary)',
@@ -86,14 +72,11 @@ export const STATUS_UI: Record<TaskCardStatusKind, TaskCardStatusUi> = {
 };
 
 /**
- * The card status a task's own wire status maps onto, before a card's action
- * verb (`updated`/`resumed`) overrides it. Anything the vocabulary doesn't
- * name falls to `unknown`, which renders the wire value verbatim rather than
- * guessing an outcome.
+ * The card status a task's own wire status maps onto. Anything the vocabulary
+ * doesn't name falls to `unknown`, which renders the wire value verbatim
+ * rather than guessing an outcome.
  */
-export function taskCardStatusKind(
-  status: string | null | undefined,
-): TaskCardStatusKind {
+export function taskCardStatusKind(status: string | null | undefined): TaskCardStatusKind {
   switch (status) {
     case 'running':
     case 'completed':
@@ -220,3 +203,53 @@ export function SubagentStatusIcon({
   if (!Icon) return null;
   return <Icon className={className} style={{ color }} />;
 }
+
+/**
+ * A subagent as a row in the reply. `starting` is a launch whose run has not
+ * shown a sign of life yet; `refused` is a launch that never ran at all, so it
+ * has no time and, unless it was a follow-up aimed at a task that exists,
+ * nothing to open. `updated` and `resumed` are follow-ups sent to a task: the
+ * verb is the news, so an update's own wire status is not read (its record
+ * keeps the `running` it was born with and nothing settles it). A resume's is
+ * read only for a run that failed or was stopped.
+ */
+export type SubagentRowKind =
+  | 'starting'
+  | 'working'
+  | 'pausing'
+  | 'done'
+  | 'failed'
+  | 'stopped'
+  | 'refused'
+  | 'updated'
+  | 'resumed'
+  | 'unknown';
+
+interface SubagentRowUi {
+  /** The status word, for screen readers and for a row with nothing better to
+   *  say; `null` leaves the raw wire status. */
+  labelKey: string | null;
+  /** Absent means no glyph, which on these rows is the done state. */
+  glyph?: RunGlyphKind;
+  /** Still working: keeps the clock running and a group open. */
+  live: boolean;
+  /** What went wrong: the word takes the danger color. */
+  danger: boolean;
+}
+
+export const SUBAGENT_ROW_UI: Record<SubagentRowKind, SubagentRowUi> = {
+  starting: { labelKey: 'chat.subagentRun.starting', glyph: 'pending', live: true, danger: false },
+  working: { labelKey: 'chat.taskCard.statusRunning', glyph: 'live', live: true, danger: false },
+  // A running task under an unanswered credit pause: still live, but its own
+  // gate stops it at the next model boundary, so it promises a stop rather
+  // than more work.
+  pausing: { labelKey: 'chat.taskCard.statusPausing', glyph: 'live', live: true, danger: false },
+  // "Finished", as the group's header says it once all are.
+  done: { labelKey: 'chat.subagentRun.finished', live: false, danger: false },
+  failed: { labelKey: 'chat.taskCard.statusFailed', glyph: 'alert', live: false, danger: true },
+  stopped: { labelKey: 'chat.taskCard.statusStopped', glyph: 'stop', live: false, danger: false },
+  refused: { labelKey: 'chat.subagentRun.couldntStart', glyph: 'alert', live: false, danger: true },
+  updated: { labelKey: 'chat.taskCard.statusUpdated', glyph: RefreshCw, live: false, danger: false },
+  resumed: { labelKey: 'chat.taskCard.statusResumed', glyph: RotateCw, live: false, danger: false },
+  unknown: { labelKey: null, live: false, danger: false },
+};

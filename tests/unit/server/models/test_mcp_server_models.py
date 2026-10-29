@@ -12,14 +12,15 @@ import pytest
 from pydantic import ValidationError
 
 from src.server.models.mcp_server import (
-    ALLOWED_COMMANDS,
     McpServerInput,
+    ProbeInput,
     catalog_row_to_response,
     coerce_mcp_name,
     collect_vault_refs,
     isolation_warnings,
     normalize_transport,
     parse_mcp_servers_payload,
+    sandbox_name_error,
     validate_remote_url,
 )
 
@@ -51,11 +52,43 @@ def test_name_accepts_valid(name):
 
 
 @pytest.mark.parametrize(
-    "name", ["1bad", "has-dash", "has.dot", "", "a" * 65, "has space"]
+    "name", ["1bad", "has-dash", "has.dot", "", "a" * 65, "has space", "trailing\n"]
 )
 def test_name_rejects_invalid(name):
     with pytest.raises(ValidationError):
         McpServerInput(**_stdio(name=name))
+
+
+@pytest.mark.parametrize(
+    "name,reason",
+    [
+        ("mcp_client", "MCP runtime module"),
+        ("__init__", "must not start with '__'"),
+        ("__private", "must not start with '__'"),
+        ("class", "Python keyword"),
+        ("None", "Python keyword"),
+        ("await", "Python keyword"),
+    ],
+)
+def test_sandbox_reserves_the_runtime_dunders_and_hard_keywords(name, reason):
+    # The name becomes a module in the sandbox's tools package, so the message
+    # has to say that rather than restate the shape rule the name passes.
+    assert reason in (sandbox_name_error(name) or "")
+
+
+@pytest.mark.parametrize(
+    "name", ["match", "case", "type", "_", "class_server", "mcp_client_v2", "_private", "Type"]
+)
+def test_sandbox_accepts_soft_keywords_and_near_misses(name):
+    # ``from tools.match import ...`` parses: a soft keyword is a legal module.
+    assert sandbox_name_error(name) is None
+    assert McpServerInput(**_stdio(name=name)).name == name
+
+
+def test_the_model_checks_shape_only_so_an_edit_keeps_a_reserved_name():
+    # The doors that introduce a name refuse a reserved one; the model also
+    # carries edits of rows saved before their name was reserved.
+    assert McpServerInput(**_stdio(name="class")).name == "class"
 
 
 # ---------------------------------------------------------------------------
@@ -97,19 +130,24 @@ def test_sse_requires_url():
 
 
 # ---------------------------------------------------------------------------
-# Command allowlist — no bash / no shells
+# Command — not filtered
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("cmd", sorted(ALLOWED_COMMANDS))
-def test_command_allowlist_accepts(cmd):
+# Every one of these is how some published MCP server documents its own launch.
+# The list is not a contract about what we run, it is the evidence that a
+# closed one would have made these uninstallable.
+@pytest.mark.parametrize(
+    "cmd",
+    ["npx", "uvx", "docker", "deno", "bun", "go", "java", "/usr/local/bin/srv", "./srv"],
+)
+def test_any_command_is_accepted(cmd):
     assert McpServerInput(**_stdio(command=cmd)).command == cmd
 
 
-@pytest.mark.parametrize("cmd", ["bash", "sh", "zsh", "/bin/bash", "curl", "rm"])
-def test_command_allowlist_rejects(cmd):
+def test_stdio_still_requires_a_command():
     with pytest.raises(ValidationError):
-        McpServerInput(**_stdio(command=cmd))
+        McpServerInput(**_stdio(command=""))
 
 
 # ---------------------------------------------------------------------------
@@ -198,9 +236,51 @@ def test_header_accepts_vault_ref():
     assert srv.headers["Authorization"] == "${vault:API_KEY}"
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Bearer ${vault:API_KEY}",
+        "token ${vault:API_KEY}",
+        "${vault:USER}:${vault:PASS}",
+        "${vault:API_KEY} suffix",
+    ],
+)
+def test_header_accepts_a_ref_embedded_in_a_larger_value(value):
+    # `Bearer <token>` is how nearly every MCP server wants its Authorization
+    # header, and the sandbox substitutes refs in place rather than replacing
+    # the field. Requiring the whole value to be the reference meant the scheme
+    # word had to live inside the secret.
+    srv = McpServerInput(**_http(headers={"Authorization": value}))
+    assert srv.headers["Authorization"] == value
+
+
+def test_an_embedded_ref_does_not_excuse_the_rest_of_the_value():
+    with pytest.raises(ValidationError):
+        McpServerInput(
+            **_http(headers={"Authorization": "Bearer ${vault:OK} ${HOME}"})
+        )
+
+
 def test_header_rejects_bare_host_env_value():
     with pytest.raises(ValidationError):
         McpServerInput(**_http(headers={"Authorization": "${SECRET}"}))
+
+
+def test_headers_colliding_only_in_case_are_rejected():
+    # The probe and the sandbox keep both spellings, while the relay folds the
+    # map to lowercase and keeps whichever lands last, so the value on the wire
+    # is not the one the owner can point at in the form.
+    with pytest.raises(ValidationError):
+        McpServerInput(
+            **_http(headers={"Authorization": "a", "authorization": "b"})
+        )
+
+
+def test_two_distinct_header_names_still_pass():
+    srv = McpServerInput(
+        **_http(headers={"Authorization": "a", "X-Trace": "b"})
+    )
+    assert srv.headers == {"Authorization": "a", "X-Trace": "b"}
 
 
 @pytest.mark.parametrize("key", ["1bad", "has space", "a" * 129])
@@ -262,6 +342,8 @@ def test_discovery_uses_secrets_defaults_off_and_round_trips():
 
 def test_catalog_row_discovery_uses_secrets_in_response():
     row = {
+        "plugin_name": None,
+        "plugin_enabled": None,
         "name": "remote_server",
         "transport": "http",
         "command": None,
@@ -324,6 +406,12 @@ def test_source_key_rejected():
         McpServerInput(**_stdio(source="workspace"))
 
 
+def test_auth_key_rejected():
+    # ``auth`` hands a server the sandbox's own data token: built-ins only.
+    with pytest.raises(ValidationError, match="'auth' is not allowed"):
+        McpServerInput(**_http(auth="data_token"))
+
+
 def test_unknown_extra_key_rejected():
     with pytest.raises(ValidationError):
         McpServerInput(**_stdio(unexpected="x"))
@@ -341,6 +429,10 @@ def test_collect_vault_refs_dedupes_and_sorts():
 
 def _catalog_row(**overrides):
     row = {
+        # The plugin LEFT JOIN is part of every catalog SELECT, so a real row
+        # always carries these two, NULL when it has no plugin owner.
+        "plugin_name": None,
+        "plugin_enabled": None,
         "name": "remote_server",
         "transport": "http",
         "command": None,
@@ -351,6 +443,7 @@ def _catalog_row(**overrides):
         "description": "d",
         "instruction": "i",
         "tool_exposure_mode": "summary",
+        "probe_kicked_at": "2026-01-02T03:04:05+00:00",
         "created_at": "2026-01-01T00:00:00+00:00",
         "updated_at": "2026-01-01T00:00:00+00:00",
     }
@@ -396,6 +489,16 @@ def test_catalog_row_response_tolerates_null_maps():
     assert resp.env_refs == [] and resp.header_refs == []
 
 
+def test_catalog_row_response_carries_the_probe_kick_clock():
+    # The page tells "checking..." from "nothing ever reached this row" with
+    # it, and both leave ``probe`` null.
+    from datetime import datetime, timezone
+
+    resp = catalog_row_to_response(_catalog_row())
+    assert resp.probe_kicked_at == datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    assert catalog_row_to_response(_catalog_row(probe_kicked_at=None)).probe_kicked_at is None
+
+
 # ---------------------------------------------------------------------------
 # Standard `mcpServers` JSON parser
 # ---------------------------------------------------------------------------
@@ -414,6 +517,47 @@ def test_coerce_mcp_name_prefixes_leading_digit():
 def test_coerce_mcp_name_passthrough_when_already_legal():
     name, renamed = coerce_mcp_name("already_ok")
     assert name == "already_ok" and renamed is False
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("class", "class_server"),
+        ("mcp_client", "mcp_client_server"),
+        ("mcp-client", "mcp_client_server"),
+        ("__init__", "init__"),
+        ("__class", "class_server"),
+        ("__3d", "_3d"),
+        ("---", "server"),
+    ],
+)
+def test_coerce_mcp_name_renames_what_the_sandbox_reserves(raw, expected):
+    # Import and plugin install rename rather than drop the entry, and what
+    # they produce has to pass the same check a hand-typed name does.
+    name, renamed = coerce_mcp_name(raw)
+    assert (name, renamed) == (expected, True)
+    assert sandbox_name_error(name) is None
+
+
+@pytest.mark.parametrize("raw", ["match", "type", "_"])
+def test_coerce_mcp_name_keeps_a_soft_keyword(raw):
+    assert coerce_mcp_name(raw) == (raw, False)
+
+
+def test_coerce_mcp_name_counts_an_astral_character_once():
+    # One code point, one underscore: the web preview has to agree.
+    assert coerce_mcp_name("rocket\U0001F680mcp") == ("rocket_mcp", True)
+
+
+def test_parse_reports_a_reserved_key_as_renamed():
+    [entry] = parse_mcp_servers_payload(
+        {"mcpServers": {"class": {"command": "npx", "args": ["-y", "pkg"]}}}
+    )
+    assert entry.error is None
+    assert (entry.original_name, entry.name, entry.renamed) == (
+        "class", "class_server", True,
+    )
+    assert entry.config["name"] == "class_server"
 
 
 @pytest.mark.parametrize(
@@ -494,3 +638,109 @@ def test_parse_undetermined_transport_marks_error():
 def test_parse_non_dict_payload_is_empty():
     assert parse_mcp_servers_payload("not a dict") == []
     assert parse_mcp_servers_payload(None) == []
+
+
+# ---------------------------------------------------------------------------
+# Probe verdict: one typed field, projected from the snapshot's last_probe
+# ---------------------------------------------------------------------------
+
+
+def test_the_verdict_survives_a_snapshot_that_still_serves_its_old_tools():
+    """The blocker this field exists for. The snapshot keeps its ``ok`` status
+    and its cached tools on a same-config failure, which is right for serving
+    them and wrong as the probe's last word, so the two now travel separately."""
+    resp = catalog_row_to_response(
+        _catalog_row(),
+        snapshot={
+            "status": "ok",
+            "tools": [{"name": "quote"}],
+            "last_probe": {
+                "verdict": "credential_rejected",
+                "error": "401 Unauthorized",
+                "http_status": 401,
+            },
+        },
+    )
+
+    assert resp.tool_count == 1
+    assert resp.probe.verdict == "credential_rejected"
+    assert resp.probe.http_status == 401
+
+
+def test_a_row_nothing_has_probed_reports_no_verdict_at_all():
+    """None, not a placeholder word: the UI gates its warning on the verdict,
+    and an invented "ok" for an unprobed row is the same bug in reverse."""
+    assert catalog_row_to_response(_catalog_row()).probe is None
+    assert (
+        catalog_row_to_response(_catalog_row(), snapshot={"status": "pending"}).probe
+        is None
+    )
+
+
+def test_a_verdict_this_build_no_longer_publishes_reads_as_unprobed():
+    """Stored jsonb outlives the vocabulary that wrote it; a listing must not
+    fail over one stale row."""
+    resp = catalog_row_to_response(
+        _catalog_row(), snapshot={"status": "ok", "last_probe": {"verdict": "legacy"}}
+    )
+
+    assert resp.probe is None
+
+
+def test_the_catalog_projection_never_carries_probe_tools():
+    """The row already reports ``tool_count`` from its snapshot. Tools inside
+    the verdict are the add form's preview and would be a second, divergent
+    answer on every listing."""
+    resp = catalog_row_to_response(
+        _catalog_row(),
+        snapshot={"status": "ok", "tools": [{"name": "quote"}], "last_probe": {
+            "verdict": "ok", "tools": [{"name": "stale"}]
+        }},
+    )
+    assert resp.probe.tools == []
+
+    assert resp.probe.verdict == "ok"
+    assert resp.tool_count == 1
+
+
+def test_probe_input_rejects_a_transport():
+    """The probe dials streamable HTTP whatever the form intends to save, so a
+    transport was never read. Forbidden rather than ignored, because a client
+    still sending one is describing a choice this endpoint does not have."""
+    with pytest.raises(ValidationError):
+        ProbeInput(url="https://api.example.com/mcp", transport="sse")
+
+
+def test_probe_input_accepts_the_workspace_an_earlier_form_sends():
+    """A page loaded from the previous web build still sends one, and a 422
+    there would break the add form until the page reloads."""
+    parsed = ProbeInput(url="https://api.example.com/mcp", workspace_id="ws-1")
+
+    assert parsed.url == "https://api.example.com/mcp"
+
+
+def test_probe_input_keeps_the_fields_the_route_does_read():
+    parsed = ProbeInput(
+        url="https://api.example.com/mcp",
+        headers={"Authorization": "${vault:API_KEY}"},
+    )
+
+    assert parsed.headers == {"Authorization": "${vault:API_KEY}"}
+
+
+def test_the_verdict_vocabulary_matches_the_client_copy():
+    """The client keys two exhaustive tables off its own copy of the union,
+    so a verdict added on this side alone would compile there and render as a
+    failure; the two copies have to move together."""
+    import re
+    from pathlib import Path
+    from typing import get_args
+
+    from src.server.models.mcp_server import ProbeVerdict
+
+    # Anchored to this file, not the CWD: a scoped run from anywhere else
+    # would skip the parity check by failing to find the client copy.
+    repo = Path(__file__).resolve().parents[4]
+    source = (repo / "web/src/pages/ChatAgent/utils/api/mcp.ts").read_text()
+    block = source.split("export type ProbeVerdict =", 1)[1].split(";", 1)[0]
+    assert set(re.findall(r"'([a-z_]+)'", block)) == set(get_args(ProbeVerdict))

@@ -22,18 +22,39 @@ from src.server.database.runs.lifecycle import ForkSpec, TurnLifecycleError, sta
 
 QR_DB = "src.server.database.runs.lifecycle.qr_db"
 SR_DB = "src.server.database.runs.lifecycle.sr_db"
+TT_DB = "src.server.database.runs.lifecycle.tt_db"
+REPAIR = "src.server.database.runs.lifecycle.subagent_repair"
 
 THREAD_ID = "11111111-1111-1111-1111-111111111111"
 RUN_ID = "22222222-2222-2222-2222-222222222222"
 TASK_RUN_ID = "33333333-3333-3333-3333-333333333333"
 
-FORK = ForkSpec(from_turn=2, checkpoint_id="ckpt-1")
+FORK = ForkSpec(from_turn=2, checkpoint_id="ckpt-1", branch_tip="ckpt-tip")
+
+
+@pytest.fixture(autouse=True)
+def _no_steers_to_keep():
+    """The fork's steer lift and the move fence read the cursor; these tests
+    script it for the guards alone."""
+    with (
+        patch(
+            "src.server.database.workspace.workspace_is_moving",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "src.server.database.runs.lifecycle.lift_fork_steers",
+            new=AsyncMock(return_value=([], None)),
+        ),
+        patch("src.server.database.runs.lifecycle.land_fork_steers", new=AsyncMock()),
+    ):
+        yield
 
 
 def _clean_thread(mock_cursor):
-    """No duplicate request_key, no live root run — the two probes the fork
-    path makes before it reaches the subagent guard."""
-    mock_cursor.fetchone.side_effect = [None, None]
+    """No duplicate request_key, a tip still where the fork read it, no live
+    root run: the checks the fork path makes before the subagent guard."""
+    mock_cursor.fetchone.side_effect = [{"workspace_id": "ws-1", "status": "running"}, None, None]
+    mock_cursor.rowcount = 1
 
 
 async def _start(conn):
@@ -78,10 +99,10 @@ async def test_guard_is_scoped_to_the_truncated_turns(mock_connection, mock_curs
     with (
         patch(f"{SR_DB}.find_open_run_from_turn", new=probe),
         patch(f"{QR_DB}.truncate_thread_from_turn", new=AsyncMock(return_value=3)),
-        patch(f"{SR_DB}.repair_task_chains", new=AsyncMock()),
-        patch(f"{QR_DB}.update_thread_checkpoint_id", new=AsyncMock(return_value=False)),
+        patch(f"{REPAIR}.repair_task_chains", new=AsyncMock()),
+        patch(f"{TT_DB}.drop_rewound", new=AsyncMock(side_effect=TurnLifecycleError)),
     ):
-        # Fails at the checkpoint pin, well past the guard.
+        # Fails at the transcript drop, well past the guard.
         with pytest.raises(TurnLifecycleError):
             await _start(mock_connection)
 
@@ -103,22 +124,22 @@ async def test_repair_follows_the_truncation_in_the_same_transaction(
         calls.append("repair")
         return {"rewound": 1, "deleted": 1}
 
-    async def _pin(*args, **kwargs):
-        calls.append("pin")
-        return False  # aborts the START right after the repair
+    async def _drop(*args, **kwargs):
+        calls.append("drop")
+        raise TurnLifecycleError  # aborts the START right after the repair
 
     with (
         patch(f"{SR_DB}.find_open_run_from_turn", new=AsyncMock(return_value=None)),
         patch(f"{QR_DB}.truncate_thread_from_turn", new=_truncate),
-        patch(f"{SR_DB}.repair_task_chains", new=_repair),
-        patch(f"{QR_DB}.update_thread_checkpoint_id", new=_pin),
+        patch(f"{REPAIR}.repair_task_chains", new=_repair),
+        patch(f"{TT_DB}.drop_rewound", new=_drop),
     ):
         with pytest.raises(TurnLifecycleError):
             await _start(mock_connection)
 
     # Repair must not trail the transaction: the cascade and the re-anchor
     # commit together or not at all.
-    assert calls == ["truncate", "repair", "pin"]
+    assert calls == ["truncate", "repair", "drop"]
 
 
 @pytest.mark.asyncio
@@ -129,8 +150,8 @@ async def test_repair_runs_on_the_forks_own_session(mock_connection, mock_cursor
     with (
         patch(f"{SR_DB}.find_open_run_from_turn", new=AsyncMock(return_value=None)),
         patch(f"{QR_DB}.truncate_thread_from_turn", new=AsyncMock(return_value=1)),
-        patch(f"{SR_DB}.repair_task_chains", new=repair),
-        patch(f"{QR_DB}.update_thread_checkpoint_id", new=AsyncMock(return_value=False)),
+        patch(f"{REPAIR}.repair_task_chains", new=repair),
+        patch(f"{TT_DB}.drop_rewound", new=AsyncMock(side_effect=TurnLifecycleError)),
     ):
         with pytest.raises(TurnLifecycleError):
             await _start(mock_connection)

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { isOnline } from '@/lib/network';
+
 /**
  * Track the browser's reported online status.
  *
@@ -12,9 +14,7 @@ import { useEffect, useState } from 'react';
  * doesn't crash. The effect bails on missing `window`.
  */
 export function useNetworkStatus(): { online: boolean } {
-  const [online, setOnline] = useState<boolean>(() =>
-    typeof navigator === 'undefined' ? true : navigator.onLine
-  );
+  const [online, setOnline] = useState<boolean>(isOnline);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;

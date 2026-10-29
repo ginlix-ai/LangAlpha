@@ -5,7 +5,7 @@
  * gate, the regenerate tail, and the turn projection each carried their own
  * inline `role === 'assistant' && !isSteering` check before this module.
  */
-import type { MessageRecord } from './types';
+import type { MessageProvenance } from '@/types/chat';
 
 /** The subset of message fields the predicates read. Structural so both the
  *  loose `MessageRecord` wire shape and the typed `ChatMessage` union fit. */
@@ -14,6 +14,7 @@ export interface MessageLike {
   steering?: unknown;
   steeringDelivered?: unknown;
   isSteering?: unknown;
+  queueError?: unknown;
 }
 
 /**
@@ -28,6 +29,14 @@ export function isSteeringUserMessage(message: MessageLike): boolean {
 }
 
 /**
+ * The user message a turn starts from. A steer that failed to send is none
+ * either: it was typed into the running turn and stays inside it.
+ */
+export function opensTurn(message: MessageLike): boolean {
+  return message.role === 'user' && !isSteeringUserMessage(message) && !message.queueError;
+}
+
+/**
  * An assistant bubble that CONTINUES the turn its predecessor opened (the
  * agent resumed after consuming steering). It is not a turn of its own: the
  * turn index folds back to the bubble it continues, and regenerate re-runs the
@@ -38,27 +47,18 @@ export function isSteeringContinuation(message: MessageLike): boolean {
 }
 
 /**
- * An assistant bubble that settled with nothing to show. Some turns legitimately
- * finalize empty in STATE — a HITL resume whose content landed on another bubble,
- * or a history turn whose only event was a re-raised interrupt deduped by
- * interrupt_id — and they must stay in state because edit/regenerate map UI
- * position → backend turn_index by counting assistant bubbles. But painting them
- * shows an orphan avatar + action row, so the list skips rendering them.
- * Anything renderable keeps the bubble: a streaming indicator, text, segments,
- * the Sources pill, the Stopped chip, or an error.
- *
- * INVARIANT: everything an assistant bubble can render must surface through
- * content / contentSegments / provenanceRecords / error / stopped / isStreaming.
- * A future assistant field that renders OUTSIDE those (e.g. assistant-side
- * attachments) must be added to this guard or its bubbles will be hidden.
+ * A report-back's row: the turn's own message is written for the model, so
+ * the row is drawn as its label alone, with no bubble, actions or minimap
+ * entry. It still opens its turn like any user message.
  */
-export function isOrphanAssistantMessage(message: MessageRecord): boolean {
-  if (message.role !== 'assistant') return false;
-  if (message.isStreaming) return false;
-  const segments = message.contentSegments as unknown[] | undefined;
-  if (segments && segments.length > 0) return false;
-  if (message.content) return false;
-  const provenance = message.provenanceRecords as Record<string, unknown> | undefined;
-  if (provenance && Object.keys(provenance).length > 0) return false;
-  return !message.error && !message.stopped;
+export function isReportRow(message: MessageLike & { provenance?: unknown }): boolean {
+  if (message.role !== 'user') return false;
+  const kind = (message.provenance as MessageProvenance | undefined)?.kind;
+  return isReportKind(kind);
+}
+
+/** The provenance kinds a report-back's row carries, drawn as a line of its
+ *  own and never counted as a turn the user started. */
+export function isReportKind(kind: MessageProvenance['kind'] | undefined): boolean {
+  return kind === 'analyst_report' || kind === 'task_report' || kind === 'command_report';
 }

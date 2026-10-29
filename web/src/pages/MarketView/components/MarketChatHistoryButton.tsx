@@ -19,6 +19,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Loader } from '@/components/ui/loader';
 import { queryKeys } from '@/lib/queryKeys';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
 import { getWorkspaceThreads } from '../../ChatAgent/utils/api';
 
 interface ThreadRecord {
@@ -60,8 +62,12 @@ export default function MarketChatHistoryButton({
   onStartNewChat,
 }: MarketChatHistoryButtonProps): React.ReactElement {
   const { t } = useTranslation();
+  const locale = useLocale();
+  const missingThreadHint = t('agents.market.missingThreadHint');
   const [open, setOpen] = React.useState(false);
   const [page, setPage] = React.useState(0);
+  // The row times only render while the menu is open.
+  const now = useNow(60_000, open);
 
   const PLATFORM_PREFIX = 'market_view';
   const PAGE_SIZE = 5;
@@ -101,13 +107,13 @@ export default function MarketChatHistoryButton({
         <button
           type="button"
           aria-label={t('marketView.chatHistory.triggerLabel')}
-          className="group inline-flex items-center gap-2 rounded-md px-2 py-1 max-w-[260px] transition-colors hover:bg-foreground/[0.06]"
+          className="group inline-flex items-center gap-2 rounded-md px-2 py-1 max-w-[260px] transition-colors hover:bg-foreground/6"
           style={{ color: 'var(--color-text-primary)' }}
         >
           {/* Session status dot — accent when there's an active thread, dim otherwise */}
           <span
             aria-hidden
-            className="h-[5px] w-[5px] rounded-full flex-shrink-0 transition-colors"
+            className="h-[5px] w-[5px] rounded-full shrink-0 transition-colors"
             style={{
               backgroundColor: hasActive
                 ? 'var(--color-accent-primary)'
@@ -122,7 +128,7 @@ export default function MarketChatHistoryButton({
             {activeTitle}
           </span>
           <ChevronDown
-            className="h-3 w-3 flex-shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-180"
+            className="h-3 w-3 shrink-0 transition-transform group-data-[state=open]:rotate-180"
             style={{ color: 'var(--color-text-tertiary)' }}
           />
         </button>
@@ -147,11 +153,11 @@ export default function MarketChatHistoryButton({
             onStartNewChat();
             setOpen(false);
           }}
-          className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer focus:bg-foreground/[0.06] data-[highlighted]:bg-foreground/[0.06]"
+          className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer focus:bg-foreground/6 data-highlighted:bg-foreground/6"
           style={{ color: 'var(--color-text-primary)', borderRadius: 0 }}
         >
           <Plus
-            className="h-3.5 w-3.5 flex-shrink-0"
+            className="h-3.5 w-3.5 shrink-0"
             style={{ color: 'var(--color-accent-primary)' }}
           />
           <span className="text-sm font-medium" style={{ letterSpacing: '-0.005em' }}>
@@ -189,19 +195,19 @@ export default function MarketChatHistoryButton({
           <span className="relative inline-flex items-center group/hint">
             <button
               type="button"
-              aria-label={t('marketView.chatHistory.missingThreadHint')}
+              aria-label={missingThreadHint}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
               }}
-              className="inline-flex items-center justify-center h-4 w-4 rounded-full transition-opacity opacity-60 hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
+              className="inline-flex items-center justify-center h-4 w-4 rounded-full transition-opacity opacity-60 hover:opacity-100 focus:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <Info className="h-3 w-3" />
             </button>
             <span
               role="tooltip"
-              className="pointer-events-none absolute right-0 top-full mt-1.5 w-60 rounded-md px-2.5 py-2 text-[0.6875rem] leading-snug opacity-0 translate-y-[-2px] transition-all duration-150 group-hover/hint:opacity-100 group-hover/hint:translate-y-0 group-focus-within/hint:opacity-100 group-focus-within/hint:translate-y-0"
+              className="pointer-events-none absolute right-0 top-full mt-1.5 w-60 rounded-md px-2.5 py-2 text-[0.6875rem] leading-snug opacity-0 translate-y-[-2px] transition-all group-hover/hint:opacity-100 group-hover/hint:translate-y-0 group-focus-within/hint:opacity-100 group-focus-within/hint:translate-y-0"
               style={{
                 backgroundColor: 'var(--color-bg-elevated)',
                 color: 'var(--color-text-secondary)',
@@ -212,7 +218,7 @@ export default function MarketChatHistoryButton({
                 letterSpacing: '-0.005em',
               }}
             >
-              {t('marketView.chatHistory.missingThreadHint')}
+              {missingThreadHint}
             </span>
           </span>
         </div>
@@ -233,7 +239,7 @@ export default function MarketChatHistoryButton({
               className="flex items-center justify-center gap-2 px-3 py-8 text-xs"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              <span aria-hidden="true" className="flex-shrink-0">
+              <span aria-hidden="true" className="shrink-0">
                 <Loader size={12} className="text-current" />
               </span>
               <span style={{ letterSpacing: '0.04em' }}>{t('marketView.chatHistory.loading')}</span>
@@ -245,7 +251,7 @@ export default function MarketChatHistoryButton({
               className="flex items-start gap-2 px-3 py-4 text-xs"
               style={{ color: 'var(--color-loss)' }}
             >
-              <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+              <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
               <span>{t('marketView.chatHistory.loadError')}</span>
             </div>
           )}
@@ -279,7 +285,7 @@ export default function MarketChatHistoryButton({
                   onSelectThread(thread.thread_id);
                   setOpen(false);
                 }}
-                className="group/row relative flex items-start gap-3 pl-4 pr-3 py-2 cursor-pointer focus:bg-foreground/[0.05] data-[highlighted]:bg-foreground/[0.05]"
+                className="group/row relative flex items-start gap-3 pl-4 pr-3 py-2 cursor-pointer focus:bg-foreground/5 data-highlighted:bg-foreground/5"
                 style={{ borderRadius: 0 }}
               >
                 {/* Active accent bar — 2px, full-height, replaces the boxy card */}
@@ -304,14 +310,14 @@ export default function MarketChatHistoryButton({
                 </span>
                 {thread.updated_at && (
                   <span
-                    className="text-[0.6875rem] flex-shrink-0 mt-[1px]"
+                    className="text-[0.6875rem] shrink-0 mt-px"
                     style={{
                       color: 'var(--color-text-tertiary)',
                       fontVariantNumeric: 'tabular-nums',
                       letterSpacing: '0.02em',
                     }}
                   >
-                    {relativeTime(thread.updated_at)}
+                    {relativeTime(thread.updated_at, locale, now)}
                   </span>
                 )}
               </DropdownMenuItem>
@@ -336,7 +342,7 @@ export default function MarketChatHistoryButton({
                 setPage((p) => Math.max(0, p - 1));
               }}
               disabled={page === 0 || isFetching}
-              className="inline-flex items-center justify-center h-6 w-6 rounded transition-colors hover:bg-foreground/[0.06] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              className="inline-flex items-center justify-center h-6 w-6 rounded transition-colors hover:bg-foreground/6 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               style={{ color: 'var(--color-text-secondary)' }}
             >
               <ChevronLeft className="h-3.5 w-3.5" />
@@ -362,7 +368,7 @@ export default function MarketChatHistoryButton({
                 setPage((p) => Math.min(totalPages - 1, p + 1));
               }}
               disabled={page >= totalPages - 1 || isFetching}
-              className="inline-flex items-center justify-center h-6 w-6 rounded transition-colors hover:bg-foreground/[0.06] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              className="inline-flex items-center justify-center h-6 w-6 rounded transition-colors hover:bg-foreground/6 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               style={{ color: 'var(--color-text-secondary)' }}
             >
               <ChevronRight className="h-3.5 w-3.5" />

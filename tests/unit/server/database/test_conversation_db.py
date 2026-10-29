@@ -8,6 +8,7 @@ thread sharing, and pagination logic.
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import psycopg
 import pytest
@@ -90,7 +91,6 @@ def _response_row(response_id=None, thread_id="t-1", turn_index=0, **overrides):
         "errors": [],
         "execution_time": 1.5,
         "created_at": now,
-        "sse_events": None,
     }
     row.update(overrides)
     return row
@@ -133,6 +133,151 @@ async def test_create_thread(mock_db_connection, mock_cursor):
 
     assert result["conversation_thread_id"] == "t-1"
     assert result["workspace_id"] == "ws-1"
+
+
+def _insert_values(sql, params):
+    """The INSERT's columns paired with the values each one binds.
+
+    A column's value expression can bind more than one: the switch's also
+    binds the workspace its owner's default is read from.
+    """
+    columns = sql.split("INSERT INTO conversation_threads (", 1)[1].split(")", 1)[0]
+    names = [c.strip() for c in columns.split(",")]
+    values_sql = sql.split("VALUES (", 1)[1]
+    expressions, depth, current = [], 0, ""
+    for ch in values_sql:
+        if ch == ")" and depth == 0:
+            break
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if ch == "," and depth == 0:
+            expressions.append(current)
+            current = ""
+        else:
+            current += ch
+    expressions.append(current)
+    # Placeholders and params stay aligned whichever optional columns are set.
+    assert len(expressions) == len(names)
+    assert sql.count("%s") == len(params)
+    bound, rest = {}, list(params)
+    for name, expression in zip(names, expressions):
+        count = expression.count("%s")
+        bound[name], rest = tuple(rest[:count]), rest[count:]
+    return {name: b[0] if len(b) == 1 else b for name, b in bound.items()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False, None])
+async def test_create_thread_binds_the_switch_with_its_workspace(
+    mock_db_connection, mock_cursor, allowed
+):
+    """The switch is bound with the workspace whose owner's default decides
+    whether it is stored or left NULL to follow that default (proven against
+    PostgreSQL in tests/integration/test_thread_subagents_default_db.py)."""
+    from src.server.database.conversation import create_thread
+
+    mock_cursor.fetchone.side_effect = [{"next_index": 0}, _thread_row()]
+
+    await create_thread(
+        conversation_thread_id="t-1",
+        workspace_id="ws-1",
+        current_status="in_progress",
+        platform="telegram",
+        external_id="chat:42",
+        metadata={"origin": {"type": "automation", "id": "a-1"}},
+        subagents_allowed=allowed,
+    )
+
+    values = _insert_values(*mock_cursor.execute.call_args_list[-1].args)
+    assert values["subagents_allowed"] == (allowed, "ws-1")
+    assert values["platform"] == "telegram"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("named", "stored"),
+    [({}, "ptc"), ({"msg_type": "flash"}, "flash")],
+    ids=["omitted", "named"],
+)
+async def test_create_thread_stamps_the_full_agent_unless_told_otherwise(
+    mock_db_connection, mock_cursor, named, stored
+):
+    """No caller names the producer any more; the insert still writes 'ptc'."""
+    from src.server.database.conversation import create_thread
+
+    mock_cursor.fetchone.side_effect = [{"next_index": 0}, _thread_row()]
+
+    await create_thread(
+        conversation_thread_id="t-1",
+        workspace_id="ws-1",
+        current_status="in_progress",
+        **named,
+    )
+
+    values = _insert_values(*mock_cursor.execute.call_args_list[-1].args)
+    assert values["msg_type"] == stored
+
+
+@pytest.mark.asyncio
+async def test_a_thread_a_turn_creates_is_the_full_agents(
+    mock_db_connection, mock_cursor
+):
+    """ensure_thread_exists, which every send passes through, creates the row
+    as the full agent's without being told."""
+    from src.server.database.conversation import ensure_thread_exists
+
+    mock_cursor.fetchone.side_effect = [
+        {"workspace_id": "ws-1"},
+        None,
+        {"next_index": 0},
+        _thread_row(),
+    ]
+    cache = SimpleNamespace(enabled=False, client=None)
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        created = await ensure_thread_exists(
+            workspace_id="ws-1",
+            conversation_thread_id="t-1",
+            user_id="u-1",
+            initial_query="hello",
+        )
+
+    assert created is True
+    values = _insert_values(*mock_cursor.execute.call_args_list[-1].args)
+    assert values["msg_type"] == "ptc"
+
+
+@pytest.mark.asyncio
+async def test_create_thread_index_retry_keeps_the_switch_aligned(
+    mock_db_connection, mock_cursor
+):
+    """The retry rebuilds the bound values with a new thread_index; the switch
+    keeps its column on every attempt."""
+    from src.server.database.conversation import create_thread
+
+    mock_cursor.execute.side_effect = [
+        None,
+        _make_unique_violation("unique_thread_index_per_workspace"),
+        None,
+        None,
+    ]
+    mock_cursor.fetchone.side_effect = [
+        {"next_index": 0},
+        {"next_index": 1},
+        _thread_row(),
+    ]
+
+    await create_thread(
+        conversation_thread_id="t-1",
+        workspace_id="ws-1",
+        current_status="in_progress",
+        platform="web",
+        subagents_allowed=False,
+    )
+
+    first = _insert_values(*mock_cursor.execute.call_args_list[1].args)
+    second = _insert_values(*mock_cursor.execute.call_args_list[3].args)
+    assert first["subagents_allowed"] == second["subagents_allowed"] == (False, "ws-1")
+    assert (first["thread_index"], second["thread_index"]) == (0, 1)
+    assert first["platform"] == second["platform"] == "web"
 
 
 @pytest.mark.asyncio
@@ -239,6 +384,74 @@ async def test_update_thread_fields_pin_skips_updated_at(
     assert "is_pinned = %s" in sql
     assert "archived_at = NULL" in sql
     assert "updated_at = NOW()" not in sql
+
+
+@pytest.mark.asyncio
+async def test_update_thread_fields_model_skips_updated_at(
+    mock_db_connection, mock_cursor
+):
+    """Changing a thread's model must not reorder the thread lists."""
+    from src.server.database.conversation import update_thread_fields
+
+    mock_cursor.fetchone.return_value = _thread_row()
+
+    await update_thread_fields("t-1", llm_model=None)
+
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "llm_model = %s" in sql
+    assert "updated_at" not in sql.split("RETURNING")[0]
+    assert params == (None, "t-1")
+
+
+@pytest.mark.asyncio
+async def test_thread_model_writers_never_touch_updated_at(
+    mock_db_connection, mock_cursor
+):
+    """Recording, clearing and moving a thread's model are not activity; a
+    clear is conditional on the name read, so a newer pick survives it."""
+    from src.server.database.conversation.threads_write import (
+        clear_thread_llm_model,
+        remember_thread_llm_model,
+    )
+
+    mock_cursor.rowcount = 1
+    assert await remember_thread_llm_model("t-1", "m-a", seen=None) is True
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "updated_at" not in sql
+    assert "llm_model IS DISTINCT FROM %s" in sql
+    assert "llm_model IS NOT DISTINCT FROM %s" in sql
+    assert params == ("m-a", "t-1", "m-a", None)
+
+    mock_cursor.rowcount = 0
+    assert await clear_thread_llm_model("t-1", "m-a") is False
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "updated_at" not in sql
+    assert "SET llm_model = NULL" in sql
+    assert "llm_model = %s" in sql.split("WHERE")[1]
+    assert params == ("t-1", "m-a")
+
+
+@pytest.mark.asyncio
+async def test_reassign_thread_models_moves_threads_off_the_old_default(
+    mock_db_connection, mock_cursor
+):
+    """Only threads on exactly the old name move, whatever their type."""
+    from src.server.database.conversation.threads_write import (
+        reassign_thread_llm_models,
+    )
+
+    mock_cursor.rowcount = 4
+    moved = await reassign_thread_llm_models("u-1", "m-a", "m-b")
+
+    assert moved == 4
+    mock_cursor.execute.assert_called_once()
+    sql, params = mock_cursor.execute.call_args[0]
+    assert params == {"user_id": "u-1", "old": "m-a", "new": "m-b"}
+    assert "t.llm_model = %(old)s" in sql
+    assert "msg_type" not in sql
+    assert "w.user_id = %(user_id)s" in sql
+    assert "w.status != 'deleted'" in sql
+    assert "updated_at" not in sql
 
 
 @pytest.mark.asyncio
@@ -520,21 +733,6 @@ async def test_get_latest_turn_index_read_failure_is_none(mock_db_connection, mo
 
 
 @pytest.mark.asyncio
-async def test_get_responses_for_thread(mock_db_connection, mock_cursor):
-    """get_responses_for_thread returns responses and total count."""
-    from src.server.database.conversation import get_responses_for_thread
-
-    r1 = _response_row(turn_index=0)
-    mock_cursor.fetchone.return_value = {"total": 1}
-    mock_cursor.fetchall.return_value = [r1]
-
-    responses, total = await get_responses_for_thread("t-1")
-
-    assert total == 1
-    assert len(responses) == 1
-
-
-@pytest.mark.asyncio
 async def test_get_recent_responses_for_thread_limit(mock_db_connection, mock_cursor):
     """Selects newest-first via DESC + LIMIT, returns chronological order."""
     from src.server.database.conversation import get_recent_responses_for_thread
@@ -586,13 +784,40 @@ async def test_replay_data_excludes_subagent_usage_rows(
             "latest_checkpoint_id": "cp-1",
         },
     ]
-    mock_cursor.fetchall.side_effect = [[], [], [], []]
+    mock_cursor.fetchall.return_value = []
 
     await get_replay_thread_data(thread_id)
 
-    usage_sql = mock_cursor.execute.call_args_list[4].args[0]
+    (usage_sql,) = [
+        c.args[0]
+        for c in mock_cursor.execute.call_args_list
+        if "FROM conversation_usages" in c.args[0]
+    ]
     assert "SELECT conversation_response_id, msg_type" in usage_sql
     assert "msg_type <> 'task'" in usage_sql
+
+
+@pytest.mark.asyncio
+async def test_replay_data_reads_running_slots_before_settled_rows(
+    mock_db_connection, mock_cursor
+):
+    """Each read is its own snapshot, so a run settling between them must land
+    in the later one: the in_progress read goes first."""
+    from src.server.database.conversation import get_replay_thread_data
+
+    thread_id = str(uuid.uuid4())
+    mock_cursor.fetchone.side_effect = [
+        {"user_id": "user-1"},
+        {"conversation_thread_id": thread_id, "latest_checkpoint_id": "cp-1"},
+    ]
+    mock_cursor.fetchall.return_value = []
+
+    await get_replay_thread_data(thread_id)
+
+    sql = [c.args[0] for c in mock_cursor.execute.call_args_list]
+    running = next(i for i, s in enumerate(sql) if "status = 'in_progress'" in s)
+    settled = next(i for i, s in enumerate(sql) if "status <> 'in_progress'" in s)
+    assert running < settled
 
 
 @pytest.mark.asyncio
@@ -603,7 +828,7 @@ async def test_get_replay_thread_data_malformed_id_skips_database(
 
     result = await get_replay_thread_data("results")
 
-    assert result == (None, None, [], [], [], [])
+    assert result is None
     mock_cursor.execute.assert_not_awaited()
 
 
@@ -646,6 +871,50 @@ async def test_get_workspace_threads_invalid_sort(mock_db_connection, mock_curso
     assert "DESC" in select_sql
 
 
+@pytest.mark.asyncio
+async def test_thread_labels_drop_non_uuids_and_scope_to_the_owner(
+    mock_db_connection, mock_cursor
+):
+    """One malformed watch member must not 22P02 the batch."""
+    from src.server.database.conversation.threads_read import get_thread_labels
+
+    member, workspace = (str(uuid.uuid4()) for _ in range(2))
+    mock_cursor.fetchall.return_value = [
+        {
+            "conversation_thread_id": uuid.UUID(member),
+            "workspace_id": uuid.UUID(workspace),
+            "workspace_name": "Semis",
+            "title": "NVDA margins",
+        }
+    ]
+
+    rows = await get_thread_labels([member, "not-a-uuid"], "user-1")
+
+    sql, params = mock_cursor.execute.call_args.args
+    assert params == ([member], "user-1")
+    assert "w.user_id = %s AND w.status != 'deleted'" in sql
+    assert "ORDER BY t.created_at ASC" in sql
+    # Ids leave as strings: the slice is JSON-encoded on the watch stream.
+    assert rows == [
+        {
+            "thread_id": member,
+            "workspace_id": workspace,
+            "workspace_name": "Semis",
+            "title": "NVDA margins",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_thread_labels_with_no_valid_ids_skip_the_database(
+    mock_db_connection, mock_cursor
+):
+    from src.server.database.conversation.threads_read import get_thread_labels
+
+    assert await get_thread_labels(["nope"], "user-1") == []
+    mock_cursor.execute.assert_not_awaited()
+
+
 # ===========================================================================
 # Thread sharing
 # ===========================================================================
@@ -653,20 +922,25 @@ async def test_get_workspace_threads_invalid_sort(mock_db_connection, mock_curso
 
 @pytest.mark.asyncio
 async def test_update_thread_sharing(mock_db_connection, mock_cursor):
-    """update_thread_sharing updates is_shared and optional share_token."""
+    """Sharing mints the token in the same UPDATE, only where there is none."""
     from src.server.database.conversation import update_thread_sharing
+    from src.server.database.share_codes import is_share_code
 
     row = _thread_row(is_shared=True, share_token="tok-abc")
     row["share_permissions"] = None
     row["shared_at"] = None
     mock_cursor.fetchone.return_value = row
 
-    result = await update_thread_sharing("t-1", is_shared=True, share_token="tok-abc")
+    result = await update_thread_sharing("t-1", is_shared=True)
 
     assert result is not None
-    sql = mock_cursor.execute.call_args[0][0]
+    sql, params = mock_cursor.execute.call_args[0]
     assert "is_shared = %s" in sql
-    assert "share_token = %s" in sql
+    assert "share_token = COALESCE(share_token, %s)" in sql
+    assert is_share_code(params[1])
+
+    await update_thread_sharing("t-1", is_shared=False)
+    assert "share_token" not in mock_cursor.execute.call_args[0][0].split("RETURNING")[0]
 
 
 @pytest.mark.asyncio

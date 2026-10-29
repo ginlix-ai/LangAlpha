@@ -1,4 +1,4 @@
-"""InsightService — Schedule-based market insights via flash agent.
+"""InsightService — Schedule-based market insights from a research agent.
 
 Schedule (all times Eastern / America/New_York):
   - 9:00 AM  pre_market    — Overnight + pre-market news
@@ -9,15 +9,16 @@ Weekends: pre_market and post_market only — no hourly updates.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from src.config.settings import get_config
+from src.config.settings import get_config, get_langsmith_metadata
 from src.server.database import market_insight as insight_db
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,12 @@ STALENESS_WINDOWS = {
 DEFAULT_MAX_SYMBOLS = 20
 DEFAULT_GENERATION_TIMEOUT = 600
 DEFAULT_DEDUP_WINDOW_MINUTES = 5
+
+# A generating row older than the generation timeout plus this is abandoned.
+# The timeout bounds research and extraction; this covers the writes around it.
+IN_FLIGHT_SLACK = timedelta(minutes=1)
+# How often a worker that lost the claim to a run in flight claims again.
+HOLDER_POLL_SECONDS = 15
 
 
 _TAIL = (
@@ -194,25 +201,31 @@ async def _llm_extract_fallback(raw_text: str, user_id: str | None) -> dict:
         ),
         user_prompt=raw_text,
         response_schema=InsightOutputSchema,
-        mode="flash",
+        slot="background",
     )
     return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
 
-async def _run_flash_agent(prompt: str, user_id: str | None = None) -> str:
-    """Run the flash agent graph and return raw text output.
+async def _research(
+    prompt: str,
+    user_id: str | None = None,
+    *,
+    insight_type: str,
+    requested_by: str | None = None,
+) -> str:
+    """Run one research brief and return the last AI message's text.
 
-    When *user_id* is provided the LLM is resolved through the normal
-    OAuth / BYOK chain so self-hosted deployments without a system API
-    key can still generate insights using the user's own credentials.
-
-    Returns:
-        Raw text content from the agent's last AI message.
+    *user_id* resolves the model through the user's OAuth / BYOK chain, so a
+    self-hosted deployment without a system key can still generate insights.
+    *requested_by* is the person who asked for the brief, None for a scheduled
+    one: a scheduled brief may run on a user's credentials without being theirs.
     """
     from langchain_core.messages import HumanMessage
 
-    from ptc_agent.agent.flash.graph import build_flash_graph
+    from ptc_agent.agent.insight_graph import build_insight_graph
+    from src.observability.langsmith_tracer import with_run_tracer
     from src.server.app import setup
+    from src.server.services.llm.config import apply_fetch_override
 
     agent_config = setup.agent_config
     if not agent_config:
@@ -223,16 +236,33 @@ async def _run_flash_agent(prompt: str, user_id: str | None = None) -> str:
         try:
             from src.server.services.llm.config import resolve_llm_config
 
-            config = await resolve_llm_config(config, user_id, request_model=None, is_byok=True, mode="flash")
+            config = await resolve_llm_config(
+                config, user_id, request_model=None, is_byok=True, slot="background",
+                user_facing=False,
+            )
         except Exception as exc:
             logger.warning(f"[MARKET_INSIGHT] Could not resolve user LLM, falling back to system: {exc}")
 
     if config.llm is None:
         raise ValueError("No LLM configured — set a model in agent_config.yaml or select one in Settings")
 
-    graph = build_flash_graph(config=config)
+    graph = build_insight_graph(config)
     input_state = {"messages": [HumanMessage(content=prompt)]}
-    result = await graph.ainvoke(input_state)
+    # WebFetch reads the user's fetch model from the context, as in a chat
+    # turn. The run gets a context of its own because the scheduler runs one
+    # brief after another in a single task, and a fetch client set for one
+    # must not outlive it.
+    run_context = contextvars.copy_context()
+    run_context.run(apply_fetch_override, config)
+    # A research run has no step cap, so it names a tracer that does not hold
+    # its run tree, as a chat turn does. Tagged so its spend and failures can
+    # be told apart from chat turns, which share the project.
+    metadata = get_langsmith_metadata(user_id=requested_by, workflow_type="market_insight")
+    metadata.update(origin="user" if requested_by else "system", insight_type=insight_type)
+    run_config = with_run_tracer({"metadata": metadata, "tags": ["workflow:insight"]})
+    result = await asyncio.create_task(
+        graph.ainvoke(input_state, run_config), context=run_context,
+    )
 
     # Extract text from the last AI message
     messages = result.get("messages", [])
@@ -249,7 +279,7 @@ async def _run_flash_agent(prompt: str, user_id: str | None = None) -> str:
                 return "\n".join(text_parts)
             return str(content)
 
-    raise ValueError("Flash agent returned no AI message")
+    raise ValueError("Insight research returned no AI message")
 
 
 class InsightService:
@@ -336,12 +366,12 @@ class InsightService:
         if next_job:
             run_at, job_type = next_job
             logger.info(
-                f"[MARKET_INSIGHT] Service started (flash agent), "
+                f"[MARKET_INSIGHT] Service started, "
                 f"next job: {job_type} at {run_at.strftime('%H:%M')} ET"
             )
         else:
             logger.info(
-                "[MARKET_INSIGHT] Service started (flash agent), "
+                "[MARKET_INSIGHT] Service started, "
                 "no more jobs today"
             )
 
@@ -390,7 +420,7 @@ class InsightService:
 
         # Atomic idempotency: try to insert, handle conflict from partial unique index
         row = await insight_db.create_market_insight_if_not_generating(
-            model="flash",
+            model="background",
             type="personalized",
             user_id=user_id,
             metadata={"schema_version": 3, "has_context": bool(symbols_context)},
@@ -427,11 +457,16 @@ class InsightService:
     async def _run_personalized_generation(
         self, user_id: str, insight_id: str, prompt: str
     ) -> None:
-        """Background task: run flash agent and persist result."""
+        """Background task: run the research graph and persist the result."""
         start_time = time.monotonic()
         try:
             raw_text = await asyncio.wait_for(
-                _run_flash_agent(prompt + "\n\n" + _JSON_GUIDELINES, user_id=user_id),
+                _research(
+                    prompt + "\n\n" + _JSON_GUIDELINES,
+                    user_id=user_id,
+                    insight_type="personalized",
+                    requested_by=user_id,
+                ),
                 timeout=self._generation_timeout,
             )
             parsed = await self._extract_with_fallback(raw_text, user_id=user_id)
@@ -608,17 +643,15 @@ class InsightService:
             else:
                 catchup_type = "post_market"
 
-            if await self._is_duplicate(catchup_type):
+            # A restart on a weekend afternoon must not run the hourly update
+            # the weekend schedule leaves out.
+            if catchup_type not in {t for _, t in self._todays_schedule(now_et)}:
                 logger.info(
-                    f"[MARKET_INSIGHT] Recent {catchup_type} insight exists "
-                    f"— skipping catch-up"
+                    f"[MARKET_INSIGHT] No {catchup_type} scheduled today "
+                    f"so no catch-up"
                 )
                 return
 
-            logger.info(
-                f"[MARKET_INSIGHT] No recent {catchup_type} insight "
-                f"— generating now"
-            )
             await self._generate_insight(catchup_type, now_et)
         except Exception as e:
             logger.warning(
@@ -656,18 +689,8 @@ class InsightService:
                 if await self._sleep_until_or_shutdown(run_at):
                     return  # Shutdown requested
 
-            # Check deduplication
-            now_et = datetime.now(self._tz)
-            if await self._is_duplicate(job_type):
-                logger.info(
-                    f"[MARKET_INSIGHT] Skipping {job_type} — "
-                    f"recent insight already exists"
-                )
-                continue
-
-            # Execute the job
             try:
-                await self._generate_insight(job_type, now_et)
+                await self._generate_insight(job_type, datetime.now(self._tz))
             except Exception as e:
                 logger.error(
                     f"[MARKET_INSIGHT] {job_type} generation failed: {e}",
@@ -686,16 +709,6 @@ class InsightService:
         except asyncio.TimeoutError:
             return False  # Timer elapsed normally
 
-    async def _is_duplicate(self, job_type: str) -> bool:
-        """Check if a completed insight of this type exists within the staleness window."""
-        latest_at = await insight_db.get_latest_completed_at(type=job_type)
-        if not latest_at:
-            return False
-
-        age = datetime.now(timezone.utc) - latest_at
-        window = STALENESS_WINDOWS.get(job_type, timedelta(minutes=30))
-        return age < window
-
     # ------------------------------------------------------------------
     # Insight generation (system scheduled)
     # ------------------------------------------------------------------
@@ -703,10 +716,21 @@ class InsightService:
     async def _generate_insight(
         self, job_type: str, now_et: datetime
     ) -> None:
-        """Generate a single market insight via flash agent."""
+        """Generate a single market insight, unless another worker has the slot
+        or a recent insight of this type already covers it."""
         instruction = _build_instruction(job_type, now_et)
+        claim = await self._claim(job_type, instruction)
+        if claim.holder_in_flight:
+            claim = await self._outlast(claim, job_type, instruction)
+        if claim.row is None:
+            logger.info(
+                f"[MARKET_INSIGHT] Skipping {job_type}: insight "
+                f"{claim.holder_id} already covers it"
+            )
+            return
+        insight_id = claim.row["market_insight_id"]
 
-        logger.info(f"[MARKET_INSIGHT] Starting {job_type} (flash agent)")
+        logger.info(f"[MARKET_INSIGHT] Starting {job_type}: id={insight_id}")
         start_time = time.monotonic()
 
         # When auth is off (local dev / self-hosted), use the local dev user's
@@ -714,19 +738,20 @@ class InsightService:
         from src.config.settings import HOST_MODE, LOCAL_DEV_USER_ID
         system_user_id = None if HOST_MODE == "platform" else LOCAL_DEV_USER_ID
 
-        row = await insight_db.create_market_insight(
-            model="flash",
-            type=job_type,
-            metadata={"instruction": instruction, "schema_version": 3},
-        )
-        insight_id = row["market_insight_id"]
+        async def research_and_extract() -> dict:
+            raw_text = await _research(
+                instruction + "\n\n" + _JSON_GUIDELINES,
+                user_id=system_user_id,
+                insight_type=job_type,
+            )
+            return await self._extract_with_fallback(raw_text, user_id=system_user_id)
 
         try:
-            raw_text = await asyncio.wait_for(
-                _run_flash_agent(instruction + "\n\n" + _JSON_GUIDELINES, user_id=system_user_id),
-                timeout=self._generation_timeout,
+            # Extraction is inside the timeout so a run never outlives the
+            # in-flight hold its claim gives it.
+            parsed = await asyncio.wait_for(
+                research_and_extract(), timeout=self._generation_timeout
             )
-            parsed = await self._extract_with_fallback(raw_text, user_id=system_user_id)
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
 
             await insight_db.complete_market_insight(
@@ -770,6 +795,35 @@ class InsightService:
                 )
             except Exception:
                 logger.warning(f"[MARKET_INSIGHT] Failed to mark {insight_id} as failed")
+
+    def _in_flight_within(self) -> timedelta:
+        return timedelta(seconds=self._generation_timeout) + IN_FLIGHT_SLACK
+
+    async def _claim(self, job_type: str, instruction: str) -> insight_db.SystemInsightClaim:
+        return await insight_db.claim_system_insight(
+            job_type,
+            fresh_within=STALENESS_WINDOWS.get(job_type, timedelta(minutes=30)),
+            in_flight_within=self._in_flight_within(),
+            model="background",
+            metadata={"instruction": instruction, "schema_version": 3},
+        )
+
+    async def _outlast(
+        self, claim: insight_db.SystemInsightClaim, job_type: str, instruction: str
+    ) -> insight_db.SystemInsightClaim:
+        """Claim again until the run holding the type completes, fails, or
+        outlives its hold, and return the claim that ends the wait.
+
+        Losing the claim is not final: the other workers' runs used to be the
+        retry when one failed, and a deploy that stops the winning worker
+        marks its run failed. The wait also ends when another worker takes
+        the type over, so a failed run is retried once, not once per worker.
+        """
+        holder_id = claim.holder_id
+        while claim.holder_in_flight and claim.holder_id == holder_id:
+            await asyncio.sleep(HOLDER_POLL_SECONDS)
+            claim = await self._claim(job_type, instruction)
+        return claim
 
     async def _extract_with_fallback(self, raw_text: str, user_id: str | None) -> dict:
         """Extract structured output from raw text, falling back to LLM if direct parse fails."""

@@ -1,24 +1,14 @@
-"""
-Token tracking initialization and management.
-
-Provides utilities for initializing token tracking with PerCallTokenTracker
-and managing execution tracking lifecycle.
-"""
+"""Token tracking initialization for workflow runs."""
 
 import logging
 
 from .per_call_token_tracker import PerCallTokenTracker
-from .core import ExecutionTracker
 
 logger = logging.getLogger(__name__)
 
 
 class TokenTrackingManager:
-    """
-    Manages token tracking initialization and lifecycle.
-
-    Encapsulates setup of token callback and execution tracker for workflow runs.
-    """
+    """Builds the per-call token callback a workflow run bills from."""
 
     @staticmethod
     def initialize_tracking(
@@ -26,7 +16,7 @@ class TokenTrackingManager:
         track_tokens: bool = True
     ) -> PerCallTokenTracker:
         """
-        Initialize token and execution tracking for a workflow run.
+        Initialize token tracking for a workflow run.
 
         Args:
             thread_id: Thread identifier for logging
@@ -35,26 +25,9 @@ class TokenTrackingManager:
         Returns:
             PerCallTokenTracker instance
         """
-        # Initialize per-call token tracking callback for accurate tiered pricing
         token_callback = PerCallTokenTracker()
-
-        # Start execution tracking to capture agent messages and tool calls
-        ExecutionTracker.start_tracking()
-
-        logger.debug(f"Token tracking and execution tracking started for thread_id={thread_id}")
-
+        logger.debug(f"Token tracking started for thread_id={thread_id}")
         return token_callback
-
-    @staticmethod
-    def stop_tracking(thread_id: str) -> None:
-        """
-        Stop execution tracking and cleanup.
-
-        Args:
-            thread_id: Thread identifier for logging
-        """
-        ExecutionTracker.stop_tracking()
-        logger.debug(f"Execution tracking stopped for thread_id={thread_id}")
 
 
 # Public API

@@ -1,174 +1,228 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { AnimatePresence } from '@/lib/framer';
 import { Button } from '@/components/ui/button';
-import { isPlatformMode } from '@/config/hostMode';
-import type { ResourceTier, Workspace, WorkspaceCapacity, WorkspaceQuota } from '@/types/api';
+import { Loader } from '@/components/ui/loader';
+import { ModalShell } from '@/components/ui/ModalShell';
+import { useLocale } from '@/hooks/useLocale';
+import type { Computer, ComputerProviderOption, ResourceTier, WorkspaceQuota } from '@/types/api';
+import {
+  TierRadioGroup,
+  isTierBlocked,
+  needsBiggerPlan,
+  normalizeTier,
+  offeredTiers,
+  quotaForSpecChange,
+  tierCapacity,
+  tierLabel,
+  type TierOffer,
+} from './tierUi';
+import { DiskBar, diskUpgradeTier, diskUsageLabel, isDiskAlertLevel } from './computerDiskUi';
+import { specErrorFiles, type SpecError } from './specErrors';
+import { activeSpecChange, effectiveTier, specChangeLabel } from './specChangeUi';
+import { PlanUpgradeHint } from './planUpgradeHint';
+import { MachinePreview } from './machineArt/MachinePreview';
+import { hostedPreview } from './machineArt/machine';
 
-type Translate = ReturnType<typeof useTranslation>['t'];
-
-/** Tier presets, ordered for the change-spec radiogroup. */
-export const TIER_ORDER: ResourceTier[] = ['standard', 'performance', 'max'];
-
-/** Coerce an unknown/legacy tier value to a known tier (defaults to standard). */
-export function normalizeTier(tier: unknown): ResourceTier {
-  return tier === 'performance' || tier === 'max' ? tier : 'standard';
-}
-
-/** Localized display name for a tier. */
-export function tierLabel(t: Translate, tier: ResourceTier): string {
-  return t(`workspace.tier.${tier}`);
-}
+type SpecTarget = Pick<Computer, 'name' | 'kind' | 'resource_tier' | 'status' | 'disk' | 'spec_change'>;
 
 interface ChangeSpecDialogProps {
-  /** Only the tier is read — narrowed so nav-tree rows open this without a cast. */
-  target: Pick<Workspace, 'resource_tier'> | null;
+  target: SpecTarget | null;
   onClose: () => void;
   onSubmit: (tier: ResourceTier) => void;
+  /** The request is in flight. It answers once the change is accepted, so this is brief. */
   busy: boolean;
   /** Per-tier count quotas (platform mode only); null/undefined hides the capacity hint. */
   quota?: WorkspaceQuota | null;
+  /**
+   * The computer's provider as offered now, which decides the sizes shown.
+   * Unknown, or a provider no longer offered, shows the base ladder.
+   */
+  provider?: ComputerProviderOption | null;
+  /** The last refusal, shown inline so a list of files can be read and acted on. */
+  error?: SpecError | null;
+  /** Opened over the Computers dialog, which steps back and keeps the page dimmed. */
+  stacked?: boolean;
 }
 
 /**
- * Change-spec dialog: pick a sandbox resource tier for a workspace. The tier
- * options are a WAI-ARIA radiogroup with roving-tabindex keyboard nav. In
- * platform mode each elevated tier shows its remaining count quota.
+ * Change a computer's resource tier. The machine is backed up and recreated,
+ * which is slow and touches every workspace on it, so the dialog says so
+ * before the click and keeps saying so while it runs. The change runs on the
+ * server, so its progress comes from the row: closing the dialog stops
+ * nothing, and reopening it shows the same change still going.
+ *
+ * The panel is mounted per opening, inside `AnimatePresence`, so it leaves
+ * with the last target it showed rather than an empty one.
  */
-function ChangeSpecDialog({ target, onClose, onSubmit, busy, quota }: ChangeSpecDialogProps) {
+function ChangeSpecDialog({ target, ...rest }: ChangeSpecDialogProps) {
+  return <AnimatePresence>{target && <ChangeSpecPanel target={target} {...rest} />}</AnimatePresence>;
+}
+
+function ChangeSpecPanel({
+  target,
+  onClose,
+  onSubmit,
+  busy,
+  quota: planQuota,
+  provider,
+  error,
+  stacked = false,
+}: Omit<ChangeSpecDialogProps, 'target'> & { target: SpecTarget }) {
   const { t } = useTranslation();
-  const [tier, setTier] = useState<ResourceTier>('standard');
-  const radioRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const locale = useLocale();
+  const titleId = useId();
+  const currentTier = effectiveTier(target);
+  const offer = offeredTiers(provider, currentTier);
+  // A computer bigger than Small moves in the slot it holds, so the other
+  // larger sizes the plan allows stay open to it. The slot is the size the row
+  // holds, which the server counts, even when an interrupted change shows the
+  // size it came from.
+  const quota = quotaForSpecChange(planQuota, normalizeTier(target.resource_tier));
+  // Derived rather than seeded: the quota and the provider's sizes land after
+  // the dialog opens and can refetch while it is open, and the row behind
+  // `target` is replaced on every list refetch. A pick holds while the
+  // provider offers it and the plan allows it (the current tier always does);
+  // otherwise the seed stands.
+  const [picked, setPicked] = useState<ResourceTier | null>(null);
+  const tier =
+    picked && offer.tiers.includes(picked) && (picked === currentTier || !isTierBlocked(tierCapacity(quota, picked)))
+      ? picked
+      : seedTier(currentTier, target, offer, quota);
+  const isRunning = target.status === 'running';
+  const errorFiles = specErrorFiles(error?.files, t, locale);
+  const change = activeSpecChange(target);
+  // The box it becomes: the size picked, or the one a running change moves to.
+  const shownTier = change ? normalizeTier(change.target_tier) : tier;
+  // A bigger tier the plan keeps closed can't be picked here, so the dialog
+  // points to where that is decided instead of leaving a dead end. Only where
+  // a bigger plan opens it: a plan at the top size is not told to upgrade.
+  const planLimited =
+    !change &&
+    offer.tiers.slice(offer.tiers.indexOf(currentTier) + 1).some((id) => needsBiggerPlan(quota, id));
+  // The row is the only witness to where the change is. It reads 'starting'
+  // from before the backup until the new sandbox is up, so that one phase
+  // covers both; 'running' is the moment before the machine is claimed.
+  const phase = !change
+    ? null
+    : isRunning
+      ? t('computer.spec.phaseBackup', 'Backing up every workspace on this computer.')
+      : target.status === 'starting' || target.status === 'creating'
+        ? t('computer.spec.phaseRebuild', 'Backing up your files and applying the {{tier}} spec.', {
+            tier: tierLabel(t, normalizeTier(change.target_tier)),
+          })
+        : t('computer.spec.phaseApply', 'Applying the new spec.');
 
-  // Seed the selection from the workspace's current tier each time the dialog opens.
-  useEffect(() => {
-    if (target) setTier(normalizeTier(target.resource_tier));
-  }, [target]);
-
-  const currentTier = normalizeTier(target?.resource_tier);
-
-  // Per-tier capacity + ungrantable flag. In platform mode a tier is ungrantable
-  // when the plan excludes it (limit === 0) or its count quota is exhausted
-  // (limit > 0 && remaining <= 0). The workspace's current tier is never disabled:
-  // re-selecting it is a no-op save that consumes no new slot (mirrors the backend's
-  // current_tier count skip).
-  const tierRows: Array<{ id: ResourceTier; capacity: WorkspaceCapacity | null; disabled: boolean }> =
-    TIER_ORDER.map((id) => {
-      // Elevated tiers carry a count quota in platform mode; standard never does.
-      const capacity =
-        id === 'performance' ? quota?.performance ?? null
-        : id === 'max' ? quota?.max ?? null
-        : null;
-      let disabled = false;
-      if (isPlatformMode && capacity && id !== currentTier) {
-        const remaining = capacity.limit - capacity.used;
-        disabled = capacity.limit === 0 || (capacity.limit > 0 && remaining <= 0);
-      }
-      return { id, capacity, disabled };
-    });
-
-  // Roving-tabindex keyboard nav: arrows move selection + focus, skipping
-  // disabled (ungrantable) tiers and wrapping around.
-  const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
-    const step =
-      e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
-      : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1
-      : 0;
-    if (step === 0) return;
-    e.preventDefault();
-    const len = TIER_ORDER.length;
-    let nextIndex = index;
-    for (let i = 0; i < len; i++) {
-      nextIndex = (nextIndex + step + len) % len;
-      if (!tierRows[nextIndex].disabled) break;
-    }
-    if (tierRows[nextIndex].disabled) return; // no enabled sibling to move to
-    setTier(TIER_ORDER[nextIndex]);
-    radioRefs.current[nextIndex]?.focus();
-  };
+  const footer = (
+    <div className="flex items-center justify-end gap-2">
+      <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+        {change ? t('common.close', 'Close') : t('common.cancel')}
+      </Button>
+      {!change && (
+        <Button
+          type="button"
+          onClick={() => onSubmit(tier)}
+          disabled={busy || tier === currentTier}
+          aria-busy={busy}
+        >
+          {busy ? t('computer.spec.applying', 'Applying...') : t('computer.spec.apply', 'Back up and change spec')}
+        </Button>
+      )}
+    </div>
+  );
 
   return (
-    <Dialog open={!!target} onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
-      <DialogContent style={{ backgroundColor: 'var(--color-bg-page)', borderColor: 'var(--color-border-muted)' }}>
-        <DialogHeader>
-          <DialogTitle>{t('workspace.changeSpec', 'Change spec')}</DialogTitle>
-          <DialogDescription>
-            {t('workspace.changeSpecDesc', 'Pick the sandbox resources for this workspace.')}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-2" role="radiogroup" aria-label={t('workspace.changeSpec', 'Change spec')}>
-          {tierRows.map(({ id, capacity, disabled }, index) => {
-            const selected = tier === id;
-            return (
-              <button
-                key={id}
-                ref={(el) => { radioRefs.current[index] = el; }}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                aria-disabled={disabled}
-                disabled={disabled}
-                tabIndex={selected ? 0 : -1}
-                onKeyDown={(e) => handleKeyDown(e, index)}
-                onClick={() => { if (!disabled) setTier(id); }}
-                className="flex items-start gap-3 rounded-lg border p-3 text-left transition-colors"
-                style={{
-                  borderColor: selected ? 'var(--color-border-elevated)' : 'var(--color-border-muted)',
-                  backgroundColor: selected ? 'var(--color-bg-elevated)' : 'transparent',
-                  opacity: disabled ? 0.5 : 1,
-                  cursor: disabled ? 'not-allowed' : 'pointer',
-                }}
-              >
-                <span
-                  className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
-                  style={{ borderColor: selected ? 'var(--color-accent-primary)' : 'var(--color-border-default)' }}
-                >
-                  {selected && (
-                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: 'var(--color-accent-primary)' }} />
-                  )}
-                </span>
-                <span className="flex-1 min-w-0">
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="font-medium" style={{ color: 'var(--color-text-primary)' }}>{tierLabel(t, id)}</span>
-                    {isPlatformMode && capacity && (
-                      <span className="text-xs whitespace-nowrap" style={{ color: 'var(--color-text-tertiary)' }}>
-                        {capacity.limit < 0
-                          ? t('workspace.quotaUnlimited', 'Unlimited')
-                          : capacity.limit === 0
-                            ? t('workspace.quotaNotOnPlan', 'Not on your plan')
-                            : t('workspace.quotaRemaining', '{{remaining}} of {{limit}} left', {
-                                remaining: Math.max(0, capacity.limit - capacity.used),
-                                limit: capacity.limit,
-                              })}
-                      </span>
-                    )}
-                  </span>
-                  <span className="block text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {t(`workspace.tierSpec.${id}`)}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+    <ModalShell
+      labelId={titleId}
+      title={t('computer.spec.title', 'Change spec for {{name}}', { name: target.name })}
+      subtitle={
+        <>
+          {isRunning
+            ? t(
+                'computer.spec.descRunning',
+                'Every workspace on this computer is backed up first. The computer is then recreated at the new spec and your files are restored. Workspaces on it are unavailable for a few minutes.',
+              )
+            : t(
+                'computer.spec.descStopped',
+                'Every workspace on this computer is backed up first. The new spec applies the next time the computer starts, and your files are restored then.',
+              )}{' '}
+          {t(
+            'computer.spec.notKept',
+            "Installed packages, caches and running apps aren't kept. The Agent reinstalls what it needs.",
+          )}
+        </>
+      }
+      onClose={onClose}
+      closeDisabled={busy}
+      width="standard"
+      density="form"
+      stacked={stacked}
+      footer={footer}
+    >
+      <MachinePreview machine={hostedPreview(t, target.kind, offer, shownTier)} />
+      {target.disk && (
+        <div className="flex flex-col gap-1.5">
+          <DiskBar disk={target.disk} />
+          <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            {diskUsageLabel(t, target.disk, locale)}
+          </span>
         </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose} disabled={busy}>
-            {t('common.cancel')}
-          </Button>
-          <Button onClick={() => onSubmit(tier)} disabled={busy || tier === currentTier}>
-            {busy ? t('common.saving') : t('common.save')}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      )}
+      {change ? (
+        <div
+          className="flex items-start gap-2 rounded-md px-3 py-2.5 text-sm"
+          role="status"
+          aria-live="polite"
+          data-testid="spec-change-progress"
+          style={{ backgroundColor: 'var(--color-bg-card)', color: 'var(--color-text-primary)' }}
+        >
+          <Loader size={14} className="mt-0.5 text-(--color-accent-primary)" />
+          <div className="flex flex-col gap-0.5">
+            <span className="font-medium">{specChangeLabel(t, change)}</span>
+            <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+              {phase}{' '}
+              {t('computer.spec.progressHint', 'This can take a few minutes. You can close this dialog; the change keeps running.')}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <TierRadioGroup
+          offer={offer}
+          value={tier}
+          onChange={setPicked}
+          label={t('computer.tierLabel', 'Computer spec')}
+          quota={quota}
+          currentTier={currentTier}
+        />
+      )}
+      {planLimited && (
+        <PlanUpgradeHint lead={t('computer.spec.planLimited', 'Need a bigger spec than your plan includes?')} />
+      )}
+      {error && !busy && !change && (
+        <div
+          role="alert"
+          className="rounded-md px-3 py-2 text-sm"
+          style={{ backgroundColor: 'var(--color-loss-soft)', color: 'var(--color-text-primary)' }}
+        >
+          <p>{error.message}</p>
+          {errorFiles.length > 0 && (
+            <ul className="mt-1.5 list-disc pl-5 text-xs font-mono break-all" style={{ color: 'var(--color-text-secondary)' }}>
+              {errorFiles.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </ModalShell>
   );
+}
+
+function seedTier(
+  current: ResourceTier,
+  target: SpecTarget,
+  offer: TierOffer,
+  quota: WorkspaceQuota | null | undefined,
+): ResourceTier {
+  return (isDiskAlertLevel(target.disk?.level) && diskUpgradeTier(current, offer, quota)) || current;
 }
 
 export default ChangeSpecDialog;

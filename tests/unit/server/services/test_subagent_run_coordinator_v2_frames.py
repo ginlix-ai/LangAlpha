@@ -6,6 +6,8 @@ start — and run_end is deferred past the wrapper's steering sweep via
 ``defer_run_end`` + ``append_run_end`` (idempotent by last-frame read).
 """
 
+import datetime
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +19,7 @@ from tests.unit.redis_mock_pipeline import attach_pipeline
 COORD_SRDB = "src.server.services.subagent_run_coordinator.sr_db"
 CACHE = "src.utils.cache.redis_cache.get_cache_client"
 TTL = "src.config.settings.get_redis_ttl_workflow_events"
+SETTLED = datetime.datetime(2026, 7, 1, 0, 3, tzinfo=datetime.timezone.utc)
 
 
 def _cache(*, enabled: bool = True, xadd_fails: bool = False, tail=None):
@@ -144,7 +147,7 @@ async def test_append_run_end_is_idempotent_by_last_frame(monkeypatch):
     monkeypatch.setattr(CACHE, lambda: cache)
 
     await SubagentRunCoordinator("t-1").append_run_end(
-        "run-1", task_id="abc123", outcome="completed"
+        "run-1", task_id="abc123", outcome="completed", finalized_at=SETTLED
     )
 
     cache.client.xadd.assert_not_awaited()
@@ -157,7 +160,7 @@ async def test_append_run_end_appends_after_content_and_stamps(monkeypatch):
     monkeypatch.setattr(TTL, lambda: 86400)
 
     await SubagentRunCoordinator("t-1").append_run_end(
-        "run-1", task_id="abc123", outcome="completed"
+        "run-1", task_id="abc123", outcome="completed", finalized_at=SETTLED
     )
 
     (key, fields), _ = cache.client.xadd.await_args
@@ -167,6 +170,75 @@ async def test_append_run_end_appends_after_content_and_stamps(monkeypatch):
     cache.client.expire.assert_awaited_once_with(
         "subagent:stream:t-1:run-1", 86400, nx=True
     )
+
+
+@pytest.mark.asyncio
+async def test_run_end_names_when_the_cas_settled_the_run(monkeypatch):
+    """Both appends carry ``finished`` (finalized_at, epoch ms), which the mux
+    forwards on chan_close: the immediate one from the row it just settled,
+    the deferred one from the row the wrapper's CAS returned."""
+    cache = _cache()
+    monkeypatch.setattr(
+        f"{COORD_SRDB}.finalize_task_run_idempotent",
+        AsyncMock(
+            return_value={
+                "applied": True,
+                "run": _row(status="error", finalized_at=SETTLED),
+            }
+        ),
+    )
+    monkeypatch.setattr(CACHE, lambda: cache)
+    monkeypatch.setattr(TTL, lambda: 86400)
+
+    await SubagentRunCoordinator("t-1").finalize_task_run("run-1", "error")
+    (_, fields), _ = cache.client.xadd.await_args
+    assert json.loads(fields[b"payload"]) == {
+        "outcome": "error",
+        "finished": SETTLED.timestamp() * 1000,
+    }
+
+    cache = _cache(tail=[(b"9-0", {b"type": b"message_chunk"})])
+    monkeypatch.setattr(CACHE, lambda: cache)
+    await SubagentRunCoordinator("t-1").append_run_end(
+        "run-1", task_id="abc123", outcome="completed", finalized_at=SETTLED
+    )
+    (_, fields), _ = cache.client.xadd.await_args
+    assert json.loads(fields[b"payload"]) == {
+        "outcome": "completed",
+        "finished": SETTLED.timestamp() * 1000,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model", [{"id": "glm-5.3-cn", "provider": "z-ai-cn"}, None]
+)
+async def test_admission_records_the_model_on_the_row_and_lane_open(
+    monkeypatch, model
+):
+    """The row and the frame a live card is born from carry one value, and a
+    run on its launcher's model carries none rather than a null."""
+    start = AsyncMock(return_value=_row())
+    cache = _cache()
+    monkeypatch.setattr(f"{COORD_SRDB}.start_task_run", start)
+    monkeypatch.setattr(CACHE, lambda: cache)
+    monkeypatch.setattr(
+        "src.server.services.thread_control_stream.announce_task_run_started",
+        AsyncMock(),
+    )
+
+    await SubagentRunCoordinator("t-1").start_task_run(
+        task_id="abc123", cause="init", model=model
+    )
+
+    assert start.await_args.kwargs["model"] == model
+    (_, fields), _ = cache.client.xadd.await_args
+    assert fields[b"type"] == b"lane_open"
+    payload = json.loads(fields[b"payload"])
+    if model:
+        assert payload["model"] == model
+    else:
+        assert "model" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -311,3 +383,32 @@ async def test_a_failed_delivery_stamp_does_not_swallow_the_rejection(monkeypatc
         await SubagentRunCoordinator("t-1").start_task_run(
             task_id="abc123", cause="init"
         )
+
+
+@pytest.mark.asyncio
+async def test_finalize_confirms_checkpointed_task_holds_before_its_cas(monkeypatch):
+    """The CAS's settle would take a row the run held, whose message its
+    checkpoint already carries, as unread."""
+    order = []
+
+    async def confirm(thread_id, task_id, task_run_id):
+        order.append(("confirm", thread_id, task_id, task_run_id))
+        return []
+
+    async def finalize(**kwargs):
+        order.append("finalize")
+        return {"applied": False, "run": _row(status="cancelled")}
+
+    monkeypatch.setattr(
+        "src.server.services.report_back.steer.confirm_checkpointed_task_holds",
+        confirm,
+    )
+    monkeypatch.setattr(f"{COORD_SRDB}.finalize_task_run_idempotent", finalize)
+    coordinator = SubagentRunCoordinator("t-1")
+    monkeypatch.setattr(
+        coordinator, "_read_task_checkpoint_tip", AsyncMock(return_value=None)
+    )
+
+    await coordinator.finalize_task_run("run-1", "cancelled", task_id="abc123")
+
+    assert order == [("confirm", "t-1", "abc123", "run-1"), "finalize"]

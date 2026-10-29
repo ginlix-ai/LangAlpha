@@ -15,7 +15,7 @@ carry that, and each gets its own coverage here:
   ``refresh_ambiguous`` and rides the old access token to expiry.
 
 ``disconnect_server`` is the module's other write path, and it gets the same
-treatment at the end of the file: its three revocation writes commit as one.
+treatment at the end of the file: its revocation writes commit as one.
 
 Redis, Postgres and the network are all faked at the module's seams: the
 advisory-lock cursor, the connection-row store, and the token endpoint.
@@ -29,6 +29,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
@@ -79,6 +80,7 @@ def _row(
         "status": ConnectionStatus(status),
         "token_type": "Bearer",
         "scope": "notes.read offline_access",
+        "granted_capabilities": None,
         "expires_at": (
             None if expires_in is None else now + timedelta(seconds=expires_in)
         ),
@@ -234,6 +236,7 @@ class FakeStore:
             scope=scope or self.row.scope,
             token_generation=expected_generation + 1,
             status=ConnectionStatus.CONNECTED,
+            last_refresh_at=datetime.now(timezone.utc),
         )
         return True
 
@@ -471,6 +474,45 @@ class TestHotPath:
         assert db.lock_attempts == [LOCK_KEY]
 
     @pytest.mark.asyncio
+    async def test_a_five_minute_token_refreshed_seconds_ago_takes_no_lock(
+        self, store, db, token_endpoint
+    ):
+        # IBKR issues five-minute tokens. Against the fixed 10-minute margin
+        # every fresh one was already due, so every relayed call refreshed and
+        # rotated the refresh token.
+        now = datetime.now(timezone.utc)
+        store.row = _row(expires_in=290, last_refresh_at=now - timedelta(seconds=10))
+
+        token = await ensure_fresh_access_token(CONNECTION_ID)
+
+        assert token.access_token == "access-old"
+        assert db.lock_attempts == []
+        assert token_endpoint.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_five_minute_token_past_half_its_life_takes_the_lock(
+        self, store, db, token_endpoint
+    ):
+        now = datetime.now(timezone.utc)
+        store.row = _row(expires_in=140, last_refresh_at=now - timedelta(seconds=160))
+
+        await ensure_fresh_access_token(CONNECTION_ID)
+
+        assert db.lock_attempts == [LOCK_KEY]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_lifetime_falls_back_to_the_fixed_margin(
+        self, store, db, token_endpoint
+    ):
+        # A connect does not stamp last_refresh_at, so the lifetime is unknown
+        # until the first refresh: the same short token is due under the ceiling.
+        store.row = _row(expires_in=290, last_refresh_at=None)
+
+        await ensure_fresh_access_token(CONNECTION_ID)
+
+        assert db.lock_attempts == [LOCK_KEY]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("status", "reason"), [("revoked", "revoked"), ("needs_reauth", "needs_reauth")]
     )
@@ -605,6 +647,27 @@ class TestWinner:
         assert abs((commit["expires_at"] - expected).total_seconds()) < 30
         # The stored bundle advanced exactly one generation.
         assert store.row.token_generation == 4
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_refuses_no_open_orders(
+        self, store, db, token_endpoint, monkeypatch
+    ):
+        """A refresh is the same login's next bearer, so an open order stands."""
+        refused: list[tuple] = []
+
+        async def _refuse(*args, **kwargs):
+            refused.append(args)
+
+        monkeypatch.setattr(
+            "src.server.database.order_attempts.refuse_attempts_on_connection_change",
+            _refuse,
+        )
+        store.row = _row(expires_in=120, generation=3)
+
+        await ensure_fresh_access_token(CONNECTION_ID)
+
+        assert len(store.commits) == 1
+        assert refused == []
 
     @pytest.mark.asyncio
     async def test_the_under_lock_re_read_is_the_one_that_takes_the_full_bundle(
@@ -761,6 +824,29 @@ class TestWinner:
 
         token = await ensure_fresh_access_token(CONNECTION_ID)
 
+        assert token.access_token == "access-newer"
+        assert token_endpoint.calls == []
+        assert store.commits == []
+        assert db.unlocks == [LOCK_KEY]
+
+    @pytest.mark.asyncio
+    async def test_the_re_read_judges_a_fresh_short_token_by_its_lifetime(
+        self, store, db, token_endpoint
+    ):
+        """The entry gate and the re-check must agree, or a rival's fresh
+        five-minute token is refreshed again the moment it lands."""
+        now = datetime.now(timezone.utc)
+        store.row = _row(
+            expires_in=120, generation=3, last_refresh_at=now - timedelta(seconds=180)
+        )
+        store.script[2] = _row(
+            expires_in=300, generation=4, access_token="access-newer",
+            last_refresh_at=now,
+        )
+
+        token = await ensure_fresh_access_token(CONNECTION_ID)
+
+        assert db.lock_attempts == [LOCK_KEY]
         assert token.access_token == "access-newer"
         assert token_endpoint.calls == []
         assert store.commits == []
@@ -2071,6 +2157,7 @@ class TestRowShapeContract:
             "status": "connected",
             "token_type": "Bearer",
             "scope": "notes.read offline_access",
+            "granted_capabilities": None,
             "expires_at": now + timedelta(seconds=self.EXPIRES_IN),
             "token_generation": 3,
             "client_info": {"client_id": "client-abc123"},
@@ -2214,9 +2301,17 @@ def disconnect_db(monkeypatch) -> FakeDisconnectDb:
         lifecycle, "revoke_grants_for_connection", fake.write("revoke_grants")
     )
     monkeypatch.setattr(
+        "src.server.database.order_attempts.refuse_attempts_on_connection_change",
+        fake.write("refuse_open_orders"),
+    )
+    monkeypatch.setattr(
         "src.server.database.mcp_tool_schemas."
         "delete_user_and_workspace_tool_schemas_and_bump",
         fake.write("purge_both_tiers"),
+    )
+    monkeypatch.setattr(
+        "src.server.services.mcp_descriptions.jobs.own_description_scope",
+        AsyncMock(return_value=[]),
     )
     # Patched only so a regression to either narrower write shows up in the
     # trace rather than as a stray database call.
@@ -2225,7 +2320,7 @@ def disconnect_db(monkeypatch) -> FakeDisconnectDb:
         fake.write("purge_user_tier_only"),
     )
     monkeypatch.setattr(
-        "src.server.database.mcp_servers.bump_user_workspaces_mcp_version",
+        "src.server.database.mcp_config_version.bump_user_workspaces_mcp_version",
         fake.write("bump_versions"),
     )
     return fake
@@ -2242,9 +2337,9 @@ def _connected(row=None):
 class TestDisconnectAtomicity:
     """A half-applied disconnect disagrees with itself — grants revoked while
     the row still reads connected leaves the sweeper renewing a credential the
-    user gave up. All three writes therefore share one transaction."""
+    user gave up. Every write therefore shares one transaction."""
 
-    async def test_the_three_revocation_writes_share_one_transaction(
+    async def test_the_revocation_writes_share_one_transaction(
         self, disconnect_db, monkeypatch
     ):
         monkeypatch.setattr(
@@ -2259,8 +2354,11 @@ class TestDisconnectAtomicity:
         assert disconnect_db.trace == [
             ("mark_status", True, 1),
             ("revoke_grants", True, 1),
+            ("refuse_open_orders", True, 1),
             ("purge_both_tiers", True, 1),
         ]
+        # An order shown for this login must not leave under the next one.
+        assert disconnect_db.args["refuse_open_orders"] == (USER_ID, SERVER_NAME)
 
     async def test_the_purge_spans_both_snapshot_tiers(
         self, disconnect_db, monkeypatch

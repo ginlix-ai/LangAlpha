@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { queryKeys } from '../queryKeys';
 
@@ -30,12 +31,9 @@ describe('queryKeys', () => {
 
   // --- oauth ---
   describe('oauth', () => {
-    it('codex() extends the oauth base key', () => {
-      expect(queryKeys.oauth.codex()).toEqual(['oauth', 'codex']);
-    });
-
-    it('claude() extends the oauth base key', () => {
-      expect(queryKeys.oauth.claude()).toEqual(['oauth', 'claude']);
+    it('status(key) extends the oauth base key', () => {
+      expect(queryKeys.oauth.status('codex')).toEqual(['oauth', 'codex']);
+      expect(queryKeys.oauth.status('claude')).toEqual(['oauth', 'claude']);
     });
   });
 
@@ -54,8 +52,8 @@ describe('queryKeys', () => {
       expect(queryKeys.workspaces.detail('ws-123')).toEqual(['workspaces', 'detail', 'ws-123']);
     });
 
-    it('flash() extends the workspaces base key', () => {
-      expect(queryKeys.workspaces.flash()).toEqual(['workspaces', 'flash']);
+    it('home() extends the workspaces base key', () => {
+      expect(queryKeys.workspaces.home()).toEqual(['workspaces', 'home']);
     });
   });
 
@@ -92,7 +90,7 @@ describe('queryKeys', () => {
       expect(queryKeys.workspaces.lists().slice(0, prefix.length)).toEqual(prefix);
       expect(queryKeys.workspaces.list({}).slice(0, prefix.length)).toEqual(prefix);
       expect(queryKeys.workspaces.detail('x').slice(0, prefix.length)).toEqual(prefix);
-      expect(queryKeys.workspaces.flash().slice(0, prefix.length)).toEqual(prefix);
+      expect(queryKeys.workspaces.home().slice(0, prefix.length)).toEqual(prefix);
     });
   });
 });

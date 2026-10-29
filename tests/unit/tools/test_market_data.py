@@ -5,44 +5,12 @@ logic in implementations.py without hitting any external APIs.
 """
 
 from src.tools.market_data.utils import (
-    format_number,
     format_percentage,
     get_rating_label,
 )
 from src.tools.market_data._shared import _normalize_market_bars, _safe_result
 from src.tools.market_data.company import _margin
-
-
-class TestFormatNumber:
-    """Tests for format_number."""
-
-    def test_none_returns_na(self):
-        assert format_number(None) == "N/A"
-
-    def test_trillions(self):
-        result = format_number(3.68e12)
-        assert result == "$3.68T"
-
-    def test_billions(self):
-        result = format_number(2.5e9)
-        assert result == "$2.50B"
-
-    def test_millions(self):
-        result = format_number(150e6)
-        assert result == "$150.00M"
-
-    def test_small_number_with_suffix(self):
-        result = format_number(247.92)
-        assert result == "$247.92"
-
-    def test_no_suffix(self):
-        result = format_number(1e9, suffix=False)
-        assert result == "1,000,000,000.00"
-        assert "$" not in result
-
-    def test_negative_trillions(self):
-        result = format_number(-1.5e12)
-        assert result == "$-1.50T"
+from src.tools.market_data.segments import _period_label
 
 
 class TestFormatPercentage:
@@ -177,3 +145,12 @@ class TestMargin:
 
     def test_empty_row_returns_none(self):
         assert _margin({}, "grossProfitRatio", "grossProfit") is None
+
+
+class TestSegments:
+    def test_period_label_matches_the_scope(self):
+        lookup = {"2025-12-31": "Q4 FY2025", "2026-06-30": "Q2 FY2026"}
+        assert _period_label("2025-12-31", lookup, "annual") == "FY2025"
+        assert _period_label("2026-06-30", lookup, "quarter") == "Q2 FY2026"
+        # A fiscal year-end outside the quarterly lookup still reads as a year.
+        assert _period_label("2019-12-31", lookup, "annual") == "Fiscal year ended 2019-12-31"

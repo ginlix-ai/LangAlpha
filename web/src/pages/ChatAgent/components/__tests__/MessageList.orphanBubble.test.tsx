@@ -4,19 +4,23 @@
  * edit/regenerate count assistant bubbles to map UI position → turn_index —
  * but MessageList must not paint them, or the transcript shows a bare avatar +
  * action-button row (the "orphan logo"). Real sources: a HITL-resume turn whose
- * content landed on another bubble, or a history turn whose only event was a
- * re-raised interrupt deduped by interrupt_id.
+ * content landed on another bubble, a history turn whose only event was a
+ * re-raised interrupt deduped by interrupt_id, or one whose only call was a
+ * hidden tool.
  *
- * Anything renderable keeps the bubble: streaming indicator, text, segments,
- * the Sources pill, the Stopped chip, or an error.
+ * Anything renderable keeps the bubble: streaming indicator, text, a segment
+ * that draws something, the Sources pill, the Stopped chip, or an error.
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import '@testing-library/jest-dom';
 import { renderWithProviders } from '@/test/utils';
 import MessageList, { isOrphanAssistantMessage } from '../MessageList';
+import type { MessageRecord } from '../messageList/types';
+import { loadConversationHistory } from '../../session/history/replayHistory';
+import { buildRuntime, makeDeps, replayOf } from '../../session/history/__tests__/replayHarness';
 
-vi.mock('framer-motion', async () => {
+vi.mock('@/lib/framer', async () => {
   const ReactActual = await vi.importActual<typeof import('react')>('react');
   const FRAMER_ONLY_PROPS = new Set([
     'initial', 'animate', 'exit', 'transition', 'variants',
@@ -54,6 +58,12 @@ vi.mock('@/hooks/useUser', () => ({ useUser: () => ({ user: null }) }));
 
 vi.mock('@/contexts/ThemeContext', () => ({
   useTheme: () => ({ theme: 'light', setTheme: () => {} }),
+}));
+
+const api = vi.hoisted(() => ({ replayThreadHistory: vi.fn() }));
+
+vi.mock('../../utils/api', () => ({
+  replayThreadHistory: api.replayThreadHistory,
 }));
 
 type Msg = Record<string, unknown>;
@@ -129,5 +139,61 @@ describe('MessageList — orphan assistant bubble suppression', () => {
     expect(isOrphanAssistantMessage(userMsg('u-1', ''))).toBe(false);
     expect(isOrphanAssistantMessage({ id: 'n-1', role: 'notification', content: 'x' })).toBe(false);
     expect(isOrphanAssistantMessage(assistant('a-1'))).toBe(true);
+  });
+});
+
+const user = (turn: number, content: string) => ({
+  event: 'user_message',
+  data: { thread_id: 'thread-1', turn_index: turn, content },
+});
+
+const text = (turn: number, content: string) => ({
+  event: 'message_chunk',
+  data: { thread_id: 'thread-1', turn_index: turn, role: 'assistant', content_type: 'text', content },
+});
+
+const toolCall = (turn: number, id: string, name: string, args: Record<string, unknown>) => ({
+  event: 'tool_calls',
+  data: { thread_id: 'thread-1', turn_index: turn, tool_calls: [{ id, name, args }] },
+});
+
+const result = (turn: number, id: string, content: string, status?: string) => ({
+  event: 'tool_call_result',
+  data: { thread_id: 'thread-1', turn_index: turn, tool_call_id: id, content, ...(status ? { status } : {}) },
+});
+
+/** Through the real replay, so the bubble carries the segments a reloaded
+ *  thread gets (a `Task` call becomes its own segment) rather than a guess. */
+async function replay(items: Array<Record<string, unknown>>) {
+  const { rt, read } = buildRuntime();
+  api.replayThreadHistory.mockImplementation(replayOf(items));
+  await loadConversationHistory(rt, makeDeps());
+  return renderWithProviders(
+    <MessageList messages={read() as unknown as MessageRecord[]} isLoading={false} />,
+  );
+}
+
+describe('history replay: a bubble with nothing to paint', () => {
+  it('skips a bubble whose only segments are hidden tool calls', async () => {
+    // TodoWrite draws the floating todo card, never anything in the bubble.
+    const { container } = await replay([
+      user(0, 'Track the steps'),
+      toolCall(0, 'call-todo', 'TodoWrite', { todos: [{ content: 'Pull the 10-K', status: 'pending' }] }),
+      result(0, 'call-todo', 'Updated todo list', 'success'),
+      user(1, 'Go on'),
+      text(1, 'Done.'),
+    ]);
+
+    expect(bubble(container, 'history-assistant-0')).toBeNull();
+    expect(bubble(container, 'history-assistant-1')).not.toBeNull();
+  });
+
+  it('keeps a bubble whose hidden tool call draws its own card', async () => {
+    const { container } = await replay([
+      user(0, 'Research it in the background'),
+      toolCall(0, 'call-task', 'Task', { description: 'Read the 10-K', prompt: 'Read the 10-K', subagent_type: 'research' }),
+    ]);
+
+    expect(bubble(container, 'history-assistant-0')).not.toBeNull();
   });
 });

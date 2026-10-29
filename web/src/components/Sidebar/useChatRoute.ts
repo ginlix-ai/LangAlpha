@@ -1,7 +1,6 @@
-import { matchPath, useLocation } from 'react-router-dom';
+import { matchPath, useLocation } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { queryKeys } from '@/lib/queryKeys';
-import { getThread } from '@/pages/ChatAgent/utils/api';
+import { threadDetailQuery } from '@/pages/ChatAgent/utils/threadQueries';
 import { isValidUuid } from '@/pages/ChatAgent/utils/uuid';
 
 interface ChatRouteState {
@@ -30,10 +29,8 @@ export function useChatRoute(): { currentWorkspaceId: string | null; currentThre
 
   const needsLookup = !!threadId && threadId !== '__default__' && !urlWorkspaceId && !stateWorkspaceId;
   const { data: threadDetail } = useQuery({
-    queryKey: queryKeys.threads.detail(threadId!),
-    queryFn: () => getThread(threadId!),
+    ...threadDetailQuery(threadId!),
     enabled: needsLookup,
-    retry: false,
   });
   const lookedUpWorkspaceId = (threadDetail as { workspace_id?: string } | undefined)?.workspace_id || null;
 

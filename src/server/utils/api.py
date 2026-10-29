@@ -10,6 +10,7 @@ import inspect
 import logging
 import os
 import re
+from dataclasses import dataclass
 from typing import Annotated, Callable, Optional, TypeVar
 from urllib.parse import parse_qs
 
@@ -17,6 +18,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.config.settings import HOST_MODE, LOCAL_DEV_USER_ID
+from src.observability.private_errors import failure
 from src.server.auth.jwt_bearer import _decode_token
 
 # Type variable for generic return type preservation
@@ -91,11 +93,72 @@ async def get_current_user_id(
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing authentication")
 
-    return _decode_token(credentials.credentials).user_id
+    return (await _decode_token(credentials.credentials)).user_id
 
 
 # Annotated type for cleaner endpoint signatures
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
+
+
+async def get_optional_user_id(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+) -> Optional[str]:
+    """Like ``get_current_user_id`` but resolves to ``None`` when no credential
+    is presented, instead of 401.
+
+    For endpoints that serve an anonymous baseline and a richer per-user view
+    (e.g. the skills list). A *present but invalid* credential still 401s —
+    only genuine absence is anonymous.
+    """
+    matched, user_id = _service_token_user_id(request)
+    if matched:
+        return user_id
+    if HOST_MODE == "oss":
+        return LOCAL_DEV_USER_ID
+    if credentials is None:
+        return None
+    return (await _decode_token(credentials.credentials)).user_id
+
+
+# The resolved user id, or None for an anonymous caller.
+OptionalUserId = Annotated[Optional[str], Depends(get_optional_user_id)]
+
+
+@dataclass(frozen=True)
+class Viewer:
+    """Who is looking at a public page, as far as their credential could say.
+
+    ``unconfirmed`` holds the 503 from a credential that arrived while the
+    signing keys could not be fetched. That viewer may be the owner, so a page
+    must not tell them a link does not exist.
+    """
+
+    user_id: Optional[str]
+    unconfirmed: Optional[HTTPException] = None
+
+
+async def get_viewer(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+) -> Viewer:
+    """Like ``get_optional_user_id``, but a credential it cannot confirm reads as anonymous.
+
+    For public pages that also have an owner's view: a visitor whose session
+    expired, or who arrives while the signing keys cannot be fetched, must
+    still get the public answer.
+    """
+    try:
+        return Viewer(await get_optional_user_id(request, credentials))
+    except HTTPException as e:
+        if e.status_code == 401:
+            return Viewer(None)
+        if e.status_code == 503:
+            return Viewer(None, unconfirmed=e)
+        raise
+
+
+PageViewer = Annotated[Viewer, Depends(get_viewer)]
 
 
 async def get_stamp_auth(
@@ -124,6 +187,30 @@ async def get_stamp_auth(
 # Annotated type for the stamp route's auth dependency: the resolved owner id, or
 # None for a privileged service caller.
 StampThreadAuth = Annotated[Optional[str], Depends(get_stamp_auth)]
+
+
+def database_unavailable(
+    action: str, logger: logging.Logger, error: Exception
+) -> HTTPException:
+    """The 503 a route answers for a database that is busy or unreachable
+    (``pool.DATABASE_UNAVAILABLE``), which a retry can clear.
+
+    The driver's text names the database host, so it stays in the log, and
+    the log keeps of a server's error what ``failure`` allows.
+    """
+    fields, trace = failure(error)
+    if trace is None:
+        logger.warning(
+            f"Database unavailable {action}: {fields['error_type']} "
+            f"(sqlstate {fields['sqlstate']})"
+        )
+    else:
+        logger.warning(f"Database unavailable {action}: {error}")
+    return HTTPException(
+        status_code=503,
+        detail="Database unavailable, please retry",
+        headers={"Retry-After": "2"},
+    )
 
 
 def handle_api_exceptions(
@@ -164,7 +251,11 @@ def handle_api_exceptions(
                     raise HTTPException(status_code=409, detail=str(e))
                 raise
             except Exception as e:
-                logger.exception(f"Error {action}: {e}")
+                fields, trace = failure(e)
+                if trace is None:
+                    logger.error(f"Error {action}: {fields['error_type']} (sqlstate {fields['sqlstate']})")
+                else:
+                    logger.exception(f"Error {action}: {e}")
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to {action}",
@@ -177,11 +268,11 @@ def handle_api_exceptions(
     return decorator
 
 
-async def require_thread_owner(thread_id: str, user_id: str) -> None:
+async def require_thread_owner(thread_id: str, user_id: str, *, conn=None) -> None:
     """Verify the user owns the thread (via workspace). Raises 404 or 403."""
     from src.server.database.conversation import get_thread_owner_id
 
-    owner_id = await get_thread_owner_id(thread_id)
+    owner_id = await get_thread_owner_id(thread_id, conn=conn)
     if owner_id is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if owner_id != user_id:
@@ -221,7 +312,7 @@ _ROUTE_UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
 # Literal (non-UUID) path segments that are valid endpoints, not ids.
-_ROUTE_ID_ALLOWLIST = frozenset({"messages", "flash", "reorder", "dispatches"})
+_ROUTE_ID_ALLOWLIST = frozenset({"messages", "home", "reorder", "dispatches"})
 _WS_PATH_RE = re.compile(r"^/api/v1/workspaces/([^/]+)")
 _THREAD_PATH_RE = re.compile(r"^/api/v1/threads/([^/]+)")
 
@@ -232,7 +323,7 @@ def find_malformed_route_ids(
     """Return (slot, value) pairs where a workspace/thread id isn't a UUID.
 
     Inspects the workspaces/threads path segment and the ``workspace_id`` query
-    param; allowlisted literal segments (messages/flash/reorder/dispatches) are ignored.
+    param; allowlisted literal segments (messages/home/reorder/dispatches) are ignored.
     """
     findings: list[tuple[str, str]] = []
 

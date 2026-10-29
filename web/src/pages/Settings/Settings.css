@@ -1,20 +1,386 @@
+/* The Settings page shell: a rail of sections beside one scrolling content
+   column, laid out as the Plugins page is. The scroll port is the column
+   rather than the root, so the desktop shell's drag strip can sit above both
+   and stay put while the page scrolls, and the rail keeps its place. */
 .settings-page {
   height: 100%;
-  overflow-y: auto;
-  padding: clamp(16px, 3vw, 32px) clamp(16px, 3vw, 32px) 48px;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-page);
 }
 
-.settings-container {
-  max-width: 672px;
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ---------- Rail ---------- */
+.settings-rail {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px 16px;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border-subtle);
+  scrollbar-width: thin;
+}
+
+.settings-rail-nav { display: flex; flex-direction: column; }
+/* A sliver between rows, so a hovered row never runs into the selected one. */
+.settings-rail-group { display: flex; flex-direction: column; gap: 2px; }
+
+.settings-rail-label {
+  margin: 18px 8px 4px;
+  font-size: 0.71875rem;
+  font-weight: 500;
+  color: var(--color-text-quaternary);
+}
+
+.settings-rail-link,
+.settings-result {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.settings-rail-link:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
+.settings-rail-link.is-active { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.settings-rail-link:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--color-focus-ring); }
+
+.settings-rail-icon { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.85; }
+.settings-rail-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Search ---------- */
+.settings-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 2px 0 4px;
+}
+.settings-search-icon {
+  position: absolute;
+  left: 9px;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-quaternary);
+  pointer-events: none;
+}
+.settings-search input {
+  width: 100%;
+  height: 32px;
+  padding: 0 28px 0 30px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius);
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.8125rem;
+  outline: none;
+}
+.settings-search input::placeholder { color: var(--color-text-quaternary); }
+.settings-search input::-webkit-search-cancel-button { display: none; }
+.settings-search input:focus-visible {
+  border-color: var(--color-border-elevated);
+  box-shadow: 0 0 0 1px var(--color-focus-ring);
+}
+.settings-search-clear {
+  position: absolute;
+  right: 5px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-quaternary);
+  cursor: pointer;
+}
+/* The shortcut, shown while the field is idle. */
+.settings-search-key {
+  position: absolute;
+  right: 8px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--color-text-quaternary);
+  pointer-events: none;
+}
+.settings-search-clear:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+.settings-results { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+/* Two lines, the setting and the section it opens. */
+.settings-result { height: auto; min-height: 40px; padding: 5px 8px; align-items: flex-start; }
+.settings-result .settings-rail-icon { margin-top: 2px; }
+.settings-result.is-active { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.settings-result-name {
+  display: block;
+  color: var(--color-text-primary);
+  line-height: 18px;
+}
+.settings-result-section {
+  display: block;
+  font-size: 0.71875rem;
+  line-height: 15px;
+  color: var(--color-text-quaternary);
+}
+.settings-results-empty {
+  margin: 4px 8px;
+  font-size: 0.78125rem;
+  color: var(--color-text-tertiary);
+}
+
+/* A phone's way into the search; the desktop rail shows the field itself. */
+.settings-search-toggle {
+  display: none;
+  flex-shrink: 0;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.settings-search-toggle svg { width: 14px; height: 14px; }
+
+/* ---------- Content column ---------- */
+.settings-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  /* A section short enough to need no scrollbar must not sit 4px to the
+     right of one that does; the gutter is reserved either way. */
+  scrollbar-gutter: stable;
+}
+
+.settings-column {
+  max-width: 720px;
   margin: 0 auto;
+  padding: var(--page-top) 40px 64px;
+}
+
+.settings-head { margin-bottom: 28px; }
+.settings-head-title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 30px;
+  letter-spacing: -0.015em;
+  color: var(--color-text-primary);
+}
+.settings-head-def {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  line-height: 18px;
+  color: var(--color-text-secondary);
 }
 
 .settings-content {
-  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  /* `backwards`, not `both`: a fill that outlives the fade keeps this a
+     stacking context for good, and dialogs render inside it. */
+  animation: settings-section-in var(--motion-quick) var(--ease-out) backwards;
+}
+@keyframes settings-section-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
+/* ---------- Groups and rows ---------- */
+.settings-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin: 0 2px 8px;
+}
+.settings-group-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--color-text-primary);
+}
+.settings-group-desc {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  line-height: 17px;
+  color: var(--color-text-tertiary);
+}
+
+.settings-card {
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+  background: var(--color-bg-card);
+  container-type: inline-size;
+}
+.settings-card > * + * { border-top: 1px solid var(--color-border-muted); }
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  min-height: 56px;
+  padding: 11px 16px;
+  scroll-margin: 24px;
+}
+.settings-row-text { flex: 1 1 260px; min-width: 0; }
+.settings-row-label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-text-primary);
+}
+label.settings-row-label { cursor: pointer; }
+.settings-row-desc {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  line-height: 17px;
+  color: var(--color-text-tertiary);
+}
+.settings-row-control { display: flex; flex-shrink: 0; max-width: 100%; }
+.settings-row.is-wide .settings-row-control { flex: 0 1 280px; }
+.settings-row.is-wide .settings-row-control > * { width: 100%; }
+
+.settings-card-body { padding: 14px 16px; scroll-margin: 24px; }
+
+/* A card too narrow for a name, its line and a choice side by side gives
+   every row one shape: the name with its control beside it whenever the two
+   fit, the line under both. Only a choice too wide for the name's line drops
+   under it, so a narrow card stays as dense as the content allows rather
+   than spending a line on every control. */
+@container (max-width: 600px) {
+  .settings-row { gap: 6px 12px; }
+  .settings-row-text { display: contents; }
+  .settings-row-label { order: 1; flex: 1 1 auto; min-width: 0; }
+  .settings-row-control { order: 2; }
+  .settings-row.is-wide .settings-row-control { flex: 1 1 180px; }
+  .settings-row-desc { order: 3; flex: 1 0 100%; margin: 0; }
+}
+
+/* The setting the search opened on, marked until the eye has found it. */
+.settings-row[data-found],
+.settings-card-body[data-found],
+.settings-group[data-found] {
+  /* motion-exempt: the hold is a wait, not motion */
+  animation: settings-found 1.6s var(--ease-out) backwards;
+}
+@keyframes settings-found {
+  0%, 60% { background-color: var(--color-bg-hover); }
+  100% { background-color: transparent; }
+}
+/* Choices drawn as cards of their own end on their own fill. */
+.settings-levels[data-found] > * {
+  /* motion-exempt: the hold is a wait, not motion */
+  animation: settings-found-card 1.6s var(--ease-out) backwards;
+}
+@keyframes settings-found-card {
+  0%, 60% { background-color: var(--color-bg-hover); }
+}
+.settings-card > :first-child[data-found] { border-top-left-radius: inherit; border-top-right-radius: inherit; }
+.settings-card > :last-child[data-found] { border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; }
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-content { animation: none; }
+}
+
+@media (max-width: 1199px) {
+  .settings-column { padding-left: 28px; padding-right: 28px; }
+}
+
+/* ---------- Phone: the rail becomes the search over a row of pills ---------- */
 @media (max-width: 767px) {
-  .settings-page { padding: 16px 16px 48px; }
-  .settings-tab-bar { scrollbar-width: none; -ms-overflow-style: none; }
-  .settings-tab-bar::-webkit-scrollbar { display: none; }
+  .settings-body { flex-direction: column; }
+  .settings-rail {
+    width: auto;
+    padding: 8px 0;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+  /* One row: the search is an icon at the head of the pills until it is
+     opened, and then takes the row until it is closed. */
+  .settings-rail:not(.is-searching) .settings-search { display: none; }
+  .settings-rail.is-searching .settings-search { margin: 0 12px; }
+  .settings-rail.is-searching .settings-rail-nav { display: none; }
+  .settings-results { margin: 6px 12px 0; }
+  .settings-rail-nav {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    scroll-padding-inline: 12px;
+  }
+  .settings-rail-nav::-webkit-scrollbar { display: none; }
+  /* Held at the row's start while the pills scroll under it, so the search
+     stays one tap away whichever section the row has scrolled to. */
+  .settings-search-toggle {
+    display: grid;
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--color-bg-page);
+    box-shadow: -12px 0 0 var(--color-bg-page), 6px 0 0 var(--color-bg-page);
+  }
+  .settings-rail-group { display: contents; }
+  .settings-rail-label,
+  .settings-rail-link .settings-rail-icon { display: none; }
+  .settings-rail-link {
+    flex-shrink: 0;
+    height: 28px;
+    padding: 0 11px;
+    border: 1px solid var(--color-border-muted);
+    border-radius: 14px;
+  }
+  .settings-rail-link.is-active {
+    background: var(--color-bg-elevated);
+    border-color: var(--color-border-default);
+  }
+  .settings-rail-name { overflow: visible; }
+  .settings-search-key { display: none; }
+  .settings-results { max-height: 50vh; overflow-y: auto; }
+
+  /* Phone: the section's name is in the pill above, so the header keeps only
+     the title, and everything below sits closer. */
+  .settings-column { padding: 14px 12px 48px; }
+  .settings-head { margin-bottom: 14px; }
+  .settings-head-title { font-size: 1.1875rem; line-height: 26px; }
+  .settings-head-def { display: none; }
+  .settings-content { gap: 18px; }
+  .settings-group-head { margin: 0 4px 6px; }
+  .settings-row { min-height: 48px; padding: 9px 12px; }
+  .settings-card-body { padding: 12px; }
 }

@@ -1,0 +1,203 @@
+/*
+ * The scene kit's own classes: the stage, the mockup window and its cards,
+ * and the parts that move on the scene clock. Only the scenes use them, so
+ * they load with the scenes rather than with the intro modal. kit.tsx
+ * imports this before scenes.css, so a utility on the same element wins a
+ * tie, as it does against any component class.
+ */
+
+/* Every scene is drawn at 400 x 330 in px: its camera shots and pointer
+   paths are px, so its type and spacing are too. The app scales the root
+   font size (a reading-size setting, or the browser's own default), and a
+   utility or radius that read rem would grow under a pointer that does not.
+   So the stage pins the theme lengths its utilities read, and the size and
+   leading its text inherits. Scaled to sit whole inside the wider panel: 1.3
+   fills it at the full 980px dialog, and narrower windows step down so a
+   centered comparison never loses its outer column. */
+.intro-scene {
+  --spacing: 4px;
+  --radius: 8px;
+  /* skeleton lines */
+  --iv-line: rgba(255, 255, 255, 0.14);
+  --iv-line-2: rgba(255, 255, 255, 0.3);
+  --iv-mk-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  --iv-ease: var(--ease-out);
+
+  font-size: 16px;
+  line-height: 1.5;
+  transform: scale(1.05);
+}
+@media (min-width: 1024px) {
+  .intro-scene {
+    transform: scale(1.3);
+  }
+}
+
+[data-theme='light'] .intro-scene {
+  --iv-line: rgba(18, 22, 30, 0.12);
+  --iv-line-2: rgba(18, 22, 30, 0.3);
+  --iv-mk-shadow: 0 10px 28px rgba(18, 22, 30, 0.08);
+}
+
+/* The app window, or a dialog over it. */
+.intro-mk {
+  position: relative;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: var(--color-bg-page);
+  box-shadow: var(--iv-mk-shadow);
+}
+
+/* A card on the page. `--active` is a card in use: focused, or held. */
+.intro-region {
+  border: 1px solid var(--color-border-muted);
+  border-radius: 8px;
+  background: var(--color-bg-card);
+}
+
+.intro-region--active {
+  border-color: var(--color-border-strong);
+}
+
+.intro-region--dashed {
+  border-style: dashed;
+  background: transparent;
+}
+
+/* Staggered reveal — set `--rv` per element. */
+.intro-rv {
+  /* motion-exempt: the illustration's own pace, a picture of the app being built rather than UI timing */
+  animation: intro-rv-enter 650ms var(--iv-ease) both;
+  animation-delay: var(--rv, 0s);
+}
+
+@keyframes intro-rv-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Element popping in after a scripted click (e.g. the created modal). */
+.intro-pop {
+  /* motion-exempt: the illustration's own pace, a picture of the app being built rather than UI timing */
+  animation: intro-pop 450ms var(--iv-ease) both;
+  animation-delay: var(--rv, 0s);
+}
+
+@keyframes intro-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── parts that move on the scene clock (kit.tsx) ── */
+
+/* Typing caret. */
+.intro-caret {
+  display: inline-block;
+  width: 1px;
+  height: 0.85em;
+  margin-left: 1px;
+  vertical-align: -0.1em;
+  background: var(--color-accent-primary);
+  /* motion-exempt: the caret's blink period */
+  animation: intro-caret 0.9s steps(1) infinite;
+}
+
+@keyframes intro-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* A turn's tool calls on the timeline's rule (`Timeline`), drawn as the
+   app's ActivityBlock.css draws it: not one line masked behind each icon,
+   but a short segment from one row's icon to the next, clear of each icon
+   by 5px of 16px there, 2.5px of 8px here. Each row draws the part above
+   its icon and the part below, reaching half the space between rows and a
+   hair past it so the two meet; the first row has none above and the last
+   none below. A row's icon sits at its middle, so the parts are placed
+   from there: 4px to the glyph's edge, then the 2.5px clear of it. */
+.intro-tl {
+  --tl-x: 6.5px;
+  --tl-reach: 0.5px;
+}
+
+.intro-tl--dense {
+  --tl-x: 3.5px;
+  --tl-reach: 5.5px;
+}
+
+.intro-tl > * {
+  position: relative;
+}
+
+.intro-tl > *::before,
+.intro-tl > *::after {
+  content: '';
+  position: absolute;
+  left: var(--tl-x);
+  width: 1px;
+  background: var(--color-border-default);
+}
+
+.intro-tl > *::before {
+  top: calc(-1 * var(--tl-reach));
+  height: calc(var(--tl-reach) + 50% - 6.5px);
+}
+
+.intro-tl > *::after {
+  top: calc(50% + 6.5px);
+  bottom: calc(-1 * var(--tl-reach));
+}
+
+.intro-tl > :first-child::before,
+.intro-tl > :last-child::after {
+  display: none;
+}
+
+/* A label the agent is still working on, like the app's TextShimmer. */
+.intro-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-text-tertiary) 0%,
+    var(--color-text-tertiary) 35%,
+    var(--color-text-primary) 50%,
+    var(--color-text-tertiary) 65%,
+    var(--color-text-tertiary) 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* motion-exempt: the loop's period; a tour illustration of the app's shimmer */
+  animation: intro-shimmer 2s linear infinite;
+}
+
+@keyframes intro-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-rv,
+  .intro-pop,
+  .intro-caret,
+  .intro-shimmer {
+    animation: none;
+  }
+}

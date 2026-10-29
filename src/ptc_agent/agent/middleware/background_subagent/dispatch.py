@@ -17,6 +17,7 @@ import structlog
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
+from ptc_agent.agent.limits import UNBOUNDED_RECURSION_LIMIT
 from ptc_agent.agent.middleware.background_subagent.context import (
     current_background_agent_id,
     current_background_token_tracker,
@@ -32,6 +33,7 @@ from ptc_agent.agent.middleware.background_subagent.spawn import (
     spawn_task_writer,
 )
 from ptc_agent.agent.middleware.background_subagent.subagent import (
+    PARENT_RUN_STATE_KEYS,
     arun_subagent_streaming,
     return_command_with_state_update,
 )
@@ -43,11 +45,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Keys that must never leak from the launching turn's config into a
-# dispatched child. The Task-tool path passes its parent config through
-# wholesale, and each Task call runs inside its OWN tool-node task, so its
-# per-call pregel state is fresh. Direct dispatch reuses ONE captured config
-# for every child, so the per-call state must be dropped to emulate that:
+# The launching call's per-call keys, which a dispatched child must not
+# inherit. A Task call builds its config inside its OWN tool-node task, so
+# that state is fresh for every call; direct dispatch reuses ONE captured
+# config for every child, so it drops the per-call state instead. Detaching
+# the child from the launcher's run is ``arun_subagent_streaming``'s job on
+# both paths.
 #
 # - checkpoint_ns/checkpoint_id/checkpoint_map — the child owns its own
 #   checkpoint namespace.
@@ -58,9 +61,8 @@ logger = structlog.get_logger(__name__)
 #   token of children after the first is silently dropped — and shifts the
 #   child's checkpoints out of the ``task:<id>`` namespace history readers
 #   expect.
-# - __pregel_stream — the launching turn's stream handle. The turn is
-#   typically settled by the time children run; duplexing into its dead
-#   queue serves no consumer.
+# - ``PARENT_RUN_STATE_KEYS`` — the launching run's resume and replay flags,
+#   dropped on the Task path too.
 #
 # The REMAINING ``__pregel_*`` internals (task_id, send/read, checkpointer,
 # runtime) are deliberately kept: they mark the child run as nested, which
@@ -68,20 +70,12 @@ logger = structlog.get_logger(__name__)
 # non-nested run gets its ns reset to "" and would write checkpoints into
 # the thread's ROOT namespace, which the writer guard refuses once the
 # launching turn's session ends.
-_DROPPED_CONFIGURABLE_KEYS = frozenset(
-    {
-        "checkpoint_ns",
-        "checkpoint_id",
-        "checkpoint_map",
-        "__pregel_scratchpad",
-        "__pregel_stream",
-    }
-)
-
-# Mirrors the main agent's ``with_config({"recursion_limit": 2000})``, which
-# Task-tool subagents inherit via the parent config.
-_DISPATCH_RECURSION_LIMIT = 2000
-
+_DROPPED_CONFIGURABLE_KEYS = PARENT_RUN_STATE_KEYS | {
+    "checkpoint_ns",
+    "checkpoint_id",
+    "checkpoint_map",
+    "__pregel_scratchpad",
+}
 
 async def run_subagent_graph(
     subagent_graph: Any,
@@ -94,6 +88,7 @@ async def run_subagent_graph(
     tool_call_id: str,
     base_configurable: dict[str, Any] | None = None,
     task_run_id: str | None = None,
+    time_limit: float | None = None,
 ) -> Command:
     """Invoke a compiled subagent graph directly and return the result Command.
 
@@ -125,7 +120,8 @@ async def run_subagent_graph(
     config: dict[str, Any] = {
         "configurable": configurable,
         "metadata": metadata,
-        "recursion_limit": _DISPATCH_RECURSION_LIMIT,
+        # What Task-tool subagents inherit from the parent config.
+        "recursion_limit": UNBOUNDED_RECURSION_LIMIT,
     }
     tracker = current_background_token_tracker.get(None)
     if tracker is not None:
@@ -133,7 +129,12 @@ async def run_subagent_graph(
 
     state = {"messages": [HumanMessage(content=prompt)]}
     result = await arun_subagent_streaming(
-        subagent_graph, state, config, registry=registry, tool_call_id=tool_call_id
+        subagent_graph,
+        state,
+        config,
+        registry=registry,
+        tool_call_id=tool_call_id,
+        time_limit=time_limit,
     )
     return return_command_with_state_update(result, tool_call_id)
 
@@ -150,13 +151,15 @@ async def dispatch_background_subagent(
     owner_task_id: str | None = None,
     tool_call_id: str | None = None,
     base_configurable: dict[str, Any] | None = None,
+    time_limit: float | None = None,
 ) -> BackgroundTask:
     """Register and spawn a background subagent without a Task tool call.
 
     ``run_id`` stamps ``spawned_run_id`` (collector fencing + record run
     stamps); ``owner_task_id`` marks the child as workflow-owned so
     agent-facing aggregation (wait-all, notifications, TaskOutput's
-    all-tasks view) skips it. Raises ``ValueError`` on an unknown
+    all-tasks view) skips it; ``time_limit`` caps the child's own clock at
+    the time its owner gives it. Raises ``ValueError`` on an unknown
     ``subagent_type`` and ``SpawnError`` when admission was rejected
     or the writer could not be spawned.
     """
@@ -224,6 +227,7 @@ async def dispatch_background_subagent(
                 tool_call_id=task.tool_call_id,
                 base_configurable=base_configurable,
                 task_run_id=task.task_run_id,
+                time_limit=time_limit,
             )
 
         await spawn_task_writer(
@@ -285,6 +289,7 @@ class SubagentDispatcher:
         run_id: str | None,
         owner_task_id: str | None = None,
         base_configurable: dict[str, Any] | None = None,
+        time_limit: float | None = None,
     ) -> BackgroundTask:
         return await dispatch_background_subagent(
             self.middleware,
@@ -296,4 +301,5 @@ class SubagentDispatcher:
             run_id=run_id,
             owner_task_id=owner_task_id,
             base_configurable=base_configurable,
+            time_limit=time_limit,
         )

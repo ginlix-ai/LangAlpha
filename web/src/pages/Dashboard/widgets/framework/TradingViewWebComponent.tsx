@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useTranslation } from 'react-i18next';
+import { cn } from '@/lib/utils';
 import { useTheme } from '@/contexts/ThemeContext';
+import { useLocale } from '@/hooks/useLocale';
 import { EmbedFallback } from './EmbedFallback';
 import { mapLocaleForTV } from './tvConfig';
 import './tvEmbed.css';
@@ -123,7 +124,6 @@ interface Props {
   /** Per-widget config; keys converted to kebab-case attributes. */
   config: Record<string, unknown>;
   className?: string;
-  card?: boolean;
 }
 
 /**
@@ -143,10 +143,9 @@ export function TradingViewWebComponent({
   element,
   config,
   className,
-  card = false,
 }: Props) {
   const { theme } = useTheme();
-  const { i18n } = useTranslation();
+  const locale = useLocale();
   const hostRef = useRef<HTMLDivElement>(null);
   const elRef = useRef<HTMLElement | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -159,7 +158,7 @@ export function TradingViewWebComponent({
   // neighbor widgets edit, the grid layout shifts, or edit-mode toggles.
   const configKey = JSON.stringify(config);
 
-  const tvLocale = mapLocaleForTV(i18n.language);
+  const tvLocale = mapLocaleForTV(locale);
 
   const retry = useCallback(() => {
     loaderPromises.delete(`${tvLocale}:${element}`);
@@ -279,9 +278,8 @@ export function TradingViewWebComponent({
     };
   }, [element]);
 
-  const cardClass = card ? 'dashboard-glass-card p-3 overflow-hidden' : '';
   return (
-    <div className={`tv-embed-host flex flex-col h-full ${cardClass} ${className ?? ''}`}>
+    <div className={cn('tv-embed-host flex flex-col h-full', className)}>
       <div className="relative flex-1 min-h-0">
         {/* `tv-wc-container` carries the color-scheme reset from tvEmbed.css —
             see TradingViewEmbed.tsx. The custom element mounts inside it so

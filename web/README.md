@@ -6,7 +6,6 @@ React frontend for LangAlpha — a vibe investing agent with AI-powered research
 
 - **Supabase Auth** — OAuth login with session management and protected routes
 - **SSE Streaming Chat** — Real-time agent responses with subagent task cards, tool call display, and reasoning blocks
-- **HITL Plan Approval** — Review and approve/reject agent plans before execution
 - **React Query Data Layer** — Hierarchical cache key factory with prefix-based invalidation, shared hooks across pages
 - **Configurable Dashboard** — Drag-and-drop widget gallery with 30+ widgets (watchlist, portfolio, news, TradingView heatmaps, screeners, ticker tape, mini-chart grid). Per-widget settings persisted to user preferences with Zod schema validation at the boundary, cross-tab sync, and an offline banner when the network drops.
 - **TradingView-Style Charting** — Interactive candlestick charts with AI chat sidebar for stock analysis
@@ -28,17 +27,17 @@ React frontend for LangAlpha — a vibe investing agent with AI-powered research
 
 | Category | Libraries |
 |----------|-----------|
-| Framework | React 19, Vite 7 |
-| Routing | React Router 6 |
+| Framework | React 19, Vite 8 |
+| Routing | React Router 8 |
 | State / Fetching | `@tanstack/react-query` 5 |
 | UI Components | shadcn/ui (Radix UI + Tailwind primitives) |
-| Styling | Tailwind CSS 3, `clsx`, `tailwind-merge`, `class-variance-authority` |
-| Animation | Framer Motion 12 |
+| Styling | Tailwind CSS 4, `clsx`, `tailwind-merge`, `class-variance-authority` |
+| Animation | Framer Motion 13 |
 | Icons | Lucide React |
 | Charts | `lightweight-charts` (TradingView), Recharts, embedded TradingView widgets |
 | Schema validation | `zod` (per-widget config schemas at the prefs boundary) |
 | Auth | `@supabase/supabase-js` |
-| HTTP | Axios |
+| HTTP | `fetch` client (`api/client.ts`) |
 | Markdown | `react-markdown`, `remark-gfm`, `remark-math`, `remark-cjk-friendly`, `rehype-katex`, `rehype-raw`, `react-syntax-highlighter` |
 | Math | `katex`, `rehype-katex` |
 | Code Editor | `@monaco-editor/react` |
@@ -46,16 +45,16 @@ React frontend for LangAlpha — a vibe investing agent with AI-powered research
 | i18n | `i18next`, `react-i18next` |
 | File Handling | `react-pdf`, `exceljs`, `html2canvas`, `react-to-print` |
 | Testing | Vitest, `@testing-library/react`, `@testing-library/jest-dom`, `@testing-library/user-event` |
-| Dev Tools | ESLint 9, TypeScript 5.9 |
+| Dev Tools | ESLint 10, TypeScript 7 (TS 6 API for typescript-eslint) |
 
 ## Project Structure
 
 ```
 src/
-├── api/                    # Axios client with Bearer token interceptor
+├── api/                    # API client: fetch with the Bearer token and a 401 retry
 ├── assets/                 # Static assets (SVG, PNG)
 ├── components/
-│   ├── Main/               # Lazy-loaded route definitions with AnimatePresence transitions
+│   ├── Main/               # Lazy-loaded route definitions with a CSS fade between routes
 │   ├── Sidebar/            # Navigation sidebar
 │   └── ui/                 # Reusable UI primitives (button, card, dialog, toast, etc.)
 ├── contexts/               # AuthContext (Supabase session), ThemeContext (light/dark)

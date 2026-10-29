@@ -6,23 +6,26 @@ from unittest.mock import patch
 
 import pytz
 
-from src.market_protocol import MarketPhase
+from market_protocol import AssetClass, MarketPhase
 from src.tools.market_data.quote_format import (
+    block_clock,
     build_live_stamp,
     current_price,
     format_quote_block,
     format_quote_line,
-    venue_clock,
+    quote_freshness,
 )
 
 _MOD = "src.tools.market_data.quote_format"
-# The exchange-calendar lookup lives in display.venue_phase; patch it there.
-_DISPLAY = "src.tools.market_data.display"
 _ET = pytz.timezone("US/Eastern")
+# A Wednesday NYSE session. Every stamp test passes it as ``at``: a stamp
+# measured against the wall clock would fail whenever New York is shut.
 _FIXED_ET = _ET.localize(datetime(2026, 7, 1, 14, 32, 5))
 
 
 def _snap(**overrides):
+    # Every row the provider chain returns carries a declared tier; the
+    # formatter treats a row without one as unknown, never as current.
     base = {
         "symbol": "NVDA",
         "price": 231.00,
@@ -30,6 +33,7 @@ def _snap(**overrides):
         "volume": 187_234_567,
         "last_trade_price": 233.45,
         "market_status": "open",
+        "tier": "realtime",
     }
     base.update(overrides)
     return base
@@ -78,6 +82,7 @@ class TestFormatQuoteBlock:
         with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
             block = format_quote_block([_snap(), _snap(symbol="TSLA", last_trade_price=412.10)])
         assert "14:32:05 ET" in block
+        assert block.startswith("Retrieved ")
         assert "market open" in block
         assert block.count("\n") >= 2
         assert "TSLA" in block
@@ -86,7 +91,7 @@ class TestFormatQuoteBlock:
 class TestBuildLiveStamp:
     def test_stamp_during_regular_hours(self):
         with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
-            stamp = build_live_stamp([_snap()])
+            stamp = build_live_stamp([_snap()], at=_FIXED_ET)
         assert stamp.startswith("[Live: ")
         assert "NVDA $233.45 (+2.31%)" in stamp
         assert "as of 14:32:05 ET" in stamp
@@ -105,7 +110,7 @@ class TestBuildLiveStamp:
         # A still-forming bar can carry NaN; it must drop the pct suffix, not
         # print "nan%" into agent-visible stamp text.
         with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
-            stamp = build_live_stamp([_snap(change_percent=float("nan"))])
+            stamp = build_live_stamp([_snap(change_percent=float("nan"))], at=_FIXED_ET)
         assert "NVDA $233.45" in stamp
         assert "nan" not in stamp.lower()
 
@@ -117,17 +122,17 @@ class TestCurrencyAndVenueAwareness:
         # resolution; only the calendar (phase) boundary is mocked so the
         # phase half of the suffix is deterministic.
         snap = {"symbol": "0700.HK", "last_trade_price": 318.20,
-                "change_percent": -0.5, "volume": 12_000_000}
-        with patch(f"{_DISPLAY}.get_calendar") as gc:
-            gc.return_value.phase_at.return_value = MarketPhase.CLOSED
+                "change_percent": -0.5, "volume": 12_000_000,
+                "tier": "realtime"}
+        with patch(f"{_MOD}.venue_phase", return_value=MarketPhase.CLOSED):
             line = format_quote_line(snap)
         assert "HK$318.20" in line
         assert re.search(r"\(closed, \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} HKT\)$", line)
 
     def test_regular_hours_suffix_is_venue_clock_only(self):
-        snap = {"symbol": "0700.HK", "last_trade_price": 318.20}
-        with patch(f"{_DISPLAY}.get_calendar") as gc:
-            gc.return_value.phase_at.return_value = MarketPhase.REGULAR
+        snap = {"symbol": "0700.HK", "last_trade_price": 318.20,
+                "tier": "realtime"}
+        with patch(f"{_MOD}.venue_phase", return_value=MarketPhase.REGULAR):
             line = format_quote_line(snap)
         assert "HK$318.20" in line
         assert re.search(r"\(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} HKT\)$", line)
@@ -135,8 +140,7 @@ class TestCurrencyAndVenueAwareness:
 
     def test_us_symbol_line_has_no_venue_clock(self):
         # US listings ride the block header's ET clock — no per-line stamp.
-        with patch(f"{_DISPLAY}.get_calendar") as gc:
-            gc.return_value.phase_at.return_value = MarketPhase.REGULAR
+        with patch(f"{_MOD}.venue_phase", return_value=MarketPhase.REGULAR):
             line = format_quote_line(_snap())
         assert "ET" not in line
         assert "(" not in line
@@ -144,22 +148,11 @@ class TestCurrencyAndVenueAwareness:
     def test_unresolvable_symbol_falls_back_to_dollar(self):
         # A symbol the protocol can't resolve degrades to '$' with no suffix and
         # never raises (the formatter sits in tool-output + middleware paths).
-        snap = {"symbol": "ZZZ", "last_trade_price": 12.34}
+        snap = {"symbol": "ZZZ", "last_trade_price": 12.34, "tier": "realtime"}
         with patch(f"{_MOD}.resolve_ref", return_value=None):
             line = format_quote_line(snap)
         assert line.startswith("ZZZ")
         assert "$12.34" in line
-
-    def test_venue_clock_converts_to_market_timezone_with_date(self):
-        # 14:32:05 ET on 2026-07-01 (EDT, UTC-4) is 02:32:05 HKT the NEXT day —
-        # the date in the stamp is what disambiguates the rollover.
-        at = datetime(2026, 7, 1, 18, 32, 5, tzinfo=timezone.utc)
-        assert venue_clock("0700.HK", at) == "2026-07-02 02:32:05 HKT"
-
-    def test_venue_clock_none_for_us_and_unresolvable(self):
-        assert venue_clock("NVDA") is None
-        with patch(f"{_MOD}.resolve_ref", return_value=None):
-            assert venue_clock("ZZZ") is None
 
     def test_grouping_parity_with_canonical_fmt_price(self):
         # get_quote groups thousands ("$6,120.50"); the canonical
@@ -168,9 +161,8 @@ class TestCurrencyAndVenueAwareness:
         # commas from the quote line yields the canonical spelling exactly.
         from src.tools.market_data.currency import fmt_price
 
-        snap = {"symbol": "SPY", "last_trade_price": 6120.5}
-        with patch(f"{_DISPLAY}.get_calendar") as gc:
-            gc.return_value.phase_at.return_value = MarketPhase.REGULAR
+        snap = {"symbol": "SPY", "last_trade_price": 6120.5, "tier": "realtime"}
+        with patch(f"{_MOD}.venue_phase", return_value=MarketPhase.REGULAR):
             line = format_quote_line(snap)
         assert "$6,120.50" in line
         assert fmt_price(6120.5, "USD") == "$6120.50"
@@ -179,9 +171,200 @@ class TestCurrencyAndVenueAwareness:
     def test_block_header_drops_us_label_for_foreign_venue(self):
         # A block containing a non-US listing must not claim a US session label.
         with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)), \
-             patch(f"{_DISPLAY}.get_calendar") as gc:
-            gc.return_value.phase_at.return_value = MarketPhase.REGULAR
-            block = format_quote_block([{"symbol": "0700.HK", "last_trade_price": 318.20}])
+             patch(f"{_MOD}.venue_phase", return_value=MarketPhase.REGULAR):
+            block = format_quote_block(
+                [{"symbol": "0700.HK", "last_trade_price": 318.20, "tier": "realtime"}]
+            )
         header = block.split("\n")[0]
         assert "14:32:05 ET" in header
         assert "market open" not in header
+
+
+class TestLiveStampIsVenueGated:
+    """`build_live_stamp` used to gate on the US session and label every quote
+    ET — a Shanghai listing was suppressed all through its own trading day and
+    stamped with a New York clock the rest of the time."""
+
+    _SHANGHAI_1030 = datetime(2026, 7, 1, 2, 30, tzinfo=timezone.utc)   # 10:30 CST
+    _ET_1030 = datetime(2026, 7, 1, 14, 30, tzinfo=timezone.utc)        # 10:30 ET
+
+    def _cn_snap(self):
+        return {"symbol": "600519.SS", "last_trade_price": 1712.40,
+                "change_percent": 1.25, "tier": "realtime"}
+
+    def test_cn_symbol_suppressed_while_its_own_venue_is_shut(self):
+        # 10:30 ET is 22:30 in Shanghai — SSE is closed, so there is no live
+        # quote to stamp even though the US session is wide open.
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            assert build_live_stamp([self._cn_snap()], at=self._ET_1030) is None
+
+    def test_cn_symbol_stamped_with_its_own_venue_clock(self):
+        # 10:30 in Shanghai on a trading Wednesday: the stamp exists and is
+        # labelled with the venue clock, never "ET". The vendor row reads
+        # ``.SS``; the stamp shows the display spelling.
+        with patch(f"{_MOD}.get_market_session", return_value=("CLOSED", _FIXED_ET)):
+            stamp = build_live_stamp([self._cn_snap()], at=self._SHANGHAI_1030)
+        assert stamp is not None
+        assert "600519.SH" in stamp and "(+1.25%)" in stamp
+        assert "2026-07-01 10:30:00 CST" in stamp
+        assert "ET" not in stamp
+
+    def test_us_only_stamp_is_unchanged(self):
+        # The US path keeps its exact legacy shape (ET clock + session label).
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            stamp = build_live_stamp([_snap()], at=_FIXED_ET)
+        assert stamp == "[Live: NVDA $233.45 (+2.31%) — as of 14:32:05 ET, market open]"
+
+    def test_mixed_block_drops_the_us_session_line(self):
+        # A stamp carrying a foreign venue must not assert a US session label.
+        # Both venues trade at 10:30 ET (15:30 in London); Shanghai never
+        # overlaps New York, and the calendar drops a venue it has closed.
+        london = {"symbol": "VOD.L", "last_trade_price": 72.10,
+                  "change_percent": 0.4, "tier": "realtime"}
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            stamp = build_live_stamp([_snap(), london], at=self._ET_1030)
+        assert "NVDA $233.45" in stamp and "VOD.L" in stamp
+        assert "market open" not in stamp
+
+    def test_us_row_the_calendar_has_closed_is_not_stamped(self):
+        # 2026-07-03 is a NYSE holiday the US session gate cannot see: its
+        # last print is no quote of an open venue.
+        holiday = datetime(2026, 7, 3, 14, 30, tzinfo=timezone.utc)
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            assert build_live_stamp([_snap()], at=holiday) is None
+
+
+class TestFreshnessSplitsTheStamp:
+    """A quote is stamped live only when it is measured live, or its provider
+    declares a realtime tier; a 15-minute feed reads as delayed instead."""
+
+    # 2026-07-02 is a Thursday session in Hong Kong; 10:30 HKT is 02:30 UTC.
+    _HK_1030 = datetime(2026, 7, 2, 2, 30, tzinfo=timezone.utc)
+    # 2026-09-09 is a Wednesday session in Shanghai; 10:30 CST is 02:30 UTC.
+    _CN_1030 = datetime(2026, 9, 9, 2, 30, tzinfo=timezone.utc)
+
+    def _hk_delayed(self):
+        # FMP outside the US tape: a quote with no print time, declared 15m.
+        return {"symbol": "0700.HK", "last_trade_price": 318.20,
+                "change_percent": -0.5, "tier": "delayed_15m", "source": "fmp"}
+
+    def _cn_realtime(self, at):
+        return {"symbol": "600519.SH", "last_trade_price": 1712.40,
+                "change_percent": 1.25, "tier": "realtime", "source": "tushare",
+                "as_of": int(at.timestamp() * 1000) - 10_000}
+
+    def test_delayed_hk_quote_is_not_stamped_live(self):
+        with patch(f"{_MOD}.get_market_session", return_value=("CLOSED", _FIXED_ET)):
+            stamp = build_live_stamp([self._hk_delayed()], at=self._HK_1030)
+        assert stamp.startswith("[Delayed 15m: 0700.HK HK$318.20 (-0.50%)")
+        assert "[Live" not in stamp
+
+    def test_delayed_hk_quote_says_so_on_its_line(self):
+        with patch(f"{_MOD}.get_market_session", return_value=("CLOSED", _FIXED_ET)):
+            line = format_quote_line(self._hk_delayed(), at=self._HK_1030)
+        assert "delayed 15m" in line
+
+    def test_measured_realtime_cn_quote_is_stamped_live(self):
+        with patch(f"{_MOD}.get_market_session", return_value=("CLOSED", _FIXED_ET)):
+            stamp = build_live_stamp(
+                [self._cn_realtime(self._CN_1030)], at=self._CN_1030
+            )
+        assert stamp.startswith("[Live: 600519.SH ")
+        assert "delayed" not in stamp.lower()
+
+    def test_live_quote_carries_its_print_time_not_the_retrieval_clock(self):
+        # as_of is 10 seconds before the retrieval moment: the stamp clock is
+        # the print, so it reads 10:29:50 rather than 10:30:00.
+        with patch(f"{_MOD}.get_market_session", return_value=("CLOSED", _FIXED_ET)):
+            stamp = build_live_stamp(
+                [self._cn_realtime(self._CN_1030)], at=self._CN_1030
+            )
+        assert "2026-09-09 10:29:50 CST" in stamp
+
+    def test_mixed_batch_splits_into_two_groups(self):
+        # Both venues are open at 10:30 CST/HKT on their own calendars, so the
+        # split is by freshness, not by session.
+        with patch(f"{_MOD}.get_market_session", return_value=("CLOSED", _FIXED_ET)):
+            stamp = build_live_stamp(
+                [self._cn_realtime(self._CN_1030),
+                 {**self._hk_delayed(), "symbol": "0700.HK"}],
+                at=self._CN_1030,
+            )
+        live, delayed = stamp.split("\n")
+        assert live.startswith("[Live: 600519.SH ")
+        assert delayed.startswith("[Delayed 15m: 0700.HK ")
+
+    def test_untiered_quote_is_never_called_live(self):
+        # Nothing declared and nothing measured: unknown, not a guessed delay.
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            stamp = build_live_stamp([_snap(tier=None)], at=_FIXED_ET)
+        assert stamp == "[Freshness unknown: NVDA $233.45 (+2.31%)]"
+
+    def test_hours_old_print_is_stale_not_delayed(self):
+        # A "realtime" feed whose last print is three hours behind an open
+        # session measures stale; the stamp must not call it 15 minutes late.
+        three_hours_ago = int(_FIXED_ET.timestamp() * 1000) - 3 * 3600 * 1000
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            stamp = build_live_stamp([_snap(as_of=three_hours_ago)], at=_FIXED_ET)
+        assert stamp == "[Stale: NVDA $233.45 (+2.31%)]"
+
+    def test_each_freshness_gets_its_own_group(self):
+        ten_minutes_ago = int(_FIXED_ET.timestamp() * 1000) - 10 * 60 * 1000
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            stamp = build_live_stamp(
+                [_snap(symbol="AAPL", tier=None), _snap(as_of=ten_minutes_ago)],
+                at=_FIXED_ET,
+            )
+        assert stamp.split("\n") == [
+            "[Delayed 15m: NVDA $233.45 (+2.31%)]",
+            "[Freshness unknown: AAPL $233.45 (+2.31%)]",
+        ]
+
+
+def test_block_clock_uses_the_clock_its_rows_share():
+    at = datetime(2026, 9, 27, 1, 0, tzinfo=timezone.utc)
+    assert block_clock([{"symbol": "AAPL"}, {"symbol": "MSFT"}], at) == "2026-09-26 21:00:00 ET"
+    assert block_clock([{"symbol": "600519.SS"}, {"symbol": "000858.SZ"}], at) == "2026-09-27 09:00:00 CST"
+    # Mixed venues: no clock is neutral, so the card falls back to the reader's.
+    assert block_clock([{"symbol": "600519.SS"}, {"symbol": "AAPL"}], at) is None
+
+
+class TestKnownAssetClass:
+    """A bare COMP is the Nasdaq Composite to autodetection and Compass Inc.
+    to a stock endpoint. Whoever knows which one the row is decides its clock:
+    the index has no extended hours, so the stock's after-hours print would
+    read closed."""
+
+    _AFTER_HOURS = _ET.localize(datetime(2026, 7, 1, 17, 30))
+
+    def _comp(self, **over):
+        printed = int(self._AFTER_HOURS.timestamp() * 1000) - 10_000
+        return _snap(symbol="COMP", last_trade_price=9.12, as_of=printed, **over)
+
+    def test_stock_row_is_measured_on_the_stocks_clock(self):
+        fresh = quote_freshness(
+            self._comp(), at=self._AFTER_HOURS, asset_class=AssetClass.EQUITY
+        )
+        assert fresh.label == "live"
+        assert fresh.closed is False
+
+    def test_row_that_names_its_class_needs_no_hint(self):
+        fresh = quote_freshness(self._comp(asset_class="equity"), at=self._AFTER_HOURS)
+        assert fresh.closed is False
+
+    def test_unknown_class_still_autodetects_the_index(self):
+        assert quote_freshness(self._comp(), at=self._AFTER_HOURS).closed is True
+
+    def test_stock_line_reads_post_not_closed(self):
+        line = format_quote_line(
+            self._comp(), at=self._AFTER_HOURS, asset_class=AssetClass.EQUITY
+        )
+        assert f"({MarketPhase.POST.value})" in line
+        assert "closed" not in line
+
+    def test_stock_after_hours_print_is_stamped_live(self):
+        stamp = build_live_stamp(
+            [self._comp()], at=self._AFTER_HOURS, asset_class=AssetClass.EQUITY
+        )
+        assert stamp.startswith("[Live: COMP $9.12 ")
+        assert "after-hours" in stamp

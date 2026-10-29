@@ -1,5 +1,5 @@
 """
-Claude OAuth service — PKCE authorization code flow, token exchange, refresh with Redis lock.
+Claude OAuth service: PKCE authorization code flow, token exchange and refresh.
 
 Handles the OAuth 2.0 PKCE flow for connecting Claude models via users'
 existing Anthropic subscriptions. Unlike Codex (device code flow), Anthropic
@@ -14,7 +14,6 @@ Protocol details (discovered from @mariozechner/pi-ai 0.58.0):
 - Extra authorize param: code=true
 """
 
-import asyncio
 import base64
 import hashlib
 import logging
@@ -24,11 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from src.server.database.oauth_tokens import (
-    get_oauth_tokens,
-    invalidate_oauth_active_cache,
-    upsert_oauth_tokens,
-)
+from src.server.services.oauth_protocol import TokenSet, upstream_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -144,134 +139,39 @@ def parse_callback_input(raw: str) -> tuple[str, str]:
 
 # --- Token exchange ---
 
-async def exchange_code(
-    code: str,
-    state: str,
-    code_verifier: str,
-) -> dict:
-    """Exchange authorization code for tokens.
-
-    Anthropic uses JSON body (not form-urlencoded).
-
-    Returns:
-        {access_token, refresh_token, expires_in}
-    """
+async def _token_request(body: dict) -> TokenSet:
+    # Anthropic takes a JSON body, not form-urlencoded.
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            CLAUDE_TOKEN_URL,
-            json={
-                "grant_type": "authorization_code",
-                "client_id": CLAUDE_CLIENT_ID,
-                "code": code,
-                "state": state,
-                "redirect_uri": CLAUDE_REDIRECT_URI,
-                "code_verifier": code_verifier,
-            },
+        resp = await client.post(CLAUDE_TOKEN_URL, json={**body, "client_id": CLAUDE_CLIENT_ID})
+    if resp.status_code >= 400:
+        # The code only: the body is provider text that may quote the grant.
+        logger.error(
+            f"[claude_oauth] {body['grant_type']} failed: status={resp.status_code} "
+            f"code={upstream_error_code(resp)}"
         )
-        if resp.status_code >= 400:
-            logger.error(
-                f"[claude_oauth] Token exchange failed: status={resp.status_code} body={resp.text}"
-            )
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "access_token": data["access_token"],
-            "refresh_token": data["refresh_token"],
-            "expires_in": data.get("expires_in", 3600),
-        }
+    resp.raise_for_status()
+    return token_set(resp.json())
 
 
-async def refresh_tokens(refresh_token: str) -> dict:
-    """Use refresh token to get new tokens.
-
-    Returns:
-        {access_token, refresh_token, expires_in}
-    """
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            CLAUDE_TOKEN_URL,
-            json={
-                "grant_type": "refresh_token",
-                "client_id": CLAUDE_CLIENT_ID,
-                "refresh_token": refresh_token,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "access_token": data["access_token"],
-            "refresh_token": data["refresh_token"],
-            "expires_in": data.get("expires_in", 3600),
-        }
+async def exchange_code(code: str, state: str, code_verifier: str) -> TokenSet:
+    return await _token_request({
+        "grant_type": "authorization_code",
+        "code": code,
+        "state": state,
+        "redirect_uri": CLAUDE_REDIRECT_URI,
+        "code_verifier": code_verifier,
+    })
 
 
-# --- Orchestrator with refresh-lock ---
+async def refresh_tokens(refresh_token: str) -> TokenSet:
+    return await _token_request({"grant_type": "refresh_token", "refresh_token": refresh_token})
 
-async def get_valid_token(user_id: str) -> dict | None:
-    """
-    Get a valid access_token, refreshing if needed.
 
-    Uses Redis SETNX lock to prevent concurrent refresh.
-    Returns None if user hasn't connected.
-    """
-    tokens = await get_oauth_tokens(user_id, CLAUDE_PROVIDER)
-    if not tokens:
-        return None
-
-    now = datetime.now(timezone.utc)
-    expires_at = tokens["expires_at"]
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-    # Token still valid (with 5-min buffer)
-    if expires_at > now + timedelta(minutes=5):
-        return {"access_token": tokens["access_token"], "plan_type": tokens.get("plan_type")}
-
-    # Need to refresh — acquire Redis lock
-    from src.utils.cache.redis_cache import get_cache_client
-
-    cache = get_cache_client()
-    lock_key = f"oauth:refresh:{user_id}:{CLAUDE_PROVIDER}"
-
-    if cache.enabled and cache.client:
-        acquired = await cache.client.set(lock_key, "1", nx=True, ex=35)
-        if not acquired:
-            # Another request is refreshing — wait briefly and re-read
-            await asyncio.sleep(1)
-            tokens = await get_oauth_tokens(user_id, CLAUDE_PROVIDER)
-            if tokens:
-                return {"access_token": tokens["access_token"], "plan_type": tokens.get("plan_type")}
-            return None
-
-    try:
-        new = await refresh_tokens(tokens["refresh_token"])
-
-        new_expires = now + timedelta(seconds=new.get("expires_in", 3600))
-
-        await upsert_oauth_tokens(
-            user_id=user_id,
-            provider=CLAUDE_PROVIDER,
-            access_token=new["access_token"],
-            refresh_token=new["refresh_token"],
-            account_id=tokens.get("account_id", ""),
-            email=tokens.get("email"),
-            plan_type=tokens.get("plan_type"),
-            expires_at=new_expires,
-        )
-
-        try:
-            await invalidate_oauth_active_cache(user_id)
-        except Exception:
-            pass
-
-        logger.debug(f"[claude_oauth] Refreshed tokens for user_id={user_id}")
-        return {"access_token": new["access_token"], "plan_type": tokens.get("plan_type")}
-    except Exception as e:
-        logger.error(f"[claude_oauth] Token refresh failed for user_id={user_id}: {e}")
-        return None
-    finally:
-        if cache.enabled and cache.client:
-            try:
-                await cache.client.delete(lock_key)
-            except Exception:
-                pass
+def token_set(data: dict) -> TokenSet:
+    """A token endpoint answer as stored. Anthropic's tokens name no account
+    or plan, so the identity stays empty."""
+    return TokenSet(
+        access_token=data["access_token"],
+        refresh_token=data["refresh_token"],
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 3600)),
+    )

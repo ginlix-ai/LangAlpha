@@ -1,4 +1,5 @@
-"""Code and bash execution in the sandbox, with MCP trace harvest.
+"""Bash and Python run as detached jobs on the computer, and the server's own
+plain commands.
 
 Functions take the owning ``PTCSandbox`` as their explicit first argument;
 ``PTCSandbox`` exposes same-name delegators, so call sites and patch
@@ -6,13 +7,14 @@ semantics are unchanged.
 """
 
 import asyncio
+import dataclasses
+import functools
 import hashlib
-import json
 import shlex
-import textwrap
 import time
-import uuid
-from typing import Any
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -20,371 +22,69 @@ from src.observability import (
     safe_record,
     sandbox_execute_duration_ms,
 )
-from src.observability.tracing import tracer as _otel_tracer
 
-from ptc_agent.core.sandbox.retry import RetryPolicy
-
+from ptc_agent.core.sandbox import jobs as _jobs
+from ptc_agent.core.sandbox import mcp_setup
 from ptc_agent.core.sandbox._shared import (
-    ChartData,
-    ExecutionResult,
-    _entry_name,
+    EXCEPTION_FILE_ENV,
+    SANDBOX_TIMEOUT,
+    TURN_CWD_ENV,
 )
-from typing import TYPE_CHECKING
+from ptc_agent.core.sandbox.livefs_runtime import protocol as livefs_protocol
+from ptc_agent.core.sandbox.retry import RetryPolicy
+from ptc_agent.core.sandbox.runtime import ExecResult
+
+from ..paths import SandboxLayout, WorkspaceLayout
 
 if TYPE_CHECKING:
     from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
 
+# Relative names, each joined against the tier that owns it below.
+_THREADS = WorkspaceLayout.THREADS_DIR
+_SYSTEM_CODE = SandboxLayout.SYSTEM_CODE_DIR
 
-async def _collect_mcp_trace(sandbox: "PTCSandbox", trace_path: str) -> list[dict]:
-    """Read + parse the per-execution MCP trace JSONL, then best-effort delete it.
+#: The servers a subagent the user limited may call, which the connector
+#: client checks on every call (``_require_enabled``; that file ships into the
+#: sandbox and cannot import this). Exported only for such a subagent.
+_ALLOWED_SERVERS_ENV = "PTC_ALLOWED_SERVERS"
 
-        Returns one dict per valid JSON line; malformed lines are skipped so a
-        partial write (e.g. after a crash) never breaks result assembly. Never
-        raises — tracing is provenance-only and must not affect execution.
-        """
-    # Host-memory bound on the read. The generated client's per-execution
-    # body budget caps what IT emits, but MCP_TRACE_FILE is visible to
-    # agent-authored sandbox code, which can append to the JSONL directly —
-    # so the budget is not a host-side safety bound. Size the file first and
-    # skip a file far past any legit trace rather than pulling it (possibly
-    # GBs) into memory. ~4x the body budget (RESULT_BODY_TRACE_BUDGET_BYTES)
-    # leaves slack for snippets/args/metadata; the extractor clamps anyway.
-    _MCP_TRACE_READ_MAX_BYTES = 16 * 1024 * 1024
-
-    records: list[dict] = []
-    content: str | None = None
-    try:
-        size_res = await sandbox._runtime_call(
-            sandbox.runtime.exec,
-            f"wc -c < {shlex.quote(trace_path)} 2>/dev/null",
-            retry_policy=RetryPolicy.SAFE,
-        )
-        trace_bytes = int((getattr(size_res, "stdout", "") or "").strip() or 0)
-        if trace_bytes == 0:
-            # No trace written — the common case for a bash command that
-            # imported no MCP wrappers (git/npm/ls/...). The file was never
-            # created, so skip BOTH the read and the rm below (nothing to
-            # delete): saves two sandbox round-trips on every non-MCP bash run.
-            return records
-        if trace_bytes > _MCP_TRACE_READ_MAX_BYTES:
-            logger.warning(
-                "MCP trace file over read cap; skipping",
-                path=trace_path,
-                bytes=trace_bytes,
-                cap=_MCP_TRACE_READ_MAX_BYTES,
-            )
-        else:
-            content = await sandbox.aread_file_text(trace_path)
-    except Exception as e:
-        logger.debug("Failed to read MCP trace file", path=trace_path, error=str(e))
-        content = None
-    if content:
-        for line in content.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(entry, dict):
-                records.append(entry)
-    try:
-        # Delete via the same raw absolute trace_path the read above used.
-        # trace_path is already rooted at the live work_dir; normalize_path
-        # would re-prepend work_dir when it isn't under allowed_directories,
-        # so the rm would miss and leak the file (read uses the raw path).
-        await sandbox._runtime_call(
-            sandbox.runtime.exec,
-            f"rm -f {shlex.quote(trace_path)}",
-            retry_policy=RetryPolicy.SAFE,
-        )
-    except Exception as e:
-        logger.debug("Failed to clean up MCP trace file", path=trace_path, error=str(e))
-    return records
+# The limit a failure is judged against when no exec set one: a wait chunk's.
+_DEFAULT_LIMIT_S = _jobs.WAIT_CHUNK_S + _jobs.EXEC_MARGIN_S
+# The budget a job's file upload and its retries run under: ``_runtime_call``'s
+# own, named here so a failed upload is judged against it.
+_UPLOAD_LIMIT_S = 120
+# A code run that ended on a missing import installs it and reruns, this often.
+_INSTALL_RERUNS = 2
+# What a code run whose job could not be set up reports, on a full disk and
+# otherwise. ExecuteCode leads it with ERROR alone: no output follows.
+_CODE_DISK_FULL = (
+    "The computer's disk is full, so the code could not start and did not run. "
+    "Free space, then run it again."
+)
+_CODE_NOT_LAUNCHED = "The code could not start on the computer, so it did not run. Run it again."
 
 
-async def execute(
-    sandbox: "PTCSandbox",
-    code: str,
-    timeout: int | None = None,
-    *,
-    auto_install: bool = True,
-    max_retries: int = 2,
-    thread_id: str | None = None,
-    _carry_mcp_trace: list[dict] | None = None,
-) -> ExecutionResult:
-    """Execute Python code in the sandbox with optional auto-install for missing dependencies.
+def _ran_out(error: BaseException, ran_s: float | None, limit: float) -> bool:
+    """Whether a failed exec ran to its own limit, or said it timed out."""
+    text = str(error).lower()
+    return (ran_s is not None and ran_s >= limit * 0.95) or "timed out" in text or "timeout" in text
 
-        Args:
-            code: Python code to execute
-            timeout: Optional timeout in seconds
-            auto_install: Whether to automatically install missing packages on ImportError (default: True)
-            max_retries: Maximum number of retries after auto-installing packages (default: 2)
-            thread_id: Optional thread ID (first 8 chars) for thread-scoped code storage
-            _carry_mcp_trace: MCP trace accumulated from prior auto-install
-                attempts, prepended to this attempt's trace so provenance from
-                a failed-then-retried run isn't lost (internal).
 
-        Returns:
-            ExecutionResult with execution details
-        """
-    await sandbox._wait_ready()
+def _timed_out(error: BaseException, ran_s: float | None, limit: float) -> bool:
+    """Whether a failed job exec hit a time limit: it ran to its own, said
+    so, or raised a timeout whatever its text."""
+    return isinstance(error, TimeoutError) or _ran_out(error, ran_s, limit)
 
-    sandbox.execution_count += 1
-    execution_id = f"exec_{sandbox.execution_count:04d}"
-    code_hash = hashlib.sha256(code.encode()).hexdigest()[:16]
 
-    logger.debug(
-        "Executing code",
-        execution_id=execution_id,
-        code_hash=code_hash,
-        code_length=len(code),
-        auto_install=auto_install,
-        thread_id=thread_id,
-    )
+def _error_detail(error: BaseException) -> str:
+    return f"{type(error).__name__}: {error!s}" if str(error) else type(error).__name__
 
-    timeout_val = timeout or sandbox.config.security.max_execution_time
-    start_time = time.time()
 
-    _exec_span = _otel_tracer.start_span(
-        "sandbox.execute",
-        attributes={"code_bytes": len(code), "execution_id": execution_id},
-    )
-    # finally — guarantees end() runs on asyncio.CancelledError too
-    # (it's a BaseException so the except-clauses below would skip it).
-    # Set before the try so the crash path can still read any trace lines
-    # flushed before the failure (durability).
-    trace_path: str | None = None
-    # True once _collect_mcp_trace has run (it reads AND deletes the file).
-    # The finally block only cleans up when this stayed False — i.e. an
-    # asyncio.CancelledError unwound the turn before either the success or
-    # crash path collected, which would otherwise orphan the JSONL.
-    trace_collected = False
-    carry_trace = list(_carry_mcp_trace or [])
-    try:
-        # Write code to thread dir or fallback to code/
-        if thread_id:
-            code_path = f".agents/threads/{thread_id}/code/{execution_id}.py"
-            # Ensure per-thread code dir exists (lazy, once per thread)
-            if thread_id not in sandbox._thread_dirs_created:
-                await sandbox._runtime_call(
-                    sandbox.runtime.exec,
-                    f"mkdir -p {sandbox.normalize_path(f'.agents/threads/{thread_id}/code')}",
-                    retry_policy=RetryPolicy.SAFE,
-                )
-                sandbox._thread_dirs_created.add(thread_id)
-        else:
-            code_path = f".system/code/{execution_id}.py"
-        try:
-            await sandbox._runtime_call(
-                sandbox.runtime.upload_file,
-                code.encode("utf-8"),
-                sandbox.normalize_path(code_path),
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception as upload_err:
-            logger.warning(
-                "Failed to save code file to sandbox (non-fatal)",
-                code_path=code_path,
-                error=str(upload_err),
-            )
-
-        # Get list of files before execution
-        files_before = await sandbox._list_result_files()
-
-        # Execute code
-        # Set PYTHONPATH so code can import from tools/ and _internal/
-        # MCP + GitHub env vars are injected at sandbox creation time
-        work_dir = await sandbox.runtime.fetch_working_dir()
-
-        internal_dir = f"{work_dir}/_internal"
-        exec_env = {"PYTHONPATH": f"{work_dir}:{internal_dir}/src:{internal_dir}"}
-
-        # Per-execution MCP provenance trace file. A unique id (uuid suffix)
-        # keeps the file unique across concurrent executions on a shared
-        # sandbox (parallel subagents). The generated mcp_client creates the
-        # parent dir lazily; we read + delete it after the run.
-        trace_path = f"{work_dir}/.system/trace/{execution_id}_{uuid.uuid4().hex}.jsonl"
-        exec_env["MCP_TRACE_FILE"] = trace_path
-
-        # Use code_run() for native artifact support (captures matplotlib charts)
-        result = await sandbox._runtime_call(
-            sandbox.runtime.code_run,
-            code,
-            env=exec_env,
-            timeout=timeout_val,
-            retry_policy=RetryPolicy.UNSAFE,
-            total_timeout=timeout_val + 30,
-        )
-
-        stdout = result.stdout
-        stderr = result.stderr
-        exit_code = result.exit_code
-        success = exit_code == 0
-
-        # Extract charts from artifacts
-        charts = []
-        for artifact in result.artifacts:
-            charts.append(
-                ChartData(
-                    type=artifact.type,
-                    title=artifact.name or "",
-                    png_base64=artifact.data if artifact.data else None,
-                    elements=[],
-                )
-            )
-        # Get files after execution
-        files_after = await sandbox._list_result_files()
-
-        # Determine file changes
-        files_created = [f for f in files_after if f not in files_before]
-        files_modified: list[str] = []  # TODO: Implement modification tracking
-
-        duration = time.time() - start_time
-
-        # Collect MCP provenance trace written in-sandbox (best-effort),
-        # prepending any trace carried over from prior retry attempts so a
-        # failed-then-retried run keeps the pre-failure sources (dedup is
-        # handled downstream by the extractor).
-        mcp_trace = [*carry_trace, *await sandbox._collect_mcp_trace(trace_path)]
-        trace_collected = True
-
-        execution_result = ExecutionResult(
-            success=success,
-            stdout=stdout,
-            stderr=stderr,
-            duration=duration,
-            files_created=files_created,
-            files_modified=files_modified,
-            execution_id=execution_id,
-            code_hash=code_hash,
-            charts=charts,
-            mcp_trace=mcp_trace,
-        )
-
-        # Auto-install missing packages and retry if enabled
-        if not success and auto_install and max_retries > 0:
-            missing_packages = sandbox._detect_missing_imports(stderr)
-            if missing_packages:
-                logger.info(
-                    "Attempting auto-install and retry",
-                    execution_id=execution_id,
-                    missing_packages=missing_packages,
-                    retries_remaining=max_retries,
-                )
-
-                # Install missing packages
-                for package in missing_packages:
-                    await sandbox._install_package(package)
-
-                # Retry execution with decremented retry count, carrying this
-                # attempt's trace forward so its provenance survives the retry.
-                return await sandbox.execute(
-                    code=code,
-                    timeout=timeout,
-                    auto_install=auto_install,
-                    max_retries=max_retries - 1,
-                    thread_id=thread_id,
-                    _carry_mcp_trace=mcp_trace,
-                )
-
-        logger.info(
-            "Code execution completed",
-            execution_id=execution_id,
-            success=success,
-            duration=duration,
-            files_created=len(files_created),
-            charts_captured=len(charts),
-        )
-
-        _exec_span.set_attribute("success", True)
-        safe_record(
-            sandbox_execute_duration_ms,
-            (time.time() - start_time) * 1000.0,
-            {"success": "true", "kind": "code"},
-        )
-
-        return execution_result
-
-    except Exception as e:
-        duration = time.time() - start_time
-        is_timeout, error_detail, stderr_msg = sandbox._classify_execution_error(
-            e,
-            duration,
-            timeout_val,
-            f"Execution timed out after {duration:.0f}s (limit: {timeout_val}s). "
-                "The script was killed before completion — no output was captured. "
-                "Split into smaller steps or optimize the script to run faster.",
-        )
-
-        logger.error(
-            "Code execution failed",
-            execution_id=execution_id,
-            error=error_detail,
-            duration=duration,
-            is_timeout=is_timeout,
-        )
-
-        _exec_span.record_exception(e)
-        _exec_span.set_attribute("success", False)
-        _exec_span.set_attribute("is_timeout", is_timeout)
-        safe_record(
-            sandbox_execute_duration_ms,
-            duration * 1000.0,
-            {"success": "false", "kind": "code"},
-        )
-
-        # Recover any MCP trace lines flushed before the crash (durability),
-        # plus any trace carried over from prior retry attempts.
-        crash_mcp_trace: list[dict] = list(carry_trace)
-        if trace_path:
-            crash_mcp_trace.extend(await sandbox._collect_mcp_trace(trace_path))
-            trace_collected = True
-
-        return ExecutionResult(
-            success=False,
-            stdout="",
-            stderr=stderr_msg,
-            duration=duration,
-            files_created=[],
-            files_modified=[],
-            execution_id=execution_id,
-            code_hash=code_hash,
-            charts=[],
-            mcp_trace=crash_mcp_trace,
-        )
-    finally:
-        _exec_span.end()
-        # asyncio.CancelledError (BaseException) skips the except above, so a
-        # disconnect/cancel after MCP_TRACE_FILE was set would leave the JSONL
-        # behind. Delete it here when neither path collected. shield() so the
-        # rm still runs even though this await is itself unwinding a cancel.
-        if (
-            trace_path is not None
-            and not trace_collected
-            and sandbox.runtime is not None
-        ):
-            try:
-                await asyncio.shield(
-                    sandbox._runtime_call(
-                        sandbox.runtime.exec,
-                        f"rm -f {shlex.quote(trace_path)}",
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                )
-            except asyncio.CancelledError:
-                # Propagate the cancel we're unwinding; the shielded rm above
-                # has already been dispatched and runs to completion detached.
-                raise
-            except Exception as e:
-                logger.debug(
-                    "Failed to clean up MCP trace file on cancel",
-                    path=trace_path,
-                    error=str(e),
-                )
+def _allowed_servers_value(servers: frozenset[str]) -> str:
+    """Comma-joined and sorted, so one set always exports one string."""
+    return ",".join(sorted(servers))
 
 
 async def execute_bash_command(
@@ -392,316 +92,581 @@ async def execute_bash_command(
     command: str,
     working_dir: str | None = None,
     timeout: int = 60,
-    *,
-    background: bool = False,
-    thread_id: str | None = None,
 ) -> dict[str, Any]:
-    """Execute a bash command in the sandbox.
+    """Run one of the server's own commands (``rm``, ``df``, ``pip list``)
+    and wait for it.
 
-        Args:
-            command: Bash command to execute
-            working_dir: Working directory for command execution (default: sandbox working dir)
-            timeout: Maximum execution time in seconds (default: 60)
-            background: Run command in background
-            thread_id: Optional thread ID (first 8 chars) for thread-scoped script storage
-
-        Returns:
-            Dictionary with success, stdout, stderr, exit_code, bash_id, command_hash
-        """
-    if working_dir is None:
-        working_dir = sandbox._work_dir
+    The agent's Bash runs every command as a job (``start_bash_job``), which
+    can outlast the call. ``working_dir`` defaults to the turn's workspace
+    folder, or the computer root without one. Returns ``success``,
+    ``stdout``, ``stderr``, ``exit_code``, ``bash_id``, ``command_hash`` and
+    ``mcp_trace``, and ``failure`` when the exec itself failed.
+    """
+    # The runtime's own cwd is the computer root, so a relative or virtual
+    # working_dir has to be folded into the workspace here or it lands beside
+    # the sibling folders.
+    working_dir = sandbox.normalize_path(working_dir or ".")
     await sandbox._wait_ready()
-    start_time = time.time()
-
-    # Per-execution MCP provenance trace file (foreground only; set just
-    # before exec). Initialized here so the finally can clean it up on a
-    # cancel that skips the except below.
-    trace_path: str | None = None
-    trace_collected = False
-
+    began = time.monotonic()
+    command_hash = hashlib.sha256(command.encode()).hexdigest()[:16]
     try:
-        # Generate bash execution ID for tracking
-        sandbox.bash_execution_count += 1
-        bash_id = f"bash_{sandbox.bash_execution_count:04d}"
-        command_hash = hashlib.sha256(command.encode()).hexdigest()[:16]
-        from datetime import UTC, datetime
-
-        timestamp = datetime.now(tz=UTC).isoformat()
-
-        logger.debug(
-            "Executing bash command",
-            bash_id=bash_id,
-            command_hash=command_hash,
-            command=command[:100],
-            working_dir=working_dir,
-        )
-
-        # Build the full bash command with working directory
-        # Use cd to change directory, then execute command
-        full_command = f"cd {working_dir} && {command}"
-
-        # Audit: save .sh script for traceability (non-fatal)
-        script_content = textwrap.dedent(f"""\
-                #!/bin/bash
-                # Bash Execution Log
-                # ID: {bash_id}
-                # Working Directory: {working_dir}
-                # Timestamp: {timestamp}
-                # Command Hash: {command_hash}
-
-                set -e
-                {full_command}
-            """)
-
-        if thread_id:
-            script_relative_path = f".agents/threads/{thread_id}/code/{bash_id}.sh"
-            if thread_id not in sandbox._thread_dirs_created:
-                await sandbox._runtime_call(
-                    sandbox.runtime.exec,
-                    f"mkdir -p {sandbox.normalize_path(f'.agents/threads/{thread_id}/code')}",
-                    retry_policy=RetryPolicy.SAFE,
-                )
-                sandbox._thread_dirs_created.add(thread_id)
-        else:
-            script_relative_path = f".system/code/{bash_id}.sh"
-
-        try:
-            assert sandbox.runtime is not None
-            await sandbox._runtime_call(
-                sandbox.runtime.upload_file,
-                script_content.encode("utf-8"),
-                sandbox.normalize_path(script_relative_path),
-                retry_policy=RetryPolicy.SAFE,
-            )
-        except Exception as upload_err:
-            logger.warning(
-                "Failed to save bash script to sandbox (non-fatal)",
-                bash_id=bash_id,
-                error=str(upload_err),
-            )
-
-        # Background execution via dedicated Daytona session per command
-        if background:
-            session_id = await sandbox._create_bg_session(bash_id)
-            assert sandbox.runtime is not None
-            # Inject the same MCP provenance trace env the foreground path
-            # uses so a backgrounded `python script.py` that imports the MCP
-            # wrappers records its mcp_trace too — harvested on completion in
-            # get_background_command_status. The audit .sh stays clean; only
-            # the executed command carries the exports.
-            bg_trace_path, bg_command = sandbox._build_trace_env_command(
-                bash_id, full_command
-            )
-            # Track immediately so cleanup() can find it if execute fails
-            sentinel_key = f"_pending:{session_id}"
-            sandbox._bg_sessions[sentinel_key] = session_id
-            try:
-                result = await sandbox._runtime_call(
-                    sandbox.runtime.session_execute,
-                    session_id,
-                    bg_command,
-                    run_async=True,
-                    retry_policy=RetryPolicy.UNSAFE,
-                    total_timeout=30,
-                )
-            except Exception:
-                # Clean up the session to avoid leaking on the Daytona side
-                try:
-                    await sandbox._runtime_call(
-                        sandbox.runtime.delete_session,
-                        session_id,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                except Exception:
-                    logger.debug("Failed to clean up bg session after execute failure", session_id=session_id)
-                sandbox._bg_sessions.pop(sentinel_key, None)
-                raise
-            # Replace sentinel with real cmd_id key
-            sandbox._bg_sessions.pop(sentinel_key, None)
-            sandbox._bg_sessions[result.cmd_id] = session_id
-            sandbox._bg_trace_paths[result.cmd_id] = bg_trace_path
-            logger.debug(
-                "Background command started",
-                bash_id=bash_id,
-                cmd_id=result.cmd_id,
-                session_id=session_id,
-            )
-            return {
-                "success": True,
-                "stdout": (
-                    f"Background command started (command_id: {result.cmd_id})\n"
-                        f"Use BashOutput tool with command_id=\"{result.cmd_id}\" to check output and status."
-                ),
-                "stderr": "",
-                "exit_code": 0,
-                "bash_id": bash_id,
-                "command_hash": command_hash,
-            }
-
-        # Execute directly via process.exec — no file upload dependency.
-        # Inject a per-execution MCP provenance trace file + the wrapper
-        # import path so a python script run here (e.g. `python analysis.py`
-        # importing `tools.{server}`) records the same mcp_trace ExecuteCode
-        # does — closing the bash provenance bypass. PYTHONPATH is prepended
-        # (preserving any existing value). The audit .sh above stays clean;
-        # only the executed command carries the exports.
         assert sandbox.runtime is not None
-        trace_path, exec_command = sandbox._build_trace_env_command(
-            bash_id, full_command
-        )
-        exec_result = await sandbox._runtime_call(
+        result = await sandbox._runtime_call(
             sandbox.runtime.exec,
-            exec_command,
+            f"cd {shlex.quote(working_dir)} && {command}",
             timeout=timeout,
             retry_policy=RetryPolicy.UNSAFE,
             total_timeout=timeout + 30,
         )
-
-        exit_code = exec_result.exit_code
-        stdout = exec_result.stdout
-        safe_record(
-            sandbox_execute_duration_ms,
-            (time.time() - start_time) * 1000.0,
-            {"success": "true" if exit_code == 0 else "false", "kind": "bash"},
-        )
-
-        # Harvest the in-sandbox MCP trace (best-effort; reads + deletes the
-        # file). No MCP call → file absent → empty list, no behavior change.
-        mcp_trace = await sandbox._collect_mcp_trace(trace_path)
-        trace_collected = True
-
-        if exit_code == 0:
-            return {
-                "success": True,
-                "stdout": stdout,
-                "stderr": "",
-                "exit_code": 0,
-                "bash_id": bash_id,
-                "command_hash": command_hash,
-                "mcp_trace": mcp_trace,
-            }
-
-        return {
-            "success": False,
-            "stdout": stdout,
-            "stderr": "",  # runtime.exec() returns combined output in stdout only
-            "exit_code": exit_code,
-            "bash_id": bash_id,
-            "command_hash": command_hash,
-            "mcp_trace": mcp_trace,
-        }
-
     except Exception as e:
-        duration = time.time() - start_time
+        duration = time.monotonic() - began
         safe_record(
-            sandbox_execute_duration_ms,
-            duration * 1000.0,
-            {"success": "false", "kind": "bash"},
+            sandbox_execute_duration_ms, duration * 1000.0, {"success": "false", "kind": "bash"}
         )
-        is_timeout, error_detail, stderr_msg = sandbox._classify_execution_error(
-            e,
-            duration,
-            timeout,
-            f"Command timed out after {duration:.0f}s (limit: {timeout}s). "
-                "The command was killed before completion. "
-                "Split into smaller steps or increase the timeout.",
-        )
-
+        # By its run time and text alone: a TimeoutError back in no time is a
+        # connect timeout, which never reached the command.
+        is_timeout = _ran_out(e, duration, timeout)
         logger.error(
-            f"Failed to execute bash command: {e}",
-            exc_info=True,
-            extra={"is_timeout": is_timeout},
+            f"Failed to execute bash command: {e}", exc_info=True, extra={"is_timeout": is_timeout}
         )
-        # Recover any MCP trace flushed before the failure (best-effort).
-        recovered_trace: list[dict] = []
-        if trace_path is not None:
-            recovered_trace = await sandbox._collect_mcp_trace(trace_path)
-            trace_collected = True
         return {
             "success": False,
             "stdout": "",
-            "stderr": stderr_msg,
+            "stderr": (
+                _ran_past(duration, timeout)
+                if is_timeout
+                else f"Sandbox execution error: {_error_detail(e)}"
+            ),
             "exit_code": -1,
-            "bash_id": locals().get("bash_id"),
+            "bash_id": None,
             "command_hash": None,
-            "mcp_trace": recovered_trace,
+            "mcp_trace": [],
+            "failure": SANDBOX_TIMEOUT if is_timeout else type(e).__name__,
         }
-    finally:
-        # asyncio.CancelledError (BaseException) skips the except above, so a
-        # cancel after MCP_TRACE_FILE was set would leave the JSONL behind.
-        # Delete it here when neither path collected. shield() so the rm still
-        # runs even though this await is itself unwinding a cancel.
-        if (
-            trace_path is not None
-            and not trace_collected
-            and sandbox.runtime is not None
-        ):
-            try:
-                await asyncio.shield(
-                    sandbox._runtime_call(
-                        sandbox.runtime.exec,
-                        f"rm -f {shlex.quote(trace_path)}",
-                        retry_policy=RetryPolicy.SAFE,
-                    )
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.debug(
-                    "Failed to clean up bash MCP trace file on cancel",
-                    path=trace_path,
-                    error=str(e),
-                )
-
-
-def _build_trace_env_command(
-    sandbox: "PTCSandbox", bash_id: str, full_command: str
-) -> tuple[str, str]:
-    """Wrap a bash command with the MCP-provenance trace env.
-
-        Returns ``(trace_path, command)``. ``command`` exports ``MCP_TRACE_FILE``
-        plus the wrapper ``PYTHONPATH`` (prepended, preserving any existing value)
-        before running ``full_command``, so a ``python script.py`` that imports the
-        MCP wrappers records the same ``mcp_trace`` ExecuteCode does. Shared by the
-        foreground and background bash paths so the two can't drift in how they
-        build PYTHONPATH or quote the trace path.
-        """
-    # Use the cached working dir (set on create/reconnect via
-    # fetch_working_dir, and used by normalize_path on this same bash path) so
-    # wrapping a command doesn't add a Daytona round-trip per bash invocation.
-    sandbox_root = sandbox._work_dir
-    internal_dir = f"{sandbox_root}/_internal"
-    pythonpath = f"{sandbox_root}:{internal_dir}/src:{internal_dir}"
-    trace_path = f"{sandbox_root}/.system/trace/{bash_id}_{uuid.uuid4().hex}.jsonl"
-    command = (
-        f"export MCP_TRACE_FILE={shlex.quote(trace_path)} && "
-            f"export PYTHONPATH={shlex.quote(pythonpath)}"
-            f"${{PYTHONPATH:+:$PYTHONPATH}} && "
-            f"{full_command}"
+    ok = result.exit_code == 0
+    safe_record(
+        sandbox_execute_duration_ms,
+        (time.monotonic() - began) * 1000.0,
+        {"success": "true" if ok else "false", "kind": "bash"},
     )
-    return trace_path, command
+    return {
+        "success": ok,
+        "stdout": result.stdout,
+        # Every runtime returns the command's own streams in stdout; stderr
+        # holds only what the runtime says itself, as a timeout or a run that
+        # never started.
+        "stderr": result.stderr or "",
+        "exit_code": result.exit_code,
+        "bash_id": None,
+        "command_hash": command_hash,
+        "mcp_trace": [],
+    }
 
 
-async def _list_result_files(sandbox: "PTCSandbox") -> list[str]:
-    """List files in the results directory.
+# -- Detached jobs --------------------------------------------------------------
 
-        Returns:
-            List of file paths relative to workspace (e.g., "results/file.csv")
-        """
-    try:
+# How a ``python3`` code run starts: pyplot's show() under Agg is silent on a
+# Linux machine with no display, and warns on macOS; nothing reads the figure.
+_CODE_RUN_WARNINGS = (
+    "ignore:FigureCanvasAgg is non-interactive:UserWarning",
+    "ignore:Matplotlib is currently using agg:UserWarning",
+)
+# The audit script's header, ahead of the command the job evals from it.
+_AUDIT_HEADER_LINES = 6
+
+
+def _eval_after_header(script_abs: str) -> str:
+    """Bash that evals the audit script's command, past its header.
+
+    Read with builtins rather than ``tail``, which would cost a process on
+    every command; a script that cannot be read exits 127 rather than running
+    nothing and reading as success.
+    """
+    skip = " ".join(str(i) for i in range(1, _AUDIT_HEADER_LINES + 1))
+    return (
+        f"{{ for __la_i in {skip}; do read -r __la_x; done; "
+        f"IFS= read -r -d '' __la_x; }} < {shlex.quote(script_abs)} "
+        '|| [ -n "$__la_x" ] || exit 127; '
+        'eval "unset __la_i __la_x; $__la_x"'
+    )
+
+
+class JobExecFailed(Exception):
+    """An exec of a job script raised, judged where it ran: ``timed_out``
+    when it ran to its own ``limit`` or said it timed out. A wait of many
+    execs is judged on the one that failed, never on the whole wait."""
+
+    def __init__(self, cause: Exception, *, timed_out: bool, limit: int) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.timed_out = timed_out
+        self.limit = limit
+
+
+class _JobExec:
+    """``runtime.exec`` with the sandbox's retries, raising ``JobExecFailed``.
+    Every job script is safe to run twice: a launch whose id already ran only
+    reports it."""
+
+    def __init__(self, sandbox: "PTCSandbox") -> None:
+        self._sandbox = sandbox
+
+    async def __call__(
+        self, script: str, timeout: int, *, retry_policy: RetryPolicy = RetryPolicy.SAFE
+    ) -> ExecResult:
+        sandbox = self._sandbox
         assert sandbox.runtime is not None
-        file_infos = await sandbox._runtime_call(
-            sandbox.runtime.list_files,
-            "results",
-            retry_policy=RetryPolicy.SAFE,
-        )
-        if not file_infos:
-            return []
-        # Return paths relative to workspace, not just filenames
-        return [
-            f"results/{_entry_name(f)}"
-            for f in file_infos
-        ]
-    except (OSError, AttributeError) as e:
-        logger.warning(f"Error listing result files: {e}")
+        began = time.monotonic()
+        try:
+            return await sandbox._runtime_call(
+                sandbox.runtime.exec,
+                script,
+                timeout=timeout,
+                retry_policy=retry_policy,
+                total_timeout=timeout + 60,
+            )
+        except Exception as e:
+            ran_s = time.monotonic() - began
+            raise JobExecFailed(e, timed_out=_timed_out(e, ran_s, timeout), limit=timeout) from e
+
+
+def _job_upload(sandbox: "PTCSandbox") -> _jobs.UploadFn:
+    """Upload a job's files, raising ``JobExecFailed`` as ``_JobExec`` does:
+    judged on the upload's own call and budget, not a wait chunk's."""
+
+    async def upload(files: Sequence[tuple[str, bytes]]) -> None:
+        assert sandbox.runtime is not None
+        began = time.monotonic()
+        try:
+            await sandbox._runtime_call(
+                sandbox.runtime.upload_files,
+                [(content, path) for path, content in files],
+                retry_policy=RetryPolicy.SAFE,
+                total_timeout=_UPLOAD_LIMIT_S,
+            )
+        except Exception as e:
+            ran_s = time.monotonic() - began
+            raise JobExecFailed(
+                e, timed_out=_timed_out(e, ran_s, _UPLOAD_LIMIT_S), limit=_UPLOAD_LIMIT_S
+            ) from e
+
+    return upload
+
+
+def _job_env(
+    sandbox: "PTCSandbox",
+    trace_path: str,
+    call_id: str | None,
+    allowed_servers: frozenset[str] | None,
+) -> dict[str, str]:
+    """The environment every job starts with: its MCP trace file and the
+    workspace's client config, so a script that imports the MCP wrappers
+    records its calls, and the call it runs for."""
+    env = {
+        "MCP_TRACE_FILE": trace_path,
+        "PTC_WORKSPACE_CONFIG": sandbox.workspace().mcp_client_config,
+        # A script's prints reach the log as they happen.
+        "PYTHONUNBUFFERED": "1",
+    }
+    if allowed_servers is not None:
+        env[_ALLOWED_SERVERS_ENV] = _allowed_servers_value(allowed_servers)
+    if call_id:
+        env[livefs_protocol.CALL_ENV] = call_id
+    return env
+
+
+def _job_dirs(
+    sandbox: "PTCSandbox", thread_id: str | None, ref: _jobs.JobRef
+) -> tuple[str, str]:
+    """Where the job's saved script goes, and its log's directory.
+
+    ``.system`` belongs to the computer, not to the turn's folder, so with no
+    thread the script goes there, joined against the root.
+    """
+    if thread_id:
+        code_dir = sandbox.workspace().join(f"{_THREADS}/{thread_id}/code")
+    else:
+        code_dir = sandbox.layout.join(_SYSTEM_CODE)
+    return code_dir, ref.log_path.rpartition("/")[0]
+
+
+async def _stop_quietly(sandbox: "PTCSandbox", ref: _jobs.JobRef) -> list[dict]:
+    """Stop a job and drop its files, never raising: what is unwinding matters
+    more. Returns the MCP calls its trace held, none when the stop failed."""
+    if sandbox.runtime is None:
         return []
+    try:
+        return await asyncio.shield(_jobs.discard_job(_JobExec(sandbox), ref))
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("Could not stop job", command_id=ref.command_id, error=str(e))
+        return []
+
+
+def _ran_past(duration: float, limit: int) -> str:
+    return (
+        f"Command timed out after {duration:.0f}s (limit: {limit}s). "
+        "The command was killed before completion. "
+        "Split into smaller steps or increase the timeout."
+    )
+
+
+def _cut(handle: _jobs.JobHandle, limit: int, trace: tuple[dict, ...]) -> _jobs.Failed:
+    return _jobs.Failed(
+        handle,
+        "timeout",
+        f"The sandbox did not answer within {limit}s, so the command was stopped.",
+        trace=trace,
+    )
+
+
+def _failed(handle: _jobs.JobHandle, error: Exception) -> _jobs.Failed:
+    """A call that could not run or follow its job, as the call reports it.
+
+    An exec that raised was judged where it ran; a reply no script wrote
+    carries its exec's limit and how long it ran, and is judged the same way.
+    """
+    if isinstance(error, JobExecFailed):
+        cause, timed_out, limit = error.cause, error.timed_out, error.limit
+    else:
+        cause = error
+        limit = getattr(error, "limit", None) or _DEFAULT_LIMIT_S
+        timed_out = _timed_out(error, getattr(error, "ran_s", None), limit)
+    if timed_out:
+        # The limit is the exec's own: a job never times out, only a call can.
+        return _cut(handle, limit, handle.carried)
+    return _jobs.Failed(
+        handle,
+        "transport",
+        f"Sandbox execution error: {_error_detail(cause)}",
+        trace=handle.carried,
+        raised_class=type(cause).__name__,
+    )
+
+
+async def _drive_job(
+    sandbox: "PTCSandbox",
+    handle: _jobs.JobHandle,
+    run: Callable[[], Awaitable[_jobs.JobOutcome]],
+) -> _jobs.JobOutcome:
+    """Run a launch or a wait. A failure stops the job, since the call then
+    reports it as not having run, so nothing may keep running behind that;
+    the MCP calls it made first stay in the call's trace, as its sources.
+    ``JobNotLaunched`` passes through: nothing started, and what to do
+    instead is the caller's."""
+    try:
+        return await run()
+    except _jobs.JobNotLaunched:
+        raise
+    except Exception as e:
+        failed = _failed(handle, e)
+        logger.error(
+            "Job call failed",
+            command_id=handle.ref.command_id,
+            reason=failed.reason,
+            error=failed.message,
+        )
+        called = await _stop_quietly(sandbox, handle.ref)
+        return dataclasses.replace(failed, trace=(*failed.trace, *called))
+
+
+async def _launch(
+    sandbox: "PTCSandbox",
+    handle: _jobs.JobHandle,
+    run: Callable[[], Awaitable[_jobs.JobOutcome]],
+) -> _jobs.JobOutcome:
+    """A launch, through ``_drive_job``. A cancel stops the job too: its
+    caller has no handle to stop it by yet."""
+    try:
+        return await _drive_job(sandbox, handle, run)
+    except asyncio.CancelledError:
+        await _stop_quietly(sandbox, handle.ref)
+        raise
+
+
+def _record_duration(outcome: _jobs.JobOutcome) -> None:
+    """One sample per run that ended in its call, whichever of its waits saw
+    it end; one handed off has none."""
+    if isinstance(outcome, _jobs.Running):
+        return
+    ok = isinstance(outcome, _jobs.Ended) and outcome.exit_code == 0
+    safe_record(
+        sandbox_execute_duration_ms,
+        outcome.handle.ran_for() * 1000.0,
+        {"success": "true" if ok else "false", "kind": outcome.handle.kind},
+    )
+
+
+async def start_bash_job(
+    sandbox: "PTCSandbox",
+    command: str,
+    *,
+    working_dir: str | None = None,
+    wait_s: float | None,
+    thread_id: str | None = None,
+    call_id: str | None = None,
+    allowed_servers: frozenset[str] | None = None,
+) -> _jobs.JobOutcome:
+    """Run a bash command as a detached job and wait up to ``wait_s`` for it.
+
+    ``wait_s=0`` returns at once; None waits until it ends. The command runs
+    as ``cd <working_dir> && <command>``, saved first as the thread's audit
+    script, which the job evals. Raises ``JobNotLaunched`` when the job could
+    not be set up, with the command as ``run_foreground`` would run it.
+    """
+    working_dir = sandbox.normalize_path(working_dir or ".")
+    await sandbox._wait_ready()
+    ref = _jobs.job_paths(
+        sandbox.layout, sandbox.workspace(), thread_id, _jobs.new_command_id()
+    )
+    code_dir, log_dir = _job_dirs(sandbox, thread_id, ref)
+    script_abs = f"{code_dir}/{ref.command_id}.sh"
+    header = [
+        "#!/bin/bash",
+        "# Bash Execution Log",
+        f"# ID: {ref.command_id}",
+        f"# Working Directory: {working_dir}",
+        f"# Timestamp: {datetime.now(tz=UTC).isoformat()}",
+        f"# Command Hash: {hashlib.sha256(command.encode()).hexdigest()[:16]}",
+    ]
+    assert len(header) == _AUDIT_HEADER_LINES
+    full_command = f"cd {shlex.quote(working_dir)} && {command}"
+    spec = _jobs.JobSpec(
+        ref=ref,
+        command=_eval_after_header(script_abs),
+        env=_job_env(sandbox, ref.trace_path, call_id, allowed_servers),
+        pythonpath=":".join(sandbox.workspace().pythonpath(sandbox.layout)),
+        files=((script_abs, ("\n".join(header) + "\n" + full_command + "\n").encode()),),
+        dirs=(code_dir, log_dir),
+    )
+    logger.debug(
+        "Starting bash job",
+        command_id=ref.command_id,
+        command_length=len(command),
+        working_dir=working_dir,
+        wait_s=wait_s,
+    )
+    exec_fn = _JobExec(sandbox)
+    handle = _jobs.JobHandle(ref, datetime.now(UTC))
+    try:
+        outcome = await _launch(
+            sandbox,
+            handle,
+            lambda: _jobs.run_job(
+                exec_fn, spec, wait_s, upload=_job_upload(sandbox), handle=handle
+            ),
+        )
+    except _jobs.JobNotLaunched as e:
+        logger.warning("Bash job could not launch", command_id=ref.command_id, error=str(e))
+        if wait_s is not None and wait_s <= 0:
+            # A call that asked for the background runs nothing in the
+            # foreground, which could not outlive it: this is its sample.
+            _record_duration(_jobs.Failed(handle, "not_launched", str(e)))
+        # The saved script it evals may not have been written, so the
+        # foreground runs the command itself.
+        raise _jobs.JobNotLaunched(
+            dataclasses.replace(spec, command=full_command), disk_full=e.disk_full
+        ) from None
+    _record_duration(outcome)
+    return outcome
+
+
+async def run_foreground(
+    sandbox: "PTCSandbox", spec: _jobs.JobSpec, timeout: int
+) -> _jobs.Ended | _jobs.Failed:
+    """Run a command whose job could not be set up the way Bash ran every
+    command before jobs: one exec in the foreground, with the job's
+    environment, ended in the sandbox at ``timeout`` seconds, which reads as
+    a timeout. Its audit copy is saved if it can be, and its MCP trace read
+    if one could be written."""
+    await sandbox._wait_ready()
+    assert sandbox.runtime is not None
+    handle = _jobs.JobHandle(spec.ref, datetime.now(UTC))
+    try:
+        await _job_upload(sandbox)(spec.files)
+    except Exception as e:  # noqa: BLE001 - the audit copy is best effort
+        logger.debug("Could not save the audit copy", command_id=spec.ref.command_id, error=str(e))
+    exec_fn = _JobExec(sandbox)
+    limit = max(timeout, 1)
+    outcome: _jobs.Ended | _jobs.Failed
+    began = time.monotonic()
+    try:
+        # Never retried: it is the command itself, not a script safe to rerun.
+        reply = await _jobs.run_foreground(
+            functools.partial(exec_fn, retry_policy=RetryPolicy.UNSAFE), spec, limit
+        )
+    except (JobExecFailed, _jobs.JobReplyError) as e:
+        failed = _failed(handle, e)
+        result = getattr(e, "result", None)
+        if failed.reason == "timeout" or result is None:
+            logger.error(
+                "Foreground command failed",
+                command_id=spec.ref.command_id,
+                error=failed.message,
+            )
+            _record_duration(failed)
+            return failed
+        # Short of its limit with no report, it reads as a foreground run
+        # always read: the exec's own exit code and output.
+        reply = _jobs.ForegroundReply(result.exit_code, result.stdout or "", cut=False)
+    try:
+        trace = tuple(await _jobs.collect_job_trace(exec_fn, spec.ref))
+    except (_jobs.JobReplyError, JobExecFailed) as e:
+        # The command ran and its output is in hand.
+        logger.debug("Could not read the trace", command_id=spec.ref.command_id, error=str(e))
+        trace = ()
+    if reply.cut:
+        # The sandbox answered: the command ran past its own timeout, and
+        # what it printed first is all the output it has, with no log.
+        said = _ran_past(time.monotonic() - began, limit)
+        message = f"{said}\n{reply.output}" if reply.output else said
+        outcome = _jobs.Failed(handle, "timeout", message, trace=trace)
+    else:
+        outcome = _jobs.Ended(handle, exit_code=reply.exit_code, output=reply.output, trace=trace)
+    _record_duration(outcome)
+    return outcome
+
+
+async def start_code_job(
+    sandbox: "PTCSandbox",
+    code: str,
+    *,
+    wait_s: float | None,
+    thread_id: str | None = None,
+    call_id: str | None = None,
+    allowed_servers: frozenset[str] | None = None,
+) -> _jobs.JobOutcome:
+    """Run Python code as a detached job: saved to a file, run as ``python3``.
+
+    A run that ended within the wait on a missing import installs it and runs
+    again, with what is left of the wait; one handed off is never rerun. A
+    rerun is a job of its own, so the id and log are the outcome's, and its
+    MCP calls follow the earlier attempts'.
+    """
+    await sandbox._wait_ready()
+    began = time.monotonic()
+    carried: tuple[dict, ...] = ()
+    left = wait_s
+    reruns = _INSTALL_RERUNS
+    while True:
+        outcome = await _run_code(
+            sandbox, code, left, thread_id, call_id, allowed_servers, carried
+        )
+        if not isinstance(outcome, _jobs.Ended) or outcome.exit_code == 0 or not reruns:
+            return outcome
+        # Never the output: it carries what the code printed and what its
+        # subprocesses wrote, and a name read here is installed.
+        package = mcp_setup.missing_import(outcome.raised)
+        if package is None:
+            return outcome
+        logger.info(
+            "Attempting auto-install and retry",
+            command_id=outcome.ref.command_id,
+            missing_packages=[package],
+            retries_remaining=reruns,
+        )
+        # A rerun reruns everything before the failing import, so it is only
+        # worth its side effects once the install succeeded.
+        if not await sandbox._install_package(package):
+            return outcome
+        reruns -= 1
+        carried = outcome.trace
+        left = None if wait_s is None else max(wait_s - (time.monotonic() - began), 0.0)
+
+
+async def _run_code(
+    sandbox: "PTCSandbox",
+    code: str,
+    wait_s: float | None,
+    thread_id: str | None,
+    call_id: str | None,
+    allowed_servers: frozenset[str] | None,
+    carried: tuple[dict, ...],
+) -> _jobs.JobOutcome:
+    ref = _jobs.job_paths(
+        sandbox.layout, sandbox.workspace(), thread_id, _jobs.new_command_id()
+    )
+    code_dir, log_dir = _job_dirs(sandbox, thread_id, ref)
+    code_abs = f"{code_dir}/{ref.command_id}.py"
+    workspace = sandbox.workspace().workspace
+    env = _job_env(sandbox, ref.trace_path, call_id, allowed_servers)
+    # A display-less backend for pyplot, chosen without importing matplotlib,
+    # and the turn's folder for the shipped sitecustomize.
+    env["MPLBACKEND"] = "Agg"
+    env[TURN_CWD_ENV] = workspace
+    # The module the run's own unhandled exception failed to import, apart
+    # from its output: all a missing import is read from.
+    env[EXCEPTION_FILE_ENV] = f"{ref.state_dir}/{_jobs.RAISED_FILE}"
+    warnings = " ".join(f"-W {shlex.quote(w)}" for w in _CODE_RUN_WARNINGS)
+    spec = _jobs.JobSpec(
+        ref=ref,
+        command=f"cd {shlex.quote(workspace)} && python3 {warnings} {shlex.quote(code_abs)}",
+        env=env,
+        pythonpath=":".join(sandbox.workspace().pythonpath(sandbox.layout)),
+        files=((code_abs, code.encode("utf-8")),),
+        dirs=(code_dir, log_dir),
+    )
+    logger.debug(
+        "Starting code job", command_id=ref.command_id, code_length=len(code), wait_s=wait_s
+    )
+    exec_fn = _JobExec(sandbox)
+    handle = _jobs.JobHandle(ref, datetime.now(UTC), carried, kind="code")
+    try:
+        outcome = await _launch(
+            sandbox,
+            handle,
+            lambda: _jobs.run_job(
+                exec_fn, spec, wait_s, upload=_job_upload(sandbox), handle=handle
+            ),
+        )
+    except _jobs.JobNotLaunched as e:
+        # A run has no foreground to fall back to: it is marked as any run the
+        # sandbox failed, and says that nothing of it ran.
+        outcome = dataclasses.replace(
+            _failed(handle, e),
+            reason="not_launched",
+            message=_CODE_DISK_FULL if e.disk_full else _CODE_NOT_LAUNCHED,
+        )
+        logger.warning("Code job could not launch", command_id=ref.command_id, error=str(e))
+    _record_duration(outcome)
+    return outcome
+
+
+async def continue_job(
+    sandbox: "PTCSandbox", outcome: _jobs.Running, wait_s: float | None
+) -> _jobs.JobOutcome:
+    """Wait up to ``wait_s`` more on a job a start returned still running
+    (None: until it ends). A failure stops it; a cancel leaves it to the
+    caller, which holds it."""
+    await sandbox._wait_ready()
+    exec_fn = _JobExec(sandbox)
+    result = await _drive_job(
+        sandbox, outcome.handle, lambda: _jobs.continue_job(exec_fn, outcome, wait_s)
+    )
+    _record_duration(result)
+    return result
+
+
+async def read_ended_job(sandbox: "PTCSandbox", outcome: _jobs.Running) -> _jobs.JobOutcome:
+    """Read a job a stop found already ended. Unlike a wait, a failure raises
+    and drops nothing: the job is stopped already, and its log is what the
+    caller names instead."""
+    await sandbox._wait_ready()
+    result = await _jobs.continue_job(_JobExec(sandbox), outcome, 0)
+    _record_duration(result)
+    return result
+
+
+async def stop_job(sandbox: "PTCSandbox", ref: _jobs.JobRef, *, discard: bool = False) -> bool:
+    """End a job's process group; True if it was running."""
+    await sandbox._wait_ready()
+    return await _jobs.stop_job(_JobExec(sandbox), ref, discard=discard)
+
+
+async def stop_job_with_trace(
+    sandbox: "PTCSandbox", outcome: _jobs.Running
+) -> _jobs.StoppedJob:
+    """End a job's process group and read its trace in the same exec."""
+    await sandbox._wait_ready()
+    return await _jobs.stop_job_with_trace(_JobExec(sandbox), outcome)

@@ -1,0 +1,304 @@
+"""Value types and module constants shared by the ComputerManager mixins."""
+
+import asyncio
+import json
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Set, Tuple
+
+from ptc_agent.core.mcp_composite import builtin_registry_of
+from ptc_agent.core.mcp_registry import get_global_registry
+from ptc_agent.core.sandbox.providers import provider_class
+from ptc_agent.core.sandbox.runtime import SandboxProvider
+from ptc_agent.core.session import Session
+from src.server.services.livefs.tracker import MountTracker
+
+if TYPE_CHECKING:
+    from src.server.services.computer_manager._bringup import BringUp
+    from src.server.services.trading_rule import TradingRule
+
+
+# This cache stores which projects this process has already materialised on a
+# sandbox, not authority over any of it: every step behind it is guarded by its
+# own on-disk marker.
+_PROJECTS_ATTACHED_CAP = 4096
+_WORKSPACE_TOOL_VIEWS_CAP = 64
+
+# The decision key is shared with egress grant sync and platform-secret sweeps,
+# so brief contention is expected.
+_MACHINE_DECISION_LOCK_TIMEOUT_MS = 30_000
+
+_SEEDED_AGENT_MD = """# Workspace Notes
+
+<!--
+This is a starter template. Replace these comments with real content
+as you work. The system prompt has full guidelines on what to maintain.
+-->
+
+## Thread Index
+
+## Key Findings
+
+## File Index
+"""
+
+
+class WorkspaceNotOnComputer(ValueError):
+    """Nothing below the edge resolve has a second addressing mode to fall back to.
+
+    Reachable for a Home that was never bound, and for a row that
+    disappeared between two reads."""
+
+    def __init__(self, workspace_id: str):
+        self.workspace_id = workspace_id
+        super().__init__(
+            f"Workspace {workspace_id} is not on a computer, so it has no "
+            "sandbox lifecycle"
+        )
+
+
+class WorkspaceNotFound(ValueError):
+    """The workspace is deleted, or is not on the computer the caller named.
+
+    A ValueError, as a route answers any not found, and a type of its own so
+    a caller that expects another request to have deleted it can tell that
+    from every other refusal a delete raises as a ValueError."""
+
+    def __init__(self, workspace_id: str, *, computer_id: Optional[str] = None):
+        self.workspace_id = workspace_id
+        super().__init__(
+            f"Workspace {workspace_id} not found"
+            + (f" on computer {computer_id}" if computer_id else "")
+        )
+
+
+@dataclass(frozen=True)
+class ComputerBinding:
+    """Which machine a project is on, and how to reach that machine's backend.
+
+    An empty workspace_id is a machine operation that names no project, and
+    such a binding carries no folder either. dir_name is the project's folder
+    on the machine, resolved in the same read as the machine itself. A folder
+    moves to follow a rename only in an acquisition's settle, before that
+    acquisition resolves the binding it hands out. None on a workspace binding
+    means only that this read did not answer for the folder, so the layout
+    resolves it from the row; a caller that builds a workspace binding out of a
+    machine row has to supply it. files_epoch names the last arrival of the
+    project's files on this machine, a move or a settled restore offer, None if
+    none has come. files_backup is the machine's switch for routine backups,
+    off only where its owner chose."""
+
+    workspace_id: str
+    computer_id: str
+    kind: str
+    dir_name: Optional[str] = None
+    root_dir: Optional[str] = None
+    provider_ref: Optional[str] = None
+    resource_tier: Optional[str] = None
+    is_always_on: bool = False
+    provider_config: Optional[Dict[str, Any]] = None
+    files_epoch: Optional[str] = None
+    files_backup: bool = True
+
+    @property
+    def provider_identity(self) -> Tuple[str, str]:
+        """Row-level provider overrides distinguish backends of the same kind."""
+        return (self.kind, json.dumps(self.provider_config or {}, sort_keys=True))
+
+    @property
+    def provider(self) -> type[SandboxProvider]:
+        """The machine's provider class, for the facts its kind fixes; an
+        unknown kind raises, since nothing can reach such a machine."""
+        return provider_class(self.kind)
+
+
+@dataclass(frozen=True)
+class MachineTarget:
+    """The root and target a computer's row names now, read from Postgres by
+    the request that asks for a cached session.
+
+    An ssh computer keeps its provider_ref through a reinstall or reconnect
+    another worker ran, so a sandbox id cannot fence a session built before
+    either, and no channel tells this worker it happened."""
+
+    kind: Optional[str]
+    root_dir: Optional[str] = None
+    provider_config: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def of_computer(cls, computer: Mapping[str, Any] | None) -> "MachineTarget":
+        computer = computer or {}
+        return cls(
+            kind=computer.get("kind"),
+            root_dir=computer.get("root_dir"),
+            provider_config=computer.get("provider_config") or None,
+        )
+
+    @classmethod
+    def of_workspace(cls, workspace: Mapping[str, Any] | None) -> "MachineTarget":
+        """From a workspace row that joined its computer as ``computer_*``."""
+        workspace = workspace or {}
+        return cls(
+            kind=workspace.get("computer_kind"),
+            root_dir=workspace.get("computer_root_dir"),
+            provider_config=workspace.get("computer_provider_config") or None,
+        )
+
+
+@dataclass(frozen=True)
+class WorkspaceToolView:
+    """One project's tool configuration, frozen for the turn that follows.
+
+    The session is the machine's, and its MCP fields are rewritten by whichever
+    sibling resolved last, outside the machine lock. A turn that read them at
+    build time could carry a sibling's registry and direct tools; it reads
+    this instead, taken the moment this project's composite was installed."""
+
+    workspace_id: str
+    session: Session
+    mcp_registry: Any
+    mcp_tool_summary: Optional[str]
+    direct_mcp_tools: Mapping[str, Any]
+    egress_binding: Any
+    mcp_config_version: Optional[int]
+    mcp_servers: tuple[Any, ...] = ()
+    mcp_settled_servers: frozenset[str] = frozenset()
+    # Off the same resolve as the direct tools but not out of them: a server
+    # whose tools no snapshot or grant lets bind still has the settings the
+    # rule describes.
+    trading_rule: Optional["TradingRule"] = None
+    built_at: float = field(default_factory=time.monotonic)
+
+    @classmethod
+    def from_session(cls, workspace_id: str, session: Session) -> "WorkspaceToolView":
+        return cls(
+            workspace_id=workspace_id,
+            session=session,
+            mcp_registry=session.mcp_registry,
+            mcp_tool_summary=session.mcp_tool_summary,
+            direct_mcp_tools=MappingProxyType(dict(session.direct_mcp_tools or {})),
+            egress_binding=session.egress_binding,
+            mcp_config_version=session.mcp_config_version,
+            mcp_servers=tuple(getattr(session.config.mcp, "servers", ()) or ()),
+            mcp_settled_servers=frozenset(
+                getattr(session, "mcp_settled_servers", ()) or ()
+            ),
+            trading_rule=getattr(session, "trading_rule", None),
+        )
+
+    def builtins_superseded(self) -> bool:
+        """Whether a reconnected built-in server has replaced the snapshot this
+        view was built on, so its tools, its prompt summary and the wrappers
+        synced from it all still lack that server until the view is rebuilt."""
+        if self.mcp_registry is None or self.session._owns_mcp_registry:
+            return False
+        current = get_global_registry()
+        return current is not None and builtin_registry_of(self.mcp_registry) is not current
+
+    @classmethod
+    def builtin_only(cls, workspace_id: str, session: Session) -> "WorkspaceToolView":
+        """What a project gets when its own composite never installed: the
+        built-in servers and no directly bound tools, never a sibling's set."""
+        return cls(
+            workspace_id=workspace_id,
+            session=session,
+            mcp_registry=session._builtin_mcp_registry or session.mcp_registry,
+            mcp_tool_summary=None,
+            direct_mcp_tools=MappingProxyType({}),
+            egress_binding=None,
+            mcp_config_version=None,
+            mcp_servers=tuple(getattr(session, "_pristine_mcp_servers", ()) or ()),
+            mcp_settled_servers=frozenset(),
+        )
+
+
+@dataclass
+class SessionMetadata:
+    """A NULL workspace_id represents a computer with no project."""
+
+    workspace_id: Optional[str] = None
+    computer_id: Optional[str] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_active: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    sandbox_id: Optional[str] = None
+    request_count: int = 0
+
+    def touch(self) -> None:
+        self.last_active = datetime.now(timezone.utc)
+        self.request_count += 1
+
+
+@dataclass
+class MachineState:
+    """This worker's execution context for one machine, never authority over it.
+
+    One record per machine, so a teardown drops the whole context in a single
+    move. The twelve maps this replaces had to be remembered site by site, and
+    whichever one a path forgot outlived the session it described."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    session: Optional[Session] = None
+    meta: Optional[SessionMetadata] = None
+    # Which folder holds the machine's root files; see _layout_root_owner_dir.
+    # A machine's root owner never changes, so one read per machine per process
+    # is enough. root_owner_read distinguishes "read, has none" from "unread",
+    # which keeps a failed read out of the cache.
+    root_owner_dir: Optional[str] = None
+    root_owner_read: bool = False
+    # This worker owns an unpromoted lazy start: it promotes on success and
+    # reverts on failure, so no other path may retire or reap the row.
+    pending_lazy_sync: bool = False
+    # Elevated tier seen at restart; Phase 2 rechecks the entitlement without an
+    # extra read for standard-tier machines.
+    pending_tier_recheck: bool = False
+    # A withheld version stamp is read only on the slow path, so this marker
+    # bypasses cooldown rather than leaving a superseded session live for 30s.
+    resolve_superseded: Set[str] = field(default_factory=set)
+    # Phase 2 runs outside the machine lock; racing warm and chat callers wait
+    # on the owner's event instead of duplicating readiness and asset sync.
+    phase2_event: Optional[asyncio.Event] = None
+    last_sync_at: Optional[float] = None
+    # What the idle sweep could not stop, so it stops retrying and re-logging
+    # every cycle. Execution context, never read as truth about the machine.
+    idle_reap_failures: int = 0
+    idle_reap_backoff_until: float = 0.0
+    # Discovery runs outside the response path and the machine lock because
+    # stdio cold starts take up to 30s. Tracked per machine so teardown cancels
+    # the probes before they write orphan schemas.
+    discovery_tasks: Set[asyncio.Task] = field(default_factory=set)
+    # Each project's frozen tool configuration, keyed by workspace; see
+    # WorkspaceToolView. Execution context, dropped with the session.
+    tool_views: OrderedDict[str, WorkspaceToolView] = field(default_factory=OrderedDict)
+    livefs: MountTracker = field(default_factory=MountTracker)
+    # The background restore and transcript sync of the sandbox in the slot.
+    bring_up: Optional["BringUp"] = None
+
+    def forget_session(self) -> None:
+        """Drop everything the session owned, keeping the lock its caller may hold.
+
+        The lock belongs to the machine and outlives any session on it:
+        replacing it under a holder would let the next caller build a second one
+        and run alongside."""
+        self.session = None
+        self.meta = None
+        self.pending_lazy_sync = False
+        self.pending_tier_recheck = False
+        self.resolve_superseded.clear()
+        self.phase2_event = None
+        self.last_sync_at = None
+        self.tool_views.clear()
+        self.livefs.forget()
+        if self.bring_up is not None:
+            self.cancel_bring_up(self.bring_up.sandbox_id)
+
+    def cancel_bring_up(self, sandbox_id: Optional[str]) -> None:
+        """Stop the bring-up running against ``sandbox_id``, before that sandbox goes.
+
+        A job for another sandbox belongs to a replacement installed meanwhile."""
+        job = self.bring_up
+        if job is not None and job.sandbox_id == sandbox_id:
+            self.bring_up = None
+            job.cancel()

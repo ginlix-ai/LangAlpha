@@ -38,6 +38,9 @@ import {
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
+import { createDateFormatter, formatBytes, paddedClockTime, shortMonthDay } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
+import { useNow } from '@/hooks/useNow';
 import {
   deleteUserMemo,
   triggerUserMemoDownload,
@@ -47,6 +50,7 @@ import {
 } from '../utils/api';
 import Markdown from './Markdown';
 import { MEMO_USER_DIR } from '../utils/agentPaths';
+import type { FileLocation, OpenFileHandler } from '../utils/fileLocation';
 import './FilePanel.css';
 
 // --- Constants -------------------------------------------------------------
@@ -73,35 +77,15 @@ const ACCEPT_ATTR = '.md,.txt,.csv,.json,.pdf,text/markdown,text/plain,text/csv,
 
 // --- Helpers ---------------------------------------------------------------
 
-function formatBytes(n: number): string {
-  if (!n) return '0 B';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
-}
+const monthDayYear = createDateFormatter({ year: 'numeric', month: 'short', day: 'numeric' });
 
-function formatDate(iso: string | null): string {
+function formatDate(iso: string | null, now: number, locale: string): string {
   if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameYear = d.getFullYear() === now.getFullYear();
-    const sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) {
-      return d.toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    }
-    return d.toLocaleDateString(
-      [],
-      sameYear
-        ? { month: 'short', day: 'numeric' }
-        : { year: 'numeric', month: 'short', day: 'numeric' },
-    );
-  } catch {
-    return '';
-  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const today = new Date(now);
+  if (d.toDateString() === today.toDateString()) return paddedClockTime(d, locale);
+  return d.getFullYear() === today.getFullYear() ? shortMonthDay(d, locale) : monthDayYear(d, locale);
 }
 
 function mimeToLabel(mime: string | null | undefined, key: string): string {
@@ -151,35 +135,6 @@ function errToString(err: unknown): string {
   return e?.response?.data?.detail || e?.message || String(err);
 }
 
-// --- Layout breakpoints (panel-relative, not viewport) -------------------
-// The memo panel lives inside RightPanel which the user can resize, so the
-// breakpoints are container-relative. Tracked via ResizeObserver.
-const BREAK_HIDE_PROVENANCE = 520; // below this, hide the workspace · path subline
-const BREAK_HIDE_TYPE = 640;       // below this, hide the Type column
-const BREAK_HIDE_SECONDARY = 420;  // below this, hide Size + Uploaded too
-
-
-function useElementWidth(): {
-  ref: React.MutableRefObject<HTMLDivElement | null>;
-  width: number;
-} {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    setWidth(node.getBoundingClientRect().width);
-    const observer = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width ?? 0;
-      setWidth(w);
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-  return { ref, width };
-}
-
-
 // --- Status Badge ---------------------------------------------------------
 
 function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined }) {
@@ -218,7 +173,7 @@ function StatusBadge({ status }: { status: MemoMetadataStatus | null | undefined
         color: 'var(--color-text-tertiary)',
       }}
     >
-      <span aria-hidden="true" className="flex-shrink-0">
+      <span aria-hidden="true" className="shrink-0">
         <Loader size={12} className="text-current" />
       </span>
       {t('memoPanel.status.pending')}
@@ -264,7 +219,7 @@ function ConfirmDialog({
       >
         <div className="flex items-center gap-3">
           <div
-            className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+            className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
             style={{ backgroundColor: 'rgba(255, 56, 60, 0.2)' }}
           >
             <AlertTriangle
@@ -326,11 +281,13 @@ interface MemoPanelProps {
   /** Routes a clicked link inside the rendered memo body through the
    * parent's path-aware router. Bare sibling slugs are resolved against
    * the memo dir before calling. */
-  onOpenFile?: (path: string, workspaceId?: string) => void;
+  onOpenFile?: OpenFileHandler;
 }
 
 export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: MemoPanelProps = {}) {
   const { t } = useTranslation();
+  const locale = useLocale();
+  const now = useNow();
   const [notFoundKey, setNotFoundKey] = useState<string | null>(null);
 
   // Mirror MemoryPanel: bare sibling refs in a memo body resolve against the
@@ -341,7 +298,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   // href containing a `/` (e.g. `reports/q1.pdf`) is a sandbox file
   // referenced from the memo body and must pass through to file routing.
   const handleBodyLinkOpen = useCallback(
-    (href: string, wsId?: string) => {
+    (href: string, wsId?: string, location?: FileLocation) => {
       if (!onOpenFile || !href) return;
       const isAlreadyQualified =
         href.startsWith('.agents/') ||
@@ -349,7 +306,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         href.startsWith('/') ||
         /^[a-z][a-z0-9+.-]*:/i.test(href);
       if (isAlreadyQualified) {
-        onOpenFile(href, wsId);
+        onOpenFile(href, wsId, location);
         return;
       }
       const clean = href.replace(/^\.\//, '');
@@ -357,10 +314,10 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
       // (or a 404 in the file panel) handles it instead of fabricating a
       // bogus `.agents/user/memo/reports/q1.pdf` path.
       if (clean.includes('/')) {
-        onOpenFile(clean, wsId);
+        onOpenFile(clean, wsId, location);
         return;
       }
-      onOpenFile(`${MEMO_USER_DIR}/${clean}`, wsId);
+      onOpenFile(`${MEMO_USER_DIR}/${clean}`, wsId, location);
     },
     [onOpenFile],
   );
@@ -384,12 +341,12 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   );
   const { data: wsData } = useWorkspaces({
     limit: 100,
-    includeFlash: true,
+    includeHome: true,
     enabled: hasSandboxSource,
   });
   const workspaceNameById = useMemo(() => {
     const map = new Map<string, string>();
-    const items = (wsData as { workspaces?: { workspace_id: string; name?: string }[] } | undefined)?.workspaces;
+    const items = wsData?.workspaces;
     for (const ws of items ?? []) {
       if (ws.workspace_id && ws.name) map.set(ws.workspace_id, ws.name);
     }
@@ -435,12 +392,6 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
       onCancel={handleDiscardCancel}
     />
   );
-
-  // Panel width drives the responsive layout below.
-  const { ref: bodyRef, width: panelWidth } = useElementWidth();
-  const showProvenance = panelWidth === 0 || panelWidth >= BREAK_HIDE_PROVENANCE;
-  const showType = panelWidth === 0 || panelWidth >= BREAK_HIDE_TYPE;
-  const showSecondary = panelWidth === 0 || panelWidth >= BREAK_HIDE_SECONDARY;
 
   // Bulk-select state — only relevant in the list view, never in detail.
   const [selectMode, setSelectMode] = useState(false);
@@ -812,7 +763,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
               <ArrowLeft className="h-4 w-4" />
             </button>
             <FileText
-              className="h-4 w-4 flex-shrink-0"
+              className="h-4 w-4 shrink-0"
               style={{ color: 'var(--color-text-tertiary)' }}
             />
             <span
@@ -824,7 +775,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             </span>
             <StatusBadge status={status} />
           </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex items-center gap-1 shrink-0">
             {status === 'failed' && (
               <button
                 onClick={() => handleRegenerate(selectedEntry.key)}
@@ -1004,7 +955,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             </div>
           ) : (
             <pre
-              className="whitespace-pre-wrap break-words text-xs font-mono"
+              className="whitespace-pre-wrap wrap-break-word text-xs font-mono"
               style={{ color: 'var(--color-text-primary)' }}
             >
               {content}
@@ -1059,7 +1010,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             <HoverCardTrigger asChild>
               <button
                 type="button"
-                className="inline-flex flex-shrink-0 cursor-help"
+                className="inline-flex shrink-0 cursor-help"
                 aria-label={t('memoPanel.uploadHint')}
               >
                 <Info
@@ -1082,7 +1033,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             </HoverCardContent>
           </HoverCard>
         </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex items-center gap-1 shrink-0">
           {selectMode ? (
             <>
               <span
@@ -1143,7 +1094,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 disabled={uploadMutation.isPending}
               >
                 {uploadMutation.isPending ? (
-                  <span aria-hidden="true" className="flex-shrink-0">
+                  <span aria-hidden="true" className="shrink-0">
                     <Loader size={14} className="text-current" />
                   </span>
                 ) : (
@@ -1176,7 +1127,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
           <span className="min-w-0">{uploadError}</span>
           <button
             onClick={() => setUploadError(null)}
-            className="flex-shrink-0"
+            className="shrink-0"
             title={t('memoPanel.actions.cancel')}
           >
             <X className="h-3.5 w-3.5" />
@@ -1210,7 +1161,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
           <button
             type="button"
             onClick={() => setNotFoundKey(null)}
-            className="flex-shrink-0"
+            className="shrink-0"
             title={t('memoPanel.dismissNotFound')}
           >
             <X className="h-3.5 w-3.5" />
@@ -1218,11 +1169,11 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         </div>
       )}
 
-      {/* Body */}
-      <div
-        ref={bodyRef}
-        className="flex-1 min-h-0 overflow-y-auto relative"
-      >
+      {/* Body. The file panel is resizable, so the columns answer to this
+          container's width, not the viewport's: below 640px the Type column
+          goes, below 520px the workspace and path subline, below 420px Size
+          and Uploaded too. */}
+      <div className="@container flex-1 min-h-0 overflow-y-auto relative">
         {isDragOver && (
           <div className="file-panel-drag-overlay">
             <Upload
@@ -1273,27 +1224,21 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                 <th className="font-medium px-3 py-2">
                   {t('memoPanel.columns.name')}
                 </th>
-                {showType && (
-                  <th className="font-medium px-2 py-2 whitespace-nowrap">
-                    {t('memoPanel.columns.type')}
-                  </th>
-                )}
-                {showSecondary && (
-                  <th className="font-medium px-2 py-2 whitespace-nowrap">
-                    {t('memoPanel.columns.size')}
-                  </th>
-                )}
+                <th className="hidden @min-[640px]:table-cell font-medium px-2 py-2 whitespace-nowrap">
+                  {t('memoPanel.columns.type')}
+                </th>
+                <th className="hidden @min-[420px]:table-cell font-medium px-2 py-2 whitespace-nowrap">
+                  {t('memoPanel.columns.size')}
+                </th>
                 <th className="font-medium px-2 py-2 whitespace-nowrap">
                   {t('memoPanel.columns.status')}
                 </th>
                 <th className="font-medium px-2 py-2">
                   {t('memoPanel.columns.description')}
                 </th>
-                {showSecondary && (
-                  <th className="font-medium px-2 py-2 whitespace-nowrap">
-                    {t('memoPanel.columns.uploaded')}
-                  </th>
-                )}
+                <th className="hidden @min-[420px]:table-cell font-medium px-2 py-2 whitespace-nowrap">
+                  {t('memoPanel.columns.uploaded')}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -1355,19 +1300,19 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <FileText
-                          className="h-4 w-4 flex-shrink-0"
+                          className="h-4 w-4 shrink-0"
                           style={{ color: 'var(--color-text-tertiary)' }}
                         />
                         <div className="min-w-0">
                           <div
-                            className="truncate max-w-[14rem]"
+                            className="truncate max-w-56"
                             title={sourceTitle}
                           >
                             {displayName}
                           </div>
-                          {isSandboxSourced && showProvenance && (
+                          {isSandboxSourced && (
                             <div
-                              className="truncate max-w-[14rem] text-[0.625rem]"
+                              className="hidden @min-[520px]:block truncate max-w-56 text-[0.625rem]"
                               style={{ color: 'var(--color-text-tertiary)' }}
                               title={sourceTitle}
                             >
@@ -1377,22 +1322,18 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                         </div>
                       </div>
                     </td>
-                    {showType && (
-                      <td
-                        className="px-2 py-2 whitespace-nowrap"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                      >
-                        {mimeToLabel(entry.mime_type, entry.key)}
-                      </td>
-                    )}
-                    {showSecondary && (
-                      <td
-                        className="px-2 py-2 whitespace-nowrap"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                      >
-                        {formatBytes(entry.size_bytes)}
-                      </td>
-                    )}
+                    <td
+                      className="hidden @min-[640px]:table-cell px-2 py-2 whitespace-nowrap"
+                      style={{ color: 'var(--color-text-tertiary)' }}
+                    >
+                      {mimeToLabel(entry.mime_type, entry.key)}
+                    </td>
+                    <td
+                      className="hidden @min-[420px]:table-cell px-2 py-2 whitespace-nowrap"
+                      style={{ color: 'var(--color-text-tertiary)' }}
+                    >
+                      {formatBytes(entry.size_bytes, locale)}
+                    </td>
                     <td className="px-2 py-2 whitespace-nowrap">
                       <StatusBadge status={entry.metadata_status} />
                     </td>
@@ -1404,14 +1345,12 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
                         {entry.description || ''}
                       </div>
                     </td>
-                    {showSecondary && (
-                      <td
-                        className="px-2 py-2 whitespace-nowrap"
-                        style={{ color: 'var(--color-text-tertiary)' }}
-                      >
-                        {formatDate(entry.created_at)}
-                      </td>
-                    )}
+                    <td
+                      className="hidden @min-[420px]:table-cell px-2 py-2 whitespace-nowrap"
+                      style={{ color: 'var(--color-text-tertiary)' }}
+                    >
+                      {formatDate(entry.created_at, now, locale)}
+                    </td>
                   </tr>
                 );
               })}

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import React from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,7 @@ const h = vi.hoisted(() => {
     platformMode: false,
     accessTier: 1 as number,
     otherPreference: {} as Record<string, unknown>,
+    mutate: vi.fn((_payload: unknown) => undefined),
     mutateAsync: vi.fn(async (_payload: unknown) => ({})),
     // Stable references rebuilt only between tests (in beforeEach). Settings has
     // effects keyed on the user / preferences / validModelNames identities; if a
@@ -50,6 +51,12 @@ const h = vi.hoisted(() => {
     user: null as Record<string, unknown> | null,
     preferences: null as Record<string, unknown> | null,
     validModelNames: new Set<string>(),
+    // The untouched GET /api/v1/models payload. Distinct from validModelNames,
+    // which has the user's custom models folded in.
+    rawApiResponse: null as Record<string, unknown> | null,
+    // Pre-filter catalog + custom models — what exists, as opposed to what the
+    // user can currently reach.
+    rawModels: {} as Record<string, { models?: string[] }>,
     searchProviderCatalog: searchProviderCatalog as typeof searchProviderCatalog | null,
     fullCatalog: searchProviderCatalog,
   };
@@ -83,10 +90,13 @@ vi.mock('@/hooks/usePreferences', () => ({
   usePreferences: () => ({ preferences: h.preferences, isLoading: false }),
 }));
 
-// Update mutation — assert the saved payload here. Stable object so the
-// saveModelPrefs useCallback identity stays put across renders.
-const mutationStub = { mutateAsync: h.mutateAsync };
+// Update mutation. Assert the saved payload here: every control on the tab
+// writes a patch of the keys it owns through this one hook, so the payload is
+// the whole assertion surface. Stable object so the write callback's identity
+// stays put across renders.
+const mutationStub = { mutate: h.mutate, mutateAsync: h.mutateAsync };
 vi.mock('@/hooks/useUpdatePreferences', () => ({
+  PREFERENCE_MUTATION_KEY: ['user-preferences'],
   useUpdatePreferences: () => mutationStub,
 }));
 
@@ -99,10 +109,16 @@ vi.mock('@/contexts/ThemeContext', () => ({
 vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
     models: {},
-    modelAccessMap: {},
+    // Per-model tuning metadata — the Advanced section reads it for the
+    // reasoning-effort ladder. Always an object from the real hook.
+    metadata: {},
+    payers: {},
     systemDefaults: { fallback_models: [] },
     // Stable Set ref — the stale-model cleanup effect keys on its identity.
     validModelNames: h.validModelNames,
+    rawModels: h.rawModels,
+    catalogModelNames: new Set(Object.values(h.rawModels).flatMap((data) => data.models ?? [])),
+    rawApiResponse: h.rawApiResponse,
     compactionProfiles: null,
     searchProviders: h.searchProviderCatalog,
     isLoading: false,
@@ -114,11 +130,9 @@ vi.mock('@/components/ui/use-toast', () => ({
   useToast: () => ({ toast: vi.fn() }),
 }));
 
-// Debounced save — collapse the 500ms debounce to a 0ms macrotask instead of
-// firing synchronously. The component updates modelStateRef.current during its
-// render commit; saveModelPrefs reads that ref, so the save must run AFTER the
-// setState's commit (a macrotask), not inside the same event handler tick — or
-// it would read the pre-change value. Mirrors the real debounce ordering.
+// Debounced save. The model tab has no text input and writes on the change
+// event, but the Profile section (in the same Settings shell) still debounces
+// its name field.
 vi.mock('@/hooks/useDebouncedSave', () => ({
   useDebouncedSave: (saveFn: () => Promise<void>) => ({
     trigger: () => { setTimeout(() => { void saveFn(); }, 0); },
@@ -131,10 +145,23 @@ vi.mock('@/hooks/useDebouncedSave', () => ({
 // select lives outside this component, so a stub is safe. The button exposes
 // onPrimaryModelChange so tests can fire an unrelated model-pref save.
 vi.mock('@/components/model/ModelTierConfig', () => ({
-  ModelTierConfig: (props: { onPrimaryModelChange?: (v: string) => void }) => (
+  ModelTierConfig: (props: {
+    onPrimaryModelChange?: (v: string) => void;
+  }) => (
     <div data-testid="model-tier-config-stub">
       <button onClick={() => props.onPrimaryModelChange?.('')}>stub-change-primary</button>
     </div>
+  ),
+}));
+
+// The fallback list moved out of ModelTierConfig into the Advanced section's
+// own picker. It still maps `selected` with no catalog filter, so what renders
+// is exactly the panel's state — which is what the cleanup effect must prune.
+vi.mock('@/components/model/FallbackModelsPicker', () => ({
+  FallbackModelsPicker: (props: { selected?: string[] }) => (
+    <ul data-testid="fallback-chips">
+      {(props.selected ?? []).map((m) => <li key={m}>{m}</li>)}
+    </ul>
   ),
 }));
 
@@ -144,19 +171,11 @@ vi.mock('@/pages/Dashboard/utils/api', () => ({
   clearPreferences: vi.fn(async () => ({})),
   uploadAvatar: vi.fn(async () => ({ avatar_url: '' })),
   getUserApiKeys: vi.fn(async () => ({ providers: [] })),
-  initiateCodexDevice: vi.fn(async () => ({})),
-  pollCodexDevice: vi.fn(async () => ({})),
-  getCodexOAuthStatus: vi.fn(async () => ({ connected: false })),
-  disconnectCodexOAuth: vi.fn(async () => ({})),
-  initiateClaudeOAuth: vi.fn(async () => ({})),
-  submitClaudeCallback: vi.fn(async () => ({})),
-  getClaudeOAuthStatus: vi.fn(async () => ({ connected: false })),
-  disconnectClaudeOAuth: vi.fn(async () => ({})),
 }));
 
-// Flash workspace — used by preference-modify navigation, never in these tests.
+// Home, used by preference-modify navigation, never in these tests.
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
-  getFlashWorkspace: vi.fn(async () => ({ workspace_id: 'ws-flash' })),
+  getHomeWorkspace: vi.fn(async () => ({ workspace_id: 'ws-home' })),
 }));
 
 // Onboarding — Settings renders replay/reset buttons; no provider in this harness.
@@ -171,13 +190,13 @@ import Settings from '../Settings';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function renderModelTab() {
+function renderSettings(tab: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/settings?tab=model']}>
+      <MemoryRouter initialEntries={[`/settings?tab=${tab}`]}>
         <Settings />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -186,7 +205,7 @@ function renderModelTab() {
 
 /** The search-provider select is the one with the "Web Search Provider" aria-label. */
 function getSearchProviderSelect() {
-  return screen.getByRole('combobox', { name: 'Web Search Provider' }) as HTMLSelectElement;
+  return screen.getByRole('combobox', { name: 'Web search provider' }) as HTMLSelectElement;
 }
 
 beforeEach(() => {
@@ -194,13 +213,19 @@ beforeEach(() => {
   h.accessTier = 1;
   h.otherPreference = {};
   h.validModelNames = new Set<string>();
+  h.rawModels = {};
+  h.rawApiResponse = null;
   h.searchProviderCatalog = h.fullCatalog;
+  // The Simple/Advanced choice is persisted, so it would leak between tests.
+  localStorage.removeItem('settings:modelMode');
+  h.mutate.mockClear();
   h.mutateAsync.mockClear();
   h.mutateAsync.mockResolvedValue({});
 });
 
 /** Build the stable user/preferences refs for the current scenario, then render. */
-function setupAndRenderModelTab() {
+/** The search controls live under Behavior; the model pickers under Models. */
+function setupAndRender(tab = 'agent') {
   h.user = {
     id: 'u-1',
     email: 'tester@example.com',
@@ -209,7 +234,7 @@ function setupAndRenderModelTab() {
     onboarding_completed: true,
   };
   h.preferences = { other_preference: h.otherPreference };
-  return renderModelTab();
+  return renderSettings(tab);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,9 +246,9 @@ describe('Settings — Web Search Provider', () => {
     h.platformMode = false;
     h.accessTier = 0; // tier is irrelevant in OSS mode
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    const select = await screen.findByRole('combobox', { name: 'Web search provider' });
     expect(select).toBeEnabled();
 
     const options = Array.from(
@@ -240,9 +265,9 @@ describe('Settings — Web Search Provider', () => {
     h.platformMode = true;
     h.accessTier = 0;
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    const select = await screen.findByRole('combobox', { name: 'Web search provider' });
     expect(select).toBeDisabled();
     expect(
       screen.getByText('Some search providers are available on higher plans.'),
@@ -256,9 +281,9 @@ describe('Settings — Web Search Provider', () => {
     h.accessTier = 0;
     h.searchProviderCatalog = null;
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    const select = await screen.findByRole('combobox', { name: 'Web search provider' });
     expect(select).toBeDisabled();
     expect(
       screen.queryByText('Some search providers are available on higher plans.'),
@@ -269,9 +294,9 @@ describe('Settings — Web Search Provider', () => {
     h.platformMode = true;
     h.accessTier = 1;
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    const select = await screen.findByRole('combobox', { name: 'Web search provider' });
     expect(select).toBeEnabled();
     expect(
       screen.queryByText('Some search providers are available on higher plans.'),
@@ -288,9 +313,9 @@ describe('Settings — Web Search Provider', () => {
       serper: { ...h.fullCatalog.serper, min_tier: 2 },
     };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    const select = await screen.findByRole('combobox', { name: 'Web search provider' });
     expect(select).toBeEnabled();
     expect(
       screen.getByText('Some search providers are available on higher plans.'),
@@ -302,7 +327,7 @@ describe('Settings — Web Search Provider', () => {
   it('loads the saved value from other_preference.search_provider', async () => {
     h.otherPreference = { search_provider: 'serper' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     await waitFor(() => {
       expect(getSearchProviderSelect().value).toBe('serper');
@@ -312,10 +337,10 @@ describe('Settings — Web Search Provider', () => {
   it('normalizes an unknown saved search_provider to Default', async () => {
     h.otherPreference = { search_provider: 'not-an-engine' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     // The load path validates against SEARCH_PROVIDERS and falls back to ''.
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    const select = await screen.findByRole('combobox', { name: 'Web search provider' });
     await waitFor(() => {
       expect(select).toHaveValue('');
     });
@@ -324,10 +349,9 @@ describe('Settings — Web Search Provider', () => {
   it('changing the select saves search_provider through updatePreferences', async () => {
     h.platformMode = false;
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
-    // Wait for the async model-tab load to settle (it sets state from prefs).
+    const select = await screen.findByRole('combobox', { name: 'Web search provider' });
     await waitFor(() => expect(select).toHaveValue(''));
 
     fireEvent.change(select, { target: { value: 'serper' } });
@@ -338,42 +362,40 @@ describe('Settings — Web Search Provider', () => {
     const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
       other_preference: Record<string, unknown>;
     };
-    expect(payload.other_preference).toMatchObject({ search_provider: 'serper' });
+    expect(payload.other_preference).toEqual({ search_provider: 'serper' });
   });
 
-  it('platform mode below tier: unrelated saves omit search_provider entirely', async () => {
+  it('a save carries only the keys the control it came from owns', async () => {
+    // The whole bag used to be rewritten on every save, which is why a gated
+    // key had to be omitted by hand and why an unloaded model catalog could
+    // null six model references at once. A patch write cannot reach a sibling
+    // key at all, so there is nothing left to omit.
     h.platformMode = true;
     h.accessTier = 0;
-    h.otherPreference = { search_provider: 'serper' };
+    h.otherPreference = { search_provider: 'serper', preferred_model: 'some-model' };
 
-    setupAndRenderModelTab();
+    setupAndRender('model');
 
-    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
-    expect(select).toBeDisabled();
-
-    // Fire a save through an unrelated control; the gated key must be omitted
-    // (not nulled) so the stored pref is neither re-persisted nor deleted.
-    fireEvent.click(screen.getByText('stub-change-primary'));
+    fireEvent.click(await screen.findByText('stub-change-primary'));
 
     await waitFor(() => {
-      expect(h.mutateAsync).toHaveBeenCalled();
+      expect(h.mutate).toHaveBeenCalled();
     });
-    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
-      other_preference: Record<string, unknown>;
-    };
-    expect('search_provider' in payload.other_preference).toBe(false);
+    expect(h.mutate.mock.calls.at(-1)![0]).toEqual({
+      model_preference: { preferred_model: null },
+    });
   });
 });
 
 describe('Settings — Search Depth', () => {
   function getSearchDepthSelect() {
-    return screen.getByRole('combobox', { name: 'Search Depth' }) as HTMLSelectElement;
+    return screen.getByRole('combobox', { name: 'Search depth' }) as HTMLSelectElement;
   }
 
   it('renders the depth select for a multi-depth provider with the ordered manifest levels', async () => {
     h.otherPreference = { search_provider: 'tavily' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     const select = await waitFor(() => getSearchDepthSelect());
     const options = Array.from(select.querySelectorAll('option')).map(o => o.textContent);
@@ -383,13 +405,13 @@ describe('Settings — Search Depth', () => {
   it('hides the depth select for single-depth providers and when no provider is chosen', async () => {
     h.otherPreference = { search_provider: 'serper' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
-    await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    await screen.findByRole('combobox', { name: 'Web search provider' });
     await waitFor(() => {
       expect(getSearchProviderSelect().value).toBe('serper');
     });
-    expect(screen.queryByRole('combobox', { name: 'Search Depth' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Search depth' })).not.toBeInTheDocument();
   });
 
   it('platform mode: locks only the depth options above the user tier and shows the hint', async () => {
@@ -397,7 +419,7 @@ describe('Settings — Search Depth', () => {
     h.accessTier = 1; // matches the catalog: some depth levels require a higher tier
     h.otherPreference = { search_provider: 'tavily' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     const select = await waitFor(() => getSearchDepthSelect());
     expect(select).toBeEnabled();
@@ -414,7 +436,7 @@ describe('Settings — Search Depth', () => {
   it('loads the saved depth and normalizes a level the provider does not declare', async () => {
     h.otherPreference = { search_provider: 'tavily', search_depth: 'deep' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     await waitFor(() => {
       expect(getSearchDepthSelect().value).toBe('deep');
@@ -424,7 +446,7 @@ describe('Settings — Search Depth', () => {
   it('normalizes an unknown saved search_depth to Default', async () => {
     h.otherPreference = { search_provider: 'tavily', search_depth: 'warp9' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     const select = await waitFor(() => getSearchDepthSelect());
     await waitFor(() => {
@@ -435,7 +457,7 @@ describe('Settings — Search Depth', () => {
   it('changing the depth saves search_depth through updatePreferences', async () => {
     h.otherPreference = { search_provider: 'tavily' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     const select = await waitFor(() => getSearchDepthSelect());
     await waitFor(() => expect(select).toHaveValue(''));
@@ -445,38 +467,29 @@ describe('Settings — Search Depth', () => {
     await waitFor(() => {
       expect(h.mutateAsync).toHaveBeenCalled();
     });
-    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
-      other_preference: Record<string, unknown>;
-    };
-    expect(payload.other_preference).toMatchObject({
-      search_provider: 'tavily',
-      search_depth: 'deep',
+    expect(h.mutateAsync.mock.calls.at(-1)![0]).toEqual({
+      other_preference: { search_depth: 'deep' },
     });
   });
 
-  it('switching provider resets the depth selection and drops it from the payload', async () => {
+  it('switching to a single-depth provider leaves the stored depth alone', async () => {
     h.otherPreference = { search_provider: 'tavily', search_depth: 'deep' };
 
-    setupAndRenderModelTab();
+    setupAndRender();
 
     const depthSelect = await waitFor(() => getSearchDepthSelect());
     await waitFor(() => expect(depthSelect).toHaveValue('deep'));
 
     fireEvent.change(getSearchProviderSelect(), { target: { value: 'serper' } });
 
-    // Depth select disappears (serper is single-depth)…
-    await waitFor(() => {
-      expect(screen.queryByRole('combobox', { name: 'Search Depth' })).not.toBeInTheDocument();
-    });
-    // …and the save omits search_depth (single-depth provider → gated off),
-    // leaving the stored key untouched for a later switch back.
+    // Serper has no depth control, so deleting the stored level would cost the
+    // user a value a switch back to tavily wants. (That the control itself goes
+    // away is pinned above, off the stored provider.)
     await waitFor(() => {
       expect(h.mutateAsync).toHaveBeenCalled();
     });
-    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
-      other_preference: Record<string, unknown>;
-    };
-    expect(payload.other_preference).toMatchObject({ search_provider: 'serper' });
-    expect('search_depth' in payload.other_preference).toBe(false);
+    expect(h.mutateAsync.mock.calls.at(-1)![0]).toEqual({
+      other_preference: { search_provider: 'serper' },
+    });
   });
 });

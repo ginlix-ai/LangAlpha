@@ -6,13 +6,9 @@ instantiating the full PTCSandbox (which requires Daytona credentials).
 
 import hashlib
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 from ptc_agent.core.sandbox import (
-    ChartData,
-    ExecutionResult,
     SandboxTransientError,
     SyncResult,
     _DaytonaRetryPolicy,
@@ -24,55 +20,6 @@ from ptc_agent.core.sandbox import (
 
 class TestDataclasses:
     """Tests for sandbox dataclasses."""
-
-    def test_chart_data_defaults(self):
-        chart = ChartData(type="bar", title="Revenue")
-        assert chart.type == "bar"
-        assert chart.title == "Revenue"
-        assert chart.png_base64 is None
-        assert chart.elements == []
-
-    def test_chart_data_with_values(self):
-        chart = ChartData(
-            type="line",
-            title="Prices",
-            png_base64="iVBORw0KGgo=",
-            elements=[{"x": 1, "y": 2}],
-        )
-        assert chart.png_base64 == "iVBORw0KGgo="
-        assert len(chart.elements) == 1
-
-    def test_execution_result_defaults(self):
-        result = ExecutionResult(
-            success=True,
-            stdout="hello",
-            stderr="",
-            duration=1.5,
-            files_created=["a.py"],
-            files_modified=[],
-            execution_id="exec-1",
-            code_hash="abc123",
-        )
-        assert result.success is True
-        assert result.stdout == "hello"
-        assert result.charts == []
-
-    def test_execution_result_with_charts(self):
-        chart = ChartData(type="scatter", title="Test")
-        result = ExecutionResult(
-            success=False,
-            stdout="",
-            stderr="error",
-            duration=0.1,
-            files_created=[],
-            files_modified=["x.py"],
-            execution_id="exec-2",
-            code_hash="def456",
-            charts=[chart],
-        )
-        assert result.success is False
-        assert len(result.charts) == 1
-        assert result.charts[0].title == "Test"
 
     def test_sync_result(self):
         result = SyncResult(refreshed_modules=["yfinance", "fmp"], forced=True)

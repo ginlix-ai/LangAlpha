@@ -14,7 +14,6 @@ import {
 import { buildInsightSnapshot, normalizeInsight } from '../../utils/insightFetch';
 import { InsightBriefConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
-import './InsightBriefWidget.css';
 
 type InsightBriefConfig = { variant?: 'latest' | 'personalized' };
 
@@ -90,23 +89,22 @@ function InsightBriefWidget({ instance }: WidgetRenderProps<InsightBriefConfig>)
 
   const { modals } = useDashboardContext();
   return (
-    <div className="insight-brief-widget">
-      <AIDailyBriefCard onReadFull={modals.openInsight} instanceId={instance.id} />
-    </div>
+    <AIDailyBriefCard onReadFull={modals.openInsight} instanceId={instance.id} />
   );
 }
 
 registerWidget<InsightBriefConfig>({
   type: 'insight.brief',
   titleKey: 'dashboard.widgets.insightBrief.title',
+  cardTitleKey: 'dashboard.widgets.insightBrief.cardTitle',
   descriptionKey: 'dashboard.widgets.insightBrief.description',
   category: 'intel',
   icon: Sparkles,
   component: InsightBriefWidget,
   defaultConfig: { variant: 'latest' },
   configSchema: InsightBriefConfigSchema,
-  defaultSize: { w: 8, h: 18 },
-  minSize: { w: 4, h: 15 },
+  defaultSize: { w: 8, h: 12 },
+  minSize: { w: 4, h: 6 },
   maxSize: { w: 12, h: 44 },
   singleton: true,
   fitToContent: true,

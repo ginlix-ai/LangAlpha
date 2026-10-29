@@ -110,7 +110,6 @@ function TickerTapeWidget({ instance }: WidgetRenderProps<TickerTapeConfig>) {
   }, [symbols, watchlist.rows, portfolio.rows]);
   return (
     <TradingViewEmbed
-      card
       scriptKey="ticker-tape"
       contentHeight={TICKER_CONTENT_HEIGHT[displayMode] ?? TICKER_CONTENT_HEIGHT.adaptive}
       config={{
@@ -171,10 +170,10 @@ registerWidget<TickerTapeConfig>({
   defaultConfig: { symbols: [], displayMode: 'adaptive' },
   configSchema: TickerTapeConfigSchema,
   // fitToContent: cell height tracks the embed's natural 76px iframe plus
-  // chrome. View mode → ~6 rows (128px, card hugs the ticker). Edit mode →
-  // ~9 rows (200px, includes 40px header + 24px body padding). maxSize.h
-  // must clear the edit-mode measurement (~9 rows) otherwise the clamp
-  // caps the fit and the iframe gets clipped. Width stays user-resizable.
+  // the card around it, ~6 rows. The card is the same in view and edit mode,
+  // so maxSize.h only has to leave room for a style that sets the title
+  // inside the card (Quiet); a lower clamp would clip the iframe. Width stays
+  // user-resizable.
   fitToContent: true,
   defaultSize: { w: 12, h: 6 },
   minSize: { w: 6, h: 3 },

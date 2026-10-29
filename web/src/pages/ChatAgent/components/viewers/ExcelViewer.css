@@ -1,4 +1,24 @@
+/* Shared with CsvViewer, which reuses the wrapper, the table and the truncation
+   note. Anything the spreadsheet grid alone needs is scoped to `.excel-grid`. */
+
 .excel-viewer {
+  /* The grid is paper, not chrome: a workbook's own fills and fonts are
+     authored against a white sheet, so it keeps one in both themes and the
+     surface around it carries the theme instead. The sheet tokens are that
+     theme-invariant paper and ink; every other shade here is mixed from the
+     two, so the palette stays one pair. Named so the selection outline can be
+     the same ink the cells are printed in. */
+  --excel-paper: var(--color-sheet-paper);
+  --excel-ink: var(--color-sheet-ink);
+  --excel-ink-muted: color-mix(in srgb, var(--excel-ink) 55%, var(--excel-paper));
+  --excel-rule: color-mix(in srgb, var(--excel-ink) 12%, var(--excel-paper));
+  --excel-rule-strong: color-mix(in srgb, var(--excel-ink) 22%, var(--excel-paper));
+  --excel-chrome: color-mix(in srgb, var(--excel-ink) 4%, var(--excel-paper));
+  --excel-chrome-strong: color-mix(in srgb, var(--excel-ink) 7%, var(--excel-paper));
+  --excel-select-wash: color-mix(in srgb, var(--excel-ink) 6%, transparent);
+  --excel-error: var(--color-loss);
+
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -12,48 +32,123 @@
   font-size: 0.8125rem;
 }
 
-/* Sheet tabs */
-.excel-sheet-tabs {
+/* An empty sheet still leaves the footer where it belongs. */
+.excel-viewer > .excel-viewer-empty {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ====== Formula bar ====== */
+
+.excel-fbar {
   display: flex;
-  gap: 2px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--color-border-muted);
-  overflow-x: auto;
+  align-items: stretch;
   flex-shrink: 0;
-}
-
-.excel-sheet-tab {
-  padding: 4px 10px;
-  border-radius: 4px;
+  height: 30px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--color-border-muted);
+  background: var(--color-bg-card);
+  font-family: var(--font-mono);
   font-size: 0.6875rem;
-  color: var(--color-text-tertiary);
-  background: transparent;
-  border: 1px solid var(--color-border-muted);
-  cursor: pointer;
+}
+
+.excel-namebox {
+  display: flex;
+  align-items: center;
+  /* The name box gives up a little width before the formula does, but never
+     all of it: a panel narrow enough to hide the address is no use. */
+  flex: 0 1 86px;
+  min-width: 52px;
+  padding: 0 10px;
+  border-right: 1px solid var(--color-border-muted);
+  color: var(--color-text-primary);
+  font-weight: 500;
   white-space: nowrap;
-  transition: all 0.15s;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.excel-sheet-tab:hover {
+.excel-fx {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
   color: var(--color-text-primary);
-  background: var(--color-border-muted);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.excel-sheet-tab.active {
+.excel-fx-tag {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.excel-fx-formula {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The cached half of the bar: what the file stored, and under what format. */
+.excel-fx-value {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding-left: 12px;
+  color: var(--color-text-secondary);
+}
+
+.excel-fx-value b {
   color: var(--color-text-primary);
-  background: var(--color-accent-soft);
-  border-color: var(--color-accent-overlay);
+  font-weight: 500;
 }
 
-/* Table wrapper — white background like a real spreadsheet */
+.excel-fx-fmt {
+  color: var(--color-text-tertiary);
+}
+
+.excel-fx-muted {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.excel-fx-error {
+  color: var(--color-loss);
+}
+
+.excel-fx-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  border: 0;
+  border-left: 1px solid var(--color-border-muted);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+
+.excel-fx-toggle:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.excel-fx-toggle.is-on {
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+}
+
+/* ====== Table ====== */
+
 .excel-table-wrapper {
   flex: 1;
   overflow: auto;
   min-height: 0;
-  background: #ffffff;
+  background: var(--excel-paper);
 }
 
-/* Table */
 .excel-table {
   width: max-content;
   min-width: 100%;
@@ -67,52 +162,268 @@
 .excel-table td {
   padding: 3px 8px;
   text-align: left;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--excel-rule);
   white-space: nowrap;
   max-width: 350px;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #1a1a1a;
+  color: var(--excel-ink);
   vertical-align: bottom;
 }
 
-/* Header row — preserves original styling via inline styles;
-   the defaults below apply when the Excel file has no header formatting */
+/* Header row: the defaults below apply when the file has no header formatting;
+   a cell's own styling rides as inline styles and outranks them. */
 .excel-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #f5f6f8;
-  color: #333;
+  background: var(--excel-chrome);
+  color: var(--excel-ink);
   font-weight: 600;
-  border-bottom: 2px solid #ccc;
+  border-bottom: 2px solid var(--excel-rule-strong);
 }
 
-.excel-table tbody tr:hover td {
-  outline: 1px solid var(--color-accent-overlay);
-  outline-offset: -1px;
+/* CSV keeps its row highlight; the spreadsheet grid marks a cell instead. */
+.excel-table:not(.excel-grid) tbody tr:hover td {
+  background: var(--excel-select-wash);
 }
 
-/* Row number column — stays neutral/dark for contrast */
-.excel-row-num {
-  color: #999 !important;
-  background: #f8f8f8 !important;
+/* Row number column. Qualified by the table so it outranks the generic
+   `thead th` defaults above without a flag on every line. */
+.excel-table .excel-row-num {
+  color: var(--excel-ink-muted);
+  background: var(--excel-chrome);
   font-size: 0.625rem;
-  text-align: right !important;
-  padding-right: 6px !important;
+  text-align: right;
+  padding-right: 6px;
   user-select: none;
   width: 40px;
   min-width: 40px;
-  border-right: 1px solid #e0e0e0 !important;
-  font-weight: 400 !important;
+  border-right: 1px solid var(--excel-rule);
+  font-weight: 400;
 }
 
-thead .excel-row-num {
-  background: #eef0f3 !important;
-  border-bottom: 2px solid #ccc !important;
+.excel-table thead .excel-row-num {
+  background: var(--excel-chrome-strong);
+  border-bottom: 2px solid var(--excel-rule-strong);
 }
 
-/* Truncated notice */
+/* ====== Spreadsheet grid (A1 addressing, selection, precedents) ====== */
+
+.excel-grid {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  /* Cell selection replaces text selection here: a shift-click extends a range
+     rather than dragging a highlight through the sheet. */
+  user-select: none;
+}
+
+.excel-grid thead th {
+  z-index: 3;
+  min-width: 34px;
+  text-align: center;
+  font-weight: 400;
+  color: var(--excel-ink-muted);
+  border-bottom: 1px solid var(--excel-rule);
+}
+
+.excel-grid thead th.is-active,
+.excel-grid tbody th.excel-row-num.is-active {
+  background: var(--excel-chrome-strong);
+  color: var(--excel-ink);
+}
+
+/* A header is a handle for its whole column or row, so it invites the click. */
+.excel-grid thead th:not(.excel-corner),
+.excel-grid tbody th.excel-row-num {
+  cursor: pointer;
+}
+.excel-grid thead th:not(.excel-corner):hover,
+.excel-grid tbody th.excel-row-num:hover {
+  color: var(--excel-ink);
+}
+
+/* Sticky in two directions: the row header holds the left edge, the corner
+   holds both. `border-collapse` drops a sticky cell's borders, so the edges
+   they keep are drawn as inset shadows instead. */
+.excel-grid tbody th.excel-row-num,
+.excel-grid .excel-corner {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  box-shadow: inset -1px 0 0 var(--excel-rule);
+}
+
+.excel-grid .excel-corner {
+  z-index: 4;
+}
+
+.excel-grid td {
+  position: relative;
+  min-width: 84px;
+  text-align: right;
+  cursor: cell;
+}
+
+.excel-grid td.is-text {
+  text-align: left;
+  font-family: var(--font-content);
+}
+
+.excel-grid td.is-uncalculated {
+  color: var(--excel-ink-muted);
+  font-style: italic;
+}
+
+.excel-grid td.is-error {
+  color: var(--excel-error);
+}
+
+/* A formula reads at rest as one: the dotted rule under its value says the
+   number was computed here, not typed. A font underline the file authored
+   rides as an inline style and takes over. */
+.excel-grid td.is-formula {
+  text-decoration: underline dotted var(--excel-ink-muted);
+  text-underline-offset: 2px;
+}
+
+/* Tints ride as inset shadows, not backgrounds: a cell carries the workbook's
+   own fill as an inline style, and an inline background outranks every rule
+   here. A shadow layers over it instead of losing to it. A precedent is
+   annotated by a thin amber edge, never a wash: amber marks, it does not fill. */
+.excel-grid td.is-precedent {
+  box-shadow: inset 0 0 0 1px var(--color-accent-primary);
+}
+
+.excel-grid td.is-selected {
+  box-shadow: inset 0 0 0 100vmax var(--excel-select-wash);
+}
+
+.excel-grid td.is-precedent.is-selected {
+  box-shadow:
+    inset 0 0 0 1px var(--color-accent-primary),
+    inset 0 0 0 100vmax var(--excel-select-wash);
+}
+
+/* The active cell of a range is the one being read, so it stays unwashed and
+   takes the outline, in the grid's own ink, since amber is annotation. */
+.excel-grid td.is-focus {
+  z-index: 1;
+  box-shadow: none;
+  outline: 2px solid var(--excel-ink);
+  outline-offset: -2px;
+}
+
+/* ====== Add-to-context chip ====== */
+
+.excel-selchip {
+  position: absolute;
+  right: 16px;
+  bottom: 48px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid var(--color-border-muted);
+  border-radius: var(--radius);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(12px);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+
+/* The locator gives way before the button does: a long `Sheet!A1:Z999`
+   truncates in a narrow pane rather than pushing Add out of it. */
+.excel-selchip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.excel-selchip code {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--color-text-secondary);
+}
+
+.excel-selchip button {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--color-btn-primary-bg);
+  color: var(--color-btn-primary-text);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.excel-selchip button:hover {
+  background: color-mix(in srgb, var(--color-btn-primary-bg) 88%, var(--color-btn-primary-text));
+}
+
+/* ====== Footer: sheet tabs and what the preview left out ====== */
+
+/* Wraps rather than clipping: the note moves under the tabs when the row is
+   full, so a warning about what the grid leaves out is always read whole. */
+.excel-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.excel-footer:empty {
+  display: none;
+}
+
+.excel-footer-note {
+  margin-left: auto;
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+}
+
+.excel-sheet-tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.excel-sheet-tab {
+  padding: 3px 10px;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: 1px solid var(--color-border-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--motion-quick) var(--ease-out), background var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+
+.excel-sheet-tab:hover {
+  color: var(--color-text-primary);
+  background: var(--color-border-muted);
+}
+
+/* The open sheet is a neutral raised tab, told apart by fill and ink alone. */
+.excel-sheet-tab.active {
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border-default);
+}
+
+/* Truncated notice, CsvViewer's footer */
 .excel-truncated {
   padding: 8px 12px;
   text-align: center;

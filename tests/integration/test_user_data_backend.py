@@ -3,30 +3,91 @@
 Validates the load-bearing invariants that unit tests can only fake:
 
 * the advisory ``pg_advisory_xact_lock`` serializes parallel writers,
-* the in-transaction content-hash recheck raises ``version_conflict`` when a
-  concurrent writer changes the row(s) between read and apply,
+* the version check under that lock raises ``version_conflict`` when a
+  concurrent writer changes the row(s) between read and write,
 * the SQL of inserts / updates / deletes actually mutates the underlying
   tables (no silent-no-op regressions on column-name drift),
-* ``apply_preferences`` preserves the server-managed ``other_preference``
+* ``write_preferences`` preserves the server-managed ``other_preference``
   column on update, and seeds ``{}`` on first insert,
 * watchlist rename behaves as delete+insert by ``name`` identity.
+
+Every write goes through the backend, as the agent's Write tool
+(``awrite_text`` after a Read) or the file mount (``awrite_versioned``) makes
+it, so the lock, the version check and the commit are the ones that ship.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
+from ptc_agent.agent.backends import db_json_route
+from ptc_agent.agent.backends.db_json_route import UserDataValidationError
+from ptc_agent.agent.backends.user_data import UserDataBackend
+from ptc_agent.core.sandbox.livefs_mount import CallContext
+from src.server.database import portfolio as portfolio_db
+from src.server.database import user as user_db
+from src.server.database import watchlist as watchlist_db
 from src.server.services import user_data_io as io
-from src.server.services.user_data_io import UserDataValidationError
+from src.server.services.profile_files import (
+    PORTFOLIO_FILE,
+    PREFERENCE_FILE,
+    WATCHLIST_FILE,
+    PortfolioFile,
+    PreferenceFile,
+    WatchlistFile,
+)
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
+
+PROFILE = "/work/.agents/user/profile/"
 
 
-def _serialize(content: dict) -> str:
-    return io.serialize_json(content)
+class _StubSandbox:
+    """The backend reads and writes rows, never the sandbox's files."""
+
+    def normalize_path(self, p): return p
+    def virtualize_path(self, p): return p
+    def validate_path(self, p): return True
+    @property
+    def filesystem_config(self): return None
+
+
+def _backend(user_id: str) -> UserDataBackend:
+    return UserDataBackend(
+        user_id=user_id,
+        call=CallContext(),
+        sandbox_backend=_StubSandbox(),  # type: ignore[arg-type]
+        root_prefix=PROFILE,
+    )
+
+
+def _holding(symbol: str, quantity: str = "1", average_cost: str = "1") -> dict[str, Any]:
+    return {
+        "symbol": symbol, "instrument_type": "stock",
+        "quantity": quantity, "average_cost": average_cost,
+        "account_name": "Main",
+    }
+
+
+async def _read(backend: UserDataBackend, filename: str) -> None:
+    """The Read a Write is checked against, of the whole file."""
+    assert await backend.aread_range(PROFILE + filename) is not None
+
+
+async def _write(backend: UserDataBackend, filename: str, content: dict) -> Any:
+    return await backend.awrite_text(PROFILE + filename, io.serialize_json(content))
+
+
+async def _save(user_id: str, filename: str, content: dict) -> None:
+    """Read then Write, as the agent's tools save."""
+    backend = _backend(user_id)
+    await _read(backend, filename)
+    await _write(backend, filename, content)
 
 
 # ---------------------------------------------------------------------------
@@ -37,21 +98,9 @@ def _serialize(content: dict) -> str:
 class TestPortfolioApply:
     async def test_insert_round_trips(self, seed_user, patched_get_db_connection):
         user_id = seed_user["user_id"]
+        assert await io.fetch_portfolio_for_user(user_id) == []
 
-        # Empty start
-        rows = await io.fetch_portfolio_for_user(user_id)
-        assert rows == []
-        version = io.serialize_portfolio(rows)["__version__"]
-
-        diff = io.parse_and_diff_portfolio(
-            _serialize({"holdings": [{
-                "symbol": "ZZZ", "instrument_type": "stock",
-                "quantity": "10", "average_cost": "100.00",
-                "account_name": "Main",
-            }]}),
-            rows,
-        )
-        await io.apply_portfolio_diff(diff, user_id, payload_version=version)
+        await _save(user_id, PORTFOLIO_FILE, {"holdings": [_holding("ZZZ", "10", "100.00")]})
 
         # Round-trip: fetch + serialize sees the new row
         rows_after = await io.fetch_portfolio_for_user(user_id)
@@ -62,87 +111,99 @@ class TestPortfolioApply:
     async def test_update_and_delete(self, seed_user, patched_get_db_connection):
         user_id = seed_user["user_id"]
 
-        # Seed two holdings
-        rows = await io.fetch_portfolio_for_user(user_id)
-        v0 = io.serialize_portfolio(rows)["__version__"]
-        diff0 = io.parse_and_diff_portfolio(_serialize({"holdings": [
-            {"symbol": "AAA", "instrument_type": "stock", "quantity": "1", "average_cost": "10", "account_name": "Main"},
-            {"symbol": "BBB", "instrument_type": "stock", "quantity": "2", "average_cost": "20", "account_name": "Main"},
-        ]}), rows)
-        await io.apply_portfolio_diff(diff0, user_id, payload_version=v0)
-
+        await _save(user_id, PORTFOLIO_FILE, {"holdings": [
+            _holding("AAA", "1", "10"),
+            _holding("BBB", "2", "20"),
+        ]})
         # Now drop AAA and update BBB
-        rows = await io.fetch_portfolio_for_user(user_id)
-        v1 = io.serialize_portfolio(rows)["__version__"]
-        diff1 = io.parse_and_diff_portfolio(_serialize({"holdings": [
-            {"symbol": "BBB", "instrument_type": "stock", "quantity": "99", "average_cost": "20", "account_name": "Main"},
-        ]}), rows)
-        await io.apply_portfolio_diff(diff1, user_id, payload_version=v1)
+        await _save(user_id, PORTFOLIO_FILE, {"holdings": [_holding("BBB", "99", "20")]})
 
         rows_after = await io.fetch_portfolio_for_user(user_id)
-        symbols = {r["symbol"] for r in rows_after}
-        assert symbols == {"BBB"}
-        bbb = rows_after[0]
-        assert bbb["quantity"] == Decimal("99")
+        assert {r["symbol"] for r in rows_after} == {"BBB"}
+        assert rows_after[0]["quantity"] == Decimal("99")
 
     async def test_version_conflict_on_concurrent_change(
         self, seed_user, patched_get_db_connection,
     ):
-        """Cached payload_version becomes stale → version_conflict."""
+        """A Read taken before another writer landed is stale → version_conflict."""
         user_id = seed_user["user_id"]
+        path = PROFILE + PORTFOLIO_FILE
+        ours = _backend(user_id)
+        await _read(ours, PORTFOLIO_FILE)
+        _, stale_version = await ours.aread_versioned(path)
 
-        rows = await io.fetch_portfolio_for_user(user_id)
-        stale_version = io.serialize_portfolio(rows)["__version__"]
+        # A program saves through the mount in between.
+        mount = _backend(user_id)
+        _, fresh_version = await mount.aread_versioned(path)
+        await mount.awrite_versioned(
+            path, io.serialize_json({"holdings": [_holding("RACE", "1", "5")]}), fresh_version
+        )
 
-        # A concurrent writer slips a holding in
-        other_diff = io.parse_and_diff_portfolio(_serialize({"holdings": [
-            {"symbol": "RACE", "instrument_type": "stock", "quantity": "1", "average_cost": "5", "account_name": "Main"},
-        ]}), rows)
-        await io.apply_portfolio_diff(other_diff, user_id, payload_version=stale_version)
-
-        # Our write, using the stale snapshot, must raise
-        our_diff = io.parse_and_diff_portfolio(_serialize({"holdings": [
-            {"symbol": "ZZZ", "instrument_type": "stock", "quantity": "1", "average_cost": "5", "account_name": "Main"},
-        ]}), rows)
+        # Our Write over the stale Read must raise
         with pytest.raises(UserDataValidationError) as exc:
-            await io.apply_portfolio_diff(our_diff, user_id, payload_version=stale_version)
+            await _write(ours, PORTFOLIO_FILE, {"holdings": [_holding("ZZZ", "1", "5")]})
         assert exc.value.error_type == "version_conflict"
+        # The refusal drops that Read, so a retry has to read again.
+        with pytest.raises(UserDataValidationError) as retry:
+            await _write(ours, PORTFOLIO_FILE, {"holdings": [_holding("ZZZ", "1", "5")]})
+        assert retry.value.error_type == "read_required"
+        # A mount save over the stale version is refused the same way.
+        with pytest.raises(UserDataValidationError) as mounted:
+            await mount.awrite_versioned(
+                path, io.serialize_json({"holdings": [_holding("ZZZ", "1", "5")]}), stale_version
+            )
+        assert mounted.value.error_type == "version_conflict"
 
-        # The losing write did NOT apply
+        # The losing writes did NOT apply
         symbols = {r["symbol"] for r in await io.fetch_portfolio_for_user(user_id)}
         assert symbols == {"RACE"}
 
     async def test_advisory_lock_serializes_parallel_writers(
-        self, seed_user, patched_get_db_connection,
+        self, seed_user, patched_get_db_connection, monkeypatch,
     ):
-        """Two concurrent valid writes against fresh versions: at most one wins.
+        """Two concurrent writes over the same Read: exactly one wins.
 
-        Both writers compute a payload_version against the same starting state.
-        With the advisory lock + recheck, the second one to take the lock sees
-        the first writer's hash and gets version_conflict — guaranteeing the
-        writes don't interleave row-level.
+        Each writer gets its own in-process lock, as two server workers
+        would, so only the advisory lock orders them: the second to take it
+        reads the first one's rows and gets version_conflict, so the writes
+        don't interleave row-level. Each save holds its read open until the
+        other has read too, or half a second, so without the lock both read
+        the same rows and both commit.
         """
         user_id = seed_user["user_id"]
+        monkeypatch.setattr(db_json_route, "lock_for_namespace", lambda _namespace: asyncio.Lock())
+        real_fetch = PortfolioFile.fetch
+        reads = 0
+        both_read = asyncio.Event()
 
-        rows = await io.fetch_portfolio_for_user(user_id)
-        version = io.serialize_portfolio(rows)["__version__"]
-        diff_a = io.parse_and_diff_portfolio(_serialize({"holdings": [
-            {"symbol": "AAA", "instrument_type": "stock", "quantity": "1", "average_cost": "1", "account_name": "Main"},
-        ]}), rows)
-        diff_b = io.parse_and_diff_portfolio(_serialize({"holdings": [
-            {"symbol": "BBB", "instrument_type": "stock", "quantity": "2", "average_cost": "2", "account_name": "Main"},
-        ]}), rows)
+        async def fetch(self, user_id, conn=None):
+            nonlocal reads
+            rows = await real_fetch(self, user_id, conn)
+            if conn is not None:
+                # A save's read, under its transaction.
+                reads += 1
+                if reads >= 2:
+                    both_read.set()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(both_read.wait(), 0.5)
+            return rows
+
+        monkeypatch.setattr(PortfolioFile, "fetch", fetch)
+
+        a, b = _backend(user_id), _backend(user_id)
+        await _read(a, PORTFOLIO_FILE)
+        await _read(b, PORTFOLIO_FILE)
 
         results = await asyncio.gather(
-            io.apply_portfolio_diff(diff_a, user_id, payload_version=version),
-            io.apply_portfolio_diff(diff_b, user_id, payload_version=version),
+            _write(a, PORTFOLIO_FILE, {"holdings": [_holding("AAA", "1", "1")]}),
+            _write(b, PORTFOLIO_FILE, {"holdings": [_holding("BBB", "2", "2")]}),
             return_exceptions=True,
         )
         conflicts = [r for r in results if isinstance(r, UserDataValidationError)]
-        successes = [r for r in results if r is None]
+        successes = [r for r in results if not isinstance(r, BaseException)]
         # Exactly one succeeded, one raised version_conflict.
-        assert len(successes) == 1
-        assert len(conflicts) == 1
+        assert len(successes) == 1, results
+        assert len(conflicts) == 1, results
         assert conflicts[0].error_type == "version_conflict"
 
         # Whichever symbol won is the only one present.
@@ -152,7 +213,7 @@ class TestPortfolioApply:
 
 
 # ---------------------------------------------------------------------------
-# Preferences — other_preference preservation
+# Preferences: other_preference preservation
 # ---------------------------------------------------------------------------
 
 
@@ -161,14 +222,11 @@ class TestPreferenceApply:
         self, seed_user, patched_get_db_connection,
     ):
         user_id = seed_user["user_id"]
-        current = await io.fetch_preferences_for_user(user_id)
-        version = io.serialize_preferences(current)["__version__"]
-        values = io.parse_preferences(_serialize({
+        await _save(user_id, PREFERENCE_FILE, {
             "risk_preference": {"tolerance": "moderate"},
             "investment_preference": {},
             "agent_preference": {},
-        }))
-        await io.apply_preferences(values, user_id, payload_version=version)
+        })
 
         row = await io.fetch_preferences_for_user(user_id)
         assert row is not None
@@ -183,16 +241,11 @@ class TestPreferenceApply:
         user_id = seed_user["user_id"]
 
         # First insert (agent path)
-        current = await io.fetch_preferences_for_user(user_id)
-        v0 = io.serialize_preferences(current)["__version__"]
-        await io.apply_preferences(
-            io.parse_preferences(_serialize({"risk_preference": {"tolerance": "low"}})),
-            user_id, payload_version=v0,
-        )
+        await _save(user_id, PREFERENCE_FILE, {"risk_preference": {"tolerance": "low"}})
 
-        # Server slips in onboarding state via direct SQL (simulating internal flow).
-        # Acquire-and-release the connection eagerly so the pool isn't held during
-        # the next apply_preferences call below.
+        # The server slips in onboarding state via direct SQL. Acquire and
+        # release the connection eagerly so the pool isn't held during the
+        # next write below.
         async with test_db_pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -201,16 +254,11 @@ class TestPreferenceApply:
                 )
 
         # Agent edits its slice
-        current = await io.fetch_preferences_for_user(user_id)
-        v1 = io.serialize_preferences(current)["__version__"]
-        await io.apply_preferences(
-            io.parse_preferences(_serialize({
-                "risk_preference": {"tolerance": "aggressive"},
-                "investment_preference": {"style": "growth"},
-                "agent_preference": {},
-            })),
-            user_id, payload_version=v1,
-        )
+        await _save(user_id, PREFERENCE_FILE, {
+            "risk_preference": {"tolerance": "aggressive"},
+            "investment_preference": {"style": "growth"},
+            "agent_preference": {},
+        })
 
         row = await io.fetch_preferences_for_user(user_id)
         assert row["risk_preference"] == {"tolerance": "aggressive"}
@@ -220,7 +268,7 @@ class TestPreferenceApply:
 
 
 # ---------------------------------------------------------------------------
-# Watchlist — rename = delete + insert by name
+# Watchlist: rename = delete + insert by name
 # ---------------------------------------------------------------------------
 
 
@@ -229,30 +277,18 @@ class TestWatchlistApply:
         self, seed_user, patched_get_db_connection,
     ):
         user_id = seed_user["user_id"]
+        items = [{"symbol": "AAPL", "instrument_type": "stock"}]
 
-        wls, items = await io.fetch_watchlist_for_user(user_id)
-        v0 = io.serialize_watchlist(wls, items)["__version__"]
-        diff0 = io.parse_and_diff_watchlist(_serialize({"watchlists": [{
-            "name": "Old Name",
-            "items": [{"symbol": "AAPL", "instrument_type": "stock"}],
-        }]}), wls, items)
-        await io.apply_watchlist_diff(diff0, user_id, payload_version=v0)
-
-        wls, items = await io.fetch_watchlist_for_user(user_id)
+        await _save(user_id, WATCHLIST_FILE, {"watchlists": [{"name": "Old Name", "items": items}]})
+        wls, _ = await io.fetch_watchlist_for_user(user_id)
         old_wl_id = str(wls[0]["watchlist_id"])
 
-        v1 = io.serialize_watchlist(wls, items)["__version__"]
         # Rename: agent sees "Old Name", writes "New Name" with the items intact
-        diff1 = io.parse_and_diff_watchlist(_serialize({"watchlists": [{
-            "name": "New Name",
-            "items": [{"symbol": "AAPL", "instrument_type": "stock"}],
-        }]}), wls, items)
-        await io.apply_watchlist_diff(diff1, user_id, payload_version=v1)
+        await _save(user_id, WATCHLIST_FILE, {"watchlists": [{"name": "New Name", "items": items}]})
 
         wls_after, items_after = await io.fetch_watchlist_for_user(user_id)
-        names = {w["name"] for w in wls_after}
-        assert names == {"New Name"}
-        # Brand-new row — DB id changed
+        assert {w["name"] for w in wls_after} == {"New Name"}
+        # Brand-new row, so the DB id changed
         new_wl_id = str(wls_after[0]["watchlist_id"])
         assert new_wl_id != old_wl_id
         # Items came along
@@ -260,7 +296,7 @@ class TestWatchlistApply:
 
 
 # ---------------------------------------------------------------------------
-# UserDataBackend.aread_text smoke — sanity-check that the read path hits DB
+# UserDataBackend.aread_text smoke: the read path hits the DB
 # ---------------------------------------------------------------------------
 
 
@@ -269,39 +305,102 @@ class TestBackendRead:
         self, seed_user, patched_get_db_connection,
     ):
         """End-to-end through the agent-facing surface, not just io.*."""
-        from ptc_agent.agent.backends.user_data import (
-            PORTFOLIO_FILE,
-            UserDataBackend,
-        )
+        user_id = seed_user["user_id"]
+        await _save(user_id, PORTFOLIO_FILE, {"holdings": [_holding("READ", "7", "13.5")]})
 
-        # Minimal sandbox stub — backend reads from io, not the sandbox FS
-        class _StubSandbox:
-            def normalize_path(self, p): return p
-            def virtualize_path(self, p): return p
-            def validate_path(self, p): return True
-            @property
-            def filesystem_config(self): return None
-
-        backend = UserDataBackend(
-            user_id=seed_user["user_id"],
-            sandbox_backend=_StubSandbox(),  # type: ignore[arg-type]
-            root_prefix="/work/.agents/user/profile/",
-        )
-
-        # Seed a holding via io
-        rows = await io.fetch_portfolio_for_user(seed_user["user_id"])
-        version = io.serialize_portfolio(rows)["__version__"]
-        await io.apply_portfolio_diff(
-            io.parse_and_diff_portfolio(_serialize({"holdings": [{
-                "symbol": "READ", "instrument_type": "stock",
-                "quantity": "7", "average_cost": "13.5", "account_name": "Main",
-            }]}), rows),
-            seed_user["user_id"],
-            payload_version=version,
-        )
-
-        content = await backend.aread_text(f"/work/.agents/user/profile/{PORTFOLIO_FILE}")
+        content = await _backend(user_id).aread_text(PROFILE + PORTFOLIO_FILE)
         assert content is not None
         assert "READ" in content
         # Agent-visible JSON does NOT include __version__
         assert "__version__" not in content
+
+
+# ---------------------------------------------------------------------------
+# Dashboard and tool writers against a save in flight
+# ---------------------------------------------------------------------------
+
+
+async def _portfolio_race(user_id: str):
+    await _save(user_id, PORTFOLIO_FILE, {"holdings": [_holding("AAA", "1", "10")]})
+    [row] = await io.fetch_portfolio_for_user(user_id)
+
+    def crud():
+        return portfolio_db.update_portfolio_holding(
+            str(row["user_portfolio_id"]), user_id, quantity=Decimal("5")
+        )
+
+    def landed(rows):
+        assert (rows[0]["quantity"], rows[0]["notes"]) == (Decimal("5"), "trimmed")
+
+    written = {"holdings": [{**_holding("AAA", "1", "10"), "notes": "trimmed"}]}
+    return PortfolioFile, PORTFOLIO_FILE, written, crud, landed
+
+
+async def _watchlist_race(user_id: str):
+    aapl = {"symbol": "AAPL", "instrument_type": "stock"}
+    await _save(user_id, WATCHLIST_FILE, {"watchlists": [{"name": "Tech", "items": [aapl]}]})
+    _, items_by_wl = await io.fetch_watchlist_for_user(user_id)
+    [[item]] = items_by_wl.values()
+
+    def crud():
+        return watchlist_db.update_watchlist_item(
+            str(item["watchlist_item_id"]), user_id, alert_settings={"above": 200}
+        )
+
+    def landed(rows):
+        [[after]] = rows[1].values()
+        assert (after["alert_settings"], after["notes"]) == ({"above": 200}, "core")
+
+    written = {"watchlists": [{"name": "Tech", "items": [{**aapl, "notes": "core"}]}]}
+    return WatchlistFile, WATCHLIST_FILE, written, crud, landed
+
+
+async def _preference_race(user_id: str):
+    await _save(user_id, PREFERENCE_FILE, {"risk_preference": {"tolerance": "low"}})
+
+    def crud():
+        return user_db.upsert_user_preferences(user_id, agent_preference={"tone": "brief"})
+
+    def landed(row):
+        assert (row["risk_preference"], row["agent_preference"]) == (
+            {"tolerance": "high"}, {"tone": "brief"},
+        )
+
+    written = {"risk_preference": {"tolerance": "high"}}
+    return PreferenceFile, PREFERENCE_FILE, written, crud, landed
+
+
+class TestCrudWriteDuringSave:
+    @pytest.mark.parametrize(
+        "race", [_portfolio_race, _watchlist_race, _preference_race],
+        ids=["portfolio", "watchlist", "preference"],
+    )
+    async def test_crud_write_is_not_lost(
+        self, race, seed_user, patched_get_db_connection, monkeypatch,
+    ):
+        """A dashboard or tool write that comes while a save holds its read
+        lands after the save rather than under it.
+
+        The save starts the CRUD write right after its read and waits up to
+        half a second for it. A CRUD write outside the profile lock commits
+        in that window, and the save's diff, planned from the rows it read,
+        then writes the old values back over it.
+        """
+        user_id = seed_user["user_id"]
+        file_cls, filename, written, crud, landed = await race(user_id)
+        real_fetch = file_cls.fetch
+        started: list[asyncio.Task] = []
+
+        async def fetch(self, user_id, conn=None):
+            rows = await real_fetch(self, user_id, conn)
+            if conn is not None and not started:
+                started.append(asyncio.create_task(crud()))
+                await asyncio.wait(started, timeout=0.5)
+            return rows
+
+        monkeypatch.setattr(file_cls, "fetch", fetch)
+        await _save(user_id, filename, written)
+        await started[0]
+
+        async with patched_get_db_connection() as conn:
+            landed(await real_fetch(file_cls(), user_id, conn))

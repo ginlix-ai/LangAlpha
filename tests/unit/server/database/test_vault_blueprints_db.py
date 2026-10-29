@@ -1,7 +1,7 @@
-"""Tests for src/server/database/vault_secrets.get_workspace_secret_names.
+"""Tests for src/server/database/user_vault_secrets.get_user_secret_names.
 
 The helper powers the blueprints endpoint's "already set" subtraction without
-paying the pgcrypto decryption cost that get_workspace_secrets incurs.
+paying the pgcrypto decryption cost that get_user_secrets incurs.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.database.vault_secrets import get_workspace_secret_names
+from src.server.database.user_vault_secrets import get_user_secret_names
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def vault_mock_db(mock_cursor):
         yield conn_in if conn_in is not None else conn
 
     with patch(
-        "src.server.database.vault_secrets.get_db_connection",
+        "src.server.database.user_vault_secrets.get_db_connection",
         new=_fake_connection,
     ):
         yield mock_cursor
@@ -46,7 +46,7 @@ def vault_mock_db(mock_cursor):
 @pytest.mark.asyncio
 async def test_empty_vault_returns_empty_set(vault_mock_db):
     vault_mock_db.fetchall.return_value = []
-    names = await get_workspace_secret_names("ws-1")
+    names = await get_user_secret_names("user-1")
     assert names == set()
 
 
@@ -57,14 +57,14 @@ async def test_populated_vault_returns_full_name_set(vault_mock_db):
         {"name": "FMP_API_KEY"},
         {"name": "POLYGON_KEY"},
     ]
-    names = await get_workspace_secret_names("ws-1")
+    names = await get_user_secret_names("user-1")
     assert names == {"X_BEARER_TOKEN", "FMP_API_KEY", "POLYGON_KEY"}
 
 
 @pytest.mark.asyncio
 async def test_query_does_not_select_value_column(vault_mock_db):
     """Guard rail: ensure we're not accidentally decrypting."""
-    await get_workspace_secret_names("ws-1")
+    await get_user_secret_names("user-1")
     executed_sql = vault_mock_db.execute.call_args.args[0]
     assert "name" in executed_sql.lower()
     assert "value" not in executed_sql.lower()
@@ -73,10 +73,10 @@ async def test_query_does_not_select_value_column(vault_mock_db):
 
 @pytest.mark.asyncio
 async def test_query_is_parametrized(vault_mock_db):
-    """Guard rail: ensure workspace_id is passed as a bound parameter, not
+    """Guard rail: ensure user_id is passed as a bound parameter, not
     interpolated. Catches accidental f-string regressions that would reintroduce
     SQL-injection risk."""
-    await get_workspace_secret_names("ws-42")
+    await get_user_secret_names("user-42")
     args = vault_mock_db.execute.call_args.args
-    assert args[1] == ("ws-42",)
+    assert args[1] == ("user-42",)
     assert "%s" in args[0]

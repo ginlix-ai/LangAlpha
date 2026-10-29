@@ -1,0 +1,1895 @@
+"""Workspace file transfer runtime, uploaded into the sandbox verbatim.
+
+The backend moves metadata only. This script walks the workspace, hashes
+files, and moves bytes straight between the sandbox disk and object storage
+through presigned URLs. It runs on the sandbox's bare python3, so it is
+standard library only and imports nothing from the host repo.
+
+CLI: ``python3 wsfiles_transfer.py <op> (--spec-b64 <base64 json> | <in.json>)``
+where ``op`` is scan, sweep, hash, push, pull, pack or unlink. The result is the last
+stdout line, behind ``RESULT_MARKER``, and the process exits 0 even on partial
+failure; exit 2 is reserved for unreadable or invalid input.
+"""
+
+import base64
+import codecs
+import contextlib
+import errno
+import functools
+import hashlib
+import http.client
+import json
+import os
+import shutil
+import socket
+import ssl
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+_CHUNK = 1024 * 1024
+# Defaults for a spec that names no concurrency. The server always sends its
+# own (transfer.py's PUSH_CONCURRENCY / PULL_CONCURRENCY); these are the same
+# measured knees, so a runtime driven by hand behaves like the server's.
+_PUSH_CONCURRENCY = 16
+_PULL_CONCURRENCY = 32
+# What a pull may hold in temp files at once. Every download lands beside its
+# target and is renamed into place only once it verifies, so the transient
+# disk cost is what is in flight rather than what the restore finally places.
+# The thread pool bounds the file count; nothing bounded the bytes, and with
+# no per-file cap that product is unbounded on a disk of a few GiB.
+_PULL_MAX_INFLIGHT_BYTES = 512 * 1024 * 1024
+# SandboxLayout.PACKS_DIR, spelled out because this runtime ships into the
+# sandbox stdlib-only; a unit test holds the two equal.
+_PACK_DIR = "_internal/packs"
+# Longer than the server lets a transfer take (TRANSFER_MAX_TIMEOUT_S), so a
+# sibling project's pack op never sweeps a chunk that is still being pushed.
+_PACK_STALE_S = 3 * 3600.0
+# Every transient file this runtime or the server writes into the workspace
+# sits at the root under this prefix, and the scan skips it there and only
+# there: a user's own ``sub/.wsfiles-notes`` is a file like any other.
+_TEMP_PREFIX = ".wsfiles-"
+_RELAY_STAGING_PREFIX = ".wsfiles-relay-"
+_MAX_ATTEMPTS = 3
+_BACKOFF_S = (0.5, 2.0)
+_ERROR_BODY_LIMIT = 64 * 1024
+
+
+# ---------------------------------------------------------------------------
+# shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _digest_reusable(known: Any, size: int, mtime_ns: int) -> bool:
+    """Whether the manifest's (size, mtime_ns, sha256) still names this file.
+
+    The backend stores mtimes at microsecond precision, so the check compares
+    at that granularity; an exact ns compare would rehash every file on every
+    scan. An mtime of 0 is no stamp at all: an upload that set none, or an
+    archive unpacked at the epoch, rewrites a file without moving it, so the
+    file is read again whichever side holds the 0.
+    """
+    if not known or len(known) < 3 or not known[2] or known[1] is None:
+        return False
+    recorded_us = int(known[1]) // 1000
+    current_us = mtime_ns // 1000
+    return (
+        known[0] == size
+        and recorded_us != 0
+        and current_us != 0
+        and recorded_us == current_us
+    )
+
+
+def _hash_file(path: str) -> tuple[str, bool, int]:
+    """Hash and classify the file in one read; returns (sha256, is_binary, size).
+
+    The size is the byte count the digest covers, not a separate stat: a file
+    that grows between the two would otherwise be reported with a digest of
+    the new bytes and the length of the old.
+
+    Binary means a NUL anywhere, or bytes anywhere that are not strict UTF-8.
+    Neither is sampled from a leading window: text is stored in a column that
+    cannot hold a NUL, so one further in is dropped on the way to the row and
+    the stored bytes stop hashing to the row's own digest, and a blob row is
+    never re-read on the way out, so a bad sequence after the first pages
+    would be served as text with replacement marks. The decoder is dropped at
+    the first NUL or failure, so the rest of a binary costs only the hash.
+    """
+    h = hashlib.sha256()
+    size = 0
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(_CHUNK), b""):
+            h.update(chunk)
+            if decoder is not None:
+                if b"\0" in chunk:
+                    decoder = None
+                else:
+                    try:
+                        decoder.decode(chunk)
+                    except UnicodeDecodeError:
+                        decoder = None
+            size += len(chunk)
+    if decoder is not None:
+        try:
+            decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            decoder = None
+    return h.hexdigest(), decoder is None, size
+
+
+class _ByteBudget:
+    """Weighted admission for work that materializes bytes on disk at once.
+
+    The sandbox-side twin of the server's ``ByteBudget``; this script ships
+    stdlib-only and cannot import it, so the shape is kept by hand.
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self._max = max(1, int(max_bytes))
+        self._held = 0
+        self._bytes = 0
+        self._cv = threading.Condition()
+
+    @contextlib.contextmanager
+    def hold(self, size: Any) -> Any:
+        # An unknown weight is charged the whole budget rather than nothing:
+        # a bound that admits freely whenever it cannot measure an item is
+        # not a bound. A measured zero still costs zero.
+        want = self._max if size is None else min(max(int(size), 0), self._max)
+        with self._cv:
+            # Admit when there is room, or when nothing is running at all.
+            # The second clause is what lets an item bigger than the whole
+            # budget through instead of waiting for room that can never
+            # exist, and is why it then runs alone. Holders are counted
+            # rather than bytes, so a zero-weight item still occupies it.
+            while self._held and self._bytes + want > self._max:
+                self._cv.wait()
+            self._held += 1
+            self._bytes += want
+        try:
+            yield
+        finally:
+            with self._cv:
+                self._held -= 1
+                self._bytes -= want
+                self._cv.notify_all()
+
+
+def _resolve_under_root(root: str, rel: str) -> str | None:
+    """Return the absolute final path, or None when ``rel`` escapes ``root``.
+
+    The check is lexical on purpose: a symlink already inside the workspace
+    pointing outside is the user's own arrangement, but a JSON item must never
+    name a location outside the root it was given.
+    """
+    if not rel or rel.startswith("/") or os.path.isabs(rel):
+        return None
+    norm = os.path.normpath(rel)
+    if norm == "." or os.path.isabs(norm):
+        return None
+    parts = norm.split(os.sep)
+    # Only a whole ".." component escapes; a name that merely starts with two
+    # dots ("..notes") is an ordinary file.
+    if ".." in parts:
+        return None
+    return os.path.join(root, norm)
+
+
+@functools.lru_cache(maxsize=65536)
+def _inside(root: str, path: str) -> bool:
+    """Whether ``path`` resolves inside ``root`` with links followed.
+
+    ``_resolve_under_root`` checks the name only. A pull that finds a link
+    where its manifest recorded a directory would write through it: a
+    workspace folder links the shared skills from the computer root, so the
+    bytes would land in every sibling's copy. The link is newer than the
+    row, so the row loses. Cached for one pull's steps 1 and 2, which ask
+    about the same few parents thousands of times before any link exists.
+    Step 3 asks uncached: each link it places can be the next one's parent.
+    """
+    real_root = os.path.realpath(root)
+    real = os.path.realpath(path)
+    return real == real_root or real.startswith(real_root.rstrip(os.sep) + os.sep)
+
+
+def _pack_base(spec: dict[str, Any], root: str) -> str:
+    """Directory the pack chunks live in, which need not be the walk root.
+
+    One sandbox holds several workspace folders and one shared ``_internal``,
+    so the walk root moves per workspace while the chunk staging area does
+    not. ``pack_root`` names that machine root; a spec written before the
+    split omits it and the walk root is still both.
+    """
+    pack_root = spec.get("pack_root")
+    base = os.path.abspath(pack_root) if pack_root else root
+    return os.path.join(base, _PACK_DIR)
+
+
+def _resolve_item(root: str, pack_base: str, rel: str) -> str | None:
+    """Absolute path for an item, taking an absolute one only inside ``pack_base``.
+
+    A pack chunk stages outside the walk root once several workspace folders
+    share one computer, so its path arrives absolute and is checked against
+    the pack directory instead. Everything else is a workspace-relative path
+    and keeps the lexical root check.
+    """
+    if not rel:
+        return None
+    if os.path.isabs(rel):
+        norm = os.path.normpath(rel)
+        base = os.path.normpath(pack_base)
+        if norm == base or norm.startswith(base.rstrip(os.sep) + os.sep):
+            return norm
+        return None
+    return _resolve_under_root(root, rel)
+
+
+def _result(status: str, http_status: int | None = None, error: str | None = None) -> dict[str, Any]:
+    return {"status": status, "http": http_status, "error": error}
+
+
+def _read_error_body(resp: Any) -> str:
+    try:
+        return resp.read(_ERROR_BODY_LIMIT).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    if isinstance(exc, (urllib.error.HTTPError, _HttpStatusError)):
+        return False
+    return isinstance(
+        exc,
+        (
+            urllib.error.URLError,
+            socket.timeout,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            http.client.HTTPException,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# scan
+# ---------------------------------------------------------------------------
+
+
+class _Exclusions:
+    """What a backup leaves out, shared by ``scan`` and ``sweep``.
+
+    One predicate for both, because a sweep that looked at an entry the scan
+    skips would keep reporting a project as changed, and one that skipped an
+    entry the scan keeps would let a real change go unsaved.
+    """
+
+    def __init__(self, spec: dict[str, Any]) -> None:
+        self.dir_names = set(spec.get("exclude_dir_names") or ())
+        self.rel_dirs = {p.strip("/") for p in (spec.get("exclude_rel_dirs") or ())}
+        self.rel_dir_prefixes = tuple(
+            p.strip("/") for p in (spec.get("exclude_rel_dir_prefixes") or ())
+        )
+        self.basenames = set(spec.get("exclude_basenames") or ())
+        self.rel_files = {p.strip("/") for p in (spec.get("exclude_rel_files") or ())}
+        self.root_basenames = set(spec.get("exclude_root_basenames") or ())
+        self.root_prefixes = tuple(spec.get("exclude_root_basename_prefixes") or ())
+        self.suffixes = tuple(spec.get("exclude_suffixes") or ())
+
+    def kind(self, child: Any, rel: str, at_root: bool) -> str | None:
+        """``child``'s kind as a backup carries it, or None when it is left out.
+
+        ``child`` is a ``DirEntry``; the answer is ``"symlink"``, ``"dir"`` or
+        ``"file"``. May raise OSError.
+        """
+        name = child.name
+        # Reserved root names are skipped whatever the entry is: the pull op's
+        # sweep removes any root ``.wsfiles-`` entry no item claims,
+        # directories included, so a row for one would only promise what the
+        # next restore deletes.
+        if at_root and (name in self.root_basenames or name.startswith(self.root_prefixes)):
+            return None
+        if child.is_symlink():
+            # A symlink standing where an excluded directory would be is that
+            # directory as far as a restore is concerned, so it answers to the
+            # path-anchored rules too.
+            left_out = (
+                name in self.dir_names
+                or name in self.basenames
+                or rel in self.rel_files
+                or rel in self.rel_dirs
+                or rel.startswith(self.rel_dir_prefixes)
+            )
+            return None if left_out else "symlink"
+        if child.is_dir(follow_symlinks=False):
+            left_out = (
+                name in self.dir_names
+                or rel in self.rel_dirs
+                or rel.startswith(self.rel_dir_prefixes)
+            )
+            return None if left_out else "dir"
+        if child.is_file(follow_symlinks=False):
+            left_out = name in self.basenames or rel in self.rel_files or name.endswith(self.suffixes)
+            return None if left_out else "file"
+        # Sockets, fifos and devices are not files a backup can carry.
+        return None
+
+
+def _boot_id() -> str | None:
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip() or None
+    except OSError:
+        pass
+    # macOS has no /proc; without an id every sweep would rescan everything.
+    try:
+        found = subprocess.run(
+            ["sysctl", "-n", "kern.bootsessionuuid"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return found.stdout.strip() or None
+
+
+def _clock_offset_ns() -> int:
+    """How far the wall clock sits from the boot clock.
+
+    Change times are stamped by the wall clock, which can be stepped back; the
+    boot clock cannot. A drop in this offset between a mark and a sweep means
+    the wall clock went back, so a change made since may carry a change time
+    older than the mark.
+    """
+    boot_clock = getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)
+    return time.time_ns() - time.clock_gettime_ns(boot_clock)
+
+
+# A wall clock slewed by NTP drifts from the boot clock by well under this;
+# only a step back reaches it.
+_CLOCK_STEP_NS = 1_000_000_000
+
+
+def _root(spec: dict[str, Any]) -> str:
+    """The one folder an op works in. A sweep names a folder per project instead."""
+    root = spec.get("root")
+    if not isinstance(root, str):
+        raise ValueError("spec needs a string 'root'")
+    return os.path.abspath(root)
+
+
+def scan(spec: dict[str, Any]) -> dict[str, Any]:
+    root = _root(spec)
+    excluded = _Exclusions(spec)
+    # Before the walk: a change made while it runs is newer than this and so
+    # shows up in the next sweep, whichever side of the walk it landed on.
+    started_ns = time.time_ns()
+    clock_offset_ns = _clock_offset_ns()
+    max_file_bytes = spec.get("max_file_bytes")
+    prior = spec.get("prior") or {}
+    # A listing that only compares sizes and mtimes has no use for digests,
+    # and hashing a new multi-GiB file on every status poll is the whole cost.
+    hash_files = spec.get("hash", True)
+
+    entries: list[dict[str, Any]] = []
+    oversized: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    counts = {"hashed": 0, "reused": 0}
+
+    def file_entry(abs_path: str, rel: str) -> None:
+        st = os.stat(abs_path, follow_symlinks=False)
+        size = st.st_size
+        if max_file_bytes is not None and size > max_file_bytes:
+            oversized.append({"path": rel, "size": size})
+            return
+        known = prior.get(rel)
+        if _digest_reusable(known, size, st.st_mtime_ns):
+            digest, is_binary = known[2], None
+            counts["reused"] += 1
+        elif not hash_files:
+            digest, is_binary = None, None
+        else:
+            digest, is_binary, size = _hash_file(abs_path)
+            counts["hashed"] += 1
+        entries.append(
+            {
+                "path": rel,
+                "kind": "file",
+                "size": size,
+                "mtime_ns": st.st_mtime_ns,
+                "mode": stat.S_IMODE(st.st_mode),
+                "sha256": digest,
+                "symlink_target": None,
+                "is_binary": is_binary,
+            }
+        )
+
+    def symlink_entry(abs_path: str, rel: str) -> None:
+        st = os.lstat(abs_path)
+        entries.append(
+            {
+                "path": rel,
+                "kind": "symlink",
+                "size": 0,
+                "mtime_ns": st.st_mtime_ns,
+                "mode": 0,
+                "sha256": None,
+                "symlink_target": os.readlink(abs_path),
+            }
+        )
+
+    def walk(abs_dir: str, rel_dir: str) -> None:
+        """Post-order walk: a directory's own row follows its children's."""
+        try:
+            with os.scandir(abs_dir) as it:
+                children = sorted(it, key=lambda e: e.name)
+        except OSError as exc:
+            errors.append({"path": rel_dir or ".", "error": str(exc), "errno": exc.errno})
+            return
+        for child in children:
+            rel = f"{rel_dir}/{child.name}" if rel_dir else child.name
+            try:
+                kind = excluded.kind(child, rel, not rel_dir)
+                if kind == "symlink":
+                    symlink_entry(child.path, rel)
+                elif kind == "dir":
+                    walk(child.path, rel)
+                    # Every directory gets a row, not only empty leaves: a
+                    # directory's mode is user data too (a read-only tree
+                    # has to come back read-only).
+                    st = child.stat(follow_symlinks=False)
+                    entries.append(
+                        {
+                            "path": rel,
+                            "kind": "dir",
+                            "size": 0,
+                            "mtime_ns": st.st_mtime_ns,
+                            "mode": stat.S_IMODE(st.st_mode),
+                            "sha256": None,
+                            "symlink_target": None,
+                        }
+                    )
+                elif kind == "file":
+                    file_entry(child.path, rel)
+            except OSError as exc:
+                errors.append({"path": rel, "error": str(exc), "errno": exc.errno})
+
+    walk(root, "")
+    entries.sort(key=lambda e: e["path"])
+    return {
+        "entries": entries,
+        "oversized": oversized,
+        "errors": errors,
+        "hashed": counts["hashed"],
+        "reused": counts["reused"],
+        "started_ns": started_ns,
+        "clock_offset_ns": clock_offset_ns,
+        "boot_id": _boot_id(),
+    }
+
+
+def sweep(spec: dict[str, Any]) -> dict[str, Any]:
+    """Which projects changed since their mark, walking each only until it has.
+
+    ``projects`` is ``[{"key", "root", "mark": {"ns", "boot_id", "offset_ns"} | None}]``;
+    the first entries are the likeliest to have changed, since the walk of a
+    changed project stops at its first newer entry and an unchanged one is
+    walked in full. Change time, not mtime: a delete or rename moves the
+    parent directory's, any write or chmod moves the file's, and nothing a
+    program can call sets it back. A missing mark, one from another boot, or
+    one the wall clock has since stepped back past, is changed without a walk.
+    """
+    excluded = _Exclusions(spec)
+    boot_id = _boot_id()
+    offset_ns = _clock_offset_ns()
+    changed: list[str] = []
+    unchanged: list[str] = []
+    missing: list[str] = []
+    visited = 0
+    started = time.monotonic()
+
+    def newer(abs_dir: str, rel_dir: str, mark_ns: int) -> bool:
+        nonlocal visited
+        with os.scandir(abs_dir) as it:
+            for child in it:
+                rel = f"{rel_dir}/{child.name}" if rel_dir else child.name
+                try:
+                    kind = excluded.kind(child, rel, not rel_dir)
+                    if kind is None:
+                        continue
+                    visited += 1
+                    # ``>=``: a coarse timestamp can equal a mark taken just
+                    # before the change.
+                    if child.stat(follow_symlinks=False).st_ctime_ns >= mark_ns:
+                        return True
+                    if kind == "dir" and newer(child.path, rel, mark_ns):
+                        return True
+                except RecursionError:
+                    # A legal but absurdly deep tree: say changed, and let the
+                    # scan settle it, rather than fail the sweep for every
+                    # project on the machine.
+                    return True
+                except OSError as exc:
+                    # Past PATH_MAX nothing can be opened, and the scan
+                    # already reports it as unsaved for good; counting it
+                    # changed would rescan the project on every sweep.
+                    if exc.errno == errno.ENAMETOOLONG:
+                        continue
+                    # Anything else unreadable is the scan's to report; only
+                    # a scan can say whether it hides a file a backup is missing.
+                    return True
+        return False
+
+    for project in spec.get("projects") or ():
+        key, root = project["key"], project["root"]
+        mark = project.get("mark") or {}
+        mark_ns = mark.get("ns")
+        try:
+            root_ctime = os.stat(root, follow_symlinks=False).st_ctime_ns
+        except FileNotFoundError:
+            missing.append(key)
+            continue
+        except OSError:
+            changed.append(key)
+            continue
+        mark_offset = mark.get("offset_ns")
+        if (
+            not isinstance(mark_ns, int)
+            or not boot_id
+            or mark.get("boot_id") != boot_id
+            or not isinstance(mark_offset, int)
+            or offset_ns < mark_offset - _CLOCK_STEP_NS
+        ):
+            changed.append(key)
+            continue
+        try:
+            dirty = root_ctime >= mark_ns or newer(root, "", mark_ns)
+        except OSError:
+            dirty = True
+        (changed if dirty else unchanged).append(key)
+
+    return {
+        "changed": changed,
+        "unchanged": unchanged,
+        "missing": missing,
+        "visited": visited,
+        "walk_ms": int((time.monotonic() - started) * 1000),
+        "boot_id": boot_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# HTTP with per-thread connection reuse
+# ---------------------------------------------------------------------------
+#
+# The sandbox's environment routes HTTPS through an egress proxy that exists
+# to substitute platform secrets into headers. A presigned URL carries its
+# own credentials, so the store needs none of that, and the proxy is shared
+# by every sandbox on the node: under load it stalls a CONNECT for tens of
+# seconds or refuses it outright. Each worker thread therefore connects to
+# the store directly, uses the proxy only where direct egress is blocked,
+# and keeps one connection per host so a restore is not a handshake per
+# object.
+
+_local = threading.local()
+_CONNECT_TIMEOUT_S = 5.0
+# Opening every worker's connection at the same instant drops SYNs somewhere
+# between the sandbox and the store, and a dropped SYN costs its retransmit
+# backoff (1 s, then 3 s, then 7 s). Handshakes go through this gate a few
+# at a time; established connections are pooled, so the gate is paid once.
+# Width 8 was measured and is worse: the sandbox runs on a one-CPU quota,
+# and handshakes are the most CPU-expensive thing a worker does.
+_CONNECT_GATE = threading.BoundedSemaphore(4)
+# One TLS context for the process so a session ticket from the first
+# handshake to a host resumes every later one: the store's certificate is
+# verified once per process instead of once per worker thread. On a
+# one-CPU sandbox the saving is CPU, not round trips.
+_SSL_CTX = ssl.create_default_context()
+_SESSIONS: dict[str, Any] = {}
+_HANDSHAKES = {"full": 0, "resumed": 0}
+_HANDSHAKES_LOCK = threading.Lock()
+
+
+class _HttpsConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that offers the host's cached TLS session on connect."""
+
+    def connect(self) -> None:
+        http.client.HTTPConnection.connect(self)
+        server_hostname = self._tunnel_host or self.host
+        session = _SESSIONS.get(server_hostname)
+        self.sock = _SSL_CTX.wrap_socket(self.sock, server_hostname=server_hostname, session=session)
+        with _HANDSHAKES_LOCK:
+            _HANDSHAKES["resumed" if self.sock.session_reused else "full"] += 1
+
+
+def _remember_session(conn: Any) -> None:
+    """Cache the session once the server has sent its ticket.
+
+    With TLS 1.3 the ticket follows the handshake, so it is only there after
+    the first response has been read from the connection.
+    """
+    sock = getattr(conn, "sock", None)
+    session = getattr(sock, "session", None)
+    if session is not None:
+        _SESSIONS[conn._tunnel_host or conn.host] = session
+
+
+class _HttpStatusError(Exception):
+    def __init__(self, status: int, body: str) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status = status
+        self.body = body
+
+
+def _proxy_for(scheme: str, host: str) -> tuple[str, int] | None:
+    try:
+        if urllib.request.proxy_bypass(host):
+            return None
+        raw = urllib.request.getproxies().get(scheme)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    u = urllib.parse.urlsplit(raw if "://" in raw else f"http://{raw}")
+    if not u.hostname:
+        return None
+    return u.hostname, u.port or 80
+
+
+def _open(scheme: str, host: str, port: int, timeout_s: float) -> Any:
+    cls = _HttpsConnection if scheme == "https" else http.client.HTTPConnection
+    routes = getattr(_local, "routes", None)
+    if routes is None:
+        routes = _local.routes = {}
+    proxy = _proxy_for(scheme, host)
+    with _CONNECT_GATE:
+        if proxy is not None and routes.get(host) != "direct" and routes.get(host) != "proxy":
+            conn = cls(host, port, timeout=_CONNECT_TIMEOUT_S)
+            try:
+                conn.connect()
+                routes[host] = "direct"
+                conn.timeout = timeout_s
+                conn.sock.settimeout(timeout_s)
+                conn.wsfiles_absolute_target = False
+                return conn
+            except OSError:
+                routes[host] = "proxy"
+                conn.close()
+        if proxy is None or routes.get(host) == "direct":
+            conn = cls(host, port, timeout=timeout_s)
+            conn.wsfiles_absolute_target = False
+        else:
+            conn = cls(proxy[0], proxy[1], timeout=timeout_s)
+            if scheme == "https":
+                conn.set_tunnel(host, port)
+            conn.wsfiles_absolute_target = scheme == "http"
+        conn.connect()
+    return conn
+
+
+def _connection(scheme: str, host: str, port: int, timeout_s: float) -> Any:
+    key = (scheme, host, port)
+    conns = getattr(_local, "conns", None)
+    if conns is None:
+        conns = _local.conns = {}
+    conn = conns.get(key)
+    if conn is None:
+        conn = conns[key] = _open(scheme, host, port, timeout_s)
+    return key, conn
+
+
+def _drop_connection(key: tuple) -> None:
+    conns = getattr(_local, "conns", None)
+    conn = conns.pop(key, None) if conns else None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _request(method: str, url: str, timeout_s: float, body: Any = None, headers: dict | None = None) -> Any:
+    """Send one request on the thread's pooled connection; returns the response.
+
+    The caller must read the response to the end before issuing another
+    request on the same thread. Anything but a 2xx raises ``_HttpStatusError``
+    with the body already consumed: a redirect is not followed, because a PUT
+    answered with one stored nothing and the signature would not survive the
+    new location. Any transport failure closes the connection so the retry
+    starts clean.
+    """
+    u = urllib.parse.urlsplit(url)
+    scheme = u.scheme or "https"
+    host = u.hostname or ""
+    port = u.port or (443 if scheme == "https" else 80)
+    key, conn = _connection(scheme, host, port, timeout_s)
+    target = url if conn.wsfiles_absolute_target else (u.path or "/") + (f"?{u.query}" if u.query else "")
+    try:
+        conn.request(method, target, body=body, headers=headers or {})
+        resp = conn.getresponse()
+    except BaseException:
+        _drop_connection(key)
+        raise
+    if scheme == "https":
+        _remember_session(conn)
+    if not 200 <= resp.status < 300:
+        text = _read_error_body(resp)
+        _drop_connection(key)
+        raise _HttpStatusError(resp.status, text)
+    resp.wsfiles_conn_key = key
+    return resp
+
+
+def _drop_response_connection(resp: Any) -> None:
+    """Discard the connection behind a response whose body read failed.
+
+    Left in the pool, its unread body makes the next request on the thread
+    fail with ``CannotSendRequest``, which reads as unreachable and burns an
+    attempt on a transient read error.
+    """
+    key = getattr(resp, "wsfiles_conn_key", None)
+    if key is not None:
+        _drop_connection(key)
+
+
+def _timed(fn: Any, *args: Any) -> dict[str, Any]:
+    t0 = time.monotonic()
+    try:
+        res = fn(*args)
+    except Exception as exc:
+        # A malformed item is that item's failure. Letting it out of the pool
+        # would take down the whole op, discarding the results of every item
+        # beside it in the batch, including ones already stored.
+        res = _result("failed", error=f"{type(exc).__name__}: {exc}")
+    res["ms"] = int((time.monotonic() - t0) * 1000)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# push
+# ---------------------------------------------------------------------------
+
+
+class _FileShrank(Exception):
+    """The file ran out before the range being sent did."""
+
+
+class _BoundedBody:
+    """A file wrapper that stops at ``limit``.
+
+    ``http.client`` streams a file object to EOF whatever Content-Length it
+    was handed, so a file appended to during its own PUT would put the tail on
+    the wire behind the declared body: the store keeps the prefix, which still
+    matches the signed digest, and the tail arrives at the head of the next
+    request on that pooled connection. Stopping is the whole job; whether the
+    file grew is read from its size afterwards, not from here.
+    """
+
+    def __init__(self, fh: Any, limit: int, digest: Any = None) -> None:
+        self._fh = fh
+        self._left = limit
+        self._digest = digest
+
+    def read(self, size: int = -1) -> bytes:
+        if self._left <= 0:
+            return b""
+        want = self._left if size is None or size < 0 else min(size, self._left)
+        data = self._fh.read(want)
+        if want and not data:
+            # A short body leaves the store waiting for bytes that never come,
+            # so the attempt would end as a timeout and read as unreachable.
+            raise _FileShrank("file shrank during upload")
+        self._left -= len(data)
+        if self._digest is not None:
+            self._digest.update(data)
+        return data
+
+
+def _size_of(path: str) -> int:
+    """The file's current size, or -1 when it can no longer be stat'd."""
+    try:
+        return os.stat(path).st_size
+    except OSError:
+        return -1
+
+
+def _classify(exc: BaseException) -> tuple[dict[str, Any], bool]:
+    """Map a failed attempt to its result and whether another attempt can help.
+
+    Every store answer this runtime understands is named here, so a caller
+    only decides what to do with one it will not retry. A store rejecting the
+    bytes themselves is a PUT-only answer, classified by :func:`_put_range`,
+    which is the only caller that sends any.
+    """
+    if isinstance(exc, _HttpStatusError):
+        return _result("failed", exc.status, f"HTTP {exc.status}"), exc.status >= 500
+    if _is_connection_error(exc):
+        return _result("unreachable", error=f"{type(exc).__name__}: {exc}"), True
+    return _result("failed", error=f"{type(exc).__name__}: {exc}"), False
+
+
+def _put_range(
+    path: str,
+    url: str,
+    headers: dict[str, str],
+    offset: int,
+    size: int,
+    timeout_s: float,
+    digest: Any = None,
+) -> tuple[dict[str, Any], Any]:
+    """PUT ``size`` bytes of ``path`` from ``offset``, retrying transport failures.
+
+    An ``ok`` result carries the store's ETag. The whole file is one
+    range on the single-PUT path and one range per part on the multipart one,
+    so both share this loop and the classification of what a store's answer
+    means. ``digest``, when given, is the running hash of the bytes before
+    this range; the second value is it extended by exactly the bytes the
+    successful attempt sent, so a retried range is never counted twice.
+    """
+    headers = dict(headers)
+    headers["Content-Length"] = str(size)
+    last: dict[str, Any] | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        if attempt:
+            time.sleep(_BACKOFF_S[min(attempt - 1, len(_BACKOFF_S) - 1)])
+        sent = digest.copy() if digest is not None else None
+        try:
+            fh = open(path, "rb")
+        except FileNotFoundError:
+            return _result("changed", error="file removed during upload"), None
+        except OSError as exc:
+            return _result("failed", error=str(exc)), None
+        try:
+            with fh:
+                if offset:
+                    fh.seek(offset)
+                body = _BoundedBody(fh, size, sent)
+                resp = _request("PUT", url, timeout_s, body=body, headers=headers)
+                etag = resp.getheader("ETag") or ""
+                try:
+                    resp.read()
+                except BaseException:
+                    _drop_response_connection(resp)
+                    raise
+                res = _result("ok", resp.status)
+                res["etag"] = etag
+                return res, sent
+        except Exception as exc:
+            # The file, not the link: no retry sends bytes that are not there.
+            if isinstance(exc, _FileShrank):
+                return _result("changed", error=str(exc)), None
+            # The store checked the bytes against the digest the URL was
+            # signed for and they are not those bytes, so the file changed
+            # under us. No retry sends different bytes.
+            if isinstance(exc, _HttpStatusError):
+                if exc.status == 400 and "BadDigest" in exc.body:
+                    return _result("changed", exc.status, "BadDigest"), None
+                if exc.status == 403 and "SignatureDoesNotMatch" in exc.body:
+                    return _result("changed", exc.status, "SignatureDoesNotMatch"), None
+            last, retry = _classify(exc)
+            if not retry:
+                return last, None
+    return last or _result("failed", error="exhausted retries"), None
+
+
+def _push_parts(
+    final: str,
+    parts: list[dict[str, Any]],
+    expected_size: int,
+    timeout_s: float,
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Upload one file as a sequence of presigned parts; ``ok`` carries the ETags.
+
+    A part is the unit that survives a failure: only the part is retried, not
+    the file, which is the whole reason a large file goes this way. They run
+    in order on this thread because the parallelism that pays here is across
+    files, and the server assembles or discards the upload from the result.
+
+    With ``expected_sha256`` the bytes are hashed as they are sent. A part is
+    signed for its length only, so the store cannot tell a file rewritten in
+    place at the same size from the one that was scanned; the hash of what
+    actually went out can, and the server completes the upload only when it
+    reports ``sent_sha256`` equal to the digest the object is named by.
+    """
+    etags: list[list[Any]] = []
+    http: int | None = None
+    digest = hashlib.sha256() if expected_sha256 else None
+    parts = sorted(parts, key=lambda p: int(p.get("offset") or 0))
+    for part in parts:
+        # The file has to be the same file across every part, and only the
+        # sandbox can see that it is not. Checking between parts turns a file
+        # rewritten mid-upload into a retry next sync rather than a transport
+        # error on a short read.
+        if _size_of(final) != expected_size:
+            return _result("changed", http, "size changed during upload")
+        res, digest = _put_range(
+            final,
+            part["url"],
+            part.get("headers") or {},
+            int(part.get("offset") or 0),
+            int(part["size"]),
+            timeout_s,
+            digest,
+        )
+        if res.get("status") != "ok":
+            return res
+        http = res.get("http")
+        etags.append([int(part["part_number"]), res.get("etag") or ""])
+    # The store verifies the bytes each part was framed to read, so a file
+    # that grew during its own upload is stored, and matches, as the prefix
+    # it was scanned as. Only the sandbox can see it is no longer those bytes.
+    if _size_of(final) != expected_size:
+        return _result("changed", http, "size changed during upload")
+    if digest is not None and digest.hexdigest() != expected_sha256:
+        return _result("changed", http, "content changed during upload")
+    out = _result("ok", http)
+    out["etags"] = etags
+    if digest is not None:
+        out["sent_sha256"] = digest.hexdigest()
+    return out
+
+
+def _push_one(
+    root: str, pack_base: str, item: dict[str, Any], timeout_s: float
+) -> dict[str, Any]:
+    final = _resolve_item(root, pack_base, item.get("path", ""))
+    if final is None:
+        return _result("failed", error="path escapes root")
+    expected_size = int(item["size"])
+    try:
+        # Not the same check as the ones inside the upload: a file that is
+        # gone before the first byte moves is this item's error, and it says
+        # so with the OS's reason rather than as a size that changed.
+        if os.stat(final).st_size != expected_size:
+            return _result("changed", error="size changed before upload")
+    except OSError as exc:
+        return _result("failed", error=str(exc))
+
+    # A large blob is signed as parts as well as whole, so an item may carry
+    # both; parts win, because a failure then costs one part rather than the
+    # file. An item with no parts is not necessarily small, only unsplit: a
+    # single PUT is the same upload with one part and nothing to assemble.
+    signed_parts = item.get("parts")
+    res = _push_parts(
+        final,
+        signed_parts
+        or [
+            {
+                "part_number": 1,
+                "offset": 0,
+                "size": expected_size,
+                "url": item["url"],
+                "headers": item.get("headers"),
+            }
+        ],
+        expected_size,
+        timeout_s,
+        # Only parts need it: a single PUT is signed for its digest and the
+        # store rejects any other bytes itself.
+        item.get("sha256") if signed_parts else None,
+    )
+    if not signed_parts:
+        res.pop("etags", None)
+    elif res.get("status") == "ok" and not all(etag for _, etag in res["etags"]):
+        # The server completes an upload by naming every part's ETag, so a
+        # store that answered without one has stored a part the upload can
+        # never name; only a whole PUT can be assembled without them.
+        return _result("failed", res.get("http"), "part stored without an ETag")
+    return res
+
+
+def push(spec: dict[str, Any]) -> dict[str, Any]:
+    root = _root(spec)
+    pack_base = _pack_base(spec, root)
+    timeout_s = float(spec.get("timeout_s") or 300)
+    items = spec.get("items") or []
+    concurrency = max(1, int(spec.get("concurrency") or _PUSH_CONCURRENCY))
+    results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        mapped = pool.map(
+            lambda i: _timed(_push_one, root, pack_base, i, timeout_s), items
+        )
+        for item, res in zip(items, mapped):
+            results[str(item.get("sha256") or item.get("path"))] = res
+            # A pack chunk is a one-shot artifact, but only the store having it
+            # makes the local copy expendable: an unreachable store sends the
+            # server down the relay path, which reads the chunk back out of the
+            # sandbox. What neither path took is left where it is, and the next
+            # pack op's stale sweep removes it from a directory the scan
+            # excludes, so it never becomes a user's file. Only a whole PUT is
+            # stored on ``ok``; parts still have to be assembled, and no chunk
+            # is large enough to be sent as any today (PACK_MAX_BYTES), so the
+            # parts clause guards a future cap rather than a current path.
+            if (
+                item.get("unlink")
+                and res.get("status") == "ok"
+                and not item.get("parts")
+            ):
+                final = _resolve_item(root, pack_base, item.get("path", ""))
+                if final:
+                    _unlink_quiet(final)
+    return {"results": results, "handshakes": dict(_HANDSHAKES)}
+
+
+# ---------------------------------------------------------------------------
+# pull
+# ---------------------------------------------------------------------------
+
+
+def _download_to_temp(url: str, parent: str, timeout_s: float) -> tuple[str, str, int, int]:
+    """GET ``url`` into a temp file beside the target; returns (temp, sha256, bytes, http)."""
+    tmp = tempfile.NamedTemporaryFile(dir=parent, prefix=_TEMP_PREFIX, delete=False)
+    try:
+        h = hashlib.sha256()
+        n = 0
+        resp = _request("GET", url, timeout_s)
+        try:
+            for chunk in iter(lambda: resp.read(_CHUNK), b""):
+                h.update(chunk)
+                n += len(chunk)
+                tmp.write(chunk)
+            # http.client ends a body the store closed early as though it
+            # were whole, so a cut transfer would reach ``_verify`` as other
+            # bytes, which nothing retries.
+            declared = resp.getheader("Content-Length")
+            if declared is not None and declared.isdigit() and n < int(declared):
+                raise http.client.IncompleteRead(b"", int(declared) - n)
+        except BaseException:
+            _drop_response_connection(resp)
+            raise
+        status = resp.status
+        tmp.close()
+        return tmp.name, h.hexdigest(), n, status
+    except BaseException:
+        tmp.close()
+        _unlink_quiet(tmp.name)
+        raise
+
+
+# What link(2) answers on a filesystem that has no hard links, or none
+# across these two names; ``_link_new`` then falls back to a rename.
+_NO_HARD_LINKS = frozenset({errno.EPERM, errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EMLINK})
+
+
+def _unlink_quiet(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _populated_directory(final: str) -> bool:
+    """True when a populated directory holds the path a file or symlink needs.
+
+    An empty one yields, but only at placement (``_yield_empty_directory``):
+    every fresh sandbox seeds ``data``, ``results`` and ``work`` before the
+    restore runs, and a manifest that names one of them as a symlink or file
+    must win over the seed, or it fails on every recreation and the next
+    backup records the seed as the user's choice. Removing it before the
+    bytes are verified would leave nothing at the path when the transfer
+    fails, and nothing recreates a seed mid-session."""
+    if not os.path.isdir(final) or os.path.islink(final):
+        return False
+    return bool(os.listdir(final))
+
+
+def _yield_empty_directory(final: str) -> None:
+    """Remove the empty directory at ``final`` right before the verified bytes land."""
+    if os.path.isdir(final) and not os.path.islink(final):
+        os.rmdir(final)
+
+
+def _verify(digest: str, n: int, item: dict[str, Any]) -> str | None:
+    """Describe how the bytes differ from the item's, or None when they are it.
+
+    Both halves are optional because a manifest may name neither, and one
+    spelling of the question keeps a path from checking less than its
+    neighbours without anyone being able to tell whether that was meant.
+    """
+    expected_sha, expected_size = item.get("sha256"), item.get("size")
+    if (expected_sha is not None and digest != expected_sha) or (
+        expected_size is not None and n != int(expected_size)
+    ):
+        return f"got sha256={digest} bytes={n}"
+    return None
+
+
+def _place(
+    tmp: str, final: str, item: dict[str, Any], http: int | None = None
+) -> dict[str, Any]:
+    """Stamp verified bytes with the item's mode and mtime, then rename them
+    over ``final``.
+
+    Stamped before they are placed: a file written at ``final`` once they are
+    would otherwise take the backup's mtime, and a scan that trusts a size and
+    mtime it has seen would never read its bytes. An item marked
+    ``keep_existing`` never replaces anything: an entry found at ``final``, of
+    any kind, was made after the backup, so the bytes are dropped and the item
+    counts as placed. The temp is removed when placement fails, so a failed
+    item never leaves bytes under the transient prefix for the next sweep to
+    find.
+    """
+    try:
+        _stamp(tmp, item)
+        if item.get("keep_existing"):
+            if not _link_new(tmp, final):
+                _unlink_quiet(tmp)
+                return _result("ok", http)
+        else:
+            _yield_empty_directory(final)
+            os.replace(tmp, final)
+    except OSError as exc:
+        _unlink_quiet(tmp)
+        return _result("failed", http, str(exc))
+    return _result("ok", http)
+
+
+def _link_new(tmp: str, final: str) -> bool:
+    """Put ``tmp`` at ``final`` only where nothing is; False when something is.
+
+    link(2) refuses an existing name, so the check and the placement are one
+    step and a write landing between a look and the placement is never
+    replaced. A filesystem without hard links gets a look then a rename, the
+    one window it cannot close.
+    """
+    try:
+        os.link(tmp, final)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        if exc.errno not in _NO_HARD_LINKS:
+            raise
+        if os.path.lexists(final):
+            return False
+        os.replace(tmp, final)
+        return True
+    _unlink_quiet(tmp)
+    return True
+
+
+def _holds_item_bytes(final: str, item: dict[str, Any]) -> bool:
+    """Whether ``final`` is already a regular file with exactly the item's bytes."""
+    expected_sha, expected_size = item.get("sha256"), item.get("size")
+    if expected_sha is None or expected_size is None:
+        return False
+    try:
+        st = os.stat(final, follow_symlinks=False)
+        if not stat.S_ISREG(st.st_mode) or st.st_size != int(expected_size):
+            return False
+        digest, _, n = _hash_file(final)
+    except OSError:
+        return False
+    return _verify(digest, n, item) is None
+
+
+def _place_in_situ(final: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the item's mode and mtime on a file that already holds its bytes."""
+    try:
+        _stamp(final, item)
+    except OSError as exc:
+        return _result("failed", error=str(exc))
+    return _result("ok")
+
+
+def _stamp(path: str, item: dict[str, Any]) -> None:
+    mode = item.get("mode")
+    if mode is not None:
+        os.chmod(path, int(mode))
+    mtime_ns = item.get("mtime_ns")
+    if mtime_ns is None:
+        return
+    # A recorded 0 is no stamp (see _digest_reusable). Writing it back, or
+    # leaving a file already at 0 in place, would leave it rehashed on every
+    # scan; the restore's own time lets the next backup hash it once and
+    # record a real one.
+    if int(mtime_ns) // 1000 == 0:
+        os.utime(path)
+    else:
+        os.utime(path, ns=(int(mtime_ns), int(mtime_ns)))
+
+
+def _pull_file(
+    root: str, item: dict[str, Any], timeout_s: float, budget: _ByteBudget
+) -> dict[str, Any]:
+    final = _resolve_under_root(root, item.get("path", ""))
+    if final is None:
+        return _result("failed", error="path escapes root")
+    keep = item.get("keep_existing")
+    if not keep and _populated_directory(final):
+        return _result("failed", error="target is a populated directory")
+    url = item.get("url")
+    expected_size = item.get("size")
+    if item.get("file"):
+        return _place_staged(root, final, item)
+    if not url:
+        return _result("failed", error="missing url")
+    if keep and os.path.lexists(final):
+        return _result("ok")
+    if _holds_item_bytes(final, item):
+        # Reading the file here costs a hash; fetching it again costs the
+        # same hash plus the transfer and a second copy on disk until the
+        # rename, which is what a restore onto a disk that kept its files
+        # would otherwise spend on every large one.
+        return _place_in_situ(final, item)
+
+    # Held until the verified bytes are renamed into place: until then the
+    # temp and whatever it is replacing are both on disk. The temp goes at
+    # the workspace root, the one place the scan skips the prefix.
+    with budget.hold(expected_size):
+        last: dict[str, Any] | None = None
+        for attempt in range(_MAX_ATTEMPTS):
+            if attempt:
+                time.sleep(_BACKOFF_S[min(attempt - 1, len(_BACKOFF_S) - 1)])
+            try:
+                tmp, digest, n, status = _download_to_temp(url, root, timeout_s)
+            except Exception as exc:
+                last, retry = _classify(exc)
+                if not retry:
+                    return last
+                continue
+
+            mismatch = _verify(digest, n, item)
+            if mismatch:
+                _unlink_quiet(tmp)
+                return _result("mismatch", status, mismatch)
+            return _place(tmp, final, item, status)
+        return last or _result("failed", error="exhausted retries")
+
+
+def _sweep_orphan_staging(root: str, items: list[dict[str, Any]]) -> None:
+    """Remove root-level transient entries no item of this op claims.
+
+    A relay upload the file API cut short, or a download the runtime died
+    in, leaves its partial bytes under the prefix, and the scan skips it
+    there, so nothing else would ever see them. Restores are serialized per
+    workspace, so any entry this op does not claim is a leftover of an
+    earlier one.
+    """
+    claimed = {os.path.basename(i["file"]) for i in items if i.get("file")}
+    for name in os.listdir(root):
+        if not name.startswith(_TEMP_PREFIX) or name in claimed:
+            continue
+        path = os.path.join(root, name)
+        if os.path.isdir(path) and not os.path.islink(path):
+            _rmtree_quiet(path)
+        else:
+            _unlink_quiet(path)
+
+
+def _place_staged(root: str, final: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Move a file the server uploaded to a staging name into place.
+
+    The staged copy is verified against the manifest before it becomes the
+    file: an upload cut short by a full disk would otherwise be the file's
+    next content at the next backup. The staged copy is removed either way.
+    """
+    staged = _resolve_under_root(root, item["file"])
+    if staged is None:
+        return _result("failed", error="file escapes root")
+    try:
+        digest, _, n = _hash_file(staged)
+    except OSError as exc:
+        return _result("failed", error=str(exc))
+    mismatch = _verify(digest, n, item)
+    if mismatch:
+        _unlink_quiet(staged)
+        return _result("mismatch", None, mismatch)
+    return _place(staged, final, item)
+
+
+def _reopen_dir(path: str) -> None:
+    """Give the owner write and search on a directory a previous restore closed.
+
+    Directory modes are the last thing a restore applies, so a retry after a
+    partial one finds its parents already read-only; step 4 closes them again.
+    """
+    st = os.stat(path)
+    if st.st_mode & 0o300 != 0o300:
+        os.chmod(path, stat.S_IMODE(st.st_mode) | 0o300)
+
+
+def _make_dirs(path: str, made: set[str]) -> None:
+    """``os.makedirs`` that adds each directory it creates to ``made``.
+
+    mkdir(2) refuses a name that exists, as link(2) does for ``_link_new``, so
+    a directory the turn makes at any moment before this one is never counted
+    as the restore's, and step 4 never stamps the backup's mode and mtime on it.
+    """
+    parent = os.path.dirname(path)
+    if parent != path and not os.path.isdir(parent):
+        _make_dirs(parent, made)
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        if not os.path.isdir(path):
+            raise
+        return
+    made.add(path)
+
+
+def _pull_symlink(root: str, item: dict[str, Any]) -> dict[str, Any]:
+    final = _resolve_under_root(root, item.get("path", ""))
+    if final is None:
+        return _result("failed", error="path escapes root")
+    if not _inside.__wrapped__(root, os.path.dirname(final)):
+        return _result("failed", error="path leaves root through a link")
+    target = item.get("symlink_target")
+    if not target:
+        return _result("failed", error="missing symlink_target")
+    try:
+        if item.get("keep_existing"):
+            # symlink(2) refuses an existing name, as link(2) does for
+            # ``_link_new``, so an entry made after the backup stays.
+            try:
+                os.symlink(target, final)
+            except FileExistsError:
+                return _result("ok")
+        else:
+            if os.path.islink(final) or os.path.isfile(final):
+                os.unlink(final)
+            elif _populated_directory(final):
+                return _result("failed", error="target is a populated directory")
+            else:
+                _yield_empty_directory(final)
+            os.symlink(target, final)
+    except OSError as exc:
+        return _result("failed", error=str(exc))
+    mtime_ns = item.get("mtime_ns")
+    if mtime_ns is not None:
+        try:
+            os.utime(final, ns=(int(mtime_ns), int(mtime_ns)), follow_symlinks=False)
+        except (NotImplementedError, OSError):
+            pass
+    return _result("ok")
+
+
+def _extract_member(root: str, chunk: Any, member: dict[str, Any], http_status: int | None) -> dict[str, Any]:
+    """Slice one member out of an open pack chunk and place it like a pulled file."""
+    final = _resolve_under_root(root, member.get("path", ""))
+    if final is None:
+        return _result("failed", error="path escapes root")
+    if not _inside(root, os.path.dirname(final)):
+        return _result("failed", error="path leaves root through a link")
+    if member.get("keep_existing") and os.path.lexists(final):
+        return _result("ok", http_status)
+    if _populated_directory(final):
+        return _result("failed", error="target is a populated directory")
+    size = int(member.get("size") or 0)
+    try:
+        os.makedirs(os.path.dirname(final), exist_ok=True)
+        chunk.seek(int(member.get("offset") or 0))
+        data = chunk.read(size)
+    except OSError as exc:
+        return _result("failed", http_status, str(exc))
+    if len(data) != size:
+        return _result("mismatch", http_status, f"short read from pack: got bytes={len(data)}")
+    expected_sha = member.get("sha256")
+    if expected_sha is not None:
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != expected_sha:
+            return _result("mismatch", http_status, f"got sha256={digest}")
+    tmp = tempfile.NamedTemporaryFile(dir=root, prefix=_TEMP_PREFIX, delete=False)
+    try:
+        tmp.write(data)
+    except OSError as exc:
+        tmp.close()
+        _unlink_quiet(tmp.name)
+        return _result("failed", http_status, str(exc))
+    tmp.close()
+    return _place(tmp.name, final, member, http_status)
+
+
+def _pull_pack(
+    root: str,
+    pack_base: str,
+    item: dict[str, Any],
+    timeout_s: float,
+    budget: _ByteBudget,
+) -> dict[str, dict[str, Any]]:
+    """Download one pack chunk, then slice every member out of it.
+
+    Members fail together when the chunk cannot be fetched and one at a time
+    when their own bytes do not verify; the caller only ever sees member paths.
+    A chunk already in the sandbox (``file``, relative to the root) is
+    verified and consumed in place: the relay path uploads it whole so the
+    members still get this extractor's names, modes and mtimes.
+    """
+    members = item.get("members") or []
+    url = item.get("url")
+    # A chunk is known by its digest alone. The item's size is only its weight
+    # in the budget, the most a chunk can hold, not its length.
+    chunk = {"sha256": item.get("sha256")}
+
+    def fail_all(res: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {m.get("path", ""): dict(res) for m in members}
+
+    local = item.get("file")
+    if local:
+        tmp = _resolve_item(root, pack_base, local)
+        if tmp is None:
+            return fail_all(_result("failed", error="file escapes root"))
+        try:
+            digest, _, n = _hash_file(tmp)
+        except OSError as exc:
+            return fail_all(_result("failed", error=str(exc)))
+        mismatch = _verify(digest, n, chunk)
+        if mismatch:
+            _unlink_quiet(tmp)
+            return fail_all(_result("mismatch", None, mismatch))
+        return _extract_all(root, tmp, members, None)
+    if not url:
+        return fail_all(_result("failed", error="missing url"))
+    # The chunk lands under the pack directory, which the scan excludes, so a
+    # restore that dies mid-download can never leave a partial chunk where
+    # the next backup would record it as a user's file.
+    scratch = pack_base
+    try:
+        os.makedirs(scratch, exist_ok=True)
+    except OSError as exc:
+        return fail_all(_result("failed", error=str(exc)))
+    # Held until the chunk is sliced and unlinked: the whole chunk sits on
+    # disk for that span, on top of the members it is about to write.
+    with budget.hold(item.get("size")):
+        last: dict[str, Any] | None = None
+        tmp = None
+        status: int | None = None
+        for attempt in range(_MAX_ATTEMPTS):
+            if attempt:
+                time.sleep(_BACKOFF_S[min(attempt - 1, len(_BACKOFF_S) - 1)])
+            try:
+                tmp, digest, n, status = _download_to_temp(url, scratch, timeout_s)
+            except Exception as exc:
+                last, retry = _classify(exc)
+                if not retry:
+                    return fail_all(last)
+                continue
+            mismatch = _verify(digest, n, chunk)
+            if mismatch:
+                _unlink_quiet(tmp)
+                return fail_all(_result("mismatch", status, mismatch))
+            break
+        else:
+            return fail_all(last or _result("failed", error="exhausted retries"))
+
+        return _extract_all(root, tmp, members, status)
+
+
+def _extract_all(
+    root: str, chunk_path: str, members: list[dict[str, Any]], status: int | None
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        with open(chunk_path, "rb") as chunk:
+            for member in members:
+                out[member.get("path", "")] = _extract_member(root, chunk, member, status)
+    finally:
+        _unlink_quiet(chunk_path)
+    return out
+
+
+def _timed_pack(
+    root: str,
+    pack_base: str,
+    item: dict[str, Any],
+    timeout_s: float,
+    budget: _ByteBudget,
+) -> dict[str, dict[str, Any]]:
+    t0 = time.monotonic()
+    try:
+        out = _pull_pack(root, pack_base, item, timeout_s, budget)
+    except Exception as exc:
+        # Scoped to this pack's members rather than the whole op; see _timed.
+        res = _result("failed", error=f"{type(exc).__name__}: {exc}")
+        out = {m.get("path", ""): dict(res) for m in (item.get("members") or [])}
+    ms = int((time.monotonic() - t0) * 1000)
+    for res in out.values():
+        res["ms"] = ms
+    return out
+
+
+def pull(spec: dict[str, Any]) -> dict[str, Any]:
+    """Materialize items; with ``defer_dir_modes`` the directories stay open.
+
+    The server sets that when more files follow in a later op, so directory
+    modes and mtimes are applied exactly once, by the op that places the last
+    file; a read-only directory closed early would reject its own children.
+    A ``keep_existing`` dir this op makes comes back marked ``made``, and the
+    server carries that mark on the item to the later op, which then stamps
+    it if it still stands and never makes it again.
+    """
+    root = _root(spec)
+    pack_base = _pack_base(spec, root)
+    timeout_s = float(spec.get("timeout_s") or 300)
+    items = spec.get("items") or []
+    concurrency = max(1, int(spec.get("concurrency") or _PULL_CONCURRENCY))
+    defer_dir_modes = bool(spec.get("defer_dir_modes"))
+    budget = _ByteBudget(
+        int(spec.get("max_inflight_bytes") or _PULL_MAX_INFLIGHT_BYTES)
+    )
+    results: dict[str, dict[str, Any]] = {}
+    _sweep_orphan_staging(root, items)
+    _inside.cache_clear()
+
+    files: list[dict[str, Any]] = []
+    packs: list[dict[str, Any]] = []
+    symlinks: list[dict[str, Any]] = []
+    dirs: list[tuple[dict[str, Any], str]] = []
+    # Every directory this op creates, parents included. Anything else standing
+    # where a ``keep_existing`` dir goes was put there after the backup, so it
+    # keeps its own mode and mtime.
+    made: set[str] = set()
+
+    # Step 1: parents first, then dir items, so a file lands in a directory
+    # that already exists. Dir modes wait for step 4: a read-only directory
+    # restored read-only first would reject its own children.
+    for item in items:
+        if item.get("kind") == "pack":
+            packs.append(item)
+            continue
+        path = item.get("path", "")
+        final = _resolve_under_root(root, path)
+        if final is None:
+            results[path] = _result("failed", error="path escapes root")
+            continue
+        kind = item.get("kind", "file")
+        if not _inside(root, final if kind == "dir" else os.path.dirname(final)):
+            results[path] = _result("failed", error="path leaves root through a link")
+            continue
+        try:
+            if kind == "dir" and item.get("made"):
+                # One the turn has removed since an earlier op made it stays
+                # removed.
+                if os.path.isdir(final) and not os.path.islink(final):
+                    _reopen_dir(final)
+                    dirs.append((item, final))
+                else:
+                    results[path] = _result("ok")
+                continue
+            _make_dirs(os.path.dirname(final), made)
+            if kind == "dir":
+                try:
+                    _make_dirs(final, made)
+                except FileExistsError:
+                    if not item.get("keep_existing"):
+                        raise
+                if item.get("keep_existing") and final not in made:
+                    results[path] = _result("ok")
+                    continue
+                _reopen_dir(final)
+                dirs.append((item, final))
+            elif kind == "symlink":
+                symlinks.append(item)
+            elif kind == "file":
+                files.append(item)
+            else:
+                results[path] = _result("failed", error=f"unknown kind {kind!r}")
+        except OSError as exc:
+            results[path] = _result("failed", error=str(exc))
+
+    # Step 2: packs and files, in parallel. Packs are submitted first: each
+    # is one download that fans out into many members, so it is the tail.
+    if files or packs:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            pack_futures = [
+                pool.submit(_timed_pack, root, pack_base, p, timeout_s, budget)
+                for p in packs
+            ]
+            for item, res in zip(files, pool.map(lambda i: _timed(_pull_file, root, i, timeout_s, budget), files)):
+                results[item["path"]] = res
+            for fut in pack_futures:
+                results.update(fut.result())
+
+    # Step 3: symlinks after files, so a link never shadows a file being written.
+    for item in symlinks:
+        results[item["path"]] = _pull_symlink(root, item)
+
+    # Step 4: dir modes and mtimes last, deepest first; writing children
+    # above would disturb the mtimes, and a parent's mode may forbid writes.
+    for item, final in sorted(dirs, key=lambda d: d[1], reverse=True):
+        done = _result("ok")
+        if item.get("keep_existing"):
+            # Only the restore's own get this far.
+            done["made"] = True
+        if defer_dir_modes:
+            results[item["path"]] = done
+            continue
+        mode = item.get("mode")
+        if mode is not None and item.get("keep_existing"):
+            # Restored beside a running turn and ahead of later batches, both
+            # of which write beneath it, so it never closes to its owner.
+            mode = int(mode) | 0o300
+        mtime_ns = item.get("mtime_ns")
+        try:
+            if mode is not None:
+                os.chmod(final, int(mode))
+            if mtime_ns is not None:
+                os.utime(final, ns=(int(mtime_ns), int(mtime_ns)))
+            results[item["path"]] = done
+        except OSError as exc:
+            results[item["path"]] = _result("failed", error=str(exc))
+
+    return {"results": results, "handshakes": dict(_HANDSHAKES)}
+
+
+# ---------------------------------------------------------------------------
+# pack
+# ---------------------------------------------------------------------------
+
+
+def pack(spec: dict[str, Any]) -> dict[str, Any]:
+    """Concatenate ``members`` (path, sha256, size) into chunk files under ``out_dir``.
+
+    Deterministic: members are taken in sorted path order and a chunk closes
+    only at a member boundary once the next member would exceed ``max_bytes``,
+    so the same member set always yields the same chunk bytes and digests. A
+    member whose bytes no longer match what the scan reported is dropped and
+    listed under ``changed`` rather than written wrong; the previous chunk
+    files are wiped first so a stale one can never be pushed.
+    """
+    root = _root(spec)
+    if spec.get("pack_root"):
+        base = _pack_base(spec, root)
+    else:
+        base = _resolve_under_root(root, spec.get("out_dir") or _PACK_DIR)
+        if base is None:
+            raise ValueError("out_dir escapes root")
+    max_bytes = int(spec.get("max_bytes") or 32 * 1024 * 1024)
+    members = sorted(spec.get("members") or [], key=lambda m: m["path"])
+
+    # Two syncs of one workspace can overlap (a manual backup during a
+    # scheduled one), so each op owns a directory of its own and only ever
+    # removes what nothing can still be pushing: anything untouched for
+    # longer than a transfer is allowed to take.
+    os.makedirs(base, exist_ok=True)
+    _sweep_stale(base, _PACK_STALE_S)
+    _release(root, spec)
+    out_dir = tempfile.mkdtemp(prefix="op-", dir=base)
+
+    chunks: list[dict[str, Any]] = []
+    changed: list[str] = []
+    current: dict[str, Any] | None = None
+
+    def _chunk_path(walk_root: str, final: str) -> str:
+        prefix = walk_root.rstrip(os.sep) + os.sep
+        return os.path.relpath(final, walk_root) if final.startswith(prefix) else final
+
+    def open_chunk() -> dict[str, Any]:
+        tmp = tempfile.NamedTemporaryFile(dir=out_dir, prefix="chunk-tmp-", delete=False)
+        return {"file": tmp, "hash": hashlib.sha256(), "size": 0, "members": []}
+
+    def close_chunk() -> None:
+        # A chunk is opened only immediately before its first member is
+        # written, so one that exists always has at least one.
+        nonlocal current
+        if current is None:
+            return
+        current["file"].close()
+        digest = current["hash"].hexdigest()
+        final = os.path.join(out_dir, f"chunk-{digest}")
+        os.replace(current["file"].name, final)
+        chunks.append(
+            {
+                # A chunk staged outside the walk root has no relative name
+                # there, so it travels absolute; the push and unlink ops
+                # accept an absolute path only under the pack directory.
+                "path": _chunk_path(root, final),
+                "sha256": digest,
+                "size": current["size"],
+                "members": current["members"],
+            }
+        )
+        current = None
+
+    try:
+        for member in members:
+            rel = member["path"]
+            expected_size = int(member["size"])
+            expected_sha = member.get("sha256")
+            abs_path = _resolve_under_root(root, rel)
+            if abs_path is None:
+                changed.append(rel)
+                continue
+            # Small by contract, so the whole member is read before anything is
+            # written: a member that fails to verify must leave no bytes behind.
+            try:
+                with open(abs_path, "rb") as f:
+                    data = f.read(expected_size + 1)
+            except OSError:
+                changed.append(rel)
+                continue
+            if len(data) != expected_size or (expected_sha is not None and hashlib.sha256(data).hexdigest() != expected_sha):
+                changed.append(rel)
+                continue
+            if current is not None and current["members"] and current["size"] + expected_size > max_bytes:
+                close_chunk()
+            if current is None:
+                current = open_chunk()
+            current["file"].write(data)
+            current["hash"].update(data)
+            current["members"].append(
+                {
+                    "path": rel,
+                    "offset": current["size"],
+                    "size": expected_size,
+                    "sha256": expected_sha or hashlib.sha256(data).hexdigest(),
+                }
+            )
+            current["size"] += expected_size
+        close_chunk()
+    except BaseException:
+        # A pack that dies part way, a full disk being the usual cause, would
+        # leave every chunk it wrote until the age sweep. That is the room
+        # the next backup needs, so a disk that filled once stayed full.
+        if current is not None:
+            with contextlib.suppress(OSError):
+                current["file"].close()
+        _rmtree_quiet(out_dir)
+        raise
+    if not chunks:
+        _rmtree_quiet(out_dir)
+    return {"chunks": chunks, "changed": changed}
+
+
+def _release(root: str, spec: dict[str, Any]) -> None:
+    """Remove ``release``, the previous run's chunks, or refuse to pack at all.
+
+    A backup stages its pack set a run at a time, each run in the room the
+    last one held. The push and unlink ops remove chunks quietly, so a chunk
+    they missed is caught here, before the next run is written beside it.
+    """
+    pack_base = _pack_base(spec, root)
+    kept = 0
+    for rel in spec.get("release") or []:
+        path = _resolve_item(root, pack_base, rel)
+        if path is None:
+            continue
+        _unlink_quiet(path)
+        kept += os.path.lexists(path)
+    if kept:
+        raise OSError(f"{kept} chunk(s) from the previous run could not be removed")
+
+
+def _sweep_stale(base: str, max_age_s: float) -> None:
+    cutoff = time.time() - max_age_s
+    for name in os.listdir(base):
+        path = os.path.join(base, name)
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if st.st_mtime > cutoff:
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            _rmtree_quiet(path)
+        else:
+            _unlink_quiet(path)
+
+
+def _rmtree_quiet(path: str) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def hash_one(spec: dict[str, Any]) -> dict[str, Any]:
+    """Stat and hash one regular file, so a single file can be exported alone.
+
+    ``prior`` is the manifest's (size, mtime_ns, sha256) for the path and
+    skips the read when the file has not moved since, as the scan does. A
+    symlink is refused rather than followed: the caller resolved the path
+    already, and what sits there now is the only thing it may name.
+    """
+    root = _root(spec)
+    path = _resolve_under_root(root, spec.get("path") or "")
+    if path is None:
+        return {"status": "missing"}
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return {"status": "missing"}
+    if not stat.S_ISREG(st.st_mode):
+        return {"status": "missing"}
+    real_root = os.path.realpath(root)
+    if not os.path.realpath(path).startswith(real_root.rstrip(os.sep) + os.sep):
+        return {"status": "missing"}
+    known = spec.get("prior")
+    if _digest_reusable(known, st.st_size, st.st_mtime_ns):
+        digest, is_binary, size = known[2], None, st.st_size
+    else:
+        digest, is_binary, size = _hash_file(path)
+    return {
+        "status": "ok",
+        "size": size,
+        "mtime_ns": st.st_mtime_ns,
+        "mode": stat.S_IMODE(st.st_mode),
+        "sha256": digest,
+        "is_binary": is_binary,
+    }
+
+
+def unlink(spec: dict[str, Any]) -> dict[str, Any]:
+    """Remove files under root; used to drop chunks the server relayed itself."""
+    root = _root(spec)
+    pack_base = _pack_base(spec, root)
+    removed = 0
+    for rel in spec.get("paths") or []:
+        path = _resolve_item(root, pack_base, rel)
+        if path is None or not os.path.isfile(path):
+            continue
+        _unlink_quiet(path)
+        removed += 1
+    return {"removed": removed}
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+_OPS = {
+    "scan": scan,
+    "sweep": sweep,
+    "hash": hash_one,
+    "push": push,
+    "pull": pull,
+    "pack": pack,
+    "unlink": unlink,
+}
+
+
+RESULT_MARKER = "WSFILES_RESULT "
+_USAGE = "usage: wsfiles_transfer.py <scan|sweep|hash|push|pull|pack|unlink> (--spec-b64 <base64 json> | <in.json>)\n"
+
+
+def _load_spec(argv: list[str]) -> dict[str, Any]:
+    if argv[2] == "--spec-b64":
+        raw = base64.b64decode(argv[3])
+    else:
+        with open(argv[2], "rb") as f:
+            raw = f.read()
+        # The spec file is a one-shot exchange; nothing else reads it.
+        _unlink_quiet(argv[2])
+    spec = json.loads(raw.decode("utf-8"))
+    if not isinstance(spec, dict):
+        raise ValueError("input must be a JSON object")
+    return spec
+
+
+def _main(argv: list[str]) -> int:
+    """Run one op and print its result as the last stdout line.
+
+    The result travels back on stdout behind ``RESULT_MARKER`` so the caller
+    needs no second round trip to collect it; the spec arrives inline when
+    it fits an argument and as a file otherwise.
+    """
+    # The flag and its value are one unit, so a bare ``--spec-b64`` is a
+    # truncated four-argument form rather than a valid three-argument one.
+    inline = argv[2:3] == ["--spec-b64"]
+    if len(argv) not in (3, 4) or argv[1] not in _OPS or inline != (len(argv) == 4):
+        sys.stderr.write(_USAGE)
+        return 2
+    try:
+        spec = _load_spec(argv)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"invalid input: {exc}\n")
+        return 2
+    try:
+        out = _OPS[argv[1]](spec)
+    except Exception as exc:
+        out = {"error": f"{type(exc).__name__}: {exc}"}
+    sys.stdout.write("\n" + RESULT_MARKER + json.dumps(out, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv))

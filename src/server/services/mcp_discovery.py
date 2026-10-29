@@ -24,13 +24,27 @@ from ptc_agent.core.mcp_sanitize import (
 
 from src.server.database import mcp_servers as mcp_db
 from src.server.database.mcp_tool_schemas import upsert_tool_schemas
+from src.server.services.mcp_descriptions.jobs import enqueue_if_new
+from src.server.services.mcp_identity import bounded_identity
 
 logger = logging.getLogger(__name__)
 
 # Discovery-boundary caps for hostile/buggy servers (plan §6). The prompt-side
 # detailed-mode caps live in the formatter; these bound what we cache at all.
-MAX_TOOLS_PER_SERVER = 64
-MAX_SCHEMA_CHARS_PER_SERVER = 200_000
+#
+# So neither bounds prompt cost, which is what makes them cheap to raise: a
+# server over the formatter's caps renders as a summary either way, and what
+# these actually size is the cached JSON and the wrapper module a sandbox gets.
+#
+# Sized against what brokers and data vendors really ship, not a round number.
+# Going over is not graceful degradation -- the cut is by list position, so a
+# server one tool past the cap loses whichever capability it happened to
+# enumerate last. moomoo publishes 88 tools, and the old cap of 64 silently
+# took its entire paper-trading suite along with news, insider and short
+# interest data, none of which anything on screen could explain. Alpha Vantage
+# publishes 133, and 128 cost it congressional trading and its own tool index.
+MAX_TOOLS_PER_SERVER = 200
+MAX_SCHEMA_CHARS_PER_SERVER = 400_000
 
 
 def mcp_discovery_fingerprint(server: MCPServerConfig) -> str:
@@ -72,9 +86,13 @@ class ToolSnapshotIndex:
     (``source='user'``) server reads its USER-tier snapshot first, because the
     host-side OAuth discovery that writes it is purged on disconnect and
     refreshed on connect, whereas the per-workspace snapshot's fingerprint is
-    OAuth-blind and can outlive a disconnect/reconnect. The tier is chosen by
-    which one HAS a matching snapshot, before any status filter, so a rejected
-    user-tier row never falls through to a stale workspace one.
+    OAuth-blind and can outlive a disconnect/reconnect. A tier the row is
+    missing from, or whose row ``accept`` rejects, falls through to the next:
+    every remote row now gets a user-tier row from the host-side probe, so a
+    host-side failure must not hide the answer the sandbox wrote. An OAuth
+    server is the exception -- its user tier is the whole answer, since a row
+    there says the token is dead and the snapshot beneath it was taken before
+    the connection existed.
 
     Rows are supplied by the caller (each lane already reads what it needs);
     the index owns only the acceptance rule.
@@ -97,20 +115,26 @@ class ToolSnapshotIndex:
     ) -> dict[str, Any] | None:
         """The current-config snapshot for ``server``, or None.
 
-        ``accept`` further filters the row the tier precedence selected (e.g.
-        ok-only, or a freshness window); a rejected row reads as no snapshot.
+        ``accept`` further filters each tier's row (e.g. ok-only, or a
+        freshness window); a tier whose row it rejects is passed over for the
+        next one, except on an OAuth server, which reads its user tier alone.
         """
         key = (server.name, mcp_discovery_fingerprint(server))
-        tiers = (
-            (self._user, self._workspace)
-            if getattr(server, "source", None) == "user"
-            else (self._workspace,)
-        )
+        if getattr(server, "source", None) != "user":
+            tiers = (self._workspace,)
+        elif getattr(server, "oauth_connection_id", None):
+            # The sandbox never holds this server's credential, so its
+            # snapshot predates the connection (the fingerprint is
+            # OAuth-exempt, so it still matches) and must not stand in for a
+            # host-side row saying the token no longer works.
+            tiers = (self._user,)
+        else:
+            tiers = (self._user, self._workspace)
         for tier in tiers:
             row = tier.get(key)
-            if row is None:
+            if row is None or (accept is not None and not accept(row)):
                 continue
-            return row if (accept is None or accept(row)) else None
+            return row
         return None
 
     def ok(self, server: MCPServerConfig) -> dict[str, Any] | None:
@@ -191,22 +215,12 @@ async def _stale_server_names(
     A name is stale when its row is gone (deleted/disabled mid-discovery) or
     its recomputed fingerprint differs (edited mid-discovery). Malformed rows
     count as stale — dropping a result is always safe; clobbering is not.
-    Workspace-origin servers check ``workspace_mcp_servers``; inherited
-    (``source='user'``) servers check the owner's Connectors catalog — their
-    results cache under this workspace like any other, so the guard must know
-    both tiers or every inherited discovery would be dropped as "deleted".
+    Servers are checked against the owner's Plugins catalog: their results
+    cache under this workspace, but their config lives in the user tier.
     """
     from src.server.database.workspace import get_workspace
-    from src.server.services.mcp_config import (
-        user_row_to_server_config,
-        workspace_row_to_server_config,
-    )
+    from src.server.services.mcp_config import user_row_to_server_config
 
-    rows = {
-        r["name"]: r
-        for r in await mcp_db.list_workspace_servers(workspace_id)
-        if r.get("source") == "workspace"
-    }
     user_rows: dict[str, dict[str, Any]] = {}
     if any(getattr(s, "source", None) == "user" for s in servers):
         workspace = await get_workspace(workspace_id)
@@ -218,19 +232,17 @@ async def _stale_server_names(
             }
     stale: set[str] = set()
     for server in servers:
-        inherited = getattr(server, "source", None) == "user"
-        row = (user_rows if inherited else rows).get(server.name)
+        row = (
+            user_rows.get(server.name)
+            if getattr(server, "source", None) == "user"
+            else None
+        )
         if row is None:
             stale.add(server.name)
             continue
         try:
-            current = (
-                # oauth_connection_id is fingerprint-exempt, so None is fine.
-                user_row_to_server_config(row)
-                if inherited
-                else workspace_row_to_server_config(row)
-            )
-            current_fp = mcp_discovery_fingerprint(current)
+            # oauth_connection_id is fingerprint-exempt, so None is fine.
+            current_fp = mcp_discovery_fingerprint(user_row_to_server_config(row))
         except Exception:  # noqa: BLE001
             stale.add(server.name)
             continue
@@ -280,6 +292,7 @@ async def discover_and_cache(
         results = {s.name: {"status": "error", "error": str(exc), "tools": []} for s in servers}
 
     stale = await _stale_server_names(workspace_id, servers)
+    owner = await _workspace_owner(workspace_id, servers)
     for server in servers:
         fingerprint = mcp_discovery_fingerprint(server)
         if server.name in stale:
@@ -317,7 +330,35 @@ async def discover_and_cache(
                 observed_meta={
                     "tool_count": len(kept),
                     "skipped": [list(item) for item in skipped],
+                    "server_info": bounded_identity(result.get("server_info")),
                 },
             )
         )
+        # A user's own server is described from the list its sandbox reported,
+        # which never writes a shared description; a built-in carries its
+        # author's text already.
+        if owner and _is_user_server(server):
+            await enqueue_if_new(
+                user_id=owner, server_name=server.name, tools=kept, from_vendor=False
+            )
     return rows
+
+
+def _is_user_server(server: MCPServerConfig) -> bool:
+    return getattr(server, "source", None) == "user"
+
+
+async def _workspace_owner(workspace_id: str, servers: list[MCPServerConfig]) -> str | None:
+    """Who owns the workspace, looked up only when a user's own server is
+    among those discovered."""
+    from src.server.database.workspace import get_workspace
+
+    if not any(_is_user_server(s) for s in servers):
+        return None
+    try:
+        workspace = await get_workspace(workspace_id)
+    except Exception:  # noqa: BLE001 - discovery must not fail on a description
+        logger.warning("[MCP_DISCOVERY] owner lookup failed for %s", workspace_id)
+        return None
+    user_id = (workspace or {}).get("user_id")
+    return str(user_id) if user_id else None

@@ -24,7 +24,7 @@ function TopStoriesWidget({ instance }: WidgetRenderProps<TopStoriesConfig>) {
   const cfg: Record<string, unknown> = { feedMode, displayMode };
   if (feedMode === 'market') cfg.market = market;
   if (feedMode === 'symbol') cfg.symbol = symbol;
-  return <TradingViewEmbed card scriptKey="timeline" config={cfg} />;
+  return <TradingViewEmbed scriptKey="timeline" config={cfg} />;
 }
 
 function TopStoriesSettings({ config, onChange, onClose }: WidgetSettingsProps<TopStoriesConfig>) {
@@ -94,4 +94,7 @@ registerWidget<TopStoriesConfig>({
   minSize: { w: 4, h: 14 },
   maxSize: { w: 12, h: 40 },
   source: 'tradingview',
+  // TradingView prints "Top stories" inside its iframe, and the embed has no
+  // option to drop it.
+  frame: 'untitled',
 });

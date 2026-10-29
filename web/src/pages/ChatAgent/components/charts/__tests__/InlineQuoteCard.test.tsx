@@ -73,6 +73,19 @@ const FMP_ONLY = {
   market_status: null,
 };
 
+// Freshness-bearing rows (the backend contract that gained `tier` / `freshness`).
+const NVDA_REALTIME = {
+  ...NVDA_REGULAR,
+  tier: 'realtime',
+  freshness: { label: 'live', measured: true, lag_s: 3, source: 'ginlix-data' },
+};
+
+const TSLA_DELAYED_DECLARED = {
+  ...TSLA_REGULAR,
+  tier: 'delayed_15m',
+  freshness: { label: 'unknown', measured: false, source: 'fmp' },
+};
+
 const quoteArtifact = (quotes: Record<string, unknown>[]) => ({
   type: 'quote',
   quotes,
@@ -80,20 +93,60 @@ const quoteArtifact = (quotes: Record<string, unknown>[]) => ({
   as_of_ts: 1784140325000,
 });
 
+// A move prints unsigned beside its drawn arrow, so the direction is read off
+// the mark rather than the text.
+function expectMove(text: string, dir: 'up' | 'down' | 'flat') {
+  expect(screen.getByText(text).closest('.term-chg')).toHaveAttribute('data-dir', dir);
+}
+
 describe('InlineQuoteCard', () => {
+  it('prints the row currency when the row carries one, sign first', () => {
+    render(<InlineQuoteCard artifact={quoteArtifact([{ ...HK_CLOSED, currency: 'HKD' }])} />);
+    expect(screen.getByText('HK$454.20')).toBeInTheDocument();
+    expect(screen.getByText('-HK$3.40')).toBeInTheDocument();
+    expectMove('0.74%', 'down');
+  });
+
+  it('prints an index level bare though its venue stamps a currency', () => {
+    // get_quote stamps a venue-listed index with its venue currency.
+    const venueIndex = {
+      symbol: '000300.SH', name: 'Benchmark 300', currency: 'CNY',
+      price: 4439.14, change: -78.95, change_percent: -1.75, low: 4420.1, high: 4510.3, market_status: 'closed',
+    };
+    const { unmount } = render(<InlineQuoteCard artifact={quoteArtifact([venueIndex])} />);
+    expect(screen.getByText('4,439.14')).toBeInTheDocument();
+    expect(screen.getByText('-78.95')).toBeInTheDocument();
+    expectMove('1.75%', 'down');
+    expect(screen.queryAllByText(/¥/)).toHaveLength(0);
+    unmount();
+
+    // The wire's asset class decides where a row carries one.
+    render(<InlineQuoteCard artifact={quoteArtifact([{ ...NVDA_REGULAR, symbol: 'ACMEX', asset_class: 'index', currency: 'USD', price: 1234.5 }])} />);
+    expect(screen.getByText('1,234.50')).toBeInTheDocument();
+    expect(screen.queryAllByText(/\$/)).toHaveLength(0);
+  });
+
+  it('prints the ticker once when the name only repeats it', () => {
+    render(<InlineQuoteCard artifact={quoteArtifact([{ ...NVDA_REGULAR, name: 'NVDA' }])} />);
+    expect(screen.getAllByText('NVDA')).toHaveLength(1);
+  });
+
   it('renders a hero for a single symbol: big price, abs+pct change, stats, no list header', () => {
     render(<InlineQuoteCard artifact={quoteArtifact([NVDA_REGULAR])} />);
 
     expect(screen.getByText('NVDA')).toBeInTheDocument();
+    expect(screen.getByText('NVIDIA Corporation')).toBeInTheDocument();
     expect(screen.getByText('233.45')).toBeInTheDocument();
-    expect(screen.getByText('+5.27 (+2.31%)')).toBeInTheDocument();
+    expectMove('2.31%', 'up');
+    expect(screen.getByText('+5.27')).toBeInTheDocument();
     expect(screen.getByText(/Prev Close/)).toBeInTheDocument();
     expect(screen.getByText('187.2M')).toBeInTheDocument();
-    // Labeled range bounds
-    expect(screen.getByText('L 227.80')).toBeInTheDocument();
-    expect(screen.getByText('H 234.90')).toBeInTheDocument();
+    // Labeled range bounds either side of the strip
+    expect(screen.getByText('L').nextElementSibling).toHaveTextContent('227.80');
+    expect(screen.getByText('H').nextElementSibling).toHaveTextContent('234.90');
     // Hero replaces the multi-symbol header
     expect(screen.queryByText('Live Quotes')).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   it('renders compact rows for two or more symbols', () => {
@@ -103,10 +156,12 @@ describe('InlineQuoteCard', () => {
     expect(screen.getByText('2026-07-14 14:32:05 ET')).toBeInTheDocument();
     expect(screen.getByText('NVDA')).toBeInTheDocument();
     expect(screen.getByText('TSLA')).toBeInTheDocument();
-    expect(screen.getByText('+2.31%')).toBeInTheDocument();
-    expect(screen.getByText('-1.02%')).toBeInTheDocument();
-    // Rows show pct only — the hero-style combined form must not appear
-    expect(screen.queryByText('+5.27 (+2.31%)')).not.toBeInTheDocument();
+    expectMove('2.31%', 'up');
+    expectMove('1.02%', 'down');
+    // Rows show pct only: the hero's money change must not appear
+    expect(screen.queryByText('+5.27')).not.toBeInTheDocument();
+    // Every row trades in its regular session: nothing to tag
+    expect(screen.queryByText('Regular')).not.toBeInTheDocument();
   });
 
   it('splits the after-hours move onto its own line in the hero', () => {
@@ -114,25 +169,62 @@ describe('InlineQuoteCard', () => {
 
     // Main price is the regular close with the session change…
     expect(screen.getByText('233.45')).toBeInTheDocument();
-    expect(screen.getByText('+5.27 (+2.31%)')).toBeInTheDocument();
-    // …and the extended move renders separately with the status badge.
-    expect(screen.getByText(AFTER_HOURS_LONG)).toBeInTheDocument();
-    expect(screen.getByText('235.30')).toBeInTheDocument();
-    expect(screen.getByText('+1.85 (+0.79%)')).toBeInTheDocument();
+    expect(screen.getByText('+5.27')).toBeInTheDocument();
+    expectMove('2.31%', 'up');
+    // …and the extended move renders on its own labeled line, the session tagged on the edge.
+    const extLabel = screen.getByText(AFTER_HOURS_LONG);
+    expect(extLabel.nextElementSibling).toHaveTextContent('235.30');
+    expectMove('0.79%', 'up');
     expect(screen.getByText('After-Hours')).toBeInTheDocument();
   });
 
-  it('shows the after-hours chip on rows', () => {
+  it('leads a closed venue with the regular close, not the after-hours print', () => {
+    // After 20:00 ET the row reads closed while its last trade is the
+    // after-hours print; the card showed that print under a "Last close" badge.
+    const closed = { label: 'live', measured: true, lag_s: 0, closed: true };
+    render(
+      <InlineQuoteCard
+        artifact={quoteArtifact([{ ...NVDA_AFTER_HOURS, market_status: 'closed', tier: 'realtime', freshness: closed }])}
+      />,
+    );
+
+    expect(screen.getByText('233.45')).toBeInTheDocument();
+    expect(screen.getByText('+5.27')).toBeInTheDocument();
+    expect(screen.getByText(/Last close/)).toBeInTheDocument();
+    expect(screen.getByText(AFTER_HOURS_LONG)).toBeInTheDocument();
+    expect(screen.getByText('235.30')).toBeInTheDocument();
+  });
+
+  it('shows the after-hours price on rows, the session named once by its column', () => {
     render(<InlineQuoteCard artifact={quoteArtifact([NVDA_AFTER_HOURS, TSLA_REGULAR])} />);
 
-    expect(screen.getByText(/AH 235.30/)).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: AFTER_HOURS_LONG })).toBeInTheDocument();
+    const row = screen.getByText('NVDA').closest('tr')!;
+    expect(row).toHaveTextContent('235.30');
+    expect(row).toHaveTextContent('+0.79%');
+    // The column already names the session, so the row carries no status tag.
+    expect(screen.queryByText('After-Hours')).not.toBeInTheDocument();
+  });
+
+  it('names a market status every row shares once, and a differing row\'s on that row', () => {
+    const closedNvda = { ...NVDA_REGULAR, market_status: 'closed' };
+    const closedTsla = { ...TSLA_REGULAR, market_status: 'closed' };
+    const { unmount } = render(<InlineQuoteCard artifact={quoteArtifact([closedNvda, closedTsla])} />);
+    expect(screen.getAllByText('Closed')).toHaveLength(1);
+    expect(screen.getByText('Closed').closest('tr')).toBeNull();
+    unmount();
+
+    render(<InlineQuoteCard artifact={quoteArtifact([NVDA_REGULAR, closedTsla])} />);
+    expect(screen.getAllByText('Closed')).toHaveLength(1);
+    expect(screen.getByText('Closed').closest('tr')).toHaveTextContent('TSLA');
   });
 
   it('degrades to the blended change on the FMP fallback shape', () => {
     render(<InlineQuoteCard artifact={quoteArtifact([FMP_ONLY])} />);
 
     expect(screen.getByText('190.99')).toBeInTheDocument();
-    expect(screen.getByText('+0.27 (+0.14%)')).toBeInTheDocument();
+    expect(screen.getByText('+0.27')).toBeInTheDocument();
+    expectMove('0.14%', 'up');
     expect(screen.queryByText('After-Hrs')).not.toBeInTheDocument();
     expect(screen.queryByText('Pre-Mkt')).not.toBeInTheDocument();
   });
@@ -147,7 +239,7 @@ describe('InlineQuoteCard', () => {
     // Rows: header keeps the ET stamp; the HK row carries its own local clock.
     render(<InlineQuoteCard artifact={quoteArtifact([HK_CLOSED, NVDA_REGULAR])} />);
     expect(screen.getByText('2026-07-14 14:32:05 ET')).toBeInTheDocument();
-    expect(screen.getByText('2026-07-14 23:05:12 HKT')).toBeInTheDocument();
+    expect(screen.getByText('2026-07-14 23:05:12 HKT').closest('tr')).toHaveTextContent('0700.HK');
   });
 
   it('returns null for an empty quotes list', () => {
@@ -167,5 +259,139 @@ describe('InlineQuoteCard', () => {
     render(<InlineQuoteCard artifact={quoteArtifact([NVDA_REGULAR, TSLA_REGULAR])} onClick={onClick} />);
     fireEvent.click(screen.getByText('Live Quotes'));
     expect(onClick).toHaveBeenCalledTimes(2);
+  });
+  it('keeps "Live Quotes" and shows no freshness badge for a pre-contract artifact', () => {
+    render(<InlineQuoteCard artifact={quoteArtifact([NVDA_REGULAR, TSLA_REGULAR])} />);
+
+    expect(screen.getByText('Live Quotes')).toBeInTheDocument();
+    expect(screen.queryByText('Quotes')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Delayed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Last close')).not.toBeInTheDocument();
+    expect(screen.queryByText('Stale')).not.toBeInTheDocument();
+  });
+
+  it('keeps "Live Quotes" when every row measures live', () => {
+    render(
+      <InlineQuoteCard
+        artifact={{ ...quoteArtifact([NVDA_REALTIME, { ...TSLA_REGULAR, tier: 'realtime' }]), all_realtime: true }}
+      />,
+    );
+
+    expect(screen.getByText('Live Quotes')).toBeInTheDocument();
+    expect(screen.queryByText(/Delayed/)).not.toBeInTheDocument();
+  });
+
+  it('demotes the heading to "Quotes" and badges only the delayed row', () => {
+    render(<InlineQuoteCard artifact={quoteArtifact([NVDA_REALTIME, TSLA_DELAYED_DECLARED])} />);
+
+    expect(screen.getByText('Quotes')).toBeInTheDocument();
+    expect(screen.queryByText('Live Quotes')).not.toBeInTheDocument();
+
+    // The header names the shared state once; only the row that differs keeps
+    // a mark, a dot whose accessible name carries its state.
+    expect(screen.getByText('Realtime').closest('tr')).toBeNull();
+    const delayed = screen.getAllByLabelText(/Delayed 15 min/);
+    expect(delayed).toHaveLength(1);
+    const row = delayed[0].closest('tr');
+    expect(row?.textContent).toContain('TSLA');
+    expect(row?.textContent).not.toContain('NVDA');
+    expect(screen.queryByLabelText(/Realtime/)).not.toBeInTheDocument();
+  });
+
+  it('reads a closed venue as the last close, never live', () => {
+    const closed = { label: 'live', measured: true, lag_s: 0, closed: true };
+    render(
+      <InlineQuoteCard
+        artifact={{
+          ...quoteArtifact([
+            { ...NVDA_REGULAR, tier: 'realtime', freshness: closed },
+            { ...TSLA_REGULAR, tier: 'realtime', freshness: closed },
+          ]),
+          all_realtime: false,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Quotes')).toBeInTheDocument();
+    expect(screen.queryByText('Live Quotes')).not.toBeInTheDocument();
+    // Said once, in the header, rather than as a dot on every row.
+    expect(screen.getAllByText('Last close')).toHaveLength(1);
+    expect(screen.queryAllByRole('img')).toHaveLength(0);
+    expect(screen.queryByText('Realtime')).not.toBeInTheDocument();
+  });
+
+  it('prints each row in its listing currency with both names, and the reader clock for a mixed block', () => {
+    const asOfTs = Date.UTC(2026, 8, 27, 1, 0);
+    render(
+      <InlineQuoteCard
+        artifact={{
+          type: 'quote',
+          as_of: null,
+          as_of_ts: asOfTs,
+          quotes: [
+            { ...TSLA_REGULAR, symbol: 'ACME.HK', name: 'Acme Holdings', name_local: '甲公司', name_en: 'Acme Holdings', currency: 'HKD', price: 436.6 },
+            { ...NVDA_REGULAR, currency: 'USD' },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('HK$436.60')).toBeInTheDocument();
+    expect(screen.getByText('甲公司')).toBeInTheDocument();
+    expect(screen.getByText('Acme Holdings')).toBeInTheDocument();
+    // No shared venue clock: the retrieval instant renders in the reader's time.
+    expect(screen.getByText(new Intl.DateTimeFormat('en-US', {
+      year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+    }).format(asOfTs))).toBeInTheDocument();
+  });
+
+  it('shows the time once: in the badge when it carries the stamp, plain otherwise', () => {
+    const HK_STAMP = '2026-07-14 23:05:12 HKT';
+    const BLOCK_STAMP = '2026-07-14 14:32:05 ET';
+    const noBadge = { label: 'unknown', measured: false, source: 'fmp' };
+
+    // Freshness that resolves to no badge leaves the stamp where it was.
+    const { unmount } = render(<InlineQuoteCard artifact={quoteArtifact([{ ...HK_CLOSED, freshness: noBadge }])} />);
+    expect(screen.getByText(HK_STAMP)).toBeInTheDocument();
+    unmount();
+
+    // A badge with no venue stamp to carry: the block's own time stays.
+    const { unmount: unmountUs } = render(<InlineQuoteCard artifact={quoteArtifact([NVDA_REALTIME])} />);
+    expect(screen.getByText('Realtime')).toBeInTheDocument();
+    expect(screen.getByText(BLOCK_STAMP)).toBeInTheDocument();
+    unmountUs();
+
+    // A badge that carries the stamp takes it into its tooltip.
+    const { unmount: unmountHk } = render(
+      <InlineQuoteCard artifact={quoteArtifact([{ ...HK_CLOSED, tier: 'delayed_15m', freshness: { label: 'delayed', measured: false } }])} />,
+    );
+    expect(screen.getByText('Delayed 15 min')).toBeInTheDocument();
+    expect(screen.queryByText(HK_STAMP)).not.toBeInTheDocument();
+    unmountHk();
+
+    // Rows follow the same rule.
+    const { unmount: unmountRows } = render(
+      <InlineQuoteCard artifact={quoteArtifact([{ ...HK_CLOSED, freshness: noBadge }, NVDA_REGULAR])} />,
+    );
+    expect(screen.getByText(HK_STAMP)).toBeInTheDocument();
+    unmountRows();
+
+    // A row whose own dot renders hands the stamp to the dot's tooltip.
+    const delayedHk = { ...HK_CLOSED, tier: 'delayed_15m', freshness: { label: 'delayed', measured: false } };
+    render(<InlineQuoteCard artifact={quoteArtifact([delayedHk, NVDA_REALTIME, { ...TSLA_REGULAR, tier: 'realtime' }])} />);
+    expect(screen.queryByText(HK_STAMP)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(new RegExp(HK_STAMP))).toBeInTheDocument();
+  });
+
+  it('badges the hero with the measured lag', () => {
+    render(
+      <InlineQuoteCard
+        artifact={quoteArtifact([
+          { ...NVDA_REGULAR, tier: 'delayed_15m', freshness: { label: 'delayed', measured: true, lag_s: 754 } },
+        ])}
+      />,
+    );
+
+    expect(screen.getByText('Delayed 13 min')).toBeInTheDocument();
   });
 });

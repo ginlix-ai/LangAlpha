@@ -1,12 +1,15 @@
 """Source code for the ``vault`` Python module uploaded to the sandbox.
 
 The module is written to ``_internal/src/vault.py`` so it's importable via
-``from vault import get, list_names, load_env``.  It reads secrets from
-``_internal/.vault_secrets.json`` at runtime.
+``from vault import get, list_names, load_env``. It reads the owner's secrets
+from the computer root's ``_internal/.vault_secrets.json``, the one vault every
+workspace on the computer shares.
 """
 
-VAULT_MODULE_SOURCE = '''\
-"""Workspace vault — access user-provided API keys and credentials.
+from ..paths import WorkspaceLayout
+
+_VAULT_MODULE_TEMPLATE = '''\
+"""Vault: access user-provided API keys and credentials.
 
 Usage::
 
@@ -23,8 +26,38 @@ _SECRETS_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     ".vault_secrets.json",
 )
+_WS_CONFIG_REL = "__WS_CONFIG_REL__"
+
+
+def _names_own_vault() -> bool:
+    """Whether the calling folder's tools still name a per-workspace vault.
+
+    An earlier version gave each workspace its own vault, and the root one is
+    the account's, where a secret of the same name can hold another value.
+    """
+    here = os.getcwd()
+    for _ in range(32):
+        try:
+            with open(os.path.join(here, _WS_CONFIG_REL), encoding="utf-8") as f:
+                view = json.load(f)
+        except (OSError, ValueError):
+            view = None
+        if isinstance(view, dict):
+            return bool(view.get("vault_file"))
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return False
+
 
 def _load() -> dict[str, str]:
+    if _names_own_vault():
+        raise RuntimeError(
+            "This workspace was set up by an earlier version and still names "
+            "its own vault; secrets are available once the workspace starts "
+            "again"
+        )
     try:
         with open(_SECRETS_FILE) as f:
             return json.load(f)
@@ -62,3 +95,7 @@ def load_env() -> int:
         os.environ[k] = v
     return len(secrets)
 '''
+
+VAULT_MODULE_SOURCE = _VAULT_MODULE_TEMPLATE.replace(
+    "__WS_CONFIG_REL__", WorkspaceLayout.MCP_CLIENT_CONFIG_FILE
+)

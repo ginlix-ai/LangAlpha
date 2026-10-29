@@ -11,6 +11,7 @@ from ptc_agent.agent.provenance.types import (
     hash_args,
     redact_args,
 )
+from ptc_agent.agent.provenance.trace import sources_from_trace
 
 __all__ = [
     "SNIPPET_MAX_CHARS",
@@ -20,4 +21,5 @@ __all__ = [
     "fingerprint_result_with_body",
     "hash_args",
     "redact_args",
+    "sources_from_trace",
 ]

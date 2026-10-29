@@ -132,19 +132,19 @@ describe('useChatMessages — interrupt card de-dup by interrupt_id', () => {
   });
 
   it('live resume: a still-pending interrupt re-raised after HITL resume renders ONE card', async () => {
-    // Send → a plan_approval interrupt streams in (bubble A). The user approves;
-    // the resume stream lands on a fresh `assistant-hitl-*` bubble and RE-EMITS
-    // the same interrupt_id (LangGraph re-raising it). Pre-fix that painted a
-    // second plan card on the resume bubble.
-    const planInterrupt = {
+    // Send → an ask_user_question interrupt streams in (bubble A). The user
+    // answers; the resume stream lands on a fresh `assistant-hitl-*` bubble and
+    // RE-EMITS the same interrupt_id (LangGraph re-raising it). Pre-fix that
+    // painted a second question card on the resume bubble.
+    const questionInterrupt = {
       event: 'interrupt',
-      interrupt_id: 'plan-1',
-      action_requests: [{ name: 'SubmitPlan', description: 'Step 1. Do the thing.' }],
+      interrupt_id: 'q-1',
+      action_requests: [{ type: 'ask_user_question', question: 'Which tickers?', options: [], allow_multiple: false }],
     };
 
     mockSend.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[5] as (e: Record<string, unknown>) => void;
-      onEvent(planInterrupt);
+      const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
+      onEvent(questionInterrupt);
       return { disconnected: false };
     });
 
@@ -153,40 +153,40 @@ describe('useChatMessages — interrupt card de-dup by interrupt_id', () => {
     await settleMountEffect();
 
     await act(async () => {
-      await result.current.handleSendMessage('make a plan', false);
+      await result.current.handleSendMessage('compare a few names');
     });
 
-    // The first card is on screen and pending approval.
-    await waitFor(() => expect(countSegments(result.current.messages, 'plan_approval')).toBe(1));
+    // The first card is on screen and pending an answer.
+    await waitFor(() => expect(countSegments(result.current.messages, 'user_question')).toBe(1));
 
     // The resume re-raises the same still-pending interrupt on the new bubble.
     mockSendHitl.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[3] as (e: Record<string, unknown>) => void;
-      onEvent(planInterrupt);
+      const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
+      onEvent(questionInterrupt);
       return { disconnected: false, aborted: false };
     });
 
     await act(async () => {
-      result.current.handleApproveInterrupt();
+      result.current.handleAnswerQuestion('AAPL', 'q-1', 'q-1');
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    // The re-raise did NOT paint a twin: still exactly one plan card.
+    // The re-raise did NOT paint a twin: still exactly one question card.
     await waitFor(() => expect(mockSendHitl).toHaveBeenCalled());
     await settleMountEffect();
-    expect(countSegments(result.current.messages, 'plan_approval')).toBe(1);
+    expect(countSegments(result.current.messages, 'user_question')).toBe(1);
     // ...and the suppression only dropped the CARD: the map write + pending
     // tracking still ran, so the re-raised interrupt stays answerable.
-    expect(result.current.pendingInterrupt?.interruptId).toBe('plan-1');
+    expect(result.current.pendingInterrupt?.interruptId).toBe('q-1');
   });
 
   it('interrupts without an interrupt_id are never deduped', async () => {
     // Guard false-branch: id-less interrupt events skip dedup entirely — every
     // occurrence renders its own card, and nothing is added to the rendered set.
     mockSend.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[5] as (e: Record<string, unknown>) => void;
-      onEvent({ event: 'interrupt', action_requests: [{ name: 'SubmitPlan', description: 'plan A' }] });
-      onEvent({ event: 'interrupt', action_requests: [{ name: 'SubmitPlan', description: 'plan B' }] });
+      const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
+      onEvent({ event: 'interrupt', action_requests: [{ type: 'ask_user_question', question: 'A?', options: [], allow_multiple: false }] });
+      onEvent({ event: 'interrupt', action_requests: [{ type: 'ask_user_question', question: 'B?', options: [], allow_multiple: false }] });
       return { disconnected: false };
     });
 
@@ -194,10 +194,10 @@ describe('useChatMessages — interrupt card de-dup by interrupt_id', () => {
     await waitFor(() => expect(mockReplay).toHaveBeenCalled());
     await settleMountEffect();
     await act(async () => {
-      await result.current.handleSendMessage('plan twice', false);
+      await result.current.handleSendMessage('ask twice');
     });
 
-    await waitFor(() => expect(countSegments(result.current.messages, 'plan_approval')).toBe(2));
+    await waitFor(() => expect(countSegments(result.current.messages, 'user_question')).toBe(2));
   });
 
   it('reconnect: the stripped history card is re-rendered from the reconnect stream', async () => {
@@ -253,7 +253,7 @@ describe('useChatMessages — interrupt card de-dup by interrupt_id', () => {
     });
     // The edit fork re-raises the surviving card's id.
     mockSend.mockImplementation(async (...args: unknown[]) => {
-      const onEvent = args[5] as (e: Record<string, unknown>) => void;
+      const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
       onEvent({ event: 'interrupt', interrupt_id: 'int-keep', action_requests: [ptcAction('tc-keep')] });
       return { disconnected: false };
     });
@@ -273,6 +273,41 @@ describe('useChatMessages — interrupt card de-dup by interrupt_id', () => {
     // Still exactly one card: the surviving turn-0 card owns the id, the
     // fork's re-raise did NOT paint a twin.
     expect(countSegments(result.current.messages, 'ptc_agent')).toBe(1);
+  });
+
+  it('thread switch clears the pending interrupt, so it cannot act on the next thread', async () => {
+    // `pendingInterrupt` disables the composer outright (ChatView), and its only
+    // other clears are answering and rejecting — neither of which a thread
+    // switch takes. Left behind, thread A's unanswered interrupt locks thread
+    // B's input with nothing on screen to explain it. A credit pause is how
+    // this stops being exotic: answering one means leaving to buy credits.
+    const questionInterrupt = {
+      event: 'interrupt',
+      interrupt_id: 'q-A',
+      action_requests: [{ type: 'ask_user_question', question: 'Which tickers?', options: [], allow_multiple: false }],
+    };
+    mockSend.mockImplementation(async (...args: unknown[]) => {
+      const onEvent = (args[3] as { onEvent: (e: Record<string, unknown>) => void }).onEvent;
+      onEvent(questionInterrupt);
+      return { disconnected: false };
+    });
+
+    let tid = 'th-A';
+    const { result, rerender } = renderHookWithProviders(() => useChatMessages('ws-x', tid));
+    await waitFor(() => expect(mockReplay).toHaveBeenCalled());
+    await settleMountEffect();
+
+    await act(async () => {
+      await result.current.handleSendMessage('compare a few names');
+    });
+    await waitFor(() => expect(result.current.pendingInterrupt?.interruptId).toBe('q-A'));
+
+    tid = 'th-B';
+    rerender();
+    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
+    await settleMountEffect();
+
+    expect(result.current.pendingInterrupt).toBeNull();
   });
 
   it('thread switch clears the rendered set so the next thread renders its own cards', async () => {

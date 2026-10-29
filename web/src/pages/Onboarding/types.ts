@@ -14,4 +14,6 @@ export interface OnboardingPrefs {
   lastSeenReleaseVersion: string | null;
   /** First time the engine ran for this user; only its presence is used, to gate the one-time caught-up stamp. */
   firstRunAt: number | null;
+  /** When the user passed on the welcome flow; it never opens by itself again. */
+  welcomeSkippedAt: number | null;
 }

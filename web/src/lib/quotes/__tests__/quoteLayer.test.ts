@@ -64,6 +64,25 @@ describe('QuoteBatcher', () => {
     expect(mockGetSnapshotStocks).toHaveBeenCalledTimes(1);
   });
 
+  it('lands a row under every spelling it answers, and warms the shown one', async () => {
+    // One listing asked two ways; the backend shows it once and names both.
+    mockGetSnapshotStocks.mockResolvedValue({
+      snapshots: [{ symbol: '600519.SH', requested: ['600519.SS', '600519.SH'], price: 1 }],
+    });
+
+    const [ss, sh] = await Promise.all([batcher.request('600519.ss'), batcher.request('600519.SH')]);
+    expect(ss?.symbol).toBe('600519.SH');
+    expect(sh?.price).toBe(1);
+
+    client.clear();
+    mockGetSnapshotStocks.mockResolvedValue({
+      snapshots: [{ symbol: '600519.SH', requested: ['600519.SS'], price: 2 }],
+    });
+    await batcher.request('600519.SS');
+    expect(client.getQueryData(queryKeys.quote.detail('600519.SS'))).toMatchObject({ price: 2 });
+    expect(client.getQueryData(queryKeys.quote.detail('600519.SH'))).toMatchObject({ price: 2 });
+  });
+
   it('resolves dropped/unknown symbols to null, never throws', async () => {
     mockGetSnapshotStocks.mockResolvedValue({ snapshots: [{ symbol: 'AAPL', price: 100 }] });
 
@@ -148,6 +167,19 @@ describe('snapshotToStockPrice', () => {
       quoteAvailable: true,
       previousClose: 101.69,
     });
+  });
+
+  it('keeps a CN fund price at its 3-decimal tick and a stock at cents', () => {
+    expect(
+      snapshotToStockPrice('510300.SH', {
+        symbol: '510300.SH', price: 3.912, change: 0.0123, asset_class: 'fund', currency: 'CNY',
+      }),
+    ).toMatchObject({ price: 3.912, change: 0.012 });
+    expect(
+      snapshotToStockPrice('600519.SH', {
+        symbol: '600519.SH', price: 1500.5, asset_class: 'equity', currency: 'CNY',
+      }).price,
+    ).toBe(1500.5);
   });
 
   it('marks a missing quote unavailable with zeroed display fields', () => {

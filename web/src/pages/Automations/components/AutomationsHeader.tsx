@@ -1,30 +1,74 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { SegmentedControl } from '@/components/ui/segmented-control';
+import { SkeletonBar } from '@/components/ui/skeleton';
 import type { Automation } from '@/types/automation';
+import { automationCensus } from '../utils/status';
+import type { TemplateId } from '../utils/templates';
+import { NewAutomationMenu } from './NewAutomationMenu';
+
+export type AutomationsView = 'feed' | 'manage';
 
 interface AutomationsHeaderProps {
   automations: Automation[];
+  /** The list is still being read: the header holds the shape it has with
+   *  automations, the census to come and the actions in place, so it does
+   *  not change height or grow its actions when they land. */
+  loading?: boolean;
+  view: AutomationsView;
+  onViewChange: (view: AutomationsView) => void;
+  onNew: (template: TemplateId) => void;
 }
 
-export default function AutomationsHeader({ automations }: AutomationsHeaderProps) {
+/** Title, a one-line census of what is set up, and the two ways to look at it. */
+export default function AutomationsHeader({ automations, loading = false, view, onViewChange, onNew }: AutomationsHeaderProps) {
   const { t } = useTranslation();
-  const activeCount = automations.filter((a) => a.status === 'active').length;
-  const pausedCount = automations.filter((a) => a.status === 'paused').length;
+
+  // What is set up, so a finished automation is left out. Paused and switched
+  // off are counted apart, which the groups below, keeping them under their
+  // kind, do not do.
+  const census = useMemo(() => {
+    const { running, scheduled, watching, paused, off, attention } = automationCensus(automations);
+    const parts: string[] = [];
+    if (running) parts.push(t('automation.censusRunning', { count: running }));
+    if (scheduled) parts.push(t('automation.censusScheduled', { count: scheduled }));
+    if (watching) parts.push(t('automation.censusWatching', { count: watching }));
+    if (paused) parts.push(t('automation.censusPaused', { count: paused }));
+    if (off) parts.push(t('automation.censusOff', { count: off }));
+    if (attention) parts.push(t('automation.censusAttention', { count: attention }));
+    return parts;
+  }, [automations, t]);
+
+  // With nothing set up the page below is the invitation, so the header
+  // carries no actions of its own (the workspace gallery does the same).
+  const empty = !loading && automations.length === 0;
 
   return (
-    <div className="flex items-center gap-3 mb-6">
-      <div className="flex items-center gap-2">
-        <span
-          className="inline-block w-2 h-2 rounded-full animate-pulse"
-          style={{ backgroundColor: 'var(--color-profit)' }}
-        />
-        <h1 className="text-xl font-semibold" style={{ color: 'var(--color-text-primary)' }}>{t('automation.automations')}</h1>
+    <header className="automations-header">
+      <div className="min-w-0">
+        <h1 className="title-font automations-title">{t('automation.automations')}</h1>
+        {loading ? (
+          <p className="automation-mono automations-census"><SkeletonBar className="w-28" /></p>
+        ) : census.length > 0 ? (
+          <p className="automation-mono automations-census">{census.join(' · ')}</p>
+        ) : (
+          <p className="automations-tagline">{t('automation.tagline')}</p>
+        )}
       </div>
-      {automations.length > 0 && (
-        <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-          {activeCount} {t('automation.active')}{pausedCount > 0 ? `, ${pausedCount} ${t('automation.paused')}` : ''}
-        </span>
+      {!empty && (
+        <div className="flex items-center gap-2.5">
+          <SegmentedControl<AutomationsView>
+            value={view}
+            onChange={onViewChange}
+            label={t('automation.viewLabel')}
+            options={[
+              { value: 'feed', label: t('automation.viewFeed') },
+              { value: 'manage', label: t('automation.viewManage') },
+            ]}
+          />
+          <NewAutomationMenu onPick={onNew} />
+        </div>
       )}
-    </div>
+    </header>
   );
 }

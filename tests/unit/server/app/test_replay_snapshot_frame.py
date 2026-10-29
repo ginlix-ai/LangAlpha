@@ -8,6 +8,7 @@ not a replay failure, so the None path is part of the contract.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.server.services.history.replay_builders import replay_rows
 
 THREADS_MOD = "src.server.app.threads.messaging"
 
@@ -16,9 +17,9 @@ THREAD = "11111111-1111-1111-1111-111111111111"
 
 def _replay_data():
     """Owner matches create_test_app's override; no checkpoint pointer, so
-    replay takes the (empty) sse path without touching a DB."""
+    replay takes the (empty) stub path without touching a DB."""
     thread = {"conversation_thread_id": THREAD, "latest_checkpoint_id": None}
-    return ("test-user-123", thread, [], [], {}, {})
+    return replay_rows(thread, [], [], owner_id="test-user-123")
 
 
 def _parse(body: str) -> list[tuple[str, str]]:
@@ -71,3 +72,49 @@ async def test_snapshot_frame_precedes_replay_done(
     assert [fid for fid, _ in frames] == [
         str(i) for i in range(1, len(frames) + 1)
     ]
+
+
+def _done(body: str) -> dict:
+    import json
+
+    for block in body.strip().split("\n\n"):
+        lines = dict(
+            line.split(": ", 1) for line in block.splitlines() if ": " in line
+        )
+        if lines.get("event") == "replay_done":
+            return json.loads(lines["data"])
+    raise AssertionError("no replay_done frame")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("", {"thread_id": THREAD, "latest_run_id": "run-9"}),
+        ("?limit=20", {"thread_id": THREAD, "latest_run_id": "run-9"}),
+        # An older page says nothing of the thread's newest run: its reader
+        # has the newest page's already.
+        ("?limit=20&before_turn=4", {"thread_id": THREAD}),
+    ],
+)
+async def test_replay_done_names_the_newest_run_on_the_newest_page(
+    threads_client, query, expected
+):
+    data = _replay_data()
+    data.thread["latest_run_id"] = "run-9"
+    with (
+        patch(
+            f"{THREADS_MOD}.get_replay_thread_data",
+            new=AsyncMock(return_value=data),
+        ),
+        patch(
+            "src.server.services.history.snapshot.build_thread_snapshot",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        resp = await threads_client.get(
+            f"/api/v1/threads/{THREAD}/messages/replay{query}"
+        )
+
+    assert resp.status_code == 200
+    assert _done(resp.text) == expected

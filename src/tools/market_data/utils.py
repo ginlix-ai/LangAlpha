@@ -12,18 +12,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# US session boundaries in Eastern Time. The runtime-context market clock reads
+# these too, so the tool output and the agent's runtime context cannot disagree.
+US_PRE_MARKET_OPEN = time(4, 0)    # 4:00 AM ET
+US_MARKET_OPEN = time(9, 30)       # 9:30 AM ET
+US_MARKET_CLOSE = time(16, 0)      # 4:00 PM ET
+US_AFTER_HOURS_CLOSE = time(20, 0)  # 8:00 PM ET
 
-def get_market_session() -> Tuple[str, datetime]:
+
+def get_market_session(now: Optional[datetime] = None) -> Tuple[str, datetime]:
     """
-    Determine current US market session based on Eastern Time.
+    Determine the US market session at ``now`` (default: the current moment) in Eastern Time.
 
     Returns:
-        Tuple of (session_name, current_et_time)
+        Tuple of (session_name, et_time)
         session_name: "PRE_MARKET", "REGULAR_HOURS", "AFTER_HOURS", or "CLOSED"
     """
-    # Get current time in US Eastern Time
     et_tz = pytz.timezone("US/Eastern")
-    now_et = datetime.now(et_tz)
+    now_et = datetime.now(et_tz) if now is None else now.astimezone(et_tz)
 
     # Check if it's a weekday (Monday=0, Sunday=6)
     if now_et.weekday() >= 5:  # Saturday or Sunday
@@ -32,46 +38,14 @@ def get_market_session() -> Tuple[str, datetime]:
     # Get current time
     current_time = now_et.time()
 
-    # Market hours in ET
-    pre_market_open = time(4, 0)   # 4:00 AM
-    market_open = time(9, 30)      # 9:30 AM
-    market_close = time(16, 0)     # 4:00 PM
-    after_hours_close = time(20, 0)  # 8:00 PM
-
-    if market_open <= current_time < market_close:
+    if US_MARKET_OPEN <= current_time < US_MARKET_CLOSE:
         return "REGULAR_HOURS", now_et
-    elif market_close <= current_time < after_hours_close:
+    elif US_MARKET_CLOSE <= current_time < US_AFTER_HOURS_CLOSE:
         return "AFTER_HOURS", now_et
-    elif pre_market_open <= current_time < market_open:
+    elif US_PRE_MARKET_OPEN <= current_time < US_MARKET_OPEN:
         return "PRE_MARKET", now_et
     else:
         return "CLOSED", now_et
-
-
-def format_number(value: Optional[float], suffix: bool = True) -> str:
-    """
-    Format large numbers with B/M/T suffixes or as currency.
-
-    Args:
-        value: Number to format
-        suffix: Whether to add B/M/T suffix for large numbers
-
-    Returns:
-        Formatted string (e.g., "$3.68T", "$247.92")
-    """
-    if value is None:
-        return "N/A"
-
-    if suffix and abs(value) >= 1e12:
-        return f"${value / 1e12:.2f}T"
-    elif suffix and abs(value) >= 1e9:
-        return f"${value / 1e9:.2f}B"
-    elif suffix and abs(value) >= 1e6:
-        return f"${value / 1e6:.2f}M"
-    elif suffix:
-        return f"${value:,.2f}"
-    else:
-        return f"{value:,.2f}"
 
 
 def finite_or_none(value) -> Optional[float]:

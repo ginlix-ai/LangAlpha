@@ -71,9 +71,16 @@ async def test_editing_a_prebuilt_forks_it_into_the_user_tier(overlay) -> None:
 
     result = await overlay.aedit_text(path, "return 1;", "return 42;")
 
-    # Reported exactly like a user-tier edit — the tool logs `occurrences` and
-    # returns `message`, so a fork that reported its own shape would go blank.
-    assert result == {"success": True, "occurrences": 1, "message": f"Edited {path}"}
+    # Reported exactly like a user-tier edit: the tool logs `occurrences`,
+    # sizes the result from `size` and returns `message`, so a fork that
+    # reported its own shape would go blank.
+    forked = "const meta = { name: 'shipped' };\nreturn 42;"
+    assert result == {
+        "success": True,
+        "occurrences": 1,
+        "size": len(forked),
+        "message": f"Edited {path}",
+    }
     assert "return 42;" in await overlay.aread_text(path)
     # The shipped script itself is untouched for anyone without a fork.
     assert "return 1;" in await overlay._prebuilt.aread_text(path)

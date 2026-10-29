@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * The live stream and history replay stamp a launch card from the same tool
  * result, and must leave the same record behind.
@@ -22,6 +23,14 @@ const REFUSAL = {
   content: "Error: Unknown workflow 'no-such-workflow-xyz'.",
   content_type: 'text',
   tool_call_id: TOOL_CALL_ID,
+};
+
+const STOPPED = {
+  content: 'Workflow run Task-A1b2C3 was stopped before it started.',
+  content_type: 'text',
+  tool_call_id: TOOL_CALL_ID,
+  status: 'success',
+  artifact: { launch: 'cancelled' },
 };
 
 const LAUNCHED = {
@@ -67,6 +76,13 @@ function drive(
   path: 'live' | 'replay',
   result: Record<string, unknown>,
 ): Record<string, unknown> {
+  return driveMessage(path, result).task;
+}
+
+function driveMessage(
+  path: 'live' | 'replay',
+  result: Record<string, unknown>,
+): { task: Record<string, unknown>; process: Record<string, unknown> } {
   let messages = seed();
   const setMessages = (update: unknown): void => {
     messages = (update as (prev: ChatMessage[]) => ChatMessage[])(messages);
@@ -85,10 +101,10 @@ function drive(
   } else {
     handleHistoryToolCallResult({ ...shared, pairState: {} as never });
   }
-  const stamped = (messages[0] as AssistantMessage).subagentTasks;
-  return (stamped as unknown as Record<string, Record<string, unknown>>)[
-    TOOL_CALL_ID
-  ];
+  const message = messages[0] as AssistantMessage;
+  const tasks = message.subagentTasks as unknown as Record<string, Record<string, unknown>>;
+  const processes = message.toolCallProcesses as unknown as Record<string, Record<string, unknown>>;
+  return { task: tasks[TOOL_CALL_ID], process: processes[TOOL_CALL_ID] };
 }
 
 describe('launch card parity across transports', () => {
@@ -100,6 +116,18 @@ describe('launch card parity across transports', () => {
     expect(live.result).toBe(REFUSAL.content);
     // A refusal opens no run and no channel, so this is the only settle.
     expect(live.status).toBe('error');
+  });
+
+  it('settles a launch stopped mid-setup as stopped, not failed, on both transports', () => {
+    const live = driveMessage('live', STOPPED);
+    const replay = driveMessage('replay', STOPPED);
+
+    expect(live.task).toEqual(replay.task);
+    // A stop is a cancellation: the card reads "Stopped", and neither the card
+    // nor the tool row may read as a failure.
+    expect(live.task.status).toBe('cancelled');
+    expect(live.process.isFailed).toBe(false);
+    expect(replay.process.isFailed).toBe(false);
   });
 
   it('stamps a launch that started identically, and leaves it running', () => {

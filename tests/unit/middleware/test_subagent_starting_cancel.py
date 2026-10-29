@@ -47,9 +47,10 @@ async def test_cancel_run_tasks_stamps_starting_task():
     registry = BackgroundTaskRegistry(thread_id="thread-x")
     task = await _register_starting_task(registry)
 
-    cancelled = await registry.cancel_run_tasks("run-1")
+    killed = await registry.cancel_run_tasks("run-1")
 
-    assert cancelled == 1
+    assert killed.cancelled == 1
+    assert killed.claimed == []
     assert task.cancelled is True
     assert task.completed is True
     assert task.error == "Cancelled"
@@ -214,7 +215,7 @@ def _pipeline_harness(order: list[str]):
     )
     owner = SimpleNamespace(release_task_ns=AsyncMock(side_effect=_step("release")))
     middleware = BackgroundSubagentMiddleware(
-        registry=registry, enabled=True, namespace_owner=owner
+        registry=registry, enabled=True, subagent_types={"general-purpose"}, namespace_owner=owner
     )
     task = BackgroundTask(
         tool_call_id="tc-1",
@@ -233,7 +234,7 @@ def _pipeline_harness(order: list[str]):
 async def test_finalize_cancelled_before_spawn_runs_owner_pipeline():
     """The pre-spawn fallback must settle through the SAME terminal
     pipeline as an owning writer: CAS (deferred run_end) → terminal meta →
-    steering sweep → run_end → sentinel → retention → fence release. An
+    returned steering → run_end → sentinel → retention → fence release. An
     abbreviated finalize would drop acknowledged steering before run_end
     and leave the opener's stream unsealed."""
     order: list[str] = []
@@ -241,13 +242,13 @@ async def test_finalize_cancelled_before_spawn_runs_owner_pipeline():
 
     with patch(
         "ptc_agent.agent.middleware.background_subagent.run_executor."
-        "_return_unconsumed_steering",
-        AsyncMock(side_effect=lambda *a, **k: order.append("sweep")),
+        "_emit_returned_steering",
+        AsyncMock(side_effect=lambda *a, **k: order.append("returned")),
     ):
         await middleware._finalize_cancelled_before_spawn(task)
 
     assert order == [
-        "cas", "meta", "sweep", "run_end", "sentinel", "retention", "release",
+        "cas", "meta", "returned", "run_end", "sentinel", "retention", "release",
     ]
     cas_kwargs = ledger.finalize_task_run.await_args.kwargs
     assert ledger.finalize_task_run.await_args.args[1] == "cancelled"
@@ -274,13 +275,13 @@ async def test_finalize_cancelled_before_spawn_suppresses_run_end_on_torn_stream
 
     with patch(
         "ptc_agent.agent.middleware.background_subagent.run_executor."
-        "_return_unconsumed_steering",
-        AsyncMock(side_effect=lambda *a, **k: order.append("sweep")),
+        "_emit_returned_steering",
+        AsyncMock(side_effect=lambda *a, **k: order.append("returned")),
     ):
         await middleware._finalize_cancelled_before_spawn(task)
 
     assert "run_end" not in order
-    assert order == ["cas", "meta", "sweep", "sentinel", "retention", "release"]
+    assert order == ["cas", "meta", "returned", "sentinel", "retention", "release"]
 
 
 @pytest.mark.asyncio
@@ -348,9 +349,34 @@ async def test_started_writer_cancel_skips_done_callback_finalization():
 
 @pytest.mark.asyncio
 async def test_done_writer_pending_callback_is_not_restamped():
-    """Handle present + done() + not completed = a finished writer whose
-    done-callback hasn't settled it yet — it must settle as what it was,
-    not be rewritten to cancelled."""
+    """Handle present + done() + not completed = a finished writer nothing
+    has adopted. The run-scoped kill settles it as what it was, never as
+    cancelled, and evicts it with the rest of the run: no collector is left
+    to settle it, so it would otherwise stay registered for good."""
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await _register_starting_task(registry)
+
+    async def _noop():
+        return {"success": True, "result": "answer"}
+
+    handle = asyncio.get_running_loop().create_task(_noop())
+    await handle
+    task.asyncio_task = handle
+
+    killed = await registry.cancel_run_tasks("run-1")
+
+    assert killed.cancelled == 0
+    assert task.cancelled is False
+    assert task.terminal_status == "completed"
+    assert task.result == {"success": True, "result": "answer"}
+    assert registry.get_by_tool_call_id("tc-1") is None
+
+
+@pytest.mark.asyncio
+async def test_other_cancels_leave_a_done_writer_unadopted():
+    """Only the run-scoped kill, which evicts, settles a finished writer.
+    The thread-wide and per-task cancels keep the entry for the turn's
+    collector, which adopts the outcome itself."""
     registry = BackgroundTaskRegistry(thread_id="thread-x")
     task = await _register_starting_task(registry)
 
@@ -361,8 +387,7 @@ async def test_done_writer_pending_callback_is_not_restamped():
     await handle
     task.asyncio_task = handle
 
-    cancelled = await registry.cancel_run_tasks("run-1")
-
-    assert cancelled == 0
-    assert task.cancelled is False
+    assert await registry.cancel_all(force=True) == 0
+    assert await registry.cancel_task(task.task_id, force=True) is False
     assert task.completed is False
+    assert registry.get_by_tool_call_id("tc-1") is task

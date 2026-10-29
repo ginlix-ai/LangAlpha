@@ -19,7 +19,9 @@ from ..backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
 
-# Max total size for inline-embedded data when cloud storage is unavailable.
+# Max total size of a widget's resolved data. It is also the most a
+# checkpointed artifact may carry inline, which it does whenever object
+# storage cannot take the payload (disabled, or the upload failed).
 _INLINE_DATA_CAP = 500 * 1024  # 500 KB
 
 # Resolved data up to this size is inlined into the checkpointed artifact;
@@ -221,9 +223,32 @@ async def _resolve_data_files(
             # Sanitize non-standard JSON tokens (NaN/Infinity) that Python's
             # json.dumps emits by default — these break browser JSON.parse.
             _, ext = os.path.splitext(path)
-            if ext.lower() in ('.json', '.geojson', '.topojson'):
-                value = re.sub(r'\bNaN\b', 'null', value)
-                value = re.sub(r'(?<![A-Za-z_])-?Infinity\b', 'null', value)
+            # Sanitizing shrinks text by at most 5/9 (`-Infinity` -> `null`), so
+            # text longer than 9/4 of the remaining budget is over the cap
+            # either way; skip the scan, whose per-token cost is ~20 bytes of
+            # memory per input character on dense short-string JSON. Text with
+            # neither spelling, which is most data, has nothing to rewrite, and
+            # skipping it keeps this synchronous scan off the event loop.
+            if (
+                ext.lower() in ('.json', '.geojson', '.topojson')
+                and len(value) * 4 <= (_INLINE_DATA_CAP - inline_total) * 9
+                and ("NaN" in value or "Infinity" in value)
+            ):
+                # Match quoted strings first so names and labels stay intact.
+                # Avoid a parse/dump round trip that could alter numeric precision.
+                # The closing quote is optional and a backslash escapes any
+                # character, so the string branch can never backtrack after it
+                # starts: a truncated string (malformed JSON) stays linear and
+                # is left byte-for-byte intact. The possessive `*+` states
+                # that to the engine, which then keeps no per-iteration
+                # backtrack state; a plain `*` costs ~120 bytes of memory per
+                # character of the longest string, and this runs on the whole
+                # file before the inline cap is applied.
+                value = re.sub(
+                    r'"(?:\\[\s\S]|[^"\\])*+"?|(?P<constant>(?<!\w)(?:NaN|-?Infinity)\b)',
+                    lambda token: "null" if token.group("constant") else token.group(0),
+                    value,
+                )
         else:
             b64 = base64.b64encode(content).decode()  # type: ignore[arg-type]
             value = f"data:{mime};base64,{b64}"
@@ -256,8 +281,10 @@ async def _attach_widget_data(
 
     Small payloads (and everything when storage is disabled) inline as
     ``data``; larger ones upload content-addressed and attach
-    ``data_ref {key, sha256, size}``. On upload failure the artifact carries
-    neither — replay then falls back to the stored-event merge.
+    ``data_ref {key, sha256, size}``. The artifact is the only copy replay
+    reads, so a failed upload inlines the data too, as a deployment without
+    storage does: a checkpoint heavier by at most ``_INLINE_DATA_CAP`` beats a
+    widget that reloads empty.
     """
     payload = json.dumps(resolved_data, ensure_ascii=False, sort_keys=True).encode()
     if len(payload) <= _INLINE_ARTIFACT_CAP or not is_storage_enabled():
@@ -276,7 +303,10 @@ async def _attach_widget_data(
         artifact["data_ref"] = {"key": key, "sha256": sha, "size": len(payload)}
         logger.debug("ShowWidget data uploaded", key=key, size=len(payload))
     else:
-        logger.warning("ShowWidget data upload failed", key=key, size=len(payload))
+        logger.warning(
+            "ShowWidget data upload failed; inlining it", key=key, size=len(payload)
+        )
+        artifact["data"] = resolved_data
 
 
 def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
@@ -291,8 +321,14 @@ def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
         """Render an interactive HTML/SVG widget inline in the chat.
 
         Use this to display charts, dashboards, data tables, or any interactive
-        visualization directly in the conversation. The HTML is rendered in a
-        sandboxed iframe with access to CDN libraries (Chart.js, D3, etc.).
+        visualization directly in the conversation.
+
+        Read `.agents/skills/inline-widget/SKILL.md` before your first widget; it
+        carries the layout and styling rules.
+
+        CSP blocks every non-CDN origin: fetch() and XMLHttpRequest to arbitrary
+        URLs will fail. Pass workspace files through data_files, or embed small
+        data directly in the HTML.
 
         Available in the widget:
         - CDN libraries: cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com, esm.sh
@@ -307,9 +343,6 @@ def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
                 made available in the widget as ``window.__WIDGET_DATA__["filename"]``.
                 Text files (json/csv/txt/…) are strings; binary files (png/jpg/…)
                 become data-URL strings.
-
-        Returns:
-            Confirmation message and artifact dict for inline rendering.
         """
         # Validate HTML before rendering
         violations = _validate_html(html)
@@ -341,10 +374,9 @@ def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
             "title": display_title,
         }
 
-        # Resolve data files. Small payloads inline into the checkpointed
-        # artifact; large ones persist to object storage as a content-addressed
-        # data_ref — state carries pointers, not bulk payloads, and replay can
-        # recover the data without the stored SSE stream.
+        # Resolve data files into the checkpointed artifact, which is all
+        # replay reads: large payloads go to object storage as a
+        # content-addressed data_ref so state carries pointers, not bulk data.
         resolved_data: dict[str, str] | None = None
         if data_files and backend is not None:
             resolved_data = await _resolve_data_files(backend, data_files) or None

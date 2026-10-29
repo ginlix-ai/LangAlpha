@@ -11,10 +11,13 @@ Covers:
 - Max retries exceeded
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from ptc_agent.core.sandbox.ptc_sandbox import SandboxTransientError
 from ptc_agent.core.sandbox.retry import RetryPolicy, async_retry_with_backoff
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxHostUnavailableError
 
 
 class TestAsyncRetryWithBackoff:
@@ -49,6 +52,24 @@ class TestAsyncRetryWithBackoff:
         )
         assert result == "ok"
         assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_gone_is_raised_even_when_its_reason_reads_transient(self):
+        call_count = 0
+
+        async def gone():
+            nonlocal call_count
+            call_count += 1
+            raise SandboxGoneError("sb-1", "container start timed out")
+
+        with pytest.raises(SandboxGoneError):
+            await async_retry_with_backoff(
+                gone,
+                retry_policy=RetryPolicy.SAFE,
+                is_transient=lambda e: "timed out" in str(e),
+                initial_delay_s=0.01,
+            )
+        assert call_count == 1
 
     @pytest.mark.asyncio
     async def test_unsafe_policy_no_retry(self):
@@ -176,6 +197,49 @@ class TestAsyncRetryWithBackoff:
         )
         assert result == "ok"
         assert callback_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_reconnect_finding_the_host_silent_ends_the_retries(self):
+        """Each further attempt would pay the reconnect's connect timeout again,
+        and the person would read a generic transient for the reason."""
+        verdict = SandboxHostUnavailableError(
+            "sb-1", "did not answer within 10 seconds"
+        )
+        on_transient = AsyncMock(side_effect=verdict)
+        func = AsyncMock(side_effect=ConnectionError("reset"))
+
+        with pytest.raises(SandboxHostUnavailableError) as raised:
+            await async_retry_with_backoff(
+                func,
+                retry_policy=RetryPolicy.SAFE,
+                is_transient=lambda e: isinstance(e, ConnectionError),
+                on_transient=on_transient,
+                initial_delay_s=0.01,
+            )
+
+        assert raised.value is verdict
+        assert func.await_count == 1
+        assert on_transient.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_reconnect_that_fails_otherwise_is_retried(self):
+        """A provider 5xx under the reconnect may pass; the next attempt
+        reconnects again rather than reuse the client it closed."""
+        on_transient = AsyncMock(side_effect=[SandboxTransientError("503"), None])
+        func = AsyncMock(
+            side_effect=[ConnectionError("reset"), ConnectionError("reset"), "ok"]
+        )
+
+        result = await async_retry_with_backoff(
+            func,
+            retry_policy=RetryPolicy.SAFE,
+            is_transient=lambda e: isinstance(e, ConnectionError),
+            on_transient=on_transient,
+            initial_delay_s=0.01,
+        )
+
+        assert result == "ok"
+        assert on_transient.await_count == 2
 
     @pytest.mark.asyncio
     async def test_passes_args_and_kwargs(self):

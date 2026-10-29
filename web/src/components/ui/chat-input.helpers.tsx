@@ -1,5 +1,8 @@
 import { Bot, HardDriveDownload, Shrink, Terminal } from 'lucide-react';
 import type { SlashCommand } from './chat-input.types';
+import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
+import { TWEEN } from '@/lib/motion';
+import type { MentionedFile } from './chat-input.types';
 
 /** Return the appropriate icon for a slash command. */
 export function getSlashCommandIcon(cmd: SlashCommand, className: string) {
@@ -7,6 +10,42 @@ export function getSlashCommandIcon(cmd: SlashCommand, className: string) {
   if (cmd.name === 'offload') return <HardDriveDownload className={className} />;
   if (cmd.type === 'action') return <Shrink className={className} />;
   return <Terminal className={className} />;
+}
+
+/* --- MOTION ---
+ * What the composer adds and takes away, as framer props on the motion
+ * tokens. Opacity and transform only: nothing here tweens a height or a
+ * width, so a row reflows once, when a chip arrives or after it has gone. */
+
+/** A chip or pill joining the draft, and leaving it. */
+export const CHIP_PRESENCE = {
+  initial: { opacity: 0, scale: 0.95 },
+  animate: { opacity: 1, scale: 1, transition: TWEEN.quick },
+  exit: { opacity: 0, scale: 0.95, transition: TWEEN.exit },
+};
+
+/** The slash and @mention menus. They open above the composer, so this is
+ *  `.pop-in[data-side='top']` (styles/animations.css) in framer, which keeps
+ *  the list a menu last showed on screen through its exit. */
+export const MENU_PRESENCE = {
+  initial: { opacity: 0, y: 8, scale: 0.95 },
+  animate: { opacity: 1, y: 0, scale: 1, transition: TWEEN.quick },
+  exit: { opacity: 0, scale: 0.95, transition: TWEEN.exit },
+};
+
+/**
+ * A stable key per pill. Removing a pill must not rename the ones after it,
+ * or each would leave and arrive again; two pills alike in every field the
+ * draft can tell apart are numbered in order.
+ */
+export function mentionPillKeys(files: MentionedFile[]): string[] {
+  const seen = new Map<string, number>();
+  return files.map((f) => {
+    const base = [f.path, f.label, f.locator, f.source, f.lineStart, f.lineEnd, f.snippet?.length].join('::');
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return n ? `${base}::${n}` : base;
+  });
 }
 
 /* --- CONSTANTS --- */
@@ -65,10 +104,15 @@ export function slashRank(item: SlashCommand, query: string): number {
   return (isPrefix ? 0 : 2) + (isSkill ? 1 : 0);
 }
 
-/** Derive a short display name from a model key string. */
-export function getModelDisplayName(key: string | null): string {
+/** Short display name for a model key: the manifest's authored name when the
+ *  metadata carries one, else one derived from the key. */
+export function getModelDisplayName(key: string | null, metadata?: Record<string, ModelMetadataEntry>): string {
   if (!key) return '';
-  let name = key;
+  const authored = metadata?.[key]?.display_name;
+  if (authored) return authored;
+  // A subscription's twin of a model is the same model, so it takes its name.
+  // A name the user gave a model of their own is theirs, suffix and all.
+  let name = metadata?.[key]?.is_custom_model ? key : key.replace(/-oauth$/, '');
   // Strip common provider prefixes
   for (const prefix of ['claude-', 'gpt-', 'chatgpt-', 'o1-', 'o3-', 'o4-']) {
     if (name.startsWith(prefix)) { name = name.slice(prefix.length); break; }

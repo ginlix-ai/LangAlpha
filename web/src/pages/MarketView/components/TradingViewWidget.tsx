@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
+import { deviceTimezone } from '@/lib/deviceTimezone';
 import { TradingViewEmbed } from '@/pages/Dashboard/widgets/framework/TradingViewEmbed';
 
 // Map our interval keys to TradingView widget interval values
@@ -28,7 +29,7 @@ interface TradingViewWidgetProps {
  * here so the host component stays uniform.
  *
  * Note on background/grid: the shared TV_COMMON_CONFIG sets transparent
- * defaults so dashboard widgets render cleanly inside `.dashboard-glass-card`.
+ * defaults so dashboard widgets render cleanly inside their card.
  * MarketView's chart has no card behind it, and Advanced Chart's up-candles
  * use semi-transparent fills — with a transparent background they composite
  * against the page and render pastel/washed-out. We override with a solid
@@ -41,7 +42,7 @@ function TradingViewWidget({ symbol, interval = '1day' }: TradingViewWidgetProps
   const config = {
     symbol,
     interval: TV_INTERVALS[interval] || 'D',
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+    timezone: deviceTimezone(),
     style: '1',
     isTransparent: false,
     // Literals, not var() — the TV embed is an iframe and can't read our

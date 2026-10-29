@@ -97,3 +97,178 @@ class TestFmpHeaderAuth:
         assert "apikey" not in kwargs["params"]
         assert client._cache
         assert all(_SECRET not in key for key in client._cache)
+
+
+class TestFmpVendorSpelling:
+    """FMP resolves Shanghai only as ``.SS``; a ``.SH`` caller still lands."""
+
+    @pytest.mark.asyncio
+    async def test_display_spelling_reaches_fmp_in_its_own_form(self):
+        request = httpx.Request("GET", "https://financialmodelingprep.com/stable/quote")
+        response = httpx.Response(200, request=request, json=[{"symbol": "600519.SS"}])
+        get_mock = AsyncMock(return_value=response)
+        client = _client_with_mocked_http(get_mock)
+        try:
+            await client._make_request("quote", {"symbol": "600519.SH"})
+            await client._make_request("batch-quote", {"symbols": "600519.SH,AAPL"})
+        finally:
+            await client.close()
+
+        sent = [call.kwargs["params"] for call in get_mock.await_args_list]
+        assert sent[0]["symbol"] == "600519.SS"
+        assert sent[1]["symbols"] == "600519.SS,AAPL"
+
+    @pytest.mark.asyncio
+    async def test_rows_come_back_in_our_spelling(self):
+        request = httpx.Request("GET", "https://financialmodelingprep.com/stable/batch-quote")
+        response = httpx.Response(
+            200, request=request, json=[{"symbol": "600519.SS"}, {"symbol": "^GSPC"}]
+        )
+        get_mock = AsyncMock(return_value=response)
+        client = _client_with_mocked_http(get_mock)
+        try:
+            fresh = await client._make_request("batch-quote", {"symbols": "600519.SH,^GSPC"})
+            cached = await client._make_request("batch-quote", {"symbols": "600519.SH,^GSPC"})
+        finally:
+            await client.close()
+
+        assert get_mock.await_count == 1
+        assert [r["symbol"] for r in fresh] == ["600519.SH", "^GSPC"]
+        assert [r["symbol"] for r in cached] == ["600519.SH", "^GSPC"]
+
+    @pytest.mark.asyncio
+    async def test_blank_entries_drop_and_an_unspellable_symbol_never_reaches_fmp(self):
+        request = httpx.Request("GET", "https://financialmodelingprep.com/stable/batch-quote")
+        get_mock = AsyncMock(return_value=httpx.Response(200, request=request, json=[]))
+        client = _client_with_mocked_http(get_mock)
+        try:
+            await client._make_request("batch-quote", {"symbols": "600519.SH,, AAPL,"})
+            with pytest.raises(FMPRequestError) as exc:
+                await client._make_request("batch-quote", {"symbols": "AAPL,EUR/USD"})
+        finally:
+            await client.close()
+
+        assert get_mock.await_count == 1
+        assert get_mock.await_args.kwargs["params"]["symbols"] == "600519.SS,AAPL"
+        # A status, so the sandbox tools report it as a bad argument, with the reason.
+        assert exc.value.status_code == 400
+        assert "EUR/USD" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_batch_skips_only_the_symbol_fmp_cannot_be_asked_for(self):
+        from unittest.mock import patch
+
+        from src.data_client.fmp.data_source import FMPDataSource
+
+        asked: list[list[str]] = []
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_batch_quotes(self, symbols):
+                asked.append(symbols)
+                return [{"symbol": s, "price": 1.0} for s in symbols]
+
+        with patch("src.data_client.fmp.data_source.FMPClient", return_value=_FakeClient()):
+            snaps = await FMPDataSource().get_snapshots(["AAPL", "EUR/USD", "MSFT"])
+            # Nothing left to ask: the refusal itself is the answer.
+            with pytest.raises(ValueError, match="EUR/USD"):
+                await FMPDataSource().get_snapshots(["EUR/USD"])
+
+        assert [s["symbol"] for s in snaps] == ["AAPL", "MSFT"]
+        assert asked == [["AAPL", "MSFT"]]
+
+
+class TestEconomicIndicatorWindowWalk:
+    """Stable ignores ``limit`` and answers at most 91 days ending at ``to``."""
+
+    @pytest.mark.asyncio
+    async def test_the_newest_limit_rows_come_from_windows_walked_back(self, monkeypatch):
+        from datetime import date, timedelta
+
+        import src.data_client.fmp.fmp_client as fmp_client
+
+        monkeypatch.setattr(fmp_client, "_today_utc", lambda: date(2026, 10, 19))
+        # Quarterly, dated at the quarter's start: nothing in the newest 91 days.
+        quarters = [date(y, m, 1) for y in range(2026, 2019, -1) for m in (10, 7, 4, 1)]
+        quarters = [q for q in quarters if q <= date(2026, 4, 1)]
+
+        async def fmp_get(url, params, headers):
+            hi = date.fromisoformat(params["to"])
+            lo = max(date.fromisoformat(params["from"]), hi - timedelta(days=90))
+            rows = [
+                {"name": "GDP", "date": q.isoformat(), "value": q.year + q.month / 100}
+                for q in quarters
+                if lo <= q <= hi
+            ]
+            return httpx.Response(200, request=httpx.Request("GET", url), json=rows)
+
+        get_mock = AsyncMock(side_effect=fmp_get)
+        client = _client_with_mocked_http(get_mock)
+        try:
+            rows = await client.get_economic_indicators("GDP", limit=3)
+        finally:
+            await client.close()
+
+        assert [r["date"] for r in rows] == ["2026-04-01", "2026-01-01", "2025-10-01"]
+        sent = [call.kwargs["params"] for call in get_mock.await_args_list]
+        assert all("limit" not in p for p in sent)
+        # The first window alone, then batches of two and four, newest first.
+        assert len(sent) == 7
+        windows = sorted(
+            ((p["from"], p["to"]) for p in sent), key=lambda w: w[1], reverse=True
+        )
+        assert windows[0] == ("2026-07-21", "2026-10-19")
+        for (lo, hi), (_, older_hi) in zip(windows, windows[1:]):
+            assert (date.fromisoformat(hi) - date.fromisoformat(lo)).days == 90
+            assert date.fromisoformat(older_hi) == date.fromisoformat(lo) - timedelta(days=1)
+
+    @pytest.mark.parametrize(
+        ("failing_to", "fails"),
+        [
+            # The two oldest windows of the last batch: three rows were in hand.
+            ("2025-07-21", False),
+            ("2025-04-21", False),
+            # A window the three rows still needed.
+            ("2026-01-19", True),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_only_a_needed_window_s_failure_fails_the_read(
+        self, monkeypatch, failing_to, fails
+    ):
+        from datetime import date, timedelta
+
+        import src.data_client.fmp.fmp_client as fmp_client
+
+        monkeypatch.setattr(fmp_client, "_today_utc", lambda: date(2026, 10, 19))
+        quarters = [date(y, m, 1) for y in range(2026, 2019, -1) for m in (10, 7, 4, 1)]
+        quarters = [q for q in quarters if q <= date(2026, 4, 1)]
+
+        async def fmp_get(url, params, headers):
+            request = httpx.Request("GET", url)
+            if params["to"] == failing_to:
+                return httpx.Response(429, request=request, json={})
+            hi = date.fromisoformat(params["to"])
+            lo = max(date.fromisoformat(params["from"]), hi - timedelta(days=90))
+            rows = [
+                {"name": "GDP", "date": q.isoformat(), "value": q.year + q.month / 100}
+                for q in quarters
+                if lo <= q <= hi
+            ]
+            return httpx.Response(200, request=request, json=rows)
+
+        client = _client_with_mocked_http(AsyncMock(side_effect=fmp_get))
+        try:
+            if fails:
+                with pytest.raises(fmp_client.FMPRequestError):
+                    await client.get_economic_indicators("GDP", limit=3)
+            else:
+                rows = await client.get_economic_indicators("GDP", limit=3)
+                assert [r["date"] for r in rows] == ["2026-04-01", "2026-01-01", "2025-10-01"]
+        finally:
+            await client.close()

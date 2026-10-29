@@ -1,9 +1,8 @@
 /**
  * Shared web search result parsing utilities.
  *
- * Used by both DetailPanel (structured card rendering) and
- * ToolCallMessageContent (inline markdown rendering) to normalize
- * results from Tavily, Bocha, and Serper.
+ * Used by DetailPanel (structured card rendering) to normalize results from
+ * Tavily, Bocha, and Serper.
  */
 
 /** Result types that should be displayed as search result cards.

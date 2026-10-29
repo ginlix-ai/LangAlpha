@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.vitest.tsbuildinfo",
+    "allowImportingTsExtensions": true,
+    "types": ["node", "dom-speech-recognition", "react-syntax-highlighter"],
+    "paths": { "@/*": ["./src/*"], "@e2e/*": ["./e2e/*"] }
+  },
+  "include": ["src/**/*.d.ts", "src/**/__tests__", "src/**/*.test.ts", "src/**/*.test.tsx", "src/test"],
+  "exclude": []
+}

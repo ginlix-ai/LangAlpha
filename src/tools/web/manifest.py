@@ -188,6 +188,20 @@ def providers_with_capability(verb: str) -> Mapping[str, WebProviderSpec]:
     }
 
 
+def search_levels(provider: Optional[str] = None) -> list[str]:
+    """The depth levels ``provider`` searches at, in manifest order.
+
+    Without a search provider (None, or a name that isn't one), every
+    provider's levels: depth names are provider-scoped, and the provider a
+    depth will run with may not be known yet.
+    """
+    providers = providers_with_capability(CAPABILITY_SEARCH)
+    specs = [providers[provider]] if provider in providers else providers.values()
+    return list(dict.fromkeys(
+        lv.name for spec in specs for lv in spec.capability(CAPABILITY_SEARCH).levels
+    ))
+
+
 @lru_cache(maxsize=1)
 def get_auxiliary_pricing() -> Mapping[str, Dict[str, Any]]:
     """Pricing entries for tools that aren't level-selectable capabilities

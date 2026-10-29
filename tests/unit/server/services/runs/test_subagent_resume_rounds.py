@@ -78,8 +78,9 @@ class _SpoolingRegistry(BackgroundTaskRegistry):
         super().__init__(thread_id=thread_id)
         self._stream = stream
 
-    async def _spill_record_to_redis(self, task, record) -> None:
-        self._stream.append(record["seq"], record)
+    async def _spill_records_to_redis(self, task, records) -> None:
+        for record in records:
+            self._stream.append(record["seq"], record)
 
 
 def _make_cache(stream: _FakeStream, *, stream_delete) -> MagicMock:
@@ -107,7 +108,7 @@ async def _round_one(stream: _FakeStream):
     """Spawn a task, capture five events under ``RUN_ONE``."""
     registry = _SpoolingRegistry(THREAD_ID, stream)
     registry.current_run_id = RUN_ONE
-    middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True)
+    middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True, subagent_types={"general-purpose"})
     task = await registry.register(
         tool_call_id="tc-1",
         description="d",
@@ -125,8 +126,9 @@ async def _resume(middleware, task, cache, *, run_id: str) -> None:
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
-        await middleware._reset_task_for_resume(task)
-    task.spawned_run_id = run_id
+        await middleware._reset_task_for_resume(
+            task, task_run_id=task.task_run_id, spawned_run_id=run_id
+        )
 
 
 async def _collect(task, response_id: str, cache) -> tuple[bool, list[dict]]:
@@ -220,8 +222,7 @@ async def test_stop_drain_snapshots_the_resumed_round():
     ):
         merged = await drain_killed_subagent_events(THREAD_ID, [task])
 
-    assert [e["data"].get("content") for e in merged[:3]] == ["c0", "c1", "c2"]
-    assert merged[-1]["data"]["finish_reason"] == "stopped"
+    assert [e["data"].get("content") for e in merged] == ["c0", "c1", "c2"]
 
 
 @pytest.mark.asyncio

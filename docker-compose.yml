@@ -63,9 +63,13 @@ services:
       # Override in .env to connect to external services or for host dev.
       DB_HOST: ${DB_HOST:-postgres}
       REDIS_URL: "${REDIS_URL:-redis://:${REDIS_PASSWORD:-redis}@redis:6379/0}"
+      # The web app is served from its own port here, and /a/<code> links the
+      # agent writes into a reply must open there, not on the API port.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:${FRONTEND_PORT:-5173}}
     volumes:
       # Mount source for hot-reload
       - ./src:/app/src
+      - ./libs/market-protocol:/app/libs/market-protocol
       - ./server.py:/app/server.py
       - ./agent_config.yaml:/app/agent_config.yaml
       # Required when SANDBOX_PROVIDER=docker and the backend auto-builds
@@ -76,7 +80,7 @@ services:
       - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - ./config.yaml:/app/config.yaml
       - ./mcp_servers:/app/mcp_servers
-      - ./skills:/app/skills
+      - ./plugins:/app/plugins
       - ./scripts:/app/scripts
       - ./alembic.ini:/app/alembic.ini
       - ./migrations:/app/migrations
@@ -87,18 +91,71 @@ services:
       retries: 10
       start_period: 30s
 
+  # SSH tunnel gateway: lets a machine the server cannot dial (a home Mac behind
+  # a router, an office box behind NAT) connect out with `ssh -N -R ...` and be
+  # reached through this service. It only relays bytes; the SSH login stays end
+  # to end with the machine's own sshd. Exactly one instance per deployment (it
+  # holds the tunnels in memory); restarting it drops them for a few seconds and
+  # machines reconnect by themselves. Off by default. To turn it on:
+  #   docker compose --profile ssh-gateway up -d ssh-gateway
+  # and in .env set SSH_GATEWAY_ADDRESS=ssh-gateway:2023 for the backend, plus
+  # SSH_GATEWAY_PUBLIC_ADDRESS=<host>:<port> where machines reach it (raw TCP).
+  # Port 2023 takes only the backend's login and is never published, so the
+  # gateway's dialer key is no use from outside this network.
+  ssh-gateway:
+    profiles: ["ssh-gateway"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.dev
+      args:
+        INSTALL_OBSERVABILITY: ${INSTALL_OBSERVABILITY:-${OTEL_EXPORTER_OTLP_ENDPOINT:+true}}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${SSH_GATEWAY_PORT:-2022}:2022"
+    env_file: .env
+    environment:
+      BYOK_ENCRYPTION_KEY: ${BYOK_ENCRYPTION_KEY:-langalpha-local-dev-encryption-key}
+      DB_HOST: ${DB_HOST:-postgres}
+      # The container port is fixed, published as SSH_GATEWAY_PORT above; a
+      # SSH_GATEWAY_LISTEN in .env, meant for a native run, cannot move it.
+      SSH_GATEWAY_LISTEN: 0.0.0.0:2022
+      SSH_GATEWAY_DIAL_LISTEN: 0.0.0.0:2023
+      # One process: a mass disconnect asks for a connection per tunnel at
+      # once, which past this waits its turn instead of taking the database's.
+      # One connection is held throughout for the gateway's lock.
+      POSTGRES_CONVERSATION_POOL_MAX: ${SSH_GATEWAY_DB_POOL_MAX:-15}
+    # A file per connected machine.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Anyone may connect on the published port, so what a flood of them can
+    # take is bounded here rather than from the rest of the host.
+    mem_limit: ${SSH_GATEWAY_MEM_LIMIT:-1g}
+    memswap_limit: ${SSH_GATEWAY_MEM_LIMIT:-1g}
+    command: ["uv", "run", "python", "-m", "src.server.ssh_gateway"]
+    volumes:
+      - ./src:/app/src
+      - ./libs/market-protocol:/app/libs/market-protocol
+      - ./alembic.ini:/app/alembic.ini
+      - ./migrations:/app/migrations
+    # Wait for the backend so its migrations have run before the gateway reads keys.
+    depends_on:
+      backend:
+        condition: service_healthy
+
   frontend:
     image: node:22-alpine
     working_dir: /app
-    command: sh -c "npm install -g pnpm@10 && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0"
+    command: sh -c "npm install -g pnpm@12 && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0"
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-5173}:5173"
     environment:
       VITE_PROXY_BACKEND: http://backend:8000
-      # macOS bind mounts don't forward fsevents, so enable Vite/chokidar
-      # polling in-container to keep HMR alive (vite.config.js reads this).
-      CHOKIDAR_USEPOLLING: "true"
     volumes:
       - ./web:/app
       - frontend_node_modules:/app/node_modules

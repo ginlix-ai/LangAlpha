@@ -4,7 +4,11 @@ import {
   centerLatestBarView,
   computeInitialLoadRange,
   dedupeMergeByTime,
+  defaultBarsView,
   etDateStr,
+  fillLatestBarsView,
+  NARROW_CENTERED_GUTTER,
+  NARROW_CENTERED_VIEW_PX,
   rangeBeforeOldest,
   shouldSkipPollWhileWsHealthy,
 } from '../chartDataLoaders';
@@ -124,6 +128,62 @@ describe('centerLatestBarView', () => {
     const r = centerLatestBarView({ chartWidth: 25, barSpacing: 10, dataLen: 50 });
     expect(r.from).toBe(49); // floor(25/10/2) = 1
     expect(r.to).toBe(51);
+  });
+});
+
+describe('fillLatestBarsView', () => {
+  it('packs the latest bars with a small default gutter', () => {
+    // 40 bars fit; default 6% gutter = floor(2.4) -> clamped to 2
+    const r = fillLatestBarsView({ chartWidth: 400, barSpacing: 10, dataLen: 100 });
+    expect(r).toEqual({ from: 62, to: 102 });
+  });
+
+  it('widens the gutter when asked, keeping the window one chart wide', () => {
+    const r = fillLatestBarsView({ chartWidth: 400, barSpacing: 10, dataLen: 100, rightGutter: 0.15 });
+    expect(r).toEqual({ from: 66, to: 106 });
+  });
+
+  it('keeps a short history at the right edge, with empty room before it', () => {
+    // 10 bars in a 40-bar window: the last bar stays at the gutter edge.
+    const r = fillLatestBarsView({ chartWidth: 400, barSpacing: 10, dataLen: 10 });
+    expect(r).toEqual({ from: -28, to: 12 });
+  });
+
+  it('frames at least one bar in a chart narrower than a bar', () => {
+    const r = fillLatestBarsView({ chartWidth: 5, barSpacing: 10, dataLen: 10 });
+    expect(r).toEqual({ from: 9, to: 10 });
+  });
+});
+
+describe('defaultBarsView', () => {
+  // 800px at 10px spacing: 80 bars fit, centering gives 40 either side.
+  const wide = { chartWidth: 800, barSpacing: 10, dataLen: 100 };
+
+  it('centers the latest bar on a wide chart', () => {
+    expect(defaultBarsView({ defaultView: 'centered', ...wide }))
+      .toEqual(centerLatestBarView(wide));
+  });
+
+  it('fills flush whatever the width when the host asks for fill', () => {
+    expect(defaultBarsView({ defaultView: 'fill', ...wide }))
+      .toEqual(fillLatestBarsView(wide));
+    const narrow = { ...wide, chartWidth: 400 };
+    expect(defaultBarsView({ defaultView: 'fill', ...narrow }))
+      .toEqual(fillLatestBarsView(narrow));
+  });
+
+  it('packs a centered view below the narrow threshold, with the wider gutter', () => {
+    const narrow = { ...wide, chartWidth: NARROW_CENTERED_VIEW_PX - 1 };
+    expect(defaultBarsView({ defaultView: 'centered', ...narrow }))
+      .toEqual(fillLatestBarsView({ ...narrow, rightGutter: NARROW_CENTERED_GUTTER }));
+    expect(defaultBarsView({ defaultView: 'centered', ...narrow }))
+      .not.toEqual(fillLatestBarsView(narrow));
+  });
+
+  it('still centers exactly at the threshold', () => {
+    const edge = { ...wide, chartWidth: NARROW_CENTERED_VIEW_PX };
+    expect(defaultBarsView({ defaultView: 'centered', ...edge }))
+      .toEqual(centerLatestBarView(edge));
   });
 });
 

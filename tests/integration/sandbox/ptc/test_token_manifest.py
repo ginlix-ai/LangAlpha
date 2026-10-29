@@ -7,37 +7,46 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="class")]
 
 
+def _payload(token: str, iat_ms: int, expires_at: str) -> dict[str, str | int]:
+    return {
+        "access_token": token,
+        "iat_ms": iat_ms,
+        "expires_at": expires_at,
+        "ginlix_data_url": "https://data.example",
+    }
+
+
 class TestTokenUpload:
-    """PTCSandbox.upload_token_file() -- token file lifecycle."""
+    """PTCSandbox.upload_token_file() -- the server writes, the sandbox reads."""
 
-    async def test_upload_tokens(self, shared_sandbox):
-        tokens = {
-            "access_token": "gxsa_test_access",
-            "refresh_token": "gxsr_test_refresh",
-            "client_id": "test-client",
-        }
-        await shared_sandbox.upload_token_file(tokens)
+    async def _read(self, shared_sandbox) -> dict:
+        content = await shared_sandbox.runtime.download_file(
+            shared_sandbox._token_file_path
+        )
+        return json.loads(content)
 
-        # Read back from the sandbox using the same path constant
-        token_path = f"{shared_sandbox._work_dir}/_internal/.mcp_tokens.json"
-        content = await shared_sandbox.runtime.download_file(token_path)
-        assert content is not None
-        data = json.loads(content)
-        assert data["access_token"] == "gxsa_test_access"
-        assert data["refresh_token"] == "gxsr_test_refresh"
-        assert data["client_id"] == "test-client"
-        assert "auth_service_url" in data
-        assert "ginlix_data_url" in data
+    async def test_upload_token(self, shared_sandbox):
+        payload = _payload("gxsa_test_access", 1, "2026-01-01T01:00:00Z")
+        assert await shared_sandbox.upload_token_file(payload) is True
 
-    async def test_token_overwrite(self, shared_sandbox):
-        """Uploading tokens again should overwrite the file."""
-        await shared_sandbox.upload_token_file({"access_token": "v1", "refresh_token": "r1", "client_id": "c1"})
-        await shared_sandbox.upload_token_file({"access_token": "v2", "refresh_token": "r2", "client_id": "c2"})
+        assert await self._read(shared_sandbox) == payload
+        mode = await shared_sandbox.runtime.exec(
+            f"stat -c %a {shared_sandbox._token_file_path}"
+        )
+        assert mode.stdout.strip() == "600"
 
-        token_path = f"{shared_sandbox._work_dir}/_internal/.mcp_tokens.json"
-        content = await shared_sandbox.runtime.download_file(token_path)
-        data = json.loads(content)
-        assert data["access_token"] == "v2"
+    async def test_only_a_later_token_replaces_the_file(self, shared_sandbox):
+        """A write that stalled behind a newer one must not put its older,
+        possibly revoked, token back, nor report it written. Issue order wins
+        over expiry, which a shorter lifetime puts out of order."""
+        v1 = _payload("v1", 2, "2026-01-01T03:00:00Z")
+        assert await shared_sandbox.upload_token_file(v1) is True
+        v2 = _payload("v2", 3, "2026-01-01T02:00:00Z")
+        assert await shared_sandbox.upload_token_file(v2) is True
+        assert (await self._read(shared_sandbox))["access_token"] == "v2"
+
+        assert await shared_sandbox.upload_token_file(v1) is False
+        assert (await self._read(shared_sandbox))["access_token"] == "v2"
 
 
 class TestManifest:

@@ -6,12 +6,8 @@ announces that ``run_id`` as the FIRST yielded SSE chunk (``event:
 metadata``). Frontend reconnect / demotion / steering boundary logic
 latches onto this frame, so it must appear before any model output, and
 the handler must not be constructible without a real ``run_id`` (a
-``None`` would leak through the persisted SSE log and poison the
+``None`` would leak through the Redis event log and poison the
 frontend reconnect URL).
-
-The metadata frame is also written with ``accumulate=False`` so it does
-NOT end up in the response's persisted SSE event log. (Replay paths
-synthesise it on demand from the response row's ``conversation_response_id``.)
 """
 
 import json
@@ -84,29 +80,41 @@ class TestMetadataFrameFirst:
         assert data == {"thread_id": "t-1", "run_id": "r-abc"}
 
     @pytest.mark.asyncio
-    async def test_metadata_frame_is_not_persisted(self):
-        """Persisted SSE log must NOT include the metadata frame — it's a
-        per-connection identity hand-shake. The accumulator owns persistence,
-        so a missing accumulated entry proves ``accumulate=False`` flowed
-        through ``_format_sse_event``."""
-        handler = RunSSEProducer(thread_id="t-1", run_id="r-abc")
-        chunks = await _collect_stream(handler)
-        assert chunks  # sanity — metadata was emitted to the wire
-        persisted = handler.get_sse_events()
-        # Either no events were accumulated at all (None), or — if some
-        # later credit event slipped through — metadata is not among them.
-        if persisted is None:
-            return
-        kinds = [e["event"] for e in persisted]
-        assert "metadata" not in kinds, (
-            f"metadata frame must not be persisted; got accumulated events={kinds!r}"
+    async def test_report_source_rides_the_metadata_frame(self):
+        """A report-back's stream names its report up front: a client that
+        attaches live gets no user message to draw the report's row from."""
+        source = {"kind": "task", "task_id": "k3", "display_id": "Task-k3", "failed": False}
+        handler = RunSSEProducer(
+            thread_id="t-1", run_id="r-abc", announced={"report_source": source}
         )
+        event_name, data = _parse_sse((await _collect_stream(handler))[0])
+        assert event_name == "metadata"
+        assert data == {"thread_id": "t-1", "run_id": "r-abc", "report_source": source}
 
-    def test_run_id_is_required_at_construction(self):
-        """``run_id`` has no default — forgetting it is a TypeError, not a
-        silently-malformed stream. This is the structural guarantee that
-        replaces the old ``run_id=None`` suppression branch: there's no
-        way for a caller to construct the handler without committing to a
-        canonical per-turn identity."""
-        with pytest.raises(TypeError):
-            RunSSEProducer(thread_id="t-1")  # type: ignore[call-arg]
+    @pytest.mark.asyncio
+    async def test_market_target_rides_the_metadata_frame(self):
+        """A target's wake names its notice up front: a client that attaches
+        live reads no query row to draw the alert's row from."""
+        notice = {"target_id": "tg-1", "notice": "hit", "symbol": "ACME", "kind": "above", "value": 205}
+        handler = RunSSEProducer(
+            thread_id="t-1", run_id="r-abc", turn_index=3, announced={"market_target": notice}
+        )
+        event_name, data = _parse_sse((await _collect_stream(handler))[0])
+        assert event_name == "metadata"
+        assert data == {
+            "thread_id": "t-1",
+            "run_id": "r-abc",
+            "turn_index": 3,
+            "market_target": notice,
+        }
+
+    @pytest.mark.asyncio
+    async def test_metadata_names_the_admitted_turn(self):
+        """The client stamps a live turn's bubbles from this value: a view
+        that missed turns added elsewhere would otherwise count to the wrong
+        one, and edit, regenerate and feedback would address it."""
+        handler = RunSSEProducer(thread_id="t-1", run_id="r-abc", turn_index=45)
+        chunks = await _collect_stream(handler)
+        event_name, data = _parse_sse(chunks[0])
+        assert event_name == "metadata"
+        assert data == {"thread_id": "t-1", "run_id": "r-abc", "turn_index": 45}

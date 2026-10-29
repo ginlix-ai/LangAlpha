@@ -21,12 +21,14 @@ class TestPackageImports:
 
         scope = RunScope(user_id="u-1", burst_slot_id=None)
         assert scope.slot_owned is True
+        assert scope.handed_off is False
         assert scope.owned_run_handle is None
         scope.attach_run(object())
         assert scope.owned_run_handle is not None
         # Handoff flips ownership: the executor owns cleanup from here.
         scope.transfer_to_executor()
         assert scope.slot_owned is False
+        assert scope.handed_off is True
         assert scope.owned_run_handle is None
 
 

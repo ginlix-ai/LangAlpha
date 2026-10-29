@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
+import itertools
 import re
 import weakref
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
+import re2
 import structlog
 from langgraph.store.base import BaseStore
 
+from ptc_agent.agent.backends.results import EditTextResult
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
+from ptc_agent.core.sandbox.grep_render import _GREP_WINDOWS_PER_LINE, GREP_LINE_CHARS, GrepLine, cut_grep_line
+from src.observability.private_errors import failure
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +42,15 @@ class StoreContentTooLargeError(ValueError):
     """Raised when a write would exceed ``MAX_CONTENT_BYTES``."""
 
 
+class StoreContentInvalidError(ValueError):
+    """Raised for text the store cannot hold."""
+
+
+#: A store value is JSON in Postgres, which holds no NUL character, and the
+#: write would otherwise fail as an outage.
+_NUL_REFUSAL = "Stored text cannot hold a NUL character (\\x00); keep binary content in a workspace file."
+
+
 class StoreListingIncomplete(RuntimeError):
     """A namespace walk ended early, so absence cannot be concluded from it."""
 
@@ -52,11 +67,18 @@ class ReadOnlyStoreError(PermissionError):
 # Shared across backend instances targeting the same namespace so concurrent
 # turns within one process cannot lose updates. WeakValueDictionary auto-prunes
 # entries once no caller holds the lock, so the registry never leaks across
-# long-running processes. Cross-process safety still needs store-level CAS on
-# ``modified_at``.
+# long-running processes. Other processes are ordered by the database lock
+# ``namespace_write_lock`` takes after this one.
 _WRITE_LOCKS: weakref.WeakValueDictionary[tuple[str, ...], asyncio.Lock] = (
     weakref.WeakValueDictionary()
 )
+
+# Salted so these keys cannot collide with the app's other advisory locks.
+_WRITE_LOCK_KEY_PREFIX = "store-write:"
+
+# A holder keeps the lock for one read and one write of the store, each bounded
+# by _STORE_OP_TIMEOUT_S, so a wait past this means the holder is stuck.
+_WRITE_LOCK_WAIT = "5s"
 
 
 def lock_for_namespace(namespace: tuple[str, ...]) -> asyncio.Lock:
@@ -73,8 +95,40 @@ def lock_for_namespace(namespace: tuple[str, ...]) -> asyncio.Lock:
     return lock
 
 
-# Module-private alias kept so internal call sites don't need updating.
-_lock_for_namespace = lock_for_namespace
+@contextlib.asynccontextmanager
+async def namespace_write_lock(
+    store: BaseStore, namespace: tuple[str, ...]
+) -> AsyncIterator[None]:
+    """Hold ``namespace`` against every other writer of it, in any worker.
+
+    A Postgres store is shared by every server worker, so this also takes an
+    advisory lock on the app database, held until the write inside has
+    committed. A wait past the limit raises ``TimeoutError``, as a stuck store
+    does, so a writer answers the two alike.
+    """
+    from langgraph.store.postgres import AsyncPostgresStore
+
+    async with lock_for_namespace(namespace):
+        if not isinstance(store, AsyncPostgresStore):
+            yield
+            return
+        from psycopg.errors import LockNotAvailable
+
+        from src.server.database.pool import get_db_connection
+
+        # After the in-process lock, so a worker queues at most one connection
+        # per namespace here, and on the app pool: a waiter on the store's own
+        # pool would hold a connection the holder's reads and writes need.
+        async with get_db_connection() as conn, conn.transaction():
+            try:
+                await conn.execute(f"SET LOCAL lock_timeout = '{_WRITE_LOCK_WAIT}'")
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (_WRITE_LOCK_KEY_PREFIX + "/".join(namespace),),
+                )
+            except LockNotAvailable as exc:
+                raise TimeoutError(f"store namespace {namespace} stayed locked") from exc
+            yield
 
 
 def validate_store_key(key: str) -> None:
@@ -91,6 +145,141 @@ def validate_store_key(key: str) -> None:
                 f"Disallowed characters in key segment {seg!r} "
                 "(allowed: letters, digits, '-', '_', '.', '@', '+', '~')"
             )
+
+
+def store_label(value: str) -> str:
+    """``value`` as a namespace label the store accepts.
+
+    The store joins labels with ``.`` and, since langgraph-checkpoint 4.3,
+    refuses a label holding one on reads as well as writes, so an id that
+    carries a dot (an email set as ``AUTH_USER_ID``) has it escaped. Only the
+    dot is: a write under a dotted label always failed, so no row moves, and
+    every other id keeps the label its rows were written under. An id spelling
+    ``%2E`` would share its dotted twin's label, and no deployment holds both:
+    ids are UUIDs or the one configured ``AUTH_USER_ID``.
+    """
+    return value.replace(".", "%2E")
+
+
+def user_memory_namespace(user_id: str) -> tuple[str, ...]:
+    return (store_label(user_id), "memory")
+
+
+def workspace_memory_namespace(user_id: str, workspace_id: str) -> tuple[str, ...]:
+    return (store_label(user_id), "workspaces", store_label(workspace_id), "memory")
+
+
+def memo_namespace(user_id: str) -> tuple[str, ...]:
+    return (store_label(user_id), "memos")
+
+
+_REFUSED_NOTE = (
+    "[Grep did not search {path}: its files are searched with RE2, which "
+    "refuses this pattern ({reason}). Grep that path again without that "
+    "syntax to search them.]"
+)
+
+
+class UnsupportedPattern(ValueError):
+    """A Grep pattern RE2 refuses, such as one with ``(?x)``, which rg runs.
+
+    Raised rather than answered with no matches, which would read as nothing
+    there: the search answers with ``note`` instead."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+    def note(self, path: str) -> str:
+        return _REFUSED_NOTE.format(path=path, reason=self.reason)
+
+
+def compile_grep(pattern: str, case_insensitive: bool) -> Any:
+    """``pattern`` compiled for ``grep_texts``; raises ``UnsupportedPattern``
+    for one RE2 refuses.
+
+    RE2 matches in time linear in the line and lets go of the GIL while it
+    does, where ``re`` can take seconds over one long line (``.*x`` over a
+    JSONL event) and holds the event loop throughout, even from a thread.
+    Its ``\\w``, ``\\d``, ``\\s`` and ``\\b`` are ASCII only, unlike rg's."""
+    options = re2.Options()
+    options.case_sensitive = not case_insensitive
+    # Otherwise each pattern it refuses is logged to stderr.
+    options.log_errors = False
+    try:
+        return re2.compile(pattern, options=options)
+    except re2.error as e:
+        reason = e.args[0] if e.args else "unsupported syntax"
+        if isinstance(reason, bytes):
+            reason = reason.decode(errors="replace")
+        raise UnsupportedPattern(str(reason)) from None
+
+
+
+def _cut(line: str, matches: Iterator[Any]) -> str:
+    """A long line cut as rg's output is cut. The cut takes bytes, as rg
+    reports them, but only places the first few matches; the others are only
+    counted, so a pattern that matches everywhere holds no list of them."""
+    placed = [
+        (len(line[: m.start()].encode()), len(line[: m.end()].encode()))
+        for m in itertools.islice(matches, _GREP_WINDOWS_PER_LINE)
+    ]
+    rest = sum(1 for _ in matches)
+    return cut_grep_line(line.encode(), placed, total=len(placed) + rest)
+
+
+def grep_texts(
+    texts: Iterable[tuple[str, str]],
+    compiled: Any,
+    output_mode: str,
+    *,
+    show_line_numbers: bool,
+    head_limit: int | None = None,
+    offset: int = 0,
+    cut_long_lines: bool = False,
+    max_lines: int | None = None,
+) -> list[Any]:
+    """Grep over files held in memory as (path, content), answered in the
+    sandbox grep's output modes, ``compiled`` by ``compile_grep``.
+
+    ``cut_long_lines`` cuts a long line to windows around its matches, as
+    the sandbox's are cut, and a content search stops at ``max_lines``."""
+    files: list[str] = []
+    lines: list[str] = []
+    counts: list[tuple[str, int]] = []
+    full = False
+    for path, content in texts:
+        found = 0
+        for number, line in enumerate(content.splitlines(), start=1):
+            if output_mode != "content":
+                if compiled.search(line) is None:
+                    continue
+                found += 1
+                if output_mode != "count":
+                    # One line lists the file.
+                    break
+                continue
+            matches = compiled.finditer(line)
+            first = next(matches, None)
+            if first is None:
+                continue
+            found += 1
+            text = line
+            if cut_long_lines and len(line) > GREP_LINE_CHARS:
+                text = _cut(line, itertools.chain([first], matches))
+            prefix = f"{path}:{number}:" if show_line_numbers else f"{path}:"
+            lines.append(GrepLine(prefix + text, path))
+            full = max_lines is not None and len(lines) >= max_lines
+            if full:
+                break
+        if found:
+            files.append(path)
+            counts.append((path, found))
+        if full:
+            break
+    selected: list[Any] = {"content": lines, "count": counts}.get(output_mode, files)
+    start = max(0, offset)
+    return selected[start : None if head_limit is None else start + head_limit]
 
 
 class StoreBackend:
@@ -137,6 +326,23 @@ class StoreBackend:
     @property
     def root_prefix(self) -> str:
         return self._root_prefix
+
+    def read_only_view(self, error: str) -> StoreBackend:
+        """This tier refusing writes with ``error``. The store and the
+        request's cache stay shared, so it reads what a writable view of the
+        tier wrote this turn."""
+        return StoreBackend(
+            store=self._store,
+            namespace_factory=self._namespace_factory,
+            root_prefix=self._root_prefix,
+            sandbox_backend=self._sandbox,
+            read_only=True,
+            read_only_error=error,
+            cache=self._cache,
+        )
+
+    def is_writable(self, file_path: str) -> bool:
+        return not self._read_only
 
     def _namespace(self) -> tuple[str, ...]:
         return self._namespace_factory()
@@ -220,11 +426,27 @@ class StoreBackend:
         end = start + max(0, limit)
         return "".join(lines[start:end])
 
-    async def awrite_text(self, file_path: str, content: str) -> bool:
+    async def awrite_text(
+        self,
+        file_path: str,
+        content: str,
+        *,
+        check: Callable[[str | None], None] | None = None,
+        base_content: str | None = None,
+    ) -> bool:
+        """Store ``content``; False when the store did not answer in time.
+
+        ``check`` is given what the file holds just before this write replaces
+        it, under the namespace lock, and refuses the write by raising, so no
+        other writer lands between a caller's precondition and its write. With
+        no row the file holds ``base_content``: an overlay tier's shipped file.
+        """
         if self._read_only:
             logger.debug("write rejected on read-only tier", path=file_path)
             raise ReadOnlyStoreError(self._read_only_error)
         key = self._path_to_key(file_path)
+        if "\x00" in content:
+            raise StoreContentInvalidError(_NUL_REFUSAL)
         content_bytes = len(content.encode("utf-8"))
         if content_bytes > MAX_CONTENT_BYTES:
             raise StoreContentTooLargeError(
@@ -233,39 +455,49 @@ class StoreBackend:
                 "detail files or shorten the entry."
             )
         namespace = self._namespace()
-        lock = _lock_for_namespace(namespace)
-        async with lock:
-            try:
-                existing_item = await asyncio.wait_for(
-                    self._store.aget(namespace, key),
-                    timeout=_STORE_OP_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "store aget timed out",
-                    path=file_path,
-                    timeout_s=_STORE_OP_TIMEOUT_S,
-                )
-                return False
-            existing_value = existing_item.value if existing_item else None
-            value = self._build_value(content=content, existing=existing_value)
-            try:
-                await asyncio.wait_for(
-                    self._store.aput(namespace, key, value),
-                    timeout=_STORE_OP_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "store aput timed out",
-                    path=file_path,
-                    timeout_s=_STORE_OP_TIMEOUT_S,
-                )
-                return False
-            except Exception:
-                logger.exception("store awrite_text failed", path=file_path)
-                return False
-            if self._cache is not None:
-                self._cache.invalidate(namespace, key)
+        try:
+            async with namespace_write_lock(self._store, namespace):
+                try:
+                    existing_item = await asyncio.wait_for(
+                        self._store.aget(namespace, key),
+                        timeout=_STORE_OP_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "store aget timed out",
+                        path=file_path,
+                        timeout_s=_STORE_OP_TIMEOUT_S,
+                    )
+                    return False
+                existing_value = existing_item.value if existing_item else None
+                if check is not None:
+                    check(
+                        self._content_from_value(existing_value)
+                        if existing_item
+                        else base_content
+                    )
+                value = self._build_value(content=content, existing=existing_value)
+                try:
+                    await asyncio.wait_for(
+                        self._store.aput(namespace, key, value),
+                        timeout=_STORE_OP_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "store aput timed out",
+                        path=file_path,
+                        timeout_s=_STORE_OP_TIMEOUT_S,
+                    )
+                    return False
+                except Exception as exc:
+                    fields, trace = failure(exc)
+                    logger.error("store awrite_text failed", path=file_path, exc_info=trace, **fields)
+                    return False
+                if self._cache is not None:
+                    self._cache.invalidate(namespace, key)
+        except TimeoutError:
+            logger.warning("store write lock timed out", path=file_path)
+            return False
         return True
 
     async def aedit_text(
@@ -277,7 +509,7 @@ class StoreBackend:
         replace_all: bool = False,
         base_content: str | None = None,
         max_bytes: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> EditTextResult:
         """Edit a stored file; ``base_content`` forks it when the key is absent.
 
         An overlay tier (shipped scripts shadowed by the user's own) passes the
@@ -298,90 +530,101 @@ class StoreBackend:
                 "success": False,
                 "error": "old_string and new_string are identical",
             }
+        if "\x00" in new_string:
+            return {"success": False, "error": _NUL_REFUSAL}
         namespace = self._namespace()
-        lock = _lock_for_namespace(namespace)
-        async with lock:
-            try:
-                item = await asyncio.wait_for(
-                    self._store.aget(namespace, key),
-                    timeout=_STORE_OP_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "store aget timed out",
-                    path=file_path,
-                    timeout_s=_STORE_OP_TIMEOUT_S,
-                )
-                return {
-                    "success": False,
-                    "error": "Long-term store timed out. Retry shortly.",
-                }
-            if item is None:
-                if base_content is None:
-                    return {"success": False, "error": f"File not found: {file_path}"}
-                content: str | None = base_content
-            else:
-                content = self._content_from_value(item.value)
-            if content is None:
-                return {
-                    "success": False,
-                    "error": "Malformed store value (missing content)",
-                }
+        try:
+            async with namespace_write_lock(self._store, namespace):
+                try:
+                    item = await asyncio.wait_for(
+                        self._store.aget(namespace, key),
+                        timeout=_STORE_OP_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "store aget timed out",
+                        path=file_path,
+                        timeout_s=_STORE_OP_TIMEOUT_S,
+                    )
+                    return {
+                        "success": False,
+                        "error": "Long-term store timed out. Retry shortly.",
+                    }
+                if item is None:
+                    if base_content is None:
+                        return {"success": False, "error": f"File not found: {file_path}"}
+                    content: str | None = base_content
+                else:
+                    content = self._content_from_value(item.value)
+                if content is None:
+                    return {
+                        "success": False,
+                        "error": "Malformed store value (missing content)",
+                    }
 
-            occurrences = content.count(old_string)
-            if occurrences == 0:
-                return {"success": False, "error": f"String not found: {old_string!r}"}
-            if occurrences > 1 and not replace_all:
-                return {
-                    "success": False,
-                    "error": (
-                        f"String appears {occurrences} times. Provide more context or "
-                        "set replace_all=True."
-                    ),
-                }
+                occurrences = content.count(old_string)
+                if occurrences == 0:
+                    return {"success": False, "error": f"String not found: {old_string!r}"}
+                if occurrences > 1 and not replace_all:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"String appears {occurrences} times. Provide more context or "
+                            "set replace_all=True."
+                        ),
+                    }
 
-            if replace_all:
-                new_content = content.replace(old_string, new_string)
-            else:
-                new_content = content.replace(old_string, new_string, 1)
+                if replace_all:
+                    new_content = content.replace(old_string, new_string)
+                else:
+                    new_content = content.replace(old_string, new_string, 1)
 
-            cap = min(max_bytes or MAX_CONTENT_BYTES, MAX_CONTENT_BYTES)
-            if len(new_content.encode("utf-8")) > cap:
-                return {
-                    "success": False,
-                    "error": (
-                        f"Edit would grow content past {cap} bytes; "
-                        "split the file or shorten the replacement."
-                    ),
-                }
+                cap = min(max_bytes or MAX_CONTENT_BYTES, MAX_CONTENT_BYTES)
+                if len(new_content.encode("utf-8")) > cap:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Edit would grow content past {cap} bytes; "
+                            "split the file or shorten the replacement."
+                        ),
+                    }
 
-            value = self._build_value(
-                content=new_content, existing=item.value if item else None
-            )
-            try:
-                await asyncio.wait_for(
-                    self._store.aput(namespace, key, value),
-                    timeout=_STORE_OP_TIMEOUT_S,
+                value = self._build_value(
+                    content=new_content, existing=item.value if item else None
                 )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "store aput timed out",
-                    path=file_path,
-                    timeout_s=_STORE_OP_TIMEOUT_S,
-                )
-                return {
-                    "success": False,
-                    "error": "Long-term store timed out. Retry shortly.",
-                }
-            except Exception as exc:
-                logger.exception("store aedit_text failed", path=file_path)
-                return {"success": False, "error": str(exc)}
-            if self._cache is not None:
-                self._cache.invalidate(namespace, key)
+                try:
+                    await asyncio.wait_for(
+                        self._store.aput(namespace, key, value),
+                        timeout=_STORE_OP_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "store aput timed out",
+                        path=file_path,
+                        timeout_s=_STORE_OP_TIMEOUT_S,
+                    )
+                    return {
+                        "success": False,
+                        "error": "Long-term store timed out. Retry shortly.",
+                    }
+                except Exception as exc:
+                    # The agent gets the text, which quotes its own file.
+                    fields, trace = failure(exc)
+                    logger.error("store aedit_text failed", path=file_path, exc_info=trace, **fields)
+                    return {"success": False, "error": str(exc)}
+                if self._cache is not None:
+                    self._cache.invalidate(namespace, key)
+        except TimeoutError:
+            logger.warning("store write lock timed out", path=file_path)
+            return {
+                "success": False,
+                "error": "Long-term store timed out. Retry shortly.",
+            }
 
         return {
             "success": True,
             "occurrences": occurrences if replace_all else 1,
+            "size": len(new_content),
             "message": (
                 f"Edited {file_path} ({occurrences} occurrences replaced)"
                 if replace_all
@@ -392,19 +635,17 @@ class StoreBackend:
     async def _all_items(self, *, strict: bool = False) -> list[Any]:
         """Page through every Item under the backend's namespace.
 
-        Pages are fetched in fan-out batches of ``fanout`` so that a 300-key
-        namespace pays roughly ``ceil(N / page_size / fanout)`` round-trips
-        instead of ``ceil(N / page_size)``. Termination: as soon as any page
-        in a batch returns short, we know there are no more rows past that
-        offset and stop. Tiny namespaces (≤ page_size) issue exactly one
-        round-trip in either implementation, so there's no overhead in the
-        common case.
+        Most namespaces fit one page, so the first round trip asks for one
+        page alone rather than ``fanout`` of them; a full one means more,
+        fetched in batches of ``fanout`` concurrent pages. The walk stops at
+        the first short page.
 
-        A timed-out page ends the walk with what it has, which reads as a
-        short listing and not as a failure — right for search and grep, where
-        partial beats nothing. ``strict`` is for the callers that infer
-        absence from a miss, and for whom a truncated listing and an empty
-        namespace must not look alike.
+        The timeout bounds each round trip, not the walk, so a large namespace
+        takes more of them rather than failing. A timed-out one ends the walk
+        with what it has, which reads as a short listing and not as a failure,
+        right for search and grep, where partial beats nothing. ``strict`` is
+        for the callers that infer absence from a miss, and for whom a
+        truncated listing and an empty namespace must not look alike.
         """
         namespace = self._namespace()
         page_size = 100
@@ -413,8 +654,9 @@ class StoreBackend:
         fanout = 3
         items: list[Any] = []
         offset = 0
+        width = 1
         while True:
-            offsets = [offset + i * page_size for i in range(fanout)]
+            offsets = [offset + i * page_size for i in range(width)]
             try:
                 pages = await asyncio.wait_for(
                     asyncio.gather(
@@ -450,11 +692,64 @@ class StoreBackend:
                     break
             if stop:
                 break
-            offset += fanout * page_size
+            offset += width * page_size
+            width = fanout
         return items
 
     def _absolute(self, key: str) -> str:
         return f"{self._root_prefix}{key}"
+
+    async def adelete_text(
+        self, file_path: str, *, check: Callable[[str | None], None] | None = None
+    ) -> bool:
+        """Delete a stored file; False when there was none. Raises on timeout.
+
+        ``check`` refuses the delete as ``awrite_text``'s refuses a write, on
+        what the file holds under the namespace lock (None for no file).
+        """
+        if self._read_only:
+            raise ReadOnlyStoreError(self._read_only_error)
+        key = self._path_to_key(file_path)
+        namespace = self._namespace()
+        async with namespace_write_lock(self._store, namespace):
+            item = await asyncio.wait_for(
+                self._store.aget(namespace, key), timeout=_STORE_OP_TIMEOUT_S
+            )
+            if check is not None:
+                check(self._content_from_value(item.value) if item else None)
+            if item is None:
+                return False
+            await asyncio.wait_for(
+                self._store.adelete(namespace, key), timeout=_STORE_OP_TIMEOUT_S
+            )
+            if self._cache is not None:
+                self._cache.invalidate(namespace, key)
+        return True
+
+    async def aread_tree(self, path: str) -> dict[str, str]:
+        """Every file at or under ``path`` with its content, from one listing.
+
+        The tier is one namespace whose keys hold the path, and the store
+        searches by namespace only, so the subtree is kept from a walk of
+        the tier. Strict, because callers read a missing path as a file that
+        does not exist: a walk a timeout cut short raises instead.
+        """
+        normalized = self.normalize_path(path)
+        if normalized.startswith(self._root_prefix):
+            subtree = normalized[len(self._root_prefix):].rstrip("/")
+        elif normalized.rstrip("/") == self._root_prefix.rstrip("/"):
+            subtree = ""
+        else:
+            return {}
+        out: dict[str, str] = {}
+        for item in await self._all_items(strict=True):
+            key = str(item.key)
+            if subtree and key != subtree and not key.startswith(subtree + "/"):
+                continue
+            content = self._content_from_value(item.value)
+            if content is not None:
+                out[self._absolute(key)] = content
+        return out
 
     async def aglob_paths(
         self, pattern: str, path: str = ".", *, strict: bool = False
@@ -502,12 +797,7 @@ class StoreBackend:
         offset: int = 0,
     ) -> Any:
         """Regex search. Context/multiline flags and ``type`` are accepted but ignored."""
-        flags = re.IGNORECASE if case_insensitive else 0
-        try:
-            compiled = re.compile(pattern, flags=flags)
-        except re.error as exc:
-            logger.debug("store agrep invalid regex", pattern=pattern, error=str(exc))
-            return []
+        compiled = compile_grep(pattern, case_insensitive)
 
         items = await self._all_items()
         normalized_path = self.normalize_path(path)
@@ -517,10 +807,7 @@ class StoreBackend:
         elif normalized_path.rstrip("/") != self._root_prefix.rstrip("/"):
             return []
 
-        files_with_matches: list[str] = []
-        content_lines: list[str] = []
-        counts: list[tuple[str, int]] = []
-
+        texts: list[tuple[str, str]] = []
         for item in items:
             key = str(item.key)
             if subtree and not key.startswith(subtree.rstrip("/") + "/") and key != subtree:
@@ -530,32 +817,8 @@ class StoreBackend:
             ):
                 continue
             content = self._content_from_value(item.value)
-            if content is None:
-                continue
-            abs_path = self._absolute(key)
-            file_count = 0
-            matches_here: list[str] = []
-            for line_no, line in enumerate(content.splitlines(), start=1):
-                if compiled.search(line):
-                    file_count += 1
-                    if show_line_numbers:
-                        matches_here.append(f"{abs_path}:{line_no}:{line}")
-                    else:
-                        matches_here.append(f"{abs_path}:{line}")
-            if file_count == 0:
-                continue
-            files_with_matches.append(abs_path)
-            content_lines.extend(matches_here)
-            counts.append((abs_path, file_count))
-
-        def _slice(seq: list[Any]) -> list[Any]:
-            start = max(0, offset)
-            if head_limit is not None:
-                return seq[start : start + head_limit]
-            return seq[start:]
-
-        if output_mode == "content":
-            return _slice(content_lines)
-        if output_mode == "count":
-            return _slice(counts)
-        return _slice(files_with_matches)
+            if content is not None:
+                texts.append((self._absolute(key), content))
+        return grep_texts(
+            texts, compiled, output_mode, show_line_numbers=show_line_numbers, head_limit=head_limit, offset=offset
+        )

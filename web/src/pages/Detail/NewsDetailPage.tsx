@@ -1,8 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { useParams, useNavigate } from 'react-router';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { Loader } from '@/components/ui/loader';
+import { useScrollMemory } from '@/lib/scrollMemory';
 import { getNewsArticle } from '../Dashboard/utils/api';
+import { useLocale } from '@/hooks/useLocale';
+import { formatTimestamp } from '@/lib/format';
 
 interface ArticleSentiment {
   ticker: string;
@@ -28,9 +31,41 @@ interface NewsArticle {
   article_url?: string;
 }
 
+/* Three exit paths render three different roots, and none of them is a bar the
+   window could be dragged by, so the titlebar is donated here instead of in each
+   one. Outside the article's own padding on purpose: it keeps the strip flush
+   with the top of the column and out of the column gap below it.
+
+   The article is long and this route brought no scroll port of its own, so it
+   was `.app-main` doing the scrolling -- with the strip inside it. That is the
+   third shape App.css warns about: the titlebar rides the content out of view
+   and stops working the moment the user scrolls. Give the page the column that
+   Settings and Plugins have, strip above and a scroll port below it. */
 function NewsDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const portRef = useRef<HTMLDivElement>(null);
+  // Owned here rather than left to the shell, now that the scrolling is. What
+  // `App.tsx` remembers is `.app-main`, which on this route no longer moves.
+  //
+  // The slowest caller the hook has, and the one that decided its shape: the
+  // article arrives from a fetch inside `NewsArticleView`, so the port is empty
+  // for as long as that takes and there is nothing to scroll until it lands.
+  useScrollMemory(portRef, `page:news:${id ?? ''}`);
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="chrome-drag-strip" aria-hidden="true" />
+      <div ref={portRef} className="flex-1 min-h-0 overflow-y-auto">
+        <NewsArticleView />
+      </div>
+    </div>
+  );
+}
+
+function NewsArticleView() {
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const locale = useLocale();
   const [article, setArticle] = useState<NewsArticle | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -51,7 +86,7 @@ function NewsDetailPage() {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 p-8" style={{ color: 'var(--color-text-secondary)' }}>
-        <span aria-hidden="true" className="flex-shrink-0">
+        <span aria-hidden="true" className="shrink-0">
           <Loader size={24} className="text-current" />
         </span>
         <p>Loading article...</p>
@@ -76,7 +111,7 @@ function NewsDetailPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)' }}>
+    <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto" style={{ color: 'var(--color-text-primary)', paddingTop: 'calc(var(--page-top) - 3px)' }}>
       {/* Back button */}
       <button
         onClick={handleBack}
@@ -95,7 +130,7 @@ function NewsDetailPage() {
         <div className="flex items-center gap-3 flex-wrap">
           {article.published_at && (
             <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              {new Date(article.published_at).toLocaleString()}
+              {formatTimestamp(article.published_at, locale)}
             </span>
           )}
           {article.author && (
@@ -167,14 +202,14 @@ function NewsDetailPage() {
             {article.sentiments.map((s, i) => (
               <div key={i} className="flex items-start gap-3 text-xs rounded-md p-2.5" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
                 <span
-                  className="flex-shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
+                  className="shrink-0 font-mono font-medium px-1.5 py-0.5 rounded"
                   style={{ color: 'var(--color-accent-primary)', backgroundColor: 'var(--color-bg-tag)' }}
                 >
                   {s.ticker}
                 </span>
                 {s.sentiment && (
                   <span
-                    className="flex-shrink-0 font-medium px-1.5 py-0.5 rounded"
+                    className="shrink-0 font-medium px-1.5 py-0.5 rounded"
                     style={{
                       color: s.sentiment === 'positive' ? 'var(--color-profit)' : s.sentiment === 'negative' ? 'var(--color-loss)' : 'var(--color-text-secondary)',
                       backgroundColor: 'var(--color-bg-tag)',

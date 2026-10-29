@@ -49,11 +49,17 @@ docs: |
   Updates the name, description, or configuration of an existing workspace.
   All fields are optional - only provided fields will be updated.
 
+  A rename writes the name only. The folder follows the next time the
+  workspace's computer is acquired (a start, a turn, a file request): `dir_name`
+  becomes the new folder and the old one joins `previous_dir_names`, so paths
+  written under it still resolve.
+
   **Path Parameters:**
   - `workspace_id`: Workspace UUID
 
   **Request Body:**
-  - `name` (optional): New workspace name (1-255 characters)
+  - `name` (optional): New workspace name, 1-80 characters, unique per user
+    on the same terms as at creation
   - `description` (optional): New workspace description (max 1000 characters)
   - `config` (optional): New configuration settings (replaces existing)
 
@@ -63,6 +69,9 @@ docs: |
   - `name`: Updated workspace name
   - `description`: Updated workspace description
   - `sandbox_id`: Daytona sandbox ID
+  - `dir_name`: The workspace's folder on its computer (the old folder until a
+    rename's move has run)
+  - `previous_dir_names`: Folders a rename moved the workspace out of, newest first
   - `status`: Workspace status
   - `created_at`: Creation timestamp
   - `updated_at`: Last update timestamp
@@ -71,5 +80,11 @@ docs: |
   - `config`: Updated configuration settings
 
   **Error Responses:**
+  - 400 `workspace_name_invalid`: The name is reserved or has no usable folder
+    spelling. `{"detail": {"code": "workspace_name_invalid", "message": "..."}}`
   - 404: Workspace not found
+  - 409 `workspace_name_taken`: Another of the user's workspaces has the name.
+    `{"detail": {"code": "workspace_name_taken", "message": "...", "name": "...", "workspace_id": "..."}}`,
+    where `workspace_id` is the workspace holding it.
+  - 422: Request validation failed (name empty or longer than 80 characters)
   - 500: Failed to update workspace

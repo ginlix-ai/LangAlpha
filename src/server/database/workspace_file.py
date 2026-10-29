@@ -6,15 +6,64 @@ and PostgreSQL for offline access and disaster recovery.
 """
 
 import logging
-from datetime import datetime
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from psycopg.errors import LockNotAvailable
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 
 from src.server.database.pool import get_db_connection
+from src.server.database.session_lock import release_session_lock
+from src.server.database.sql_fences import FENCE_LIVE_WORKSPACE
 from src.server.utils.pg_sanitize import strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+# Namespace prefix for the per-workspace manifest-sync lock, so the key space
+# is this module's alone.
+_SYNC_LOCK_NS = "WSFILES_SYNC"
+# Longer than any healthy sync, so a waiter only gives up when the holder is
+# wedged; a bounded wait keeps a stuck holder from pinning every later sync's
+# pool slot behind it.
+SYNC_LOCK_WAIT = "120s"
+
+
+# ``file_path`` is VARCHAR(1024), and the unique (workspace_id, file_path) index
+# refuses a key past roughly 2.7 KB whatever the column allows. A sandbox has no
+# such bound (a tree can nest past PATH_MAX through relative paths), and one
+# path over either limit fails the whole batch insert, so the sync has to set
+# such a path aside before it writes. The byte bound only bites on multibyte
+# names: 1024 ASCII characters are 1024 bytes.
+MAX_FILE_PATH_CHARS = 1024
+_MAX_FILE_PATH_BYTES = 2048
+
+
+def path_fits_manifest(path: str) -> bool:
+    return (
+        len(path) <= MAX_FILE_PATH_CHARS
+        and len(path.encode("utf-8", "surrogatepass")) <= _MAX_FILE_PATH_BYTES
+    )
+
+
+class WorkspaceSyncBusy(Exception):
+    """Another sync held the workspace lock for the whole wait."""
+
+
+def datetime_to_micros(value: datetime | None) -> int | None:
+    """Exact integer microseconds since the epoch, or None."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return (value - _EPOCH) // timedelta(microseconds=1)
+
+
+def micros_to_datetime(micros: int) -> datetime:
+    return _EPOCH + timedelta(microseconds=micros)
 
 
 # =============================================================================
@@ -37,8 +86,10 @@ async def bulk_upsert_files(
     Args:
         workspace_id: Workspace UUID
         files: List of dicts with keys: file_path, file_name, file_size,
-               content_hash, content_text, content_binary, mime_type,
-               is_binary, permissions, sandbox_modified_at
+               content_hash, content_text, content_binary, blob_sha256,
+               pack_sha256, pack_offset, mime_type, is_binary, permissions,
+               sandbox_modified_at, kind ('file' default, 'dir', 'symlink'),
+               symlink_target
         conn: Optional database connection to reuse
 
     Returns:
@@ -50,20 +101,26 @@ async def bulk_upsert_files(
     sql = """
         INSERT INTO workspace_files (
             workspace_id, file_path, file_name, file_size, content_hash,
-            content_text, content_binary, mime_type, is_binary, permissions,
-            sandbox_modified_at
+            content_text, content_binary, blob_sha256, pack_sha256, pack_offset,
+            mime_type, is_binary, permissions, sandbox_modified_at, kind,
+            symlink_target
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (workspace_id, file_path) DO UPDATE SET
             file_name = EXCLUDED.file_name,
             file_size = EXCLUDED.file_size,
             content_hash = EXCLUDED.content_hash,
             content_text = EXCLUDED.content_text,
             content_binary = EXCLUDED.content_binary,
+            blob_sha256 = EXCLUDED.blob_sha256,
+            pack_sha256 = EXCLUDED.pack_sha256,
+            pack_offset = EXCLUDED.pack_offset,
             mime_type = EXCLUDED.mime_type,
             is_binary = EXCLUDED.is_binary,
             permissions = EXCLUDED.permissions,
             sandbox_modified_at = EXCLUDED.sandbox_modified_at,
+            kind = EXCLUDED.kind,
+            symlink_target = EXCLUDED.symlink_target,
             updated_at = NOW()
     """
 
@@ -80,10 +137,15 @@ async def bulk_upsert_files(
             f.get("content_hash"),
             strip_pg_nul_str(f.get("content_text")),
             f.get("content_binary"),
+            f.get("blob_sha256"),
+            f.get("pack_sha256"),
+            f.get("pack_offset"),
             strip_pg_nul_str(f.get("mime_type")),
             f.get("is_binary", False),
             strip_pg_nul_str(f.get("permissions")),
             f.get("sandbox_modified_at"),
+            f.get("kind", "file"),
+            strip_pg_nul_str(f.get("symlink_target")),
         )
         for f in files
     ]
@@ -120,46 +182,14 @@ async def bulk_upsert_files(
         raise
 
 
-async def upsert_file(
-    workspace_id: str,
-    file_path: str,
-    file_name: str,
-    file_size: int,
-    content_hash: Optional[str] = None,
-    content_text: Optional[str] = None,
-    content_binary: Optional[bytes] = None,
-    mime_type: Optional[str] = None,
-    is_binary: bool = False,
-    permissions: Optional[str] = None,
-    sandbox_modified_at: Optional[datetime] = None,
-    *,
-    conn=None,
-) -> None:
-    """Insert or update a single workspace file. Delegates to bulk_upsert_files."""
-    await bulk_upsert_files(
-        workspace_id,
-        [
-            {
-                "file_path": file_path,
-                "file_name": file_name,
-                "file_size": file_size,
-                "content_hash": content_hash,
-                "content_text": content_text,
-                "content_binary": content_binary,
-                "mime_type": mime_type,
-                "is_binary": is_binary,
-                "permissions": permissions,
-                "sandbox_modified_at": sandbox_modified_at,
-            }
-        ],
-        conn=conn,
-    )
-
-
 async def get_files_for_workspace(
     workspace_id: str,
     *,
     include_content: bool = False,
+    all_kinds: bool = False,
+    under: Optional[str] = None,
+    outside: Optional[str | tuple[str, ...]] = None,
+    paths: Optional[List[str]] = None,
     conn=None,
 ) -> List[Dict[str, Any]]:
     """
@@ -168,9 +198,19 @@ async def get_files_for_workspace(
     By default returns metadata only (no content_text/content_binary) for
     efficient listing. Set include_content=True to include file contents.
 
+    Only ``kind = 'file'`` rows are returned unless ``all_kinds`` is set:
+    directory and symlink rows exist for restore, and every other reader
+    (file tree, serving, redaction) is written for files. Restore is the one
+    caller that asks for everything.
+
     Args:
         workspace_id: Workspace UUID
         include_content: Whether to include content_text and content_binary
+        all_kinds: Include directory and symlink rows
+        under: Only the row for this directory and rows beneath it
+        outside: Every row except those ``under`` would select for this
+            path, or for any of these paths
+        paths: Only these exact paths
         conn: Optional database connection to reuse
 
     Returns:
@@ -181,25 +221,41 @@ async def get_files_for_workspace(
             columns = """
                 workspace_file_id, workspace_id, file_path, file_name,
                 file_size, content_hash, content_text, content_binary,
-                mime_type, is_binary, permissions, sandbox_modified_at,
-                created_at, updated_at
+                blob_sha256, pack_sha256, pack_offset, mime_type, is_binary, permissions,
+                sandbox_modified_at, created_at, updated_at,
+                kind, symlink_target
             """
         else:
             columns = """
                 workspace_file_id, workspace_id, file_path, file_name,
                 file_size, content_hash, mime_type, is_binary, permissions,
-                sandbox_modified_at, created_at, updated_at
+                sandbox_modified_at, created_at, updated_at,
+                kind, symlink_target
             """
+
+        filters = "" if all_kinds else "AND kind = 'file'"
+        params: list[Any] = [workspace_id]
+        # starts_with, not LIKE: these are real directory names, and an
+        # underscore in one is a LIKE wildcard.
+        if under is not None:
+            filters += " AND (file_path = %s OR starts_with(file_path, %s))"
+            params += [under, under + "/"]
+        for excluded in (outside,) if isinstance(outside, str) else outside or ():
+            filters += " AND NOT (file_path = %s OR starts_with(file_path, %s))"
+            params += [excluded, excluded + "/"]
+        if paths is not None:
+            filters += " AND file_path = ANY(%s)"
+            params.append(list(paths))
 
         async def _execute(cur):
             await cur.execute(
                 f"""
                 SELECT {columns}
                 FROM workspace_files
-                WHERE workspace_id = %s
+                WHERE workspace_id = %s {filters}
                 ORDER BY file_path ASC
                 """,
-                (workspace_id,),
+                params,
             )
             results = await cur.fetchall()
             return [dict(r) for r in results]
@@ -241,14 +297,16 @@ async def get_file(
             columns = """
                 workspace_file_id, workspace_id, file_path, file_name,
                 file_size, content_hash, content_text, content_binary,
-                mime_type, is_binary, permissions, sandbox_modified_at,
-                created_at, updated_at
+                blob_sha256, pack_sha256, pack_offset, mime_type, is_binary, permissions,
+                sandbox_modified_at, created_at, updated_at,
+                kind, symlink_target
             """
         else:
             columns = """
                 workspace_file_id, workspace_id, file_path, file_name,
                 file_size, content_hash, mime_type, is_binary, permissions,
-                sandbox_modified_at, created_at, updated_at
+                sandbox_modified_at, created_at, updated_at,
+                kind, symlink_target
             """
 
         async def _execute(cur):
@@ -256,7 +314,7 @@ async def get_file(
                 f"""
                 SELECT {columns}
                 FROM workspace_files
-                WHERE workspace_id = %s AND file_path = %s
+                WHERE workspace_id = %s AND file_path = %s AND kind = 'file'
                 """,
                 (workspace_id, file_path),
             )
@@ -281,49 +339,40 @@ async def get_file(
         raise
 
 
-async def get_file_hashes(
-    workspace_id: str,
-    *,
-    conn=None,
-) -> Dict[str, str]:
+async def get_file_locator(
+    workspace_id: str, file_path: str, *, conn=None
+) -> Optional[Dict[str, Any]]:
+    """Where one file's bytes live, without the bytes.
+
+    ``get_file(include_content=False)`` leaves out the blob and pack pointers,
+    and ``include_content=True`` pulls an inline body of up to 100 MB to learn
+    them. ``mtime_ns`` matches ``get_file_metadata_for_sync``.
     """
-    Get content hashes for all files in a workspace.
 
-    Useful for diffing local sandbox state against stored state to determine
-    which files need to be synced.
+    async def _execute(cur):
+        await cur.execute(
+            """
+            SELECT file_name, file_size, content_hash, blob_sha256, pack_sha256,
+                   mime_type, sandbox_modified_at
+            FROM workspace_files
+            WHERE workspace_id = %s AND file_path = %s AND kind = 'file'
+            """,
+            (workspace_id, file_path),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        micros = datetime_to_micros(out.pop("sandbox_modified_at"))
+        out["mtime_ns"] = micros * 1000 if micros is not None else None
+        return out
 
-    Args:
-        workspace_id: Workspace UUID
-        conn: Optional database connection to reuse
-
-    Returns:
-        Dict mapping file_path to content_hash
-    """
-    try:
-
-        async def _execute(cur):
-            await cur.execute(
-                """
-                SELECT file_path, content_hash
-                FROM workspace_files
-                WHERE workspace_id = %s
-                """,
-                (workspace_id,),
-            )
-            results = await cur.fetchall()
-            return {row["file_path"]: row["content_hash"] for row in results}
-
-        if conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                return await _execute(cur)
-        else:
-            async with get_db_connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    return await _execute(cur)
-
-    except Exception as e:
-        logger.error(f"Error getting file hashes for workspace {workspace_id}: {e}")
-        raise
+    if conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            return await _execute(cur)
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            return await _execute(cur)
 
 
 async def get_file_metadata_for_sync(
@@ -334,32 +383,53 @@ async def get_file_metadata_for_sync(
     """
     Get file metadata for incremental sync comparison.
 
-    Returns dict mapping file_path to {content_hash, file_size, mtime_epoch}.
-    Used to pre-filter unchanged files before downloading.
+    Returns dict mapping file_path to {content_hash, file_size, mtime_epoch,
+    mtime_ns, kind, permissions, symlink_target, blob_sha256, is_binary,
+    mime_type}. Every kind is
+    included: the sync diff has to see directory and symlink rows to know
+    whether they still exist.
+
+    ``mtime_ns`` is derived from the stored microsecond timestamp, so it
+    equals the nanosecond value the sandbox reports only when the file's mtime
+    was itself set from this row (restore does that) or the filesystem keeps
+    no finer precision. Either way an exact match means unchanged.
     """
     try:
 
         async def _execute(cur):
             await cur.execute(
                 """
-                SELECT file_path, content_hash, file_size,
-                       EXTRACT(EPOCH FROM sandbox_modified_at) AS mtime_epoch
+                SELECT file_path, content_hash, file_size, kind, permissions,
+                       symlink_target, blob_sha256, pack_sha256, pack_offset,
+                       is_binary, mime_type, sandbox_modified_at
                 FROM workspace_files
                 WHERE workspace_id = %s
                 """,
                 (workspace_id,),
             )
             results = await cur.fetchall()
-            return {
-                row["file_path"]: {
+            out = {}
+            for row in results:
+                modified = row["sandbox_modified_at"]
+                # Integer microseconds straight off the datetime: a float
+                # epoch drops the last digit on about one row in twenty,
+                # which read as "changed" and rewrote the row every sync.
+                micros = datetime_to_micros(modified)
+                out[row["file_path"]] = {
                     "content_hash": row["content_hash"],
                     "file_size": row["file_size"],
-                    "mtime_epoch": float(row["mtime_epoch"])
-                    if row["mtime_epoch"] is not None
-                    else None,
+                    "mtime_epoch": micros / 1_000_000 if micros is not None else None,
+                    "mtime_ns": micros * 1000 if micros is not None else None,
+                    "kind": row["kind"],
+                    "permissions": row["permissions"],
+                    "symlink_target": row["symlink_target"],
+                    "blob_sha256": row["blob_sha256"],
+                    "pack_sha256": row["pack_sha256"],
+                    "pack_offset": row["pack_offset"],
+                    "is_binary": row["is_binary"],
+                    "mime_type": row["mime_type"],
                 }
-                for row in results
-            }
+            return out
 
         if conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -374,18 +444,18 @@ async def get_file_metadata_for_sync(
         raise
 
 
-async def bulk_update_file_mtimes(
+async def bulk_update_file_stamps(
     workspace_id: str,
     updates: List[tuple],
     *,
     conn=None,
 ) -> int:
     """
-    Bulk update sandbox_modified_at for multiple files.
+    Bulk update the mtime and mode of files whose bytes did not change.
 
     Args:
         workspace_id: Workspace UUID
-        updates: List of (file_path, sandbox_modified_at) tuples
+        updates: List of (file_path, sandbox_modified_at, permissions) tuples
         conn: Optional database connection to reuse
 
     Returns:
@@ -396,83 +466,148 @@ async def bulk_update_file_mtimes(
 
     sql = """
         UPDATE workspace_files
-        SET sandbox_modified_at = %s, updated_at = NOW()
+        SET sandbox_modified_at = %s, permissions = %s, updated_at = NOW()
         WHERE workspace_id = %s AND file_path = %s
     """
 
     params_list = [
-        (mtime, workspace_id, fpath) for fpath, mtime in updates
+        (mtime, permissions, workspace_id, fpath)
+        for fpath, mtime, permissions in updates
     ]
 
-    try:
+    async def _execute(c):
+        async with c.transaction():
+            async with c.cursor() as cur:
+                await cur.executemany(sql, params_list)
 
-        async def _execute(c):
-            async with c.transaction():
-                async with c.cursor() as cur:
-                    await cur.executemany(sql, params_list)
+    if conn:
+        await _execute(conn)
+    else:
+        async with get_db_connection() as c:
+            await _execute(c)
 
-        if conn:
-            await _execute(conn)
-        else:
-            async with get_db_connection() as c:
-                await _execute(c)
-
-        logger.debug(
-            f"Bulk updated mtimes for {len(updates)} files in workspace {workspace_id}"
-        )
-        return len(updates)
-
-    except Exception as e:
-        logger.warning(
-            f"Error bulk updating mtimes for workspace {workspace_id}: {e}"
-        )
-        return 0
-
-
-async def update_file_mtime(
-    workspace_id: str,
-    file_path: str,
-    sandbox_modified_at: datetime,
-) -> None:
-    """Update only the sandbox_modified_at for a file. Delegates to bulk_update_file_mtimes."""
-    await bulk_update_file_mtimes(
-        workspace_id, [(file_path, sandbox_modified_at)]
+    logger.debug(
+        f"Bulk updated mtimes for {len(updates)} files in workspace {workspace_id}"
     )
+    return len(updates)
+
+
+async def manifest_clock(*, conn=None) -> datetime:
+    """The database's own ``now()``: the reference every ``updated_at`` uses."""
+    async with get_db_connection(conn) as c:
+        async with c.cursor() as cur:
+            await cur.execute("SELECT now()")
+            row = await cur.fetchone()
+    return row[0]
+
+
+@asynccontextmanager
+async def workspace_sync_lock(
+    workspace_id: str, *, wait: str = SYNC_LOCK_WAIT, conn=None
+):
+    """Serialize manifest syncs for one workspace, and yield the session holding it.
+
+    Session-level rather than transaction-level because a sync is not one
+    statement: it reads the manifest, walks the sandbox, moves bytes, and only
+    then writes. Two overlapping syncs that each read before either wrote let
+    the older pack's unconditional upsert land last, so the fence has to span
+    the read and the write together. The connection is yielded because the
+    sync's own reads and writes belong on this session rather than on a second
+    pool slot checked out underneath it. ``conn`` takes the lock on a session
+    the caller already holds instead.
+    """
+    key = f"{_SYNC_LOCK_NS}:{workspace_id}"
+    async with get_db_connection(conn) as conn:
+        try:
+            # SET LOCAL scopes the timeout to this transaction; the session
+            # lock itself outlives the commit.
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SET LOCAL lock_timeout = '{wait}'")
+                    await cur.execute(
+                        "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key,)
+                    )
+        except LockNotAvailable as e:
+            raise WorkspaceSyncBusy(
+                f"workspace {workspace_id} sync lock held for over {wait}"
+            ) from e
+        except BaseException:
+            # A cancellation or failure while the grant may already have
+            # landed: the transaction rolls back but a session lock does
+            # not, so the session is released the way a held one is rather
+            # than handed to the pool with the lock still on it.
+            await release_session_lock(conn, key)
+            raise
+        try:
+            yield conn
+        finally:
+            await release_session_lock(conn, key)
 
 
 async def delete_removed_files(
     workspace_id: str,
     active_paths: set,
     *,
+    walked_dir_name: str,
+    untouched_since: datetime,
     conn=None,
 ) -> int:
     """
     Delete files that are no longer present in the sandbox.
 
     Removes all workspace_files rows whose file_path is NOT in active_paths.
-    If active_paths is empty, deletes all files (equivalent to delete_all_files).
+
+    ``walked_dir_name`` is the folder the scan that produced ``active_paths``
+    actually walked, and the statement fires only when the row says the same,
+    so a scan of the computer root (or of a sibling's folder) prunes nothing.
+    Rows are keyed relative to one directory, which makes a path from the
+    wrong directory indistinguishable from a real subdirectory of this one,
+    and the only place the two can still be told apart is against the row.
+
+    ``untouched_since`` fences the prune to rows nobody has written since the
+    caller's scan began: two syncs may overlap (a post-turn backup and a stop,
+    say), and the older scan must not delete a row the newer one just added.
+    It is required rather than optional because an unfenced prune against an
+    empty ``active_paths`` erases the whole manifest.
 
     Args:
         workspace_id: Workspace UUID
         active_paths: Set of file paths that still exist in the sandbox
+        walked_dir_name: The folder the scan walked ("" for the computer root)
+        untouched_since: Only delete rows with ``updated_at`` before this
         conn: Optional database connection to reuse
 
     Returns:
         Number of deleted rows
     """
     try:
-        if not active_paths:
-            return await delete_all_files(workspace_id, conn=conn)
-
         paths_list = list(active_paths)
 
         async def _execute(cur):
             await cur.execute(
                 """
-                DELETE FROM workspace_files
-                WHERE workspace_id = %s AND NOT (file_path = ANY(%s))
+                DELETE FROM workspace_files f
+                USING workspaces w
+                WHERE w.workspace_id = %(workspace_id)s
+                  AND f.workspace_id = %(workspace_id)s
+                  AND COALESCE(w.dir_name, '') = %(walked_dir_name)s
+                  AND NOT (f.file_path = ANY(%(active_paths)s::text[]))
+                  AND (
+                        %(untouched_since)s::timestamptz IS NULL
+                        OR f.updated_at < %(untouched_since)s::timestamptz
+                      )
                 """,
-                (workspace_id, paths_list),
+                {
+                    "workspace_id": workspace_id,
+                    "walked_dir_name": walked_dir_name or "",
+                    "active_paths": paths_list,
+                    "untouched_since": untouched_since,
+                },
+                # Never prepared: Postgres hashes ``= ANY`` only over a constant
+                # array, which a generic plan does not have, so a prepared prune
+                # compares every row against every path. At 65k paths that
+                # measured 19.6 s against 0.15 s planned with the values.
+                prepare=False,
             )
             return cur.rowcount
 
@@ -493,48 +628,84 @@ async def delete_removed_files(
         raise
 
 
-async def delete_all_files(
-    workspace_id: str,
-    *,
-    conn=None,
+async def delete_file_rows(
+    workspace_id: str, paths: list[str], *, conn=None
 ) -> int:
+    """Delete the named manifest rows. Unlike ``delete_removed_files`` this
+    is unfenced: the caller has positive evidence each path is gone."""
+    if not paths:
+        return 0
+
+    async def _execute(cur):
+        await cur.execute(
+            """
+            DELETE FROM workspace_files
+            WHERE workspace_id = %s AND file_path = ANY(%s::text[])
+            """,
+            (workspace_id, paths),
+        )
+        return cur.rowcount
+
+    if conn:
+        async with conn.cursor() as cur:
+            return await _execute(cur)
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            return await _execute(cur)
+
+
+async def set_files_scan_mark(
+    workspace_id: str, mark: dict[str, Any], *, conn=None
+) -> None:
+    sql = "UPDATE workspaces SET files_scan_mark = %s WHERE workspace_id = %s"
+    if conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, (Json(mark), workspace_id))
+        return
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, (Json(mark), workspace_id))
+
+
+async def mark_files_backed_up(workspace_id: str, *, conn) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE workspaces SET files_backed_up_at = NOW() WHERE workspace_id = %s",
+            (workspace_id,),
+        )
+
+
+async def workspace_has_backup(workspace_id: str, *, conn=None) -> bool:
+    async with get_db_connection(conn) as owned, owned.cursor() as cur:
+        await cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM workspace_files WHERE workspace_id = %s)",
+            (workspace_id,),
+        )
+        row = await cur.fetchone()
+    return bool(row and row[0])
+
+
+async def get_scan_marks_for_computer(computer_id: str) -> List[Dict[str, Any]]:
+    """Every live project on the machine with its folder and scan mark.
+
+    The same set the machine-wide backup mirrors, so a sweep never skips a
+    project that backup would have covered.
     """
-    Delete all files for a workspace.
-
-    Args:
-        workspace_id: Workspace UUID
-        conn: Optional database connection to reuse
-
-    Returns:
-        Number of deleted rows
-    """
-    try:
-
-        async def _execute(cur):
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                DELETE FROM workspace_files
-                WHERE workspace_id = %s
+                SELECT workspace_id, dir_name, files_scan_mark
+                FROM workspaces
+                WHERE computer_id = %s AND status <> 'deleted'
+                ORDER BY created_at
                 """,
-                (workspace_id,),
+                (computer_id,),
             )
-            return cur.rowcount
-
-        if conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                deleted = await _execute(cur)
-        else:
-            async with get_db_connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    deleted = await _execute(cur)
-
-        if deleted:
-            logger.info(f"Deleted all {deleted} files for workspace {workspace_id}")
-        return deleted
-
-    except Exception as e:
-        logger.error(f"Error deleting all files for workspace {workspace_id}: {e}")
-        raise
+            return [
+                {**r, "workspace_id": str(r["workspace_id"])}
+                for r in await cur.fetchall()
+            ]
 
 
 async def copy_workspace_files(
@@ -549,6 +720,11 @@ async def copy_workspace_files(
     Inserts fresh rows for dest_id mirroring every file under source_id.
     Primary keys and created_at/updated_at use their DB defaults (new uuid,
     NOW()); all content columns are carried over.
+
+    ``blob_sha256`` is copied rather than dereferenced: the fork points at the
+    same content-addressed objects, so forking a large workspace no longer
+    duplicates its TOASTed bytes. Shared pointers are also why per-workspace
+    object deletion is unsafe by construction.
 
     Args:
         source_id: Workspace UUID to copy files from
@@ -565,13 +741,15 @@ async def copy_workspace_files(
                 """
                 INSERT INTO workspace_files (
                     workspace_id, file_path, file_name, file_size,
-                    content_hash, content_text, content_binary, mime_type,
-                    is_binary, permissions, sandbox_modified_at
+                    content_hash, content_text, content_binary, blob_sha256,
+                    pack_sha256, pack_offset, mime_type, is_binary, permissions,
+                    sandbox_modified_at, kind, symlink_target
                 )
                 SELECT
                     %s, file_path, file_name, file_size,
-                    content_hash, content_text, content_binary, mime_type,
-                    is_binary, permissions, sandbox_modified_at
+                    content_hash, content_text, content_binary, blob_sha256,
+                    pack_sha256, pack_offset, mime_type, is_binary, permissions,
+                    sandbox_modified_at, kind, symlink_target
                 FROM workspace_files
                 WHERE workspace_id = %s
                 """,
@@ -618,9 +796,11 @@ async def get_workspace_total_size(
     try:
 
         async def _execute(cur):
+            # SUM over a bigint is numeric, which arrives as a Decimal and
+            # serializes as a string.
             await cur.execute(
                 """
-                SELECT COALESCE(SUM(file_size), 0) AS total_size
+                SELECT COALESCE(SUM(file_size), 0)::bigint AS total_size
                 FROM workspace_files
                 WHERE workspace_id = %s
                 """,
@@ -640,3 +820,20 @@ async def get_workspace_total_size(
     except Exception as e:
         logger.error(f"Error getting total size for workspace {workspace_id}: {e}")
         raise
+
+
+async def get_live_project_sizes_for_computer(computer_id: str) -> List[int]:
+    """Backed-up bytes of each live project on a computer, one entry per project."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                SELECT COALESCE(SUM(f.file_size), 0)::bigint AS total_size
+                FROM workspaces w
+                LEFT JOIN workspace_files f ON f.workspace_id = w.workspace_id
+                WHERE w.computer_id = %s AND w.{FENCE_LIVE_WORKSPACE}
+                GROUP BY w.workspace_id
+                """,
+                (computer_id,),
+            )
+            return [r["total_size"] for r in await cur.fetchall()]

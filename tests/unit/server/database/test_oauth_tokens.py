@@ -67,7 +67,7 @@ async def test_has_any_oauth_token_cache_hit():
         result = await has_any_oauth_token("user-1")
 
     assert result is True
-    cache.client.get.assert_awaited_once_with("oauth_active:user-1")
+    cache.client.get.assert_awaited_once_with("oauth_active:v2:user-1")
     # DB should NOT have been called
     cursor.execute.assert_not_awaited()
 
@@ -93,7 +93,7 @@ async def test_has_any_oauth_token_cache_miss():
     cursor.execute.assert_awaited_once()
     # Cache was populated
     cache.client.set.assert_awaited_once_with(
-        "oauth_active:user-1", b"1", ex=86400
+        "oauth_active:v2:user-1", b"1", ex=86400
     )
 
 
@@ -109,4 +109,39 @@ async def test_invalidate_oauth_active_cache():
 
         await invalidate_oauth_active_cache("user1")
 
-    cache.client.delete.assert_awaited_once_with("oauth_active:user1")
+    cache.client.delete.assert_awaited_once_with("oauth_active:v2:user1", "oauth_active:user1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rowcount, invalidated", [(1, True), (0, False)])
+async def test_flagging_invalidates_only_when_a_row_was_flagged(rowcount, invalidated):
+    """A flag that missed (the token was already replaced) changed nothing."""
+    cache = _make_cache()
+    cursor, _conn, fake_db = _make_db_fixtures()
+    cursor.rowcount = rowcount
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ), patch(
+        "src.server.database.oauth_tokens.get_db_connection", new=fake_db
+    ), patch(
+        "src.server.database.oauth_tokens.get_encryption_key", return_value="k"
+    ):
+        from src.server.database.oauth_tokens import mark_oauth_needs_reauth
+
+        flagged = await mark_oauth_needs_reauth(
+            "user1", "codex-oauth", refresh_token="rt", error_code="invalid_grant"
+        )
+
+    assert flagged is invalidated
+    assert cache.client.delete.await_count == (1 if invalidated else 0)
+
+
+@pytest.mark.asyncio
+async def test_invalidation_fails_open_without_redis():
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", side_effect=RuntimeError("no redis")
+    ):
+        from src.server.database.oauth_tokens import invalidate_oauth_active_cache
+
+        await invalidate_oauth_active_cache("user1")

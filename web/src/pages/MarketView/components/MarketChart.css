@@ -8,13 +8,88 @@
   min-height: 0;
   min-width: 0;
   height: 100%;
-  /* Mask chart until layout stabilizes after page transition (autoSize ResizeObserver) */
-  animation: chart-reveal 0s 0.18s both;
+  /* Mask chart until layout stabilizes after page transition (autoSize ResizeObserver).
+     motion-exempt: the delay is a wait, not motion */
+  animation: chart-reveal 0s 180ms both;
+}
+
+.chart-subrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-height: 30px;
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--color-border-default);
+  flex-shrink: 0;
+}
+
+.chart-toolbar-trail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* The lead is the one thing in the row that gives. It sits at a basis of 0
+   and grows to its content, so the row breaks lines on the two groups' own
+   widths and hands the lead whatever is left; short of room the lead is cut
+   with an ellipsis, and the controls never paint over each other. The tier
+   logic reads its scrollWidth, which stays the content width when clipped. */
+.chart-toolbar-lead {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: max-content;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Beside a ticker legend (`chart--with-lead`) the intervals are text, not a
+   segmented control: the legend already reads at toolbar weight, and a filled
+   track and pill made the picker the heaviest thing in the row. Without the
+   track the choice still has to read as one, so a divider sets the group
+   apart from the readouts, the selected interval is underlined like a tab,
+   and hover brings back a light fill. Only the intervals group changes: the
+   Light / Advanced switch shares `.interval-selector` and keeps its track. */
+.chart--with-lead .interval-selector--intervals {
+  background: none;
+  padding: 0 0 0 8px;
+  margin-left: 4px;
+  gap: 2px;
+  border-left: 1px solid var(--color-border-default);
+  border-radius: 0;
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn,
+.chart--with-lead .interval-selector--intervals .interval-btn-active {
+  background: none;
+  padding: 4px 6px;
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.chart--with-lead .interval-selector--intervals .interval-btn-active {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
 }
 
 @keyframes chart-reveal {
   from { visibility: hidden; }
   to   { visibility: visible; }
+}
+
+/* The mask's delay is the settle wait, not motion, so it outlasts the global
+   reduced-motion rule that cuts delays. */
+@media (prefers-reduced-motion: reduce) {
+  .market-chart-container {
+    /* motion-exempt: the delay is a wait, not motion */
+    animation-delay: 180ms !important;
+  }
 }
 
 /* Capture wheel over chart so K-line pan/zoom doesn't scroll the page */
@@ -52,11 +127,16 @@
   border-radius: 2px;
 }
 
+/* The two groups keep their natural widths; when they cannot share the row
+   the right one wraps beneath rather than over the left, which is the last
+   guard under the collapse tiers. */
 .chart-tools {
   padding: 8px 20px;
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
+  column-gap: 8px;
+  row-gap: 4px;
   border-bottom: 1px solid var(--color-border-default);
   flex-shrink: 0;
   position: relative;
@@ -68,7 +148,6 @@
   align-items: center;
   gap: 12px;
   overflow: visible;
-  min-width: 0;
 }
 
 .indicator-toggles {
@@ -96,7 +175,7 @@
   border: 1px solid transparent;
   border-radius: 3px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
 }
 
 .indicator-toggle-btn:hover {
@@ -125,7 +204,7 @@
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  transition: color 0.15s, background-color 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
   display: inline-flex;
   align-items: center;
 }
@@ -151,7 +230,7 @@
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   z-index: 20;
   pointer-events: none;
-  animation: tooltip-fade-in 0.12s ease-out;
+  animation: tooltip-fade-in var(--motion-quick) var(--ease-out);
 }
 
 @keyframes tooltip-fade-in {
@@ -164,6 +243,7 @@
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .chart-tool-buttons { display: flex; gap: 4px; flex-shrink: 0; }
@@ -183,7 +263,7 @@
   font-size: 0.75rem;
   font-weight: 500;
   font-family: 'SF Mono', 'Fira Code', monospace;
-  transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
   white-space: nowrap;
 }
 
@@ -242,26 +322,6 @@
   overflow: hidden;
 }
 
-.rsi-container {
-  height: 120px;
-  flex-shrink: 0;
-  border-top: 1px solid var(--color-border-default);
-  padding: 4px 0 0 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.rsi-label {
-  font-size: 0.75rem;
-  color: var(--color-text-secondary);
-  margin: 0 0 2px 8px;
-}
-
-.rsi-chart-wrapper {
-  flex: 1;
-  min-height: 80px;
-}
-
 .chart-loading,
 .chart-error {
   position: absolute;
@@ -281,26 +341,6 @@
   align-items: center;
   gap: 10px;
   font-size: 0.8125rem;
-}
-
-.chart-loading-shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--color-border-muted) 0%,
-    var(--color-text-primary) 40%,
-    var(--color-border-muted) 80%
-  );
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: chart-text-shimmer 2s ease-in-out infinite;
-  font-weight: 500;
-}
-
-@keyframes chart-text-shimmer {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
 }
 
 .chart-scroll-loading {
@@ -388,7 +428,7 @@
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
-  transition: color 0.15s, background-color 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
 }
 
 .interval-dropdown-item:hover {
@@ -406,12 +446,14 @@
   background: var(--color-bg-surface);
 }
 
-/* ===== Responsive toolbar: progressive collapse by container width =====
-   Cumulative tiers (chart--c1 ⊂ c2 ⊂ c3) sacrifice items least-important first:
-   indicator values → scale/view tools → indicators + tools dropdowns. The
-   interval selector, Clear, selection tools and Light/Advanced always stay
-   inline; collapsed actionable items move into the overflow menu, which the
-   component only renders from tier 2 on. */
+/* ===== Responsive toolbar: progressive collapse by toolbar width =====
+   Cumulative tiers (chart--c1 ⊂ c2 ⊂ c3 ⊂ c4 ⊂ c5), one per breakpoint of
+   `TOOLBAR_WIDTH_BREAKPOINTS` (1180, 880, 710, 560, 300px of the container
+   net of a host's lead and trail slots), sacrifice items least-important
+   first: indicator values → scale/view tools → indicators + tools dropdowns →
+   the mode switch and Clear's label → the primary intervals. Clear and the
+   selection tools always stay inline; collapsed actionable items move into
+   the overflow menu, which the component only renders from tier 2 on. */
 
 /* Tier 1: drop the read-only indicator values. */
 .chart--c1 .toolbar-item--values { display: none; }
@@ -434,6 +476,10 @@
 .chart--c4 .toolbar-item--mode { display: none; }
 .chart--c4 .chart-clear-annotations-btn .clear-label { display: none; }
 
+/* Tier 5 (under 300px, a lead slot taking most of a narrow row): the
+   component folds the primary intervals into their dropdown, so the picker is
+   one button. No rule here; the component renders the fold. */
+
 .compact-menu-panel { min-width: 240px; }
 .compact-menu-section-label {
   font-size: 0.625rem;
@@ -441,6 +487,12 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--color-text-tertiary);
+}
+
+/* Tracking spaces Latin capitals; it only pulls Chinese characters apart. */
+:lang(zh) .indicator-toggles-label,
+:lang(zh) .compact-menu-section-label {
+  letter-spacing: normal;
 }
 .compact-menu-divider {
   height: 1px;
@@ -481,7 +533,6 @@
  * The lightweight-charts watermark is an <a> whose href always contains
  * `utm_medium=lwc-link`; the class selector is a secondary safety net. */
 .chart-wrapper a[href*="utm_medium=lwc-link"],
-.rsi-chart-wrapper a[href*="utm_medium=lwc-link"],
 .tv-lightweight-charts__watermark {
   display: none !important;
   visibility: hidden !important;
@@ -521,7 +572,7 @@
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  transition: color 0.15s, background-color 0.15s;
+  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
   white-space: nowrap;
 }
 .range-btn:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }

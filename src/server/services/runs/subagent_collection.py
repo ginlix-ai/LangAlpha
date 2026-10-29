@@ -1,12 +1,14 @@
-"""Post-terminal subagent collection for root workflow runs.
+"""Post-terminal subagent collection and billing for root workflow runs.
 
 Owns the read/retire side of the per-task capture streams: replaying a
 settled subagent's events into the turn archive, billing its usage, and
-retiring its Redis keys — all fenced on the collector claim
-(``collector_response_id``), because a resume can steal a task back at any
-await boundary. Process-local executor state (the orphan-collector registry,
-the task table) stays in ``LocalRunExecutor`` and is lent in through
-narrow callables.
+retiring its Redis keys, all fenced on the collector claim
+(``collector_response_id``) because a resume can steal a task back at any
+await boundary. A run that ends without a collector has its subagents
+claimed by its kill, their lanes archived here once their writers settle, and
+billed here when the user stopped it. Process-local executor state (the
+orphan-collector registry, the task table) stays in ``LocalRunExecutor`` and
+is lent in through narrow callables.
 """
 
 import asyncio
@@ -20,26 +22,17 @@ from src.config.settings import (
     get_subagent_orphan_collector_timeout,
 )
 from src.server.services.runs.subagent_archive import (
+    ArchiveBuffer,
     SubagentArchiveReadError,
     iter_subagent_events_full,
+    persist_collected_events,
+    record_to_persist_event,
 )
+from src.server.services.runs.teardown import killed_lane
+from src.server.services.runs.subagent_usage import persist_subagent_usage
 from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
-
-
-def record_to_persist_event(record: dict, thread_id: str) -> dict:
-    """Convert a captured-event record to persistence shape ``{event, data}``."""
-    data = dict(record.get("data") or {})
-    data["thread_id"] = thread_id
-    out: dict = {
-        "event": record.get("event"),
-        "data": data,
-    }
-    ts = record.get("ts")
-    if ts is not None:
-        out["ts"] = ts
-    return out
 
 
 # Settled task streams are RETAINED for a bounded window instead of
@@ -203,29 +196,25 @@ def _owned_pending(tasks: list, response_id: str) -> dict[asyncio.Task, Any]:
     }
 
 
-async def _replay_settled(
-    thread_id: str,
-    tasks: list,
-    response_id: str,
-    pending: dict,
-    out: list[dict],
-) -> bool:
-    """Replay every owned, settled task's events; False on any withheld
-    archive (``is_pending``/``completed`` are mutually exclusive, so the
-    pending check only guards the registered-but-unstarted shape)."""
-    ok = True
+async def _replay_into(buf: ArchiveBuffer, task) -> None:
+    replayed = await replay_owned_task_events(
+        buf.thread_id, task, buf.response_id, buf.unwritten
+    )
+    buf.withheld |= not replayed
+
+
+async def _replay_settled(tasks: list, pending: dict, buf: ArchiveBuffer) -> None:
+    """Replay every owned, settled task's events into ``buf``
+    (``is_pending``/``completed`` are mutually exclusive, so the pending
+    check only guards the registered-but-unstarted shape)."""
     for task in tasks:
         if (
-            task.collector_response_id == response_id
+            task.collector_response_id == buf.response_id
             and task.completed
             and task.captured_event_count > 0
             and task not in pending.values()
         ):
-            if not await replay_owned_task_events(
-                thread_id, task, response_id, out
-            ):
-                ok = False
-    return ok
+            await _replay_into(buf, task)
 
 
 async def _claim_owner_children(
@@ -285,19 +274,17 @@ async def _claim_settled_parents(
 async def _adopt_settled_batch(
     done: set,
     pending: dict,
-    thread_id: str,
-    response_id: str,
-    out: list[dict],
+    buf: ArchiveBuffer,
     *,
     tasks: list,
     log_label: str | None = None,
-) -> bool:
+) -> None:
     """Pop finished writers, adopt their results, replay their events.
 
     Replay re-checks the claim per task: the prior task's replay awaits,
     and a steal in that window would archive round-2 events into round 1.
     """
-    ok = True
+    thread_id, response_id = buf.thread_id, buf.response_id
     settled_now = []
     for writer in done:
         task = pending.pop(writer)
@@ -315,47 +302,18 @@ async def _adopt_settled_batch(
         if task.collector_response_id != response_id:
             continue
         if task.captured_event_count > 0:
-            if not await replay_owned_task_events(
-                thread_id, task, response_id, out
-            ):
-                ok = False
+            await _replay_into(buf, task)
         if log_label:
             logger.info(
                 f"[{log_label}] {task.display_id} completed, "
                 f"persisting events for thread_id={thread_id}"
             )
-    return ok
-
-
-async def _persist_if_any(
-    main_chunks: list[dict],
-    all_events: list[dict],
-    response_id: str,
-    thread_id: str,
-    workspace_id: str,
-    user_id: str,
-    sandbox,
-    persist_ok: bool,
-) -> bool:
-    if not all_events:
-        return persist_ok
-    return (
-        await persist_collected_events(
-            main_chunks, all_events, response_id,
-            thread_id, workspace_id, user_id, sandbox=sandbox,
-        )
-        and persist_ok
-    )
 
 
 async def _finish_collected(
-    thread_id: str,
-    response_id: str,
+    buf: ArchiveBuffer,
     collected_tasks: list,
-    workspace_id: str,
-    user_id: str,
     is_byok: bool,
-    persist_ok: bool,
     *,
     publish_wake: bool,
 ) -> None:
@@ -366,21 +324,20 @@ async def _finish_collected(
     under the new response id.
     """
     await persist_subagent_usage(
-        response_id, collected_tasks, thread_id, workspace_id, user_id,
-        is_byok=is_byok,
+        buf.response_id, collected_tasks, buf.thread_id, buf.workspace_id,
+        buf.user_id, is_byok=is_byok,
     )
     if publish_wake:
-        await publish_settled_wake(thread_id)
+        await publish_settled_wake(buf.thread_id)
     await await_drain_and_cleanup_tasks(
-        collected_tasks, thread_id, response_id,
-        retire_streams=persist_ok,
+        collected_tasks, buf.thread_id, buf.response_id,
+        retire_streams=buf.complete,
     )
 
 
 async def collect_subagent_results_for_turn(
     thread_id: str,
     response_id: str,
-    original_chunks: list[dict[str, Any]],
     tasks: list,
     workspace_id: str,
     user_id: str,
@@ -396,32 +353,15 @@ async def collect_subagent_results_for_turn(
     try:
         _settle_finished(tasks, response_id)
 
-        subagent_agent_ids = {f"task:{t.task_id}" for t in tasks}
-        main_chunks = [
-            c for c in original_chunks
-            if c.get("data", {}).get("agent", "") not in subagent_agent_ids
-        ]
-
         pending = _owned_pending(tasks, response_id)
         await _claim_settled_parents(thread_id, tasks, response_id, pending)
 
-        all_subagent_events: list[dict] = []
-        # Tracks whether the LATEST archive write landed. Cleanup retires
-        # the Redis capture streams, which after a failed persist are the
-        # only remaining source of the transcript — never retire on False.
-        persist_ok = await _replay_settled(
-            thread_id, tasks, response_id, pending, all_subagent_events
-        )
-        persist_ok = await _persist_if_any(
-            main_chunks, all_subagent_events, response_id,
-            thread_id, workspace_id, user_id, sandbox, persist_ok,
-        )
+        buf = ArchiveBuffer(response_id, thread_id, workspace_id, user_id, sandbox)
+        await _replay_settled(tasks, pending, buf)
+        await buf.flush()
 
         if not pending:
-            await _finish_collected(
-                thread_id, response_id, tasks, workspace_id, user_id,
-                is_byok, persist_ok, publish_wake=False,
-            )
+            await _finish_collected(buf, tasks, is_byok, publish_wake=False)
             return
 
         deadline = time.time() + timeout
@@ -444,15 +384,8 @@ async def collect_subagent_results_for_turn(
             if not done:
                 break
 
-            if not await _adopt_settled_batch(
-                done, pending, thread_id, response_id, all_subagent_events,
-                tasks=tasks,
-            ):
-                persist_ok = False
-            persist_ok = await _persist_if_any(
-                main_chunks, all_subagent_events, response_id,
-                thread_id, workspace_id, user_id, sandbox, persist_ok,
-            )
+            await _adopt_settled_batch(done, pending, buf, tasks=tasks)
+            await buf.flush()
 
         if pending:
             orphaned_tasks = list(pending.values())
@@ -464,8 +397,7 @@ async def collect_subagent_results_for_turn(
                 collect_orphaned_subagent_results(
                     thread_id=thread_id,
                     response_id=response_id,
-                    main_chunks=main_chunks,
-                    prior_subagent_events=list(all_subagent_events),
+                    unwritten=buf.unwritten[:],
                     tasks=orphaned_tasks,
                     workspace_id=workspace_id,
                     user_id=user_id,
@@ -482,8 +414,7 @@ async def collect_subagent_results_for_turn(
             and t not in pending.values()
         ]
         await _finish_collected(
-            thread_id, response_id, collected_tasks, workspace_id, user_id,
-            is_byok, persist_ok, publish_wake=not pending,
+            buf, collected_tasks, is_byok, publish_wake=not pending,
         )
 
     except Exception as e:
@@ -520,11 +451,11 @@ async def await_drain_and_cleanup_tasks(
     new writer's handles, nuke its fresh Redis keys, and evict the entry
     out from under the resuming run's tail drain.
 
-    ``retire_streams=False`` (after a failed archive persist) skips only
-    the Redis key retirement — the streams keep their terminal-retention
-    TTL as the transcript's last copy — while heavy refs and registry
-    entries are still released; the in-memory entry is process-local and
-    holding it recovers nothing, it only leaks."""
+    ``retire_streams=False`` (a replay withheld, or a write not landed)
+    skips only the Redis key retirement, so the streams keep their
+    terminal-retention TTL as the transcript's last copy. Heavy refs and
+    registry entries are still released: the in-memory entry is
+    process-local, and holding it recovers nothing, it only leaks."""
     if timeout is None:
         timeout = get_sse_drain_timeout()
 
@@ -538,7 +469,7 @@ async def await_drain_and_cleanup_tasks(
 
     if not retire_streams:
         logger.error(
-            f"[SubagentCleanup] Archive persist failed for "
+            f"[SubagentCleanup] Archive incomplete for "
             f"response_id={response_id}; retaining capture streams for "
             "their terminal-retention TTL"
         )
@@ -612,8 +543,7 @@ async def await_drain_and_cleanup_tasks(
 async def collect_orphaned_subagent_results(
     thread_id: str,
     response_id: str,
-    main_chunks: list[dict[str, Any]],
-    prior_subagent_events: list[dict],
+    unwritten: list[dict],
     tasks: list,
     workspace_id: str,
     user_id: str,
@@ -624,28 +554,23 @@ async def collect_orphaned_subagent_results(
     poll_interval = min(30.0, idle_timeout)
 
     try:
-        all_subagent_events = list(prior_subagent_events)
+        # ``unwritten``: the turn collector's events that have not landed yet.
+        buf = ArchiveBuffer(
+            response_id, thread_id, workspace_id, user_id, sandbox, unwritten
+        )
 
         _settle_finished(tasks, response_id)
         pending = _owned_pending(tasks, response_id)
         await _claim_settled_parents(thread_id, tasks, response_id, pending)
 
-        persist_ok = await _replay_settled(
-            thread_id, tasks, response_id, pending, all_subagent_events
-        )
+        await _replay_settled(tasks, pending, buf)
 
         if not pending:
-            persist_ok = await _persist_if_any(
-                main_chunks, all_subagent_events, response_id,
-                thread_id, workspace_id, user_id, sandbox, persist_ok,
-            )
+            await buf.flush()
             owned_tasks = [
                 t for t in tasks if t.collector_response_id == response_id
             ]
-            await _finish_collected(
-                thread_id, response_id, owned_tasks, workspace_id, user_id,
-                is_byok, persist_ok, publish_wake=False,
-            )
+            await _finish_collected(buf, owned_tasks, is_byok, publish_wake=False)
             logger.info(
                 f"[OrphanCollector] All tasks already completed for "
                 f"thread_id={thread_id}"
@@ -657,8 +582,8 @@ async def collect_orphaned_subagent_results(
             f"{idle_timeout}s idle timeout, thread_id={thread_id}"
         )
 
-        last_activity: dict[asyncio.Task, tuple[float, int]] = {
-            at: (t.last_updated_at, t.captured_event_count)
+        last_activity: dict[asyncio.Task, tuple[float, int, float]] = {
+            at: (t.last_updated_at, t.captured_event_count, t.alive_at)
             for at, t in pending.items()
         }
         last_progress_time = time.time()
@@ -682,26 +607,23 @@ async def collect_orphaned_subagent_results(
                 for writer in done:
                     last_activity.pop(writer, None)
 
-                if not await _adopt_settled_batch(
-                    done, pending, thread_id, response_id,
-                    all_subagent_events, tasks=tasks,
-                    log_label="OrphanCollector",
-                ):
-                    persist_ok = False
-                persist_ok = await _persist_if_any(
-                    main_chunks, all_subagent_events, response_id,
-                    thread_id, workspace_id, user_id, sandbox, persist_ok,
+                await _adopt_settled_batch(
+                    done, pending, buf, tasks=tasks, log_label="OrphanCollector",
                 )
+                await buf.flush()
             else:
                 for asyncio_task, task in pending.items():
-                    prev_update, prev_events = last_activity.get(
-                        asyncio_task, (0.0, 0)
+                    prev = last_activity.get(asyncio_task, (0.0, 0, 0.0))
+                    # A model call in flight beats without a chunk for as
+                    # long as its stream may stay silent (``alive_at``).
+                    cur = (
+                        task.last_updated_at,
+                        task.captured_event_count,
+                        task.alive_at,
                     )
-                    cur_update = task.last_updated_at
-                    cur_events = task.captured_event_count
-                    if cur_update > prev_update or cur_events > prev_events:
+                    if any(now > then for now, then in zip(cur, prev)):
                         last_progress_time = time.time()
-                        last_activity[asyncio_task] = (cur_update, cur_events)
+                        last_activity[asyncio_task] = cur
 
         if pending:
             for asyncio_task, task in pending.items():
@@ -720,8 +642,7 @@ async def collect_orphaned_subagent_results(
         ]
         if collected_tasks:
             await _finish_collected(
-                thread_id, response_id, collected_tasks, workspace_id,
-                user_id, is_byok, persist_ok, publish_wake=not pending,
+                buf, collected_tasks, is_byok, publish_wake=not pending,
             )
 
     except Exception as e:
@@ -755,34 +676,95 @@ def _retain_collector(task: asyncio.Task) -> None:
     task.add_done_callback(_discard)
 
 
-async def spawn_subagent_collector(
+def _billable_at_run_end(tasks: list, response_id: str) -> list:
+    """The claimed tasks whose usage is final: settled, and not a child of a
+    workflow still running. A driver reads each child's records when the
+    child settles, and billing clears them, so a running workflow's children
+    wait for the collector, which bills only after their owner settles."""
+    by_id = {t.task_id: t for t in tasks}
+    return [
+        t for t in tasks
+        if t.collector_response_id == response_id
+        and t.completed
+        and (
+            t.owner_task_id is None
+            or getattr(by_id.get(t.owner_task_id), "completed", False)
+        )
+    ]
+
+
+async def claim_turn_subagents(
     thread_id: str,
     run_id: str,
+    metadata: dict,
+    workspace_id: Optional[str],
+    user_id: Optional[str],
+) -> list:
+    """Claim a finished turn's subagents and bill the ones already settled.
+
+    Runs before the turn's run_end so the token totals that frame carries
+    count every subagent that finished inside the turn; the collector would
+    bill them only after the turn's housekeeping. Billing takes each task's
+    usage off it, so the collector bills only what settles later. Never
+    raises, so the run_end after it always goes out.
+    """
+    response_id = run_id  # 1:1 contract
+
+    from src.server.services.background_registry_store import BackgroundRegistryStore
+
+    try:
+        bg_registry = await BackgroundRegistryStore.get_instance().get_registry(
+            thread_id
+        )
+        if not bg_registry:
+            return []
+        tasks = await bg_registry.claim_run_subagents(run_id, response_id)
+    except Exception:
+        logger.warning(
+            f"[SubagentCollector] claim failed for run={run_id} "
+            f"thread_id={thread_id}",
+            exc_info=True,
+        )
+        return []
+    if tasks and workspace_id and user_id:
+        try:
+            _settle_finished(tasks, response_id)
+            await _claim_settled_parents(thread_id, tasks, response_id, {})
+            await persist_subagent_usage(
+                response_id,
+                _billable_at_run_end(tasks, response_id),
+                thread_id,
+                workspace_id,
+                user_id,
+                is_byok=metadata.get("is_byok", False),
+            )
+        except Exception:
+            logger.warning(
+                f"[SubagentCollector] run-end billing failed for run={run_id} "
+                f"thread_id={thread_id}",
+                exc_info=True,
+            )
+    return tasks
+
+
+def spawn_subagent_collector(
+    thread_id: str,
+    run_id: str,
+    tasks: list,
     metadata: dict,
     workspace_id: Optional[str],
     user_id: Optional[str],
     *,
     collect_for_turn: Callable[..., Any],
 ) -> None:
-    """Claim this run's subagents and collect their events post-terminal."""
-    response_id = run_id  # 1:1 contract
-
-    from src.server.services.background_registry_store import BackgroundRegistryStore
-    bg_store = BackgroundRegistryStore.get_instance()
-    bg_registry = await bg_store.get_registry(thread_id)
-    if not bg_registry:
-        return
-    tasks_to_collect = await bg_registry.claim_run_subagents(run_id, response_id)
-    if tasks_to_collect and workspace_id and user_id:
-        handler = metadata.get("handler")
-        sse_events = handler.get_sse_events() if handler else []
+    """Collect the claimed subagents' events post-terminal."""
+    if tasks and workspace_id and user_id:
         _retain_collector(
             asyncio.create_task(
                 collect_for_turn(
                     thread_id=thread_id,
-                    response_id=response_id,
-                    original_chunks=sse_events or [],
-                    tasks=tasks_to_collect,
+                    response_id=run_id,
+                    tasks=tasks,
                     workspace_id=workspace_id,
                     user_id=user_id,
                     is_byok=metadata.get("is_byok", False),
@@ -793,157 +775,134 @@ async def spawn_subagent_collector(
         )
 
 
-async def persist_collected_events(
-    main_chunks: list[dict],
-    subagent_events: list[dict],
-    response_id: str,
+async def end_run_subagents(
     thread_id: str,
-    workspace_id: str,
-    user_id: str,
+    run_id: str,
+    workspace_id: Optional[str],
+    user_id: Optional[str],
+    *,
+    claimed_at_stop: list,
+    carried_events: list[dict],
+    bill: bool,
+    is_byok: bool = False,
     sandbox=None,
-) -> bool:
-    """Clean and persist main + subagent events to DB.
+) -> None:
+    """Kill the subagents of a run no collector takes, archive their lanes,
+    and bill each of them once when the ending bills.
 
-    Returns True once the archive write landed; callers must not retire
-    the Redis capture streams on False — they are the only remaining
-    source of the captured transcript.
+    ``claimed_at_stop`` is what a stop teardown's kill claimed, and
+    ``carried_events`` what its drain put in the finalize. This kill claims
+    whatever is still registered, which is all of them when no teardown ran
+    (a stop only the finalize learns of, a failure). Every claimed lane the
+    finalize did not carry is archived once its writers settle, so none is
+    left to expire with its capture stream. Process-local claims suffice: a
+    subagent's writer and usage live on the worker running the turn that
+    spawned or resumed it, which is where that turn finalizes.
     """
-    import copy
+    from src.server.services.background_registry_store import BackgroundRegistryStore
 
-    cleaned = []
-    for event in subagent_events:
-        e = copy.deepcopy(event)
-        e.pop("ts", None)
-        cleaned.append(e)
-
-    if sandbox:
-        try:
-            from src.server.services.persistence.image_capture import (
-                capture_and_rewrite_images,
+    killed_claimed: list = []
+    try:
+        killed = await BackgroundRegistryStore.get_instance().cancel_run_tasks(
+            thread_id, run_id, force=True, claim_for=run_id
+        )
+        killed_claimed = killed.claimed
+    finally:
+        # Read only now: a teardown that a second cancel left running claims
+        # into ``claimed_at_stop`` while this kill waits on the same writers,
+        # and whichever kill's lock section comes second finds them claimed.
+        # Settled even when the kill raised: the claim keeps every later
+        # collector off these tasks, so this is the only owner they have.
+        claimed = [*claimed_at_stop, *killed_claimed]
+        if claimed and workspace_id:
+            carried = {(e.get("data") or {}).get("agent") for e in carried_events}
+            _archive_after_unwind(
+                thread_id,
+                run_id,
+                [t for t in claimed if f"task:{t.task_id}" not in carried],
+                workspace_id,
+                sandbox,
             )
-
-            await capture_and_rewrite_images(
-                cleaned, sandbox, thread_id=thread_id,
-            )
-        except Exception:
-            logger.warning(
-                "[IMAGE_CAPTURE] Hook B failed", exc_info=True,
-            )
-
-    # Direct DB update — we know the response_id, no need to go through
-    # the persistence-service singleton (which would key by run_id and
-    # might not match a subagent collector running across turns).
-    from src.server.database import conversation as qr_db
-
-    replaced_agents = {
-        str((e.get("data") or {}).get("agent", "")) for e in cleaned
-    }
-    # One bounded retry: the replay cache gate holds the turn uncacheable
-    # until these rows land, so a transiently failed write must not leave
-    # the turn rebuilding on every read for its lifetime. Each attempt
-    # rebases inside one row-locked transaction — concurrent atomic
-    # appends (compact/offload context_window) serialize on the lock
-    # instead of being erased, and successive batch writes strip their
-    # own earlier task rows rather than duplicate them.
-    for attempt in (1, 2):
-        try:
-            if await qr_db.rebase_sse_events(
-                response_id,
-                drop_agents=replaced_agents,
-                append_events=cleaned,
-                fallback_base=main_chunks,
-            ):
-                logger.info(
-                    f"[SubagentCollector] Updated sse_events for "
-                    f"response_id={response_id} (+{len(cleaned)} events)"
+            if bill and user_id:
+                await _bill_after_unwind(
+                    run_id, claimed, thread_id, workspace_id, user_id, is_byok
                 )
-                return True
-            raise RuntimeError(f"no response row for {response_id}")
-        except Exception as e:
-            if attempt == 1:
-                await asyncio.sleep(2.0)
-                continue
-            logger.error(
-                f"[SubagentCollector] Failed to update sse_events "
-                f"response_id={response_id}: {e}",
-                exc_info=True,
+
+
+def _archive_after_unwind(
+    thread_id: str, response_id: str, tasks: list, workspace_id: str, sandbox
+) -> None:
+    """Archive claimed tasks' lanes in the background once their writers settle.
+
+    A writer still unwinding can append past any earlier read, which is why
+    the stop drain withholds its lane. The read is fenced on the claim: a
+    resume that takes a task back meanwhile archives that lane under its own
+    run.
+    """
+    if not tasks:
+        return
+
+    async def archive() -> None:
+        writers = [writer for task in tasks for writer in task.live_writers]
+        if writers:
+            await asyncio.wait(writers, timeout=SUBAGENT_TAIL_TIMEOUT)
+        events: list[dict] = []
+        for task in tasks:
+            events.extend(await killed_lane(thread_id, task, owner=response_id))
+        if events:
+            await persist_collected_events(
+                events, response_id, thread_id, workspace_id, sandbox=sandbox
             )
-    return False
+
+    _retain_collector(
+        asyncio.create_task(
+            archive(), name=f"subagent-archive-{thread_id}-{response_id}"
+        )
+    )
 
 
-async def persist_subagent_usage(
+# How long a run's subagent writers may outlive it. Legit tail subagents (deep
+# research) run 15+ min, so a writer alive past this is hung: the guard drain
+# discards the run's session under it, and the stop bill stops waiting for it.
+SUBAGENT_TAIL_TIMEOUT = 1800.0
+
+
+async def _bill_after_unwind(
     response_id: str,
     tasks: list,
     thread_id: str,
     workspace_id: str,
     user_id: str,
-    is_byok: bool = False,
+    is_byok: bool,
 ) -> None:
-    """Persist each subagent's token usage as a separate row with msg_type='task'."""
-    from ptc_agent.agent.middleware.background_subagent.registry import take_task_usage
-    from src.server.services.persistence.usage import UsagePersistenceService
-    from src.server.services.background_registry_store import BackgroundRegistryStore
+    """Bill claimed tasks once their writers can no longer add to the usage.
 
-    # Snapshot-and-clear usage under the registry lock, gated on still
-    # owning the task (collector_response_id == response_id). A resume
-    # clears that field, so a stale collector that re-claimed the same task
-    # at turn-N end skips here while turn-N+1's collector bills the merged
-    # usage exactly once — no double-persist across the resume window.
-    bg_registry = await BackgroundRegistryStore.get_instance().get_registry(thread_id)
-
-    if bg_registry is not None:
-        claimed = await bg_registry.take_owned_usage(tasks, response_id)
-    else:
-        # Registry gone (thread teardown) — the tasks still carry their claim,
-        # and the take has no awaits, so it is atomic without the lock.
-        claimed = take_task_usage(tasks, response_id)
-
-    if not claimed:
+    A writer merges its usage onto the task as it settles, so a task still
+    unwinding past the kill's bounded wait has not merged yet. Waiting for it
+    happens off the caller's path, in one retained task for the whole batch.
+    """
+    writers = [writer for task in tasks for writer in task.live_writers]
+    if not writers:
+        await persist_subagent_usage(
+            response_id, tasks, thread_id, workspace_id, user_id, is_byok=is_byok
+        )
         return
 
-    persisted_count = 0
-    persisted_records = 0
-
-    for task, records, tool_usage in claimed:
-        try:
-            usage_service = UsagePersistenceService(
-                thread_id=thread_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
+    async def bill_when_settled() -> None:
+        _, hung = await asyncio.wait(writers, timeout=SUBAGENT_TAIL_TIMEOUT)
+        if hung:
+            logger.warning(
+                f"[SubagentUsage] {len(hung)} writer(s) of response_id="
+                f"{response_id} thread_id={thread_id} still running after "
+                f"{SUBAGENT_TAIL_TIMEOUT:.0f}s; billing without their usage"
             )
-            await usage_service.track_llm_usage(records)
-
-            if tool_usage:
-                usage_service.record_tool_usage_batch(tool_usage)
-
-            # track_llm_usage([]) initializes _token_usage to a zeroed
-            # dict, so tool-only tasks still get stamped; None only on its
-            # internal cost-calculation error path, where skipping is the
-            # documented is_byok fallback contract.
-            if usage_service._token_usage is not None:
-                usage_service._token_usage["task_id"] = task.task_id
-                usage_service._token_usage["agent_id"] = task.agent_id
-                usage_service._token_usage["subagent_type"] = task.subagent_type
-
-            await usage_service.persist_usage(
-                response_id=response_id,
-                msg_type="task",
-                status="completed",
-                is_byok=is_byok,
-            )
-            persisted_count += 1
-            persisted_records += len(records)
-
-        except Exception as e:
-            logger.error(
-                f"[SubagentUsage] Failed to persist usage for task {task.task_id} "
-                f"in thread_id={thread_id}: {e}",
-                exc_info=True,
-            )
-
-    if persisted_count:
-        logger.info(
-            f"[SubagentUsage] Persisted {persisted_count} subagent usage row(s) "
-            f"({persisted_records} LLM calls) for response_id={response_id} "
-            f"thread_id={thread_id}"
+        await persist_subagent_usage(
+            response_id, tasks, thread_id, workspace_id, user_id, is_byok=is_byok
         )
+
+    _retain_collector(
+        asyncio.create_task(
+            bill_when_settled(),
+            name=f"subagent-usage-{thread_id}-{response_id}-unwind",
+        )
+    )

@@ -1,28 +1,49 @@
-"""CompactionMiddleware — two-tier context management for LangGraph agents.
+"""CompactionMiddleware: two-tier context management for LangGraph agents.
 
-Based on deepagent's SummarizationMiddleware but modified to:
-- Emit unified 'context_window' SSE events (discriminated by action field)
-- Use get_stream_writer() for lifecycle signaling
-- Use wrap_model_call for non-destructive context management (preserves checkpoint)
-- Two-tier context management: tool arg truncation + LLM summarization
+Compaction is a view over the checkpoint, never a rewrite of it: each model
+call is sent the history after the last summary with the recorded Tier 1 cuts
+applied, so the checkpoint keeps every message and a later compaction builds
+on the one before.
 
-Actions emitted via context_window events (values preserved as wire protocol):
-- token_usage: after each model call (input/output/total tokens)
-- summarize: start/complete/error signals during LLM summarization
-- offload: complete signal after Tier 1 tool arg truncation
+- Tier 1: at a turn start after a long pause, when the provider's prompt
+  cache has expired, large tool arguments are cut to a pointer at the
+  transcript file that keeps them and stale Read results are hidden, never
+  ahead of thinking a later call is checked against (see ``select_offloads``).
+  Off unless the operator turns it on (see ``OffloadSettings.idle_seconds``).
+- Tier 2: when the context reaches its threshold, or the model refuses it
+  as too long, the start of the view is summarized (see ``compact``), all of
+  it at a turn start while the thread's system prompt is stale, so the call
+  after it can take the new one (see ``rebuild_pending``), and
+  the attachments in what it keeps are taken out until it fits; on Claude,
+  whose kept turns are sent as they were, the summary takes them instead
+  (see ``fitting.Fit``); and between turns when the user asks (see
+  ``between_turns``).
+- The window: on the main agent, at each pass through ``before_agent``, the
+  runs a summary stands in for are trimmed from the checkpoint once the
+  server holds them (see ``window``).
+
+Each step is reported as a ``context_window`` event, whose ``action`` values
+are wire protocol: ``token_usage`` after each model call, ``summarize``
+(start, complete or error) around a summary, and ``offload`` (complete) after
+Tier 1.
 """
 
-import asyncio
-import warnings
-import logging
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, cast
+from __future__ import annotations
 
-from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
-from langchain_core.messages.human import HumanMessage
-from langchain_core.messages.utils import trim_messages
-from langchain_core.exceptions import ContextOverflowError
+import asyncio
+import copy
+import dataclasses
+import functools
+import logging
+import time
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
+
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.config import get_config, get_stream_writer
+from langgraph.constants import TAG_NOSTREAM
 from langgraph.types import Command
 from typing_extensions import override
 
@@ -32,204 +53,258 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain.chat_models import BaseChatModel, init_chat_model
 
-from src.config.settings import get_compaction_timeout
-from src.llms.content_utils import format_llm_content
-from src.llms.token_counter import extract_token_usage
-from ptc_agent.config.agent import CompactionConfig
-from src.llms import get_llm_by_type, maybe_disable_streaming
+from src.llms.error_classification import is_context_overflow
+from src.llms.provider_compaction import (
+    compaction_settings,
+    is_opaque,
+    kept_user_texts,
+    native_answer,
+    native_kind,
+)
 
 from ptc_agent.agent.state import ensure_message_ids
-from ptc_agent.agent.middleware.compaction.types import (
-    CompactionEvent,
-    CompactionState,
-    ContextSize,
-    TruncateArgsSettings,
-    TokenCounter,
-    _DEFAULT_FALLBACK_MESSAGE_COUNT,
-    _DEFAULT_MESSAGES_TO_KEEP,
-    _DEFAULT_TRIM_TOKEN_LIMIT,
+from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, asked
+from ptc_agent.agent.middleware.compaction.types import CompactionState, OffloadSettings
+from ptc_agent.agent.middleware.compaction.fitting import Fit, reported_usage
+from ptc_agent.agent.middleware.compaction.compact import (
+    NOTHING_TO_COMPACT,
+    Compaction,
+    NativeAnswer,
+    Own,
+    Summarizer,
+)
+from ptc_agent.agent.middleware.compaction.measure import (
+    ContextReading,
+    Estimate,
+    context_tokens,
+    estimate_for,
+    keep_cutoff,
+    keep_tokens_for,
+    stamp_context_growth,
+)
+from ptc_agent.agent.middleware.compaction.summarize import (
+    is_other_model,
+    summary_text,
+)
+from ptc_agent.agent.middleware.compaction.summary_request import (
+    finished_summary,
+    keeps_turns,
+    summary_prompt,
 )
 from ptc_agent.agent.middleware.compaction.utils import (
-    DEFAULT_SUMMARY_PROMPT,
-    build_compaction_event,
-    build_summary_message,
-    count_tokens_tiktoken,
     get_effective_messages,
-    strip_base64_from_messages,
-    truncate_message_args,
-    truncate_read_results,
+    handed_off,
+    provider_cutoff,
+    read_ahead,
+    stamp_compaction_summary,
+    stamp_context_threshold,
+    target_cost,
+    turn_start_cut,
+    with_summary_text,
 )
+from ptc_agent.agent.middleware.runtime_context.frozen_prompt import rebuild_pending
 from ptc_agent.agent.middleware.compaction.offloading import (
-    aoffload_base64_content,
-    aoffload_to_backend,
-    aoffload_truncated_args,
-    get_thread_id,
+    is_idle,
+    offload_view,
+    record_offloads,
+    recorded_offloads,
+    select_offloads,
 )
+from ptc_agent.agent.middleware.compaction.window import (
+    WindowCarry,
+    WindowCoverage,
+    trim,
+    window_cut,
+)
+from ptc_agent.agent.middleware.model_resilience import as_sent
+from ptc_agent.agent.middleware.reasoning_compat import ORIGIN_KEY
+from ptc_agent.agent.transcript import TranscriptTarget, Window
+from ptc_agent.agent.transcript.classify import human_kind, is_summary_message
+from ptc_agent.agent.transcript.identity import DIGEST_VERSION
+from ptc_agent.agent.transcript.pointer import (
+    aexport_transcript,
+    shell_reads_transcripts,
+    transcript_target,
+)
+
+if TYPE_CHECKING:
+    from ptc_agent.agent.backends.sandbox import SandboxBackend
+    from ptc_agent.config.agent import AgentConfig
 
 logger = logging.getLogger(__name__)
 
+# The coverage read sits in front of a turn. It walks the thread's turn
+# boundaries, which takes tens of milliseconds; past this the trim waits for
+# the next pass rather than hold the turn.
+_COVERAGE_TIMEOUT_S = 5.0
 
-_COMPACTION_USER_NUDGE = "Generate the summary now."
+
+@contextmanager
+def _unstreamed() -> Iterator[None]:
+    """Tag the model calls made inside ``nostream``. The model node calls the
+    model with the config it finds here, so the tag reaches the call, and the
+    callbacks that bill and trace it still see it."""
+    ambient = var_child_runnable_config.get() or {}
+    token = var_child_runnable_config.set(
+        {**ambient, "tags": [*(ambient.get("tags") or ()), TAG_NOSTREAM]}
+    )
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
 
 
-def _build_summary_request(
-    summary_prompt: str, trimmed_messages: list[AnyMessage]
-) -> list[AnyMessage]:
-    """System = instructions, Human = nudge + rendered history.
+def _user_texts(messages: Sequence[AnyMessage]) -> list[str]:
+    """What the user wrote in ``messages``, oldest first, with what an
+    earlier OpenAI summary among them kept: the messages Codex keeps beside
+    its item, none of the rows the runtime stamps."""
+    texts: list[str] = []
+    for message in messages:
+        if not isinstance(message, HumanMessage):
+            continue
+        if is_summary_message(message):
+            texts.extend(kept_user_texts(message))
+        elif human_kind(message) in ("plain", "steering"):
+            texts.append(message.text)
+    return texts
 
-    Splitting the two channels keeps the system prompt small and cacheable,
-    lets Codex OAuth populate its ``instructions`` field cleanly, and avoids
-    Python repr inflation by rendering messages via ``get_buffer_string``.
-    """
-    from langchain_core.messages import get_buffer_string
-    from src.llms.api_call import create_messages
 
-    history = get_buffer_string(trimmed_messages)
-    user_prompt = f"{_COMPACTION_USER_NUDGE}\n\n<messages>\n{history}\n</messages>"
+def _last_ai(response: ModelResponse) -> AIMessage | None:
+    return next((m for m in reversed(response.result or ()) if isinstance(m, AIMessage)), None)
 
-    return create_messages(
-        system_prompt=summary_prompt,
-        user_prompt=user_prompt,
+
+def _log_usage(call: str, message: AIMessage | None) -> None:
+    """Log what a call the turn's stream never shows read from the cache."""
+    usage = (message.usage_metadata if message is not None else None) or {}
+    details = usage.get("input_token_details") or {}
+    logger.info(
+        "[Compaction] %s: %s in, %s cached, %s out",
+        call,
+        usage.get("input_tokens"),
+        details.get("cache_read"),
+        usage.get("output_tokens"),
     )
 
 
+def _summary_fields(compaction: Compaction) -> dict[str, Any]:
+    """The summarize complete signal's payload, one shape for the live signal
+    and the stamp replay reads it back from."""
+    return {
+        "summary_length": len(compaction.summary.text),
+        "original_message_count": compaction.original_count,
+        "summary_text": compaction.summary.text,
+        "source": compaction.summary.source,
+    }
+
+
 class CompactionMiddleware(AgentMiddleware):
-    """
-    Custom compaction middleware that emits SSE events for frontend visibility.
+    """Keeps an agent's context under its threshold (see the module docstring).
 
-    Manages the full context window lifecycle: token counting, tool-arg
-    truncation, Read-result deduplication, base64 offloading, sandbox
-    persistence of evicted messages, and LLM-based summarization.
-
-    Uses wrap_model_call to reconstruct the message list on-the-fly without
-    modifying the LangGraph checkpoint — preserving full history, enabling
-    recovery, and supporting chained compactions.
-
-    Two-tier context management:
-    - Tier 1: Tool arg truncation (cheap, fires early at message count threshold)
-    - Tier 2: Full LLM summarization (expensive, fires at token count threshold)
-
-    Key differences from LangChain's SummarizationMiddleware:
-    - Emits unified 'context_window' events via get_stream_writer()
-    - Actions: "summarize" (start/complete/error), "offload" (complete), "token_usage"
-    - Does NOT stream intermediate chunks (to avoid duplicate events)
+    Every per-run value is read from graph state on each call, never kept on
+    the instance, so one instance serves concurrent runs.
     """
 
     state_schema = CompactionState
 
     def __init__(
         self,
-        model: str | BaseChatModel,
+        summarizer: Summarizer,
         *,
-        trigger: ContextSize | list[ContextSize] | None = None,
-        keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
-        token_counter: TokenCounter = count_tokens_tiktoken,
-        summary_prompt: str,
-        trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
-        backend: Any | None = None,
-        truncate_args_settings: TruncateArgsSettings | None = None,
-        **deprecated_kwargs: Any,
+        token_threshold: int,
+        keep_tokens: int,
+        claude_keep_tokens: int | None = None,
+        offload: OffloadSettings = OffloadSettings(),
+        backend: SandboxBackend | None = None,
+        workspace_id: str | None = None,
+        native: bool = True,
+        self_summary: bool = True,
+        receives: Callable[[Any], Callable[[Any], bool]] | None = None,
+        page_tokens: Callable[[Any], int | None] | None = None,
     ) -> None:
         """
-        Initialize custom compaction middleware.
-
         Args:
-            model: The language model to use for generating summaries.
-            trigger: Threshold(s) that trigger full compaction (summarization).
-            keep: How much context to retain after compaction.
-            token_counter: Function to count tokens in messages.
-            summary_prompt: Prompt template for generating summaries.
-            trim_tokens_to_summarize: Max tokens to keep for summarization call.
-            backend: Backend for offloading conversation history (SandboxBackend for PTC,
-                None for flash). When None, no filesystem ops are attempted.
-            truncate_args_settings: Settings for truncating large tool arguments
-                in old messages. When None, argument truncation is disabled.
+            summarizer: Writes the summaries, and counts the tokens that
+                trigger one.
+            token_threshold: The context size that triggers a summary.
+            keep_tokens: How much of the newest history a summary leaves
+                out, word for word (see ``keep_cutoff``).
+            claude_keep_tokens: The same for a Claude model, whose tokens
+                hold less text; None keeps ``keep_tokens``.
+            offload: Tier 1 settings.
+            backend: The sandbox, which holds the transcript and the
+                attachments a summary saves. None for a build without a
+                sandbox, which has neither.
+            workspace_id: The workspace the turn runs in, whose folder must
+                reach the transcript before anything points at it.
+            native: Whether a provider that can compact the conversation
+                itself does.
+            self_summary: Whether the agent's model writes a summary from its
+                own request (see ``_writes_own``).
+            receives: Which attachment blocks a call to a model is sent as
+                they are (``MultimodalStripMiddleware.receives``). The strip
+                sits inside this middleware and turns the rest into short
+                placeholders, so only these count toward the trigger and the
+                fit. None counts every attachment.
+            page_tokens: What a call to a model is charged for a PDF page
+                (``MultimodalStripMiddleware.pdf_page_tokens``), or None
+                where that is not known, which counts ``PDF_PAGE_TOKENS``.
         """
-        # Handle deprecated parameters
-        if "max_tokens_before_summary" in deprecated_kwargs:
-            value = deprecated_kwargs["max_tokens_before_summary"]
-            warnings.warn(
-                "max_tokens_before_summary is deprecated. Use trigger=('tokens', value) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if trigger is None and value is not None:
-                trigger = ("tokens", value)
-
-        if "messages_to_keep" in deprecated_kwargs:
-            value = deprecated_kwargs["messages_to_keep"]
-            warnings.warn(
-                "messages_to_keep is deprecated. Use keep=('messages', value) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if keep == ("messages", _DEFAULT_MESSAGES_TO_KEEP):
-                keep = ("messages", value)
-
         super().__init__()
-
-        if isinstance(model, str):
-            model = init_chat_model(model)
-
-        self.model = model
-        if trigger is None:
-            self.trigger: ContextSize | list[ContextSize] | None = None
-            trigger_conditions: list[ContextSize] = []
-        elif isinstance(trigger, list):
-            validated_list = [
-                self._validate_context_size(item, "trigger") for item in trigger
-            ]
-            self.trigger = validated_list
-            trigger_conditions = validated_list
-        else:
-            validated = self._validate_context_size(trigger, "trigger")
-            self.trigger = validated
-            trigger_conditions = [validated]
-        self._trigger_conditions = trigger_conditions
-
-        self.keep = self._validate_context_size(keep, "keep")
-        self.token_counter = token_counter
-        self.summary_prompt = summary_prompt
-        self.trim_tokens_to_summarize = trim_tokens_to_summarize
-
-        # Backend for offloading conversation history to sandbox (immutable config)
-        self._backend = backend
-
-        # Parse truncate_args_settings
-        if truncate_args_settings is None:
-            self._truncate_args_trigger: ContextSize | None = None
-            self._truncate_args_keep: ContextSize = ("messages", 20)
-            self._max_arg_length = 2000
-            self._truncation_text = "...(argument truncated)"
-        else:
-            self._truncate_args_trigger = truncate_args_settings.get("trigger")
-            self._truncate_args_keep = truncate_args_settings.get(
-                "keep", ("messages", 20)
-            )
-            self._max_arg_length = truncate_args_settings.get("max_length", 2000)
-            self._truncation_text = truncate_args_settings.get(
-                "truncation_text", "...(argument truncated)"
-            )
-
-        requires_profile = any(
-            condition[0] == "fraction" for condition in self._trigger_conditions
+        self._summarizer = summarizer
+        self._token_threshold = token_threshold
+        self._keep_tokens = keep_tokens
+        self._claude_keep_tokens = (
+            keep_tokens if claude_keep_tokens is None else claude_keep_tokens
         )
-        if self.keep[0] == "fraction":
-            requires_profile = True
-        if requires_profile and self._get_profile_limits() is None:
-            msg = (
-                "Model profile information is required to use fractional token limits, "
-                "and is unavailable for the specified model. Please use absolute token "
-                "counts instead, or pass "
-                '`\n\nChatModel(..., profile={"max_input_tokens": ...})`.\n\n'
-                "with a desired integer value of the model's maximum input tokens."
-            )
-            raise ValueError(msg)
+        self._offload = offload
+        self._backend = backend
+        self._workspace_id = workspace_id
+        self._native = native
+        self._self_summary_on = self_summary
+        self._receives = receives
+        self._page_tokens = page_tokens
+        # The notes folder this agent's summaries name; see with_scratchpad_notes.
+        self._notes_dir: str | None = None
+        # The main agent's window; see with_window.
+        self._coverage: WindowCoverage | None = None
+        self._carries: tuple[WindowCarry, ...] = ()
+
+    @classmethod
+    def for_agent(
+        cls,
+        config: AgentConfig,
+        *,
+        backend: SandboxBackend | None = None,
+        workspace_id: str | None = None,
+        receives: Callable[[Any], Callable[[Any], bool]] | None = None,
+        page_tokens: Callable[[Any], int | None] | None = None,
+    ) -> CompactionMiddleware | None:
+        """The middleware ``config.compaction`` describes, or None when it is off.
+
+        The ``provider_compaction`` feature is read here rather than with the
+        user's settings, so a build that resolves no user, a system insight,
+        still honors an operator who turned it off.
+        """
+        settings = config.compaction
+        if not settings.enabled:
+            return None
+        return cls(
+            Summarizer.for_agent(config),
+            token_threshold=settings.token_threshold,
+            keep_tokens=settings.keep_tokens,
+            claude_keep_tokens=settings.claude_keep_tokens,
+            offload=OffloadSettings.from_config(settings),
+            backend=backend,
+            workspace_id=workspace_id,
+            native=settings.native and config.feature_enabled("provider_compaction"),
+            self_summary=settings.self_summary,
+            receives=receives,
+            page_tokens=page_tokens,
+        )
 
     # =========================================================================
-    # wrap_model_call — primary async path
+    # Tier 2: every model call, summarizing first at the threshold
     # =========================================================================
 
     @override
@@ -238,804 +313,520 @@ class CompactionMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse | ExtendedModelResponse:
-        """Process messages before model invocation with two-tier context management.
-
-        Flow:
-        1. Reconstruct effective messages from previous summarization event
-        2. TIER 1: Truncate large tool args in old messages (cheap, fires early)
-        3. TIER 2: Check if full summarization is needed (expensive, fires later)
-           - NO: call handler with truncated messages, cache tokens, return
-             (catch ContextOverflowError -> fall through to summarize)
-           - YES: offload -> summarize -> call handler -> cache tokens -> return
-                  ExtendedModelResponse with state update
-        """
-        # 1. Read all per-invocation state from graph state into locals.
-        #    No self._ mutations — keeps the middleware instance stateless and
-        #    safe to share across concurrent invocations.
-        previous_event: CompactionEvent | None = request.state.get(
-            "_summarization_event"
-        )
-        offloaded_tool_call_ids = set(
-            request.state.get("_offloaded_tool_call_ids") or ()
-        )
-        offloaded_read_result_ids = set(
-            request.state.get("_offloaded_read_result_ids") or ()
-        )
-        last_truncation_msg_count: int = request.state.get("_truncation_batch_count", 0)
-        cached_input_tokens: int = request.state.get("_cached_input_tokens", 0)
-        cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
-
-        # 2. Reconstruct effective messages
+        """Send the model the view, summarizing its start first once the
+        context reaches the threshold, or when the model refuses the view as
+        too long, and taking attachments out of what is kept until it fits.
+        A call made between turns (``between_turns``) is answered with what
+        it asks instead."""
         ensure_message_ids(request.messages)
-        effective_messages = self._get_effective_messages(
-            request.messages, previous_event
-        )
+        view = await self.view(request.messages, request.state)
+        await read_ahead(view)
+        between = asked()
+        if between is not None:
+            between.answer = await self._between_turns(request, handler, view, between.ask)
+            between.answered = True
+            return ModelResponse(result=[])
 
-        # 3. Count tokens once (prefer cached from last model call, fall back to tiktoken).
-        #    Pass through to _truncate_args / _truncate_read_results to avoid recomputing.
-        if cached_input_tokens > 0:
-            total_tokens = cached_input_tokens + cached_output_tokens
-        else:
-            counted_msgs = (
-                [request.system_message, *effective_messages]
-                if request.system_message is not None
-                else effective_messages
-            )
-            total_tokens = self.token_counter(counted_msgs)
-
-        # 4. TIER 1: Truncate tool args in old messages (batch gated)
-        truncated_messages, truncated, originals = self._truncate_args(
-            effective_messages,
-            request.system_message,
-            request.tools,
-            total_tokens=total_tokens,
-            last_truncation_msg_count=last_truncation_msg_count,
-        )
-
-        # Track whether state needs persisting via ExtendedModelResponse
-        state_changed = False
-
-        # Offload original args to backend before they're lost (skip already-offloaded)
-        if truncated and originals:
-            new_originals = {
-                k: v for k, v in originals.items() if k not in offloaded_tool_call_ids
-            }
-            skipped_count = len(originals) - len(new_originals)
-            if new_originals:
-                await aoffload_truncated_args(self._backend, new_originals)
-                offloaded_tool_call_ids.update(new_originals)
-                state_changed = True
-                self._emit_context_signal(
-                    "offload",
-                    "complete",
-                    kind="args",
-                    offloaded_args=len(new_originals),
-                )
-                if skipped_count:
-                    logger.info(
-                        "[Compaction] Offloaded %d new tool args, skipped %d already-offloaded",
-                        len(new_originals),
-                        skipped_count,
-                    )
-            elif skipped_count:
-                logger.debug(
-                    "[Compaction] Tier 1 args: %d truncated in-memory, all already offloaded",
-                    skipped_count,
-                )
-
-        # 4b. TIER 1 (cont.): Offload duplicate/non-critical Read results
-        truncated_messages, read_truncated, read_offloaded_ids = (
-            self._truncate_read_results(
-                truncated_messages,
-                request.system_message,
-                request.tools,
-                total_tokens=total_tokens,
-                last_truncation_msg_count=last_truncation_msg_count,
-            )
-        )
-        if read_truncated and read_offloaded_ids:
-            new_ids = read_offloaded_ids - offloaded_read_result_ids
-            if new_ids:
-                offloaded_read_result_ids.update(new_ids)
-                state_changed = True
-                self._emit_context_signal(
-                    "offload",
-                    "complete",
-                    kind="reads",
-                    offloaded_reads=len(new_ids),
-                )
-            else:
-                logger.debug(
-                    "[Compaction] Tier 1 reads: %d truncated in-memory, all already offloaded",
-                    len(read_offloaded_ids),
-                )
-
-        # Advance batch counter when Tier 1 produced new offloads
-        if state_changed:
-            last_truncation_msg_count = len(effective_messages)
-
-        # 5. TIER 2: Check if summarization is needed
-        if not self._should_summarize(truncated_messages, total_tokens):
+        system = [request.system_message] if request.system_message is not None else []
+        estimate = self._estimate(request.model)
+        reading = await context_tokens(request.state, view, estimate, system)
+        tokens = reading.tokens
+        refusal: Exception | None = None
+        if tokens < self._token_threshold:
             try:
-                response = await handler(request.override(messages=truncated_messages))
-                cached_input_tokens, cached_output_tokens = self._extract_token_usage(
-                    response
-                )
-                return ExtendedModelResponse(
-                    model_response=response,
-                    command=Command(
-                        update=self._build_state_update(
-                            offloaded_tool_call_ids=offloaded_tool_call_ids,
-                            offloaded_read_result_ids=offloaded_read_result_ids,
-                            last_truncation_msg_count=last_truncation_msg_count,
-                            cached_input_tokens=cached_input_tokens,
-                            cached_output_tokens=cached_output_tokens,
-                        )
-                    ),
-                )
-            except ContextOverflowError:
-                # Fall through to summarization as emergency fallback
-                logger.warning(
-                    "[Compaction] ContextOverflowError caught, triggering emergency summarization"
-                )
+                response = await handler(request.override(messages=view))
+                return self._answered(response, reading=reading)
+            except Exception as exc:
+                # Matched across providers, most of which LangChain does not
+                # classify as an overflow.
+                if not is_context_overflow(exc):
+                    raise
+                logger.warning("[Compaction] Context overflow, summarizing: %s", exc)
+                refusal = exc
+        else:
+            logger.info("[Compaction] Triggered: %d >= %d tokens", tokens, self._token_threshold)
 
-        # 6. Summarization needed
-        cutoff_index = self._determine_cutoff_index(truncated_messages)
-        if cutoff_index <= 0:
-            # Can't summarize — too few messages
-            response = await handler(request.override(messages=truncated_messages))
-            cached_input_tokens, cached_output_tokens = self._extract_token_usage(
-                response
+        # A stale system prompt stays while any thinking it bound is in view,
+        # so at a turn start the summary keeps none: its own request still
+        # carries the old prompt and tools, which the thinking it summarizes
+        # is checked against, and the call after it takes the new ones.
+        rebuild = turn_start_cut(view) if rebuild_pending(request.state) else 0
+        cutoff = rebuild or self._cutoff(view, request.model)
+        fit = Fit(
+            self._token_threshold,
+            system,
+            estimate,
+            lossless=self._native and native_kind(request.model) == "anthropic",
+        )
+        if rebuild:
+            logger.info("[Compaction] Rebuild: the summary keeps no turns")
+        elif fit.lossless:
+            cutoff = fit.cut(view, cutoff, tokens, refused=refusal is not None)
+        if cutoff <= 0:
+            # All of it is the kept tail: the attachments are all that can go.
+            fitted = await fit.send(request, handler, view, refusal=refusal)
+            return self._answered(
+                fitted.response, fitted.update(request.state), spared=fitted.spared
             )
-            return ExtendedModelResponse(
-                model_response=response,
-                command=Command(
-                    update=self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                    )
+
+        compaction = await self._summarize(request, handler, view, cutoff, rebuild=bool(rebuild))
+        note = compaction.note_row()
+        # A refusal of the view says nothing of what the summary made room
+        # for, so its messages are fitted by estimate like any others. The
+        # note goes into history ahead of the answer produced behind it.
+        fitted = await fit.send(
+            request, handler, [*compaction.messages, note] if note is not None else compaction.messages
+        )
+        if note is not None:
+            fitted = fitted._replace(
+                response=dataclasses.replace(fitted.response, result=[note, *fitted.response.result])
+            )
+        self._stamp_summary(fitted.response, compaction)
+        update = compaction.update(request.state)
+        return self._answered(
+            fitted.response, {**update, **fitted.update(update)}, spared=fitted.spared
+        )
+
+    async def _summarize(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        view: list[AnyMessage],
+        cutoff: int,
+        *,
+        rebuild: bool = False,
+    ) -> Compaction:
+        """Summarize ``view`` before ``cutoff``, first by the agent's own
+        model: its provider compacting the conversation where it can, else the
+        model writing the summary itself (see ``_writes_own``). A provider
+        that could compact but is told not to leaves it to the summarizer, as
+        the setting says. ``rebuild`` is True for a summary that keeps no
+        turn, whose cut is the user's new message: Claude's cut stays there
+        rather than move back onto the answer before it. Whether turns stay
+        after the summary is read from what it keeps (``keeps_turns``)."""
+        own: Own | None = None
+        kind = native_kind(request.model)
+        # Claude reads its block only where the kept turns can follow it.
+        cut = provider_cutoff(view, cutoff) if kind == "anthropic" and not rebuild else cutoff
+        if kind is not None and self._native and cut > 0:
+            cutoff = cut
+            own = functools.partial(
+                self._provider_summary, request, handler, notes=self._notes_dir is not None
+            )
+        elif kind is None and self._writes_own(request):
+            own = functools.partial(
+                self._self_summary, request, handler, notes=self._notes_dir is not None
+            )
+        return await self._compact(request, view, cutoff, self._transcript_target(), own)
+
+    def _writes_own(self, request: ModelRequest) -> bool:
+        """Whether the agent's model writes the summary from its own request.
+
+        It reads the conversation from its provider's cache, with the system
+        prompt, tools and reasoning the transcript summarizer leaves out, and
+        the summarizer stays the fallback. Its request is about half again the
+        transcript's size, so on a cache gone cold it costs that much more;
+        that is taken for the warm case, the common one. A model picked for
+        compaction is the user's choice, and writes it instead.
+        """
+        return self._self_summary_on and not is_other_model(
+            self._summarizer.model, request.model
+        )
+
+    def _cost(self, model: Any) -> Callable[[Any], int] | None:
+        """What an attachment costs on a call to ``model`` (``target_cost``)."""
+        return target_cost(
+            self._receives(model) if self._receives is not None else None,
+            self._page_tokens(model) if self._page_tokens is not None else None,
+        )
+
+    def _estimate(self, model: Any) -> Estimate:
+        """How what no call to ``model`` measured is counted (``counter_for``),
+        its attachments as the model is charged for them."""
+        return estimate_for(model, self._summarizer.counter, self._cost(model))
+
+    def _cutoff(self, view: list[AnyMessage], model: Any) -> int:
+        """Where a summary of ``view`` for ``model`` ends (``keep_cutoff``)."""
+        tokens = keep_tokens_for(
+            model, self._keep_tokens, self._claude_keep_tokens, self._token_threshold
+        )
+        return keep_cutoff(view, tokens=tokens, estimate=self._estimate(model))
+
+    async def _between_turns(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        view: list[AnyMessage],
+        ask: Ask,
+    ) -> Compaction | HumanMessage | None:
+        """What a call between turns asks for (see ``between_turns``)."""
+        if isinstance(ask, HandOff):
+            return await self._hand_off(request, handler, view, notes=self._notes_dir is not None)
+        cutoff = self._cutoff(view, request.model)
+        if cutoff <= 0:
+            raise ValueError(NOTHING_TO_COMPACT)
+        return await self._summarize(request, handler, view, cutoff)
+
+    @staticmethod
+    async def _hand_off(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        view: list[AnyMessage],
+        *,
+        notes: bool,
+    ) -> HumanMessage | None:
+        """The view's opening summary written out by the agent's model, when
+        it is one only that model's provider can read, else None.
+
+        The summary goes out as the provider's own answer (``adopt``, inside
+        ``handler``), from the provider's cache, and the model writes it out
+        as text. Tools stay bound so the prefix is the one the cache holds;
+        none may be called. Only this model reading that answer can write it,
+        so a failure is never moved to a fallback model or retried without it.
+        """
+        head = view[0] if view and is_summary_message(view[0]) else None
+        if not isinstance(head, HumanMessage) or not is_opaque(head) or handed_off(head):
+            return None
+        prompt = summary_prompt("handoff", keeps_turns(view[1:]), notes)
+        with as_sent():
+            response = await handler(
+                request.override(
+                    messages=[head, HumanMessage(prompt)],
+                    tool_choice="none",
+                )
+            )
+        message = _last_ai(response)
+        _log_usage("hand-off", message)
+        text = message.text.strip() if message is not None and not message.tool_calls else ""
+        written = with_summary_text(head, text) if text else None
+        if written is None:
+            raise ValueError("the model wrote no hand-off summary")
+        return written
+
+    async def _compact(
+        self,
+        request: ModelRequest,
+        view: list[AnyMessage],
+        cutoff: int,
+        transcript: TranscriptTarget | None,
+        own: Own | None = None,
+    ) -> Compaction:
+        """Summarize ``view`` before ``cutoff``, by ``own`` when given,
+        this agent's model being the fallback (see ``Summarizer.compact``).
+
+        Start is outside the try, so a start that fails opened no window. A
+        cancellation still emits error before it propagates: otherwise the
+        stream would keep an orphan start and its compaction window open.
+        """
+        self._emit_context_signal("summarize", "start")
+        try:
+            compaction = await self._summarizer.compact(
+                request.messages,
+                view,
+                cutoff,
+                backend=self._backend,
+                workspace_id=self._workspace_id,
+                transcript=transcript,
+                fallback=request.model,
+                notes_dir=self._notes_dir,
+                window=Window.of(request.state),
+                # Its own action: a client built before the count reads any
+                # summarize signal but start as the summary's end.
+                progress=lambda tokens: self._emit_context_signal(
+                    "summary_progress", "progress", summary_tokens=tokens
                 ),
+                own=own,
             )
+        except BaseException as e:
+            self._emit_context_signal("summarize", "error", error=str(e))
+            raise
+        self._emit_context_signal("summarize", "complete", **_summary_fields(compaction))
+        return compaction
 
-        messages_to_summarize, preserved_messages = self._partition_messages(
-            truncated_messages, cutoff_index
+    @staticmethod
+    async def _provider_summary(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        to_summarize: list[AnyMessage],
+        kept: bool,
+        *,
+        notes: bool,
+    ) -> NativeAnswer:
+        """The agent's provider compacting ``to_summarize`` itself, with the
+        summary prompt in place of its own where it takes one (Claude), the
+        one for a summary that keeps no turn when ``kept`` is False.
+
+        Sent through ``handler`` so the request is the conversation's own:
+        the same system prompt, tools and thinking, which its cache and the
+        thinking in the kept turns are checked against. It goes to this model
+        as sent: the kept thinking stays valid only through a compaction its
+        own model writes, and the summarizer is the fallback here. It stays
+        out of the turn's message stream, where its reply would read as the
+        answer. OpenAI's goes after the user's own messages it summarized.
+        """
+        settings = compaction_settings(
+            request.model,
+            request.model_settings,
+            summary_prompt("native", kept, notes),
         )
+        with as_sent(), _unstreamed():
+            response = await handler(
+                request.override(messages=to_summarize, model_settings=settings)
+            )
+        message = _last_ai(response)
+        _log_usage("provider summary", message)
+        answer = native_answer(message, _user_texts(to_summarize))
+        if message is None or answer is None:
+            stop = (message.response_metadata or {}).get("stop_reason") if message else None
+            raise ValueError(f"no compaction (stop reason {stop})")
+        return NativeAnswer(answer, (message.response_metadata or {}).get(ORIGIN_KEY))
 
-        # Reset token cache (context is about to change dramatically)
-        cached_input_tokens = 0
-        cached_output_tokens = 0
+    @staticmethod
+    async def _self_summary(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        to_summarize: list[AnyMessage],
+        kept: bool,
+        *,
+        notes: bool,
+    ) -> str:
+        """The agent's model writing the summary of ``to_summarize`` as text,
+        asked in the last user message of its own request.
 
-        # Offload evicted messages to backend (non-fatal)
-        file_path = await aoffload_to_backend(self._backend, messages_to_summarize)
+        Sent through ``handler`` with the turn's tools and settings unchanged,
+        so the request opens on the prefix the provider has cached; none may
+        be called. It goes to this model as sent: a fallback model would read
+        none of it from a cache, and the summarizer is the fallback here. It
+        stays out of the turn's message stream. A summary that stops before
+        its closing line was cut off, and counts as none.
+        """
+        with as_sent(), _unstreamed():
+            response = await handler(
+                request.override(
+                    messages=[
+                        *to_summarize,
+                        HumanMessage(summary_prompt("self", kept, notes)),
+                    ]
+                )
+            )
+        message = _last_ai(response)
+        _log_usage("self summary", message)
+        if message is None or message.tool_calls:
+            raise ValueError("no reply" if message is None else "called a tool")
+        text = finished_summary(summary_text(message))
+        if text is None:
+            stop = (message.response_metadata or {}).get("stop_reason")
+            raise ValueError(f"no closing line (stop reason {stop})")
+        return text
 
-        # Generate summary (emits SSE start/complete/error signals)
-        summary = await self._acreate_summary(
-            messages_to_summarize, original_count=len(truncated_messages)
-        )
+    @staticmethod
+    def _stamp_summary(response: ModelResponse, compaction: Compaction) -> None:
+        """Stamp the summary on the response that answered from it, for
+        replay to show where it fired: live, its signal comes right before
+        this response streams."""
+        for msg in reversed(response.result or ()):
+            if isinstance(msg, AIMessage):
+                stamp_compaction_summary(
+                    msg, compaction.event["summary_message"].id, _summary_fields(compaction)
+                )
+                return
 
-        # Build summary message
-        summary_message = self._build_summary_message(
-            summary, file_path, original_message_count=len(truncated_messages)
-        )
-
-        # Create summarization event with an id anchor (cutoff grounded in raw list)
-        new_event = build_compaction_event(
-            raw_messages=request.messages,
-            preserved_messages=preserved_messages,
-            summary_message=summary_message,
-            file_path=file_path,
-            effective_cutoff=cutoff_index,
-            previous_event=previous_event,
-        )
-
-        # Call handler with summarized messages
-        modified_messages = [summary_message, *preserved_messages]
-        response = await handler(request.override(messages=modified_messages))
-
-        # Cache tokens from the new (reduced) context
-        cached_input_tokens, cached_output_tokens = self._extract_token_usage(response)
-
-        # Reset batch counter after summarization (message count drops dramatically)
-        last_truncation_msg_count = 0
-
-        # Return with state update to persist summarization event + offloaded IDs
+    def _answered(
+        self,
+        response: ModelResponse,
+        update: dict[str, Any] | None = None,
+        *,
+        spared: int = 0,
+        reading: ContextReading | None = None,
+    ) -> ExtendedModelResponse:
+        """``response``, with ``update`` and the state the next call reads:
+        the context size this call measured, less the ``spared`` tokens of
+        attachments ``update`` takes out of the next one, and when the model
+        answered, which the next turn's Tier 1 measures its pause from.
+        ``reading`` is the trigger's reading of the view this call was sent
+        as it was, which its growth is stamped from; a call that was sent a
+        summary or a fitted view has none."""
+        input_tokens, output_tokens = self._extract_token_usage(response, reading)
         return ExtendedModelResponse(
             model_response=response,
             command=Command(
                 update={
-                    "_summarization_event": new_event,
-                    **self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                    ),
+                    **(update or {}),
+                    "_cached_input_tokens": max(input_tokens - spared, 0),
+                    "_cached_output_tokens": output_tokens,
+                    "_last_model_response_at": time.time(),
                 }
             ),
         )
 
+    def _extract_token_usage(
+        self, response: ModelResponse, reading: ContextReading | None = None
+    ) -> tuple[int, int]:
+        """The (input, output) tokens the newest AI message reports, emitted
+        to the frontend with the threshold they fill and stamped with it for
+        replay, and with its growth from ``reading``, or (0, 0) when none
+        does."""
+        usage = reported_usage(response)
+        if usage is None:
+            return (0, 0)
+        msg, input_tokens, output_tokens = usage
+        logger.debug("[Compaction] Token usage: input=%d, output=%d", input_tokens, output_tokens)
+        stamp_context_threshold(msg, self._token_threshold)
+        if reading is not None:
+            stamp_context_growth(msg, reading, input_tokens)
+        self._emit_context_signal(
+            "token_usage",
+            "complete",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            threshold=self._token_threshold,
+        )
+        return (input_tokens, output_tokens)
+
     # =========================================================================
-    # wrap_model_call — sync fallback (skips backend persistence)
+    # Tier 1: trimming old tool args and Read results after a long pause
     # =========================================================================
 
     @override
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse | ExtendedModelResponse:
-        """Sync fallback — same flow as awrap_model_call but skips backend offloading."""
-        # 1. Load all per-invocation state from graph state into locals
-        previous_event: CompactionEvent | None = request.state.get(
-            "_summarization_event"
-        )
-        offloaded_tool_call_ids = set(
-            request.state.get("_offloaded_tool_call_ids") or ()
-        )
-        offloaded_read_result_ids = set(
-            request.state.get("_offloaded_read_result_ids") or ()
-        )
-        last_truncation_msg_count: int = request.state.get("_truncation_batch_count", 0)
-        cached_input_tokens: int = request.state.get("_cached_input_tokens", 0)
-        cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
+    async def abefore_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        """Tier 1 when the turn starts after a long pause, then the window's
+        trim. A resume after an interrupt does not pass through here, since
+        the graph picks up where it stopped; an orchestrator re-entry does."""
+        update = await self._offload_idle(state)
+        trimmed = await self._trim({**state, **update})
+        return {**update, **(trimmed or {})} or None
 
-        ensure_message_ids(request.messages)
-        effective_messages = self._get_effective_messages(
-            request.messages, previous_event
-        )
-
-        truncated_messages, truncated, originals = self._truncate_args(
-            effective_messages,
-            request.system_message,
-            request.tools,
-            last_truncation_msg_count=last_truncation_msg_count,
-        )
-        # Note: sync path skips backend offloading for truncated args
-
-        state_changed = False
-
-        # Track newly truncated args (no backend offload in sync path)
-        if truncated and originals:
-            new_originals = {
-                k: v for k, v in originals.items() if k not in offloaded_tool_call_ids
-            }
-            if new_originals:
-                offloaded_tool_call_ids.update(new_originals)
-                state_changed = True
-
-        # Tier 1 (cont.): Truncate duplicate/non-critical Read results
-        truncated_messages, read_truncated, read_offloaded_ids = (
-            self._truncate_read_results(
-                truncated_messages,
-                request.system_message,
-                request.tools,
-                last_truncation_msg_count=last_truncation_msg_count,
-            )
-        )
-        if read_truncated and read_offloaded_ids:
-            new_ids = read_offloaded_ids - offloaded_read_result_ids
-            if new_ids:
-                offloaded_read_result_ids.update(new_ids)
-                state_changed = True
-
-        # Advance batch counter when Tier 1 produced new offloads
-        if state_changed:
-            last_truncation_msg_count = len(effective_messages)
-
-        if cached_input_tokens > 0:
-            total_tokens = cached_input_tokens + cached_output_tokens
-        else:
-            total_tokens = self.token_counter(truncated_messages)
-
-        if not self._should_summarize(truncated_messages, total_tokens):
-            try:
-                response = handler(request.override(messages=truncated_messages))
-                cached_input_tokens, cached_output_tokens = self._extract_token_usage(
-                    response
-                )
-                return ExtendedModelResponse(
-                    model_response=response,
-                    command=Command(
-                        update=self._build_state_update(
-                            offloaded_tool_call_ids=offloaded_tool_call_ids,
-                            offloaded_read_result_ids=offloaded_read_result_ids,
-                            last_truncation_msg_count=last_truncation_msg_count,
-                            cached_input_tokens=cached_input_tokens,
-                            cached_output_tokens=cached_output_tokens,
-                        )
-                    ),
-                )
-            except ContextOverflowError:
-                logger.warning(
-                    "[Compaction] ContextOverflowError caught, triggering emergency summarization"
-                )
-
-        cutoff_index = self._determine_cutoff_index(truncated_messages)
-        if cutoff_index <= 0:
-            response = handler(request.override(messages=truncated_messages))
-            cached_input_tokens, cached_output_tokens = self._extract_token_usage(
-                response
-            )
-            return ExtendedModelResponse(
-                model_response=response,
-                command=Command(
-                    update=self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                    )
-                ),
-            )
-
-        messages_to_summarize, preserved_messages = self._partition_messages(
-            truncated_messages, cutoff_index
-        )
-
-        cached_input_tokens = 0
-        cached_output_tokens = 0
-
-        # Sync path skips backend persistence (SandboxBackend is async-only).
-        # It is not the runtime path (the agent runs async via abefore_model /
-        # _acreate_summary, which carries the compaction_timeout); a blocking
-        # invoke() can't be bounded by asyncio.wait_for, so no timeout here.
-        file_path = None
-
-        summary = self._create_summary(
-            messages_to_summarize, original_count=len(truncated_messages)
-        )
-        summary_message = self._build_summary_message(
-            summary, file_path, original_message_count=len(truncated_messages)
-        )
-
-        new_event = build_compaction_event(
-            raw_messages=request.messages,
-            preserved_messages=preserved_messages,
-            summary_message=summary_message,
-            file_path=file_path,
-            effective_cutoff=cutoff_index,
-            previous_event=previous_event,
-        )
-
-        modified_messages = [summary_message, *preserved_messages]
-        response = handler(request.override(messages=modified_messages))
-        cached_input_tokens, cached_output_tokens = self._extract_token_usage(response)
-
-        # Reset batch counter after summarization
-        last_truncation_msg_count = 0
-
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(
-                update={
-                    "_summarization_event": new_event,
-                    **self._build_state_update(
-                        offloaded_tool_call_ids=offloaded_tool_call_ids,
-                        offloaded_read_result_ids=offloaded_read_result_ids,
-                        last_truncation_msg_count=last_truncation_msg_count,
-                        cached_input_tokens=cached_input_tokens,
-                        cached_output_tokens=cached_output_tokens,
-                    ),
-                }
-            ),
-        )
-
-    # =========================================================================
-    # Effective message reconstruction
-    # =========================================================================
-
-    @staticmethod
-    def _get_effective_messages(
-        messages: list[AnyMessage],
-        event: CompactionEvent | None,
-    ) -> list[AnyMessage]:
-        """Delegate to shared utility."""
-        return get_effective_messages(messages, event)
-
-    # =========================================================================
-    # Token cache management
-    # =========================================================================
-
-    def _extract_token_usage(self, response: ModelResponse) -> tuple[int, int]:
-        """Extract token usage from model response and emit to frontend.
-
-        Args:
-            response: The ModelResponse from handler().
-
-        Returns:
-            (input_tokens, output_tokens) tuple. Returns (0, 0) if no usage found.
-        """
-        if not response.result:
-            return (0, 0)
-
-        for msg in reversed(response.result):
-            if not isinstance(msg, AIMessage):
-                continue
-
-            # Use shared extract_token_usage which handles all provider formats
-            usage = extract_token_usage(msg)
-            input_tokens = usage.get("input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
-
-            if input_tokens > 0:
-                logger.debug(
-                    f"[Compaction] Token usage: "
-                    f"input={input_tokens}, output={output_tokens}"
-                )
-
-                # Emit token usage to frontend via _emit_context_signal
-                # (ensures checkpoint_ns is included for proper agent identification)
-                self._emit_context_signal(
-                    "token_usage",
-                    "complete",
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=input_tokens + output_tokens,
-                )
-
-                return (input_tokens, output_tokens)
-
-        return (0, 0)
-
-    # =========================================================================
-    # Tier 1: Tool argument truncation
-    # =========================================================================
-
-    def _should_truncate_args(
-        self,
-        messages: list[AnyMessage],
-        total_tokens: int,
-        last_truncation_msg_count: int = 0,
-    ) -> bool:
-        """Check if argument truncation should be triggered (batch gated).
-
-        Uses batch gating: after truncation fires at N messages, the next
-        trigger waits until N + trigger_value messages. This avoids cache
-        invalidation and SSE notification spam on every turn.
-
-        Args:
-            messages: Current effective message history.
-            total_tokens: Total token count of messages.
-            last_truncation_msg_count: Message count at last Tier 1 trigger.
-
-        Returns:
-            True if truncation should occur.
-        """
-        if self._truncate_args_trigger is None:
-            return False
-
-        trigger_type, trigger_value = self._truncate_args_trigger
-
-        if trigger_type == "messages":
-            next_trigger = last_truncation_msg_count + trigger_value
-            return len(messages) >= next_trigger
-        if trigger_type == "tokens":
-            return total_tokens >= trigger_value
-        if trigger_type == "fraction":
-            max_input_tokens = self._get_profile_limits()
-            if max_input_tokens is None:
-                return False
-            threshold = int(max_input_tokens * trigger_value)
-            if threshold <= 0:
-                threshold = 1
-            return total_tokens >= threshold
-
-        return False
-
-    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage]) -> int:
-        """Determine the cutoff index for argument truncation based on keep policy.
-
-        Messages at index >= cutoff are protected from truncation.
-        Messages at index < cutoff can have their tool args truncated.
-
-        Args:
-            messages: Current effective message history.
-
-        Returns:
-            Index where truncation cutoff occurs.
-        """
-        keep_type, keep_value = self._truncate_args_keep
-
-        if keep_type == "messages":
-            if len(messages) <= keep_value:
-                return len(messages)  # All messages are recent
-            return int(len(messages) - keep_value)
-
-        if keep_type in {"tokens", "fraction"}:
-            if keep_type == "fraction":
-                max_input_tokens = self._get_profile_limits()
-                if max_input_tokens is None:
-                    messages_to_keep = 20
-                    if len(messages) <= messages_to_keep:
-                        return len(messages)
-                    return len(messages) - messages_to_keep
-                target_token_count = int(max_input_tokens * keep_value)
-            else:
-                target_token_count = int(keep_value)
-
-            if target_token_count <= 0:
-                target_token_count = 1
-
-            tokens_kept = 0
-            for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = self.token_counter([messages[i]])
-                if tokens_kept + msg_tokens > target_token_count:
-                    return i + 1
-                tokens_kept += msg_tokens
-            return 0
-
-        return len(messages)
-
-    def _truncate_args(
-        self,
-        messages: list[AnyMessage],
-        system_message: Any | None,
-        tools: list[Any] | None,
-        *,
-        total_tokens: int | None = None,
-        last_truncation_msg_count: int = 0,
-    ) -> tuple[list[AnyMessage], bool, dict[str, dict[str, Any]]]:
-        """Truncate large tool call arguments in old messages.
-
-        Only processes messages before the keep cutoff. Only modifies AIMessages
-        with tool calls to truncatable tools (Write, Edit, ExecuteCode).
-
-        Args:
-            messages: Effective messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
-            total_tokens: Pre-computed token count (avoids redundant counting).
-            last_truncation_msg_count: Message count at last Tier 1 trigger.
-
-        Returns:
-            Tuple of (messages, modified, originals). If modified is False,
-            messages is the same list object as input. originals maps
-            tool_call_id -> {"name": str, "args": dict} for calls that were
-            truncated, so callers can offload the original content.
-        """
-        # Count tokens for truncation threshold check
-        if total_tokens is None:
-            counted_messages = (
-                [system_message, *messages] if system_message is not None else messages
-            )
-            total_tokens = self.token_counter(counted_messages)
-
-        if not self._should_truncate_args(
-            messages, total_tokens, last_truncation_msg_count
-        ):
-            return messages, False, {}
-
-        cutoff_index = self._determine_truncate_cutoff_index(messages)
-        if cutoff_index >= len(messages):
-            return messages, False, {}
-
-        # Compute thread_dir so truncation markers can reference the offload path
-        thread_dir = None
-        if self._backend is not None:
-            thread_dir = f".agents/threads/{get_thread_id()}"
-
-        return truncate_message_args(
+    async def _offload_idle(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        """Tier 1, once per turn and only when the model last answered more
+        than the idle threshold ago: by then the provider's prompt cache has
+        expired, so hiding part of the prefix costs no cache hit, while doing
+        it mid-turn would throw a warm one away. An argument is hidden only
+        once the transcript holding it is saved where the workspace can read
+        it, since that is then its one copy."""
+        if not is_idle(state, self._offload, time.time()):
+            return {}
+        messages = state["messages"]
+        effective = get_effective_messages(messages, state.get("_summarization_event"))
+        args, reads = select_offloads(effective, self._offload, recorded_offloads(state))
+        if args and await aexport_transcript(
+            self._backend,
+            self._transcript_target(),
             messages,
-            cutoff_index,
-            self._max_arg_length,
-            self._truncation_text,
-            thread_dir,
+            workspace_id=self._workspace_id,
+            window=Window.of(state),
+        ) is None:
+            args = set()
+        if args:
+            self._emit_context_signal("offload", "complete", kind="args", offloaded_args=len(args))
+        if reads:
+            self._emit_context_signal(
+                "offload", "complete", kind="reads", offloaded_reads=len(reads)
+            )
+        return record_offloads(state, args, reads)
+
+    async def _trim(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The window's trim (see ``window``), or None while it may not:
+        without the server to ask (any stack but the main agent's, see
+        ``with_window``), before a summary with an anchor, or while the
+        server's slices do not hold exactly the messages it would drop, in
+        which case the update keeps the refusal.
+
+        A refusal is kept in the checkpoint with the anchor and cut it was
+        for, and the digest it was checked under, and not asked again until
+        one of them moves: a thread whose slices do not match pays for the
+        check once per summary, not per turn, and one backfilled since trims
+        after its next summary.
+        """
+        if self._coverage is None:
+            return None
+        messages = state["messages"]
+        event = state.get("_summarization_event")
+        cut = window_cut(messages, event)
+        if cut <= 0:
+            return None
+        asked = {"anchor": event["anchor_message_id"], "cut": cut, "digest": DIGEST_VERSION}
+        if state.get("_window_refused") == asked:
+            return None
+        try:
+            async with asyncio.timeout(_COVERAGE_TIMEOUT_S):
+                head = await self._coverage(Window.of(state), messages[:cut])
+        except Exception:  # noqa: BLE001 - an unanswered check only delays the trim
+            logger.warning("[Compaction] window coverage unread", exc_info=True)
+            return None
+        if head is None:
+            logger.info(
+                "[Compaction] window waits for the next summary: slices do not "
+                "hold the %d messages before the cut",
+                cut,
+            )
+            return {"_window_refused": asked}
+        logger.info(
+            "[Compaction] window trimmed %d messages, runs up to %d", cut, head.runs
+        )
+        return trim(state, cut, self._carries, head=head)
+
+    def with_window(
+        self, coverage: WindowCoverage, carries: Sequence[WindowCarry] = ()
+    ) -> CompactionMiddleware:
+        """This middleware, trimming the main agent's checkpoint to its window.
+
+        ``coverage`` asks the server whether turn slices hold the runs a trim
+        would drop; ``carries`` keep what other readers counted in them. For
+        the main agent's stack only: a subagent's run is bounded, and its
+        transcript reads its namespace's whole history.
+        """
+        main = copy.copy(self)
+        main._coverage = coverage
+        main._carries = tuple(carries)
+        return main
+
+    def with_scratchpad_notes(self, notes_dir: str) -> CompactionMiddleware:
+        """This middleware, with each summary naming ``notes_dir``'s files.
+
+        For the main agent's stack only: a subagent compacts its own run,
+        which keeps no notes, so its stack holds the plain instance. A copy
+        is enough because the instance keeps nothing per invocation.
+        """
+        main = copy.copy(self)
+        main._notes_dir = notes_dir
+        return main
+
+    async def view(self, messages: list[AnyMessage], state: Mapping[str, Any]) -> list[AnyMessage]:
+        """What this agent's model is sent of ``messages``: what the summary
+        trigger counts, and so what the scratchpad's fill counts too."""
+        return await offload_view(
+            messages,
+            state,
+            max_length=self._offload.max_length,
+            transcript=self._transcript_target(),
+            shell=shell_reads_transcripts(self._backend),
         )
 
-    def _truncate_read_results(
-        self,
-        messages: list[AnyMessage],
-        system_message: Any | None,
-        tools: list[Any] | None,
-        *,
-        total_tokens: int | None = None,
-        last_truncation_msg_count: int = 0,
-    ) -> tuple[list[AnyMessage], bool, set[str]]:
-        """Truncate duplicate and non-critical Read tool results in old messages.
-
-        Reuses the same threshold/cutoff logic as _truncate_args to decide whether
-        and where to apply Read result truncation.
-
-        Args:
-            messages: Effective messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
-            total_tokens: Pre-computed token count (avoids redundant counting).
-            last_truncation_msg_count: Message count at last Tier 1 trigger.
-
-        Returns:
-            Tuple of (messages, modified, offloaded_tool_call_ids).
-        """
-        if total_tokens is None:
-            counted_messages = (
-                [system_message, *messages] if system_message is not None else messages
-            )
-            total_tokens = self.token_counter(counted_messages)
-
-        if not self._should_truncate_args(
-            messages, total_tokens, last_truncation_msg_count
-        ):
-            return messages, False, set()
-
-        cutoff_index = self._determine_truncate_cutoff_index(messages)
-        if cutoff_index >= len(messages):
-            return messages, False, set()
-
-        return truncate_read_results(messages, cutoff_index)
-
-    # =========================================================================
-    # Summary message construction
-    # =========================================================================
-
-    def _build_summary_message(
-        self,
-        summary: str,
-        file_path: str | None = None,
-        original_message_count: int = 0,
-    ) -> HumanMessage:
-        """Delegate to shared utility."""
-        return build_summary_message(summary, file_path, original_message_count)
-
-    # =========================================================================
-    # Summarization trigger and cutoff logic
-    # =========================================================================
-
-    def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
-        """Determine whether summarization should run for the current token usage."""
-        if not self._trigger_conditions:
-            return False
-
-        for kind, value in self._trigger_conditions:
-            if kind == "messages" and len(messages) >= value:
-                return True
-            if kind == "tokens" and total_tokens >= value:
-                logger.info(
-                    f"[Compaction] Triggered: {total_tokens} >= {value} tokens"
-                )
-                return True
-            if kind == "fraction":
-                max_input_tokens = self._get_profile_limits()
-                if max_input_tokens is None:
-                    continue
-                threshold = int(max_input_tokens * value)
-                if threshold <= 0:
-                    threshold = 1
-                if total_tokens >= threshold:
-                    return True
-        return False
-
-    def _determine_cutoff_index(self, messages: list[AnyMessage]) -> int:
-        """Choose cutoff index respecting retention configuration."""
-        kind, value = self.keep
-        if kind in {"tokens", "fraction"}:
-            token_based_cutoff = self._find_token_based_cutoff(messages)
-            if token_based_cutoff is not None:
-                return token_based_cutoff
-            return self._find_safe_cutoff(messages, _DEFAULT_MESSAGES_TO_KEEP)
-        return self._find_safe_cutoff(messages, cast("int", value))
-
-    def _find_token_based_cutoff(self, messages: list[AnyMessage]) -> int | None:
-        """Find cutoff index based on target token retention."""
-        if not messages:
-            return 0
-
-        kind, value = self.keep
-        if kind == "fraction":
-            max_input_tokens = self._get_profile_limits()
-            if max_input_tokens is None:
-                return None
-            target_token_count = int(max_input_tokens * value)
-        elif kind == "tokens":
-            target_token_count = int(value)
-        else:
-            return None
-
-        if target_token_count <= 0:
-            target_token_count = 1
-
-        if self.token_counter(messages) <= target_token_count:
-            return 0
-
-        left, right = 0, len(messages)
-        cutoff_candidate = len(messages)
-        max_iterations = len(messages).bit_length() + 1
-        for _ in range(max_iterations):
-            if left >= right:
-                break
-
-            mid = (left + right) // 2
-            if self.token_counter(messages[mid:]) <= target_token_count:
-                cutoff_candidate = mid
-                right = mid
-            else:
-                left = mid + 1
-
-        if cutoff_candidate == len(messages):
-            cutoff_candidate = left
-
-        if cutoff_candidate >= len(messages):
-            if len(messages) == 1:
-                return 0
-            cutoff_candidate = len(messages) - 1
-
-        return self._find_safe_cutoff_point(messages, cutoff_candidate)
-
-    def _get_profile_limits(self) -> int | None:
-        """Retrieve max input token limit from the model profile."""
+    def _transcript_target(self) -> TranscriptTarget | None:
+        """This agent's transcript, or None where nothing serves one."""
         try:
-            profile = self.model.profile
-        except AttributeError:
+            configurable = get_config().get("configurable", {})
+        except RuntimeError:
             return None
-
-        if not isinstance(profile, Mapping):
-            return None
-
-        max_input_tokens = profile.get("max_input_tokens")
-
-        if not isinstance(max_input_tokens, int):
-            return None
-
-        return max_input_tokens
-
-    def _validate_context_size(
-        self, context: ContextSize, parameter_name: str
-    ) -> ContextSize:
-        """Validate context configuration tuples."""
-        kind, value = context
-        if kind == "fraction":
-            if not 0 < value <= 1:
-                msg = f"Fractional {parameter_name} values must be between 0 and 1, got {value}."
-                raise ValueError(msg)
-        elif kind in {"tokens", "messages"}:
-            if value <= 0:
-                msg = (
-                    f"{parameter_name} thresholds must be greater than 0, got {value}."
-                )
-                raise ValueError(msg)
-        else:
-            msg = f"Unsupported context size type {kind} for {parameter_name}."
-            raise ValueError(msg)
-        return context
+        return transcript_target(
+            self._backend,
+            configurable.get("thread_id"),
+            str(configurable.get("checkpoint_ns") or ""),
+        )
 
     # =========================================================================
-    # Summary generation
+    # Events
     # =========================================================================
-
-    def _extract_summary_text(self, response: Any) -> str:
-        """Extract text content from LLM response, discarding reasoning/thinking.
-
-        Args:
-            response: The LLM response object
-
-        Returns:
-            Extracted text content, stripped
-        """
-        content = response.content if hasattr(response, "content") else response
-        additional_kwargs = getattr(response, "additional_kwargs", None)
-        formatted = format_llm_content(content, additional_kwargs)
-        summary = formatted.get("text", "")
-
-        # Log if reasoning was discarded
-        if formatted.get("reasoning"):
-            logger.debug(
-                f"[Compaction] Discarded reasoning content "
-                f"(length={len(formatted.get('reasoning', ''))})"
-            )
-
-        return summary.strip()
 
     def _emit_context_signal(self, action: str, signal: str, **kwargs: Any) -> None:
-        """Emit a context_window event via stream writer.
+        """Emit a context_window event via the stream writer.
 
         Args:
-            action: Action discriminator ("summarize", "offload", "token_usage")
-            signal: Signal type ("start", "complete", or "error")
-            **kwargs: Additional payload fields (summary_length, error, truncated_count, etc.)
+            action: Action discriminator ("summarize", "summary_progress",
+                "offload", "token_usage")
+            signal: Signal type ("start", "progress", "complete", or "error")
+            **kwargs: Additional payload fields (summary_length, error, etc.)
         """
         try:
             stream_writer = get_stream_writer()
@@ -1046,275 +837,18 @@ class CompactionMiddleware(AgentMiddleware):
             }
             # Include checkpoint_ns for agent identification by streaming handler
             try:
-                config = get_config()
-                checkpoint_ns = config.get("configurable", {}).get("checkpoint_ns", "")
+                checkpoint_ns = get_config().get("configurable", {}).get("checkpoint_ns", "")
                 if checkpoint_ns:
                     payload["checkpoint_ns"] = checkpoint_ns
             except RuntimeError:
                 pass
             payload.update(kwargs)
             stream_writer(payload)
-            if signal == "start":
-                logger.debug(f"[Compaction] Emitted {action} start signal")
-            elif signal == "complete":
-                logger.debug(f"[Compaction] Emitted {action} complete signal")
-            elif signal == "error":
+            if signal == "error":
                 logger.warning(
-                    f"[Compaction] Emitted {action} error signal: {kwargs.get('error')}"
+                    "[Compaction] Emitted %s error signal: %s", action, kwargs.get("error")
                 )
+            else:
+                logger.debug("[Compaction] Emitted %s %s signal", action, signal)
         except Exception as e:
-            logger.debug(f"Could not emit context_window {action}/{signal} signal: {e}")
-
-    def _get_thread_id(self) -> str:
-        """Get the current thread ID from LangGraph config."""
-        try:
-            config = get_config()
-            return config.get("configurable", {}).get("thread_id", "")
-        except RuntimeError:
-            return ""
-
-    def _build_state_update(
-        self,
-        offloaded_tool_call_ids: set[str],
-        offloaded_read_result_ids: set[str],
-        last_truncation_msg_count: int,
-        cached_input_tokens: int,
-        cached_output_tokens: int,
-    ) -> dict[str, Any]:
-        """Build a state update dict for persisting per-invocation state."""
-        return {
-            "_offloaded_tool_call_ids": offloaded_tool_call_ids,
-            "_offloaded_read_result_ids": offloaded_read_result_ids,
-            "_truncation_batch_count": last_truncation_msg_count,
-            "_cached_input_tokens": cached_input_tokens,
-            "_cached_output_tokens": cached_output_tokens,
-        }
-
-    def _partition_messages(
-        self,
-        conversation_messages: list[AnyMessage],
-        cutoff_index: int,
-    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-        """Partition messages into those to summarize and those to preserve."""
-        messages_to_summarize = conversation_messages[:cutoff_index]
-        preserved_messages = conversation_messages[cutoff_index:]
-
-        return messages_to_summarize, preserved_messages
-
-    def _find_safe_cutoff(
-        self, messages: list[AnyMessage], messages_to_keep: int
-    ) -> int:
-        """Find safe cutoff point that preserves AI/Tool message pairs."""
-        if len(messages) <= messages_to_keep:
-            return 0
-
-        target_cutoff = len(messages) - messages_to_keep
-        return self._find_safe_cutoff_point(messages, target_cutoff)
-
-    def _find_safe_cutoff_point(
-        self, messages: list[AnyMessage], cutoff_index: int
-    ) -> int:
-        """Find a safe cutoff point that doesn't split AI/Tool message pairs."""
-        while cutoff_index < len(messages) and isinstance(
-            messages[cutoff_index], ToolMessage
-        ):
-            cutoff_index += 1
-        return cutoff_index
-
-    def _create_summary(
-        self, messages_to_summarize: list[AnyMessage], *, original_count: int = 0
-    ) -> str:
-        """Generate summary for the given messages (sync version)."""
-        if not messages_to_summarize:
-            return "No previous conversation history."
-
-        trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
-        if not trimmed_messages:
-            return "Previous conversation was too long to summarize."
-
-        # Strip base64 blobs so the summarization LLM doesn't receive them
-        trimmed_messages = strip_base64_from_messages(trimmed_messages)
-
-        # Start is outside the try: if it fails, the window was never opened
-        # so nothing needs closing. Inside the try we catch BaseException (not
-        # just Exception) so CancelledError also closes the window before
-        # propagating — otherwise a cancelled stream would leave an orphan
-        # start event with no terminator.
-        self._emit_context_signal("summarize", "start")
-        try:
-            response = self.model.invoke(
-                _build_summary_request(self.summary_prompt, trimmed_messages)
-            )
-            summary = self._extract_summary_text(response)
-        except BaseException as e:
-            self._emit_context_signal("summarize", "error", error=str(e))
-            if isinstance(e, Exception):
-                return f"Error generating summary: {e!s}"
-            raise
-
-        self._emit_context_signal(
-            "summarize",
-            "complete",
-            summary_length=len(summary),
-            original_message_count=original_count,
-            summary_text=summary,
-        )
-        return summary
-
-    async def _acreate_summary(
-        self, messages_to_summarize: list[AnyMessage], *, original_count: int = 0
-    ) -> str:
-        """Generate summary for the given messages (async version with custom events)."""
-        if not messages_to_summarize:
-            return "No previous conversation history."
-
-        trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
-        if not trimmed_messages:
-            return "Previous conversation was too long to summarize."
-
-        # Offload base64 blobs to sandbox (or strip if no backend)
-        trimmed_messages = await aoffload_base64_content(
-            self._backend, trimmed_messages
-        )
-
-        # Start is outside the try: if it fails, the window was never opened
-        # so nothing needs closing. Inside the try we catch BaseException (not
-        # just Exception) so CancelledError also closes the window before
-        # propagating — otherwise a cancelled stream would leave an orphan
-        # start event with no terminator.
-        self._emit_context_signal("summarize", "start")
-        try:
-            # Use ainvoke (non-streaming) to avoid duplicate events.
-            # The model should have streaming=False set in factory.
-            # The bracketing context_window summarize start/complete/error
-            # events tell the SSE handler to re-route chunks emitted between
-            # them to the compaction_chunk channel.
-            #
-            # Wall-clock budget: a hung summarize raises TimeoutError, which the
-            # except below treats like any LLM failure — emits the error signal
-            # (closing the window so the admission guard releases) and returns a
-            # fallback string. The timeout lives on the call so it fails
-            # naturally instead of blocking the in-flight turn forever.
-            response = await asyncio.wait_for(
-                self.model.ainvoke(
-                    _build_summary_request(self.summary_prompt, trimmed_messages)
-                ),
-                timeout=get_compaction_timeout(),
-            )
-            summary = self._extract_summary_text(response)
-        except BaseException as e:
-            self._emit_context_signal("summarize", "error", error=str(e))
-            if isinstance(e, Exception):
-                return f"Error generating summary: {e!s}"
-            raise
-
-        self._emit_context_signal(
-            "summarize",
-            "complete",
-            summary_length=len(summary),
-            original_message_count=original_count,
-            summary_text=summary,
-        )
-        return summary
-
-    def _trim_messages_for_summary(
-        self, messages: list[AnyMessage]
-    ) -> list[AnyMessage]:
-        """Trim messages to fit within summary generation limits."""
-        if not messages:
-            return messages
-
-        # If no trim limit set, return all messages
-        if self.trim_tokens_to_summarize is None:
-            return messages
-
-        try:
-            trimmed = cast(
-                "list[AnyMessage]",
-                trim_messages(
-                    messages,
-                    max_tokens=self.trim_tokens_to_summarize,
-                    token_counter=self.token_counter,
-                    start_on="human",
-                    strategy="last",
-                    allow_partial=True,
-                    include_system=True,
-                ),
-            )
-
-            # If trim_tokens_to_summarize is too restrictive and returns empty,
-            # fall back to keeping the last N messages instead of failing
-            if not trimmed:
-                logger.warning(
-                    f"[Compaction] trim_tokens_to_summarize={self.trim_tokens_to_summarize} "
-                    f"is too restrictive, falling back to last {_DEFAULT_FALLBACK_MESSAGE_COUNT} messages"
-                )
-                return messages[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
-
-            return trimmed
-        except Exception as e:
-            logger.warning(f"[Compaction] trim_messages failed: {e}, using fallback")
-            return messages[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
-
-    # =========================================================================
-    # Factory
-    # =========================================================================
-
-    @classmethod
-    def from_config(
-        cls,
-        config: dict | None = None,
-        backend: Any | None = None,
-    ) -> "CompactionMiddleware | None":
-        """Create a configured instance from agent_config.yaml settings.
-
-        Args:
-            config: Optional config override (defaults to CompactionConfig defaults).
-            backend: Backend for offloading conversation history (SandboxBackend
-                for PTC, None for flash). When None, no filesystem ops are attempted.
-
-        Returns:
-            Configured CompactionMiddleware or None if disabled.
-        """
-        if config is None:
-            config = CompactionConfig().model_dump()
-
-        if not config.get("enabled", False):
-            return None
-
-        # Get compaction model from config (prefer pre-built OAuth/BYOK client)
-        llm_client = config.get("_llm_client")
-        if llm_client is not None:
-            compaction_model: BaseChatModel = llm_client
-        else:
-            model_name = config.get("llm", "")
-            compaction_model: BaseChatModel = get_llm_by_type(model_name)
-
-        # Suppress normal message_chunk emission where the provider permits it.
-        maybe_disable_streaming(compaction_model)
-
-        # Get configuration values
-        token_threshold = config.get("token_threshold", 120000)
-        keep_messages = config.get("keep_messages", 5)
-
-        # Build truncate_args_settings from config (None disables truncation)
-        truncate_args_settings: TruncateArgsSettings | None = None
-        truncate_trigger_messages = config.get("truncate_args_trigger_messages")
-        if truncate_trigger_messages is not None:
-            truncate_keep_messages = config.get("truncate_args_keep_messages", 20)
-            truncate_max_length = config.get("truncate_args_max_length", 2000)
-            truncate_args_settings = TruncateArgsSettings(
-                trigger=("messages", int(truncate_trigger_messages)),
-                keep=("messages", int(truncate_keep_messages)),
-                max_length=int(truncate_max_length),
-            )
-
-        return cls(
-            model=compaction_model,
-            trigger=("tokens", token_threshold),
-            keep=("messages", keep_messages),
-            trim_tokens_to_summarize=token_threshold + 50000,
-            summary_prompt=DEFAULT_SUMMARY_PROMPT,
-            backend=backend,
-            truncate_args_settings=truncate_args_settings,
-        )
+            logger.debug("Could not emit context_window %s/%s signal: %s", action, signal, e)

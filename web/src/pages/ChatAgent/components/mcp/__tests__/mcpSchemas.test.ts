@@ -1,17 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
+  serverNameError,
   validateMcpServer,
   validateRemoteUrl,
   validateArg,
   isValidSecretValue,
   collectVaultRefs,
-  ALLOWED_COMMANDS,
+  refsOnlyValue,
   DESCRIPTION_MAX,
   INSTRUCTION_MAX,
 } from '../mcpSchemas';
 
 // Mirror of the backend validator test matrix in
-// src/server/models/mcp_server.py (allowlist, URL policy incl.
+// src/server/models/mcp_server.py (command shape, URL policy incl.
 // 169.254.169.254, vault-ref vs bare ${VAR}, length caps). Neutral
 // placeholder names throughout.
 
@@ -36,19 +37,74 @@ describe('mcpSchemas — name shape', () => {
   ])('rejects invalid name (%s)', (_label, name) => {
     expect(validateMcpServer(stdio({ name })).ok).toBe(false);
   });
+
+  // The name becomes a Python module in the sandbox, so the shape rule alone
+  // admits names that cannot hold that role. Same matrix as the backend.
+  it.each([
+    ['mcp_client', 'runtimeModule'],
+    ['__init__', 'dunder'],
+    ['__private', 'dunder'],
+    ['class', 'keyword'],
+    ['None', 'keyword'],
+    ['await', 'keyword'],
+  ])('rejects %s, which the sandbox reserves, and says why', (name, reason) => {
+    expect(serverNameError(name)).toBe(reason);
+    const result = validateMcpServer(stdio({ name }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatchObject({ path: 'name' });
+  });
+
+  it.each(['match', 'type', 'case', '_', 'class_server', 'mcp_client_v2', '_private', 'Type'])(
+    'accepts %s, a soft keyword or a name that only resembles a reserved one',
+    (name) => {
+      expect(validateMcpServer(stdio({ name })).ok).toBe(true);
+    },
+  );
+
+  it('keeps a reserved name the edited row is already saved under', () => {
+    // The backend checks reserved names only where a name is introduced, so an
+    // edit of a row saved before its name was reserved has to stay savable.
+    expect(validateMcpServer(stdio({ name: 'class' }), { keepName: 'class' }).ok).toBe(true);
+    expect(validateMcpServer(stdio({ name: 'class' }), { keepName: 'other' }).ok).toBe(false);
+  });
+
+  it('reports a malformed name once, with the shape message', () => {
+    expect(serverNameError('__has-dash')).toBe('shape');
+    const result = validateMcpServer(stdio({ name: '__has-dash' }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.map((e) => e.message)).toEqual([
+      'name must be 1-64 chars: letter/underscore then letters/digits/underscores',
+    ]);
+  });
 });
 
-describe('mcpSchemas — command allowlist (no bash)', () => {
-  it.each(ALLOWED_COMMANDS)('accepts allowed command %s', (command) => {
+describe('mcpSchemas — command shape', () => {
+  // Published MCP servers are launched every one of these ways, and the schema
+  // filters none of them out: running what the user asked for in their own
+  // sandbox beats making most of the ecosystem uninstallable.
+  it.each([
+    'npx',
+    'uvx',
+    'uv',
+    'python3',
+    'node',
+    'docker',
+    'deno',
+    'bun',
+    'go',
+    'java',
+    '/usr/local/bin/my-server',
+    './server',
+  ])('accepts command %s', (command) => {
     expect(validateMcpServer(stdio({ command })).ok).toBe(true);
   });
 
-  it.each(['bash', 'sh', 'zsh', 'curl', 'rm', '/bin/bash'])(
-    'rejects disallowed command %s',
-    (command) => {
-      expect(validateMcpServer(stdio({ command })).ok).toBe(false);
-    },
-  );
+  it.each([['empty', ''], ['blank', '   ']])('rejects %s command', (_label, command) => {
+    expect(validateMcpServer(stdio({ command })).ok).toBe(false);
+  });
 });
 
 describe('mcpSchemas — URL policy', () => {
@@ -111,12 +167,32 @@ describe('mcpSchemas — secret value policy (vault-ref vs bare $VAR)', () => {
     expect(isValidSecretValue('')).toBe(true);
   });
 
+  it('rejects two spellings of one header name', () => {
+    const result = validateMcpServer(
+      http({ headers: { Authorization: 'Bearer a', authorization: 'Bearer b' } }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.map((e) => e.message)).toContain('header names must be unique case-insensitively');
+  });
+
+  it('keeps env names case-sensitive', () => {
+    const result = validateMcpServer(
+      stdio({ env: { Token: 'a', token: 'b' } }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a ref embedded in a literal, the shape an auth header takes', () => {
+    expect(isValidSecretValue('Bearer ${vault:TOKEN}')).toBe(true);
+    expect(isValidSecretValue('use ${vault:X} here')).toBe(true);
+  });
+
   it.each([
     ['bare braced env', '${MY_TOKEN}'],
     ['bare dollar env', '$MY_TOKEN'],
     ['embedded bare env', 'prefix-${SECRET}-suffix'],
     ['malformed vault ref', '${vault:bad'],
-    ['partial vault ref text', 'use ${vault:X} here'],
+    ['malformed ref beside a good one', '${vault:A} ${vault:'],
   ])('rejects %s', (_label, value) => {
     expect(isValidSecretValue(value)).toBe(false);
   });
@@ -132,6 +208,27 @@ describe('mcpSchemas — secret value policy (vault-ref vs bare $VAR)', () => {
   it('rejects an invalid env key name', () => {
     expect(validateMcpServer(stdio({ env: { '1bad key': 'literal' } })).ok).toBe(false);
   });
+});
+
+// A sign-in that saves a server keeps its body in session storage until it
+// comes back. A value with a ref in it was kept whole, so a key typed beside
+// the ref (`sk-live ${vault:X}`) went into storage with it.
+describe('mcpSchemas — refsOnlyValue', () => {
+  it.each([
+    ['sk-live ${vault:X}'],
+    ['abc123${vault:'],
+    ['sk-live-abc123'],
+    ['Bearer sk-live${vault:X}'],
+  ])('drops %s, which holds more than refs', (value) => {
+    expect(refsOnlyValue(value)).toBe('');
+  });
+
+  it.each([['${vault:T}'], ['Bearer ${vault:T}'], ['basic ${vault:T}'], ['${vault:A}${vault:B}']])(
+    'keeps %s, which names stored keys and nothing else',
+    (value) => {
+      expect(refsOnlyValue(value)).toBe(value);
+    },
+  );
 });
 
 describe('mcpSchemas — stdio args policy (vault refs vs host-env placeholders)', () => {
@@ -203,6 +300,21 @@ describe('mcpSchemas — length caps', () => {
 
   it('rejects instruction over the cap', () => {
     expect(validateMcpServer(stdio({ instruction: 'a'.repeat(INSTRUCTION_MAX + 1) })).ok).toBe(false);
+  });
+});
+
+// zod/mini carries no locale, so an issue without a message of its own would
+// read "Invalid input" in the modal unless validateMcpServer supplies English.
+describe('mcpSchemas: messages for issues without their own', () => {
+  it('explains the cap and the type in English', () => {
+    const result = validateMcpServer(stdio({ description: 'a'.repeat(DESCRIPTION_MAX + 1), args: ['ok', 3] }));
+    expect(result).toEqual({
+      ok: false,
+      errors: [
+        { path: 'args.1', message: 'Invalid input: expected string, received number' },
+        { path: 'description', message: `Too big: expected string to have <=${DESCRIPTION_MAX} characters` },
+      ],
+    });
   });
 });
 

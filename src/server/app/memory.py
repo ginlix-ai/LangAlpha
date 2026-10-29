@@ -8,6 +8,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from ptc_agent.agent.backends import (
+    user_memory_namespace,
+    workspace_memory_namespace,
+)
 from src.server.app import setup
 from src.server.app._store_helpers import (
     aget,
@@ -81,7 +85,7 @@ def _value_to_read(tier: str, key: str, value: Any) -> MemoryReadResponse:
 async def list_user_memory(user_id: CurrentUserId) -> MemoryListResponse:
     """List all user-tier memory entries for the caller."""
     store = require_store(setup.store)
-    namespace = (user_id, "memory")
+    namespace = user_memory_namespace(user_id)
     entries, truncated = await paginate_namespace(store, namespace, _value_to_entry)
     return MemoryListResponse(tier="user", entries=entries, truncated=truncated)
 
@@ -94,7 +98,7 @@ async def read_user_memory(
     """Read one user-tier memory file by its key."""
     validate_key(key)
     store = require_store(setup.store)
-    item = await aget(store, (user_id, "memory"), key)
+    item = await aget(store, user_memory_namespace(user_id), key)
     if item is None:
         raise HTTPException(status_code=404, detail="Memory entry not found")
     return _value_to_read("user", key, item.value)
@@ -112,7 +116,7 @@ async def list_workspace_memory(
     workspace = await db_get_workspace(workspace_id)
     require_workspace_owner(workspace, user_id=user_id)
     store = require_store(setup.store)
-    namespace = (user_id, "workspaces", workspace_id, "memory")
+    namespace = workspace_memory_namespace(user_id, workspace_id)
     entries, truncated = await paginate_namespace(store, namespace, _value_to_entry)
     return MemoryListResponse(
         tier="workspace", entries=entries, truncated=truncated
@@ -130,7 +134,7 @@ async def read_workspace_memory(
     workspace = await db_get_workspace(workspace_id)
     require_workspace_owner(workspace, user_id=user_id)
     store = require_store(setup.store)
-    namespace = (user_id, "workspaces", workspace_id, "memory")
+    namespace = workspace_memory_namespace(user_id, workspace_id)
     item = await aget(store, namespace, key)
     if item is None:
         raise HTTPException(status_code=404, detail="Memory entry not found")

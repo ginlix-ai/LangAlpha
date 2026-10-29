@@ -18,7 +18,6 @@ const DEFAULT_CURRENCIES = [...FOREX_DEFAULT_CURRENCIES];
 function ForexHeatmapWidget({ instance }: WidgetRenderProps<ForexHeatmapConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="forex-cross-rates"
       config={{
         currencies: instance.config.currencies?.length ? instance.config.currencies : DEFAULT_CURRENCIES,

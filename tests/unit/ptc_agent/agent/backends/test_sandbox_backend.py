@@ -2,7 +2,7 @@
 
 Covers:
 - Protocol methods (als, aread, awrite[overwrite=], aedit, agrep, aglob, aexecute).
-- Rich adapter-extension methods (path helpers, agrep_rich, aexecute_bash, etc.).
+- Rich adapter-extension methods (path helpers, agrep_rich, etc.).
 - Sync-stub removal: assert direct overrides of every async method so the
   protocol base class's async-dispatches-to-sync default can never fire.
 """
@@ -23,6 +23,8 @@ from deepagents.backends.protocol import (
 )
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.sandbox.runtime import SandboxTransientError
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +37,11 @@ def _make_sandbox(working_dir: str = "/home/workspace") -> MagicMock:
     sandbox = MagicMock()
     sandbox.config.filesystem.working_directory = working_dir
     sandbox.config.filesystem.enable_path_validation = True
+    # A pinned backend folds a path itself, against the real allow list and the
+    # live computer root; a MagicMock's stand-ins for those iterate empty and
+    # read as a path object, so an absolute spelling would fold twice.
+    sandbox.config.filesystem.allowed_directories = [working_dir, "/tmp"]
+    sandbox._work_dir = working_dir
     sandbox.sandbox_id = "sbx-abc123"
     sandbox.skills_manifest = {"skills": {}}
     # normalize_path: default pass-through for test simplicity
@@ -54,9 +61,6 @@ def _make_sandbox(working_dir: str = "/home/workspace") -> MagicMock:
     sandbox.execute_bash_command = AsyncMock(
         return_value={"success": True, "stdout": "", "stderr": "", "exit_code": 0}
     )
-    sandbox.execute = AsyncMock()
-    sandbox.stop_background_command = AsyncMock(return_value=True)
-    sandbox.get_background_command_status = AsyncMock(return_value={})
     sandbox.start_and_get_preview_url = AsyncMock()
     return sandbox
 
@@ -84,6 +88,25 @@ class TestStructure:
 
     def test_id_property_returns_sandbox_id(self, backend):
         assert backend.id == "sbx-abc123"
+
+    @pytest.mark.asyncio
+    async def test_a_command_gets_the_mount_only_where_it_serves_its_folder(self, sandbox):
+        """The links may still be going in when the turn starts and may not go
+        in at all; a command whose folder they missed runs without the mount."""
+        served = {"ws-a"}
+
+        async def ready(workspace_id=None) -> bool:
+            return workspace_id in served
+
+        mount = MagicMock(ready=AsyncMock(side_effect=ready))
+        sandbox.livefs = mount
+        backend = SandboxBackend(sandbox)
+
+        assert await backend.settled_livefs("ws-a") is mount
+        assert await backend.settled_livefs("ws-b") is None
+
+        sandbox.livefs = None
+        assert await backend.settled_livefs("ws-a") is None
 
     def test_every_async_method_is_directly_overridden(self):
         """If any async method were inherited from SandboxBackendProtocol, its
@@ -295,6 +318,25 @@ class TestAedit:
         await backend.aedit("/f.py", "x", "y")
         cb.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_failed_readback_does_not_fail_a_committed_edit(self, sandbox):
+        """The read now raises where it used to return None.
+
+        The edit is already committed by the time the callback re-reads, so
+        letting a sandbox that died in between propagate would fail the whole
+        tool call over a snapshot the callback can do without.
+        """
+        sandbox.aedit_file_text.return_value = {"success": True, "occurrences": 2}
+        sandbox.aread_file_text.side_effect = SandboxTransientError("sandbox went away")
+        cb = MagicMock()
+        backend = SandboxBackend(sandbox, operation_callback=cb)
+
+        result = await backend.aedit("/f.py", "old", "new")
+
+        assert result.error is None
+        assert result.occurrences == 2
+        assert cb.call_args.args[0]["content"] is None
+
 
 class TestAdownloadAupload:
     """Protocol-surface batch file transfer methods."""
@@ -311,10 +353,15 @@ class TestAdownloadAupload:
         assert r.error == "file_not_found"
 
     @pytest.mark.asyncio
-    async def test_adownload_exception_maps_to_file_not_found(self, sandbox, backend):
+    async def test_adownload_exception_is_not_reported_as_not_found(
+        self, sandbox, backend
+    ):
+        """A transport failure must not read as "this file does not exist"."""
         sandbox.adownload_file_bytes.side_effect = RuntimeError("net")
         [r] = await backend.adownload_files(["/x.txt"])
-        assert r.error == "file_not_found"
+        assert r.error is not None
+        assert r.error != "file_not_found"
+        assert "net" in r.error
 
     @pytest.mark.asyncio
     async def test_adownload_mixed_batch_preserves_order(self, sandbox, backend):
@@ -450,6 +497,42 @@ class TestPathHelpers:
     def test_skills_manifest_returns_raw(self, sandbox, backend):
         assert backend.skills_manifest == {"skills": {}}
 
+    def test_a_write_resolves_against_the_turns_workspace(self, sandbox, backend):
+        """One backend serves a session, so the tier decision cannot be frozen
+        at construction: thread scratch belongs to the project that produced it.
+        """
+        sandbox.normalize_path.side_effect = (
+            lambda p: f"/home/workspace/proj-a/{p}"
+        )
+        assert backend._normalize_path(
+            f"{WorkspaceLayout.THREADS_DIR}/abcd1234/evicted.md"
+        ) == f"/home/workspace/proj-a/{WorkspaceLayout.THREADS_DIR}/abcd1234/evicted.md"
+
+    def test_a_pinned_root_keeps_its_own_base(self, sandbox):
+        pinned = SandboxBackend(sandbox, "/home/workspace/proj-b")
+        sandbox.normalize_path.side_effect = AssertionError
+        assert pinned._normalize_path("out.md") == "/home/workspace/proj-b/out.md"
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "../proj-a/.agents/tools/yf_price.py",
+            "/home/workspace/proj-b/../proj-a/.agents/tools/yf_price.py",
+            "/tmp/../home/workspace/proj-a/.agents/tools/yf_price.py",
+        ],
+    )
+    def test_a_pinned_root_collapses_traversal_like_the_sandbox_does(
+        self, sandbox, spelling
+    ):
+        """The pin is a base, not a fence: only the collapse lets the
+        validator recognise the directory a `..` names."""
+        pinned = SandboxBackend(sandbox, "/home/workspace/proj-b")
+        sandbox.normalize_path.side_effect = AssertionError
+        assert (
+            pinned._normalize_path(spelling)
+            == "/home/workspace/proj-a/.agents/tools/yf_price.py"
+        )
+
 
 class TestRichFileOps:
     @pytest.mark.asyncio
@@ -511,43 +594,6 @@ class TestAgrepRich:
         assert kwargs["offset"] == 5
 
 
-class TestRichExec:
-    @pytest.mark.asyncio
-    async def test_aexecute_bash_forwards_options(self, sandbox, backend):
-        await backend.aexecute_bash(
-            "npm test",
-            working_dir="/src",
-            timeout=300,
-            background=True,
-            thread_id="abc12345",
-        )
-        kwargs = sandbox.execute_bash_command.call_args.kwargs
-        assert kwargs["command"] == "npm test"
-        assert kwargs["working_dir"] == "/src"
-        assert kwargs["timeout"] == 300
-        assert kwargs["background"] is True
-        assert kwargs["thread_id"] == "abc12345"
-
-    @pytest.mark.asyncio
-    async def test_astop_background_command_delegates(self, sandbox, backend):
-        sandbox.stop_background_command.return_value = True
-        result = await backend.astop_background_command("bash_0001")
-        assert result is True
-        sandbox.stop_background_command.assert_awaited_with("bash_0001")
-
-    @pytest.mark.asyncio
-    async def test_aget_background_command_status_delegates(self, sandbox, backend):
-        sandbox.get_background_command_status.return_value = {"is_running": True}
-        result = await backend.aget_background_command_status("bash_0001")
-        assert result == {"is_running": True}
-
-    @pytest.mark.asyncio
-    async def test_aexecute_code_forwards_thread_id(self, sandbox, backend):
-        await backend.aexecute_code("print(1)", thread_id="th12345")
-        sandbox.execute.assert_awaited_once()
-        assert sandbox.execute.call_args.kwargs["thread_id"] == "th12345"
-
-
 class TestMiscRich:
     @pytest.mark.asyncio
     async def test_adownload_file_bytes_delegates(self, sandbox, backend):
@@ -557,6 +603,8 @@ class TestMiscRich:
 
     @pytest.mark.asyncio
     async def test_astart_preview_url_delegates(self, sandbox, backend):
+        sandbox.workspace.return_value.workspace = "/workspace/project-a"
         sandbox.start_and_get_preview_url.return_value = MagicMock(url="https://x")
         result = await backend.astart_preview_url("node server.js", 3000)
         assert result.url == "https://x"
+        assert sandbox.start_and_get_preview_url.call_args.args[0] == "cd /workspace/project-a && node server.js"

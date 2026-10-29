@@ -1,0 +1,8 @@
+{
+  "//": [
+    "The leaves behind the ../api.ts facade have no module-scope effects of their own, but each imports the API client, so without this declaration Rolldown counts every leaf, and the facade, as side-effectful.",
+    "One eager import of the facade would then put every leaf on the critical path. A leaf nothing imports from is dropped whole; one whose exports are used keeps its module-scope statements, so a registerAuthReset call still runs whenever there is a cache to reset.",
+    "Enforced by scripts/check-critical-path.mjs."
+  ],
+  "sideEffects": false
+}

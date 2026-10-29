@@ -226,7 +226,7 @@ function StructuredResultBlock({
           data-testid="structured-result-truncated"
           style={{ color: 'var(--color-warning)' }}
         >
-          <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+          <AlertTriangle className="h-3 w-3 shrink-0" />
           {t('chat.resultTruncated')}
         </div>
       )}

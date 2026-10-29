@@ -169,3 +169,47 @@ describe('useMarketWatch – live stamp survives the turn-completion refetch (me
     });
   });
 });
+
+// Price targets are wakeups now: the market watch keeps symbols only, so a
+// target in the GET answer neither keeps the watch on nor reaches the state.
+describe('useMarketWatch: symbols only', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('ignores the targets the endpoint still returns', async () => {
+    const armed = { target_id: 'tg-1', symbol: 'NVDA', kind: 'above', value: 205, status: 'armed' };
+    mockFetchMarketWatch.mockResolvedValue({ thread_id: 'thread-a', symbols: [], targets: [armed] });
+    const threadIdRef = { current: 'thread-a' };
+    const { result } = renderHookWithProviders(() => useMarketWatch('thread-a', false, threadIdRef));
+    await waitFor(() => expect(mockFetchMarketWatch).toHaveBeenCalled());
+    expect(result.current.marketWatch).toBeNull();
+
+    mockFetchMarketWatch.mockResolvedValue({ thread_id: 'thread-a', symbols: ['NVDA'], targets: [armed] });
+    await act(async () => {
+      result.current.refreshMarketWatch();
+    });
+    await waitFor(() => expect(result.current.marketWatch).toEqual({ symbols: ['NVDA'] }));
+  });
+
+  it('drops an older read that answers after a newer one', async () => {
+    mockFetchMarketWatch.mockResolvedValue({ thread_id: 'thread-a', symbols: ['NVDA'] });
+    const threadIdRef = { current: 'thread-a' };
+    const { result } = renderHookWithProviders(() => useMarketWatch('thread-a', false, threadIdRef));
+    await waitFor(() => expect(result.current.marketWatch).toEqual({ symbols: ['NVDA'] }));
+
+    const answers: Array<(v: unknown) => void> = [];
+    mockFetchMarketWatch.mockImplementation(() => new Promise((r) => { answers.push(r); }));
+    act(() => {
+      result.current.refreshMarketWatch();
+      result.current.refreshMarketWatch();
+    });
+    await act(async () => {
+      answers[1]({ thread_id: 'thread-a', symbols: ['TSLA'] });
+    });
+    await act(async () => {
+      answers[0]({ thread_id: 'thread-a', symbols: ['NVDA'] });
+    });
+    expect(result.current.marketWatch).toEqual({ symbols: ['TSLA'] });
+  });
+});

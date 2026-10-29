@@ -56,7 +56,7 @@ class SkillMetadata(TypedDict):
 # --- Validation helpers ---
 
 
-def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
+def validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     """Validate skill name per Agent Skills specification."""
     if not name:
         return False, "name is required"
@@ -65,9 +65,10 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     if name.startswith("-") or name.endswith("-") or "--" in name:
         return False, "name must be lowercase alphanumeric with single hyphens only"
     for c in name:
-        if c == "-":
-            continue
-        if (c.isalpha() and c.islower()) or c.isdigit():
+        # ASCII only: str.isalpha()/isdigit() accept Unicode letters and
+        # digits, which would admit names that look identical to a platform
+        # skill's and paths no other layer here expects.
+        if c == "-" or "a" <= c <= "z" or "0" <= c <= "9":
             continue
         return False, "name must be lowercase alphanumeric with single hyphens only"
     if name != directory_name:
@@ -177,7 +178,7 @@ def parse_skill_metadata(
     if not description:
         confirmed = False
 
-    is_valid, error = _validate_skill_name(name, directory_name)
+    is_valid, error = validate_skill_name(name, directory_name)
     if not is_valid:
         logger.warning(
             "Skill '%s' in %s: %s — using directory name",
@@ -242,7 +243,14 @@ async def adiscover_skills(
     """
     result = await backend.als(source_path)  # 1 API call
     items = result.entries or []
-    skill_dirs = [item["path"] for item in items if item.get("is_dir")]
+    # A hidden directory is never a skill (a skill name cannot start with a
+    # dot) and the sync's own staging area lives here as one, so listing it
+    # would present the harness's scratch space as an unconfirmed skill.
+    skill_dirs = [
+        item["path"]
+        for item in items
+        if item.get("is_dir") and not PurePosixPath(item["path"]).name.startswith(".")
+    ]
 
     if not skill_dirs:
         return []
@@ -356,7 +364,7 @@ async def adiscover_skills(
             logger.debug("Self-healing lock write failed (non-critical)")
 
     # NOTE: Full lock ↔ filesystem reconciliation (adds + removes) is handled
-    # post-completion by PTCSandbox.sync_skills_lock(). The self-healing above
-    # is a fallback for cases where sync_skills_lock failed or was skipped.
+    # post-turn by reconcile_workspace_skills. The self-healing above is a
+    # fallback for the window before that pass runs, or when it failed.
 
     return results

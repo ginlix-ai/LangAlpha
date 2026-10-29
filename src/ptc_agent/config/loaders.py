@@ -22,19 +22,22 @@ LLM Configuration:
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
 from ptc_agent.config.agent import (
     AgentConfig,
     CompactionConfig,
-    FlashConfig,
     LLMConfig,
     SkillsConfig,
     SubagentConfig,
     SubagentsConfig,
 )
-from ptc_agent.config.core import CoreConfig, create_default_security_config
+from ptc_agent.config.core import (
+    CoreConfig,
+    create_default_security_config,
+)
 from ptc_agent.config.utils import (
     configure_structlog,
     create_filesystem_config,
@@ -51,7 +54,10 @@ from ptc_agent.config.file_utils import (
     get_config_search_paths,
     get_default_config_dir,
     load_yaml_config,
+    refuse_renamed_llm_keys,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def _resolve_config_file(
@@ -243,8 +249,11 @@ def load_from_dict(
             "Please add these sections to your agent_config.yaml file."
         )
 
-    # Load LLM configuration - extract name and flash LLM
+    # Load LLM configuration - extract name and the Background model
     # llm: null (or omitted) is allowed — users configure models via the UI instead.
+    # A dict passed in directly never went through load_yaml_config, which
+    # refuses the retired llm.flash spelling for a file.
+    refuse_renamed_llm_keys(config_data, "the agent config")
     llm_data = config_data.get("llm")
 
     llm_config: LLMConfig | None = None
@@ -255,17 +264,13 @@ def load_from_dict(
         llm_name = llm_data.get("name", "")
         if not llm_name:
             raise ValueError("llm.name is required in agent_config.yaml when llm is a dict")
-        # Blank compaction/fetch inherit the flash model, so leaving them empty
-        # in agent_config.yaml means "reuse flash for these cheaper roles".
-        # `... or None` folds "" to None when flash is itself unset, so the
-        # downstream fall-back-to-main path (resolve_compaction_client) still
-        # engages instead of resolving an empty model name.
-        flash_model = llm_data.get("flash") or None
+        # Blank compaction/fetch stay None so they resolve per turn
+        # (LLMConfig.compaction_name / fetch_name), not to this file's models.
         llm_config = LLMConfig(
             name=llm_name,
-            flash=llm_data.get("flash"),
-            compaction=llm_data.get("compaction") or flash_model,
-            fetch=llm_data.get("fetch") or flash_model,
+            background=llm_data.get("background"),
+            compaction=llm_data.get("compaction") or None,
+            fetch=llm_data.get("fetch") or None,
             fallback=llm_data.get("fallback"),
         )
     elif llm_data is not None:
@@ -292,16 +297,33 @@ def load_from_dict(
     # Load Subagent configuration (optional section)
     subagents_data = config_data.get("subagents") or {}
     subagents_enabled = subagents_data.get("enabled", ["general-purpose"])
+    from ptc_agent.agent.subagents.builtins import BUILTIN_SUBAGENTS
+
     subagent_definitions: dict[str, SubagentConfig] = {}
     for name, defn_data in (subagents_data.get("definitions") or {}).items():
+        if isinstance(defn_data, dict) and "mode" in defn_data:
+            # ``mode`` is retired: ``ptc`` was the default, and ``flash`` only
+            # turned every prompt section off, which ``sections:`` says itself.
+            # Any other value was refused while the field existed, so it still is.
+            defn_data = dict(defn_data)
+            mode = defn_data.pop("mode")
+            if mode == "flash":
+                raise ValueError(
+                    f"subagents.definitions.{name}: mode: flash was retired; "
+                    "under sections:, set to false each prompt section it "
+                    "should leave out"
+                )
+            if mode != "ptc":
+                raise ValueError(
+                    f"subagents.definitions.{name}: mode was retired; remove it"
+                )
         try:
-            subagent_definitions[name] = SubagentConfig(**defn_data)
+            # A bare key is an empty patch; any other value that is not a map fails here.
+            subagent_definitions[name] = SubagentConfig(**({} if defn_data is None else defn_data))
         except Exception as e:
             raise ValueError(f"Invalid subagent definition '{name}': {e}") from e
 
     # Validate enabled subagent names exist in builtins or user definitions
-    from ptc_agent.agent.subagents.builtins import BUILTIN_SUBAGENTS
-
     known_names = set(BUILTIN_SUBAGENTS) | set(subagent_definitions)
     for name in subagents_enabled:
         if name not in known_names:
@@ -321,17 +343,6 @@ def load_from_dict(
     skills_config = SkillsConfig(
         enabled=skills_data.get("enabled", True),
         user_skills_dir=skills_data.get("user_skills_dir", "~/.ptc-agent/skills"),
-        project_skills_dir=skills_data.get("project_skills_dir", "skills"),
-        sandbox_skills_base=skills_data.get(
-            "sandbox_skills_base", f"{filesystem_config.working_directory}/.agents/skills"
-        ),
-    )
-
-    # Load Flash configuration (optional section)
-    # Flash LLM is now in llm.flash; compaction uses main compaction config
-    flash_data = config_data.get("flash") or {}
-    flash_config = FlashConfig(
-        enabled=flash_data.get("enabled", True),
     )
 
     # Load Compaction configuration (optional section)
@@ -351,7 +362,6 @@ def load_from_dict(
         mcp=mcp_config,
         filesystem=filesystem_config,
         skills=skills_config,
-        flash=flash_config,
         subagents=subagents_config,
         compaction=compaction_config,
         search_api=search_api,
@@ -381,21 +391,27 @@ cli:
 # Model name from src/llms/manifest/models.json
 llm:
   name: "your-model-name"       # Required: primary model from models.json
-  # flash: "your-flash-model"   # Optional: model for flash agent
+  # background: "your-model"    # Optional: model for background work
   # compaction: "your-model"    # Optional: model for context compaction
   # fetch: "your-model"         # Optional: model for web content extraction
   # fallback:                   # Optional: fallback models when primary fails
   #   - "fallback-model"
 
-# Daytona Sandbox
-# ---------------
-daytona:
-  base_url: "https://app.daytona.io/api"
-  # api_key: set DAYTONA_API_KEY in environment or .env file
-  python_version: "3.12"
-  auto_stop_interval: 3600  # 1 hour
-  auto_archive_interval: 604800  # 7 days
-  auto_delete_interval: 7776000  # 90 days
+# Sandbox
+# -------
+sandbox:
+  provider: "daytona"  # daytona, e2b or docker; SANDBOX_PROVIDER overrides it
+  daytona:
+    base_url: "https://app.daytona.io/api"
+    # api_key: set DAYTONA_API_KEY in environment or .env file
+    python_version: "3.12"
+    auto_stop_interval: 3600  # 1 hour
+    auto_archive_interval: 604800  # 7 days
+    auto_delete_interval: 7776000  # 90 days
+  # e2b:  # with provider: "e2b"
+  #   # api_key: set E2B_API_KEY in environment or .env file
+  #   auto_stop_interval: 3600  # idle seconds before a sandbox pauses
+  #   max_timeout: 3600  # plan's longest continuous run (86400 on Pro)
 
 # MCP Servers (optional)
 # ----------------------
@@ -424,7 +440,7 @@ filesystem:
   # These tools provide direct file and directory operations without code generation
 
   # Working directory for the sandbox - used as the root for virtual path normalization
-  # Agent sees virtual paths like /results/file.txt which map to {working_directory}/results/file.txt
+  # Agent sees virtual paths like /work/task/file.txt which map to {working_directory}/work/task/file.txt
   working_directory: "/home/workspace"
 
   # allowed_directories and denied_directories are auto-derived from working_directory:

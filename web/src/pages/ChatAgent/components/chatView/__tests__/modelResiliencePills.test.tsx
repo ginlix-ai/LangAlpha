@@ -5,11 +5,9 @@
  *     - retrying → "<model> error — retrying ({attempt+1}/{maxRetries+1})…"
  *     - fallback → "Falling back to <toModel>…"
  *   - FallbackSuggestionPill: rendered only when `fallbackSuggestion &&
- *     !isLoading && toModel !== nextSendModel`, with a switch action and a
- *     dismiss. `nextSendModel = inputModel ?? (lastThreadModel ||
- *     activePreferredModel)` — the chat input's live selection (what the next
- *     send re-uses), NOT the durable preference, which a thread's own model
- *     overrides on every send.
+ *     !isLoading && toModel !== composerModel`, with a switch action and a
+ *     dismiss. `composerModel` is the model the composer shows, which is what
+ *     the next send names.
  *
  * Copy is asserted through the real i18n instance (global test setup) against
  * the chat.modelRetrying / chat.modelFallingBack / chat.modelTroubleSuggestion
@@ -17,11 +15,28 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import '@testing-library/jest-dom';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
+import { createTestQueryClient, renderWithProviders } from '@/test/utils';
+import { queryKeys } from '@/lib/queryKeys';
 import React from 'react';
 import type { FallbackSuggestion } from '../../../session/types';
 import { ModelStatusPill } from '../ModelStatusPill';
 import { FallbackSuggestionPill } from '../FallbackSuggestionPill';
+
+// The pills print a model's authored name from the cached catalog the composer
+// loaded; seed it the way that load would.
+function seededClient() {
+  const queryClient = createTestQueryClient();
+  queryClient.setQueryData(queryKeys.models.all, {
+    model_metadata: {
+      'model-alpha': { display_name: 'Alpha' },
+      'model-beta': { display_name: 'Beta' },
+    },
+  });
+  return queryClient;
+}
+
+const render = (ui: React.ReactElement) => renderWithProviders(ui, { queryClient: seededClient() });
 
 describe('ModelStatusPill', () => {
   it('renders the retrying pill with 1-based counts when streaming', () => {
@@ -33,7 +48,7 @@ describe('ModelStatusPill', () => {
     );
     const pill = screen.getByRole('status');
     // attempt+1 = 2, maxRetries+1 = 4
-    expect(pill).toHaveTextContent('model-alpha error — retrying (2/4)…');
+    expect(pill).toHaveTextContent('Alpha error — retrying (2/4)…');
     expect(pill).toHaveAttribute('aria-live', 'polite');
   });
 
@@ -44,7 +59,17 @@ describe('ModelStatusPill', () => {
         isLoading={true}
       />,
     );
-    expect(screen.getByRole('status')).toHaveTextContent('Falling back to model-beta…');
+    expect(screen.getByRole('status')).toHaveTextContent('Falling back to Beta…');
+  });
+
+  it('says who pays for the model it falls back to, where the server said', () => {
+    render(
+      <ModelStatusPill
+        modelStatus={{ kind: 'fallback', fromModel: 'model-alpha', toModel: 'model-beta', paidBy: 'byok' }}
+        isLoading={true}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('Falling back to Beta (Your key)…');
   });
 
   it('renders nothing when not loading, even with a modelStatus set', () => {
@@ -72,9 +97,7 @@ describe('FallbackSuggestionPill', () => {
       <FallbackSuggestionPill
         fallbackSuggestion={suggestion}
         isLoading={false}
-        inputModel={null}
-        lastThreadModel={null}
-        activePreferredModel="model-alpha"
+        composerModel="model-alpha"
         onSwitchModel={noop}
         onDismiss={noop}
         {...overrides}
@@ -85,9 +108,18 @@ describe('FallbackSuggestionPill', () => {
     const onSwitchModel = vi.fn();
     renderPill({ onSwitchModel });
     const pill = screen.getByRole('status');
-    expect(pill).toHaveTextContent('model-alpha is having trouble — this answer came from model-beta');
+    expect(pill).toHaveTextContent('Alpha is having trouble — this answer came from Beta');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Switch to model-beta' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Beta' }));
+    expect(onSwitchModel).toHaveBeenCalledWith('model-beta');
+  });
+
+  // Two models can share a name, one on a plan and one on credits, so the
+  // switch says which payer the thread moves onto.
+  it('says who pays for the model it would switch to', () => {
+    const onSwitchModel = vi.fn();
+    renderPill({ onSwitchModel, fallbackSuggestion: { ...suggestion, paidBy: 'byok' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Beta (Your key)' }));
     expect(onSwitchModel).toHaveBeenCalledWith('model-beta');
   });
 
@@ -103,42 +135,13 @@ describe('FallbackSuggestionPill', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders nothing when the preference resolves to the working model and nothing overrides it', () => {
-    const { container } = renderPill({ activePreferredModel: 'model-beta' });
-    expect(container.firstChild).toBeNull();
-  });
-
-  it('still renders when the durable preference is the working model but the input re-sends the broken one', () => {
-    // Regression: the thread's own model (input selection) overrides the
-    // preference on every send — a "correct" preference must not hide the pill.
-    renderPill({
-      inputModel: 'model-alpha',
-      lastThreadModel: 'model-alpha',
-      activePreferredModel: 'model-beta',
-    });
-    expect(screen.getByRole('status')).toBeInTheDocument();
-  });
-
-  it('renders nothing once the input selection is already the working model', () => {
-    const { container } = renderPill({
-      inputModel: 'model-beta',
-      lastThreadModel: 'model-alpha',
-      activePreferredModel: 'model-alpha',
-    });
-    expect(container.firstChild).toBeNull();
-  });
-
-  it('falls back to the thread model before the preference while the input has not reported', () => {
-    const { container } = renderPill({
-      inputModel: null,
-      lastThreadModel: 'model-beta',
-      activePreferredModel: 'model-alpha',
-    });
+  it('renders nothing once the composer already shows the working model', () => {
+    const { container } = renderPill({ composerModel: 'model-beta' });
     expect(container.firstChild).toBeNull();
   });
 
   it('renders nothing without a suggestion', () => {
-    const { container } = renderPill({ fallbackSuggestion: null, activePreferredModel: null });
+    const { container } = renderPill({ fallbackSuggestion: null });
     expect(container.firstChild).toBeNull();
   });
 });

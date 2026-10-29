@@ -1,0 +1,11 @@
+{# The MCP roster, rendered into the cached per-thread baseline: byte-
+   deterministic for equal inputs, so no timestamps, no dict iteration, and no
+   guidance fence. An empty roster renders nothing rather than an empty element:
+   there is no server to name, and a labelled blank would read as one. #}
+{% if content %}
+<mcp-servers>
+Each server below is importable as `tools.<server_name>` inside `execute_code`; read the tool's doc under `.agents/tools/docs/<server_name>/` before you call it the first time.
+
+{{ content }}
+</mcp-servers>
+{% endif %}

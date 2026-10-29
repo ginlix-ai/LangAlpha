@@ -1,30 +1,24 @@
-import { Search, HelpCircle, Mail, LayoutGrid, Pencil } from 'lucide-react';
+import { Search, HelpCircle, Mail, Pencil } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { searchStocks } from '@/lib/marketUtils';
-import { useNavigate } from 'react-router-dom';
+import type { StockSearchHit } from '@/lib/marketUtils';
+import { useSymbolSearch } from '@/hooks/useSymbolSearch';
+import { resolveDualName } from '@/lib/displayName';
+import { useNavigate } from 'react-router';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { buildMarketViewUrl } from '@/pages/MarketView/utils/marketRoute';
 import './DashboardHeader.css';
 
-interface StockResult {
-  symbol: string;
-  name?: string;
-  [key: string]: unknown;
-}
-
 interface DashboardHeaderProps {
-  onStockSearch?: (symbol: string, stock: StockResult | null) => void;
   onScrollToTop?: () => void;
-  /** When provided (desktop only), show the Classic/Custom segmented toggle and the Edit button in Custom mode. */
-  layoutToggle?: {
-    mode: 'classic' | 'custom';
-    onModeChange: (mode: 'classic' | 'custom') => void;
-    editMode?: boolean;
-    onEditModeChange?: (edit: boolean) => void;
+  /** The layout's Edit button; absent where the layout can't be edited (a phone). */
+  edit?: {
+    editMode: boolean;
+    onEditModeChange: (edit: boolean) => void;
   };
 }
 
-const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScrollToTop, layoutToggle }) => {
+const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onScrollToTop, edit }) => {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { t } = useTranslation();
@@ -34,8 +28,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
 
   // Search state
   const [searchValue, setSearchValue] = useState('');
-  const [searchResults, setSearchResults] = useState<StockResult[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
+  const { hits: searchResults, loading: searchLoading } = useSymbolSearch(searchValue, 12);
   const [showDropdown, setShowDropdown] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -66,33 +59,6 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showHelpPopover]);
 
-  // Stock search with debounce (300ms)
-  useEffect(() => {
-    const query = searchValue.trim();
-    if (!query || query.length < 1) {
-      setSearchResults([]);
-      setSearchLoading(false);
-      setShowDropdown(false);
-      return;
-    }
-
-    const timeoutId = setTimeout(async () => {
-      setSearchLoading(true);
-      setShowDropdown(true);
-      try {
-        const result = await searchStocks(query, 12);
-        setSearchResults((result.results || []) as StockResult[]);
-      } catch (error) {
-        console.error('Stock search failed:', error);
-        setSearchResults([]);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300);
-
-    return () => clearTimeout(timeoutId);
-  }, [searchValue]);
-
   // Close search dropdown on outside click
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -104,23 +70,24 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleSelectStock = (stock: StockResult) => {
-    if (stock?.symbol) {
-      const symbol = stock.symbol.trim().toUpperCase();
-      setSearchValue(symbol);
-      setShowDropdown(false);
-      if (onStockSearch) {
-        onStockSearch(symbol, stock);
-      } else {
-        navigate(`/market?symbol=${encodeURIComponent(symbol)}`);
-      }
-    }
+  const openSymbol = (symbol: string) => {
+    setSearchValue(symbol);
+    setShowDropdown(false);
+    navigate(buildMarketViewUrl({ symbol }));
+  };
+
+  const handleSelectStock = (stock: StockSearchHit) => {
+    openSymbol(stock.symbol.trim().toUpperCase());
   };
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const q = searchValue.trim();
     if (!q) return;
+    // Nothing is taken while a search is resting or in flight: the rows on
+    // screen may still answer the query that was typed over, and the raw text
+    // may yet resolve to a hit of its own. The same rule as SymbolSearch.
+    if (searchLoading) return;
 
     // Default to the first search result when available
     if (searchResults.length > 0) {
@@ -128,22 +95,21 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
       return;
     }
 
-    const symbol = q.toUpperCase();
-    setSearchValue(symbol);
-    setShowDropdown(false);
-    if (onStockSearch) {
-      onStockSearch(symbol, null);
-    } else {
-      navigate(`/market?symbol=${encodeURIComponent(symbol)}`);
-    }
+    openSymbol(q.toUpperCase());
   };
 
   return (
     <>
+      {/* Doubles as titlebar in the desktop shell. The search field and the
+          buttons declare no-drag for themselves, so it is the space between
+          them that moves the window. */}
       <div
+        data-chrome="drag"
         className="sticky top-0 z-30 flex items-center justify-between px-4 sm:px-6 py-3"
         style={{
-          backgroundColor: 'var(--color-bg-canvas)',
+          backgroundColor: 'var(--color-bg-page)',
+          // The 40px search row centres at the shared first-row depth (--page-top).
+          paddingTop: 'calc(var(--page-top) - 6px)',
           borderBottom: '1px solid var(--color-border-muted)',
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
@@ -160,7 +126,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
           <div className="dashboard-search-wrapper" ref={dropdownRef}>
             <form
               onSubmit={handleSubmit}
-              className="dashboard-search-form relative group flex items-center gap-2 h-10 px-3 rounded-xl border transition-all"
+              className="dashboard-search-form owns-its-edge relative group flex items-center gap-2 h-10 px-3 rounded-xl border transition-all"
               style={{
                 backgroundColor: 'var(--color-bg-input)',
                 borderColor: searchFocused ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
@@ -176,7 +142,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                 type="text"
                 placeholder={t('dashboard.searchPlaceholder')}
                 value={searchValue}
-                onChange={(e) => setSearchValue(e.target.value)}
+                onChange={(e) => { setSearchValue(e.target.value); setShowDropdown(e.target.value.trim() !== ''); }}
                 onFocus={() => {
                   setSearchFocused(true);
                   if (searchValue.trim()) setShowDropdown(true);
@@ -193,7 +159,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
               {/* "/" shortcut badge */}
               {!searchFocused && !searchValue && (
                 <span
-                  className="text-xs border rounded px-1.5 py-0.5 flex-shrink-0"
+                  className="text-xs border rounded px-1.5 py-0.5 shrink-0"
                   style={{
                     color: 'var(--color-text-quaternary, var(--color-text-secondary))',
                     borderColor: 'var(--color-border-default)',
@@ -205,7 +171,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
             </form>
             {showDropdown && searchValue.trim() && (
               <div className="dashboard-search-dropdown">
-                {searchLoading ? (
+                {searchLoading && searchResults.length === 0 ? (
                   <div className="dashboard-search-dropdown-item dashboard-search-dropdown-loading">
                     {t('dashboard.searching')}
                   </div>
@@ -214,17 +180,28 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                     {t('dashboard.noResults')}
                   </div>
                 ) : (
-                  searchResults.slice(0, 12).map((stock, index) => (
-                    <button
-                      key={`${stock.symbol}-${index}`}
-                      type="button"
-                      className="dashboard-search-dropdown-item"
-                      onClick={() => handleSelectStock(stock)}
-                    >
-                      <span className="dashboard-search-dropdown-symbol">{stock.symbol}</span>
-                      <span className="dashboard-search-dropdown-name">{stock.name || stock.symbol}</span>
-                    </button>
-                  ))
+                  searchResults.map((stock, index) => {
+                    const dualName = resolveDualName(
+                      { name: stock.name, nameLocal: stock.nameLocal, nameEn: stock.nameEn },
+                      stock.symbol,
+                    );
+                    return (
+                      <button
+                        key={`${stock.symbol}-${index}`}
+                        type="button"
+                        className="dashboard-search-dropdown-item"
+                        onClick={() => handleSelectStock(stock)}
+                      >
+                        <span className="dashboard-search-dropdown-symbol">{stock.symbol}</span>
+                        <span className="dashboard-search-dropdown-name">
+                          {dualName.primary}
+                          {dualName.secondary && (
+                            <span className="dashboard-search-dropdown-name-secondary">{dualName.secondary}</span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })
                 )}
               </div>
             )}
@@ -233,72 +210,20 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
 
         {/* Right actions */}
         <div className="flex items-center gap-3 ml-3 shrink-0">
-          {/* Layout toggle — hidden on mobile */}
-          {layoutToggle && !isMobile && (
-            <>
-              <div
-                className="flex items-center rounded-lg border p-0.5"
-                style={{
-                  backgroundColor: 'var(--color-bg-input)',
-                  borderColor: 'var(--color-border-muted)',
-                }}
-                role="tablist"
-                aria-label={t('dashboard.layoutToggle.groupAria')}
-              >
-                <button
-                  type="button"
-                  onClick={() => layoutToggle.onModeChange('classic')}
-                  role="tab"
-                  aria-selected={layoutToggle.mode === 'classic'}
-                  className="px-2.5 py-1 text-xs rounded-md transition-colors"
-                  style={{
-                    backgroundColor:
-                      layoutToggle.mode === 'classic' ? 'var(--color-bg-elevated)' : 'transparent',
-                    color:
-                      layoutToggle.mode === 'classic'
-                        ? 'var(--color-text-primary)'
-                        : 'var(--color-text-secondary)',
-                    fontWeight: layoutToggle.mode === 'classic' ? 600 : 400,
-                  }}
-                >
-                  {t('dashboard.layoutToggle.classic')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => layoutToggle.onModeChange('custom')}
-                  role="tab"
-                  aria-selected={layoutToggle.mode === 'custom'}
-                  className="px-2.5 py-1 text-xs rounded-md transition-colors flex items-center gap-1"
-                  style={{
-                    backgroundColor:
-                      layoutToggle.mode === 'custom' ? 'var(--color-bg-elevated)' : 'transparent',
-                    color:
-                      layoutToggle.mode === 'custom'
-                        ? 'var(--color-text-primary)'
-                        : 'var(--color-text-secondary)',
-                    fontWeight: layoutToggle.mode === 'custom' ? 600 : 400,
-                  }}
-                >
-                  <LayoutGrid size={12} />
-                  {t('dashboard.layoutToggle.custom')}
-                </button>
-              </div>
-              {layoutToggle.mode === 'custom' && layoutToggle.onEditModeChange && (
-                <button
-                  type="button"
-                  onClick={() => layoutToggle.onEditModeChange?.(!layoutToggle.editMode)}
-                  className="p-2 rounded-md transition-colors"
-                  style={{
-                    color: layoutToggle.editMode ? 'var(--color-btn-primary-text)' : 'var(--color-text-secondary)',
-                    backgroundColor: layoutToggle.editMode ? 'var(--color-btn-primary-bg)' : 'transparent',
-                  }}
-                  aria-label={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}
-                  title={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}
-                >
-                  <Pencil size={16} />
-                </button>
-              )}
-            </>
+          {edit && (
+            <button
+              type="button"
+              onClick={() => edit.onEditModeChange(!edit.editMode)}
+              className="p-2 rounded-md transition-colors"
+              style={{
+                color: edit.editMode ? 'var(--color-btn-primary-text)' : 'var(--color-text-secondary)',
+                backgroundColor: edit.editMode ? 'var(--color-btn-primary-bg)' : 'transparent',
+              }}
+              aria-label={t(edit.editMode ? 'dashboard.header.exitEditLayout' : 'dashboard.header.editLayout')}
+              title={t(edit.editMode ? 'dashboard.header.exitEditLayout' : 'dashboard.header.editLayout')}
+            >
+              <Pencil size={16} />
+            </button>
           )}
 
           {/* Help — hidden on mobile to save space */}
@@ -332,21 +257,25 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                   {t('dashboard.contactMessage')}
                 </p>
                 {((import.meta.env.VITE_CONTACT_EMAILS as string) || '').split(',').filter(Boolean).map((email: string, idx: number, arr: string[]) => (
-                  <div
+                  <a
                     key={email}
+                    href={`mailto:${email.trim()}`}
+                    // An anchor, not a div with an onClick: this row is a link,
+                    // and the element brings focus, Enter activation and the
+                    // browser's own address menu with it. It also sits inside the
+                    // header's drag region, which chrome.css exempts by element,
+                    // and `a` is on that list where a bare div is not: as a div
+                    // the shell read a click on the row as dragging the window.
                     className="flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer transition-colors hover:opacity-80"
                     style={{ backgroundColor: 'var(--color-bg-input)', marginBottom: idx < arr.length - 1 ? '8px' : undefined }}
-                    onClick={() => {
-                      window.location.href = `mailto:${email.trim()}`;
-                      setShowHelpPopover(false);
-                    }}
+                    onClick={() => setShowHelpPopover(false)}
                   >
-                    <Mail className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
+                    <Mail className="h-4 w-4 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
                     <div className="min-w-0">
-                      <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.classic.emailLabel')}</p>
+                      <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.header.emailLabel')}</p>
                       <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{email.trim()}</p>
                     </div>
-                  </div>
+                  </a>
                 ))}
               </div>
             )}

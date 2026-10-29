@@ -18,14 +18,15 @@ class WebhookClient:
     async def fire(self, url: str, payload: dict, secret: str | None = None) -> bool:
         """POST JSON payload to url with optional HMAC-SHA256 signature.
 
-        Returns True on 2xx, False otherwise. Never raises.
+        Returns True on 2xx, False otherwise. Never raises: this is the one
+        guard on a delivery, so a method that fails leaves the others sent.
         """
-        body = json.dumps(payload, default=str)
-        headers = {"Content-Type": "application/json"}
-        if secret:
-            sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
-            headers["X-Webhook-Signature"] = f"sha256={sig}"
         try:
+            body = json.dumps(payload, default=str)
+            headers = {"Content-Type": "application/json"}
+            if secret:
+                sig = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+                headers["X-Webhook-Signature"] = f"sha256={sig}"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(url, content=body, headers=headers)
                 if not resp.is_success:
@@ -45,51 +46,75 @@ class WebhookClient:
         thread_id: str | None,
         workspace_id: str | None,
         error: str | None = None,
+        run_id: str | None = None,
+        failure_reason: str | None = None,
     ) -> list[dict] | None:
         """Fire an event to all configured delivery methods.
 
         Reads delivery_config.methods from the automation and resolves
-        the webhook URL and secret from environment variables.
-        Never raises — all errors are logged and swallowed.
+        the webhook URL and secret from environment variables. Never raises,
+        since a settle calls it after its row is committed and what follows
+        must still run: an event it cannot build is logged and sends nothing,
+        and ``fire`` reports a failed delivery as that method's result.
+
+        ``run_id`` names the turn this execution ran. A thread can hold a
+        newer turn by the time the event lands (the next firing of a pinned
+        thread can start within seconds), so a receiver reading the report
+        should read that turn, not the thread's latest.
+
+        ``failure_reason`` sets apart a failed run that was not the
+        automation's own failure: ``usage_limit`` (``error`` is then the quota
+        service's own message), ``provider_auth`` (their key was rejected and
+        the automation is now disabled), ``server_error`` (the service failed
+        it) or ``interrupted`` (the server cut its run off). None for any other
+        event or failure.
 
         Returns a list of per-method results, or None if no delivery configured.
-        Each result: {"method": str, "success": bool, "error"?: str}
+        Each result: {"method": str, "success": bool}
         """
-        delivery_config = automation.get("delivery_config") or {}
-        methods = delivery_config.get("methods", [])
-        if not methods:
+        try:
+            delivery_config = automation.get("delivery_config") or {}
+            methods = list(delivery_config.get("methods") or [])
+            if not methods:
+                return None
+
+            from src.config import settings
+
+            webhook_url = settings.AUTOMATION_WEBHOOK_URL
+            webhook_secret = settings.AUTOMATION_WEBHOOK_SECRET
+            if not webhook_url:
+                logger.warning("[WEBHOOK] AUTOMATION_WEBHOOK_URL not configured, skipping delivery")
+                return None
+
+            base_payload = {
+                "event": event,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "automation_id": str(automation["automation_id"]),
+                "automation_name": automation.get("name"),
+                "execution_id": execution_id,
+                "thread_id": thread_id,
+                "run_id": run_id,
+                "failure_reason": failure_reason,
+                "user_id": automation["user_id"],
+                "workspace_id": str(workspace_id) if workspace_id else None,
+                "title": automation.get("name"),
+            }
+            if error:
+                base_payload["error"] = error
+        except Exception as e:
+            logger.error(
+                f"[WEBHOOK] Could not build {event}: execution_id={execution_id} error={e!r}"
+            )
             return None
 
-        from src.config import settings
-
-        webhook_url = settings.AUTOMATION_WEBHOOK_URL
-        webhook_secret = settings.AUTOMATION_WEBHOOK_SECRET
-        if not webhook_url:
-            logger.warning("[WEBHOOK] AUTOMATION_WEBHOOK_URL not configured, skipping delivery")
-            return None
-
-        base_payload = {
-            "event": event,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "automation_id": str(automation["automation_id"]),
-            "automation_name": automation.get("name"),
-            "execution_id": execution_id,
-            "thread_id": thread_id,
-            "user_id": automation["user_id"],
-            "agent_mode": automation.get("agent_mode"),
-            "workspace_id": str(workspace_id) if workspace_id else None,
-            "title": automation.get("name"),
-        }
-        if error:
-            base_payload["error"] = error
-
-        results = []
-        for method in methods:
-            payload = {**base_payload, "config": {"channel": method}}
-            try:
-                success = await self.fire(webhook_url, payload, webhook_secret or None)
-                results.append({"method": method, "success": success})
-            except Exception as e:
-                logger.error(f"[WEBHOOK] fire_event failed: method={method} error={e}")
-                results.append({"method": method, "success": False, "error": str(e)})
-        return results
+        return [
+            {
+                "method": method,
+                "success": await self.fire(
+                    webhook_url,
+                    {**base_payload, "config": {"channel": method}},
+                    webhook_secret or None,
+                ),
+            }
+            for method in methods
+        ]

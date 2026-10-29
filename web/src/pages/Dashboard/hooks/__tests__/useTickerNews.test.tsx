@@ -70,25 +70,25 @@ describe('useTickerNews (React Query)', () => {
     expect(mockGetNews).toHaveBeenCalledTimes(1); // no further polls
   });
 
-  it('keeps Classic (no provider) and Custom (tickertick) feeds in separate cache entries', async () => {
+  it('keeps two providers\' feeds in separate cache entries', async () => {
     // Same QueryClient + same tickers/cacheKey, differing only by provider. The
     // provider is part of the query key, so the two must NOT serve each other's
-    // articles — the invariant a prior review flagged as critical.
+    // articles.
     const Wrapper = makeWrapper();
-    mockGetNews.mockImplementation(({ provider }: { provider?: string }) =>
-      Promise.resolve({ results: [{ id: provider ?? 'classic', title: provider ?? 'classic' }] }),
+    mockGetNews.mockImplementation(({ provider }: { provider: string }) =>
+      Promise.resolve({ results: [{ id: provider, title: provider }] }),
     );
     const rows = rowsFor('AAPL');
-    const classic = renderHook(() => useTickerNews(rows, 'portfolio'), { wrapper: Wrapper });
-    const custom = renderHook(() => useTickerNews(rows, 'portfolio', 'tickertick'), { wrapper: Wrapper });
+    const chain = renderHook(() => useTickerNews(rows, 'portfolio', 'chain'), { wrapper: Wrapper });
+    const tickertick = renderHook(() => useTickerNews(rows, 'portfolio', 'tickertick'), { wrapper: Wrapper });
 
-    await waitFor(() => expect(classic.result.current.loading).toBe(false));
-    await waitFor(() => expect(custom.result.current.loading).toBe(false));
+    await waitFor(() => expect(chain.result.current.loading).toBe(false));
+    await waitFor(() => expect(tickertick.result.current.loading).toBe(false));
 
-    expect(mockGetNews).toHaveBeenCalledWith({ tickers: ['AAPL'], limit: 50, provider: undefined });
+    expect(mockGetNews).toHaveBeenCalledWith({ tickers: ['AAPL'], limit: 50, provider: 'chain' });
     expect(mockGetNews).toHaveBeenCalledWith({ tickers: ['AAPL'], limit: 50, provider: 'tickertick' });
-    expect(classic.result.current.items[0].id).toBe('classic');
-    expect(custom.result.current.items[0].id).toBe('tickertick');
+    expect(chain.result.current.items[0].id).toBe('chain');
+    expect(tickertick.result.current.items[0].id).toBe('tickertick');
   });
 
   it('keys cache by cacheKey so portfolio and watchlist feeds stay separate', async () => {
@@ -113,7 +113,7 @@ describe('useTickerNews (React Query)', () => {
 
     expect(result.current.items[0]).toMatchObject({
       id: '1', title: 'T', isHot: true, author: null,
-      source: '', favicon: null, image: null, keywords: [], publishedAt: null, time: '',
+      source: '', favicon: null, image: null, keywords: [], publishedAt: null,
     });
   });
 

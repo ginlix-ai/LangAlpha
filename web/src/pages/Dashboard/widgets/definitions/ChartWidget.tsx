@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { Loader } from '@/components/ui/loader';
 import {
   createChart,
@@ -13,8 +13,13 @@ import {
   type ISeriesApi,
   type MouseEventParams,
   type UTCTimestamp,
+  AreaSeries,
+  CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
 } from 'lightweight-charts';
-import { searchStocks } from '@/lib/marketUtils';
+import { useSymbolSearch } from '@/hooks/useSymbolSearch';
+import { normalizeSymbolInput, readTypedTicker } from '@/lib/marketUtils';
 import {
   getChartTheme,
   STAGE2_BACKFILL_DAYS,
@@ -33,13 +38,14 @@ import {
   WS_FOLD_INTERVALS,
   isUSEquity,
   fetchStockData,
-  centerLatestBarView,
   computeInitialLoadRange,
+  defaultBarsView,
   dedupeMergeByTime,
   rangeBeforeOldest,
-  currencySymbol,
+  formatMoney,
+  quoteCurrency,
   foldMinuteBar,
-  formatPrice,
+  chartPriceFormat,
   timezoneForSymbol,
   useCurrencyDisplay,
   useLiveBars,
@@ -48,7 +54,8 @@ import { chartSecToDateStr, dateStrInTz } from '@/lib/utils';
 import { createValueStore, type ValueStore } from '@/lib/valueStore';
 import { useMarketDataWSContext } from '@/pages/MarketView/contexts/MarketDataWSContext';
 import { useTheme } from '@/contexts/ThemeContext';
-import { createFormatter, createDateFormatter } from '@/lib/format';
+import { createDateFormatter, createFormatter, grouped2, integer } from '@/lib/format';
+import { useLocale } from '@/hooks/useLocale';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../types';
 import { useWidgetContextExport } from '../framework/contextSnapshot';
 import {
@@ -57,12 +64,10 @@ import {
   wrapWidgetContext,
 } from '../framework/snapshotSerializers';
 
-const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // Compact volumes ("1.23B", "1.23M", "1.2K"). Intl.NumberFormat with
 // notation: 'compact' produces locale-appropriate scale suffixes — `1.23亿`
 // instead of `123M` for zh-CN, `1.23 Mio.` for de-DE.
 const fmtVolumeCompact = createFormatter({ notation: 'compact', compactDisplay: 'short', maximumFractionDigits: 2 });
-const fmtVolumeRound = createFormatter({ maximumFractionDigits: 0 });
 // Hover labels use the venue-wall-clock-as-UTC convention shared across the
 // chart; timeZone: 'UTC' keeps the formatter from reapplying any regional
 // shift while month/day names still respect the user's locale.
@@ -116,16 +121,16 @@ type Bar = {
 // Hover timestamps are stored as venue-wall-clock-as-UTC (same 'Z' trick the
 // rest of the chart uses); the formatters are pinned to timeZone: 'UTC' so the
 // read reflects market-local values, while month/day names follow the locale.
-function formatHoverTime(timeSec: number, daily: boolean): string {
+function formatHoverTime(timeSec: number, daily: boolean, locale: string): string {
   const d = new Date(timeSec * 1000);
-  return daily ? fmtHoverDay(d) : fmtHoverIntraday(d);
+  return daily ? fmtHoverDay(d, locale) : fmtHoverIntraday(d, locale);
 }
 
-function formatHoverVolume(v: number): string {
+function formatHoverVolume(v: number, locale: string): string {
   // Round-only for sub-1K values matches the prior `String(Math.round(v))`
   // shape (no decimals on small volumes); compact format kicks in above.
-  if (v < 1e3) return fmtVolumeRound(v);
-  return fmtVolumeCompact(v);
+  if (v < 1e3) return integer(v, locale);
+  return fmtVolumeCompact(v, locale);
 }
 
 type HoverBar =
@@ -133,8 +138,7 @@ type HoverBar =
   | null;
 
 // Subscribes to the hover store so per-mousemove crosshair updates re-render
-// only this strip, never the widget that owns the chart. useTranslation is
-// required — the fmt*/fmtHover* formatters are locale-bound.
+// only this strip, never the widget that owns the chart.
 const HoverReadout = memo(function HoverReadout({
   store,
   daily,
@@ -142,7 +146,7 @@ const HoverReadout = memo(function HoverReadout({
   store: ValueStore<HoverBar>;
   daily: boolean;
 }) {
-  useTranslation();
+  const locale = useLocale();
   const hover = useSyncExternalStore(store.subscribe, store.get);
   if (!hover) return null;
   return (
@@ -151,27 +155,27 @@ const HoverReadout = memo(function HoverReadout({
       style={{ color: 'var(--color-text-tertiary)' }}
     >
       <span style={{ color: 'var(--color-text-secondary)' }}>
-        {formatHoverTime(hover.time, daily)}
+        {formatHoverTime(hover.time, daily, locale)}
       </span>
       {hover.open != null && hover.high != null && hover.low != null && (
         <>
           <span>
-            O <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.open)}</span>
+            O <span style={{ color: 'var(--color-text-primary)' }}>{grouped2(hover.open, locale)}</span>
           </span>
           <span>
-            H <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.high)}</span>
+            H <span style={{ color: 'var(--color-text-primary)' }}>{grouped2(hover.high, locale)}</span>
           </span>
           <span>
-            L <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.low)}</span>
+            L <span style={{ color: 'var(--color-text-primary)' }}>{grouped2(hover.low, locale)}</span>
           </span>
         </>
       )}
       <span>
-        C <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.close)}</span>
+        C <span style={{ color: 'var(--color-text-primary)' }}>{grouped2(hover.close, locale)}</span>
       </span>
       {hover.volume != null && hover.volume > 0 && (
         <span>
-          V <span style={{ color: 'var(--color-text-primary)' }}>{formatHoverVolume(hover.volume)}</span>
+          V <span style={{ color: 'var(--color-text-primary)' }}>{formatHoverVolume(hover.volume, locale)}</span>
         </span>
       )}
     </div>
@@ -192,6 +196,7 @@ function etDateOfBar(timeSec: number): string {
 
 function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>) {
   const { t } = useTranslation();
+  const locale = useLocale();
   // Merge stored config onto the default, then sanitize the interval: if a
   // persisted dashboard pref has a legacy visible-range key (e.g. '3M') from
   // before the bar-interval refactor, silently fall back to the default so
@@ -209,7 +214,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
   const ctRef = useRef(ct);
   ctRef.current = ct;
 
-  // Shared WS provided at DashboardCustom level. When ginlix-data is disabled
+  // Shared WS provided by the Dashboard page. When ginlix-data is disabled
   // the hook returns an empty `prices` map and `subscribe` is a no-op.
   const { prices, subscribe, unsubscribe, ginlixDataEnabled } = useMarketDataWSContext();
 
@@ -423,11 +428,11 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     setSummary({ first, last });
   }, []);
 
-  // --- Default view: mirror MarketView's convention — latest bar centered
-  // at `TARGET_BAR_SPACING[interval]` pixels per bar. Keeps the candlestick
-  // ratio and scroll feel consistent between the widget and the full chart
-  // page. Half the chart width is reserved as empty future-space on the
-  // right (same as `centerLatestBarView`).
+  // --- Default view: mirror MarketView's framing (`defaultBarsView`): the
+  // latest bar centered at `TARGET_BAR_SPACING[interval]` pixels per bar with
+  // room to the right while the widget is wide, the bars packed with a gutter
+  // once it is narrow. Keeps the candlestick ratio and scroll feel consistent
+  // between the widget and the full chart page.
   const applyDefaultView = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -444,7 +449,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
       containerRef.current?.clientWidth ||
       800;
     ts.setVisibleLogicalRange(
-      centerLatestBarView({ chartWidth, barSpacing, dataLen: bars.length }),
+      defaultBarsView({ defaultView: 'centered', chartWidth, barSpacing, dataLen: bars.length }),
     );
   }, []);
 
@@ -501,11 +506,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
   // storage (allDataRef) and the WS tick clock (lastLiveTickTimeRef, written by
   // the WS fold effect). `seedMeta` seeds the watermark + currency from the
   // initial loader's metadata. See useLiveBars for the reconcile/skip invariants.
-  const { seedMeta } = useLiveBars(config.symbol, config.interval, {
+  // A series rebuilt server-side re-runs that loader (`historyEpoch`), never a splice.
+  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const { seedMeta, loadFailed } = useLiveBars(config.symbol, config.interval, {
     enabled: true,
     dataRef: allDataRef,
     lastWsTickRef: lastLiveTickTimeRef,
     onMeta: onCurrencyMeta,
+    onRebuilt: () => setHistoryEpoch((n) => n + 1),
     onBars: (merged) => {
       updateSeriesData(merged);
       const latest = merged[merged.length - 1];
@@ -562,7 +570,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     });
     chartRef.current = chart;
 
-    const volume = chart.addHistogramSeries({
+    const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
       color: 'rgba(128,128,128,0.3)',
@@ -673,12 +681,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     // Currency-aware price axis + native crosshair label, scoped to the price
     // series (the volume histogram keeps its `type: 'volume'` format). The
     // formatter reads the ref so the currency follows `displayCurrency`.
-    const priceFmt = {
-      type: 'custom' as const,
-      minMove: 0.01,
-      formatter: (price: number) =>
-        formatPrice(price, priceFormatRef.current.code, priceFormatRef.current.decimals),
-    };
+    const priceFmt = chartPriceFormat(priceFormatRef);
 
     // Already correct type — just reapply colors (positive may have flipped).
     if (seriesRef.current && seriesTypeRef.current === config.chartType) {
@@ -712,7 +715,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
 
     let next: ISeriesApi<'Candlestick'> | ISeriesApi<'Area'> | ISeriesApi<'Line'>;
     if (config.chartType === 'candle') {
-      next = chart.addCandlestickSeries({
+      next = chart.addSeries(CandlestickSeries, {
         upColor: ct.upColor,
         downColor: ct.downColor,
         borderVisible: false,
@@ -721,7 +724,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         priceFormat: priceFmt,
       });
     } else if (config.chartType === 'area') {
-      next = chart.addAreaSeries({
+      next = chart.addSeries(AreaSeries, {
         lineColor: changeColor,
         topColor: positive ? ct.baselineUpFill1 : ct.baselineDownFill2,
         bottomColor: positive ? ct.baselineUpFill2 : ct.baselineDownFill1,
@@ -731,7 +734,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         priceFormat: priceFmt,
       });
     } else {
-      next = chart.addLineSeries({
+      next = chart.addSeries(LineSeries, {
         color: changeColor,
         lineWidth: 2,
         priceLineVisible: false,
@@ -753,6 +756,12 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     // priceFormatRef is a stable ref (from useCurrencyDisplay) — listed so
     // exhaustive-deps sees the formatter's read; its identity never changes.
   }, [config.chartType, changeColor, positive, ct.upColor, ct.downColor, ct.baselineUpFill1, ct.baselineUpFill2, ct.baselineDownFill1, ct.baselineDownFill2, updateSeriesData, priceFormatRef]);
+
+  // The price step is fixed when applied, and the served decimals land after
+  // the series exists (first protocol header, symbol change).
+  useEffect(() => {
+    seriesRef.current?.applyOptions({ priceFormat: chartPriceFormat(priceFormatRef) });
+  }, [displayCurrency.decimals, priceFormatRef]);
 
   // ============================================================
   // Effect 4: Interval label format + initial data load
@@ -808,6 +817,9 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         if (ac.signal.aborted || symbolRef.current !== sym || intervalRef.current !== iv) return;
         const bars = (res?.data ?? []) as Bar[];
         if (bars.length === 0) {
+          // No bars, from an error or an empty answer: a reload a rebuild
+          // asked for is sent again on the next poll tick.
+          loadFailed();
           updateSeriesData([]);
           setLoading(false);
           return;
@@ -885,7 +897,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
       ac.abort();
       stage2AbortRef.current?.abort();
     };
-  }, [config.symbol, config.interval, applyDefaultView, updateSeriesData, mergePrependedData, seedMeta]);
+  }, [config.symbol, config.interval, historyEpoch, applyDefaultView, updateSeriesData, mergePrependedData, seedMeta, loadFailed]);
 
   // ============================================================
   // Effect 5: WS subscription — one ref-count per symbol across all
@@ -1100,29 +1112,23 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
 
   const hasData = allDataRef.current.length > 0 || summary !== null;
 
-  // Inline symbol search — click the symbol text to edit in place. The same
-  // debounced search the DashboardHeader uses powers a dropdown of matches
-  // so users can ticker-hunt without leaving the widget. Enter picks the
-  // first match (or the raw uppercase query if no matches); Escape or
-  // outside-click cancels.
-  type SymbolHit = { symbol: string; name?: string };
+  // Inline symbol search: click the symbol text to edit in place, with a
+  // dropdown of matches. Enter picks the first match (or the raw uppercase
+  // query if no matches); Escape or outside-click cancels.
   const [editingSymbol, setEditingSymbol] = useState(false);
   const [symbolDraft, setSymbolDraft] = useState(config.symbol);
-  const [searchHits, setSearchHits] = useState<SymbolHit[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
+  const { hits: searchHits, loading: searchLoading } = useSymbolSearch(symbolDraft, 8, { enabled: editingSymbol });
   const symbolEditorRef = useRef<HTMLDivElement | null>(null);
   const symbolInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectSymbol = useCallback((sym: string) => {
-    const next = sym.trim().toUpperCase();
+    const next = normalizeSymbolInput(sym);
     if (next && next !== config.symbol) updateConfig({ symbol: next });
     setEditingSymbol(false);
-    setSearchHits([]);
   }, [config.symbol, updateConfig]);
 
   const startEditSymbol = useCallback(() => {
     setSymbolDraft(config.symbol);
-    setSearchHits([]);
     setEditingSymbol(true);
     requestAnimationFrame(() => {
       symbolInputRef.current?.focus();
@@ -1130,37 +1136,12 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     });
   }, [config.symbol]);
 
-  // Debounced search while editing. Kept in the component (not extracted) —
-  // this is the only caller and the state is small.
-  useEffect(() => {
-    if (!editingSymbol) return;
-    const q = symbolDraft.trim();
-    if (!q) {
-      setSearchHits([]);
-      setSearchLoading(false);
-      return;
-    }
-    setSearchLoading(true);
-    const timer = setTimeout(async () => {
-      try {
-        const res = await searchStocks(q, 8);
-        setSearchHits(((res.results || []) as SymbolHit[]).slice(0, 8));
-      } catch {
-        setSearchHits([]);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [symbolDraft, editingSymbol]);
-
   // Outside-click dismiss for the editor + dropdown.
   useEffect(() => {
     if (!editingSymbol) return;
     const onMouseDown = (e: MouseEvent) => {
       if (symbolEditorRef.current && !symbolEditorRef.current.contains(e.target as Node)) {
         setEditingSymbol(false);
-        setSearchHits([]);
       }
     };
     document.addEventListener('mousedown', onMouseDown);
@@ -1168,13 +1149,8 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
   }, [editingSymbol]);
 
   return (
-    <div
-      className="flex flex-col h-full rounded-xl px-4 pt-4 pb-3"
-      style={{
-        backgroundColor: 'var(--color-bg-card)',
-        border: '1px solid var(--color-border-muted)',
-      }}
-    >
+    // The widget frame draws the card; the chart fills it.
+    <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-2">
         <div ref={symbolEditorRef} className="relative text-left min-w-0">
           {editingSymbol ? (
@@ -1186,17 +1162,21 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   // Prefer the top search hit so users can type "nvid" and
-                  // land on NVDA. Fall back to the raw draft for exact
-                  // symbols the search doesn't know (e.g. freshly listed).
-                  const pick = searchHits[0]?.symbol || symbolDraft;
-                  selectSymbol(pick);
+                  // land on NVDA. Neither the hit nor the draft is taken while
+                  // a search is resting or in flight, the same rule as
+                  // SymbolSearch: "goog" + a fast Enter must not open GOOG
+                  // while GOOGL is on its way, and the listed hits may still
+                  // answer the draft that was typed over.
+                  const hit = searchHits[0]?.symbol;
+                  const typed = readTypedTicker(symbolDraft);
+                  if (hit && !searchLoading) selectSymbol(hit);
+                  else if (typed && !searchLoading) selectSymbol(typed);
                 } else if (e.key === 'Escape') {
                   setEditingSymbol(false);
                   setSymbolDraft(config.symbol);
-                  setSearchHits([]);
                 }
               }}
-              className="text-sm font-semibold tabular-nums bg-transparent outline-none border-b px-0 py-0 w-24"
+              className="text-sm font-semibold tabular-nums bg-transparent border-b px-0 py-0 w-24"
               style={{
                 color: 'var(--color-text-primary)',
                 borderColor: 'var(--color-accent-primary)',
@@ -1222,13 +1202,13 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   className="text-sm tabular-nums"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  {currencySymbol(displayCurrency.code)}{fmt2(headerLast)}
+                  {formatMoney(headerLast, quoteCurrency(displayCurrency.code, config.symbol), locale)}
                 </span>
               )}
             </div>
           )}
           <div className="text-[0.6875rem] tabular-nums" style={{ color: changeColor }}>
-            {positive ? '+' : ''}{fmt2(change)} ({positive ? '+' : ''}{fmt2(pct)}%)
+            {positive ? '+' : ''}{grouped2(change, locale)} ({positive ? '+' : ''}{grouped2(pct, locale)}%)
           </div>
           {editingSymbol && symbolDraft.trim() && (
             <div
@@ -1253,9 +1233,9 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   {t('dashboard.widgets.chart.noMatchesEnter', { symbol: symbolDraft.trim().toUpperCase() })}
                 </div>
               ) : (
-                searchHits.map((hit) => (
+                searchHits.map((hit, i) => (
                   <button
-                    key={hit.symbol}
+                    key={`${hit.symbol}-${i}`}
                     type="button"
                     onMouseDown={(e) => {
                       // Use onMouseDown so the click fires before the input
@@ -1339,7 +1319,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
             className="absolute inset-0 rounded animate-pulse flex items-center justify-center"
             style={{ backgroundColor: 'var(--color-bg-subtle)' }}
           >
-            <Loader size={18} className="text-[color:var(--color-text-tertiary)]" />
+            <Loader size={18} className="text-(--color-text-tertiary)" />
           </div>
         )}
         {loading && hasData && (
@@ -1347,7 +1327,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
           // chart body is already cleared at fetch-start so there's no stale
           // data to hide behind an overlay.
           <div className="absolute top-2 right-2 pointer-events-none">
-            <Loader size={14} className="text-[color:var(--color-text-tertiary)]" />
+            <Loader size={14} className="text-(--color-text-tertiary)" />
           </div>
         )}
       </div>

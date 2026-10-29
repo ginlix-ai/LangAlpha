@@ -6,29 +6,170 @@ idle cleanup, singleton pattern, and background cleanup tasks.
 """
 
 import asyncio
+import logging
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager, ExitStack
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from ptc_agent.core.sandbox.runtime import SandboxGoneError
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.core.sandbox.runtime import (
+    RuntimeState,
+    SandboxFailureKind,
+    SandboxGoneError,
+)
+from src.server.database.workspace_folders import WorkspaceFolderMoving
+from src.server.models.computer import ComputerStatus
+from src.server.services.computer_errors import SpecChangeLostError, UnknownResourceTier
+from src.server.services.computer_manager._types import ComputerBinding, MachineTarget
+
+# Imported for its side effect: this module binds ``platform_secrets_active`` by
+# value at import time, and the hot-resync tests below patch that name on its
+# source module. Left to a lazy import inside the code under test, the first
+# import would land while the patch is live and keep the mock for the rest of
+# the session.
+from src.server.services import platform_secret_rollout  # noqa: F401
+from src.server.services.persistence.sync_result import (
+    BackupIncomplete,
+    SyncResult,
+    UnsavedFile,
+)
+from src.server.services.user_skills.reconcile import ReconcileStats
 from src.server.services.workspace_manager import WorkspaceManager
+from tests.computer_manager_patch import cm_patch
+from tests.unit.server.services.conftest import (
+    _patch_identity,
+    _patch_machine_bind,
+)
+
+
+_STUB_COMPUTER_ID = "11111111-1111-1111-1111-111111111111"
+_SSH_TARGET = {
+    "host": "macbook-pro",
+    "port": 22,
+    "username": "dev",
+    "tunnel": "tunnel-old",
+}
+
+_LIFECYCLE = "src.server.services.computer_manager._lifecycle"
+_MACHINES = "src.server.services.computer_manager._machines"
+_RETIREMENT = "src.server.services.computer_manager._retirement"
+_WORKSPACE_MANAGER = "src.server.services.workspace_manager"
+_PROVISIONING = "src.server.services.computer_manager._provisioning"
+_LAYOUT = "src.server.services.workspace_layout"
+_MACHINE_BACKUP = "src.server.services.computer_manager._machine_backup"
+_ENTITLEMENTS = "src.server.services.workspace_entitlements"
+_SPEC = "src.server.services.computer_manager._spec"
+
+
+_STUB_COMPUTER = {
+    "computer_id": _STUB_COMPUTER_ID,
+    "user_id": "user-1",
+    "kind": "daytona",
+    "root_dir": "/home/workspace",
+    # The machine agrees with the project row ``_make_workspace`` builds: same
+    # sandbox, same state. The lifecycle is the computer's, so a stub that
+    # disagreed would send every acquire down the split-binding recreate.
+    "provider_ref": "sandbox-abc",
+    "status": "running",
+    "resource_tier": "standard",
+    "is_always_on": False,
+    "is_primary": True,
+}
+
+
+@pytest.fixture(autouse=True)
+def _stub_computer_minting():
+    """Creating a project resolves the user's machine and reads it back.
+
+    Both are the ``ComputerManager``'s reads; the tests in this module are about
+    the project side, and the machine's own create path is covered in
+    ``test_computer_manager.py``.
+    """
+    with (
+        patch(
+            f"{_MACHINES}.get_primary_computer",
+            new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
+        ),
+        patch(
+            f"{_MACHINES}.create_computer",
+            new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
+        ),
+        patch(
+            "src.server.services.computer_manager._sessions.get_computer_for_workspace",
+            new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
+        ),
+        # Phase 2 re-reads the machine rather than trusting the binding frozen
+        # at turn start, and that read is where always-on and the sandbox id
+        # come from. It is the same row this fixture mints.
+        patch(
+            f"{_LIFECYCLE}.get_computer",
+            new=AsyncMock(return_value=dict(_STUB_COMPUTER)),
+        ),
+        # A start through an unstamped folder asks whether a sibling verified
+        # the machine's settings.
+        patch(
+            f"{_LIFECYCLE}.computer_has_config_hash",
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _stub_project_folder():
+    """Which folder a project owns on its machine is a row read of its own.
+
+    Every file, restore and layout call resolves it, and these tests run with
+    no pool, where the read raises rather than answering "the whole machine".
+    """
+    folder = AsyncMock(return_value="test-ab12")
+    with (
+        patch(f"{_PROVISIONING}.db_get_workspace_dir_name", new=folder),
+        patch(f"{_LAYOUT}.get_workspace_dir_name", new=folder),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _stub_sibling_restore_flags():
+    """A recreate flags its siblings' restores pending before provisioning,
+    a row write these pool-less tests would see raise."""
+    with patch(
+        f"{_PROVISIONING}.flag_sibling_restores_pending",
+        new=AsyncMock(return_value=0),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_config():
     """Create a minimal mock AgentConfig."""
     config = MagicMock()
     config.to_core_config.return_value = MagicMock()
+    # The core config has to agree with the computer the autouse fixture mints,
+    # or ``_core_config_for`` rewrites provider/root and drags these tests into
+    # the platform-secret path. An empty catalog keeps that path skipped.
+    core_config = config.to_core_config.return_value
+    core_config.sandbox.provider = "daytona"
+    core_config.sandbox.platform_secrets = {}
+    core_config.sandbox.settings_for.side_effect = lambda kind: getattr(
+        core_config.sandbox, kind
+    )
+    # The idle sweep stops a machine 600s before its provider would.
+    core_config.sandbox.daytona.auto_stop_interval = 2400
+    core_config.filesystem.working_directory = "/home/workspace"
     config.daytona = MagicMock(api_key="test-key", base_url="https://daytona.test")
     config.sandbox = MagicMock(provider="daytona")
+    config.sandbox.creatable_providers.return_value = ("daytona",)
     config.filesystem = MagicMock(working_directory="/home/workspace")
     config.skills = MagicMock(enabled=False)
     return config
@@ -52,6 +193,7 @@ def _make_config_with_tiers():
         default_tier="standard",
         auto_stop_interval=3600,
     )
+    config.to_core_config.return_value.sandbox.daytona = config.sandbox.daytona
     return config
 
 
@@ -80,6 +222,95 @@ def _make_workspace(
     return data
 
 
+def _make_computer(computer_id=None, user_id="user-1", status="running", **overrides):
+    now = datetime.now(timezone.utc)
+    data = {
+        "computer_id": computer_id or str(uuid.uuid4()),
+        "user_id": user_id,
+        "name": "Test Computer",
+        "kind": "daytona",
+        "root_dir": "/home/workspace",
+        "status": status,
+        "resource_tier": "standard",
+        "is_always_on": False,
+        "is_primary": True,
+        "provider_ref": "sandbox-abc",
+        "created_at": now,
+        "updated_at": now,
+        "last_activity_at": now,
+    }
+    data.update(overrides)
+    return data
+
+
+def _decision_lock(acquired: bool):
+    """Stand in for the Postgres advisory key, yielding whether it was taken."""
+
+    @asynccontextmanager
+    async def lock(_computer_id):
+        yield acquired
+
+    return lock
+
+
+def _binding(workspace_id, computer=None, **overrides):
+    """The machine handle every lifecycle method now takes in place of an id."""
+    row = {**(computer or _STUB_COMPUTER), **overrides}
+    return WorkspaceManager._binding_from_computer(str(workspace_id), row)
+
+
+_LIVE_IDS_MODULES = (_MACHINE_BACKUP, _MACHINES, _RETIREMENT, _SPEC)
+
+
+@contextmanager
+def _patch_live_ids(*workspace_ids, side_effect=None):
+    """Stub the machine's live-project list in every module that reads it."""
+    mock = AsyncMock(return_value=list(workspace_ids))
+    if side_effect is not None:
+        mock.side_effect = side_effect
+    with ExitStack() as stack:
+        for module in _LIVE_IDS_MODULES:
+            stack.enter_context(
+                patch(f"{module}.get_live_workspace_ids_for_computer", new=mock)
+            )
+        yield mock
+
+
+def _patch_ws_status(mock=None):
+    """``update_workspace_status`` is bound only in the lifecycle module now."""
+    return patch(
+        f"{_LIFECYCLE}.update_workspace_status",
+        new=mock if mock is not None else AsyncMock(),
+    )
+
+
+def _claimed_computer(*workspace_ids, **overrides):
+    """What the machine's start CAS returns: the row plus the shadows it reached."""
+    return {
+        **_STUB_COMPUTER,
+        "status": "starting",
+        "shadowed_workspace_ids": [str(w) for w in workspace_ids],
+        **overrides,
+    }
+
+
+def _patch_resolve(computer):
+    """Point the project-to-machine resolve at one row, over the module stub."""
+    return patch(
+        "src.server.services.computer_manager._sessions.get_computer_for_workspace",
+        new=AsyncMock(return_value=dict(computer)),
+    )
+
+
+def _patch_machine_activity(active=False):
+    """The machine-wide activity gate fails closed, so it must be answered."""
+    executor = MagicMock()
+    executor.get_instance.return_value.has_active_tasks_for_computer = AsyncMock(
+        return_value=active
+    )
+    return patch(f"{_LIFECYCLE}.LocalRunExecutor", new=executor)
+
+
 def _make_mock_session(initialized=True, has_sandbox=True):
     session = MagicMock()
     session._initialized = initialized
@@ -89,6 +320,7 @@ def _make_mock_session(initialized=True, has_sandbox=True):
         session.sandbox.is_ready = MagicMock(return_value=True)
         session.sandbox.ensure_sandbox_ready = AsyncMock()
         session.sandbox.sync_sandbox_assets = AsyncMock()
+        session.sandbox.runtime.autostops = False
     session.initialize = AsyncMock()
     session.initialize_lazy = AsyncMock()
     session.stop = AsyncMock()
@@ -99,6 +331,7 @@ def _make_mock_session(initialized=True, has_sandbox=True):
 # ---------------------------------------------------------------------------
 # Singleton
 # ---------------------------------------------------------------------------
+
 
 class TestSingleton:
     """Test WorkspaceManager singleton pattern."""
@@ -137,6 +370,7 @@ class TestSingleton:
 # Init and stats
 # ---------------------------------------------------------------------------
 
+
 class TestInitAndStats:
     """Test initialization and statistics."""
 
@@ -148,10 +382,9 @@ class TestInitAndStats:
 
     def test_init_sets_defaults(self):
         config = _make_config()
-        wm = WorkspaceManager(config, idle_timeout=600, cleanup_interval=60)
-        assert wm.idle_timeout == 600
+        wm = WorkspaceManager(config, cleanup_interval=60)
         assert wm.cleanup_interval == 60
-        assert wm._sessions == {}
+        assert wm._machines == {}
         assert wm._shutdown is False
 
     def test_get_stats_empty(self):
@@ -159,25 +392,32 @@ class TestInitAndStats:
         wm = WorkspaceManager(config)
         stats = wm.get_stats()
         assert stats["cached_sessions"] == 0
-        assert stats["cached_workspace_ids"] == []
-        assert stats["idle_timeout"] == 1800
+        assert stats["cached_computer_ids"] == []
 
     def test_get_stats_with_sessions(self):
+        """The cache is keyed by machine: two projects sharing one computer are
+        one cached session, not two."""
         config = _make_config()
         wm = WorkspaceManager(config)
-        wm._sessions["ws-1"] = _make_mock_session()
-        wm._sessions["ws-2"] = _make_mock_session()
+        wm._machine("computer-1").session = _make_mock_session()
+        wm._machine("computer-2").session = _make_mock_session()
         stats = wm.get_stats()
         assert stats["cached_sessions"] == 2
-        assert set(stats["cached_workspace_ids"]) == {"ws-1", "ws-2"}
+        assert set(stats["cached_computer_ids"]) == {"computer-1", "computer-2"}
 
 
 # ---------------------------------------------------------------------------
 # create_workspace
 # ---------------------------------------------------------------------------
 
+
 class TestCreateWorkspace:
-    """Test workspace creation."""
+    """Creation returns a bound project and builds nothing.
+
+    The machine is brought up by the first turn, exactly as it is for a project
+    that has been sitting stopped, so a create that awaits a sandbox is the
+    regression these tests exist to catch.
+    """
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -185,71 +425,338 @@ class TestCreateWorkspace:
     def teardown_method(self):
         WorkspaceManager.reset_instance()
 
+    @staticmethod
+    def _created(ws_id, **overrides):
+        return _make_workspace(
+            workspace_id=ws_id,
+            status="stopped",
+            sandbox_id=None,
+            computer_id=_STUB_COMPUTER_ID,
+            dir_name="test-ab12",
+            **overrides,
+        )
+
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.update_workspace_status", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.db_create_workspace", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.SessionManager")
-    async def test_create_workspace_success(
-        self, mock_sm, mock_db_create, mock_update_status
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    @cm_patch("SessionManager")
+    async def test_create_returns_a_bound_project_without_provisioning(
+        self, mock_sm, mock_insert
     ):
         ws_id = str(uuid.uuid4())
-        created_ws = _make_workspace(workspace_id=ws_id, status="creating")
-        updated_ws = _make_workspace(workspace_id=ws_id, status="running")
+        mock_insert.return_value = self._created(ws_id)
 
-        mock_db_create.return_value = created_ws
-        mock_update_status.return_value = updated_ws
-
-        mock_session = _make_mock_session(initialized=False)
-        mock_sm.get_session.return_value = mock_session
-
-        config = _make_config()
-        wm = WorkspaceManager(config)
-
+        wm = WorkspaceManager(_make_config())
         result = await wm.create_workspace(
             user_id="user-1", name="Test", description="desc"
         )
 
-        assert result["status"] == "running"
-        mock_db_create.assert_awaited_once()
-        mock_session.initialize.assert_awaited_once()
-        assert ws_id in wm._sessions
+        assert result["computer_id"] == _STUB_COMPUTER_ID
+        assert result["dir_name"] == "test-ab12"
+        # Nothing was built: no session asked for, none cached, no sandbox.
+        mock_sm.get_session.assert_not_called()
+        assert wm._cached_session(ws_id) is None
+        assert wm._machines == {}
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.update_workspace_status", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.db_create_workspace", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.SessionManager")
-    async def test_create_workspace_sandbox_failure_marks_error(
-        self, mock_sm, mock_db_create, mock_update_status
-    ):
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_the_project_is_inserted_on_the_users_machine(self, mock_insert):
         ws_id = str(uuid.uuid4())
-        created_ws = _make_workspace(workspace_id=ws_id, status="creating")
-        mock_db_create.return_value = created_ws
+        mock_insert.return_value = self._created(ws_id)
 
-        mock_session = _make_mock_session(initialized=False)
-        mock_session.initialize.side_effect = RuntimeError("sandbox failed")
-        mock_sm.get_session.return_value = mock_session
+        wm = WorkspaceManager(_make_config())
+        await wm.create_workspace(user_id="user-1", name="Test")
+
+        args, kwargs = mock_insert.call_args
+        assert args[0] == "user-1"
+        assert args[2] == _STUB_COMPUTER_ID
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_a_new_workspaces_config_never_carries_server_owned_keys(
+        self, mock_insert
+    ):
+        """A forged stamp would skip the migration the first start owes."""
+        mock_insert.return_value = self._created(str(uuid.uuid4()))
+
+        wm = WorkspaceManager(_make_config())
+        await wm.create_workspace(
+            user_id="user-1",
+            name="Test",
+            config={
+                "custom": "kept",
+                "sandbox_config_hash": "forged",
+                "sandbox_provider": "daytona",
+                "sandbox_working_dir": "/elsewhere",
+                "folder_landings": ["Sibling"],
+            },
+        )
+
+        assert mock_insert.call_args.kwargs["config"] == {"custom": "kept"}
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_the_new_project_is_inserted_already_bound(self, mock_insert):
+        """Creation resolves the machine, and an insert that landed bound means
+        that resolve is a read rather than the adoption a 046 row needs."""
+        ws_id = str(uuid.uuid4())
+        mock_insert.return_value = self._created(ws_id)
+
+        wm = WorkspaceManager(_make_config())
+        with patch.object(
+            wm, "_adopt_workspace_onto_computer", new_callable=AsyncMock
+        ) as adopt:
+            await wm.create_workspace(user_id="user-1", name="Test")
+            binding = await wm.resolve_binding(ws_id)
+
+        assert binding.computer_id == _STUB_COMPUTER_ID
+        adopt.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    # The minted primary is numbered past the user's other computers.
+    @patch(
+        "src.server.database.computer_names.get_computer_names",
+        new=AsyncMock(return_value=[]),
+    )
+    @patch(
+        "src.server.services.computer_manager._machines.create_computer",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.computer_manager._machines.get_primary_computer",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_a_user_with_no_machine_gets_their_primary_minted(
+        self, mock_insert, mock_primary, mock_create_computer
+    ):
+        mock_primary.return_value = None
+        mock_create_computer.return_value = dict(_STUB_COMPUTER)
+        mock_insert.return_value = self._created(str(uuid.uuid4()))
 
         config = _make_config()
+        # The tier is checked against the kind's presets before the row exists.
+        config.to_core_config.return_value.sandbox.daytona.resource_tiers = {
+            "performance": SimpleNamespace(cpu=2, memory=4, disk=5)
+        }
         wm = WorkspaceManager(config)
+        await wm.create_workspace(
+            user_id="user-1", name="Test", resource_tier="performance"
+        )
 
-        with pytest.raises(RuntimeError, match="sandbox failed"):
+        kwargs = mock_create_computer.call_args.kwargs
+        assert kwargs["is_primary"] is True
+        assert kwargs["resource_tier"] == "performance"
+        assert kwargs["kind"] == "daytona"
+        # Nothing is being built, so the machine is born stopped and the first
+        # start claims it the way it claims any stopped machine.
+        assert kwargs["status"] == "stopped"
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.computer_manager._machines.create_computer",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.computer_manager._machines.get_primary_computer",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_a_second_project_joins_the_machine_it_already_has(
+        self, mock_insert, mock_primary, mock_create_computer
+    ):
+        mock_primary.return_value = dict(_STUB_COMPUTER)
+        mock_insert.return_value = self._created(str(uuid.uuid4()))
+
+        wm = WorkspaceManager(_make_config())
+        await wm.create_workspace(user_id="user-1", name="Second")
+
+        mock_create_computer.assert_not_awaited()
+        assert mock_insert.call_args[0][2] == _STUB_COMPUTER_ID
+
+    @pytest.mark.asyncio
+    # The minted primary is numbered past the user's other computers.
+    @patch(
+        "src.server.database.computer_names.get_computer_names",
+        new=AsyncMock(return_value=[]),
+    )
+    @patch(
+        "src.server.services.computer_manager._machines.update_computer_status",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.computer_manager._machines.create_computer",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.computer_manager._machines.get_primary_computer",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_losing_the_primary_race_tombstones_the_loser(
+        self, mock_insert, mock_primary, mock_create_computer, mock_status
+    ):
+        """Two creates at once must not leave a spare machine to hand out later."""
+        winner = {**_STUB_COMPUTER, "computer_id": str(uuid.uuid4())}
+        loser_id = str(uuid.uuid4())
+        mock_primary.side_effect = [None, winner]
+        mock_create_computer.return_value = {
+            **_STUB_COMPUTER,
+            "computer_id": loser_id,
+            "is_primary": False,
+        }
+        mock_insert.return_value = self._created(str(uuid.uuid4()))
+
+        wm = WorkspaceManager(_make_config())
+        await wm.create_workspace(user_id="user-1", name="Test")
+
+        mock_status.assert_awaited_once_with(loser_id, "deleted")
+        assert mock_insert.call_args[0][2] == winner["computer_id"]
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.create_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_a_machine_that_vanished_mid_create_is_reported(self, mock_insert):
+        """Returning None here means the insert wrote nothing, so answering 201
+        would hand the caller a workspace id that names no row."""
+        mock_insert.return_value = None
+
+        wm = WorkspaceManager(_make_config())
+        with pytest.raises(RuntimeError, match=_STUB_COMPUTER_ID):
             await wm.create_workspace(user_id="user-1", name="Test")
 
-        # Should have called update_workspace_status with error
-        mock_update_status.assert_awaited()
-        error_call = [
-            c for c in mock_update_status.call_args_list
-            if c.kwargs.get("status") == "error" or (len(c.args) > 1 and c.args[1] == "error")
-        ]
-        assert len(error_call) > 0
+
+class TestCreateWorkspaceOnAChosenComputer:
+    """A project placed on one of the user's computers rather than their primary."""
+
+    _CHOSEN_ID = "33333333-3333-4333-8333-333333333333"
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    def _chosen(self, **overrides):
+        return {
+            **_STUB_COMPUTER,
+            "computer_id": self._CHOSEN_ID,
+            "kind": "e2b",
+            "is_primary": False,
+            "status": "stopped",
+            **overrides,
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_owned_computer_takes_the_project(self):
+        wm = WorkspaceManager(_make_config())
+        created = _make_workspace(
+            status="stopped", sandbox_id=None, computer_id=self._CHOSEN_ID
+        )
+        with (
+            patch(
+                f"{_WORKSPACE_MANAGER}.get_computer",
+                new=AsyncMock(return_value=self._chosen()),
+            ),
+            patch(
+                f"{_WORKSPACE_MANAGER}.create_workspace_on_computer",
+                new=AsyncMock(return_value=created),
+            ) as insert,
+            patch.object(wm, "ensure_primary_computer", new=AsyncMock()) as primary,
+            patch.object(wm, "resolve_binding", new=AsyncMock()),
+        ):
+            result = await wm.create_workspace(
+                user_id="user-1", name="Test", computer_id=self._CHOSEN_ID
+            )
+
+        assert result is created
+        assert insert.call_args[0][2] == self._CHOSEN_ID
+        primary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "computer",
+        [
+            pytest.param(None, id="missing-or-deleted"),
+            pytest.param({"user_id": "someone-else"}, id="another-users"),
+            pytest.param({"config": {"retire_when_empty": True}}, id="retiring"),
+        ],
+    )
+    async def test_a_computer_the_user_cannot_place_on_reads_as_not_found(
+        self, computer
+    ):
+        from src.server.services.computer_errors import ComputerNotFoundError
+
+        row = None if computer is None else self._chosen(**computer)
+        wm = WorkspaceManager(_make_config())
+        with (
+            patch(
+                f"{_WORKSPACE_MANAGER}.get_computer", new=AsyncMock(return_value=row)
+            ),
+            patch(
+                f"{_WORKSPACE_MANAGER}.create_workspace_on_computer",
+                new=AsyncMock(),
+            ) as insert,
+            patch.object(wm, "ensure_primary_computer", new=AsyncMock()) as primary,
+        ):
+            with pytest.raises(ComputerNotFoundError, match="Computer not found"):
+                await wm.create_workspace(
+                    user_id="user-1", name="Test", computer_id=self._CHOSEN_ID
+                )
+
+        insert.assert_not_awaited()
+        primary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_computer_deleted_mid_create_reads_as_not_found(self):
+        from src.server.services.computer_errors import ComputerNotFoundError
+
+        wm = WorkspaceManager(_make_config())
+        with (
+            patch(
+                f"{_WORKSPACE_MANAGER}.get_computer",
+                new=AsyncMock(return_value=self._chosen()),
+            ),
+            patch(
+                f"{_WORKSPACE_MANAGER}.create_workspace_on_computer",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            with pytest.raises(ComputerNotFoundError):
+                await wm.create_workspace(
+                    user_id="user-1", name="Test", computer_id=self._CHOSEN_ID
+                )
 
 
 # ---------------------------------------------------------------------------
-# stop_workspace
+# stopping the machine
 # ---------------------------------------------------------------------------
+
 
 class TestStopWorkspace:
-    """Test workspace stopping."""
+    """Stopping a machine through the computer surface."""
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -258,56 +765,297 @@ class TestStopWorkspace:
         WorkspaceManager.reset_instance()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.update_workspace_status", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.FilePersistenceService")
-    async def test_stop_running_workspace(
-        self, mock_file_svc, mock_db_get, mock_update_status
-    ):
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_stop_running_workspace(self, mock_file_svc, mock_db_get):
         ws_id = str(uuid.uuid4())
-        mock_db_get.return_value = _make_workspace(workspace_id=ws_id, status="running")
-        mock_file_svc.sync_to_db = AsyncMock()
-        stopped_ws = _make_workspace(workspace_id=ws_id, status="stopped")
-        mock_update_status.return_value = stopped_ws
+        mock_db_get.return_value = _make_workspace(workspace_id=ws_id, status="stopped")
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
 
         config = _make_config()
         wm = WorkspaceManager(config)
         mock_session = _make_mock_session()
-        wm._sessions[ws_id] = mock_session
-        wm._last_sync_at[ws_id] = time.monotonic()
+        wm._machine(_STUB_COMPUTER_ID).session = mock_session
+        wm._machine(_STUB_COMPUTER_ID).last_sync_at = time.monotonic()
 
-        result = await wm.stop_workspace(ws_id)
+        with (
+            _patch_machine_activity(),
+            _patch_live_ids(ws_id),
+            patch(f"{_LIFECYCLE}.get_computer", AsyncMock(return_value=_STUB_COMPUTER)),
+            patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=_STUB_COMPUTER)),
+            patch(
+                f"{_MACHINES}.update_computer_status",
+                AsyncMock(return_value=dict(_STUB_COMPUTER)),
+            ),
+        ):
+            result = await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=ws_id)
 
         assert result["status"] == "stopped"
         mock_session.stop.assert_awaited_once()
-        assert ws_id not in wm._sessions
-        assert ws_id not in wm._last_sync_at
+        assert wm._cached_session(_STUB_COMPUTER_ID) is None
+        assert wm._machine(_STUB_COMPUTER_ID).last_sync_at is None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
-    async def test_stop_workspace_not_found_raises(self, mock_db_get):
-        mock_db_get.return_value = None
+    @pytest.mark.parametrize("state", ["running", "stopped", "unreachable"])
+    @pytest.mark.parametrize("cached", [True, False])
+    async def test_failed_stop_uses_provider_state_or_leaves_recovery_claim(self, state, cached):
+        manager = WorkspaceManager(_make_config())
+        manager._backup_machine_files_to_db = AsyncMock(return_value=0)
+        manager._machine_has_active_tasks = AsyncMock(return_value=False)
+        manager._retain_machine_stop_claim = AsyncMock(return_value=True)
+        manager._settle_machine_stop = AsyncMock()
+        session = _make_mock_session()
+        session.stop.side_effect = RuntimeError("stop failed")
+        if cached:
+            manager._machine(_STUB_COMPUTER_ID).session = session
+        else:
+            manager._detached_sandbox_teardown = AsyncMock(
+                side_effect=RuntimeError("stop failed")
+            )
+        runtime = SimpleNamespace(get_state=AsyncMock(
+            return_value=SimpleNamespace(value=state),
+            side_effect=RuntimeError("unreachable") if state == "unreachable" else None,
+        ))
+        @asynccontextmanager
+        async def detached(*_args, **_kwargs):
+            yield runtime
+        manager._detached_runtime = detached
+        with patch(f"{_LIFECYCLE}.update_computer_activity", AsyncMock()):
+            with pytest.raises(RuntimeError, match="stop failed"):
+                await manager._finish_claimed_stop(
+                    _binding("ws-1"), workspace_id="ws-1",
+                    durable_sandbox_id="sandbox-abc",
+                )
+        if state == "unreachable":
+            manager._settle_machine_stop.assert_not_awaited()
+        else:
+            manager._settle_machine_stop.assert_awaited_once_with(_STUB_COMPUTER_ID, state)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "files_backup"), [("daytona", True), ("ssh", False)], ids=["on", "off"]
+    )
+    async def test_the_stop_backup_follows_the_machines_switch(self, kind, files_backup):
+        """Off is the owner's choice to keep the last backup as it is; the stop
+        itself runs in full either way."""
+        manager = WorkspaceManager(_make_config())
+        manager._backup_machine_files_to_db = AsyncMock(return_value=1)
+        manager._owner_machine_state = AsyncMock(return_value=RuntimeState.RUNNING)
+        manager.refresh_computer_disk = AsyncMock()
+        manager._machine_has_active_tasks = AsyncMock(return_value=False)
+        manager._retain_machine_stop_claim = AsyncMock(return_value=True)
+        manager._settle_machine_stop = AsyncMock()
+        manager._stop_result = AsyncMock(return_value={"status": "stopped"})
+        session = _make_mock_session()
+        manager._machine(_STUB_COMPUTER_ID).session = session
+
+        await manager._finish_claimed_stop(
+            _binding("ws-1", kind=kind, files_backup=files_backup),
+            workspace_id="ws-1",
+            durable_sandbox_id="sandbox-abc",
+        )
+
+        assert manager._backup_machine_files_to_db.await_count == (1 if files_backup else 0)
+        session.stop.assert_awaited_once()
+        manager._settle_machine_stop.assert_awaited_once_with(
+            _STUB_COMPUTER_ID, ComputerStatus.STOPPED
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_a_machine_that_is_gone_raises(self):
+        """The machine is the lifecycle authority, so its absence is the error
+        a stop reports; the project row is only the handle that asked."""
         config = _make_config()
         wm = WorkspaceManager(config)
 
-        with pytest.raises(ValueError, match="not found"):
-            await wm.stop_workspace("nonexistent")
+        with (
+            _patch_machine_activity(),
+            patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=None)),
+        ):
+            with pytest.raises(ValueError, match="not found"):
+                await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=str(uuid.uuid4()))
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
-    async def test_stop_non_running_workspace_raises(self, mock_db_get):
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_stopping_an_already_stopped_machine_is_not_an_error(
+        self, mock_db_get
+    ):
+        """A settled machine has nothing to stop, and saying so is the answer.
+
+        Raising here made every idle sweep over a machine a peer had already
+        stopped count as a failure, which walked the reaper into its
+        three-strike backoff over work that did not need doing.
+        """
         ws_id = str(uuid.uuid4())
+        stopped = {**_STUB_COMPUTER, "status": "stopped"}
         mock_db_get.return_value = _make_workspace(workspace_id=ws_id, status="stopped")
-        config = _make_config()
-        wm = WorkspaceManager(config)
+        wm = WorkspaceManager(_make_config())
 
-        with pytest.raises(RuntimeError, match="Cannot stop"):
-            await wm.stop_workspace(ws_id)
+        with (
+            _patch_machine_activity(),
+            patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=stopped)),
+            patch(
+                f"{_MACHINES}.update_computer_status", new_callable=AsyncMock
+            ) as mock_status,
+            _patch_resolve(stopped),
+        ):
+            result = await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=ws_id)
+
+        assert result["status"] == "stopped"
+        mock_status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_a_machine_mid_transition_raises(self):
+        """A state no stop can leave is the refusal that survived the merge of
+        the pre-check into the claim."""
+        starting = {**_STUB_COMPUTER, "status": "starting"}
+        wm = WorkspaceManager(_make_config())
+
+        with (
+            _patch_machine_activity(),
+            patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=starting)),
+            _patch_resolve(starting),
+        ):
+            with pytest.raises(RuntimeError, match="Cannot stop"):
+                await wm._stop_machine(_STUB_COMPUTER_ID, workspace_id=str(uuid.uuid4()))
 
 
 # ---------------------------------------------------------------------------
-# _backup_files_to_db strict mode
+# _identity_is_stale
 # ---------------------------------------------------------------------------
+
+
+class TestIdentityIsStale:
+    """The predicate guarding every cached-session return.
+
+    Postgres owns the workspace↔sandbox binding; this worker's cache is only a
+    handle. Getting this wrong in either direction is expensive: too permissive
+    and a deleted sandbox keeps serving 404s, too strict and a live workspace
+    retires its session on every single request.
+    """
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @staticmethod
+    def _check(identity, *, local_id="sandbox-abc", ready=True, owns_lazy_init=False):
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session()
+        session.sandbox.sandbox_id = local_id
+        session.sandbox.is_ready = MagicMock(return_value=ready)
+        if owns_lazy_init:
+            wm._machine(_STUB_COMPUTER_ID).pending_lazy_sync = True
+        return wm._identity_is_stale(_binding("ws-1"), session, identity)
+
+    def test_agreeing_running_row_is_served(self):
+        assert self._check({"status": "running", "sandbox_id": "sandbox-abc"}) is None
+
+    @pytest.mark.asyncio
+    async def test_an_unbound_home_never_reaches_the_predicate(self):
+        """'unbound' is not a status this predicate can see. A Home on no
+        computer yet has no machine, so resolving its binding refuses it
+        before any session is looked up.
+        """
+        from src.server.services.computer_manager._types import (
+            WorkspaceNotOnComputer,
+        )
+
+        wm = WorkspaceManager(_make_config())
+        home = _make_workspace(status="unbound", sandbox_id=None)
+        with (
+            patch(
+                "src.server.services.computer_manager._sessions.get_computer_for_workspace",
+                AsyncMock(return_value=None),
+            ),
+            patch(f"{_MACHINES}.db_get_workspace", AsyncMock(return_value=home)),
+        ):
+            with pytest.raises(WorkspaceNotOnComputer):
+                await wm.resolve_binding(str(home["workspace_id"]))
+
+    def test_missing_row_is_stale(self):
+        assert "row is gone" in self._check(None)
+
+    def test_identity_moved_is_stale(self):
+        reason = self._check({"status": "running", "sandbox_id": "sandbox-new"})
+        assert "sandbox identity moved" in reason
+
+    @pytest.mark.parametrize("status", ["deleted", "error", "stopped", "stopping"])
+    def test_non_serving_status_is_stale_even_when_ids_agree(self, status):
+        """A stop leaves ``sandbox_id`` untouched, so the ids still agree while
+        the sandbox they name is being torn down — status is the only signal."""
+        reason = self._check({"status": status, "sandbox_id": "sandbox-abc"})
+        assert repr(status) in reason
+
+    def test_starting_without_owning_the_lazy_init_is_stale(self):
+        """'starting' on a worker that owns no lazy init means someone else
+        claimed this workspace for replacement — our handle names a doomed
+        sandbox. Readiness is irrelevant; ownership is the whole signal."""
+        reason = self._check({"status": "starting", "sandbox_id": "sandbox-abc"})
+        assert "'starting'" in reason
+
+    @pytest.mark.parametrize("ready", [False, True])
+    def test_starting_while_owning_the_lazy_init_is_served(self, ready):
+        """The worker running the lazy init sees its own claim, and keeps
+        seeing it after its sandbox goes ready.
+
+        Phase 2 runs outside the lock, so the owner's sandbox is ready for the
+        whole sync while the row is still 'starting'. Retiring there drops the
+        record's ``pending_lazy_sync`` flag, which gates both the promotion
+        and its revert, leaving the row wedged in 'starting' until the reaper.
+        """
+        assert (
+            self._check(
+                {"status": "starting", "sandbox_id": "sandbox-abc"},
+                ready=ready,
+                owns_lazy_init=True,
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "db_id,local_id", [("sandbox-abc", None), (None, "sandbox-abc"), (None, None)]
+    )
+    def test_half_known_binding_is_stale(self, db_id, local_id):
+        """A one-sided binding is itself an inconsistency. Treating it as
+        "can't tell, assume fine" is how a deleted sandbox goes on serving
+        indefinitely."""
+        reason = self._check(
+            {"status": "running", "sandbox_id": db_id}, local_id=local_id
+        )
+        if db_id == local_id:
+            assert reason is None
+        else:
+            assert "sandbox identity moved" in reason
+
+    def test_initialized_session_without_a_sandbox_is_stale(self):
+        """``SessionManager`` outlives the machine record's session, so an
+        initialized session with no sandbox can be handed back for a bound
+        workspace."""
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session(has_sandbox=False)
+        reason = wm._identity_is_stale(
+            _binding("ws-1"),
+            session,
+            {"status": "running", "sandbox_id": "sandbox-abc"},
+        )
+        assert "sandbox identity moved" in reason
+
+
+# ---------------------------------------------------------------------------
+# backup_project_files strict mode
+# ---------------------------------------------------------------------------
+
+
+def _patch_backup_identity(sandbox_id="sandbox-abc"):
+    """Stub the durable-identity read ``backup_project_files`` validates against."""
+    return cm_patch(
+        "db_get_workspace_identity",
+        AsyncMock(return_value={"status": "running", "sandbox_id": sandbox_id}),
+    )
+
 
 class TestBackupFilesStrict:
     """strict=True turns the best-effort backup into a hard precondition for
@@ -320,76 +1068,645 @@ class TestBackupFilesStrict:
         WorkspaceManager.reset_instance()
 
     @pytest.mark.asyncio
+    async def test_reconnect_keeps_a_matching_persisted_root(self):
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session()
+        session.sandbox.working_dir = "/persisted/root"
+        binding = ComputerBinding(
+            workspace_id="workspace", computer_id=_STUB_COMPUTER_ID,
+            root_dir="/persisted/root", kind="daytona", provider_config={},
+        )
+        wm._write_sandbox_stamp = AsyncMock()
+        wm._backup_machine_files_to_db = AsyncMock()
+        wm._recover_sandbox = AsyncMock()
+
+        result = await wm._maybe_migrate_sandbox(binding, "user-1", session, {"config": {}})
+
+        assert result is None
+        wm._backup_machine_files_to_db.assert_not_awaited()
+        wm._recover_sandbox.assert_not_awaited()
+        wm._write_sandbox_stamp.assert_awaited_once_with(binding)
+
+    @pytest.mark.asyncio
+    async def test_migration_waits_for_every_sibling_run(self):
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session()
+        session.sandbox.working_dir = "/old/root"
+        binding = ComputerBinding(
+            workspace_id="workspace",
+            computer_id=_STUB_COMPUTER_ID,
+            root_dir="/new/root",
+            kind="daytona",
+            provider_config={},
+        )
+        wm._machine_has_active_tasks = AsyncMock(return_value=True)
+        wm._backup_machine_files_to_db = AsyncMock()
+        wm._recover_sandbox = AsyncMock()
+
+        result = await wm._maybe_migrate_sandbox(
+            binding, "user-1", session,
+            {"config": {"sandbox_config_hash": "old"}, "sandbox_id": "sandbox-abc"},
+            expected_hash="new",
+        )
+
+        assert result is None
+        wm._machine_has_active_tasks.assert_awaited_once_with(
+            _STUB_COMPUTER_ID, workspace_id="workspace"
+        )
+        wm._backup_machine_files_to_db.assert_not_awaited()
+        wm._recover_sandbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @cm_patch("try_claim_computer_for_start", AsyncMock(return_value=True))
+    @cm_patch("SessionManager")
+    @patch(f"{_PROVISIONING}.update_computer_status", new_callable=AsyncMock)
+    async def test_migration_rechecks_sibling_runs_after_claim(
+        self, mock_status, mock_sessions
+    ):
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session()
+        session.sandbox.working_dir = "/old/root"
+        binding = ComputerBinding(
+            workspace_id="workspace",
+            computer_id=_STUB_COMPUTER_ID,
+            root_dir="/new/root",
+            kind="daytona",
+            provider_config={},
+        )
+        wm._machine_has_active_tasks = AsyncMock(side_effect=[False, True])
+        wm._backup_machine_files_to_db = AsyncMock()
+        wm._recover_sandbox = AsyncMock()
+
+        result = await wm._maybe_migrate_sandbox(
+            binding, "user-1", session,
+            {"config": {"sandbox_config_hash": "old"}, "sandbox_id": "sandbox-abc"},
+            expected_hash="new",
+        )
+
+        assert result is None
+        assert wm._machine_has_active_tasks.await_count == 2
+        mock_status.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            ComputerStatus.RUNNING,
+            expected=ComputerStatus.STARTING,
+        )
+        mock_sessions.cleanup_session.assert_not_called()
+        wm._recover_sandbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @cm_patch("try_claim_computer_for_start", AsyncMock(return_value=True))
+    @cm_patch("SessionManager")
+    @patch(f"{_PROVISIONING}.update_computer_status", new_callable=AsyncMock)
+    async def test_migration_aborts_when_old_sandbox_delete_is_unconfirmed(
+        self, mock_status, mock_sessions
+    ):
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session()
+        session.sandbox.working_dir = "/old/root"
+        binding = ComputerBinding(
+            workspace_id="workspace",
+            computer_id=_STUB_COMPUTER_ID,
+            root_dir="/new/root",
+            kind="daytona",
+            provider_config={},
+        )
+        wm._machine_has_active_tasks = AsyncMock(return_value=False)
+        wm._backup_machine_files_to_db = AsyncMock()
+        wm._recover_sandbox = AsyncMock()
+        wm._is_sandbox_gone = MagicMock(return_value=False)
+        mock_sessions.cleanup_session = AsyncMock(
+            side_effect=RuntimeError("delete API unavailable")
+        )
+
+        with pytest.raises(RuntimeError, match="delete API unavailable"):
+            await wm._maybe_migrate_sandbox(
+                binding, "user-1", session,
+                {"config": {"sandbox_config_hash": "old"}, "sandbox_id": "sandbox-abc"},
+                expected_hash="new",
+            )
+
+        wm._recover_sandbox.assert_not_awaited()
+        mock_status.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            ComputerStatus.STOPPED,
+            expected=ComputerStatus.STARTING,
+        )
+
+    @pytest.mark.asyncio
+    @cm_patch("try_claim_computer_for_start", AsyncMock(return_value=True))
+    @cm_patch("SessionManager")
+    @patch(f"{_PROVISIONING}.update_computer_status", new_callable=AsyncMock)
+    async def test_migration_continues_when_old_sandbox_is_already_gone(
+        self, mock_status, mock_sessions
+    ):
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session()
+        session.sandbox.working_dir = "/old/root"
+        binding = ComputerBinding(
+            workspace_id="workspace",
+            computer_id=_STUB_COMPUTER_ID,
+            root_dir="/new/root",
+            kind="daytona",
+            provider_config={},
+        )
+        replacement = _make_mock_session()
+        wm._machine_has_active_tasks = AsyncMock(return_value=False)
+        wm._backup_machine_files_to_db = AsyncMock()
+        wm._recover_sandbox = AsyncMock(return_value=replacement)
+        wm._write_sandbox_stamp = AsyncMock()
+        mock_sessions.cleanup_session = AsyncMock(
+            side_effect=SandboxGoneError("sandbox-abc", "gone")
+        )
+
+        result = await wm._maybe_migrate_sandbox(
+            binding, "user-1", session,
+            {"config": {"sandbox_config_hash": "old"}, "sandbox_id": "sandbox-abc"},
+            expected_hash="new",
+        )
+
+        assert result is replacement
+        wm._recover_sandbox.assert_awaited_once()
+        mock_status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @cm_patch("try_claim_computer_for_start", AsyncMock(return_value=True))
+    @cm_patch("SessionManager")
+    @patch(f"{_PROVISIONING}.update_computer_status", new_callable=AsyncMock)
+    async def test_migration_reads_usage_before_its_cleanup_deletes_the_sandbox(
+        self, mock_status, mock_sessions
+    ):
+        wm = WorkspaceManager(_make_config())
+        session = _make_mock_session()
+        session.sandbox.working_dir = "/old/root"
+        binding = ComputerBinding(
+            workspace_id="workspace",
+            computer_id=_STUB_COMPUTER_ID,
+            root_dir="/new/root",
+            kind="daytona",
+            provider_config={},
+        )
+        order: list[str] = []
+        wm._machine_has_active_tasks = AsyncMock(return_value=False)
+        wm._backup_machine_files_to_db = AsyncMock()
+        wm._recover_sandbox = AsyncMock(return_value=_make_mock_session())
+        wm._write_sandbox_stamp = AsyncMock()
+        wm._fold_usage_before_delete = AsyncMock(side_effect=lambda _c: order.append("read"))
+        wm._end_replaced_usage_run = AsyncMock(
+            side_effect=lambda _c, sandbox_id: order.append(f"end {sandbox_id}")
+        )
+        mock_sessions.cleanup_session = AsyncMock(
+            side_effect=lambda _c: order.append("delete")
+        )
+
+        await wm._maybe_migrate_sandbox(
+            binding, "user-1", session,
+            {"config": {"sandbox_config_hash": "old"}, "sandbox_id": "sandbox-abc"},
+            expected_hash="new",
+        )
+
+        assert order == ["read", "delete", "end sandbox-abc"]
+
+    @staticmethod
+    def _backup(wm, workspace_id, **kwargs):
+        """The mirror is per project, but the session it reads is the machine's."""
+        return wm.backup_project_files(
+            workspace_id, computer_id=_STUB_COMPUTER_ID, **kwargs
+        )
+
+    @pytest.mark.asyncio
     async def test_strict_raises_without_session(self):
         wm = WorkspaceManager(_make_config())
         ws_id = str(uuid.uuid4())
 
         with pytest.raises(RuntimeError, match="No attached session"):
-            await wm._backup_files_to_db(ws_id, strict=True)
+            await self._backup(wm, ws_id, strict=True)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.FilePersistenceService")
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
     async def test_strict_raises_on_sync_failure(self, mock_file_svc):
         wm = WorkspaceManager(_make_config())
         ws_id = str(uuid.uuid4())
-        wm._sessions[ws_id] = _make_mock_session()
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
         mock_file_svc.sync_to_db = AsyncMock(side_effect=OSError("disk detached"))
 
-        with pytest.raises(RuntimeError, match="aborting before sandbox teardown"):
-            await wm._backup_files_to_db(ws_id, strict=True)
+        with _patch_backup_identity():
+            with pytest.raises(RuntimeError, match="aborting before sandbox teardown"):
+                await self._backup(wm, ws_id, strict=True)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.FilePersistenceService")
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_lazy_start_is_waited_out_before_the_sync(self, mock_file_svc):
+        """A lazy start names its sandbox before attaching the runtime, so the
+        identity check alone let the sync reach a runtime that was still None."""
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        session = _make_mock_session()
+        session.sandbox.runtime = None
+
+        async def start_lands():
+            session.sandbox.runtime = MagicMock()
+
+        session.sandbox.ensure_sandbox_ready = AsyncMock(side_effect=start_lands)
+        wm._machine(_STUB_COMPUTER_ID).session = session
+
+        async def sync(_workspace_id, sandbox, **_kw):
+            assert sandbox.runtime is not None
+            return SyncResult(synced=1)
+
+        mock_file_svc.sync_to_db = AsyncMock(side_effect=sync)
+
+        with _patch_backup_identity():
+            assert await self._backup(wm, ws_id, strict=True) is True
+        mock_file_svc.sync_to_db.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_failed_lazy_start_is_reported_without_a_sync(self, mock_file_svc):
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        session = _make_mock_session()
+        session.sandbox.runtime = None
+        session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError("sandbox-abc", "not found")
+        )
+        wm._machine(_STUB_COMPUTER_ID).session = session
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_backup_identity():
+            assert await self._backup(wm, ws_id) is False
+            with pytest.raises(BackupIncomplete, match="not ready"):
+                await self._backup(wm, ws_id, strict=True)
+        mock_file_svc.sync_to_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
     async def test_default_stays_best_effort(self, mock_file_svc):
         wm = WorkspaceManager(_make_config())
         ws_id = str(uuid.uuid4())
-        wm._sessions[ws_id] = _make_mock_session()
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
         mock_file_svc.sync_to_db = AsyncMock(side_effect=OSError("disk detached"))
 
-        await wm._backup_files_to_db(ws_id)  # warns, does not raise
+        with _patch_backup_identity():
+            await self._backup(wm, ws_id)  # warns, does not raise
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_strict_aborts_when_sync_leaves_files_unsaved(self, mock_file_svc):
+        """``sync_to_db`` reports per-file failures instead of raising, so a clean
+        return is not proof the backup is complete. The strict caller is about to
+        delete the sandbox, which makes a nonzero count unrecoverable data loss.
+        """
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        mock_file_svc.sync_to_db = AsyncMock(
+            return_value=SyncResult(
+                synced=3,
+                unsaved=[
+                    UnsavedFile("data/q3.parquet", "too_large", 300 * 1024**2),
+                    UnsavedFile("notes.md", "changed", 12),
+                ],
+            )
+        )
+
+        with _patch_backup_identity():
+            with pytest.raises(RuntimeError, match="left 2 file\\(s\\) unsaved") as raised:
+                await self._backup(wm, ws_id, strict=True)
+        assert "data/q3.parquet" in str(raised.value)
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_strict_abort_names_only_a_few_paths_per_reason(self, mock_file_svc):
+        """The message becomes an HTTP error detail, so a tree that failed
+        wholesale must not turn it into thousands of paths."""
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        mock_file_svc.sync_to_db = AsyncMock(
+            return_value=SyncResult(
+                unsaved=[UnsavedFile(f"cache/{i}", "unreadable") for i in range(1000)]
+            )
+        )
+
+        with _patch_backup_identity():
+            with pytest.raises(RuntimeError) as raised:
+                await self._backup(wm, ws_id, strict=True)
+        assert (
+            "1000 unreadable in the sandbox: cache/0, cache/1, cache/2, +997 more"
+            in str(raised.value)
+        )
+        assert len(str(raised.value)) < 300
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_strict_aborts_when_sync_skips_oversized_files(self, mock_file_svc):
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        mock_file_svc.sync_to_db = AsyncMock(
+            return_value=SyncResult(
+                synced=3, unsaved=[UnsavedFile("big.bin", "too_large", 2 * 1024**3)]
+            )
+        )
+
+        with _patch_backup_identity():
+            with pytest.raises(RuntimeError, match="left 1 file\\(s\\) unsaved"):
+                await self._backup(wm, ws_id, strict=True)
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_refuses_a_session_bound_to_a_superseded_sandbox(self, mock_file_svc):
+        """``sync_to_db`` OVERWRITES the workspace's durable file copy, so running
+        it from a stale handle destroys the good copy as well as missing the live
+        files. The check is unconditional: making it opt-in is what left two of
+        five call sites unprotected.
+        """
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(
+            _STUB_COMPUTER_ID
+        ).session = _make_mock_session()  # on 'sandbox-abc'
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_backup_identity(sandbox_id="sandbox-REPLACED"):
+            await self._backup(wm, ws_id)  # best-effort: warns, no raise
+            mock_file_svc.sync_to_db.assert_not_awaited()
+
+            with pytest.raises(RuntimeError, match="stale session"):
+                await self._backup(wm, ws_id, strict=True)
+            mock_file_svc.sync_to_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_caller_naming_only_the_project_reaches_the_machine(
+        self, mock_file_svc
+    ):
+        """The post-turn mirror holds no binding, and the session it has to read
+        is the machine's. Demanding the machine id of every caller made that one
+        fail on its own signature, so no turn's files were mirrored until stop.
+        """
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        wm.resolve_binding = AsyncMock(
+            return_value=SimpleNamespace(
+                computer_id=_STUB_COMPUTER_ID, root_dir="/persisted/root"
+            )
+        )
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_backup_identity():
+            await wm.backup_project_files(ws_id)
+
+        wm.resolve_binding.assert_awaited_once_with(ws_id)
+        mock_file_svc.sync_to_db.assert_awaited_once()
+        assert mock_file_svc.sync_to_db.call_args.kwargs["layout"].root == "/persisted/root"
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_strict_backup_uses_the_computers_persisted_root(self, mock_file_svc):
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        wm.resolve_binding = AsyncMock(return_value=SimpleNamespace(
+            computer_id=_STUB_COMPUTER_ID, root_dir="/persisted/root"
+        ))
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_backup_identity():
+            await self._backup(wm, ws_id, strict=True)
+
+        mock_file_svc.sync_to_db.assert_awaited_once()
+        assert mock_file_svc.sync_to_db.call_args.kwargs["layout"].root == "/persisted/root"
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_caller_supplied_identity_skips_the_read(self, mock_file_svc):
+        """``expected_sandbox_id`` is an optimization for callers holding the row,
+        not the contract - the guard runs either way."""
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        identity = AsyncMock()
+        with cm_patch("db_get_workspace_identity", identity):
+            await self._backup(wm, ws_id, expected_sandbox_id="sandbox-abc")
+
+        identity.assert_not_awaited()
+        mock_file_svc.sync_to_db.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_the_scan_walks_the_folder_read_under_the_folder_hold(self, mock_file_svc):
+        """A settle on any worker moves only a folder it can hold. The sweep read
+        its layout before that, so a folder that landed since is read again under
+        the hold, and the scan ends before the hold lets go."""
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        events = []
+
+        @asynccontextmanager
+        async def hold(_workspace_id):
+            events.append("hold")
+            yield
+            events.append("release")
+
+        async def read_folder(_workspace_id):
+            events.append("read")
+            return "Macro"
+
+        async def sync(_workspace_id, _sandbox, *, layout, routine):
+            events.append(f"sync {layout.root}/{layout.dir_name}")
+            return SyncResult(synced=1)
+
+        mock_file_svc.sync_to_db = AsyncMock(side_effect=sync)
+        with (
+            patch(f"{_LAYOUT}.workspace_folder_in_use", hold),
+            patch(f"{_LAYOUT}.get_workspace_dir_name", read_folder),
+        ):
+            assert await self._backup(
+                wm, ws_id, expected_sandbox_id="sandbox-abc",
+                layout=WorkspaceLayout("/persisted/root", "Research"),
+            )
+
+        assert events == ["hold", "read", "sync /persisted/root/Macro", "release"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("moving", ["staged", "held by a settle"])
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_folder_a_settle_is_moving_is_not_reported_mirrored(
+        self, mock_file_svc, moving
+    ):
+        """Scanned mid-move, the folder reads as missing, which the sync reports
+        as nothing to mirror: a strict caller would then destroy the sandbox
+        holding every file written since the last backup."""
+        wm = WorkspaceManager(_make_config())
+        ws_id = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(root_missing=True))
+
+        @asynccontextmanager
+        async def held_by_a_settle(workspace_id):
+            raise WorkspaceFolderMoving(workspace_id)
+            yield
+
+        with ExitStack() as stack:
+            if moving == "staged":
+                stack.enter_context(patch(
+                    f"{_LAYOUT}.get_workspace_dir_name",
+                    AsyncMock(return_value=f"_internal/moving/{ws_id}"),
+                ))
+            else:
+                stack.enter_context(
+                    patch(f"{_LAYOUT}.workspace_folder_in_use", held_by_a_settle)
+                )
+            assert not await self._backup(wm, ws_id, expected_sandbox_id="sandbox-abc")
+            with pytest.raises(BackupIncomplete, match="moving"):
+                await self._backup(
+                    wm, ws_id, expected_sandbox_id="sandbox-abc", strict=True
+                )
+
+        mock_file_svc.sync_to_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_the_machine_wide_mirror_covers_every_sibling(self, mock_file_svc):
+        """One runtime ends for all of them, so the project that asked is not the
+        unit of data loss; each sibling is fenced by the machine's durable ref."""
+        wm = WorkspaceManager(_make_config())
+        asked, sibling = str(uuid.uuid4()), str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_live_ids(asked, sibling):
+            await wm._backup_machine_files_to_db(
+                _STUB_COMPUTER_ID,
+                workspace_id=asked,
+                expected_sandbox_id="sandbox-abc",
+            )
+
+        assert [c.args[0] for c in mock_file_svc.sync_to_db.await_args_list] == [
+            asked,
+            sibling,
+        ]
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_the_machine_wide_mirror_counts_only_what_it_mirrored(
+        self, mock_file_svc
+    ):
+        """A worker with no attached session skips every project; reporting the
+        asked count as complete is what let a stop log a backup that never ran."""
+        wm = WorkspaceManager(_make_config())
+        asked, sibling = str(uuid.uuid4()), str(uuid.uuid4())
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_live_ids(asked, sibling):
+            skipped = await wm._backup_machine_files_to_db(
+                _STUB_COMPUTER_ID, workspace_id=asked, expected_sandbox_id="sandbox-abc"
+            )
+            wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+            mirrored = await wm._backup_machine_files_to_db(
+                _STUB_COMPUTER_ID, workspace_id=asked, expected_sandbox_id="sandbox-abc"
+            )
+
+        assert (skipped, mirrored) == (0, 2)
+        assert mock_file_svc.sync_to_db.await_count == 2
+
+    @pytest.mark.asyncio
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
+    async def test_a_lost_sibling_list_refuses_a_strict_teardown(self, mock_file_svc):
+        """Without the list the unmirrored set is unknown, so "no failures" is
+        not the same as "everything is saved"."""
+        wm = WorkspaceManager(_make_config())
+        asked = str(uuid.uuid4())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
+
+        with _patch_live_ids(side_effect=RuntimeError("no pool")):
+            with pytest.raises(RuntimeError, match="unmirrored"):
+                await wm._backup_machine_files_to_db(
+                    _STUB_COMPUTER_ID,
+                    workspace_id=asked,
+                    expected_sandbox_id="sandbox-abc",
+                    strict=True,
+                )
 
 
 # ---------------------------------------------------------------------------
 # delete_workspace
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteWorkspace:
     """Test workspace deletion."""
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
+        self._retirement_marker = patch(
+            f"{_RETIREMENT}.mark_computer_retirement_pending",
+            AsyncMock(return_value=True),
+        )
+        self._retirement_marker.start()
+        self._retirement_clear = patch(
+            f"{_RETIREMENT}.clear_computer_retirement_pending",
+            AsyncMock(return_value=True),
+        )
+        self._retirement_clear.start()
 
     def teardown_method(self):
+        self._retirement_clear.stop()
+        self._retirement_marker.stop()
         WorkspaceManager.reset_instance()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_delete_workspace", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.FilePersistenceService")
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_PROVISIONING}.FilePersistenceService")
     async def test_delete_workspace_success(
-        self, mock_file_svc, mock_db_get, mock_sm, mock_db_delete
+        self, mock_file_svc, mock_db_get, mock_db_delete
     ):
+        """The project is mirrored, tombstoned and unlinked; the machine under
+        it is the user's primary, so its session and sandbox stay."""
         ws_id = str(uuid.uuid4())
-        mock_db_get.return_value = _make_workspace(workspace_id=ws_id, status="running")
-        mock_file_svc.sync_to_db = AsyncMock()
-        mock_sm.cleanup_session = AsyncMock()
+        mock_db_get.return_value = _make_workspace(
+            workspace_id=ws_id, status="running", dir_name="test-ab12"
+        )
+        mock_file_svc.sync_to_db = AsyncMock(return_value=SyncResult(synced=1))
 
         config = _make_config()
         wm = WorkspaceManager(config)
         mock_session = _make_mock_session()
-        wm._sessions[ws_id] = mock_session
+        wm._machine(_STUB_COMPUTER_ID).session = mock_session
+        wm._session_computer[ws_id] = _STUB_COMPUTER_ID
+        wm._machine_decision_lock = _decision_lock(True)
+        wm._remove_workspace_folder = AsyncMock()
+        wm._teardown_machine = AsyncMock()
 
-        result = await wm.delete_workspace(ws_id)
+        with (
+            patch(f"{_RETIREMENT}.get_computer", AsyncMock(return_value=_STUB_COMPUTER)),
+            _patch_live_ids(),
+        ):
+            result = await wm.delete_workspace(ws_id)
 
         assert result is True
-        # Cleanup goes through SessionManager (single path, no double-cleanup)
-        mock_sm.cleanup_session.assert_awaited_once_with(ws_id)
-        mock_db_delete.assert_awaited_once_with(ws_id)
-        assert ws_id not in wm._sessions
+        mock_db_delete.assert_awaited_once_with(
+            ws_id, bound_to=_STUB_COMPUTER_ID, keep_folder=False
+        )
+        wm._remove_workspace_folder.assert_awaited_once()
+        wm._teardown_machine.assert_not_awaited()
+        # The session belongs to the computer and outlives the project; only the
+        # project's own index entry goes.
+        assert wm._cached_session(_STUB_COMPUTER_ID) is mock_session
+        assert ws_id not in wm._session_computer
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
     async def test_delete_workspace_not_found_raises(self, mock_db_get):
         mock_db_get.return_value = None
         config = _make_config()
@@ -398,13 +1715,545 @@ class TestDeleteWorkspace:
         with pytest.raises(ValueError, match="not found"):
             await wm.delete_workspace("nonexistent")
 
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_a_moving_workspace_is_refused_before_its_last_backup(
+        self, mock_db_get, mock_db_delete
+    ):
+        """The last backup holds the folder the move is about to set aside, so
+        taking it would fail the move rather than wait for it."""
+        from src.server.database.workspace import WorkspaceBusyError
+
+        ws_id = str(uuid.uuid4())
+        mock_db_get.return_value = _make_workspace(
+            workspace_id=ws_id, status="running", dir_name="test-ab12"
+        )
+        wm = WorkspaceManager(_make_config())
+        wm.backup_project_files = AsyncMock()
+        wm._remove_workspace_folder = AsyncMock()
+        wm._teardown_machine = AsyncMock()
+
+        with patch(
+            "src.server.services.workspace_manager.workspace_is_moving",
+            AsyncMock(return_value=True),
+        ) as moving:
+            with pytest.raises(WorkspaceBusyError):
+                await wm.delete_workspace(ws_id)
+
+        moving.assert_awaited_once_with(ws_id)
+        wm.backup_project_files.assert_not_awaited()
+        mock_db_delete.assert_not_awaited()
+        wm._remove_workspace_folder.assert_not_awaited()
+        wm._teardown_machine.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_a_workspace_with_a_live_run_is_refused_before_its_commands_end(
+        self, mock_db_get, mock_db_delete
+    ):
+        """The delete's own transaction refuses it anyway, so ending its
+        background commands first would stop them for a delete that never
+        happens."""
+        from src.server.database.workspace import (
+            ACTIVE_WORK_DELETE_REFUSAL,
+            WorkspaceBusyError,
+        )
+
+        ws_id = str(uuid.uuid4())
+        mock_db_get.return_value = _make_workspace(
+            workspace_id=ws_id, status="running", dir_name="test-ab12"
+        )
+        wm = WorkspaceManager(_make_config())
+        wm.backup_project_files = AsyncMock()
+
+        with (
+            patch(
+                "src.server.services.workspace_manager.workspace_has_active_work",
+                AsyncMock(return_value=True),
+            ) as busy,
+            patch(
+                "src.server.services.commands.control.end_workspace_commands",
+                AsyncMock(),
+            ) as end_commands,
+        ):
+            with pytest.raises(WorkspaceBusyError, match=ACTIVE_WORK_DELETE_REFUSAL):
+                await wm.delete_workspace(ws_id)
+
+        busy.assert_awaited_once_with(ws_id)
+        end_commands.assert_not_awaited()
+        wm.backup_project_files.assert_not_awaited()
+        mock_db_delete.assert_not_awaited()
+
+
+class TestDeleteOnASharedMachine:
+    """Deleting a project takes the project, never the machine under a sibling.
+
+    The sandbox is the computer's and a sibling may be mid-turn on it, so the
+    only delete that ends a machine is the one that leaves nothing on it.
+    """
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+        self._retirement_marker = patch(
+            f"{_RETIREMENT}.mark_computer_retirement_pending",
+            AsyncMock(return_value=True),
+        )
+        self._retirement_marker.start()
+        self._retirement_clear = patch(
+            f"{_RETIREMENT}.clear_computer_retirement_pending",
+            AsyncMock(return_value=True),
+        )
+        self._retirement_clear.start()
+
+    def teardown_method(self):
+        self._retirement_clear.stop()
+        self._retirement_marker.stop()
+        WorkspaceManager.reset_instance()
+
+    @staticmethod
+    def _manager():
+        wm = WorkspaceManager(_make_config())
+        wm._teardown_machine = AsyncMock()
+        wm._remove_workspace_folder = AsyncMock()
+        wm.backup_project_files = AsyncMock()
+        wm._machine_decision_lock = _decision_lock(True)
+        return wm
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @patch(f"{_RETIREMENT}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_RETIREMENT}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_a_sibling_keeps_the_sandbox(
+        self, mock_db_get, mock_get_computer, mock_status, mock_db_delete
+    ):
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID)
+        computer_id = _STUB_COMPUTER_ID
+        ws_id = str(uuid.uuid4())
+        mock_db_get.return_value = _make_workspace(
+            workspace_id=ws_id, computer_id=computer_id, dir_name="alpha-1a2b"
+        )
+        mock_get_computer.return_value = computer
+
+        wm = self._manager()
+        lock = wm._machine_lock(computer_id)
+
+        with _patch_live_ids("sibling-ws"):
+            assert await wm.delete_workspace(ws_id) is True
+
+        wm._teardown_machine.assert_not_awaited()
+        mock_status.assert_not_awaited()
+        wm._remove_workspace_folder.assert_awaited_once()
+        wm.backup_project_files.assert_awaited_once()
+        # The lock is the machine's, so a sibling's next call must find the
+        # same object rather than build a second one beside the holder.
+        assert wm._machine_lock(computer_id) is lock
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @patch(f"{_RETIREMENT}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_a_machine_with_backups_off_is_not_backed_up_before_a_delete(
+        self, mock_db_get, mock_get_computer, mock_db_delete
+    ):
+        """The last sync before a delete is a routine backup like any other,
+        which its owner turned off; the delete itself goes ahead."""
+        computer = _make_computer(
+            computer_id=_STUB_COMPUTER_ID, kind="ssh", files_backup=False
+        )
+        ws_id = str(uuid.uuid4())
+        mock_db_get.return_value = _make_workspace(
+            workspace_id=ws_id, computer_id=_STUB_COMPUTER_ID, dir_name="alpha-1a2b"
+        )
+        mock_get_computer.return_value = computer
+
+        wm = self._manager()
+        with _patch_resolve(computer), _patch_live_ids("sibling-ws"):
+            assert await wm.delete_workspace(ws_id) is True
+
+        wm.backup_project_files.assert_not_awaited()
+        mock_db_delete.assert_awaited_once_with(
+            ws_id, bound_to=_STUB_COMPUTER_ID, keep_folder=True
+        )
+        wm._remove_workspace_folder.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @patch(f"{_RETIREMENT}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_RETIREMENT}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_the_last_project_on_a_non_primary_ends_the_machine(
+        self, mock_db_get, mock_get_computer, mock_status, mock_db_delete
+    ):
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, is_primary=False)
+        computer_id = _STUB_COMPUTER_ID
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(
+            workspace_id=ws_id, computer_id=computer_id, dir_name="alpha-1a2b"
+        )
+        mock_db_get.return_value = workspace
+        mock_get_computer.return_value = computer
+        mock_status.side_effect = [
+            {**computer, "status": "stopping"},
+            {**computer, "status": "deleted"},
+        ]
+
+        wm = self._manager()
+
+        with _patch_live_ids():
+            assert await wm.delete_workspace(ws_id) is True
+
+        wm._teardown_machine.assert_awaited_once_with(_binding(ws_id, computer))
+        assert [item.kwargs for item in mock_status.await_args_list] == [
+            {"expected": "running"},
+            {"expected": "stopping"},
+        ]
+        # Nothing is unlinked from a disk that has just been destroyed.
+        wm._remove_workspace_folder.assert_not_awaited()
+        assert wm._machine_if_known(computer_id) is None
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @patch(f"{_RETIREMENT}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_RETIREMENT}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_the_last_project_on_the_primary_keeps_the_machine(
+        self, mock_db_get, mock_get_computer, mock_status, mock_db_delete
+    ):
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, is_primary=True)
+        ws_id = str(uuid.uuid4())
+        mock_db_get.return_value = _make_workspace(
+            workspace_id=ws_id, computer_id=_STUB_COMPUTER_ID, dir_name="alpha-1a2b"
+        )
+        mock_get_computer.return_value = computer
+
+        wm = self._manager()
+
+        with _patch_live_ids():
+            assert await wm.delete_workspace(ws_id) is True
+
+        wm._teardown_machine.assert_not_awaited()
+        mock_status.assert_not_awaited()
+        wm._remove_workspace_folder.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.db_delete_workspace",
+        new_callable=AsyncMock,
+    )
+    @patch(f"{_RETIREMENT}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_RETIREMENT}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace", new_callable=AsyncMock)
+    async def test_two_deletes_of_the_last_two_retire_the_machine_once(
+        self, mock_db_get, mock_get_computer, mock_status, mock_db_delete
+    ):
+        """Emptiness is read after the row is tombstoned and under the machine's
+        key, so the pair cannot both read the other as live and both walk away,
+        and the tombstone's own fence stops the loser retiring it twice."""
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, is_primary=False)
+        computer_id = _STUB_COMPUTER_ID
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        rows = {
+            first: _make_workspace(
+                workspace_id=first, computer_id=computer_id, dir_name="alpha-1a2b"
+            ),
+            second: _make_workspace(
+                workspace_id=second, computer_id=computer_id, dir_name="beta-3c4d"
+            ),
+        }
+        live = [first, second]
+
+        mock_db_get.side_effect = lambda ws_id, *a, **k: rows[ws_id]
+        mock_db_delete.side_effect = lambda ws_id, *a, **k: live.remove(ws_id) or True
+        mock_status.side_effect = [
+            {**computer, "status": "stopping"},
+            {**computer, "status": "deleted"},
+        ]
+        mock_get_computer.side_effect = (
+            lambda *a, **k: computer if mock_status.await_count == 0 else None
+        )
+
+        wm = self._manager()
+
+        # Both rows are gone by the time either decision runs, which is what
+        # the tombstone-before-the-key ordering guarantees.
+        with _patch_live_ids(side_effect=lambda *a, **k: list(live)):
+            await asyncio.gather(
+                wm.delete_workspace(first), wm.delete_workspace(second)
+            )
+
+        assert wm._teardown_machine.await_count == 1
+        assert mock_status.await_count == 2
+        assert [item.kwargs for item in mock_status.await_args_list] == [
+            {"expected": "running"},
+            {"expected": "stopping"},
+        ]
+
+
+class TestDeleteKeepsTheFolderOnTheOwnersMachine:
+    """A folder on a machine its owner brought may hold work kept nowhere else,
+    so a delete leaves it unless the owner asked for it to go."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+        self._retirement_marker = patch(
+            f"{_RETIREMENT}.mark_computer_retirement_pending",
+            AsyncMock(return_value=True),
+        )
+        self._retirement_marker.start()
+        self._retirement_clear = patch(
+            f"{_RETIREMENT}.clear_computer_retirement_pending",
+            AsyncMock(return_value=True),
+        )
+        self._retirement_clear.start()
+
+    def teardown_method(self):
+        self._retirement_clear.stop()
+        self._retirement_marker.stop()
+        WorkspaceManager.reset_instance()
+
+    async def _delete(self, kind, **kwargs):
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, kind=kind)
+        ws_id = str(uuid.uuid4())
+        wm = WorkspaceManager(_make_config())
+        wm._teardown_machine = AsyncMock()
+        wm._remove_workspace_folder = AsyncMock()
+        wm.backup_project_files = AsyncMock()
+        wm._machine_decision_lock = _decision_lock(True)
+        with (
+            patch(
+                f"{_WORKSPACE_MANAGER}.db_delete_workspace", new_callable=AsyncMock
+            ) as db_delete,
+            cm_patch(
+                "db_get_workspace",
+                AsyncMock(
+                    return_value=_make_workspace(
+                        workspace_id=ws_id,
+                        computer_id=_STUB_COMPUTER_ID,
+                        dir_name="alpha",
+                    )
+                ),
+            ),
+            patch(f"{_RETIREMENT}.get_computer", AsyncMock(return_value=computer)),
+            _patch_resolve(computer),
+            _patch_live_ids("sibling-ws"),
+        ):
+            assert await wm.delete_workspace(ws_id, **kwargs) is True
+        return ws_id, db_delete, wm._remove_workspace_folder
+
+    @pytest.mark.asyncio
+    async def test_a_delete_leaves_the_folder_by_default(self):
+        """The default is what an agent's tool and any API caller without the
+        flag get, so it is the one that must not lose files."""
+        ws_id, db_delete, remove = await self._delete("ssh")
+
+        db_delete.assert_awaited_once_with(
+            ws_id, bound_to=_STUB_COMPUTER_ID, keep_folder=True
+        )
+        remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_owner_asking_deletes_the_folder(self):
+        ws_id, db_delete, remove = await self._delete("ssh", delete_files=True)
+
+        db_delete.assert_awaited_once_with(
+            ws_id, bound_to=_STUB_COMPUTER_ID, keep_folder=False
+        )
+        remove.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["daytona", "e2b", "docker"])
+    @pytest.mark.parametrize("delete_files", [False, True])
+    async def test_a_hosted_machine_deletes_the_folder_either_way(
+        self, kind, delete_files
+    ):
+        ws_id, db_delete, remove = await self._delete(kind, delete_files=delete_files)
+
+        db_delete.assert_awaited_once_with(
+            ws_id, bound_to=_STUB_COMPUTER_ID, keep_folder=False
+        )
+        remove.assert_awaited_once()
+
+
+class TestRemoveComputerWithWorkspaces:
+    """Emptying a computer for its removal deletes only what its owner was
+    shown, and asks what would refuse the removal before deleting anything."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+        self.wm = WorkspaceManager(_make_config())
+        self.retired = False
+        self.wm.delete_workspace = AsyncMock(return_value=True)
+        self.wm.remove_computer = AsyncMock()
+        self.wm.workspace_row = AsyncMock(
+            side_effect=lambda ws_id: {"workspace_id": ws_id, "is_home": False}
+        )
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    def _retired_by_the_last_delete(self):
+        """A provider that builds machines retires the computer with its last
+        workspace, as the real delete does."""
+        deleted = []
+
+        async def delete(workspace_id, **_):
+            deleted.append(workspace_id)
+            self.retired = len(deleted) == 2
+            return True
+
+        self.wm.delete_workspace.side_effect = delete
+
+    async def _remove(
+        self, named, *, primary=False, moving=(), working=(), on=("ws-a", "ws-b")
+    ):
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, is_primary=primary)
+        with (
+            patch(
+                f"{_WORKSPACE_MANAGER}.get_computer",
+                AsyncMock(side_effect=lambda _id: None if self.retired else computer),
+            ),
+            patch(
+                f"{_WORKSPACE_MANAGER}.get_live_workspace_ids_for_computer",
+                AsyncMock(return_value=list(on)),
+            ),
+            patch(
+                f"{_WORKSPACE_MANAGER}.workspace_is_moving",
+                AsyncMock(side_effect=lambda ws_id: ws_id in moving),
+            ),
+            patch(
+                f"{_WORKSPACE_MANAGER}.workspace_has_active_work",
+                AsyncMock(side_effect=lambda ws_id: ws_id in working),
+            ),
+        ):
+            return await self.wm.remove_computer_with_workspaces(
+                _STUB_COMPUTER_ID, named
+            )
+
+    @pytest.mark.asyncio
+    async def test_deletes_each_workspace_on_it_then_removes_the_computer(self):
+        # A named one already gone from it is no reason to refuse, nor is it
+        # answered as deleted.
+        assert await self._remove(["ws-a", "ws-b", "ws-gone"]) == ["ws-a", "ws-b"]
+
+        assert [
+            (c.args, c.kwargs["on_computer"])
+            for c in self.wm.delete_workspace.await_args_list
+        ] == [(("ws-a",), _STUB_COMPUTER_ID), (("ws-b",), _STUB_COMPUTER_ID)]
+        self.wm.remove_computer.assert_awaited_once_with(_STUB_COMPUTER_ID)
+
+    @pytest.mark.asyncio
+    async def test_an_empty_computer_needs_none_named(self):
+        assert await self._remove([], on=()) == []
+
+        self.wm.delete_workspace.assert_not_awaited()
+        self.wm.remove_computer.assert_awaited_once_with(_STUB_COMPUTER_ID)
+
+    @pytest.mark.asyncio
+    async def test_a_computer_its_last_delete_retired_is_not_removed_again(self):
+        self._retired_by_the_last_delete()
+
+        assert await self._remove(["ws-a", "ws-b"]) == ["ws-a", "ws-b"]
+
+        assert self.wm.delete_workspace.await_count == 2
+        self.wm.remove_computer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("on", [None, _STUB_COMPUTER_ID], ids=["deleted", "moved"])
+    async def test_a_workspace_gone_from_it_meanwhile_is_passed_over(self, on):
+        """Moved off, it still exists, so the client must not forget it."""
+        from src.server.services.computer_manager._types import WorkspaceNotFound
+
+        self.wm.delete_workspace.side_effect = [
+            WorkspaceNotFound("ws-a", computer_id=on),
+            True,
+        ]
+
+        assert await self._remove(["ws-a", "ws-b"]) == ["ws-b"]
+
+        assert self.wm.delete_workspace.await_count == 2
+        self.wm.remove_computer.assert_awaited_once_with(_STUB_COMPUTER_ID)
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_once_some_went_names_them(self):
+        """A workspace that landed on it meanwhile keeps the computer; the
+        ones already deleted stay so, and the client is told which."""
+        from src.server.services.computer_errors import ComputerRemovalRefused
+
+        self.wm.remove_computer.side_effect = ComputerRemovalRefused("has_workspaces")
+
+        with pytest.raises(ComputerRemovalRefused) as refused:
+            await self._remove(["ws-a", "ws-b"])
+
+        assert (refused.value.code, refused.value.deleted) == (
+            "has_workspaces",
+            ["ws-a", "ws-b"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_any_other_refusal_of_a_delete_stops_the_removal(self):
+        self.wm.delete_workspace.side_effect = ValueError("Cannot delete Home")
+
+        with pytest.raises(ValueError, match="Cannot delete Home"):
+            await self._remove(["ws-a", "ws-b"])
+
+        self.wm.remove_computer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "code"),
+        [
+            ({"named": ["ws-a"]}, "has_workspaces"),
+            ({"named": ["ws-a", "ws-b"], "primary": True}, "primary"),
+            ({"named": ["ws-a", "ws-b"], "moving": ("ws-b",)}, "busy"),
+            ({"named": ["ws-a", "ws-b"], "working": ("ws-b",)}, "busy"),
+        ],
+        ids=["one-not-named", "primary", "one-moving", "one-working"],
+    )
+    async def test_a_refusal_deletes_nothing(self, kwargs, code):
+        from src.server.services.computer_errors import ComputerRemovalRefused
+
+        with pytest.raises(ComputerRemovalRefused) as refused:
+            await self._remove(**kwargs)
+
+        assert refused.value.code == code
+        self.wm.delete_workspace.assert_not_awaited()
+        self.wm.remove_computer.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # cleanup_idle_workspaces
 # ---------------------------------------------------------------------------
 
+
 class TestCleanupIdle:
-    """Test idle workspace cleanup."""
+    """The idle sweep walks machines, because the sandbox is the machine's.
+
+    One idle project on a busy computer is not a reason to take the computer
+    away, and a computer carrying five idle projects is stopped once rather
+    than five times. These stub the stop; what a lagging project row is allowed
+    to decide is in ``TestTheIdleSweepAndALaggingShadow`` below.
+    """
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -414,91 +2263,226 @@ class TestCleanupIdle:
 
     @pytest.fixture(autouse=True)
     def _quiet_durable_probes(self):
-        """The reaper's activity guard also reads the run ledgers; keep both
-        quiet so these tests exercise only the idle-timeout mechanics."""
+        """The reaper's activity guard also reads the run ledgers, now over the
+        whole machine; keep both quiet so these tests exercise only the
+        idle-timeout mechanics."""
         with (
             patch(
-                "src.server.database.runs.lifecycle.workspace_has_active_run",
+                "src.server.database.runs.lifecycle.computer_has_active_run",
                 new=AsyncMock(return_value=False),
             ),
             patch(
-                "src.server.database.runs.subagent_runs.count_open_runs_for_workspace",
+                "src.server.database.runs.subagent_runs.count_open_runs_for_computer",
                 new=AsyncMock(return_value=0),
             ),
         ):
             yield
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
-    async def test_cleanup_idle_stops_old_workspaces(self, mock_get_by_status):
-        ws_id = str(uuid.uuid4())
-        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        mock_get_by_status.return_value = [
-            _make_workspace(workspace_id=ws_id, last_activity_at=old_time),
-        ]
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_an_idle_machine_is_stopped_once(self, mock_computers):
+        """The machine is addressed directly, so the count of projects on it
+        cannot turn into a count of stops that would fight each other. The stop
+        is of the row as the sweep read it: one opened since has been stamped
+        and is no longer the idle machine the sweep judged."""
+        computer_id = str(uuid.uuid4())
+        row = _make_computer(
+            computer_id=computer_id,
+            last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        mock_computers.return_value = [row]
 
-        config = _make_config()
-        wm = WorkspaceManager(config, idle_timeout=1800)
-
-        with patch.object(wm, "stop_workspace", new_callable=AsyncMock) as mock_stop:
+        wm = WorkspaceManager(_make_config())
+        with patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop:
             count = await wm.cleanup_idle_workspaces()
 
         assert count == 1
-        mock_stop.assert_awaited_once_with(ws_id)
+        mock_stop.assert_awaited_once_with(
+            computer_id, unchanged_since=row["updated_at"], reason="idle"
+        )
+        mock_computers.assert_awaited_once_with("running", limit=1000, offset=0)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
-    async def test_cleanup_idle_skips_active_workspaces(self, mock_get_by_status):
-        now = datetime.now(timezone.utc)
-        mock_get_by_status.return_value = [
-            _make_workspace(last_activity_at=now),
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_always_on_first_page_cannot_starve_later_idle_machines(
+        self, mock_computers
+    ):
+        old = datetime.now(timezone.utc) - timedelta(hours=2)
+        exempt = [
+            _make_computer(
+                computer_id=str(uuid.uuid4()),
+                last_activity_at=old,
+                is_always_on=True,
+            )
+            for _ in range(1000)
+        ]
+        eligible = _make_computer(
+            computer_id=str(uuid.uuid4()), last_activity_at=old
+        )
+        mock_computers.side_effect = [exempt, [eligible]]
+        manager = WorkspaceManager(_make_config())
+        with (
+            patch.object(
+                manager,
+                "_reconcile_always_on_entitlements",
+                AsyncMock(
+                    return_value={str(row["computer_id"]) for row in exempt}
+                ),
+            ),
+            patch.object(manager, "_stop_machine", new_callable=AsyncMock) as stop,
+        ):
+            assert await manager.cleanup_idle_workspaces() == 1
+
+        assert mock_computers.await_args_list == [
+            call("running", limit=1000, offset=0),
+            call("running", limit=1000, offset=1000),
+        ]
+        stop.assert_awaited_once_with(
+            str(eligible["computer_id"]), unchanged_since=eligible["updated_at"], reason="idle"
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_each_machine_idles_out_ahead_of_its_own_auto_stop(
+        self, mock_computers
+    ):
+        """A machine whose provider stops it sooner than the deployment's
+        default is reaped sooner, before its provider stops it unannounced."""
+        from ptc_agent.config.core import DaytonaConfig
+
+        idle_since = datetime.now(timezone.utc) - timedelta(minutes=10)
+        short = _make_computer(
+            last_activity_at=idle_since,
+            provider_config={"auto_stop_interval": 900},
+        )
+        default = _make_computer(last_activity_at=idle_since)
+        mock_computers.return_value = [short, default]
+        config = _make_config()
+        config.to_core_config.return_value.sandbox.daytona = DaytonaConfig(
+            auto_stop_interval=2400
+        )
+
+        wm = WorkspaceManager(config)
+        with patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop:
+            assert await wm.cleanup_idle_workspaces() == 1
+
+        mock_stop.assert_awaited_once_with(
+            short["computer_id"], unchanged_since=short["updated_at"], reason="idle"
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_a_recently_used_machine_is_left_alone(self, mock_computers):
+        """The stamp is the computer's, so any project's turn refreshes it."""
+        mock_computers.return_value = [
+            _make_computer(last_activity_at=datetime.now(timezone.utc))
         ]
 
-        config = _make_config()
-        wm = WorkspaceManager(config, idle_timeout=1800)
-
-        with patch.object(wm, "stop_workspace", new_callable=AsyncMock) as mock_stop:
+        wm = WorkspaceManager(_make_config())
+        with patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop:
             count = await wm.cleanup_idle_workspaces()
 
         assert count == 0
         mock_stop.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
-    async def test_cleanup_idle_skips_no_activity(self, mock_get_by_status):
-        mock_get_by_status.return_value = [
-            _make_workspace(last_activity_at=None),
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    @pytest.mark.parametrize(("row_age", "stopped"), [(timedelta(hours=2), 1), (timedelta(0), 0)])
+    async def test_an_unstamped_machine_is_idle_since_its_row_last_changed(
+        self, mock_computers, row_age, stopped
+    ):
+        """Skipping a machine with no stamp left its row 'running' for good once
+        the provider stopped the sandbox, since nothing else moves the row."""
+        computer_id = str(uuid.uuid4())
+        row = _make_computer(
+            computer_id=computer_id,
+            last_activity_at=None,
+            updated_at=datetime.now(timezone.utc) - row_age,
+        )
+        mock_computers.return_value = [row]
+
+        wm = WorkspaceManager(_make_config())
+        with patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop:
+            count = await wm.cleanup_idle_workspaces()
+
+        assert count == stopped
+        assert mock_stop.await_args_list == [
+            call(computer_id, unchanged_since=row["updated_at"], reason="idle")
+        ] * stopped
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_a_turn_anywhere_on_the_machine_holds_it_open(self, mock_computers):
+        """Stopping it takes every project down, so one busy project is enough
+        to veto even when the machine's own stamp has gone quiet."""
+        computer_id = str(uuid.uuid4())
+        mock_computers.return_value = [
+            _make_computer(
+                computer_id=computer_id,
+                last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            )
         ]
 
-        config = _make_config()
-        wm = WorkspaceManager(config, idle_timeout=1800)
-
-        with patch.object(wm, "stop_workspace", new_callable=AsyncMock) as mock_stop:
+        wm = WorkspaceManager(_make_config())
+        with (
+            patch.object(
+                wm, "_machine_has_active_tasks", new=AsyncMock(return_value=True)
+            ) as mock_active,
+            patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop,
+        ):
             count = await wm.cleanup_idle_workspaces()
 
         assert count == 0
         mock_stop.assert_not_awaited()
+        # Asked about the machine, not about a project borrowed as its handle.
+        mock_active.assert_awaited_once_with(computer_id)
 
     # --- always-on entitlement reconciliation (bundled into the idle sweep) ---
 
     @pytest.mark.asyncio
-    @patch("src.server.dependencies.usage_limits.always_on_entitlement_lost", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
-    async def test_cleanup_always_on_entitled_stays_exempt(
-        self, mock_get_by_status, mock_lost
-    ):
-        """A long-idle always-on workspace whose owner is still entitled is
+    @patch(
+        "src.server.dependencies.usage_limits.always_on_entitlement_lost",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_always_on_entitled_stays_exempt(self, mock_computers, mock_lost):
+        """A long-idle always-on machine whose owner is still entitled is
         neither disabled nor reaped — the idle exemption holds."""
-        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        mock_get_by_status.return_value = [
-            _make_workspace(is_always_on=True, last_activity_at=old_time),
+        mock_computers.return_value = [
+            _make_computer(
+                is_always_on=True,
+                last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            )
         ]
         mock_lost.return_value = False
 
-        wm = WorkspaceManager(_make_config(), idle_timeout=1800)
+        wm = WorkspaceManager(_make_config())
         with (
-            patch.object(wm, "stop_workspace", new_callable=AsyncMock) as mock_stop,
-            patch.object(wm, "set_workspace_always_on", new_callable=AsyncMock) as mock_disable,
+            patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop,
+            patch.object(
+                wm, "set_computer_always_on", new_callable=AsyncMock
+            ) as mock_disable,
         ):
             count = await wm.cleanup_idle_workspaces()
 
@@ -507,91 +2491,118 @@ class TestCleanupIdle:
         mock_disable.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.dependencies.usage_limits.always_on_entitlement_lost", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
-    async def test_cleanup_always_on_lost_idle_disables_and_reaps(
-        self, mock_get_by_status, mock_lost
+    @patch(
+        "src.server.dependencies.usage_limits.always_on_entitlement_lost",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_always_on_lost_idle_disables_the_machine_and_reaps_it(
+        self, mock_computers, mock_lost
     ):
-        """Lost entitlement clears always-on, then the now-normal idle workspace
-        is reaped in the same tick."""
-        ws_id = str(uuid.uuid4())
-        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        mock_get_by_status.return_value = [
-            _make_workspace(
-                workspace_id=ws_id, is_always_on=True, last_activity_at=old_time
-            ),
-        ]
+        """Always-on is the machine's flag, so losing it clears it on the
+        computer and the now-normal machine is reaped in the same tick."""
+        computer_id = str(uuid.uuid4())
+        row = _make_computer(
+            computer_id=computer_id,
+            is_always_on=True,
+            last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            updated_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        mock_computers.return_value = [row]
         mock_lost.return_value = True
+        # The disable writes the row, which moves updated_at; a stop claimed
+        # against the row as first read would lose to it and wait a tick.
+        disabled = {**row, "is_always_on": False, "updated_at": datetime.now(timezone.utc)}
 
-        wm = WorkspaceManager(_make_config(), idle_timeout=1800)
+        wm = WorkspaceManager(_make_config())
         with (
-            patch.object(wm, "stop_workspace", new_callable=AsyncMock) as mock_stop,
-            patch.object(wm, "set_workspace_always_on", new_callable=AsyncMock) as mock_disable,
+            patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop,
+            patch.object(
+                wm, "set_computer_always_on", AsyncMock(return_value=disabled)
+            ) as mock_disable,
         ):
             count = await wm.cleanup_idle_workspaces()
 
-        mock_disable.assert_awaited_once_with(ws_id, False)
-        mock_stop.assert_awaited_once_with(ws_id)
+        mock_disable.assert_awaited_once_with(computer_id, False)
+        mock_stop.assert_awaited_once_with(
+            computer_id, unchanged_since=disabled["updated_at"], reason="idle"
+        )
         assert count == 1
 
     @pytest.mark.asyncio
-    @patch("src.server.dependencies.usage_limits.always_on_entitlement_lost", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
-    async def test_cleanup_always_on_lost_active_disables_without_stop(
-        self, mock_get_by_status, mock_lost
+    @patch(
+        "src.server.dependencies.usage_limits.always_on_entitlement_lost",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_always_on_lost_in_use_disables_without_stopping(
+        self, mock_computers, mock_lost
     ):
-        """Lost entitlement on an actively-used workspace clears always-on but
-        does NOT stop it mid-use — it idle-stops on a later tick."""
-        ws_id = str(uuid.uuid4())
-        mock_get_by_status.return_value = [
-            _make_workspace(
-                workspace_id=ws_id,
+        """Clearing the flag must not yank a machine out from under a user
+        mid-use; it idle-stops on a later tick like any other."""
+        computer_id = str(uuid.uuid4())
+        mock_computers.return_value = [
+            _make_computer(
+                computer_id=computer_id,
                 is_always_on=True,
                 last_activity_at=datetime.now(timezone.utc),
-            ),
+            )
         ]
         mock_lost.return_value = True
 
-        wm = WorkspaceManager(_make_config(), idle_timeout=1800)
+        wm = WorkspaceManager(_make_config())
         with (
-            patch.object(wm, "stop_workspace", new_callable=AsyncMock) as mock_stop,
-            patch.object(wm, "set_workspace_always_on", new_callable=AsyncMock) as mock_disable,
+            patch.object(wm, "_stop_machine", new_callable=AsyncMock) as mock_stop,
+            patch.object(
+                wm, "set_computer_always_on", AsyncMock(return_value={})
+            ) as mock_disable,
         ):
             count = await wm.cleanup_idle_workspaces()
 
-        mock_disable.assert_awaited_once_with(ws_id, False)
+        mock_disable.assert_awaited_once_with(computer_id, False)
         mock_stop.assert_not_awaited()
         assert count == 0
 
     @pytest.mark.asyncio
-    @patch("src.server.dependencies.usage_limits.always_on_entitlement_lost", new_callable=AsyncMock)
-    @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
-    async def test_cleanup_always_on_validate_memoized_per_user(
-        self, mock_get_by_status, mock_lost
+    @patch(
+        "src.server.dependencies.usage_limits.always_on_entitlement_lost",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_the_entitlement_is_validated_once_per_owner(
+        self, mock_computers, mock_lost
     ):
-        """Two always-on workspaces for one user trigger a single platform
-        validate, not one per workspace."""
-        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        mock_get_by_status.return_value = [
-            _make_workspace(
-                workspace_id=str(uuid.uuid4()),
+        """Two always-on machines for one user trigger a single platform
+        validate, not one per machine."""
+        mock_computers.return_value = [
+            _make_computer(
                 user_id="user-1",
                 is_always_on=True,
-                last_activity_at=old_time,
+                last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
             ),
-            _make_workspace(
-                workspace_id=str(uuid.uuid4()),
+            _make_computer(
                 user_id="user-1",
                 is_always_on=True,
-                last_activity_at=old_time,
+                last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
             ),
         ]
         mock_lost.return_value = True
 
-        wm = WorkspaceManager(_make_config(), idle_timeout=1800)
+        wm = WorkspaceManager(_make_config())
         with (
-            patch.object(wm, "stop_workspace", new_callable=AsyncMock),
-            patch.object(wm, "set_workspace_always_on", new_callable=AsyncMock) as mock_disable,
+            patch.object(wm, "_stop_machine", new_callable=AsyncMock),
+            patch.object(
+                wm, "set_computer_always_on", AsyncMock(return_value={})
+            ) as mock_disable,
         ):
             await wm.cleanup_idle_workspaces()
 
@@ -599,10 +2610,15 @@ class TestCleanupIdle:
         assert mock_disable.await_count == 2
 
 
-class TestReapStuckStarting:
-    """reap_stuck_starting_workspaces reverts rows wedged in 'starting' past the
-    reap_stuck_after window, but never reaps a start THIS worker is still running
-    (it holds _pending_lazy_sync membership) and leaves fresh rows alone."""
+class TestTheIdleSweepAndALaggingShadow:
+    """A project row that lags its computer must not be what decides the stop.
+
+    Reproduced live on wt3: one row left at 'stopped' under a running computer
+    (a fenced shadow write, or a rebind that moved the binding without the
+    lifecycle columns) made the sweep raise every five minutes, forever. The
+    machine was never stopped and kept billing, and the project could not start
+    either, because the start claim wants the machine 'stopped'.
+    """
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -612,86 +2628,380 @@ class TestReapStuckStarting:
 
     @pytest.mark.asyncio
     @patch(
-        "src.server.services.workspace_manager.update_workspace_status",
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_a_lagging_project_row_does_not_refuse_the_machines_stop(
+        self, mock_computers
+    ):
+        computer_id = str(uuid.uuid4())
+        ws_id = str(uuid.uuid4())
+        computer = _make_computer(
+            computer_id=computer_id,
+            last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        mock_computers.return_value = [computer]
+        # Present, and deliberately disagreeing with its machine: the stop must
+        # read the computer and never take this row's word for the state.
+        lagging = _make_workspace(
+            workspace_id=ws_id, status="stopped", computer_id=computer_id
+        )
+
+        transitions = []
+
+        async def _move(cid, status, *, expected=None, **_kwargs):
+            transitions.append((cid, status, expected))
+            return {**computer, "status": status, "shadowed_workspace_ids": [ws_id]}
+
+        wm = WorkspaceManager(_make_config())
+        with (
+            cm_patch("db_get_workspace", AsyncMock(return_value=lagging)),
+            _patch_live_ids(ws_id),
+            patch(f"{_LIFECYCLE}.get_computer", AsyncMock(return_value=computer)),
+            patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=computer)),
+            patch(
+                f"{_MACHINES}.update_computer_status",
+                AsyncMock(side_effect=_move),
+            ),
+            patch.object(
+                wm, "_machine_has_active_tasks", AsyncMock(return_value=False)
+            ),
+            patch.object(wm, "backup_project_files", AsyncMock()),
+            patch.object(
+                wm, "_detached_sandbox_teardown", AsyncMock()
+            ) as mock_teardown,
+        ):
+            count = await wm.cleanup_idle_workspaces()
+
+        assert count == 1
+        # Both halves enter through the computer, and both are compare-and-set,
+        # so a peer that moved the machine wins instead of being stomped.
+        assert transitions == [
+            (computer_id, "stopping", "running"),
+            (computer_id, "stopping", "stopping"),
+            (computer_id, "stopped", "stopping"),
+        ]
+        mock_teardown.assert_awaited_once()
+        assert wm._machine(computer_id).idle_reap_failures == 0
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_a_machine_it_cannot_stop_is_parked_rather_than_retried_forever(
+        self, mock_computers, caplog
+    ):
+        """Whatever the cause, the same error every cycle for the life of the
+        process is not a signal; one warning naming it is."""
+        computer_id = str(uuid.uuid4())
+        mock_computers.return_value = [
+            _make_computer(
+                computer_id=computer_id,
+                last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            )
+        ]
+
+        wm = WorkspaceManager(_make_config())
+        stop = AsyncMock(side_effect=RuntimeError("the provider is down"))
+        idle = patch.object(
+            wm, "_machine_has_active_tasks", AsyncMock(return_value=False)
+        )
+        with (
+            idle,
+            patch.object(wm, "_stop_machine", stop),
+            caplog.at_level(
+                logging.WARNING, logger="src.server.services.workspace_manager"
+            ),
+        ):
+            for _ in range(6):
+                assert await wm.cleanup_idle_workspaces() == 0
+
+        assert stop.await_count == 3
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "the provider is down" in warnings[0].message
+
+        # The hour is a park, not a retirement: once it passes the sweep tries
+        # again, so a machine stuck behind a provider outage still gets stopped.
+        wm._machine(computer_id).idle_reap_backoff_until = 0.0
+        with idle, patch.object(wm, "_stop_machine", stop):
+            await wm.cleanup_idle_workspaces()
+        assert stop.await_count == 4
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_the_sweeps_stop_mirrors_every_project_on_the_machine(
+        self, mock_computers
+    ):
+        """The sweep names no project, and the stop ends the runtime for all of
+        them, so every one is mirrored before the sandbox goes."""
+        computer_id = str(uuid.uuid4())
+        oldest, newer = str(uuid.uuid4()), str(uuid.uuid4())
+        computer = _make_computer(
+            computer_id=computer_id,
+            last_activity_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+        mock_computers.return_value = [computer]
+
+        wm = WorkspaceManager(_make_config())
+        backup = AsyncMock()
+        with (
+            cm_patch(
+                "db_get_workspace",
+                AsyncMock(
+                    return_value=_make_workspace(
+                        workspace_id=oldest, computer_id=computer_id
+                    )
+                ),
+            ),
+            _patch_live_ids(oldest, newer),
+            patch(f"{_LIFECYCLE}.get_computer", AsyncMock(return_value=computer)),
+            patch(f"{_MACHINES}.get_computer", AsyncMock(return_value=computer)),
+            patch(
+                f"{_MACHINES}.update_computer_status",
+                AsyncMock(return_value={**computer, "status": "stopping"}),
+            ),
+            patch.object(
+                wm, "_machine_has_active_tasks", AsyncMock(return_value=False)
+            ),
+            patch.object(wm, "backup_project_files", backup),
+            patch.object(wm, "_detached_sandbox_teardown", AsyncMock()),
+        ):
+            count = await wm.cleanup_idle_workspaces()
+
+        assert count == 1
+        assert [c.args[0] for c in backup.await_args_list] == [oldest, newer]
+
+
+class TestReapStuckStopping:
+    """A stop its worker never finished (a deploy, a crash) is settled by the
+    sweep, through the reconcile a start runs, once past a provider stop's
+    bound; nothing else would, for a machine no one starts or works on."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_settles_only_the_stops_past_the_bound_and_goes_on_past_a_failure(
+        self, mock_computers
+    ):
+        from src.server.services.path_lock_coordination import (
+            STOP_HEARTBEAT_UNAVAILABLE_RECOVERY_S,
+        )
+
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        old = datetime.now(timezone.utc) - timedelta(
+            seconds=STOP_HEARTBEAT_UNAVAILABLE_RECOVERY_S + 1
+        )
+        dark, stuck, fresh = (str(uuid.uuid4()) for _ in range(3))
+        mock_computers.return_value = [
+            _make_computer(computer_id=dark, status="stopping", updated_at=old),
+            _make_computer(computer_id=stuck, status="stopping", updated_at=old),
+            _make_computer(
+                computer_id=fresh, status="stopping", updated_at=datetime.now(timezone.utc)
+            ),
+        ]
+
+        async def reconcile(computer_id):
+            if computer_id == dark:
+                raise RuntimeError("unreachable")
+            return {"computer_id": computer_id, "status": "stopped"}
+
+        manager.reconcile_stopping_computer = AsyncMock(side_effect=reconcile)
+
+        assert await manager.reap_stuck_stopping_computers() == 1
+        mock_computers.assert_awaited_once_with("stopping", limit=1000)
+        assert [c.args[0] for c in manager.reconcile_stopping_computer.await_args_list] == [
+            dark,
+            stuck,
+        ]
+
+
+class TestReapStuckStarting:
+    """reap_stuck_starting_workspaces reverts computers wedged in 'starting' past
+    the reap_stuck_after window, but never reaps a start THIS worker is still
+    running (its record holds the pending_lazy_sync flag) and leaves fresh
+    rows alone.
+    """
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.update_computer_status",
         new_callable=AsyncMock,
     )
     @patch(
-        "src.server.services.workspace_manager.get_workspaces_by_status",
+        "src.server.services.workspace_manager.get_computers_by_status",
         new_callable=AsyncMock,
     )
-    async def test_reaps_stale_starting_row(self, mock_get_by_status, mock_status):
+    @patch(
+        "src.server.services.workspace_manager.get_computer",
+        new_callable=AsyncMock,
+    )
+    @pytest.mark.parametrize("stuck", ["starting", "creating"])
+    async def test_reaps_a_stale_starting_machine(
+        self, mock_computer, mock_computers, mock_status, stuck
+    ):
         """A row wedged past the threshold with NO local membership is the
-        cross-process case (a crashed/recycled worker left it 'starting'): no
-        in-process owner will ever recover it, so the reaper reverts it."""
+        cross-process case (a crashed/recycled worker left it 'starting', or a
+        create request died before its start claimed the row): no in-process
+        owner will ever recover it, so the reaper reverts it. The revert is
+        fenced on that status so a start that finished meanwhile wins.
+        """
         manager = WorkspaceManager.get_instance(config=_make_config())
-        ws_id = str(uuid.uuid4())
-        stale = _make_workspace(
-            workspace_id=ws_id,
-            status="starting",
+        computer_id = str(uuid.uuid4())
+        stale = _make_computer(
+            computer_id=computer_id,
+            status=stuck,
             updated_at=datetime.now(timezone.utc)
             - timedelta(seconds=manager.reap_stuck_after + 1),
         )
-        mock_get_by_status.return_value = [stale]
-        # No _pending_lazy_sync membership — no owner on this worker.
+        mock_computers.side_effect = lambda status, limit: (
+            [stale] if status == stuck else []
+        )
+        mock_computer.return_value = stale
+        manager._machine_decision_lock = _decision_lock(True)
 
         reverted = await manager.reap_stuck_starting_workspaces()
 
         assert reverted == 1
-        mock_status.assert_awaited_once_with(workspace_id=ws_id, status="stopped")
+        assert mock_computers.await_args_list == [
+            call("starting", limit=1000),
+            call("creating", limit=1000),
+        ]
+        mock_status.assert_awaited_once_with(
+            computer_id,
+            "stopped",
+            expected=stuck,
+            updated_before=ANY,
+        )
 
     @pytest.mark.asyncio
     @patch(
-        "src.server.services.workspace_manager.update_workspace_status",
+        "src.server.services.workspace_manager.update_computer_status",
         new_callable=AsyncMock,
     )
     @patch(
-        "src.server.services.workspace_manager.get_workspaces_by_status",
+        "src.server.services.workspace_manager.get_computers_by_status",
         new_callable=AsyncMock,
     )
-    async def test_leaves_in_flight_lazy_owner_past_threshold(
-        self, mock_get_by_status, mock_status
+    @patch(
+        "src.server.services.workspace_manager.get_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_heartbeat_wins_if_it_renews_after_the_sweep_read(
+        self, mock_computer, mock_computers, mock_status
     ):
-        """Even PAST the threshold, a row this worker is still starting (it holds
-        _pending_lazy_sync) must NOT be reaped — the owner will promote on success
-        or revert on failure. Reaping would discard the membership and no-op the
-        owner's promotion, stranding a ready session behind a 'stopped' row. This
-        guards the slow-archived-restore race independently of the threshold."""
         manager = WorkspaceManager.get_instance(config=_make_config())
-        ws_id = str(uuid.uuid4())
-        owned = _make_workspace(
-            workspace_id=ws_id,
+        stale = _make_computer(
             status="starting",
             updated_at=datetime.now(timezone.utc)
             - timedelta(seconds=manager.reap_stuck_after + 1),
         )
-        mock_get_by_status.return_value = [owned]
-        manager._pending_lazy_sync.add(ws_id)
+        mock_computers.return_value = [stale]
+        mock_computer.return_value = stale
+        manager._machine_decision_lock = _decision_lock(True)
+        mock_status.return_value = None
+
+        assert await manager.reap_stuck_starting_workspaces() == 0
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.update_computer_status",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_does_not_reap_while_a_spec_change_holds_the_machine_key(
+        self, mock_computers, mock_status
+    ):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        mock_computers.return_value = [
+            _make_computer(
+                status="starting",
+                updated_at=datetime.now(timezone.utc)
+                - timedelta(seconds=manager.reap_stuck_after + 1),
+            )
+        ]
+        manager._machine_decision_lock = _decision_lock(False)
+
+        assert await manager.reap_stuck_starting_workspaces() == 0
+        mock_status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.update_computer_status",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computers_by_status",
+        new_callable=AsyncMock,
+    )
+    async def test_leaves_an_in_flight_lazy_owner_past_threshold(
+        self, mock_computers, mock_status
+    ):
+        """Even PAST the threshold, a machine this worker is still starting (it
+        holds the record's pending_lazy_sync flag) must NOT be reaped. The
+        owner will promote on success or revert on failure. Reaping would clear
+        the flag and no-op that promotion, stranding a ready session behind a
+        'stopped' row.
+        """
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        computer_id = str(uuid.uuid4())
+        mock_computers.return_value = [
+            _make_computer(
+                computer_id=computer_id,
+                status="starting",
+                updated_at=datetime.now(timezone.utc)
+                - timedelta(seconds=manager.reap_stuck_after + 1),
+            )
+        ]
+        manager._machine(computer_id).pending_lazy_sync = True
 
         reverted = await manager.reap_stuck_starting_workspaces()
 
         assert reverted == 0
         mock_status.assert_not_awaited()
-        # Membership preserved so the owner's later promotion still fires.
-        assert ws_id in manager._pending_lazy_sync
+        # The flag is preserved so the owner's later promotion still fires.
+        assert manager._pending_lazy_start(computer_id)
 
     @pytest.mark.asyncio
     @patch(
-        "src.server.services.workspace_manager.update_workspace_status",
+        "src.server.services.workspace_manager.update_computer_status",
         new_callable=AsyncMock,
     )
     @patch(
-        "src.server.services.workspace_manager.get_workspaces_by_status",
+        "src.server.services.workspace_manager.get_computers_by_status",
         new_callable=AsyncMock,
     )
-    async def test_leaves_fresh_starting_row(self, mock_get_by_status, mock_status):
+    async def test_leaves_a_fresh_starting_machine(self, mock_computers, mock_status):
         """A start still within the wait window must NOT be reaped — that would
         yank a legitimately in-flight cold restore out from under its owner."""
         manager = WorkspaceManager.get_instance(config=_make_config())
-        fresh = _make_workspace(
-            status="starting",
-            updated_at=datetime.now(timezone.utc) - timedelta(seconds=10),
-        )
-        mock_get_by_status.return_value = [fresh]
+        mock_computers.return_value = [
+            _make_computer(
+                status="starting",
+                updated_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+            )
+        ]
 
         reverted = await manager.reap_stuck_starting_workspaces()
 
@@ -700,28 +3010,26 @@ class TestReapStuckStarting:
 
     @pytest.mark.asyncio
     @patch(
-        "src.server.services.workspace_manager.update_workspace_status",
+        "src.server.services.workspace_manager.update_computer_status",
         new_callable=AsyncMock,
     )
     @patch(
-        "src.server.services.workspace_manager.get_workspaces_by_status",
+        "src.server.services.workspace_manager.get_computers_by_status",
         new_callable=AsyncMock,
     )
-    async def test_leaves_slow_but_legit_restore(self, mock_get_by_status, mock_status):
+    async def test_leaves_a_slow_but_legit_restore(self, mock_computers, mock_status):
         """A row older than start_wait_timeout but younger than reap_stuck_after
         is below the reap threshold and must NOT be reaped — even with no local
         membership (e.g. a cross-process start that is slow but not yet wedged).
         This isolates the threshold boundary from the in-process owner guard."""
         manager = WorkspaceManager.get_instance(config=_make_config())
-        ws_id = str(uuid.uuid4())
-        # Halfway between the two thresholds (e.g. ~450s with defaults).
         age = (manager.start_wait_timeout + manager.reap_stuck_after) / 2
-        slow = _make_workspace(
-            workspace_id=ws_id,
-            status="starting",
-            updated_at=datetime.now(timezone.utc) - timedelta(seconds=age),
-        )
-        mock_get_by_status.return_value = [slow]
+        mock_computers.return_value = [
+            _make_computer(
+                status="starting",
+                updated_at=datetime.now(timezone.utc) - timedelta(seconds=age),
+            )
+        ]
 
         reverted = await manager.reap_stuck_starting_workspaces()
 
@@ -730,8 +3038,87 @@ class TestReapStuckStarting:
 
 
 # ---------------------------------------------------------------------------
+# Deleted-project folder cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestDeletedProjectFolderCleanup:
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.get_pending_workspace_folder_cleanups",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_the_periodic_sweep_retries_a_running_computer(
+        self, mock_computer, mock_pending
+    ):
+        workspace = {
+            "workspace_id": "ws-deleted",
+            "computer_id": _STUB_COMPUTER_ID,
+            "dir_name": "deleted-ab12",
+            "status": "deleted",
+        }
+        mock_pending.return_value = [workspace]
+        computer = _make_computer(status="running", provider_ref="sandbox-abc")
+        mock_computer.return_value = computer
+        manager = WorkspaceManager(_make_config())
+        manager._remove_workspace_folder = AsyncMock(return_value=True)
+
+        assert await manager.reap_pending_workspace_folder_cleanups() == 1
+
+        manager._remove_workspace_folder.assert_awaited_once_with(
+            "ws-deleted", workspace, computer
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_manager.complete_workspace_folder_cleanup",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_pending_workspace_folder_cleanups",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "src.server.services.workspace_manager.get_computer",
+        new_callable=AsyncMock,
+    )
+    async def test_a_retired_computer_settles_the_claim_without_a_runtime(
+        self, mock_computer, mock_pending, mock_complete
+    ):
+        mock_pending.return_value = [{
+            "workspace_id": "ws-deleted",
+            "computer_id": _STUB_COMPUTER_ID,
+            "dir_name": "deleted-ab12",
+            "status": "deleted",
+        }]
+        mock_computer.return_value = None
+        mock_complete.return_value = True
+        manager = WorkspaceManager(_make_config())
+        manager._remove_workspace_folder = AsyncMock()
+
+        assert await manager.reap_pending_workspace_folder_cleanups() == 1
+        manager._remove_workspace_folder.assert_not_awaited()
+        mock_complete.assert_awaited_once_with(
+            "ws-deleted",
+            computer_id=_STUB_COMPUTER_ID,
+            dir_name="deleted-ab12",
+        )
+
+
+# ---------------------------------------------------------------------------
 # shutdown
 # ---------------------------------------------------------------------------
+
 
 class TestShutdown:
     """Test workspace manager shutdown."""
@@ -746,17 +3133,16 @@ class TestShutdown:
     async def test_shutdown_clears_state(self):
         config = _make_config()
         wm = WorkspaceManager(config)
-        wm._sessions["ws-1"] = _make_mock_session()
-        wm._pending_lazy_sync.add("ws-1")
-        wm._last_sync_at["ws-1"] = time.monotonic()
-        wm._workspace_locks["ws-1"] = asyncio.Lock()
+        machine = wm._machine("ws-1")
+        machine.session = _make_mock_session()
+        machine.pending_lazy_sync = True
+        machine.last_sync_at = time.monotonic()
 
         await wm.shutdown()
 
-        assert wm._sessions == {}
-        assert len(wm._pending_lazy_sync) == 0
-        assert wm._last_sync_at == {}
-        assert wm._workspace_locks == {}
+        # The record carried the session, the flag, the cooldown stamp and the
+        # machine lock, and shutdown drops the record whole.
+        assert wm._machines == {}
         assert wm._shutdown is True
 
     @pytest.mark.asyncio
@@ -776,6 +3162,7 @@ class TestShutdown:
 # ---------------------------------------------------------------------------
 # Sync cooldown
 # ---------------------------------------------------------------------------
+
 
 class TestSyncCooldown:
     """Test sync cooldown logic."""
@@ -801,7 +3188,9 @@ class TestSyncCooldown:
         config = _make_config()
         wm = WorkspaceManager(config)
         # Set sync time to well past the cooldown
-        wm._last_sync_at["ws-1"] = time.monotonic() - wm._SYNC_COOLDOWN_SECONDS - 10
+        wm._machine("ws-1").last_sync_at = (
+            time.monotonic() - wm._SYNC_COOLDOWN_SECONDS - 10
+        )
         assert wm._sync_cooldown_ok("ws-1") is False
 
 
@@ -809,22 +3198,54 @@ class TestSyncCooldown:
 # _seed_agent_md
 # ---------------------------------------------------------------------------
 
+
 class TestSeedAgentMd:
     """Test agent.md seeding."""
 
+    @staticmethod
+    def _bare_sandbox():
+        """A sandbox with nothing in it yet: the seed's only writing case."""
+        sandbox = AsyncMock()
+        sandbox.aread_file_text = AsyncMock(return_value=None)
+        sandbox.awrite_file_text = AsyncMock(return_value=True)
+        return sandbox
+
     @pytest.mark.asyncio
     async def test_seed_agent_md_writes_to_sandbox(self):
-        sandbox = AsyncMock()
-        sandbox.awrite_file_text = AsyncMock(return_value=True)
+        sandbox = self._bare_sandbox()
 
-        await WorkspaceManager._seed_agent_md(sandbox, "My Workspace", "A description")
+        await WorkspaceManager._seed_agent_md(sandbox, "My Workspace")
 
         sandbox.awrite_file_text.assert_awaited_once()
         call_args = sandbox.awrite_file_text.call_args
         assert call_args[0][0] == "agent.md"
-        content = call_args[0][1]
-        assert "My Workspace" in content
-        assert "A description" in content
+        assert "## Thread Index" in call_args[0][1]
+
+    @pytest.mark.asyncio
+    async def test_an_existing_agent_md_is_never_overwritten(self):
+        """A project reaching its first sandbox may arrive with restored files
+        (a duplicate's copy, or a machine rebuilt under it). The seed is a
+        starting point, not a reset, and clobbering one loses the user's file.
+        """
+        sandbox = self._bare_sandbox()
+        sandbox.aread_file_text = AsyncMock(return_value="# their notes")
+
+        await WorkspaceManager._seed_agent_md(sandbox, "My Workspace")
+
+        sandbox.awrite_file_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_template_does_not_name_the_workspace(self):
+        # The row is the only place the name lives, and the prompt injects it
+        # from there each turn. A copy written here could only go stale, which
+        # is the whole bug the front-matter block used to cause.
+        sandbox = self._bare_sandbox()
+
+        await WorkspaceManager._seed_agent_md(sandbox, "My Workspace")
+
+        content = sandbox.awrite_file_text.call_args[0][1]
+        assert "My Workspace" not in content
+        assert not content.startswith("---")
 
     @pytest.mark.asyncio
     async def test_seed_agent_md_none_sandbox_noop(self):
@@ -833,7 +3254,7 @@ class TestSeedAgentMd:
 
     @pytest.mark.asyncio
     async def test_seed_agent_md_handles_write_failure(self):
-        sandbox = AsyncMock()
+        sandbox = self._bare_sandbox()
         sandbox.awrite_file_text = AsyncMock(side_effect=Exception("write failed"))
 
         # Should not raise
@@ -843,6 +3264,7 @@ class TestSeedAgentMd:
 # ---------------------------------------------------------------------------
 # SandboxGoneError
 # ---------------------------------------------------------------------------
+
 
 class TestSandboxGoneError:
     """Test SandboxGoneError exception class."""
@@ -866,6 +3288,7 @@ class TestSandboxGoneError:
 # PTCSandbox.has_failed() state matrix
 # ---------------------------------------------------------------------------
 
+
 class TestHasFailed:
     """Test PTCSandbox.has_failed() distinguishes 'init failed' from 'still initializing'."""
 
@@ -874,8 +3297,10 @@ class TestHasFailed:
         sandbox = MagicMock()
         sandbox._ready_event = None
         sandbox._init_error = None
+        sandbox._lost = None
         # Call the real has_failed logic
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
         result = PTCSandbox.has_failed(sandbox)
         assert result is False
 
@@ -884,7 +3309,9 @@ class TestHasFailed:
         sandbox = MagicMock()
         sandbox._ready_event = asyncio.Event()
         sandbox._init_error = None
+        sandbox._lost = None
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
         result = PTCSandbox.has_failed(sandbox)
         assert result is False
 
@@ -894,7 +3321,9 @@ class TestHasFailed:
         sandbox._ready_event = asyncio.Event()
         sandbox._ready_event.set()
         sandbox._init_error = None
+        sandbox._lost = None
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
         result = PTCSandbox.has_failed(sandbox)
         assert result is False
 
@@ -904,14 +3333,32 @@ class TestHasFailed:
         sandbox._ready_event = asyncio.Event()
         sandbox._ready_event.set()
         sandbox._init_error = SandboxGoneError("sb-1", "not found")
+        sandbox._lost = None
         from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
         result = PTCSandbox.has_failed(sandbox)
         assert result is True
+
+    def test_lost_after_init(self):
+        """A reconnect that found the sandbox gone fails a handle that was ready,
+        so the next acquisition recovers instead of reusing it."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        sandbox = MagicMock()
+        sandbox._ready_event = None
+        sandbox._init_error = None
+        sandbox.runtime = object()
+        sandbox._lost = SandboxGoneError("sb-1", "replaced")
+
+        assert PTCSandbox.has_failed(sandbox) is True
+        assert PTCSandbox.is_ready(sandbox) is False
+        assert PTCSandbox.init_error.fget(sandbox) is sandbox._lost
 
 
 # ---------------------------------------------------------------------------
 # has_ready_session
 # ---------------------------------------------------------------------------
+
 
 class TestHasReadySession:
     """Test WorkspaceManager.has_ready_session() quick pre-check."""
@@ -923,7 +3370,7 @@ class TestHasReadySession:
         WorkspaceManager.reset_instance()
 
     def test_has_ready_session_no_cache(self):
-        """workspace_id not in _sessions returns False."""
+        """A project this worker holds no session for returns False."""
         config = _make_config()
         wm = WorkspaceManager(config)
         assert wm.has_ready_session("ws-nonexistent") is False
@@ -934,7 +3381,8 @@ class TestHasReadySession:
         wm = WorkspaceManager(config)
         session = _make_mock_session(initialized=True, has_sandbox=True)
         session.sandbox.is_ready = MagicMock(return_value=True)
-        wm._sessions["ws-1"] = session
+        wm._machine(_STUB_COMPUTER_ID).session = session
+        wm._session_computer["ws-1"] = _STUB_COMPUTER_ID
         assert wm.has_ready_session("ws-1") is True
 
     def test_has_ready_session_not_ready(self):
@@ -943,13 +3391,83 @@ class TestHasReadySession:
         wm = WorkspaceManager(config)
         session = _make_mock_session(initialized=True, has_sandbox=True)
         session.sandbox.is_ready = MagicMock(return_value=False)
-        wm._sessions["ws-1"] = session
+        wm._machine(_STUB_COMPUTER_ID).session = session
+        wm._session_computer["ws-1"] = _STUB_COMPUTER_ID
         assert wm.has_ready_session("ws-1") is False
+
+    def test_a_project_this_worker_has_never_served_reports_no_session(self):
+        """The check is synchronous and must not resolve the machine to answer.
+
+        A sibling's live session on the same computer is not this project's:
+        answering off the machine would report ready for a project whose folder
+        and tool overlay this worker has never prepared.
+        """
+        wm = WorkspaceManager(_make_config())
+        wm._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        assert wm.has_ready_session("ws-never-served") is False
+
+
+class TestGetSessionIfRunning:
+    """An open preview card polls every two minutes, so a read that started the
+    computer would undo every stop within two."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @staticmethod
+    def _manager(provider_state):
+        wm = WorkspaceManager(_make_config())
+        wm.get_session_for_workspace = AsyncMock(return_value=_make_mock_session())
+        runtime = MagicMock(get_state=AsyncMock(return_value=provider_state))
+
+        @asynccontextmanager
+        async def detached(_ref, *, binding=None):
+            yield runtime
+
+        wm._detached_runtime = detached
+        return wm
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "db_status, provider_state",
+        [
+            # Stopped by the user.
+            ("stopped", RuntimeState.RUNNING),
+            # Paused on the provider's idle timer before the server noticed;
+            # attaching to a paused E2B sandbox resumes it.
+            ("running", RuntimeState.STOPPED),
+        ],
+    )
+    async def test_a_computer_that_is_not_running_is_never_acquired(
+        self, db_status, provider_state
+    ):
+        wm = self._manager(provider_state)
+        with patch(
+            "src.server.services.workspace_manager.get_computer_for_workspace",
+            AsyncMock(return_value=_make_computer(status=db_status)),
+        ):
+            assert await wm.get_session_if_running("ws-1") is None
+        wm.get_session_for_workspace.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_running_computer_is_attached(self):
+        wm = self._manager(RuntimeState.RUNNING)
+        with patch(
+            "src.server.services.workspace_manager.get_computer_for_workspace",
+            AsyncMock(return_value=_make_computer(status="running")),
+        ):
+            session = await wm.get_session_if_running("ws-1", user_id="user-1")
+        assert session is wm.get_session_for_workspace.return_value
+        wm.get_session_for_workspace.assert_awaited_once_with("ws-1", user_id="user-1")
 
 
 # ---------------------------------------------------------------------------
 # Sandbox recovery — Gap 1 & Gap 2 fixes
 # ---------------------------------------------------------------------------
+
 
 class TestSandboxRecovery:
     """Test sandbox recovery when lazy init fails with sandbox-gone error."""
@@ -962,7 +3480,13 @@ class TestSandboxRecovery:
 
     def _make_manager(self):
         config = _make_config()
-        return WorkspaceManager.get_instance(config=config)
+        manager = WorkspaceManager.get_instance(config=config)
+        # Recovery re-provisions through the real restore path; with no DB pool
+        # the completeness guard cannot be raised and provisioning aborts on
+        # purpose. These tests are about the recovery spine, not the restore.
+        manager._restore_files = AsyncMock()
+        manager._maybe_restore_files = AsyncMock()
+        return manager
 
     def _make_failed_session(self, error=None):
         """Create a session whose sandbox has a failed lazy init."""
@@ -980,10 +3504,40 @@ class TestSandboxRecovery:
         return session
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    async def test_second_stop_wait_continues_when_the_stop_settles(self):
+        manager = self._make_manager()
+        session = _make_mock_session()
+        manager._acquire_session = AsyncMock(return_value=session)
+        stopped = _make_computer(status="stopped")
+
+        with (
+            patch(f"{_LIFECYCLE}.asyncio.sleep", new=AsyncMock()),
+            patch(
+                f"{_LIFECYCLE}.get_computer",
+                new=AsyncMock(side_effect=[stopped, stopped]),
+            ),
+        ):
+            result = await manager._await_stop_and_retry(
+                _binding("ws-a", stopped),
+                user_id="user-1",
+                workspace_user_id="user-1",
+                on_state_observed=None,
+                attempt=1,
+            )
+
+        assert result is session
+        manager._acquire_session.assert_awaited_once_with(
+            "ws-a",
+            user_id="user-1",
+            on_state_observed=None,
+            _attempt=2,
+        )
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_cache_hit_failed_lazy_sandbox_gone_recovers(
         self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -995,7 +3549,7 @@ class TestSandboxRecovery:
 
         # Place broken session in cache
         broken_session = self._make_failed_session()
-        manager._sessions[ws_id] = broken_session
+        manager._machine(_STUB_COMPUTER_ID).session = broken_session
 
         # Mock recovery: SessionManager.get_session returns a new working session
         new_session = _make_mock_session()
@@ -1003,20 +3557,24 @@ class TestSandboxRecovery:
         mock_session_mgr.get_session.return_value = new_session
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with (
+            _patch_identity(workspace),
+            _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID),
+        ):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Broken session should be proactively cleaned up (MCP + provider)
-        mock_session_mgr.cleanup_session.assert_awaited_with(ws_id)
+        mock_session_mgr.cleanup_session.assert_awaited_with(_STUB_COMPUTER_ID)
         # Recovery creates a new session
         new_session.initialize.assert_called_once()
         # Status updated
         assert result is not None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_cache_hit_failed_lazy_other_error_clears(
         self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1030,24 +3588,28 @@ class TestSandboxRecovery:
         broken_session = self._make_failed_session(
             error=RuntimeError("network timeout")
         )
-        manager._sessions[ws_id] = broken_session
+        manager._machine(_STUB_COMPUTER_ID).session = broken_session
 
         # Fall-through: SessionManager.get_session returns a new session for reconnect
         new_session = _make_mock_session()
         mock_session_mgr.get_session.return_value = new_session
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with (
+            _patch_identity(workspace),
+            _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID),
+        ):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Broken session proactively cleaned up (MCP + provider)
-        mock_session_mgr.cleanup_session.assert_awaited_with(ws_id)
+        mock_session_mgr.cleanup_session.assert_awaited_with(_STUB_COMPUTER_ID)
         # Falls through to status-based handling (reconnect)
         assert result is not None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("SessionManager")
+    @cm_patch("db_get_workspace")
     async def test_recover_sandbox_failure_destroys_orphan(
         self, mock_get_ws, mock_session_mgr, mock_status
     ):
@@ -1063,21 +3625,21 @@ class TestSandboxRecovery:
         mock_session_mgr.get_session.return_value = session
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        manager._mint_sandbox_tokens = AsyncMock(return_value={})
+        manager._keep_data_token = AsyncMock()
         manager._apply_session_mcp = AsyncMock(return_value=None)
         manager._sync_sandbox_assets = AsyncMock()
         # Sandbox is created (initialize ok) but a later step fails.
         manager._restore_files = AsyncMock(side_effect=RuntimeError("restore boom"))
 
         with pytest.raises(RuntimeError, match="restore boom"):
-            await manager._recover_sandbox(ws_id, "user-1", MagicMock())
+            await manager._recover_sandbox(_binding(ws_id), "user-1", MagicMock())
 
-        mock_session_mgr.cleanup_session.assert_awaited_once_with(ws_id)
+        mock_session_mgr.cleanup_session.assert_awaited_once_with(_STUB_COMPUTER_ID)
         # Broken session not left in the cache.
-        assert ws_id not in manager._sessions
+        assert manager._cached_session(_STUB_COMPUTER_ID) is None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @cm_patch("db_get_workspace")
     async def test_cache_hit_still_initializing_returns(self, mock_get_ws):
         """Sandbox still initializing → returns session immediately, no recovery."""
         manager = self._make_manager()
@@ -1086,18 +3648,19 @@ class TestSandboxRecovery:
         mock_get_ws.return_value = workspace
 
         session = self._make_initializing_session()
-        manager._sessions[ws_id] = session
+        manager._machine(_STUB_COMPUTER_ID).session = session
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with _patch_identity(workspace):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Same session returned, no recovery triggered
         assert result is session
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_phase2_sandbox_gone_recovers(
         self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1112,9 +3675,9 @@ class TestSandboxRecovery:
         session.sandbox.ensure_sandbox_ready = AsyncMock(
             side_effect=SandboxGoneError("sb-old", "not found")
         )
-        manager._sessions[ws_id] = session
+        manager._machine(_STUB_COMPUTER_ID).session = session
         # Force sync by clearing cooldown
-        manager._last_sync_at = {}
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
 
         # Mock recovery
         new_session = _make_mock_session()
@@ -1122,16 +3685,73 @@ class TestSandboxRecovery:
         mock_session_mgr.get_session.return_value = new_session
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with (
+            _patch_identity(workspace),
+            _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID),
+        ):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Recovery triggered
-        mock_session_mgr.cleanup_session.assert_awaited_with(ws_id)
+        mock_session_mgr.cleanup_session.assert_awaited_with(_STUB_COMPUTER_ID)
         new_session.initialize.assert_called_once()
         assert result is not None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @pytest.mark.parametrize("lazy", [True, False], ids=["lazy-start", "running"])
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    async def test_phase2_failed_recovery_releases_the_lazy_claim(
+        self,
+        mock_activity,
+        mock_ws_status,
+        mock_computer_status,
+        mock_session_mgr,
+        mock_get_ws,
+        lazy,
+    ):
+        """The clear before the recovery forgets the claim; without the release
+        the row stays starting until the reaper. It releases only while the row
+        is still this start's, since a recovery on another worker may have
+        bound its own sandbox meanwhile."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+        session = _make_mock_session()
+        claimed = session.sandbox.sandbox_id
+        session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError(claimed, "not found")
+        )
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
+        manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = lazy
+        mock_session_mgr.cleanup_session = AsyncMock()
+        manager._recover_sandbox = AsyncMock(side_effect=RuntimeError("restore failed"))
+
+        with _patch_identity(workspace), pytest.raises(RuntimeError):
+            await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        if lazy:
+            mock_computer_status.assert_awaited_once_with(
+                _STUB_COMPUTER_ID,
+                "stopped",
+                expected="starting",
+                expected_provider_ref=claimed,
+                require_provider_ref=True,
+            )
+        else:
+            mock_computer_status.assert_not_awaited()
+        assert not any(
+            c.kwargs.get("status") == "stopped"
+            for c in mock_ws_status.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
     async def test_phase2_concurrent_recovery_skips(
         self, mock_session_mgr, mock_get_ws
     ):
@@ -1146,32 +3766,33 @@ class TestSandboxRecovery:
         broken_session.sandbox.ensure_sandbox_ready = AsyncMock(
             side_effect=SandboxGoneError("sb-old", "not found")
         )
-        manager._sessions[ws_id] = broken_session
-        manager._last_sync_at = {}
+        manager._machine(_STUB_COMPUTER_ID).session = broken_session
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
 
         # Simulate concurrent recovery: when we re-acquire the lock,
         # another request has already placed a working session in the cache.
         already_recovered = _make_mock_session()
         already_recovered.sandbox.is_ready = MagicMock(return_value=True)
 
-        original_acquire = manager._acquire_workspace_lock
+        original_acquire = manager._acquire_machine_lock
 
         @asynccontextmanager
         async def mock_acquire(wid, timeout=60.0):
             # Before yielding the lock, simulate concurrent recovery
-            manager._sessions[wid] = already_recovered
+            manager._machine(_STUB_COMPUTER_ID).session = already_recovered
             async with original_acquire(wid, timeout=timeout):
                 yield
 
-        manager._acquire_workspace_lock = mock_acquire
+        manager._acquire_machine_lock = mock_acquire
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with _patch_identity(workspace):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Should return the already-recovered session, not create a new one
         assert result is already_recovered
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @cm_patch("db_get_workspace")
     async def test_phase2_other_error_logs_warning(self, mock_get_ws):
         """Phase 2: non-SandboxGoneError → logs warning, returns session."""
         manager = self._make_manager()
@@ -1183,19 +3804,21 @@ class TestSandboxRecovery:
         session.sandbox.ensure_sandbox_ready = AsyncMock(
             side_effect=RuntimeError("network blip")
         )
-        manager._sessions[ws_id] = session
-        manager._last_sync_at = {}
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with _patch_identity(workspace):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Same session returned (broken, but we don't know it's sandbox-gone)
         assert result is session
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.stamp_running_computer", AsyncMock(return_value=True))
     async def test_running_reconnect_sandbox_gone_recovers(
         self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1218,19 +3841,20 @@ class TestSandboxRecovery:
         mock_session_mgr.get_session.side_effect = [failing_session, recovered_session]
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Recovery triggered
-        mock_session_mgr.cleanup_session.assert_awaited_with(ws_id)
+        mock_session_mgr.cleanup_session.assert_awaited_with(_STUB_COMPUTER_ID)
         recovered_session.initialize.assert_called_once()
         assert result is not None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_stopped_workspace_lazy_init_sandbox_gone_recovers(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1247,7 +3871,7 @@ class TestSandboxRecovery:
         workspace = _make_workspace(workspace_id=ws_id, status="stopped")
         mock_get_ws.return_value = workspace
         # Cross-worker claim succeeds — this worker wins the start mutex.
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
 
         # _restart_workspace returns a session whose sandbox will fail in Phase 2
         lazy_session = _make_mock_session()
@@ -1266,23 +3890,29 @@ class TestSandboxRecovery:
 
         # Patch _restart_workspace to return the lazy session directly
         # (simulates the real lazy init path)
-        async def mock_restart(workspace, user_id, lazy_init=True, on_state_observed=None):
+        async def mock_restart(
+            binding, workspace, user_id=None, lazy_init=True, on_state_observed=None
+        ):
             session = lazy_session
-            manager._sessions[ws_id] = session
-            manager._pending_lazy_sync.add(ws_id)
+            manager._machine(_STUB_COMPUTER_ID).session = session
+            manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = True
             return session
 
-        with patch.object(manager, "_restart_workspace", side_effect=mock_restart):
+        with (
+            patch.object(manager, "_restart_workspace", side_effect=mock_restart),
+            _patch_identity(workspace),
+            _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID),
+        ):
             result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Phase 2 caught SandboxGoneError and triggered recovery
-        mock_session_mgr.cleanup_session.assert_awaited_with(ws_id)
+        mock_session_mgr.cleanup_session.assert_awaited_with(_STUB_COMPUTER_ID)
         assert result is not None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_restart_workspace_stamps_activity_after_status(
         self, mock_activity, mock_status, mock_session_mgr
     ):
@@ -1311,6 +3941,7 @@ class TestSandboxRecovery:
 
         async def record_status(**kwargs):
             call_order.append("status")
+            return {"workspace_id": ws_id}
 
         async def record_activity(workspace_id):
             call_order.append("activity")
@@ -1319,7 +3950,7 @@ class TestSandboxRecovery:
         mock_activity.side_effect = record_activity
 
         result = await manager._restart_workspace(
-            workspace, user_id="user-1", lazy_init=False
+            _binding(ws_id), workspace, user_id="user-1", lazy_init=False
         )
 
         assert result is session
@@ -1337,9 +3968,9 @@ class TestSandboxRecovery:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("always_on", [True, False])
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_restart_reseeds_autostop_in_both_directions(
         self, mock_activity, mock_status, mock_session_mgr, always_on
     ):
@@ -1364,15 +3995,22 @@ class TestSandboxRecovery:
         manager._maybe_migrate_sandbox = AsyncMock(return_value=None)
         manager._apply_autostop_for_always_on = AsyncMock()
 
-        await manager._restart_workspace(
-            workspace, user_id="user-1", lazy_init=False
-        )
+        with patch(
+            f"{_LIFECYCLE}.get_computer",
+            AsyncMock(return_value={**_STUB_COMPUTER, "is_always_on": always_on}),
+        ):
+            await manager._restart_workspace(
+                _binding(ws_id, is_always_on=always_on),
+                workspace,
+                user_id="user-1",
+                lazy_init=False,
+            )
 
         # enabled tracks the flag exactly — True keeps interval 0, False
         # restores the default so the sandbox can auto-stop again. The non-lazy
         # reconnect reuses the live runtime, so it's passed through as ``runtime``.
         manager._apply_autostop_for_always_on.assert_awaited_once_with(
-            "sandbox-abc", enabled=always_on, runtime=ANY
+            "sandbox-abc", enabled=always_on, runtime=ANY, binding=ANY
         )
 
 
@@ -1380,6 +4018,93 @@ class TestSandboxRecovery:
 # on_state_observed forwarding — pin the kwarg threads through every
 # session init branch so a silent typo in any one call site fails CI.
 # ---------------------------------------------------------------------------
+
+
+class TestAnAttachRestartsTheIdleClock:
+    """Opening a machine whose row reads running reconnects it, which starts a
+    sandbox its provider stopped, so the idle clock restarts as a start's does.
+    Without the stamp, a machine opened and not yet typed in read idle since its
+    last turn, and the idle sweep stopped it under the user. The stamp comes
+    before the reconnect and only while the row reads running, so of the attach
+    and a stop claimed on another worker exactly one goes ahead."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.stamp_running_computer", new_callable=AsyncMock)
+    async def test_a_cold_attach_stamps_the_machine_before_reconnecting(
+        self, mock_stamp, _mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        manager._sync_sandbox_assets = AsyncMock()
+        manager._maybe_migrate_sandbox = AsyncMock(return_value=None)
+        ws_id = str(uuid.uuid4())
+        mock_get_ws.return_value = _make_workspace(workspace_id=ws_id, status="running")
+        session = _make_mock_session(initialized=False)
+        mock_session_mgr.get_session.return_value = session
+        reconnected_at_stamp = []
+
+        def stamp(_computer_id):
+            reconnected_at_stamp.append(session.initialize.await_count)
+            return True
+
+        mock_stamp.side_effect = stamp
+
+        await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        session.initialize.assert_awaited_once()
+        mock_stamp.assert_awaited_once_with(_STUB_COMPUTER_ID)
+        assert reconnected_at_stamp == [0]
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.stamp_running_computer", new_callable=AsyncMock)
+    async def test_an_attach_a_stop_beat_waits_for_it_instead_of_reconnecting(
+        self, mock_stamp, _mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+        mock_get_ws.return_value = _make_workspace(workspace_id=ws_id, status="running")
+        session = _make_mock_session(initialized=False)
+        mock_session_mgr.get_session.return_value = session
+        mock_stamp.return_value = False
+        restarted = _make_mock_session()
+        manager._await_stop_and_retry = AsyncMock(return_value=restarted)
+
+        got = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        session.initialize.assert_not_awaited()
+        manager._await_stop_and_retry.assert_awaited_once()
+        assert got is restarted
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.stamp_running_computer", new_callable=AsyncMock)
+    async def test_an_attach_whose_stamp_fails_does_not_reconnect_unfenced(
+        self, mock_stamp, _mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+        mock_get_ws.return_value = _make_workspace(workspace_id=ws_id, status="running")
+        session = _make_mock_session(initialized=False)
+        mock_session_mgr.get_session.return_value = session
+        mock_stamp.side_effect = ConnectionError("database unreachable")
+
+        with pytest.raises(ConnectionError):
+            await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        session.initialize.assert_not_awaited()
 
 
 class TestOnStateObservedForwarding:
@@ -1401,11 +4126,12 @@ class TestOnStateObservedForwarding:
         return manager
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.stamp_running_computer", new_callable=AsyncMock)
     async def test_running_path_forwards_callback_to_initialize(
-        self, mock_activity, mock_session_mgr, mock_get_ws
+        self, _mock_stamp, mock_activity, mock_session_mgr, mock_get_ws
     ):
         """status=running + no cache → session.initialize(..., on_state_observed=sentinel)."""
         manager = self._make_manager()
@@ -1425,11 +4151,11 @@ class TestOnStateObservedForwarding:
         assert session.initialize.await_args.kwargs.get("on_state_observed") is sentinel
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_stopped_path_forwards_callback_to_initialize_lazy(
         self, mock_claim, mock_status, mock_activity, mock_session_mgr, mock_get_ws
     ):
@@ -1445,7 +4171,7 @@ class TestOnStateObservedForwarding:
             config={"sandbox_config_hash": "matching-hash"},
         )
         mock_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
         session = _make_mock_session(initialized=False)
         # Simulate lazy init leaving sandbox ready so Phase 2 doesn't retry.
         session.sandbox.is_ready = MagicMock(return_value=True)
@@ -1473,11 +4199,11 @@ class TestOnStateObservedForwarding:
         session.initialize.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_restart_forced_non_lazy_forwards_callback_to_initialize(
         self, mock_claim, mock_status, mock_activity, mock_session_mgr, mock_get_ws
     ):
@@ -1492,7 +4218,7 @@ class TestOnStateObservedForwarding:
             config={"sandbox_config_hash": "old-hash"},
         )
         mock_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
         session = _make_mock_session(initialized=False)
         session.sandbox.is_ready = MagicMock(return_value=True)
         session.sandbox.has_failed = MagicMock(return_value=False)
@@ -1517,9 +4243,51 @@ class TestOnStateObservedForwarding:
         session.initialize_lazy.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
+    async def test_restart_through_an_unstamped_folder_of_a_verified_machine_stays_lazy(
+        self, mock_claim, mock_status, mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        """A Home or workspace no build stamped takes the stamp a sibling earned
+        on the same sandbox, instead of a full init under the machine lock."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        manager._compute_sandbox_config_hash = MagicMock(return_value="current")
+        workspace = _make_workspace(workspace_id=ws_id, status="stopped", config={})
+        mock_get_ws.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
+        session = _make_mock_session(initialized=False)
+        session.sandbox.is_ready = MagicMock(return_value=True)
+        session.sandbox.has_failed = MagicMock(return_value=False)
+        mock_session_mgr.get_session.return_value = session
+
+        with (
+            patch(
+                f"{_LIFECYCLE}.computer_has_config_hash",
+                new=AsyncMock(return_value=True),
+            ) as verified,
+            patch.object(
+                manager, "_write_sandbox_stamp", new_callable=AsyncMock
+            ) as stamp,
+        ):
+            await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        verified.assert_awaited_once_with(_STUB_COMPUTER_ID, "current")
+        stamp.assert_awaited()
+        assert {
+            (call.args[0].workspace_id, call.args[0].computer_id)
+            for call in stamp.await_args_list
+        } == {(ws_id, _STUB_COMPUTER_ID)}
+        session.initialize_lazy.assert_awaited_once()
+        session.initialize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
     async def test_warm_cached_session_does_not_call_any_initialize(
         self, mock_activity, mock_session_mgr, mock_get_ws
     ):
@@ -1528,21 +4296,133 @@ class TestOnStateObservedForwarding:
         path to fire on the warm hit and must not leak into any init path."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(workspace_id=ws_id, status="running")
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
         cached = _make_mock_session(initialized=True)
         cached.sandbox.is_ready = MagicMock(return_value=True)
         cached.sandbox.has_failed = MagicMock(return_value=False)
-        manager._sessions[ws_id] = cached
+        manager._machine(_STUB_COMPUTER_ID).session = cached
 
         def sentinel(_s: str) -> None:
             return None
 
-        await manager.get_session_for_workspace(
-            ws_id, user_id="user-1", on_state_observed=sentinel
-        )
+        with _patch_identity(workspace):
+            await manager.get_session_for_workspace(
+                ws_id, user_id="user-1", on_state_observed=sentinel
+            )
 
         cached.initialize.assert_not_awaited()
         cached.initialize_lazy.assert_not_awaited()
+
+
+class TestARestartOnItsOwnSandboxResyncsEveryWorkspace:
+    """A stop leaves every workspace attached to the sandbox it ran on, so
+    only the restart can queue their bring-ups: the threads deleted while it
+    was stopped are still on its disk. A lazy restart has no runtime until its
+    Phase 2, so it queues them there, once, after it promotes the start."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    def _make_manager(self):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        manager._sync_sandbox_assets = AsyncMock()
+        manager._maybe_migrate_sandbox = AsyncMock(return_value=None)
+        manager._queue_reconnect_syncs_soon = MagicMock()
+        return manager
+
+    def _stopped(self, manager, mock_claim, mock_session_mgr, mock_get_ws, *, stamp):
+        ws_id = str(uuid.uuid4())
+        manager._compute_sandbox_config_hash = MagicMock(return_value="current")
+        mock_get_ws.return_value = _make_workspace(
+            workspace_id=ws_id, status="stopped", config={"sandbox_config_hash": stamp}
+        )
+        mock_claim.return_value = _claimed_computer(ws_id)
+        session = _make_mock_session(initialized=False)
+        session.sandbox.is_ready = MagicMock(return_value=True)
+        session.sandbox.has_failed = MagicMock(return_value=False)
+        mock_session_mgr.get_session.return_value = session
+        return ws_id, session
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
+    async def test_a_lazy_restart_queues_them_once_its_start_is_promoted(
+        self, mock_claim, mock_status, mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        manager = self._make_manager()
+        ws_id, session = self._stopped(
+            manager, mock_claim, mock_session_mgr, mock_get_ws, stamp="current"
+        )
+        machine = manager._machine(_STUB_COMPUTER_ID)
+        promoted = []
+        manager._queue_reconnect_syncs_soon.side_effect = lambda *_, **__: promoted.append(
+            not machine.pending_lazy_sync
+        )
+
+        await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        session.initialize_lazy.assert_awaited_once()
+        manager._queue_reconnect_syncs_soon.assert_called_once_with(
+            _STUB_COMPUTER_ID, session.sandbox, opened=ws_id
+        )
+        assert promoted == [True]
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
+    async def test_a_restart_forced_to_a_full_init_queues_them_as_it_attaches(
+        self, mock_claim, mock_status, mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        manager = self._make_manager()
+        ws_id, session = self._stopped(
+            manager, mock_claim, mock_session_mgr, mock_get_ws, stamp="old"
+        )
+
+        await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        session.initialize.assert_awaited_once()
+        manager._queue_reconnect_syncs_soon.assert_called_once_with(
+            _STUB_COMPUTER_ID, session.sandbox, opened=ws_id
+        )
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
+    async def test_a_cancel_in_the_listing_leaves_the_restart_running(
+        self, mock_claim, mock_status, mock_activity, mock_session_mgr, mock_get_ws
+    ):
+        """The listing runs once the row reads running; inside the start, a
+        cancel there would unwind its claim and mark a live computer stopped."""
+        manager = self._make_manager()
+        del manager._queue_reconnect_syncs_soon
+        ws_id, _session = self._stopped(
+            manager, mock_claim, mock_session_mgr, mock_get_ws, stamp="old"
+        )
+
+        with patch(
+            "src.server.services.computer_manager._bringup.get_live_workspace_ids_for_computer",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        ) as listing:
+            await manager.get_session_for_workspace(ws_id, user_id="user-1")
+            await asyncio.sleep(0)
+
+        listing.assert_awaited_once()
+        assert "stopped" not in [
+            c.kwargs.get("status") for c in mock_status.await_args_list
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1570,10 +4450,10 @@ class TestPhase2ErrorNarrowing:
         return WorkspaceManager.get_instance(config=_make_config())
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_phase2_transient_init_failure_clears_and_raises(
         self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1581,30 +4461,29 @@ class TestPhase2ErrorNarrowing:
         is called and the error propagates for handle_workflow_error to catch."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="running"
-        )
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
 
         session = _make_mock_session()
         session.sandbox.ensure_sandbox_ready = AsyncMock(
             side_effect=SandboxTransientError("transport failed after retries")
         )
         session.sandbox.has_failed = MagicMock(return_value=True)
-        manager._sessions[ws_id] = session
-        manager._last_sync_at = {}
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        with pytest.raises(SandboxTransientError):
+        with pytest.raises(SandboxTransientError), _patch_identity(workspace):
             await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
-        mock_session_mgr.cleanup_session.assert_awaited_with(ws_id)
-        assert ws_id not in manager._sessions
+        mock_session_mgr.cleanup_session.assert_awaited_with(_STUB_COMPUTER_ID)
+        assert manager._cached_session(_STUB_COMPUTER_ID) is None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_phase2_transient_post_init_lazy_reverts_and_raises(
         self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1612,13 +4491,13 @@ class TestPhase2ErrorNarrowing:
         reverts the row to 'stopped' and re-raises. has_failed() == False, so
         the sandbox is healthy — but returning the session here would hand back
         a sandbox the DB says is 'stopped', letting another worker spawn a
-        second one (split-brain). The discriminator is _pending_lazy_sync
-        membership; the deferred-sync asset step is reached only on that path."""
+        second one (split-brain). The discriminator is the record's
+        pending_lazy_sync flag; the deferred-sync asset step is reached only on
+        that path."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="running"
-        )
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
 
         session = _make_mock_session()
         session.sandbox.has_failed = MagicMock(return_value=False)
@@ -1629,25 +4508,26 @@ class TestPhase2ErrorNarrowing:
             side_effect=SandboxTransientError("sync blip")
         )
         manager._maybe_restore_files = AsyncMock()
-        manager._pending_lazy_sync.add(ws_id)  # unpromoted lazy start
-        manager._sessions[ws_id] = session
-        manager._last_sync_at = {}
+        # An unpromoted lazy start: this worker owns the row's transition.
+        manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = True
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        with pytest.raises(SandboxTransientError):
+        with pytest.raises(SandboxTransientError), _patch_identity(workspace):
             await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         # Row reverted so cross-worker losers re-claim immediately instead of
         # the caller returning a sandbox behind a 'stopped' row.
         mock_status.assert_any_await(workspace_id=ws_id, status="stopped")
-        assert ws_id not in manager._pending_lazy_sync
+        assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
         # has_failed() was False — the healthy session is left cached (not
         # cleared); the next request re-claims against the reverted row.
         mock_session_mgr.cleanup_session.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
     async def test_phase2_generic_exception_not_cleared(
         self, mock_session_mgr, mock_get_ws
     ):
@@ -1655,19 +4535,19 @@ class TestPhase2ErrorNarrowing:
         'log and retry next request' behavior. Do not broaden the clear."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="running"
-        )
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
 
         session = _make_mock_session()
         session.sandbox.ensure_sandbox_ready = AsyncMock(
             side_effect=RuntimeError("some non-sandbox runtime error")
         )
-        manager._sessions[ws_id] = session
-        manager._last_sync_at = {}
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = None
         mock_session_mgr.cleanup_session = AsyncMock()
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with _patch_identity(workspace):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         assert result is session
         mock_session_mgr.cleanup_session.assert_not_awaited()
@@ -1676,7 +4556,11 @@ class TestPhase2ErrorNarrowing:
 class TestClearSessionHelper:
     """WorkspaceManager._clear_session proactively awaits cleanup_session
     (closes MCP + provider) and clears local caches. Must be resilient when
-    cleanup_session raises and idempotent when workspace not present."""
+    cleanup_session raises and idempotent when the machine is not tracked.
+
+    The session and every cache beside it belong to the computer, so this takes
+    a computer id: clearing per project would drop a handle a sibling is using.
+    """
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -1685,54 +4569,49 @@ class TestClearSessionHelper:
         WorkspaceManager.reset_instance()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @cm_patch("SessionManager")
     async def test_clear_session_happy_path(self, mock_sm):
-        """Awaits cleanup_session, pops from _sessions, discards from
-        _pending_lazy_sync."""
+        """Awaits cleanup_session, then clears the machine record's session
+        and its pending_lazy_sync flag."""
         config = _make_config()
         manager = WorkspaceManager.get_instance(config=config)
-        ws_id = str(uuid.uuid4())
-        manager._sessions[ws_id] = _make_mock_session()
-        manager._pending_lazy_sync.add(ws_id)
+        manager._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = True
         mock_sm.cleanup_session = AsyncMock()
 
-        await manager._clear_session(ws_id)
+        await manager._clear_session(_STUB_COMPUTER_ID)
 
-        mock_sm.cleanup_session.assert_awaited_once_with(ws_id)
-        assert ws_id not in manager._sessions
-        assert ws_id not in manager._pending_lazy_sync
+        mock_sm.cleanup_session.assert_awaited_once_with(_STUB_COMPUTER_ID)
+        assert manager._cached_session(_STUB_COMPUTER_ID) is None
+        assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @cm_patch("SessionManager")
     async def test_clear_session_idempotent_when_absent(self, mock_sm):
         """Workspace not tracked — no KeyError; cleanup still attempted."""
         config = _make_config()
         manager = WorkspaceManager.get_instance(config=config)
-        ws_id = str(uuid.uuid4())
         mock_sm.cleanup_session = AsyncMock()
 
-        await manager._clear_session(ws_id)  # must not raise
+        await manager._clear_session(_STUB_COMPUTER_ID)  # must not raise
 
-        mock_sm.cleanup_session.assert_awaited_once_with(ws_id)
+        mock_sm.cleanup_session.assert_awaited_once_with(_STUB_COMPUTER_ID)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @cm_patch("SessionManager")
     async def test_clear_session_survives_cleanup_exception(self, mock_sm):
         """If cleanup_session raises, local caches still clear — the caller
         must not see the exception bleed out of this helper."""
         config = _make_config()
         manager = WorkspaceManager.get_instance(config=config)
-        ws_id = str(uuid.uuid4())
-        manager._sessions[ws_id] = _make_mock_session()
-        manager._pending_lazy_sync.add(ws_id)
-        mock_sm.cleanup_session = AsyncMock(
-            side_effect=RuntimeError("MCP stuck")
-        )
+        manager._machine(_STUB_COMPUTER_ID).session = _make_mock_session()
+        manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = True
+        mock_sm.cleanup_session = AsyncMock(side_effect=RuntimeError("MCP stuck"))
 
-        await manager._clear_session(ws_id)  # must swallow
+        await manager._clear_session(_STUB_COMPUTER_ID)  # must swallow
 
-        assert ws_id not in manager._sessions
-        assert ws_id not in manager._pending_lazy_sync
+        assert manager._cached_session(_STUB_COMPUTER_ID) is None
+        assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -1771,9 +4650,9 @@ class TestIntermediateStartingStatus:
         )
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_lazy_restart_sets_starting_without_activity_stamp(
         self, mock_activity, mock_status, mock_session_mgr
     ):
@@ -1787,7 +4666,7 @@ class TestIntermediateStartingStatus:
         mock_session_mgr.get_session.return_value = session
 
         await manager._restart_workspace(
-            workspace, user_id="user-1", lazy_init=True
+            _binding(ws_id), workspace, user_id="user-1", lazy_init=True
         )
 
         mock_status.assert_awaited_once()
@@ -1797,11 +4676,11 @@ class TestIntermediateStartingStatus:
         mock_activity.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_phase2_success_promotes_starting_to_running_and_stamps(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1812,7 +4691,7 @@ class TestIntermediateStartingStatus:
         ws_id = str(uuid.uuid4())
         workspace = self._lazy_workspace(ws_id, status="stopped")
         mock_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
 
         lazy_session = _make_mock_session()
         lazy_session.sandbox.ensure_sandbox_ready = AsyncMock()
@@ -1822,6 +4701,7 @@ class TestIntermediateStartingStatus:
 
         async def record_status(**kwargs):
             call_order.append(("status", kwargs))
+            return {"workspace_id": ws_id}
 
         async def record_activity(workspace_id):
             call_order.append(("activity", {"workspace_id": workspace_id}))
@@ -1841,11 +4721,42 @@ class TestIntermediateStartingStatus:
         assert call_order[2][1]["workspace_id"] == ws_id
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    async def test_running_publish_reapplies_always_on_after_a_racing_toggle(self):
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        binding = _binding(ws_id, is_always_on=False)
+        session = _make_mock_session()
+        manager._apply_autostop_for_always_on = AsyncMock()
+        rows = [
+            {**_STUB_COMPUTER, "is_always_on": False},
+            {**_STUB_COMPUTER, "is_always_on": True},
+        ]
+        with (
+            patch(f"{_LIFECYCLE}.get_computer", AsyncMock(side_effect=rows)),
+            patch(
+                f"{_LIFECYCLE}.update_workspace_status",
+                AsyncMock(side_effect=[None, {"workspace_id": ws_id}]),
+            ) as publish,
+        ):
+            await manager._publish_workspace_running_with_current_always_on(
+                binding, session, fallback_sandbox_id="sandbox-abc"
+            )
+
+        assert [
+            call.kwargs["enabled"]
+            for call in manager._apply_autostop_for_always_on.await_args_list
+        ] == [False, True]
+        assert [
+            call.kwargs["expected_computer_always_on"]
+            for call in publish.await_args_list
+        ] == [False, True]
+
+    @pytest.mark.asyncio
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_phase2_failure_reverts_status_to_stopped(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1857,7 +4768,7 @@ class TestIntermediateStartingStatus:
         ws_id = str(uuid.uuid4())
         workspace = self._lazy_workspace(ws_id, status="stopped")
         mock_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
 
         lazy_session = _make_mock_session()
         lazy_session.sandbox.ensure_sandbox_ready = AsyncMock(
@@ -1876,14 +4787,14 @@ class TestIntermediateStartingStatus:
         assert {c["status"] for c in status_calls} == {"starting", "stopped"}
         assert status_calls[-1]["status"] == "stopped"
         # Pending-sync marker cleared so the workspace isn't wedged.
-        assert ws_id not in manager._pending_lazy_sync
+        assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_phase2_generic_failure_reverts_status_to_stopped(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1896,7 +4807,7 @@ class TestIntermediateStartingStatus:
         ws_id = str(uuid.uuid4())
         workspace = self._lazy_workspace(ws_id, status="stopped")
         mock_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
 
         lazy_session = _make_mock_session()
         lazy_session.sandbox.ensure_sandbox_ready = AsyncMock(
@@ -1911,17 +4822,14 @@ class TestIntermediateStartingStatus:
         status_calls = [c.kwargs for c in mock_status.await_args_list]
         assert {c["status"] for c in status_calls} == {"starting", "stopped"}
         assert status_calls[-1]["status"] == "stopped"
-        assert ws_id not in manager._pending_lazy_sync
+        assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch(
-        "src.server.services.workspace_manager.try_claim_workspace_for_start",
-        new_callable=AsyncMock,
-    )
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_phase2_cancelled_reverts_status_to_stopped(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -1933,7 +4841,7 @@ class TestIntermediateStartingStatus:
         ws_id = str(uuid.uuid4())
         workspace = self._lazy_workspace(ws_id, status="stopped")
         mock_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
 
         lazy_session = _make_mock_session()
         lazy_session.sandbox.ensure_sandbox_ready = AsyncMock(
@@ -1946,21 +4854,18 @@ class TestIntermediateStartingStatus:
 
         status_calls = [c.kwargs for c in mock_status.await_args_list]
         assert status_calls[-1]["status"] == "stopped"
-        assert ws_id not in manager._pending_lazy_sync
+        assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
 
     @pytest.mark.asyncio
     @patch(
-        "src.server.services.workspace_manager.publish_status_change",
+        "src.server.services.computer_manager._lifecycle.publish_status_change",
         new_callable=AsyncMock,
     )
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch(
-        "src.server.services.workspace_manager.try_claim_workspace_for_start",
-        new_callable=AsyncMock,
-    )
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_claim_owner_broadcasts_archived_state(
         self,
         mock_claim,
@@ -1978,7 +4883,7 @@ class TestIntermediateStartingStatus:
         ws_id = str(uuid.uuid4())
         workspace = self._lazy_workspace(ws_id, status="stopped")
         mock_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
 
         session = _make_mock_session(initialized=False)
         session.sandbox.is_ready = MagicMock(return_value=True)
@@ -2002,10 +4907,10 @@ class TestIntermediateStartingStatus:
         assert archived[0].args[1] == "starting"
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
     async def test_status_starting_waits_for_other_worker_to_finish(
         self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -2015,7 +4920,7 @@ class TestIntermediateStartingStatus:
         then attaches to that session via the running path.
 
         Replaces the prior "re-enter restart flow" behavior, which was unsafe
-        under multi-worker deployments — see ``try_claim_workspace_for_start``
+        under multi-worker deployments. See ``try_claim_computer_for_start``
         and ``_wait_for_start_completion``.
         """
         manager = self._make_manager()
@@ -2025,9 +4930,9 @@ class TestIntermediateStartingStatus:
         ws_id = str(uuid.uuid4())
         starting_ws = self._lazy_workspace(ws_id, status="starting")
         running_ws = self._lazy_workspace(ws_id, status="running")
-        # First read sees 'starting'; first poll-iteration read inside
-        # _wait_for_start_completion sees 'running' (other worker finished).
-        mock_get_ws.side_effect = [starting_ws, running_ws]
+        # Phase 1 sees 'starting'; the wait helper reads the row once to pick
+        # the machine's status channel, then its first re-read sees 'running'.
+        mock_get_ws.side_effect = [starting_ws, starting_ws, running_ws]
 
         session = _make_mock_session(initialized=True)
         session.sandbox.is_ready = MagicMock(return_value=True)
@@ -2050,33 +4955,166 @@ class TestIntermediateStartingStatus:
 class TestStatusRoutesToDbFallback:
     """Smoke check that the consumer modules route non-live workspaces to the
     DB fallback instead of waking a sandbox. ``workspace_files`` (authenticated)
-    compares against the stopped/stopping/starting tuple; ``public``
+    decides through ``served_from_mirror``; ``public``
     (unauthenticated) uses the stronger ``status == "running"`` +
     ``has_ready_session`` no-wake gate. A regression in either reproduces the
     503 storm from the original incident (or, for public, a denial-of-wallet)."""
 
     @pytest.mark.parametrize("status", ["stopped", "stopping", "starting"])
-    def test_workspace_files_tuple_includes_status(self, status):
+    def test_workspace_files_route_to_the_mirror(self, status):
         from src.server.app.workspace_files import crud
+        from src.server.models.workspace import served_from_mirror
         import inspect
 
+        assert served_from_mirror(status)
+        assert not served_from_mirror("running")
+        # The authenticated routes decide through the one shared predicate.
         source = inspect.getsource(crud)
-        assert f'"{status}"' in source
-        # The authenticated routes compare against this exact tuple.
-        assert '"stopped", "stopping", "starting"' in source
+        assert 'served_from_mirror(workspace.get("status"))' in source
+        assert '"stopped", "stopping", "starting"' not in source
 
-    def test_public_routes_gate_on_ready_session(self):
+    def test_public_routes_never_acquire_a_session(self):
         """The unauthenticated shared file routes must read only a warm
-        in-memory session via the no-wake ``get_session_if_ready`` accessor,
-        never ``get_session_for_workspace`` which would attach/restart a Daytona
-        sandbox for a share-token request (denial-of-wallet)."""
-        from src.server.app import public
+        in-memory session, never ``get_session_for_workspace`` which would
+        attach/restart a Daytona sandbox for a share-token request
+        (denial-of-wallet)."""
+        from src.server.app import share_files
         import inspect
 
-        source = inspect.getsource(public)
-        # list/read/download each read the cached session through the single
-        # no-wake accessor rather than acquiring (or waking) one.
-        assert source.count("get_session_if_ready(workspace_id)") >= 3
+        source = inspect.getsource(share_files)
+        # Every read goes through the one no-wake helper.
+        assert "get_session_for_workspace" not in source
+        assert source.count("warm_sandbox(") >= 2
+
+    def test_get_session_if_ready_declines_a_handle_bound_elsewhere(self):
+        """The no-wake accessor must refuse a session whose sandbox has moved."""
+        config = _make_config()
+        wm = WorkspaceManager(config)
+        # The handle is the machine's; the project names which machine it is on.
+        wm._machine(
+            _STUB_COMPUTER_ID
+        ).session = _make_mock_session()  # on 'sandbox-abc'
+        wm._session_computer["ws-1"] = _STUB_COMPUTER_ID
+
+        target = MachineTarget(kind="daytona")
+        assert (
+            wm.get_session_if_ready(
+                "ws-1", expected_sandbox_id="sandbox-abc", target=target
+            )
+            is not None
+        )
+        # The machine was rebound to a replacement sandbox.
+        assert (
+            wm.get_session_if_ready(
+                "ws-1", expected_sandbox_id="sandbox-xyz", target=target
+            )
+            is None
+        )
+        # A half-known binding is an inconsistency, not a licence to serve.
+        assert (
+            wm.get_session_if_ready("ws-1", expected_sandbox_id=None, target=target)
+            is None
+        )
+
+    @staticmethod
+    def _ssh_session(root: str = "/Users/dev/langalpha"):
+        from ptc_agent.config.core import SSHConfig
+
+        session = _make_mock_session()  # on 'sandbox-abc'
+        session.config.filesystem.working_directory = root
+        session.config.sandbox.ssh = SSHConfig.model_validate(_SSH_TARGET)
+        return session
+
+    def test_get_session_if_ready_declines_an_ssh_handle_a_repair_left_behind(self):
+        """A reinstall or reconnect on another worker keeps the computer's id
+        on the machine, so only the row's root and target tell this worker its
+        handle reaches the old folder or the machine as it was paired before."""
+        wm = WorkspaceManager(_make_config())
+        wm._machine(_STUB_COMPUTER_ID).session = self._ssh_session()
+        wm._session_computer["ws-1"] = _STUB_COMPUTER_ID
+
+        def ready(**row):
+            computer = {
+                "kind": "ssh",
+                "root_dir": "/Users/dev/langalpha",
+                "provider_config": _SSH_TARGET,
+                **row,
+            }
+            return wm.get_session_if_ready(
+                "ws-1",
+                expected_sandbox_id="sandbox-abc",
+                target=MachineTarget.of_computer(computer),
+            )
+
+        assert ready() is not None
+        assert ready(root_dir="/Users/dev/langalpha-2") is None
+        assert ready(provider_config={**_SSH_TARGET, "tunnel": "tunnel-new"}) is None
+        assert ready(provider_config={**_SSH_TARGET, "host": "mac-mini"}) is None
+
+    def test_get_session_if_ready_checks_no_target_off_ssh(self):
+        """Only an ssh computer's root and target change under its id."""
+        wm = WorkspaceManager(_make_config())
+        wm._machine(_STUB_COMPUTER_ID).session = self._ssh_session()
+        wm._session_computer["ws-1"] = _STUB_COMPUTER_ID
+
+        target = MachineTarget(
+            kind="daytona",
+            root_dir="/home/daytona",
+            provider_config={"host": "elsewhere"},
+        )
+        assert (
+            wm.get_session_if_ready(
+                "ws-1", expected_sandbox_id="sandbox-abc", target=target
+            )
+            is not None
+        )
+
+    def test_the_warm_handle_is_fenced_on_the_rows_computer_root(self):
+        """The file and share routes fence on the computer columns the
+        workspace row already joins, with no read of their own."""
+        from src.server.app.workspace_files.serve import warm_sandbox
+
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = self._ssh_session()
+        wm._machine(_STUB_COMPUTER_ID).session = session
+        wm._session_computer["ws-1"] = _STUB_COMPUTER_ID
+        try:
+            running = {
+                "status": "running",
+                "sandbox_id": "sandbox-abc",
+                "computer_kind": "ssh",
+                "computer_root_dir": "/Users/dev/langalpha",
+                "computer_provider_config": _SSH_TARGET,
+            }
+            assert warm_sandbox(running, "ws-1") is session.sandbox
+            moved = {**running, "computer_root_dir": "/Users/dev/langalpha-2"}
+            assert warm_sandbox(moved, "ws-1") is None
+        finally:
+            WorkspaceManager.reset_instance()
+
+    def test_the_warm_handle_is_fenced_on_the_rows_sandbox_id(self):
+        """The share routes do no DB round-trip of their own, so the row they
+        already hold is what fences the cached handle.
+
+        Without it a replaced sandbox keeps answering share links with a false
+        "File not found", and a row whose sandbox auto-stopped serves nothing
+        while reading 'running'.
+        """
+        from src.server.app.workspace_files.serve import warm_sandbox
+
+        wm = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()  # on 'sandbox-abc'
+        wm._machine(_STUB_COMPUTER_ID).session = session
+        wm._session_computer["ws-1"] = _STUB_COMPUTER_ID
+        try:
+            running = {"status": "running", "sandbox_id": "sandbox-abc"}
+            assert warm_sandbox(running, "ws-1") is session.sandbox
+            # Replaced sandbox, same row status.
+            assert warm_sandbox({**running, "sandbox_id": "sb-new"}, "ws-1") is None
+            # Not running: nothing warm to serve from.
+            assert warm_sandbox({**running, "status": "stopped"}, "ws-1") is None
+        finally:
+            WorkspaceManager.reset_instance()
 
 
 # ---------------------------------------------------------------------------
@@ -2085,10 +5123,13 @@ class TestStatusRoutesToDbFallback:
 
 
 class TestMultiWorkerStartMutex:
-    """``try_claim_workspace_for_start`` atomically flips status='stopped' →
-    'starting'; only the winner restarts. Losers wait via
-    ``_wait_for_start_completion`` and attach via the running path. These
-    tests cover that contract."""
+    """``try_claim_computer_for_start`` atomically flips the machine from the
+    state the caller saw to 'starting'; only the winner restarts. Losers wait
+    via ``_wait_for_start_completion`` and attach via the running path.
+
+    The claim moved to the computer because the sandbox is the computer's: two
+    projects on one machine racing project-row claims would both win and start
+    the same sandbox twice."""
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -2106,11 +5147,11 @@ class TestMultiWorkerStartMutex:
         return manager
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_winner_proceeds_with_restart(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -2126,7 +5167,7 @@ class TestMultiWorkerStartMutex:
         )
         mock_get_ws.return_value = workspace
         # Claim succeeds — we own the start.
-        mock_claim.return_value = workspace
+        mock_claim.return_value = _claimed_computer(ws_id)
 
         session = _make_mock_session()
         session.sandbox.ensure_sandbox_ready = AsyncMock()
@@ -2134,15 +5175,15 @@ class TestMultiWorkerStartMutex:
 
         await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
-        mock_claim.assert_awaited_once_with(ws_id)
+        mock_claim.assert_awaited_once_with(_STUB_COMPUTER_ID, from_status="stopped")
         session.initialize_lazy.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_loser_waits_then_attaches_via_running_path(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -2152,9 +5193,10 @@ class TestMultiWorkerStartMutex:
         ws_id = str(uuid.uuid4())
         stopped_ws = _make_workspace(workspace_id=ws_id, status="stopped")
         running_ws = _make_workspace(workspace_id=ws_id, status="running")
-        # Phase 1 DB read sees 'stopped'; subsequent poll inside the wait
-        # sees 'running' (winner finished).
-        mock_get_ws.side_effect = [stopped_ws, running_ws]
+        # Phase 1 DB read sees 'stopped'; the wait helper then reads the row
+        # once to pick its channel, and its first poll sees 'running' (winner
+        # finished).
+        mock_get_ws.side_effect = [stopped_ws, stopped_ws, running_ws]
         # Claim returns None — another worker already claimed.
         mock_claim.return_value = None
 
@@ -2165,17 +5207,17 @@ class TestMultiWorkerStartMutex:
 
         result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
-        mock_claim.assert_awaited_once_with(ws_id)
+        mock_claim.assert_awaited_once_with(_STUB_COMPUTER_ID, from_status="stopped")
         # Critical: did not restart — no double-start across workers.
         session.initialize_lazy.assert_not_awaited()
         assert result is session
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.try_claim_workspace_for_start", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_loser_raises_when_winner_errors(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -2185,14 +5227,15 @@ class TestMultiWorkerStartMutex:
         ws_id = str(uuid.uuid4())
         stopped_ws = _make_workspace(workspace_id=ws_id, status="stopped")
         error_ws = _make_workspace(workspace_id=ws_id, status="error")
-        mock_get_ws.side_effect = [stopped_ws, error_ws]
+        # Phase 1 read, the wait helper's channel read, then the poll.
+        mock_get_ws.side_effect = [stopped_ws, stopped_ws, error_ws]
         mock_claim.return_value = None
 
         with pytest.raises(RuntimeError, match="failed to start"):
             await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @cm_patch("db_get_workspace")
     async def test_wait_helper_times_out_when_stuck(self, mock_get_ws):
         """If status sits in 'starting' past the timeout (winner died mid-
         start), the wait helper raises rather than waiting forever."""
@@ -2207,7 +5250,7 @@ class TestMultiWorkerStartMutex:
             await manager._wait_for_start_completion(ws_id)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @cm_patch("db_get_workspace")
     async def test_wait_helper_raises_on_deletion(self, mock_get_ws):
         """Workspace deleted while waiting → ValueError (caller must not
         keep polling a row that no longer exists)."""
@@ -2219,14 +5262,11 @@ class TestMultiWorkerStartMutex:
             await manager._wait_for_start_completion(ws_id)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch(
-        "src.server.services.workspace_manager.try_claim_workspace_for_start",
-        new_callable=AsyncMock,
-    )
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_start_wait_does_not_hold_workspace_lock(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -2265,7 +5305,7 @@ class TestMultiWorkerStartMutex:
         # timeout so a regression (wait-inside-lock) fails fast instead of
         # hanging the full 60s lock-acquire ceiling.
         async def _probe():
-            async with manager._observed_lock(ws_id, "probe"):
+            async with manager._observed_lock(_STUB_COMPUTER_ID, "probe"):
                 return True
 
         assert await asyncio.wait_for(_probe(), timeout=2.0) is True
@@ -2275,14 +5315,11 @@ class TestMultiWorkerStartMutex:
         assert result is session
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch(
-        "src.server.services.workspace_manager.try_claim_workspace_for_start",
-        new_callable=AsyncMock,
-    )
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("update_workspace_activity")
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_loser_retries_once_when_owner_reverts_to_stopped(
         self, mock_claim, mock_activity, mock_status, mock_session_mgr, mock_get_ws
     ):
@@ -2298,7 +5335,7 @@ class TestMultiWorkerStartMutex:
         )
         mock_get_ws.return_value = stopped_ws  # both Phase 1 reads see 'stopped'
         # First claim loses; the post-revert retry wins.
-        mock_claim.side_effect = [None, stopped_ws]
+        mock_claim.side_effect = [None, _claimed_computer(ws_id)]
         # Owner failed and reverted the row back to 'stopped'.
         manager._wait_for_start_completion = AsyncMock(return_value=stopped_ws)
 
@@ -2331,62 +5368,103 @@ class TestEntitledTier:
         return WorkspaceManager.get_instance(config=_make_config_with_tiers())
 
     _LOST = "src.server.dependencies.usage_limits.spec_entitlement_lost"
-    _SET_TIER = "src.server.services.workspace_entitlements.db_set_workspace_resource_tier"
+    _SET_TIER = (
+        "src.server.services.workspace_entitlements.db_set_computer_resource_tier"
+    )
 
     @pytest.mark.asyncio
     async def test_standard_tier_short_circuits(self):
         """standard tier is never reclaimed — no entitlement check."""
         manager = self._make_manager()
-        ws = _make_workspace(resource_tier="standard")
+        binding = _binding("ws-1", resource_tier="standard")
 
         with patch(self._LOST, new_callable=AsyncMock) as mock_lost:
-            assert await manager._entitled_tier(ws, "user-1") == "standard"
+            assert await manager._entitled_tier(binding, "user-1") == "standard"
         mock_lost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_user_keeps_elevated_tier(self):
         """No owner to reconcile against → keep the elevated tier, no check."""
         manager = self._make_manager()
-        ws = _make_workspace(resource_tier="max")
+        binding = _binding("ws-1", resource_tier="max")
 
         with patch(self._LOST, new_callable=AsyncMock) as mock_lost:
-            assert await manager._entitled_tier(ws, None) == "max"
+            assert await manager._entitled_tier(binding, None) == "max"
         mock_lost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_still_entitled_keeps_tier_no_write(self):
         """Entitlement held → keep the elevated tier, nothing persisted."""
         manager = self._make_manager()
-        ws = _make_workspace(resource_tier="performance")
+        binding = _binding("ws-1", resource_tier="performance")
 
         with (
             patch(self._LOST, new_callable=AsyncMock, return_value=False),
             patch(self._SET_TIER) as mock_set_tier,
         ):
-            assert await manager._entitled_tier(ws, "user-1") == "performance"
+            assert await manager._entitled_tier(binding, "user-1") == "performance"
         mock_set_tier.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_lost_and_disk_fits_reclaims_to_standard(self):
         """Lost entitlement + files fit standard → persist and return standard."""
         manager = self._make_manager()
-        ws = _make_workspace(workspace_id="ws-1", resource_tier="max")
-        manager._assert_disk_fits = AsyncMock()
+        binding = _binding("ws-1", resource_tier="max")
+        manager._backup_machine_files_to_db = AsyncMock()
+        manager._assert_machine_disk_fits = AsyncMock()
 
         with (
             patch(self._LOST, new_callable=AsyncMock, return_value=True),
             patch(self._SET_TIER) as mock_set_tier,
         ):
-            assert await manager._entitled_tier(ws, "user-1") == "standard"
-        mock_set_tier.assert_awaited_once_with("ws-1", "standard")
+            assert await manager._entitled_tier(binding, "user-1") == "standard"
+        # The tier is the machine's, so the reclaim writes the computer row.
+        mock_set_tier.assert_awaited_once_with(_STUB_COMPUTER_ID, "standard")
+
+    @pytest.mark.asyncio
+    async def test_mirror_only_never_runs_the_strict_backup(self):
+        manager = self._make_manager()
+        binding = _binding("ws-1", resource_tier="max")
+        manager._backup_machine_files_to_db = AsyncMock()
+        manager._assert_machine_disk_fits = AsyncMock()
+
+        with (
+            patch(self._LOST, new_callable=AsyncMock, return_value=True),
+            patch(self._SET_TIER, AsyncMock()),
+        ):
+            tier = await manager._entitled_tier(binding, "user-1", mirror_only=True)
+
+        assert tier == "standard"
+        manager._backup_machine_files_to_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("attached", [True, False])
+    async def test_incomplete_backup_retains_tier_before_any_destruction(self, attached):
+        manager = self._make_manager()
+        binding = _binding("ws-1", resource_tier="max")
+        session = _make_mock_session() if attached else None
+        manager._backup_machine_files_to_db = AsyncMock(side_effect=RuntimeError("unsaved sibling"))
+        manager._assert_machine_disk_fits = AsyncMock()
+        with (
+            patch(self._LOST, AsyncMock(return_value=True)),
+            patch(self._SET_TIER, AsyncMock()) as write,
+        ):
+            assert await manager._entitled_tier(binding, "user-1", session=session) == "max"
+        manager._backup_machine_files_to_db.assert_awaited_once_with(
+            binding.computer_id, strict=True, expected_sandbox_id=binding.provider_ref, session=session,
+        )
+        write.assert_not_awaited()
+        # Only the mirror's measurement ahead of the backup ran.
+        manager._assert_machine_disk_fits.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lost_but_files_overflow_keeps_size(self):
         """Lost entitlement but files exceed the standard disk → keep the size
         (data safety over enforcement), nothing persisted."""
         manager = self._make_manager()
-        ws = _make_workspace(workspace_id="ws-1", resource_tier="max")
-        manager._assert_disk_fits = AsyncMock(
+        binding = _binding("ws-1", resource_tier="max")
+        manager._backup_machine_files_to_db = AsyncMock()
+        manager._assert_machine_disk_fits = AsyncMock(
             side_effect=RuntimeError("Cannot downgrade")
         )
 
@@ -2394,8 +5472,20 @@ class TestEntitledTier:
             patch(self._LOST, new_callable=AsyncMock, return_value=True),
             patch(self._SET_TIER) as mock_set_tier,
         ):
-            assert await manager._entitled_tier(ws, "user-1") == "max"
+            assert await manager._entitled_tier(binding, "user-1") == "max"
         mock_set_tier.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_small_sibling_projects_reserve_only_their_own_size(self):
+        """A project's restore stages at most its own bytes, so five tiny
+        projects must not each reserve a full staging window."""
+        manager = self._make_manager()
+        mod = _SPEC
+        with patch(
+            f"{mod}.get_live_project_sizes_for_computer",
+            AsyncMock(return_value=[1024] * 5),
+        ):
+            await manager._assert_machine_disk_fits(_STUB_COMPUTER_ID, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -2420,53 +5510,251 @@ class TestEntitledAlwaysOn:
         return WorkspaceManager.get_instance(config=_make_config_with_tiers())
 
     _LOST = "src.server.dependencies.usage_limits.always_on_entitlement_lost"
-    _SET_AO = "src.server.services.workspace_entitlements.db_set_workspace_always_on"
+    _SET_AO = "src.server.services.workspace_entitlements.db_set_computer_always_on"
 
     @pytest.mark.asyncio
     async def test_not_always_on_short_circuits(self):
-        """A workspace that isn't always-on is never checked."""
+        """A machine that isn't always-on is never checked."""
         manager = self._make_manager()
-        ws = _make_workspace(is_always_on=False)
+        binding = _binding("ws-1", is_always_on=False)
 
         with patch(self._LOST, new_callable=AsyncMock) as mock_lost:
-            assert await manager._entitled_always_on(ws, "user-1") is False
+            assert await manager._entitled_always_on(binding, "user-1") is False
         mock_lost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_user_keeps_flag(self):
         """No owner to reconcile against → keep always-on, no check."""
         manager = self._make_manager()
-        ws = _make_workspace(is_always_on=True)
+        binding = _binding("ws-1", is_always_on=True)
 
         with patch(self._LOST, new_callable=AsyncMock) as mock_lost:
-            assert await manager._entitled_always_on(ws, None) is True
+            assert await manager._entitled_always_on(binding, None) is True
         mock_lost.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_still_entitled_keeps_flag_no_write(self):
         """Entitlement held → keep always-on, nothing persisted."""
         manager = self._make_manager()
-        ws = _make_workspace(is_always_on=True)
+        binding = _binding("ws-1", is_always_on=True)
 
         with (
             patch(self._LOST, new_callable=AsyncMock, return_value=False),
             patch(self._SET_AO) as mock_set_ao,
         ):
-            assert await manager._entitled_always_on(ws, "user-1") is True
+            assert await manager._entitled_always_on(binding, "user-1") is True
         mock_set_ao.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_lost_reclaims_and_clears_flag(self):
         """Lost entitlement → clear the flag and return False (auto-stop back on)."""
         manager = self._make_manager()
-        ws = _make_workspace(workspace_id="ws-1", is_always_on=True)
+        binding = _binding("ws-1", is_always_on=True)
 
         with (
             patch(self._LOST, new_callable=AsyncMock, return_value=True),
             patch(self._SET_AO, new_callable=AsyncMock) as mock_set_ao,
         ):
-            assert await manager._entitled_always_on(ws, "user-1") is False
-        mock_set_ao.assert_awaited_once_with("ws-1", False)
+            assert await manager._entitled_always_on(binding, "user-1") is False
+        mock_set_ao.assert_awaited_once_with(_STUB_COMPUTER_ID, False)
+
+    @pytest.mark.asyncio
+    async def test_unmetered_kind_keeps_flag_without_probe(self):
+        """A user's own machine keeps always-on whatever the plan says."""
+        manager = self._make_manager()
+        binding = _binding("ws-1", is_always_on=True, kind="ssh")
+
+        with (
+            patch(self._LOST, new_callable=AsyncMock, return_value=True) as mock_lost,
+            patch(self._SET_AO, new_callable=AsyncMock) as mock_set_ao,
+        ):
+            assert await manager._entitled_always_on(binding, "user-1") is True
+        mock_lost.assert_not_awaited()
+        mock_set_ao.assert_not_awaited()
+
+
+class TestReconcileAlwaysOnUnmetered:
+    @pytest.mark.asyncio
+    async def test_unmetered_exempt_unprobed_metered_reclaimed(self):
+        manager = WorkspaceManager(_make_config())
+        ssh = _make_computer(computer_id="c-ssh", kind="ssh", is_always_on=True)
+        cloud = _make_computer(computer_id="c-cloud", is_always_on=True)
+        lost = "src.server.dependencies.usage_limits.always_on_entitlement_lost"
+
+        with (
+            patch(lost, new_callable=AsyncMock, return_value=True) as mock_lost,
+            patch.object(
+                manager, "set_computer_always_on", new_callable=AsyncMock, return_value={}
+            ) as disable,
+        ):
+            exempt = await manager._reconcile_always_on_entitlements([ssh, cloud])
+
+        assert exempt == {"c-ssh"}
+        mock_lost.assert_awaited_once_with("user-1")
+        disable.assert_awaited_once_with("c-cloud", False)
+
+
+class TestSetComputerAlwaysOn:
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_opposite_updates_serialize_persistence_with_provider(self):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        decision_lock = asyncio.Lock()
+        provider_started = asyncio.Event()
+        release_provider = asyncio.Event()
+        events = []
+
+        @asynccontextmanager
+        async def machine_decision_lock(_computer_id):
+            async with decision_lock:
+                yield True
+
+        async def persist(_computer_id, enabled):
+            events.append(("db", enabled))
+
+        async def apply(_sandbox_id, *, enabled, **_kwargs):
+            events.append(("provider", enabled))
+            if enabled:
+                provider_started.set()
+                await release_provider.wait()
+
+        manager._machine_decision_lock = machine_decision_lock
+        manager._apply_autostop_for_always_on = AsyncMock(side_effect=apply)
+        computer = _make_computer(
+            computer_id=_STUB_COMPUTER_ID,
+            status="running",
+            provider_ref="sandbox-abc",
+        )
+        with (
+            patch(f"{_ENTITLEMENTS}.get_computer", AsyncMock(return_value=computer)),
+            patch(
+                f"{_ENTITLEMENTS}.db_set_computer_always_on",
+                AsyncMock(side_effect=persist),
+            ),
+        ):
+            enable = asyncio.create_task(
+                manager.set_computer_always_on(_STUB_COMPUTER_ID, True)
+            )
+            await provider_started.wait()
+            disable = asyncio.create_task(
+                manager.set_computer_always_on(_STUB_COMPUTER_ID, False)
+            )
+            await asyncio.sleep(0)
+            assert events == [("db", True), ("provider", True)]
+            release_provider.set()
+            await asyncio.gather(enable, disable)
+
+        assert events == [
+            ("db", True),
+            ("provider", True),
+            ("db", False),
+            ("provider", False),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_caps_runtime_refuses_always_on(self):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        persist = AsyncMock()
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, kind="e2b")
+        with (
+            patch(f"{_ENTITLEMENTS}.get_computer", AsyncMock(return_value=computer)),
+            patch(f"{_ENTITLEMENTS}.db_set_computer_always_on", persist),
+        ):
+            with pytest.raises(RuntimeError, match="Always-on isn't available"):
+                await manager.set_computer_always_on(_STUB_COMPUTER_ID, True)
+        persist.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_quota_lock_follows_the_local_lock_and_precedes_machine_lock(self):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        events = []
+
+        @asynccontextmanager
+        async def observed(_computer_id, _span):
+            events.append("observed-enter")
+            yield
+            events.append("observed-exit")
+
+        @asynccontextmanager
+        async def capacity(_user_id):
+            events.append("capacity-enter")
+            yield
+            events.append("capacity-exit")
+
+        @asynccontextmanager
+        async def decision(_computer_id):
+            events.append("machine-enter")
+            yield True
+            events.append("machine-exit")
+
+        computer = _make_computer(computer_id=_STUB_COMPUTER_ID, status="stopped")
+        manager._observed_lock = observed
+        manager._machine_decision_lock = decision
+        with (
+            patch(f"{_ENTITLEMENTS}.get_computer", AsyncMock(return_value=computer)),
+            patch(f"{_ENTITLEMENTS}.computer_capacity_lock", capacity),
+            patch(
+                "src.server.dependencies.usage_limits.platform_gating_active",
+                return_value=True,
+            ),
+            patch(
+                "src.server.dependencies.usage_limits.assert_always_on_allowed",
+                AsyncMock(side_effect=lambda _user: events.append("gate")),
+            ),
+            patch(
+                f"{_ENTITLEMENTS}.db_set_computer_always_on",
+                AsyncMock(side_effect=lambda *_args: events.append("write")),
+            ),
+        ):
+            await manager.set_computer_always_on(
+                _STUB_COMPUTER_ID, True, user_id="user-1"
+            )
+
+        assert events == [
+            "observed-enter",
+            "capacity-enter",
+            "gate",
+            "machine-enter",
+            "write",
+            "machine-exit",
+            "capacity-exit",
+            "observed-exit",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_owners_machine_goes_always_on_outside_the_plan_cap(self):
+        """Its owner runs and pays for it, so no always-on slot counts it, and
+        the user-wide capacity lock is not held for its toggle."""
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        manager._machine_decision_lock = _decision_lock(True)
+        computer = _make_computer(
+            computer_id=_STUB_COMPUTER_ID, kind="ssh", status="stopped"
+        )
+        capacity = MagicMock(side_effect=AssertionError("capacity lock taken"))
+        gate = AsyncMock()
+        persist = AsyncMock()
+        with (
+            patch(f"{_ENTITLEMENTS}.get_computer", AsyncMock(return_value=computer)),
+            patch(f"{_ENTITLEMENTS}.computer_capacity_lock", capacity),
+            patch(
+                "src.server.dependencies.usage_limits.platform_gating_active",
+                return_value=True,
+            ),
+            patch("src.server.dependencies.usage_limits.assert_always_on_allowed", gate),
+            patch(f"{_ENTITLEMENTS}.db_set_computer_always_on", persist),
+        ):
+            await manager.set_computer_always_on(
+                _STUB_COMPUTER_ID, True, user_id="user-1"
+            )
+
+        persist.assert_awaited_once_with(_STUB_COMPUTER_ID, True)
+        gate.assert_not_awaited()
+        capacity.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2487,19 +5775,27 @@ class TestMaybeReclaimLazyTier:
     def _make_manager(self):
         return WorkspaceManager.get_instance(config=_make_config())
 
+    @staticmethod
+    def _elevated(**overrides):
+        return {
+            **_STUB_COMPUTER,
+            "resource_tier": "max",
+            "provider_ref": "sandbox-1",
+            "status": "starting",
+            **overrides,
+        }
+
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_lapsed_tier_destroys_and_recovers(self, mock_get_ws):
+    @patch(f"{_ENTITLEMENTS}.get_computer")
+    async def test_lapsed_tier_destroys_and_recovers(self, mock_get_computer):
         """Lapsed entitlement → destroy the reconnected sandbox, clear the
         session (identity-guarded), and recover at the reclaimed tier."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="starting", sandbox_id="sandbox-1",
-            resource_tier="max",
-        )
+        computer = self._elevated()
+        mock_get_computer.return_value = computer
         session = _make_mock_session()
-        manager._sessions[ws_id] = session
+        manager._machine(_STUB_COMPUTER_ID).session = session
 
         manager._entitled_tier = AsyncMock(return_value="standard")
         manager._destroy_sandbox = AsyncMock()
@@ -2507,83 +5803,144 @@ class TestMaybeReclaimLazyTier:
         recovered = _make_mock_session()
         manager._recover_sandbox = AsyncMock(return_value=recovered)
 
-        result = await manager._maybe_reclaim_lazy_tier(ws_id, "user-1", session)
+        binding = _binding(ws_id, computer)
+        result = await manager._maybe_reclaim_lazy_tier(binding, "user-1", session)
 
         assert result is recovered
-        manager._destroy_sandbox.assert_awaited_once_with("sandbox-1")
-        manager._clear_session.assert_awaited_once_with(ws_id, evict_session=session)
-        manager._recover_sandbox.assert_awaited_once_with(ws_id, "user-1", ANY)
-        assert ws_id not in manager._pending_lazy_sync
+        reclaimed = manager._destroy_sandbox.await_args.kwargs["binding"]
+        assert reclaimed.resource_tier == "standard"
+        manager._destroy_sandbox.assert_awaited_once_with(
+            "sandbox-1", binding=reclaimed
+        )
+        # Sandbox, session and tier all hang off the machine, so every arm of
+        # the reclaim is keyed by the computer rather than the project.
+        manager._clear_session.assert_awaited_once_with(
+            _STUB_COMPUTER_ID, evict_session=session
+        )
+        manager._recover_sandbox.assert_awaited_once_with(
+            reclaimed, "user-1", ANY
+        )
+        assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_still_entitled_returns_none(self, mock_get_ws):
+    @patch(f"{_ENTITLEMENTS}.get_computer")
+    async def test_lapsed_tier_reads_usage_before_the_delete_and_ends_the_run(
+        self, mock_get_computer
+    ):
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._elevated()
+        session = _make_mock_session()
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        order: list[str] = []
+        manager._entitled_tier = AsyncMock(return_value="standard")
+        manager._fold_usage_before_delete = AsyncMock(
+            side_effect=lambda _c: order.append("read")
+        )
+        manager._destroy_sandbox = AsyncMock(
+            side_effect=lambda *_a, **_k: order.append("delete")
+        )
+        manager._end_replaced_usage_run = AsyncMock(
+            side_effect=lambda _c, sandbox_id: order.append(f"end {sandbox_id}")
+        )
+        manager._clear_session = AsyncMock()
+        manager._recover_sandbox = AsyncMock(return_value=_make_mock_session())
+
+        await manager._maybe_reclaim_lazy_tier(
+            _binding(str(uuid.uuid4()), self._elevated()), "user-1", session
+        )
+
+        assert order == ["read", "delete", "end sandbox-1"]
+
+    @pytest.mark.asyncio
+    @patch(f"{_ENTITLEMENTS}.get_computer")
+    async def test_still_entitled_returns_none(self, mock_get_computer):
         """Still entitled → None (proceed on the existing sandbox), no teardown."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="starting", sandbox_id="sandbox-1",
-            resource_tier="max",
-        )
+        mock_get_computer.return_value = self._elevated()
         session = _make_mock_session()
         manager._entitled_tier = AsyncMock(return_value="max")
         manager._destroy_sandbox = AsyncMock()
         manager._recover_sandbox = AsyncMock()
 
-        assert await manager._maybe_reclaim_lazy_tier(ws_id, "user-1", session) is None
+        assert (
+            await manager._maybe_reclaim_lazy_tier(
+                _binding(ws_id, self._elevated()), "user-1", session
+            )
+            is None
+        )
         manager._destroy_sandbox.assert_not_awaited()
         manager._recover_sandbox.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_standard_tier_skips_entitlement_check(self, mock_get_ws):
+    @patch(f"{_ENTITLEMENTS}.get_computer")
+    async def test_standard_tier_skips_entitlement_check(self, mock_get_computer):
         """standard tier → no platform round-trip at all."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="starting"
-        )
+        mock_get_computer.return_value = self._elevated(resource_tier="standard")
         session = _make_mock_session()
         manager._entitled_tier = AsyncMock()
 
-        assert await manager._maybe_reclaim_lazy_tier(ws_id, "user-1", session) is None
+        assert (
+            await manager._maybe_reclaim_lazy_tier(_binding(ws_id), "user-1", session)
+            is None
+        )
         manager._entitled_tier.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_destroy_failure_still_recovers(self, mock_get_ws):
-        """Destroying the outsized sandbox is best-effort — a failure logs and
-        still proceeds to recover (Daytona reclaims the orphan later)."""
+    @patch(f"{_ENTITLEMENTS}.get_computer")
+    async def test_a_machine_deleted_under_the_reclaim_is_left_alone(
+        self, mock_get_computer
+    ):
+        """The binding was frozen at turn start, so the row is re-read; a gone
+        machine has nothing left to resize."""
+        manager = self._make_manager()
+        mock_get_computer.return_value = None
+        manager._entitled_tier = AsyncMock()
+        manager._destroy_sandbox = AsyncMock()
+
+        assert (
+            await manager._maybe_reclaim_lazy_tier(
+                _binding(str(uuid.uuid4()), self._elevated()),
+                "user-1",
+                _make_mock_session(),
+            )
+            is None
+        )
+        manager._entitled_tier.assert_not_awaited()
+        manager._destroy_sandbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_ENTITLEMENTS}.get_computer")
+    async def test_destroy_failure_aborts_replacement(self, mock_get_computer):
+        """An unknown delete failure must not create a second billed sandbox."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="starting", sandbox_id="sandbox-1",
-            resource_tier="max",
-        )
+        mock_get_computer.return_value = self._elevated()
         session = _make_mock_session()
         manager._entitled_tier = AsyncMock(return_value="standard")
         manager._destroy_sandbox = AsyncMock(side_effect=RuntimeError("destroy boom"))
         manager._clear_session = AsyncMock()
-        recovered = _make_mock_session()
-        manager._recover_sandbox = AsyncMock(return_value=recovered)
+        manager._recover_sandbox = AsyncMock()
 
-        result = await manager._maybe_reclaim_lazy_tier(ws_id, "user-1", session)
+        with pytest.raises(RuntimeError, match="destroy boom"):
+            await manager._maybe_reclaim_lazy_tier(
+                _binding(ws_id, self._elevated()), "user-1", session
+            )
 
-        assert result is recovered
-        manager._recover_sandbox.assert_awaited_once()
+        manager._clear_session.assert_not_awaited()
+        manager._recover_sandbox.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_recovery_failure_rearms_pending_and_raises(self, mock_get_ws):
-        """A failed recovery re-arms _pending_lazy_sync so Phase 2's generic
-        handler reverts the claim row to 'stopped' and re-raises, instead of
-        tolerating the failure as a warm re-sync hiccup."""
+    @patch(f"{_ENTITLEMENTS}.get_computer")
+    async def test_recovery_failure_rearms_pending_and_raises(self, mock_get_computer):
+        """A failed recovery re-arms the record's pending_lazy_sync flag so
+        Phase 2's generic handler reverts the claim row to 'stopped' and
+        re-raises, instead of tolerating the failure as a warm re-sync hiccup."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
-            workspace_id=ws_id, status="starting", sandbox_id="sandbox-1",
-            resource_tier="max",
-        )
+        mock_get_computer.return_value = self._elevated()
         session = _make_mock_session()
         manager._entitled_tier = AsyncMock(return_value="standard")
         manager._destroy_sandbox = AsyncMock()
@@ -2591,13 +5948,15 @@ class TestMaybeReclaimLazyTier:
         manager._recover_sandbox = AsyncMock(side_effect=RuntimeError("recover boom"))
 
         with pytest.raises(RuntimeError, match="recover boom"):
-            await manager._maybe_reclaim_lazy_tier(ws_id, "user-1", session)
-        assert ws_id in manager._pending_lazy_sync
+            await manager._maybe_reclaim_lazy_tier(
+                _binding(ws_id, self._elevated()), "user-1", session
+            )
+        assert manager._pending_lazy_start(_STUB_COMPUTER_ID)
 
 
 class TestPhase2TierReclaim:
     """Wiring: the reclaim runs in Phase 2 of get_session_for_workspace —
-    after the lazy restart, with the per-workspace lock released."""
+    after the lazy restart, with the machine lock released."""
 
     def setup_method(self):
         WorkspaceManager.reset_instance()
@@ -2612,8 +5971,17 @@ class TestPhase2TierReclaim:
         manager._maybe_migrate_sandbox = AsyncMock(return_value=None)
         manager._apply_session_mcp = AsyncMock(return_value=None)
         manager._apply_autostop_for_always_on = AsyncMock()
+        manager._reconcile_skills = AsyncMock()
+        manager._ensure_project_attached = AsyncMock()
         manager._compute_sandbox_config_hash = MagicMock(return_value="stable")
         return manager
+
+    _ELEVATED_COMPUTER = {
+        **_STUB_COMPUTER,
+        "status": "stopped",
+        "resource_tier": "max",
+        "provider_ref": "sandbox-1",
+    }
 
     @staticmethod
     def _elevated_workspace(workspace_id, status="stopped"):
@@ -2626,28 +5994,33 @@ class TestPhase2TierReclaim:
         )
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch(
-        "src.server.services.workspace_manager.try_claim_workspace_for_start",
-        new_callable=AsyncMock,
-    )
+    @patch(f"{_ENTITLEMENTS}.get_computer", new_callable=AsyncMock)
+    @patch(f"{_LIFECYCLE}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_lapsed_tier_reclaims_off_the_lock(
-        self, mock_claim, mock_activity, mock_status, mock_session_mgr,
-        mock_get_ws, mock_ent_get_ws,
+        self,
+        mock_claim,
+        mock_status,
+        mock_activity,
+        mock_session_mgr,
+        mock_get_ws,
+        mock_get_computer,
+        mock_ent_get_computer,
     ):
         """Lapsed entitlement on a lazy restart → recovery runs with the
-        per-workspace lock FREE (Phase 2), and the caller gets the recovered
+        machine lock FREE (Phase 2), and the caller gets the recovered
         session; the Phase-1 reconnect itself stayed lazy."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
         workspace = self._elevated_workspace(ws_id)
         mock_get_ws.return_value = workspace
-        mock_ent_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_claim.return_value = dict(self._ELEVATED_COMPUTER)
+        mock_get_computer.return_value = dict(self._ELEVATED_COMPUTER)
+        mock_ent_get_computer.return_value = dict(self._ELEVATED_COMPUTER)
         mock_session_mgr.cleanup_session = AsyncMock()
 
         lazy_session = _make_mock_session()
@@ -2659,42 +6032,47 @@ class TestPhase2TierReclaim:
 
         lock_was_held: list[bool] = []
 
-        async def recover_probe(workspace_id, user_id, core_config):
-            lock = await manager._get_workspace_lock(workspace_id)
+        async def recover_probe(binding, user_id, core_config):
+            lock = manager._machine_lock(binding.computer_id)
             lock_was_held.append(lock.locked())
             return recovered
 
         manager._recover_sandbox = AsyncMock(side_effect=recover_probe)
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with _patch_resolve(self._ELEVATED_COMPUTER):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         assert result is recovered
         lazy_session.initialize_lazy.assert_awaited_once()
-        manager._destroy_sandbox.assert_awaited_once_with("sandbox-1")
+        manager._destroy_sandbox.assert_awaited_once_with("sandbox-1", binding=ANY)
         assert lock_was_held == [False]
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch(
-        "src.server.services.workspace_manager.try_claim_workspace_for_start",
-        new_callable=AsyncMock,
-    )
+    @patch(f"{_ENTITLEMENTS}.get_computer", new_callable=AsyncMock)
+    @patch(f"{_LIFECYCLE}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_entitled_tier_promotes_normally(
-        self, mock_claim, mock_activity, mock_status, mock_session_mgr,
-        mock_get_ws, mock_ent_get_ws,
+        self,
+        mock_claim,
+        mock_status,
+        mock_activity,
+        mock_session_mgr,
+        mock_get_ws,
+        mock_get_computer,
+        mock_ent_get_computer,
     ):
         """Still entitled → no destroy/recover; the lazy start promotes to
         'running' exactly as before the reclaim existed."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        workspace = self._elevated_workspace(ws_id)
-        mock_get_ws.return_value = workspace
-        mock_ent_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_get_ws.return_value = self._elevated_workspace(ws_id)
+        mock_claim.return_value = dict(self._ELEVATED_COMPUTER)
+        mock_get_computer.return_value = dict(self._ELEVATED_COMPUTER)
+        mock_ent_get_computer.return_value = dict(self._ELEVATED_COMPUTER)
 
         lazy_session = _make_mock_session()
         mock_session_mgr.get_session.return_value = lazy_session
@@ -2702,37 +6080,55 @@ class TestPhase2TierReclaim:
         manager._entitled_tier = AsyncMock(return_value="max")
         manager._destroy_sandbox = AsyncMock()
         manager._recover_sandbox = AsyncMock()
+        heartbeat = []
 
-        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        @asynccontextmanager
+        async def start_heartbeat(computer_id):
+            heartbeat.append(("enter", computer_id))
+            yield
+            heartbeat.append(("exit", computer_id))
+
+        manager._computer_start_heartbeat = start_heartbeat
+
+        with _patch_resolve(self._ELEVATED_COMPUTER):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         assert result is lazy_session
         manager._destroy_sandbox.assert_not_awaited()
         manager._recover_sandbox.assert_not_awaited()
         statuses = [c.kwargs.get("status") for c in mock_status.await_args_list]
         assert "running" in statuses
+        assert heartbeat == [
+            ("enter", _STUB_COMPUTER_ID),
+            ("exit", _STUB_COMPUTER_ID),
+        ]
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    @patch("src.server.services.workspace_manager.db_get_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch(
-        "src.server.services.workspace_manager.try_claim_workspace_for_start",
-        new_callable=AsyncMock,
-    )
+    @patch(f"{_ENTITLEMENTS}.get_computer", new_callable=AsyncMock)
+    @patch(f"{_LIFECYCLE}.get_computer", new_callable=AsyncMock)
+    @cm_patch("db_get_workspace")
+    @cm_patch("SessionManager")
+    @cm_patch("update_workspace_activity")
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @patch("src.server.services.computer_manager._machines.try_claim_computer_for_start", new_callable=AsyncMock)
     async def test_reclaim_recovery_failure_reverts_to_stopped(
-        self, mock_claim, mock_activity, mock_status, mock_session_mgr,
-        mock_get_ws, mock_ent_get_ws,
+        self,
+        mock_claim,
+        mock_status,
+        mock_activity,
+        mock_session_mgr,
+        mock_get_ws,
+        mock_get_computer,
+        mock_ent_get_computer,
     ):
         """A failed reclaim recovery reverts the claim row to 'stopped' (via the
         re-armed pending marker) and surfaces the failure to the caller."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        workspace = self._elevated_workspace(ws_id)
-        mock_get_ws.return_value = workspace
-        mock_ent_get_ws.return_value = workspace
-        mock_claim.return_value = workspace
+        mock_get_ws.return_value = self._elevated_workspace(ws_id)
+        mock_claim.return_value = dict(self._ELEVATED_COMPUTER)
+        mock_get_computer.return_value = dict(self._ELEVATED_COMPUTER)
+        mock_ent_get_computer.return_value = dict(self._ELEVATED_COMPUTER)
         mock_session_mgr.cleanup_session = AsyncMock()
 
         lazy_session = _make_mock_session()
@@ -2742,8 +6138,9 @@ class TestPhase2TierReclaim:
         manager._destroy_sandbox = AsyncMock()
         manager._recover_sandbox = AsyncMock(side_effect=RuntimeError("recover boom"))
 
-        with pytest.raises(RuntimeError, match="recover boom"):
-            await manager.get_session_for_workspace(ws_id, user_id="user-1")
+        with _patch_resolve(self._ELEVATED_COMPUTER):
+            with pytest.raises(RuntimeError, match="recover boom"):
+                await manager.get_session_for_workspace(ws_id, user_id="user-1")
 
         statuses = [c.kwargs.get("status") for c in mock_status.await_args_list]
         assert statuses[-1] == "stopped"
@@ -2760,34 +6157,70 @@ class TestRecoverSandboxEntitledTier:
         return WorkspaceManager.get_instance(config=_make_config())
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @cm_patch("update_workspace_activity")
+    @cm_patch("SessionManager")
+    @cm_patch("db_get_workspace")
     async def test_provisions_at_entitled_tier(
-        self, mock_get_ws, mock_session_mgr, mock_status, mock_activity
+        self, mock_get_ws, mock_session_mgr, mock_activity
     ):
         """_recover_sandbox sizes the fresh sandbox to the tier _entitled_tier
         returns, not the raw persisted tier (a lapsed 'max' rebuilds at standard)."""
         manager = self._make_manager()
         ws_id = str(uuid.uuid4())
-        mock_get_ws.return_value = _make_workspace(
+        workspace = _make_workspace(
             workspace_id=ws_id, status="stopped", resource_tier="max"
         )
+        mock_get_ws.return_value = workspace
         session = _make_mock_session()
         mock_session_mgr.get_session.return_value = session
 
         manager._entitled_tier = AsyncMock(return_value="standard")
-        manager._mint_sandbox_tokens = AsyncMock(return_value={})
+        manager._keep_data_token = AsyncMock()
         manager._apply_session_mcp = AsyncMock(return_value=None)
         manager._sync_sandbox_assets = AsyncMock()
         manager._restore_files = AsyncMock()
 
-        result = await manager._recover_sandbox(ws_id, "user-1", MagicMock())
+        with _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID):
+            result = await manager._recover_sandbox(
+                _binding(ws_id, resource_tier="max"),
+                "user-1",
+                manager.config.to_core_config(),
+            )
 
         assert result is session
         manager._entitled_tier.assert_awaited_once()
         assert session.initialize.await_args.kwargs["tier"] == "standard"
+
+    @pytest.mark.asyncio
+    @cm_patch("update_workspace_activity")
+    @cm_patch("SessionManager")
+    @cm_patch("db_get_workspace")
+    async def test_recovery_asks_for_a_mirror_only_entitlement_check(
+        self, mock_get_ws, mock_session_mgr, mock_activity
+    ):
+        """The sandbox being replaced is gone, so a strict backup from it would fail."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(
+            workspace_id=ws_id, status="stopped", resource_tier="max"
+        )
+        mock_get_ws.return_value = workspace
+        mock_session_mgr.get_session.return_value = _make_mock_session()
+
+        manager._entitled_tier = AsyncMock(return_value="standard")
+        manager._keep_data_token = AsyncMock()
+        manager._apply_session_mcp = AsyncMock(return_value=None)
+        manager._sync_sandbox_assets = AsyncMock()
+        manager._restore_files = AsyncMock()
+
+        with _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID):
+            await manager._recover_sandbox(
+                _binding(ws_id, resource_tier="max"),
+                "user-1",
+                manager.config.to_core_config(),
+            )
+
+        assert manager._entitled_tier.await_args.kwargs["mirror_only"] is True
 
 
 class TestRecoverSandboxOwnerBackfill:
@@ -2810,12 +6243,12 @@ class TestRecoverSandboxOwnerBackfill:
         manager._entitled_tier = AsyncMock(return_value="standard")
         manager._entitled_always_on = AsyncMock(return_value=False)
         manager._provision_sandbox_session = AsyncMock(return_value=(session, {}))
-        await manager._recover_sandbox(ws_id, user_id, MagicMock())
+        await manager._recover_sandbox(_binding(ws_id), user_id, MagicMock())
         return session
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @cm_patch("update_workspace_activity")
+    @cm_patch("db_get_workspace")
     async def test_a_caller_without_a_user_id_recovers_as_the_row_owner(
         self, mock_get_ws, mock_activity
     ):
@@ -2832,8 +6265,8 @@ class TestRecoverSandboxOwnerBackfill:
         assert manager._entitled_always_on.await_args.args[1] == "user-9"
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_manager.update_workspace_activity")
-    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @cm_patch("update_workspace_activity")
+    @cm_patch("db_get_workspace")
     async def test_an_explicit_caller_identity_is_not_overwritten(
         self, mock_get_ws, mock_activity
     ):
@@ -2856,6 +6289,52 @@ class TestRecoverSandboxOwnerBackfill:
 
 
 class TestSetWorkspaceSpec:
+    """The tier is the machine's, so the project route is a thin address.
+
+    Every branch reads, writes and reverts the computer row; the workspace id
+    only names who asked, for the mirror and the error copy.
+    """
+
+    @pytest.fixture(autouse=True)
+    def stopped_probe(self):
+        probe = MagicMock()
+        probe.initialize = AsyncMock()
+        probe.stop = AsyncMock()
+        with (
+            patch(f"{_SPEC}.Session", return_value=probe),
+            patch(f"{_SPEC}.try_claim_computer_for_start", AsyncMock(return_value={"status": "starting"})),
+            patch(f"{_SPEC}.update_computer_status", AsyncMock()),
+        ):
+            yield probe
+
+    @pytest.fixture(autouse=True)
+    def spec_record(self):
+        """Every change claims the row first and settles its outcome on it."""
+        claimed = {**_STUB_COMPUTER, "spec_change": {"claim_id": "claim-1"}}
+        with (
+            patch(
+                f"{_SPEC}.claim_computer_spec_change",
+                AsyncMock(return_value=claimed),
+            ) as claim,
+            patch(f"{_SPEC}.settle_computer_spec_change", AsyncMock()) as settle,
+            patch(
+                f"{_SPEC}.heartbeat_computer_spec_change", AsyncMock(return_value=True)
+            ) as heartbeat,
+            patch(f"{_SPEC}.publish_computer_status_change", AsyncMock()),
+            patch(f"{_SPEC}.clear_computer_disk", AsyncMock(return_value=True)),
+        ):
+            self.claim = claim
+            self.settle = settle
+            self.heartbeat = heartbeat
+            yield
+
+    def _settled_error(self):
+        """The error code the one settle wrote, None for a success."""
+        self.settle.assert_awaited_once()
+        assert self.settle.await_args.kwargs["claim_id"] == "claim-1"
+        error = self.settle.await_args.kwargs.get("error")
+        return error and error["code"]
+
     def setup_method(self):
         WorkspaceManager.reset_instance()
 
@@ -2863,172 +6342,835 @@ class TestSetWorkspaceSpec:
         WorkspaceManager.reset_instance()
 
     def _make_manager(self):
-        return WorkspaceManager.get_instance(config=_make_config_with_tiers())
+        manager = WorkspaceManager.get_instance(config=_make_config_with_tiers())
+        manager._machine_decision_lock = _decision_lock(True)
+        manager._sync_machine_assets = AsyncMock()
+        manager._backup_machine_files_to_db = AsyncMock()
+        return manager
+
+    @staticmethod
+    def _computer(**overrides):
+        return {**_STUB_COMPUTER, "provider_ref": "sb-1", **overrides}
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_unknown_tier_raises_before_db(self, mock_get_ws):
-        """An unknown tier is rejected before any DB read."""
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_unknown_tier_uses_the_computers_presets(self, mock_get_computer):
+        """Tier validation uses the durable computer provider configuration."""
+        mock_get_computer.return_value = self._computer()
         manager = self._make_manager()
-        with pytest.raises(ValueError, match="Unknown resource tier"):
+        with pytest.raises(UnknownResourceTier, match="does not offer the 'titanium' spec"):
             await manager.set_workspace_spec("ws-1", "titanium")
-        mock_get_ws.assert_not_called()
+        # Refused by the precheck, before anything is claimed.
+        assert mock_get_computer.await_count == 1
+        self.claim.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_never_started_persists_tier_only(self, mock_get_ws, mock_set_tier):
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_extra_large_is_refused_on_a_daytona_computer(self, mock_get_computer):
+        """Daytona's own tiers stop at Large, whatever E2B offers."""
+        from ptc_agent.config.core import DaytonaConfig
+
+        mock_get_computer.return_value = self._computer(kind="daytona")
+        manager = self._make_manager()
+        manager.config.sandbox.daytona.resource_tiers = DaytonaConfig().resource_tiers
+        with pytest.raises(UnknownResourceTier, match="'xlarge'"):
+            await manager.set_computer_spec(_STUB_COMPUTER["computer_id"], "xlarge")
+        self.claim.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_quota_lock_follows_the_local_lock_and_precedes_machine_lock(self):
+        manager = self._make_manager()
+        events = []
+
+        @asynccontextmanager
+        async def observed(_computer_id, _span):
+            events.append("observed-enter")
+            yield
+            events.append("observed-exit")
+
+        @asynccontextmanager
+        async def capacity(_user_id):
+            events.append("capacity-enter")
+            yield
+            events.append("capacity-exit")
+
+        @asynccontextmanager
+        async def decision(_computer_id):
+            events.append("machine-enter")
+            yield True
+            events.append("machine-exit")
+
+        computer = self._computer(status="creating", provider_ref=None)
+        manager._observed_lock = observed
+        manager._machine_decision_lock = decision
+        with (
+            patch(f"{_SPEC}.get_computer", AsyncMock(return_value=computer)),
+            patch(f"{_SPEC}.computer_capacity_lock", capacity),
+            patch(
+                "src.server.dependencies.usage_limits.platform_gating_active",
+                return_value=True,
+            ),
+            patch(
+                "src.server.dependencies.usage_limits.assert_spec_allowed",
+                AsyncMock(side_effect=lambda *_args, **_kwargs: events.append("gate")),
+            ),
+            patch(
+                f"{_SPEC}.db_set_computer_resource_tier",
+                AsyncMock(
+                    side_effect=lambda *_args, **_kwargs: (
+                        events.append("write") or computer
+                    )
+                ),
+            ),
+        ):
+            await manager.set_computer_spec(
+                _STUB_COMPUTER_ID, "performance", user_id="user-1"
+            )
+
+        assert events == [
+            "observed-enter",
+            "capacity-enter",
+            "gate",
+            "machine-enter",
+            "write",
+            "machine-exit",
+            "capacity-exit",
+            "observed-exit",
+        ]
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_never_started_persists_tier_only(
+        self, mock_get_computer, mock_set_tier, mock_get_ws
+    ):
         """No sandbox yet → just persist the tier; no recreate."""
         manager = self._make_manager()
-        ws = _make_workspace(status="creating", sandbox_id=None, resource_tier="standard")
-        mock_get_ws.return_value = ws
+        mock_get_computer.return_value = self._computer(
+            status="creating", provider_ref=None
+        )
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
         manager._recover_sandbox = AsyncMock()
 
-        await manager.set_workspace_spec(ws["workspace_id"], "performance")
+        await manager.set_workspace_spec("ws-1", "performance")
 
-        mock_set_tier.assert_awaited_once_with(ws["workspace_id"], "performance")
+        mock_set_tier.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            "performance",
+            expected_status="creating",
+            expected_provider_ref=None,
+        )
         manager._recover_sandbox.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_already_at_tier_is_noop(self, mock_get_ws, mock_set_tier):
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_never_started_retries_when_start_wins_the_tier_write(
+        self, mock_get_computer, mock_set_tier, mock_get_ws
+    ):
+        """The tier write cannot publish after a concurrent initial start."""
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(
+            status="creating", provider_ref=None
+        )
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_set_tier.side_effect = [None, self._computer()]
+        manager._recover_sandbox = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="Computer changed"):
+            await manager.set_workspace_spec("ws-1", "performance")
+
+        assert mock_set_tier.await_args_list[0].kwargs == {
+            "expected_status": "creating",
+            "expected_provider_ref": None,
+        }
+        assert mock_set_tier.await_count == 1
+        assert self._settled_error() == "busy"
+        manager._recover_sandbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_already_at_tier_is_noop(
+        self, mock_get_computer, mock_set_tier, mock_get_ws
+    ):
         """Same tier + live sandbox → early return, nothing persisted."""
         manager = self._make_manager()
-        ws = _make_workspace(status="running", sandbox_id="sb-1", resource_tier="max")
-        mock_get_ws.return_value = ws
+        mock_get_computer.return_value = self._computer(resource_tier="max")
+        workspace = _make_workspace(workspace_id="ws-1")
+        mock_get_ws.return_value = workspace
 
-        result = await manager.set_workspace_spec(ws["workspace_id"], "max")
+        result = await manager.set_workspace_spec("ws-1", "max")
 
-        assert result is ws
+        # The project route answers with the project row it was addressed by.
+        assert result is workspace
         mock_set_tier.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.LocalRunExecutor")
-    @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_entitlements.update_workspace_status")
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
+    @cm_patch("SessionManager")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    @patch(
+        f"{_SPEC}.try_claim_computer_for_start",
+        new_callable=AsyncMock,
+    )
     async def test_running_recreate_failure_marks_stopped_and_reverts_tier(
-        self, mock_get_ws, mock_set_tier, mock_status, mock_session_mgr, mock_btm
+        self,
+        mock_claim,
+        mock_get_computer,
+        mock_set_tier,
+        mock_status,
+        mock_get_ws,
+        mock_cm_session_mgr,
     ):
         """A failed recreate flips the row to stopped (so the next start
         self-heals via claim -> restart -> SandboxGone -> recover) AND reverts
         the persisted tier."""
         manager = self._make_manager()
-        ws = _make_workspace(status="running", sandbox_id="sb-1", resource_tier="standard")
-        mock_get_ws.return_value = ws
-        mock_btm.get_instance.return_value.has_active_tasks_for_workspace = AsyncMock(
-            return_value=False
-        )
-        mock_session_mgr.cleanup_session = AsyncMock()
-        manager._sessions[ws["workspace_id"]] = MagicMock(sandbox=MagicMock())
-        manager._backup_files_to_db = AsyncMock()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_claim.return_value = self._computer(status="starting")
+        mock_cm_session_mgr.cleanup_session = AsyncMock()
+        attached = _make_mock_session()
+        attached.sandbox.sandbox_id = "sb-1"
+        manager._machine(_STUB_COMPUTER_ID).session = attached
+        manager._backup_machine_files_to_db = AsyncMock()
         manager._destroy_sandbox = AsyncMock()
-        manager._recover_sandbox = AsyncMock(side_effect=RuntimeError("snapshot build failed"))
+        manager._recover_sandbox = AsyncMock(
+            side_effect=RuntimeError("snapshot build failed")
+        )
 
-        with pytest.raises(RuntimeError, match="snapshot build failed"):
-            await manager.set_workspace_spec(ws["workspace_id"], "max", user_id="user-1")
+        with _patch_machine_activity():
+            with pytest.raises(RuntimeError, match="snapshot build failed"):
+                await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
 
         # Row marked stopped (not terminal 'error') so the next start recovers.
-        mock_status.assert_awaited_once_with(workspace_id=ws["workspace_id"], status="stopped")
-        # Tier persisted to the target first, then reverted on the outer except.
-        assert mock_set_tier.await_args_list[0].args == (ws["workspace_id"], "max")
-        assert mock_set_tier.await_args_list[-1].args == (ws["workspace_id"], "standard")
+        mock_status.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            ComputerStatus.STOPPED,
+            expected=ComputerStatus.STARTING,
+        )
+        # Tier persisted to the target once; the failed settle reverts it.
+        assert [c.args for c in mock_set_tier.await_args_list] == [
+            (_STUB_COMPUTER_ID, "max")
+        ]
+        assert self._settled_error() == "unknown"
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.LocalRunExecutor")
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_running_without_attached_session_refuses_and_reverts(
-        self, mock_get_ws, mock_set_tier, mock_btm
+    @cm_patch("SessionManager")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    @patch(
+        f"{_SPEC}.try_claim_computer_for_start",
+        new_callable=AsyncMock,
+    )
+    async def test_running_delete_failure_aborts_before_recovery(
+        self,
+        mock_claim,
+        mock_get_computer,
+        mock_set_tier,
+        mock_status,
+        mock_get_ws,
+        mock_cm_session_mgr,
     ):
-        """Running on another replica (no local session): refuse before teardown —
-        the backup would silently no-op and destroy the only copy of the files."""
+        """An unconfirmed delete must not provision a second billed sandbox."""
         manager = self._make_manager()
-        ws = _make_workspace(status="running", sandbox_id="sb-1", resource_tier="standard")
-        mock_get_ws.return_value = ws
-        mock_btm.get_instance.return_value.has_active_tasks_for_workspace = AsyncMock(
-            return_value=False
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_claim.return_value = self._computer(status="starting")
+        mock_cm_session_mgr.cleanup_session = AsyncMock()
+        attached = _make_mock_session()
+        attached.sandbox.sandbox_id = "sb-1"
+        manager._machine(_STUB_COMPUTER_ID).session = attached
+        manager._backup_machine_files_to_db = AsyncMock()
+        manager._destroy_sandbox = AsyncMock(side_effect=RuntimeError("delete failed"))
+        manager._recover_sandbox = AsyncMock()
+
+        with _patch_machine_activity():
+            with pytest.raises(RuntimeError, match="delete failed"):
+                await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
+
+        manager._recover_sandbox.assert_not_awaited()
+        mock_status.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            ComputerStatus.STOPPED,
+            expected=ComputerStatus.STARTING,
+        )
+        assert self._settled_error() == "unknown"
+
+    def _fake_provider(self, delete_effects, *, gone_after_accept=1):
+        """A provider whose deletes settle asynchronously, like Daytona's."""
+
+        class Gone(Exception):
+            pass
+
+        state = {"accepted_at": None, "gets": 0}
+        runtime = MagicMock()
+        effects = list(delete_effects)
+
+        async def delete():
+            effect = effects.pop(0) if effects else None
+            if isinstance(effect, Exception):
+                raise effect
+            state["accepted_at"] = state["gets"]
+
+        runtime.delete = AsyncMock(side_effect=delete)
+
+        async def get(_sandbox_id):
+            state["gets"] += 1
+            accepted = state["accepted_at"]
+            if accepted is not None and state["gets"] - accepted > gone_after_accept:
+                raise Gone("404")
+            return runtime
+
+        provider = MagicMock()
+        provider.get = AsyncMock(side_effect=get)
+        provider.close = AsyncMock()
+        provider.classify_error = lambda e: (
+            SandboxFailureKind.SANDBOX_GONE
+            if isinstance(e, Gone)
+            else SandboxFailureKind.UNKNOWN
+        )
+        return provider, runtime
+
+    @pytest.mark.asyncio
+    async def test_destroy_retries_a_refused_delete_until_the_sandbox_is_gone(self):
+        """Daytona refuses a delete while a stop or an earlier delete settles;
+        the retry lands once it has, and only absence ends the wait."""
+        manager = self._make_manager()
+        provider, runtime = self._fake_provider(
+            [RuntimeError("Sandbox state change in progress")] * 2
+        )
+        manager._provider_for = MagicMock(return_value=provider)
+
+        with patch(f"{_SPEC}.asyncio.sleep", new=AsyncMock()):
+            await manager._destroy_sandbox("sb-1")
+
+        assert runtime.delete.await_count == 3
+        provider.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_destroy_of_an_absent_sandbox_is_done(self):
+        manager = self._make_manager()
+        provider, runtime = self._fake_provider([])
+        provider.get = AsyncMock(side_effect=SandboxGoneError("sb-1"))
+        provider.classify_error = lambda e: SandboxFailureKind.UNKNOWN
+        manager._provider_for = MagicMock(return_value=provider)
+
+        await manager._destroy_sandbox("sb-1")
+
+        runtime.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_destroy_raises_when_the_sandbox_never_goes(self):
+        """An unconfirmed delete must stop a replacement being built beside it."""
+        manager = self._make_manager()
+        provider, _ = self._fake_provider(
+            [RuntimeError("Sandbox state change in progress")] * 1000
+        )
+        manager._provider_for = MagicMock(return_value=provider)
+
+        with patch(f"{_SPEC}.asyncio.sleep", new=AsyncMock()):
+            with pytest.raises(RuntimeError, match="could not be removed") as exc:
+                await manager._destroy_sandbox("sb-1", timeout=0)
+        # The provider's text is logged, never handed to a client.
+        assert "state change" not in str(exc.value)
+
+        provider.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @cm_patch("SessionManager")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    @patch(
+        f"{_SPEC}.try_claim_computer_for_start",
+        new_callable=AsyncMock,
+    )
+    async def test_running_claims_the_machine_before_the_backup(
+        self,
+        mock_claim,
+        mock_get_computer,
+        mock_set_tier,
+        mock_status,
+        mock_get_ws,
+        mock_cm_session_mgr,
+    ):
+        """A turn admitted during the backup would run on the sandbox about to
+        be deleted and lose what it wrote after its project was mirrored."""
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_claim.return_value = self._computer(status="starting")
+        mock_cm_session_mgr.cleanup_session = AsyncMock()
+        attached = _make_mock_session()
+        attached.sandbox.sandbox_id = "sb-1"
+        manager._machine(_STUB_COMPUTER_ID).session = attached
+        order: list[str] = []
+        mock_claim.side_effect = lambda *a, **k: order.append("claim") or (
+            self._computer(status="starting")
+        )
+        manager._backup_machine_files_to_db = AsyncMock(
+            side_effect=lambda *a, **k: order.append("backup")
         )
         manager._destroy_sandbox = AsyncMock()
         manager._recover_sandbox = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="not attached"):
-            await manager.set_workspace_spec(ws["workspace_id"], "max", user_id="user-1")
+        with _patch_machine_activity():
+            await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
 
-        manager._destroy_sandbox.assert_not_awaited()
-        manager._recover_sandbox.assert_not_awaited()
-        assert mock_set_tier.await_args_list[-1].args == (ws["workspace_id"], "standard")
+        assert order == ["claim", "backup"]
+        manager._recover_sandbox.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.LocalRunExecutor")
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_running_with_active_turn_refuses_and_reverts(
-        self, mock_get_ws, mock_set_tier, mock_btm
+    @cm_patch("SessionManager")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    @patch(
+        f"{_SPEC}.try_claim_computer_for_start",
+        new_callable=AsyncMock,
+    )
+    async def test_running_backup_failure_hands_the_machine_back_running(
+        self,
+        mock_claim,
+        mock_get_computer,
+        mock_set_tier,
+        mock_status,
+        mock_get_ws,
+        mock_cm_session_mgr,
     ):
-        """An in-flight agent turn blocks the recreate (would abort execute_code)."""
+        """Nothing was torn down, so the refusal must not leave it stopped."""
         manager = self._make_manager()
-        ws = _make_workspace(status="running", sandbox_id="sb-1", resource_tier="standard")
-        mock_get_ws.return_value = ws
-        mock_btm.get_instance.return_value.has_active_tasks_for_workspace = AsyncMock(
-            return_value=True
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_claim.return_value = self._computer(status="starting")
+        attached = _make_mock_session()
+        attached.sandbox.sandbox_id = "sb-1"
+        manager._machine(_STUB_COMPUTER_ID).session = attached
+        manager._backup_machine_files_to_db = AsyncMock(
+            side_effect=RuntimeError("backup incomplete")
         )
-        manager._backup_files_to_db = AsyncMock()
+        manager._destroy_sandbox = AsyncMock()
         manager._recover_sandbox = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="agent turn is running"):
-            await manager.set_workspace_spec(ws["workspace_id"], "max", user_id="user-1")
+        with _patch_machine_activity():
+            with pytest.raises(RuntimeError, match="backup incomplete"):
+                await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
 
-        # Refused before any teardown; tier reverted to the original.
-        manager._backup_files_to_db.assert_not_awaited()
-        manager._recover_sandbox.assert_not_awaited()
-        assert mock_set_tier.await_args_list[-1].args == (ws["workspace_id"], "standard")
+        manager._destroy_sandbox.assert_not_awaited()
+        mock_status.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            ComputerStatus.RUNNING,
+            expected=ComputerStatus.STARTING,
+        )
+        assert self._settled_error() == "unknown"
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_running_without_attached_session_reconnects_for_backup(
+        self, mock_get_computer, mock_set_tier, mock_get_ws
+    ):
+        """A worker with no cache reconnects the locked sandbox before backup."""
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        session = _make_mock_session(initialized=False, has_sandbox=False)
+
+        async def initialize(*, sandbox_id):
+            session._initialized = True
+            session.sandbox = MagicMock(sandbox_id=sandbox_id)
+
+        session.initialize.side_effect = initialize
+        manager._session_handle = MagicMock(return_value=session)
+
+        with _patch_machine_activity():
+            result = await manager._assert_machine_is_replaceable(
+                _binding("ws-1", self._computer()), "sb-1", "ws-1"
+            )
+
+        assert result is session
+        session.initialize.assert_awaited_once_with(sandbox_id="sb-1")
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_a_sibling_turn_on_the_machine_refuses_and_reverts(
+        self, mock_get_computer, mock_set_tier, mock_get_ws
+    ):
+        """An in-flight agent turn blocks the recreate (would abort execute_code).
+
+        The gate is machine-wide: the sandbox being rebuilt is shared, so a turn
+        on any project on it is enough to refuse, not only one on the project
+        the request named.
+        """
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        manager._backup_machine_files_to_db = AsyncMock()
+        manager._recover_sandbox = AsyncMock()
+
+        with _patch_machine_activity(active=True):
+            with pytest.raises(RuntimeError, match="agent turn is running"):
+                await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
+
+        # Refused by the precheck, before the claim or any write.
+        manager._backup_machine_files_to_db.assert_not_awaited()
+        manager._recover_sandbox.assert_not_awaited()
+        self.claim.assert_not_awaited()
+        mock_set_tier.assert_not_awaited()
+        self.settle.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
     async def test_stopped_destroys_sandbox_for_recreate_on_next_start(
-        self, mock_get_ws, mock_set_tier
+        self, mock_get_computer, mock_set_tier, mock_get_ws
     ):
         """A stopped sandbox is destroyed so the next start rebuilds it at the new tier."""
         manager = self._make_manager()
-        ws = _make_workspace(status="stopped", sandbox_id="sb-1", resource_tier="standard")
-        mock_get_ws.return_value = ws
+        mock_get_computer.return_value = self._computer(
+            status="stopped", resource_tier="standard"
+        )
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
         manager._destroy_sandbox = AsyncMock()
 
-        await manager.set_workspace_spec(ws["workspace_id"], "max", user_id="user-1")
+        await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
 
-        manager._destroy_sandbox.assert_awaited_once_with("sb-1")
-        # Upgrade succeeds → tier stays at the target, never reverted.
-        assert mock_set_tier.await_args_list[-1].args == (ws["workspace_id"], "max")
+        manager._destroy_sandbox.assert_awaited_once_with("sb-1", binding=ANY)
+        # Upgrade succeeds → tier stays at the target, settled as a success.
+        assert mock_set_tier.await_args_list[-1].args == (_STUB_COMPUTER_ID, "max")
+        assert self._settled_error() is None
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.get_workspace_total_size")
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_downgrade_rejected_when_files_exceed_target_disk(
-        self, mock_get_ws, mock_set_tier, mock_size
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_a_stopped_machine_whose_sandbox_is_gone_still_changes_tier(
+        self, mock_get_computer, mock_set_tier, mock_get_ws, stopped_probe
     ):
-        """A downgrade whose backed-up files overflow the smaller disk is refused."""
+        """The previous change destroyed the sandbox and the row still names
+        it, so a second change while stopped finds nothing to attach. Nothing
+        is left to back up either: the tier lands and the next start rebuilds
+        from the manifest, instead of every retry failing until a start."""
         manager = self._make_manager()
-        # max (10 GiB) → standard (3 GiB); 100 GiB of files won't fit.
-        ws = _make_workspace(status="stopped", sandbox_id="sb-1", resource_tier="max")
-        mock_get_ws.return_value = ws
-        mock_size.return_value = 100 * 1024**3
+        mock_get_computer.return_value = self._computer(
+            status="stopped", resource_tier="standard"
+        )
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        manager._destroy_sandbox = AsyncMock()
+        stopped_probe.initialize.side_effect = SandboxGoneError("sb-1", "not found")
+
+        await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
+
+        manager._backup_machine_files_to_db.assert_not_awaited()
+        manager._destroy_sandbox.assert_not_awaited()
+        stopped_probe.stop.assert_awaited_once()
+        assert mock_set_tier.await_args_list[-1].args == (_STUB_COMPUTER_ID, "max")
+        assert self._settled_error() is None
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_a_lost_claim_stops_before_a_stopped_sandbox_is_destroyed(
+        self, mock_get_computer, mock_set_tier, mock_get_ws
+    ):
+        """The backup ran long enough for the claim to go stale and be taken
+        over. The heartbeat ahead of the destroy misses, and the sandbox the
+        other runner is about to back up stays intact."""
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(
+            status="stopped", resource_tier="standard"
+        )
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        manager._destroy_sandbox = AsyncMock()
+        self.heartbeat.side_effect = [True, False]
+
+        with pytest.raises(SpecChangeLostError):
+            await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
+
+        manager._backup_machine_files_to_db.assert_awaited_once()
+        manager._destroy_sandbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @cm_patch("SessionManager")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.update_computer_status", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.try_claim_computer_for_start", new_callable=AsyncMock)
+    async def test_a_lost_claim_hands_a_running_machine_back_before_teardown(
+        self,
+        mock_claim,
+        mock_get_computer,
+        mock_set_tier,
+        mock_status,
+        mock_get_ws,
+        mock_cm_session_mgr,
+    ):
+        """Ownership is proven after the backup and before teardown begins,
+        so a taken-over change hands the live sandbox back running rather
+        than deleting it under the runner that now owns the row."""
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_claim.return_value = self._computer(status="starting")
+        mock_cm_session_mgr.cleanup_session = AsyncMock()
+        self._running_machine(manager)
+        self.heartbeat.side_effect = [True, False]
+
+        with _patch_machine_activity():
+            with pytest.raises(SpecChangeLostError):
+                await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
+
+        manager._backup_machine_files_to_db.assert_awaited_once()
+        manager._destroy_sandbox.assert_not_awaited()
+        manager._recover_sandbox.assert_not_awaited()
+        mock_status.assert_awaited_once_with(
+            _STUB_COMPUTER_ID, "running", expected="starting"
+        )
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.get_live_project_sizes_for_computer", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_downgrade_rejected_when_the_machines_files_exceed_the_disk(
+        self, mock_get_computer, mock_set_tier, mock_get_ws, mock_sizes
+    ):
+        """A downgrade whose backed-up files overflow the smaller disk is refused.
+
+        The disk is the machine's, so the guard sums every project on it: asking
+        only about the one that requested the change is how a shared machine
+        passes a downgrade its combined files cannot fit.
+        """
+        manager = self._make_manager()
+        # max (10 GiB) → standard (3 GiB); 4 GiB per project won't fit either way.
+        mock_get_computer.return_value = self._computer(
+            status="stopped", resource_tier="max"
+        )
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_sizes.return_value = [4 * 1024**3, 4 * 1024**3]
         manager._destroy_sandbox = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="Cannot downgrade"):
-            await manager.set_workspace_spec(ws["workspace_id"], "standard", user_id="user-1")
+        with _patch_live_ids("ws-1", "sibling-ws"):
+            with pytest.raises(RuntimeError, match="Cannot downgrade"):
+                await manager.set_workspace_spec("ws-1", "standard", user_id="user-1")
 
-        # Refused before teardown; tier reverted to the original.
+        mock_sizes.assert_awaited_once_with(_STUB_COMPUTER_ID)
+        # Refused before teardown; the failed settle reverts the tier.
         manager._destroy_sandbox.assert_not_awaited()
-        assert mock_set_tier.await_args_list[-1].args == (ws["workspace_id"], "max")
+        assert self._settled_error() == "disk_too_small"
+
+    def _running_machine(self, manager):
+        """A live machine this worker holds the session for, with the tier
+        change's teardown steps stubbed out around the recreate."""
+        session = _make_mock_session()
+        session.sandbox.sandbox_id = "sb-1"
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._backup_machine_files_to_db = AsyncMock()
+        manager._destroy_sandbox = AsyncMock()
+        manager._recover_sandbox = AsyncMock()
+        manager._workspace_folder = AsyncMock(return_value="oldest-1a2b")
+
+    @pytest.mark.asyncio
+    @cm_patch("SessionManager")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    @patch(
+        f"{_SPEC}.try_claim_computer_for_start",
+        new_callable=AsyncMock,
+    )
+    async def test_the_recreate_is_sized_from_the_tier_just_persisted(
+        self,
+        mock_claim,
+        mock_get_computer,
+        mock_set_tier,
+        mock_get_ws,
+        mock_cm_session_mgr,
+    ):
+        """The recreate sizes from the binding, which is built after the write.
+
+        Built from the row the branch was decided on, it would carry the tier
+        the change is moving away from, and hosted Daytona bakes that size into
+        the snapshot it creates from.
+        """
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        mock_claim.return_value = self._computer(status="starting")
+        mock_cm_session_mgr.cleanup_session = AsyncMock()
+        self._running_machine(manager)
+
+        with _patch_machine_activity():
+            await manager.set_workspace_spec("ws-1", "max", user_id="user-1")
+
+        assert manager._recover_sandbox.await_args.args[0].resource_tier == "max"
+
+    @pytest.mark.asyncio
+    @cm_patch("SessionManager")
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    @patch(
+        f"{_SPEC}.try_claim_computer_for_start",
+        new_callable=AsyncMock,
+    )
+    async def test_a_machine_addressed_change_acts_through_its_own_project(
+        self,
+        mock_claim,
+        mock_get_computer,
+        mock_set_tier,
+        mock_get_ws,
+        mock_cm_session_mgr,
+    ):
+        """The machine route names no project, and the recreate needs one.
+
+        Binding a project is the write that publishes the new sandbox ref, and
+        its folder is where the new sandbox is laid out; a recreate that named
+        neither deleted the sandbox and bound nothing back.
+        """
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-oldest")
+        mock_claim.return_value = self._computer(status="starting")
+        mock_cm_session_mgr.cleanup_session = AsyncMock()
+        self._running_machine(manager)
+
+        with _patch_machine_activity(), _patch_live_ids("ws-oldest", "ws-younger"):
+            await manager.set_computer_spec(_STUB_COMPUTER_ID, "max", user_id="user-1")
+
+        binding = manager._recover_sandbox.await_args.args[0]
+        assert binding.workspace_id == "ws-oldest"
+        assert binding.dir_name == "oldest-1a2b"
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.try_claim_computer_for_start", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_a_machine_with_no_live_project_starts_again_at_the_new_tier(
+        self, mock_get_computer, mock_set_tier, mock_get_ws, mock_claim
+    ):
+        """Nothing to back up or restore: its sandbox goes, and a start under
+        the change's locks builds one at the new tier, the running slot it
+        held never given up."""
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        self._running_machine(manager)
+        manager._drop_empty_machine_sandbox = AsyncMock(return_value=True)
+        claimed = self._computer(status="starting", resource_tier="max")
+        mock_claim.return_value = claimed
+        manager._build_started_machine = AsyncMock()
+
+        with _patch_machine_activity(), _patch_live_ids():
+            await manager.set_computer_spec(_STUB_COMPUTER_ID, "max", user_id="user-1")
+
+        manager._drop_empty_machine_sandbox.assert_awaited_once()
+        mock_claim.assert_awaited_once_with(_STUB_COMPUTER_ID, from_status="stopped")
+        manager._build_started_machine.assert_awaited_once_with(claimed, user_id="user-1")
+        manager._backup_machine_files_to_db.assert_not_awaited()
+        manager._recover_sandbox.assert_not_awaited()
+        assert self._settled_error() is None
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.try_claim_computer_for_start", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_a_start_another_worker_claimed_first_completes_the_change(
+        self, mock_get_computer, mock_set_tier, mock_get_ws, mock_claim
+    ):
+        """It builds at the tier the change persisted, so the change stands."""
+        manager = self._make_manager()
+        running = self._computer(resource_tier="standard")
+        mock_get_computer.side_effect = lambda *_a, **_k: (
+            self._computer(status="starting", resource_tier="max")
+            if mock_claim.await_count
+            else running
+        )
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        self._running_machine(manager)
+        manager._drop_empty_machine_sandbox = AsyncMock(return_value=True)
+        mock_claim.return_value = None
+        manager._build_started_machine = AsyncMock()
+
+        with _patch_machine_activity(), _patch_live_ids():
+            await manager.set_computer_spec(_STUB_COMPUTER_ID, "max", user_id="user-1")
+
+        manager._build_started_machine.assert_not_awaited()
+        assert self._settled_error() is None
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.try_claim_computer_for_start", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_a_machine_waiting_to_retire_is_not_started_again(
+        self, mock_get_computer, mock_set_tier, mock_get_ws, mock_claim
+    ):
+        manager = self._make_manager()
+        running = self._computer(resource_tier="standard")
+        retiring = {**running, "config": {"retire_when_empty": True}}
+        drops = []
+
+        async def drop(*_a):
+            drops.append(True)
+            return True
+
+        mock_get_computer.side_effect = lambda *_a, **_k: retiring if drops else running
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        self._running_machine(manager)
+        manager._drop_empty_machine_sandbox = drop
+        manager._build_started_machine = AsyncMock()
+
+        with _patch_machine_activity(), _patch_live_ids():
+            await manager.set_computer_spec(_STUB_COMPUTER_ID, "max", user_id="user-1")
+
+        mock_claim.assert_not_awaited()
+        manager._build_started_machine.assert_not_awaited()
+        assert self._settled_error() is None
+
+    @pytest.mark.asyncio
+    @patch(f"{_SPEC}.try_claim_computer_for_start", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_get_workspace", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.db_set_computer_resource_tier", new_callable=AsyncMock)
+    @patch(f"{_SPEC}.get_computer", new_callable=AsyncMock)
+    async def test_a_restart_that_fails_is_the_spec_changes_error(
+        self, mock_get_computer, mock_set_tier, mock_get_ws, mock_claim
+    ):
+        manager = self._make_manager()
+        mock_get_computer.return_value = self._computer(resource_tier="standard")
+        mock_get_ws.return_value = _make_workspace(workspace_id="ws-1")
+        self._running_machine(manager)
+        manager._drop_empty_machine_sandbox = AsyncMock(return_value=True)
+        mock_claim.return_value = self._computer(status="starting", resource_tier="max")
+        manager._build_started_machine = AsyncMock(side_effect=RuntimeError("no capacity"))
+
+        with _patch_machine_activity(), _patch_live_ids(), pytest.raises(RuntimeError):
+            await manager.set_computer_spec(_STUB_COMPUTER_ID, "max", user_id="user-1")
+
+        assert self._settled_error() is not None
 
 
 # ---------------------------------------------------------------------------
-# duplicate_workspace — copy files + carried tier into a fresh "<name> (copy)";
+# duplicate_workspace: copy files + carried tier into a fresh "<name> (copy)";
 # re-check the spec entitlement (a duplicate is a new allocation); eager
 # sandbox create; mark the new row error on create failure.
 # ---------------------------------------------------------------------------
@@ -3037,8 +7179,14 @@ class TestSetWorkspaceSpec:
 class TestDuplicateWorkspace:
     def setup_method(self):
         WorkspaceManager.reset_instance()
+        self._name_keys = patch(
+            "src.server.services.workspace_entitlements.get_workspace_name_keys",
+            AsyncMock(return_value={"test workspace"}),
+        )
+        self.name_keys = self._name_keys.start()
 
     def teardown_method(self):
+        self._name_keys.stop()
         WorkspaceManager.reset_instance()
 
     def _make_manager(self):
@@ -3046,12 +7194,12 @@ class TestDuplicateWorkspace:
 
     def _install_create_path(self, manager, session):
         """Stub the eager-create collaborators so the lock body runs clean."""
-        manager._mint_sandbox_tokens = AsyncMock(return_value={})
+        manager._keep_data_token = AsyncMock()
         manager._apply_session_mcp = AsyncMock()
         manager._sync_sandbox_assets = AsyncMock()
         manager._restore_files = AsyncMock()
         manager._record_sync = MagicMock()
-        manager._update_workspace_config_fields = AsyncMock()
+        manager._write_sandbox_stamp = AsyncMock()
         manager._sandbox_config_stamp = MagicMock(return_value={})
 
     @pytest.mark.asyncio
@@ -3072,31 +7220,28 @@ class TestDuplicateWorkspace:
 
     @pytest.mark.asyncio
     @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_flash_source_rejected(self, mock_get_ws):
+    async def test_home_source_rejected(self, mock_get_ws):
         manager = self._make_manager()
-        mock_get_ws.return_value = _make_workspace(status="flash", user_id="user-1")
-        with pytest.raises(ValueError, match="flash"):
+        mock_get_ws.return_value = _make_workspace(status="unbound", user_id="user-1")
+        with pytest.raises(ValueError, match="Cannot duplicate Home"):
             await manager.duplicate_workspace("ws-x", "user-1")
 
     @pytest.mark.asyncio
-    @patch("src.server.dependencies.usage_limits.assert_spec_allowed")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_entitlements.copy_workspace_files")
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_create_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch(
+        "src.server.services.workspace_entitlements.duplicate_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    @cm_patch("SessionManager")
     @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_carries_tier_and_strips_sandbox_stamps(
-        self, mock_get_ws, mock_session_mgr, mock_create, mock_set_tier,
-        mock_copy, mock_status, mock_assert_spec,
+    async def test_the_copy_joins_the_source_machine_and_builds_nothing(
+        self, mock_get_ws, mock_session_mgr, mock_insert
     ):
-        """Entitled duplicate of an elevated workspace carries the tier and drops
-        the source's sandbox-identity stamps from the copied config."""
+        """Its sandbox is the machine's first start, which restores the files,
+        so a duplicate returns as fast as an ordinary create."""
         manager = self._make_manager()
         source = _make_workspace(
             status="stopped",
             user_id="user-1",
-            resource_tier="max",
             config={
                 "custom": "keep-me",
                 "sandbox_config_hash": "abc",
@@ -3106,96 +7251,163 @@ class TestDuplicateWorkspace:
         )
         mock_get_ws.return_value = source
         new_id = str(uuid.uuid4())
-        mock_create.return_value = {"workspace_id": new_id}
-        mock_status.return_value = _make_workspace(workspace_id=new_id, status="running")
-        mock_assert_spec.return_value = None  # entitled
-
-        session = _make_mock_session()
-        mock_session_mgr.get_session.return_value = session
-        self._install_create_path(manager, session)
+        mock_insert.return_value = _make_workspace(
+            workspace_id=new_id,
+            status="stopped",
+            sandbox_id=None,
+            computer_id=_STUB_COMPUTER_ID,
+            dir_name="test-workspace-copy-ab12",
+        )
 
         result = await manager.duplicate_workspace(source["workspace_id"], "user-1")
 
-        # A duplicate is a new allocation → re-check the carried tier's entitlement.
-        mock_assert_spec.assert_awaited_once_with("user-1", "max", current_tier="standard")
-        mock_set_tier.assert_awaited_once_with(new_id, "max")
-        mock_copy.assert_awaited_once_with(source["workspace_id"], new_id)
+        assert result["computer_id"] == _STUB_COMPUTER_ID
+        assert mock_insert.call_args.args[0] == source["workspace_id"]
+        mock_session_mgr.get_session.assert_not_called()
         # Sandbox-identity stamps stripped; unrelated config keys preserved.
-        assert mock_create.call_args.kwargs["config"] == {"custom": "keep-me"}
-        # Copy's sandbox built at the carried tier (hosted Daytona can't resize later).
-        assert session.initialize.await_args.kwargs["tier"] == "max"
-        mock_status.assert_awaited_once_with(
-            workspace_id=new_id, status="running", sandbox_id="sandbox-abc"
-        )
-        assert result["status"] == "running"
+        assert mock_insert.call_args.kwargs["config"] == {"custom": "keep-me"}
+        assert mock_insert.call_args[0][2] == "Test Workspace (copy)"
 
     @pytest.mark.asyncio
-    @patch("src.server.dependencies.usage_limits.assert_spec_allowed")
-    @patch("src.server.services.workspace_manager.update_workspace_status")
-    @patch("src.server.services.workspace_entitlements.copy_workspace_files")
-    @patch("src.server.services.workspace_entitlements.db_set_workspace_resource_tier")
-    @patch("src.server.services.workspace_entitlements.db_create_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch(
+        "src.server.services.workspace_entitlements.duplicate_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
     @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_entitlement_lost_downgrades_copy_to_standard(
-        self, mock_get_ws, mock_session_mgr, mock_create, mock_set_tier,
-        mock_copy, mock_status, mock_assert_spec,
-    ):
-        """If the user is no longer entitled to the source's tier, the copy is
-        created at standard instead of failing the duplicate."""
-        from fastapi import HTTPException
-
+    async def test_a_taken_copy_name_counts_on(self, mock_get_ws, mock_insert):
+        """Names are unique per user, so a second copy cannot reuse the first's."""
         manager = self._make_manager()
-        source = _make_workspace(status="stopped", user_id="user-1", resource_tier="performance")
+        source = _make_workspace(status="stopped", user_id="user-1")
         mock_get_ws.return_value = source
-        new_id = str(uuid.uuid4())
-        mock_create.return_value = {"workspace_id": new_id}
-        mock_status.return_value = _make_workspace(workspace_id=new_id, status="running")
-        mock_assert_spec.side_effect = HTTPException(403, detail="Requires scope: workspace:spec:performance")
-
-        session = _make_mock_session()
-        mock_session_mgr.get_session.return_value = session
-        self._install_create_path(manager, session)
+        self.name_keys.return_value = {"test workspace", "test workspace (copy)"}
+        mock_insert.return_value = _make_workspace(computer_id=_STUB_COMPUTER_ID)
 
         await manager.duplicate_workspace(source["workspace_id"], "user-1")
 
-        # Fell back to standard → tier not carried, sandbox built at standard.
-        mock_set_tier.assert_not_awaited()
-        assert session.initialize.await_args.kwargs["tier"] == "standard"
+        assert mock_insert.call_args[0][2] == "Test Workspace (copy 2)"
 
     @pytest.mark.asyncio
-    @patch("src.server.services.workspace_entitlements.update_workspace_status")
-    @patch("src.server.services.workspace_entitlements.copy_workspace_files")
-    @patch("src.server.services.workspace_entitlements.db_create_workspace")
-    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch(
+        "src.server.services.workspace_entitlements.duplicate_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
     @patch("src.server.services.workspace_entitlements.db_get_workspace")
-    async def test_sandbox_create_failure_marks_new_row_error(
-        self, mock_get_ws, mock_session_mgr, mock_create, mock_copy, mock_status
-    ):
-        """A failed sandbox create marks the new row error and re-raises."""
+    async def test_a_copy_name_taken_in_between_is_read_again(self, mock_get_ws, mock_insert):
+        """Two duplicates at once read the same free name; the loser re-reads."""
+        from src.server.database.workspace_names import WorkspaceNameTaken
+
         manager = self._make_manager()
-        source = _make_workspace(status="stopped", user_id="user-1", resource_tier="standard")
+        source = _make_workspace(status="stopped", user_id="user-1")
         mock_get_ws.return_value = source
-        new_id = str(uuid.uuid4())
-        mock_create.return_value = {"workspace_id": new_id}
+        self.name_keys.side_effect = [
+            {"test workspace"},
+            {"test workspace", "test workspace (copy)"},
+        ]
+        mock_insert.side_effect = [
+            WorkspaceNameTaken("Test Workspace (copy)"),
+            _make_workspace(computer_id=_STUB_COMPUTER_ID),
+        ]
 
-        session = _make_mock_session()
-        session.initialize = AsyncMock(side_effect=RuntimeError("sandbox boom"))
-        mock_session_mgr.get_session.return_value = session
-        mock_session_mgr.cleanup_session = AsyncMock()
-        self._install_create_path(manager, session)
+        await manager.duplicate_workspace(source["workspace_id"], "user-1")
 
-        with pytest.raises(RuntimeError, match="sandbox boom"):
+        names = [c.args[2] for c in mock_insert.call_args_list]
+        assert names == ["Test Workspace (copy)", "Test Workspace (copy 2)"]
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_entitlements.duplicate_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    @patch("src.server.services.workspace_entitlements.db_get_workspace")
+    async def test_the_tier_is_not_carried_because_it_is_the_machines(
+        self, mock_get_ws, mock_insert
+    ):
+        """An elevated source and its copy share one computer, so writing a tier
+        onto the copy could only disagree with the machine it runs on."""
+        manager = self._make_manager()
+        source = _make_workspace(
+            status="stopped", user_id="user-1", resource_tier="max"
+        )
+        mock_get_ws.return_value = source
+        mock_insert.return_value = _make_workspace(
+            workspace_id=str(uuid.uuid4()),
+            status="stopped",
+            sandbox_id=None,
+            computer_id=_STUB_COMPUTER_ID,
+            # What the insert shadows off the machine, not off the source.
+            resource_tier=_STUB_COMPUTER["resource_tier"],
+        )
+
+        result = await manager.duplicate_workspace(source["workspace_id"], "user-1")
+
+        assert "resource_tier" not in mock_insert.call_args.kwargs
+        # The row the insert returns shadows its machine, not the source.
+        assert result["resource_tier"] == _STUB_COMPUTER["resource_tier"]
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_entitlements.duplicate_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    @patch("src.server.services.workspace_entitlements.db_get_workspace")
+    async def test_a_running_source_is_reconnected_and_strictly_mirrored_first(
+        self, mock_get_ws, mock_insert
+    ):
+        manager = self._make_manager()
+        source = _make_workspace(status="running", user_id="user-1")
+        mock_get_ws.return_value = source
+        manager.get_session_for_computer = AsyncMock()
+        manager.backup_project_files = AsyncMock(
+            side_effect=RuntimeError("mirror incomplete")
+        )
+
+        with pytest.raises(RuntimeError, match="mirror incomplete"):
             await manager.duplicate_workspace(source["workspace_id"], "user-1")
 
-        mock_status.assert_awaited_once_with(workspace_id=new_id, status="error")
-        # Orphaned sandbox is torn down, not left billing.
-        mock_session_mgr.cleanup_session.assert_awaited_once_with(new_id)
+        manager.get_session_for_computer.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            user_id="user-1",
+        )
+        manager.backup_project_files.assert_awaited_once_with(
+            source["workspace_id"],
+            computer_id=_STUB_COMPUTER_ID,
+            expected_sandbox_id="sandbox-abc",
+            strict=True,
+        )
+        mock_insert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.server.services.workspace_entitlements.duplicate_workspace_on_computer",
+        new_callable=AsyncMock,
+    )
+    @patch("src.server.services.workspace_entitlements.db_get_workspace")
+    async def test_a_failed_atomic_copy_does_not_attach_a_project(
+        self, mock_get_ws, mock_insert
+    ):
+        """A rolled-back insert cannot publish an attachable project."""
+        manager = self._make_manager()
+        mock_get_ws.return_value = _make_workspace(status="stopped", user_id="user-1")
+        new_id = str(uuid.uuid4())
+        mock_insert.return_value = _make_workspace(
+            workspace_id=new_id,
+            status="stopped",
+            sandbox_id=None,
+            computer_id=_STUB_COMPUTER_ID,
+        )
+        mock_insert.side_effect = RuntimeError("copy boom")
+        manager.resolve_binding = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="copy boom"):
+            await manager.duplicate_workspace("ws-x", "user-1")
+
+        manager.resolve_binding.assert_awaited_once_with("ws-x", workspace=mock_get_ws.return_value)
 
 
 # ---------------------------------------------------------------------------
 # Platform-secret wiring
 # ---------------------------------------------------------------------------
+
 
 class TestPlatformSecretWiring:
     """Wiring between the platform-secret hooks and session lifecycle."""
@@ -3207,23 +7419,49 @@ class TestPlatformSecretWiring:
         WorkspaceManager.reset_instance()
 
     @pytest.mark.asyncio
-    async def test_evict_session_if_present(self):
-        # Public out-of-band invalidation (used by the sweeper after a scrub):
-        # evicts under the workspace lock when cached, no-ops otherwise.
+    async def test_retire_session_if_present_leaves_the_sandbox_alone(self):
+        # Retirement drops both caches without touching the sandbox — the
+        # primitive the sweeper needs after restarting a sandbox in place, and
+        # the one a stale-identity re-attach uses. A project names the machine
+        # whose session is retired; the caches are keyed by that machine.
         manager = WorkspaceManager.get_instance(config=_make_config())
         session = _make_mock_session()
-        workspace_id = "ws-evict"
-        manager._sessions[workspace_id] = session
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = True
+        manager._machine(_STUB_COMPUTER_ID).last_sync_at = time.monotonic()
 
-        with patch(
-            "src.server.services.workspace_manager."
-            "SessionManager.cleanup_session",
-            AsyncMock(),
-        ) as cleanup:
-            assert await manager.evict_session_if_present(workspace_id) is True
-            cleanup.assert_awaited_once_with(workspace_id)
-            assert workspace_id not in manager._sessions
-            assert await manager.evict_session_if_present(workspace_id) is False
+        with (
+            patch(
+                "src.server.services.computer_manager._sessions.SessionManager.cleanup_session",
+                AsyncMock(),
+            ) as cleanup,
+            patch(
+                "src.server.services.computer_manager._sessions.SessionManager.get_cached_session",
+                MagicMock(return_value=session),
+            ),
+            patch(
+                "src.server.services.computer_manager._sessions.SessionManager.remove_session",
+                MagicMock(),
+            ) as remove,
+        ):
+            assert (
+                await manager.retire_session_if_present("ws-retire", reason="test")
+                is True
+            )
+            # Both caches dropped, so the next get_session builds a fresh
+            # Session instead of handing back this one with _initialized=True.
+            remove.assert_called_once_with(_STUB_COMPUTER_ID)
+            assert manager._cached_session(_STUB_COMPUTER_ID) is None
+            assert not manager._pending_lazy_start(_STUB_COMPUTER_ID)
+            assert manager._machine(_STUB_COMPUTER_ID).last_sync_at is None
+            # The sandbox is NOT destroyed.
+            cleanup.assert_not_awaited()
+            session.cleanup.assert_not_awaited()
+
+            assert (
+                await manager.retire_session_if_present("ws-retire", reason="test")
+                is False
+            )
 
     @pytest.mark.asyncio
     async def test_hot_resync_failure_propagates_without_evicting_session(self):
@@ -3234,114 +7472,1005 @@ class TestPlatformSecretWiring:
         session = _make_mock_session()
         session.sandbox.runtime = MagicMock()
         session.platform_secret_version = None
-        workspace = _make_workspace()
-        workspace_id = workspace["workspace_id"]
-        manager._sessions[workspace_id] = session
-        manager._pending_lazy_sync.add(workspace_id)
-        manager._pending_tier_recheck.add(workspace_id)
+        manager._machine(_STUB_COMPUTER_ID).session = session
+        manager._machine(_STUB_COMPUTER_ID).pending_lazy_sync = True
+        manager._machine(_STUB_COMPUTER_ID).pending_tier_recheck = True
 
         with (
             patch(
-                "ptc_agent.core.sandbox.platform_secrets."
-                "platform_secrets_active",
+                "ptc_agent.core.sandbox.platform_secrets.platform_secrets_active",
                 return_value=True,
             ),
             patch(
                 "src.server.services.platform_secret_rollout."
-                "resync_workspace_platform_secret",
+                "resync_computer_platform_secret",
                 AsyncMock(side_effect=RuntimeError("remount failed")),
             ),
             patch(
-                "src.server.services.workspace_manager."
-                "SessionManager.cleanup_session",
+                "src.server.services.computer_manager._sessions.SessionManager.cleanup_session",
                 AsyncMock(),
             ) as cleanup,
         ):
             with pytest.raises(RuntimeError, match="remount failed"):
                 await manager._apply_session_platform_secret(
-                    workspace_id, session, ws_version=1
+                    _binding("ws-1"), session, ws_version=1
                 )
 
         cleanup.assert_not_awaited()
-        assert manager._sessions.get(workspace_id) is session
-        assert workspace_id in manager._pending_lazy_sync
-        assert workspace_id in manager._pending_tier_recheck
+        assert manager._cached_session(_STUB_COMPUTER_ID) is session
+        assert manager._pending_lazy_start(_STUB_COMPUTER_ID)
+        assert manager._machine(_STUB_COMPUTER_ID).pending_tier_recheck is True
         assert session.platform_secret_version is None
 
     @pytest.mark.asyncio
     async def test_hot_resync_stamps_session_with_applied_generation(self):
+        """The mount is the machine's, so the rollout is addressed by computer.
+
+        One sandbox serves every project on it, so resyncing per project would
+        remount the same filesystem once per sibling and compare each of their
+        shadow generations against one applied generation.
+        """
         manager = WorkspaceManager.get_instance(config=_make_config())
         session = _make_mock_session()
         session.sandbox.runtime = MagicMock()
         session.platform_secret_version = None
-        workspace = _make_workspace()
-        workspace_id = workspace["workspace_id"]
 
         resync = AsyncMock(return_value=3)
         with (
             patch(
-                "ptc_agent.core.sandbox.platform_secrets."
-                "platform_secrets_active",
+                "ptc_agent.core.sandbox.platform_secrets.platform_secrets_active",
                 return_value=True,
             ),
             patch(
                 "src.server.services.platform_secret_rollout."
-                "resync_workspace_platform_secret",
+                "resync_computer_platform_secret",
                 resync,
             ),
         ):
             await manager._apply_session_platform_secret(
-                workspace_id, session, ws_version=2
+                _binding("ws-1"), session, ws_version=2
             )
 
         assert session.platform_secret_version == 3
         kwargs = resync.await_args.kwargs
-        assert kwargs["workspace_id"] == workspace_id
+        assert kwargs["computer_id"] == _STUB_COMPUTER_ID
         assert kwargs["sandbox_id"] == "sandbox-abc"
         assert kwargs["db_version"] == 2
         assert kwargs["applied_generation"] is None
 
     @pytest.mark.asyncio
-    async def test_provision_falls_back_to_plain_running_when_certify_is_inert(
+    async def test_a_sandbox_that_needs_replacing_is_served_until_the_sweep_rebuilds_it(
         self,
     ):
+        """Replacing it here would take the sandbox from under this turn."""
+        from ptc_agent.core.sandbox.platform_secrets import (
+            PlatformSecretReplacementRequired,
+        )
+
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        session.sandbox.runtime = MagicMock()
+        session.platform_secret_version = None
+
+        with (
+            patch(
+                "ptc_agent.core.sandbox.platform_secrets.platform_secrets_active",
+                return_value=True,
+            ),
+            patch(
+                "src.server.services.platform_secret_rollout."
+                "resync_computer_platform_secret",
+                AsyncMock(side_effect=PlatformSecretReplacementRequired("FMP_API_KEY")),
+            ),
+        ):
+            await manager._apply_session_platform_secret(
+                _binding("ws-1"), session, ws_version=1
+            )
+
+        # Unstamped, so the next slow-path acquisition checks it again.
+        assert session.platform_secret_version is None
+
+    @pytest.mark.asyncio
+    async def test_hot_resync_converges_a_computer_on_another_backend_onto_its_own_kind(
+        self,
+    ):
+        """Each kind has its own rollout.
+
+        A computer kept from before a provider switch resyncs against its own
+        provider's Secrets, never the deployment's, which it could not mount.
+        """
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        session.sandbox.runtime = MagicMock()
+        session.platform_secret_version = None
+
+        resync = AsyncMock(return_value=3)
+        with (
+            patch(
+                "ptc_agent.core.sandbox.platform_secrets.platform_secrets_active",
+                return_value=True,
+            ),
+            patch(
+                "src.server.services.platform_secret_rollout."
+                "resync_computer_platform_secret",
+                resync,
+            ),
+        ):
+            await manager._apply_session_platform_secret(
+                _binding("ws-1", kind="e2b"), session, ws_version=2
+            )
+
+        assert resync.await_args.kwargs["kind"] == "e2b"
+        assert resync.await_args.kwargs["db_version"] == 2
+        assert session.platform_secret_version == 3
+
+    @pytest.mark.asyncio
+    async def test_provision_binds_through_the_cas_in_every_deployment(self):
+        """The binding CAS is the only writer, platform Secrets or not.
+
+        It used to run only when platform Secrets were active; everywhere else
+        fell through to a last-writer-wins ``update_workspace_status``, so two
+        concurrent provisions both "won" and one sandbox was left billed with
+        nothing pointing at it.
+        """
         manager = WorkspaceManager.get_instance(config=_make_config())
         session = _make_mock_session()
         session.sandbox.runtime = MagicMock()
         workspace = _make_workspace()
         workspace_id = workspace["workspace_id"]
 
-        certify = AsyncMock(return_value=None)
         status = AsyncMock(return_value=workspace)
         with (
-            patch.object(manager, "_mint_sandbox_tokens", AsyncMock(return_value={})),
-            patch(
-                "src.server.services.workspace_manager.SessionManager"
-            ) as session_mgr,
+            patch.object(manager, "_keep_data_token", AsyncMock()),
+            cm_patch("SessionManager") as session_mgr,
             patch.object(manager, "_apply_session_mcp", AsyncMock(return_value=None)),
             patch.object(manager, "_sync_sandbox_assets", AsyncMock()),
-            patch(
-                "src.server.services.platform_secret_rollout."
-                "certify_new_workspace_sandbox",
-                certify,
-            ),
-            patch(
-                "src.server.services.workspace_manager.update_workspace_status",
-                status,
-            ),
+            patch.object(manager, "_reconcile_skills", AsyncMock()),
+            patch.object(manager, "_maybe_restore_files", AsyncMock()),
+            _patch_machine_bind(workspace, computer_id=_STUB_COMPUTER_ID) as bind,
+            _patch_ws_status(status),
         ):
             session_mgr.get_session.return_value = session
             result_session, record = await manager._provision_sandbox_session(
-                workspace_id,
+                _binding(workspace_id),
                 "user-1",
                 ws_version=None,
                 kick_discovery=False,
                 post_init=AsyncMock(),
+                core_config=manager.config.to_core_config(),
+                expected_previous_sandbox_id="sb-old",
             )
 
         assert result_session is session
-        assert record is workspace
-        certify.assert_awaited_once()
-        status.assert_awaited_once_with(
-            workspace_id=workspace_id, status="running", sandbox_id="sandbox-abc"
+        # The CAS writes the machine; the record handed back is the project row
+        # re-read after it, which is what names the bound sandbox.
+        assert record["workspace_id"] == workspace_id
+        # 0 is the "never certified — may hold plaintext env" sentinel from
+        # migration 021, which is exactly what a no-catalog deployment should
+        # stamp. It must be written, not left to COALESCE onto the previous
+        # sandbox's generation.
+        bind.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            provider_ref="sandbox-abc",
+            expected_previous_provider_ref="sb-old",
+            platform_secret_version=0,
+            expected_host_unavailable_since=None,
         )
+        status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_provision_losing_the_identity_race_does_not_publish(self):
+        """A lost CAS must unwind, not fall back to an unguarded write.
+
+        Publishing anyway is how two workers end up believing they own the
+        machine; the loser's sandbox is deleted by the caller's unwind.
+        """
+        from src.server.database.workspace import SandboxIdentityLostError
+
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        session.sandbox.runtime = MagicMock()
+        workspace_id = str(uuid.uuid4())
+
+        with (
+            patch.object(manager, "_keep_data_token", AsyncMock()),
+            cm_patch("SessionManager") as session_mgr,
+            patch.object(manager, "_apply_session_mcp", AsyncMock(return_value=None)),
+            patch.object(manager, "_sync_sandbox_assets", AsyncMock()),
+            patch.object(manager, "_reconcile_skills", AsyncMock()),
+            patch.object(manager, "_maybe_restore_files", AsyncMock()),
+            _patch_machine_bind(None, computer_id=_STUB_COMPUTER_ID),
+        ):
+            session_mgr.get_session.return_value = session
+            with pytest.raises(SandboxIdentityLostError):
+                await manager._provision_sandbox_session(
+                    _binding(workspace_id),
+                    "user-1",
+                    ws_version=None,
+                    kick_discovery=False,
+                    post_init=AsyncMock(),
+                    core_config=manager.config.to_core_config(),
+                )
+
+        assert manager._cached_session(_STUB_COMPUTER_ID) is None
+
+
+class TestRestoreGuard:
+    """A restore that could not raise the completeness flag aborts provisioning.
+
+    Every other restore failure is a warning: the flag it raised first keeps the
+    next backup from pruning. With no flag there is nothing keeping it, so the
+    sandbox must not be bound.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_missing_guard_propagates_out_of_the_restore_wrapper(self):
+        from src.server.services.persistence.file import RestoreGuardUnavailable
+
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        with patch(
+            "src.server.services.computer_manager._provisioning.FilePersistenceService.restore_to_sandbox",
+            AsyncMock(side_effect=RestoreGuardUnavailable("ws-1")),
+        ):
+            with pytest.raises(RestoreGuardUnavailable):
+                await manager._restore_files(
+                    _binding("ws-1"), MagicMock(), expected_sandbox_id="sb-old"
+                )
+
+    @pytest.mark.asyncio
+    async def test_any_other_restore_failure_is_still_a_warning(self):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        with patch(
+            "src.server.services.computer_manager._provisioning.FilePersistenceService.restore_to_sandbox",
+            AsyncMock(side_effect=RuntimeError("transfer boom")),
+        ):
+            await manager._restore_files(
+                _binding("ws-1"), MagicMock(), expected_sandbox_id="sb-old"
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_lost_identity_propagates_too(self):
+        from src.server.services.persistence.file import RestoreIdentityLost
+
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        with patch(
+            "src.server.services.computer_manager._provisioning.FilePersistenceService.restore_to_sandbox",
+            AsyncMock(side_effect=RestoreIdentityLost("ws-1")),
+        ) as restore_call:
+            with pytest.raises(RestoreIdentityLost):
+                await manager._restore_files(
+                    _binding("ws-1"), MagicMock(), expected_sandbox_id="sb-old"
+                )
+        assert restore_call.await_args.kwargs["expected_sandbox_id"] == "sb-old"
+
+    @pytest.mark.asyncio
+    async def test_the_restore_is_scoped_to_the_projects_own_folder(self):
+        """A machine root holds every sibling's folder, so a restore that named
+        it would scan and overwrite across projects."""
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        with patch(
+            "src.server.services.computer_manager._provisioning.FilePersistenceService.restore_to_sandbox",
+            AsyncMock(return_value={"restored": 1, "errors": 0}),
+        ) as restore_call:
+            await manager._restore_files(
+                _binding("ws-1"), MagicMock(), expected_sandbox_id="sb-old"
+            )
+
+        layout = restore_call.await_args.kwargs["layout"]
+        assert layout.dir_name == "test-ab12"
+
+    @pytest.mark.asyncio
+    async def test_a_restore_check_fills_the_folder_read_under_the_hold(self):
+        """Into a folder a settle moved meanwhile, a restore recreates the old one
+        and marks itself complete there, and the next backup of the new one
+        prunes what never arrived. The binding may predate a settle."""
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        events = []
+
+        @asynccontextmanager
+        async def hold(_workspace_id):
+            events.append("hold")
+            try:
+                yield
+            finally:
+                events.append("release")
+
+        async def read_folder(_workspace_id):
+            events.append("read")
+            return "Macro"
+
+        async def maybe_restore(_workspace_id, _sandbox, *, layout, ask_first=False):
+            events.append(f"restore {layout.dir_name}")
+            return True
+
+        with (
+            patch(f"{_LAYOUT}.workspace_folder_in_use", hold),
+            patch(f"{_LAYOUT}.get_workspace_dir_name", read_folder),
+            patch(f"{_PROVISIONING}.FilePersistenceService.maybe_restore", maybe_restore),
+        ):
+            assert await manager._maybe_restore_files(
+                _binding("ws-1", dir_name="Research"), MagicMock()
+            )
+
+        assert events == ["hold", "read", "restore Macro", "release"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("moving", ["staged", "held by a settle"])
+    async def test_a_folder_a_settle_is_moving_is_not_restored_into(self, moving):
+        """Unrestored, the attachment stays unrecorded and the next acquisition
+        retries once the folder has landed."""
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        restore = AsyncMock()
+
+        @asynccontextmanager
+        async def held_by_a_settle(workspace_id):
+            raise WorkspaceFolderMoving(workspace_id)
+            yield
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(f"{_PROVISIONING}.FilePersistenceService.maybe_restore", restore)
+            )
+            if moving == "staged":
+                stack.enter_context(patch(
+                    f"{_LAYOUT}.get_workspace_dir_name",
+                    AsyncMock(return_value="_internal/moving/ws-1"),
+                ))
+            else:
+                stack.enter_context(
+                    patch(f"{_LAYOUT}.workspace_folder_in_use", held_by_a_settle)
+                )
+            assert not await manager._maybe_restore_files(
+                _binding("ws-1", dir_name="Research"), MagicMock()
+            )
+
+        restore.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_restore_that_gave_up_on_its_lock_is_not_a_restored_folder(self):
+        """It placed nothing, so the attachment has to stay unrecorded for the
+        next acquisition to retry; the flag alone only stops backups pruning."""
+        from src.server.database.user_skills import SkillSyncLockBusy
+
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        sandbox = MagicMock()
+        sandbox.adownload_file_bytes = AsyncMock(return_value=None)
+        restore = "src.server.services.persistence.restore"
+
+        @asynccontextmanager
+        async def hold(_workspace_id):
+            yield
+
+        with (
+            patch(f"{_LAYOUT}.workspace_folder_in_use", hold),
+            patch(
+                f"{_LAYOUT}.get_workspace_dir_name",
+                AsyncMock(return_value="Research"),
+            ),
+            patch(
+                f"{restore}.get_files_for_workspace",
+                AsyncMock(return_value=[{"file_path": "a.txt"}]),
+            ),
+            patch(
+                f"{restore}.restore_to_sandbox",
+                AsyncMock(side_effect=SkillSyncLockBusy("ws-1")),
+            ),
+        ):
+            assert not await manager._maybe_restore_files(
+                _binding("ws-1", dir_name="Research"), sandbox
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "restored", "asked", "brought_up"),
+        [
+            ("daytona", True, False, True),
+            ("ssh", False, True, False),
+            ("ssh", True, True, True),
+        ],
+        ids=["hosted", "owner-offered", "owner-owed"],
+    )
+    async def test_a_folder_waiting_on_its_owner_is_attached_but_not_brought_up(
+        self, kind, restored, asked, brought_up
+    ):
+        """Attached, turns keep their skills and tools while the owner decides.
+        The bring-up waits, since its deferred pass would lay backed-up files
+        into the folder too."""
+        manager = WorkspaceManager(_make_config())
+        maybe_restore = AsyncMock(return_value=restored)
+        with (
+            patch(f"{_PROVISIONING}.FilePersistenceService.maybe_restore", maybe_restore),
+            patch.object(manager, "_queue_bring_up") as bring_up,
+        ):
+            assert await manager._maybe_restore_files(
+                _binding("ws-1", kind=kind), MagicMock()
+            ) is True
+
+        assert maybe_restore.await_args.kwargs["ask_first"] is asked
+        assert bring_up.called is brought_up
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("SessionManager")
+    @cm_patch("db_get_workspace")
+    async def test_recovery_restores_against_the_sandbox_the_row_still_names(
+        self, mock_get_ws, mock_session_mgr, mock_status
+    ):
+        """The restore's flag and the bind's CAS must expect the same previous
+        sandbox, or a late provisioner could flag a row another has bound.
+
+        Both now read it off the machine: the sandbox is the computer's, so the
+        project shadow a lagging row carries is not what either fences on.
+        """
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+        mock_get_ws.return_value = _make_workspace(workspace_id=ws_id, status="running")
+        session = _make_mock_session()
+        mock_session_mgr.get_session.return_value = session
+        mock_session_mgr.cleanup_session = AsyncMock()
+        manager._keep_data_token = AsyncMock()
+        manager._apply_session_mcp = AsyncMock(return_value=None)
+        manager._sync_sandbox_assets = AsyncMock()
+        # Stop at the restore: the rest of the spine needs a live pool.
+        manager._restore_files = AsyncMock(side_effect=RuntimeError("stop here"))
+
+        with pytest.raises(RuntimeError, match="stop here"):
+            await manager._recover_sandbox(
+                _binding(ws_id, provider_ref="sb-previous"), "user-1", MagicMock()
+            )
+
+        assert (
+            manager._restore_files.await_args.kwargs["expected_sandbox_id"]
+            == "sb-previous"
+        )
+
+    @pytest.mark.asyncio
+    @patch(f"{_LIFECYCLE}.update_workspace_status", new_callable=AsyncMock)
+    @cm_patch("SessionManager")
+    @cm_patch("db_get_workspace")
+    async def test_recovery_flags_every_sibling_before_the_new_sandbox_exists(
+        self, mock_get_ws, mock_session_mgr, mock_status
+    ):
+        """Only the recovering project is restored, so a sibling keeping its
+        clean flag would let the next sweep read its unrestored folder as the
+        user having deleted every file in it."""
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+        mock_get_ws.return_value = _make_workspace(workspace_id=ws_id, status="running")
+        mock_session_mgr.get_session.return_value = _make_mock_session()
+        mock_session_mgr.cleanup_session = AsyncMock()
+        manager._keep_data_token = AsyncMock()
+        manager._apply_session_mcp = AsyncMock(return_value=None)
+        manager._sync_sandbox_assets = AsyncMock()
+        manager._restore_files = AsyncMock(side_effect=RuntimeError("stop here"))
+
+        with patch(
+            f"{_PROVISIONING}.flag_sibling_restores_pending",
+            new=AsyncMock(return_value=2),
+        ) as flag:
+            with pytest.raises(RuntimeError, match="stop here"):
+                await manager._recover_sandbox(
+                    _binding(ws_id, provider_ref="sb-previous"), "user-1", MagicMock()
+                )
+
+        flag.assert_awaited_once_with(
+            _STUB_COMPUTER_ID,
+            except_workspace_id=ws_id,
+            expected_provider_ref="sb-previous",
+        )
+
+    @pytest.mark.asyncio
+    @cm_patch("SessionManager")
+    @cm_patch("db_get_workspace")
+    async def test_recovery_aborts_before_provisioning_when_siblings_cannot_be_flagged(
+        self, mock_get_ws, mock_session_mgr
+    ):
+        from src.server.services.persistence.file import RestoreGuardUnavailable
+
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        ws_id = str(uuid.uuid4())
+        mock_get_ws.return_value = _make_workspace(workspace_id=ws_id, status="running")
+        mock_session_mgr.get_session = AsyncMock()
+
+        with patch(
+            f"{_PROVISIONING}.flag_sibling_restores_pending",
+            new=AsyncMock(side_effect=RuntimeError("pool down")),
+        ):
+            with pytest.raises(RestoreGuardUnavailable):
+                await manager._recover_sandbox(
+                    _binding(ws_id, provider_ref="sb-previous"), "user-1", MagicMock()
+                )
+
+        mock_session_mgr.get_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provision_reconciles_the_flag_after_winning_the_bind(self):
+        """post_init restores into a sandbox the row does not yet name, so its
+        clear cannot land. The reconcile runs once the row names this sandbox,
+        and after the session is published."""
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        session = _make_mock_session()
+        session.sandbox.runtime = MagicMock()
+        workspace = _make_workspace()
+        workspace_id = workspace["workspace_id"]
+        order: list[str] = []
+
+        async def _bind(*_a, **_k):
+            order.append("bind")
+            return {"computer_id": _STUB_COMPUTER_ID, "provider_ref": "sandbox-abc"}
+
+        async def _reconcile(*_a, **_k):
+            order.append("reconcile")
+
+        with (
+            patch.object(manager, "_keep_data_token", AsyncMock()),
+            cm_patch("SessionManager") as session_mgr,
+            patch.object(manager, "_apply_session_mcp", AsyncMock(return_value=None)),
+            patch.object(manager, "_sync_sandbox_assets", AsyncMock()),
+            patch.object(manager, "_reconcile_skills", AsyncMock()),
+            cm_patch("try_bind_computer_provider_ref", _bind),
+            cm_patch("db_get_workspace", AsyncMock(return_value=workspace)),
+            patch.object(manager, "_maybe_restore_files", _reconcile),
+        ):
+            session_mgr.get_session.return_value = session
+            await manager._provision_sandbox_session(
+                _binding(workspace_id),
+                "user-1",
+                ws_version=None,
+                kick_discovery=False,
+                post_init=AsyncMock(),
+                core_config=manager.config.to_core_config(),
+            )
+
+        assert order == ["bind", "reconcile"]
+
+
+class TestFilesRestoreChoice:
+    """The owner's answer to a restore offer: lay the backup, or keep the folder."""
+
+    @staticmethod
+    def _manager(session):
+        manager = WorkspaceManager(_make_config())
+        manager.get_session_for_workspace = AsyncMock(return_value=session)
+        manager._ensure_project_attached = AsyncMock()
+        # The settle records a new arrival of the files, read back after it.
+        manager.resolve_binding = AsyncMock(
+            side_effect=[
+                ComputerBinding(
+                    workspace_id="ws-1", computer_id="comp-1", kind="ssh",
+                    dir_name="test-ab12", root_dir="/home/u/langalpha",
+                    files_epoch=epoch,
+                )
+                for epoch in ("before", "after")
+            ]
+        )
+        return manager
+
+    @staticmethod
+    def _offer(standing=True, settled=True):
+        return (
+            patch(
+                f"{_WORKSPACE_MANAGER}.files_restore_offered",
+                AsyncMock(return_value=standing),
+            ),
+            patch(
+                f"{_WORKSPACE_MANAGER}.FilePersistenceService.settle_restore_offer",
+                AsyncMock(return_value=settled),
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_with_no_offer_standing_the_machine_is_not_reached(self):
+        """The folder came back or another tab chose: nothing waits on this one."""
+        manager = self._manager(_make_mock_session())
+        offered, settle = self._offer(standing=False)
+        with offered, settle as settled:
+            assert not await manager.settle_files_restore_offer(
+                "ws-1", user_id="user-1", restore=True
+            )
+
+        manager.get_session_for_workspace.assert_not_awaited()
+        settled.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", [True, False], ids=["restore", "keep"])
+    async def test_the_choice_settles_on_the_held_folder_then_attaches_anew(self, restore):
+        """The folder is the one read under the hold, and the attach that follows
+        is for the arrival the settle recorded: the one the offer stood on
+        matches the record made while it stood and would skip the restore owed,
+        or the bring-up held back."""
+        session = _make_mock_session()
+        manager = self._manager(session)
+        events = []
+        manager._ensure_project_attached.side_effect = (
+            lambda *_a, **_k: events.append("attach")
+        )
+        offered, settle = self._offer()
+        with offered, settle as settled:
+            settled.side_effect = lambda *_a, **_k: events.append("settle") or True
+            assert await manager.settle_files_restore_offer(
+                "ws-1", user_id="user-1", restore=restore
+            )
+
+        assert settled.await_args.args == ("ws-1", session.sandbox)
+        assert settled.await_args.kwargs["layout"].dir_name == "test-ab12"
+        assert settled.await_args.kwargs["restore"] is restore
+        assert events == ["settle", "attach"]
+        binding, attached = manager._ensure_project_attached.await_args.args
+        assert (binding.files_epoch, attached) == ("after", session)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("restore", [True, False], ids=["restore", "keep"])
+    async def test_a_choice_another_tab_settled_first_is_not_attached_again(self, restore):
+        manager = self._manager(_make_mock_session())
+        offered, settle = self._offer(settled=False)
+        with offered, settle:
+            assert not await manager.settle_files_restore_offer(
+                "ws-1", user_id="user-1", restore=restore
+            )
+
+        manager._ensure_project_attached.assert_not_awaited()
+
+
+class TestGeneratedContentGoesToTheHeldFolder:
+    """An acquisition resolves its binding before a settle on any worker may move
+    the folder, and /start or a file route has no run that settle counts as busy.
+    The asset sync (tool overlay, folder dirs) and the skill pass write into the
+    folder read under the hold, never the binding's."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    @staticmethod
+    def _hold(events, *, held_by_a_settle=False):
+        @asynccontextmanager
+        async def hold(workspace_id):
+            events.append("hold")
+            if held_by_a_settle:
+                raise WorkspaceFolderMoving(workspace_id)
+            try:
+                yield
+            finally:
+                events.append("release")
+
+        return hold
+
+    @staticmethod
+    def _read(events, folder):
+        async def read(_workspace_id, **_kw):
+            events.append("read")
+            return folder
+
+        return read
+
+    @staticmethod
+    def _folder_patches(stack, events, *, folder, held_by_a_settle=False):
+        hold = TestGeneratedContentGoesToTheHeldFolder._hold(
+            events, held_by_a_settle=held_by_a_settle
+        )
+        stack.enter_context(patch(f"{_LAYOUT}.workspace_folder_in_use", hold))
+        stack.enter_context(patch(
+            f"{_LAYOUT}.get_workspace_dir_name",
+            TestGeneratedContentGoesToTheHeldFolder._read(events, folder),
+        ))
+
+    @staticmethod
+    def _asset_sync(events):
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        manager._vault_snapshot = AsyncMock(return_value=(None, {}, ""))
+        manager._stamp_layout_version = AsyncMock()
+        manager._stamp_mcp_config_version = AsyncMock()
+        sandbox = MagicMock()
+
+        async def sync(**kwargs):
+            events.append(
+                f"sync {kwargs['project'].dir_name} (owner {kwargs['root_owner_dir_name']})"
+            )
+            return SimpleNamespace(layout_version=4)
+
+        sandbox.sync_sandbox_assets = AsyncMock(side_effect=sync)
+        return manager, sandbox
+
+    @staticmethod
+    def _asset_sync_reads(stack):
+        stack.enter_context(patch(
+            f"{_PROVISIONING}.sandbox_skill_sync_params", AsyncMock(return_value={})
+        ))
+        stack.enter_context(patch(
+            f"{_PROVISIONING}.get_workspace_dir_names_for_computer",
+            AsyncMock(return_value=("Macro",)),
+        ))
+        stack.enter_context(patch(f"{_PROVISIONING}.get_computer", AsyncMock(return_value=None)))
+
+    @pytest.mark.asyncio
+    async def test_the_asset_sync_builds_the_overlay_in_the_folder_read_under_the_hold(self):
+        """Built through the old folder, the overlay recreates it and stamps this
+        claim current in the tool ledger, so the folder that landed keeps its
+        stale tools and no later sync owes it the new ones."""
+        events = []
+        manager, sandbox = self._asset_sync(events)
+
+        with ExitStack() as stack:
+            self._asset_sync_reads(stack)
+            self._folder_patches(stack, events, folder="Macro")
+            result = await manager._sync_project_assets(
+                _binding("ws-1", dir_name="Research"), "user-1", sandbox
+            )
+
+        assert result is not None
+        assert events == ["hold", "read", "sync Macro (owner Macro)", "release"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("moving", ["staged", "held by a settle"])
+    async def test_a_folder_a_settle_is_moving_gets_no_asset_sync(self, moving):
+        """Staged, a write makes a folder the next settle cannot tell from the one
+        being moved; held past the wait, a settle is moving it now. The leg reads
+        as failed, and the next acquisition's sync finds the ledger behind."""
+        events = []
+        manager, sandbox = self._asset_sync(events)
+
+        with ExitStack() as stack:
+            self._asset_sync_reads(stack)
+            self._folder_patches(
+                stack, events, folder="_internal/moving/ws-1",
+                held_by_a_settle=moving == "held by a settle",
+            )
+            result = await manager._sync_project_assets(
+                _binding("ws-1", dir_name="Research"), "user-1", sandbox
+            )
+
+        assert result is None
+        sandbox.sync_sandbox_assets.assert_not_awaited()
+        manager._stamp_layout_version.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("folder", ["Macro", None])
+    async def test_the_skill_pass_reconciles_the_folder_read_under_the_hold(self, folder):
+        """With no folder the pass is handed none, so the service refuses it
+        rather than naming the computer root, whose prune reaches siblings."""
+        events = []
+        manager = WorkspaceManager.get_instance(config=_make_config())
+
+        async def reconcile(_sandbox, *, user_id, workspace_id, source, project=None):
+            events.append(f"reconcile {project.dir_name if project else None}")
+
+        with ExitStack() as stack:
+            self._folder_patches(stack, events, folder=folder)
+            stack.enter_context(patch(
+                "src.server.services.computer_manager._mcp.reconcile_workspace_skills",
+                reconcile,
+            ))
+            await manager._reconcile_skills("ws-1", "user-1", MagicMock(), source="restart")
+
+        assert events == ["hold", "read", f"reconcile {folder}", "release"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("moving", ["staged", "held by a settle"])
+    async def test_a_folder_a_settle_is_moving_gets_no_skill_pass(self, moving):
+        """The pass's first script creates its skill directory. Under a staged
+        row that makes the staging folder, which the next settle lands in place
+        of the content still at the old name. Skipped, never raised: the
+        acquisition does not fail on a skill pass."""
+        events = []
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        reconcile = AsyncMock()
+
+        with ExitStack() as stack:
+            self._folder_patches(
+                stack, events, folder="_internal/moving/ws-1",
+                held_by_a_settle=moving == "held by a settle",
+            )
+            stack.enter_context(patch(
+                "src.server.services.computer_manager._mcp.reconcile_workspace_skills",
+                reconcile,
+            ))
+            await manager._reconcile_skills("ws-1", "user-1", MagicMock(), source="restart")
+
+        reconcile.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("folder", "reconciled"),
+        [("Macro", ["reconcile Macro"]), ("_internal/moving/ws-1", [])],
+    )
+    async def test_a_skill_mutation_reconciles_the_folder_read_under_the_hold(
+        self, folder, reconciled
+    ):
+        """A skill added while a failed settle left the row staged must not reach
+        the staging folder any more than the acquisition's own pass does."""
+        events = []
+        manager = WorkspaceManager.get_instance(config=_make_config())
+        manager.get_session_if_ready = MagicMock(return_value=MagicMock())
+
+        async def reconcile(_sandbox, *, user_id, workspace_id, source, project=None):
+            events.append(f"reconcile {project.dir_name if project else None}")
+
+        with ExitStack() as stack:
+            self._folder_patches(stack, events, folder=folder)
+            stack.enter_context(patch(
+                "src.server.services.computer_manager._mcp.db_get_workspace",
+                AsyncMock(return_value={"sandbox_id": "sbx-1"}),
+            ))
+            stack.enter_context(patch(
+                "src.server.services.computer_manager._mcp.reconcile_workspace_skills",
+                reconcile,
+            ))
+            await manager.reconcile_skills_if_running("ws-1", "user-1", source="create")
+
+        assert events == ["hold", "read", *reconciled, "release"]
+
+    @staticmethod
+    def _nested_holds(events):
+        """Holds that record how deep they stack, and the folder read and
+        restore run under them."""
+        held = []
+
+        @asynccontextmanager
+        async def hold(workspace_id):
+            held.append(workspace_id)
+            events.append(f"hold {workspace_id} x{len(held)}")
+            try:
+                yield
+            finally:
+                held.pop()
+                events.append("release")
+
+        async def read(_workspace_id):
+            events.append("read")
+            return "Macro"
+
+        async def restore(_workspace_id, _sandbox, *, layout, ask_first=False):
+            events.append(f"restore {layout.dir_name}")
+            return True
+
+        return hold, read, restore
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("link_failed", [False, True])
+    async def test_cold_attach_reads_each_folder_under_a_stacked_hold(self, link_failed):
+        """After a deploy every attach is cold, so the restore, the overlay and
+        the skill pass all run, each reading its folder under a hold of its own
+        inside the acquisition's. Holds share the process's lock session, so a
+        stacked one takes no pooled connection from concurrent attaches. The
+        pass follows the overlay, whose asset sync can deliver skills it has to
+        link, and one whose link step failed leaves the attach to the next
+        acquisition."""
+        events = []
+
+        async def reconcile(_sandbox, *, user_id, workspace_id, source, project=None):
+            events.append(f"reconcile {project.dir_name if project else None}")
+            return ReconcileStats(failures=int(link_failed), link_failed=link_failed)
+
+        manager, sandbox = self._asset_sync(events)
+        sandbox.runtime = None
+        sandbox.sandbox_id = "sandbox-abc"
+        sandbox._ensure_workspace_dirs = AsyncMock()
+        sandbox.workspace_overlay_missing = AsyncMock(side_effect=[True, False])
+        session = SimpleNamespace(sandbox=sandbox)
+        manager._acquire_session = AsyncMock(return_value=session)
+        manager.resolve_binding = AsyncMock(return_value=_binding("ws-1", dir_name="Macro"))
+        manager._apply_session_mcp = AsyncMock()
+        manager._workspace_tool_view = MagicMock(return_value=object())
+        manager._keep_data_token = AsyncMock()
+        hold, read, restore = self._nested_holds(events)
+
+        with ExitStack() as stack:
+            self._asset_sync_reads(stack)
+            for module in (_LAYOUT, "src.server.services.workspace_manager"):
+                stack.enter_context(patch(f"{module}.workspace_folder_in_use", hold))
+            stack.enter_context(patch(f"{_LAYOUT}.get_workspace_dir_name", read))
+            stack.enter_context(
+                patch(f"{_PROVISIONING}.FilePersistenceService.maybe_restore", restore)
+            )
+            stack.enter_context(
+                patch(
+                    "src.server.services.computer_manager._mcp.reconcile_workspace_skills",
+                    reconcile,
+                )
+            )
+            got = await manager.get_session_for_workspace("ws-1", user_id="user-1")
+
+        assert got is session
+        assert events == [
+            "hold ws-1 x1",
+            "hold ws-1 x2", "read", "restore Macro", "release",
+            "hold ws-1 x2", "read", "sync Macro (owner Macro)", "release",
+            "hold ws-1 x2", "read", "reconcile Macro", "release",
+            "release",
+        ]
+        assert (("ws-1", "sandbox-abc") in manager._projects_attached) is not link_failed
+
+    @pytest.mark.asyncio
+    async def test_unheld_helpers_still_take_their_own_hold(self):
+        """The refresh route, provisioning's restore and the discovery task's
+        sync run under no caller's hold, so each holds the folder it writes into
+        and reads it under that hold."""
+        events = []
+        manager, sandbox = self._asset_sync(events)
+        manager.resolve_binding = AsyncMock(return_value=_binding("ws-1", dir_name="Research"))
+        manager._keep_data_token = AsyncMock()
+        hold, read, restore = self._nested_holds(events)
+
+        with ExitStack() as stack:
+            self._asset_sync_reads(stack)
+            stack.enter_context(patch(f"{_LAYOUT}.workspace_folder_in_use", hold))
+            stack.enter_context(patch(f"{_LAYOUT}.get_workspace_dir_name", read))
+            stack.enter_context(
+                patch(f"{_PROVISIONING}.FilePersistenceService.maybe_restore", restore)
+            )
+            assert await manager.refresh_project_assets("ws-1", "user-1", sandbox)
+            assert await manager._maybe_restore_files(
+                _binding("ws-1", dir_name="Research"), sandbox
+            )
+
+        assert events == [
+            "hold ws-1 x1", "read", "sync Macro (owner Macro)", "release",
+            "hold ws-1 x1", "read", "restore Macro", "release",
+        ]
+
+
+class TestSupersededResolve:
+    """A resolve overtaken by a newer config preserves the prior workspace view."""
+
+    @pytest.mark.asyncio
+    async def test_the_prior_workspace_view_is_kept(self):
+        from src.server.services.egress.session_binding import RelayBind
+
+        manager = WorkspaceManager(_make_config())
+        registry = MagicMock()
+        session = SimpleNamespace(
+            sandbox=MagicMock(mcp_registry=registry),
+            computer_id=_STUB_COMPUTER_ID,
+            config=SimpleNamespace(mcp=SimpleNamespace(servers=[])),
+            mcp_registry=registry,
+            _builtin_mcp_registry=registry,
+            mcp_config_version=1,
+            mcp_config_workspace_id="ws-1",
+            mcp_tool_summary="old summary",
+            direct_mcp_tools={},
+            egress_binding=None,
+            mcp_settled_servers=set(),
+        )
+
+        async def _install(
+            sess,
+            resolved,
+            *,
+            user_id=None,
+            workspace_id=None,
+            egress_binding=None,
+        ):
+            sess.direct_mcp_tools = {"moomoo": object()}
+            sess.mcp_tool_summary = "installed summary"
+
+        with (
+            patch(
+                "src.server.services.mcp_config.resolve_mcp_config",
+                AsyncMock(return_value=SimpleNamespace(version=2, servers=[])),
+            ),
+            patch.object(
+                manager, "_install_session_composite", AsyncMock(side_effect=_install)
+            ),
+            patch(
+                "src.server.services.computer_manager._mcp.sync_egress_relay",
+                AsyncMock(return_value=RelayBind.SUPERSEDED),
+            ),
+        ):
+            out = await manager._apply_session_mcp(
+                _binding("ws-1"), "user-1", session, ws_version=2
+            )
+
+        assert out is None
+        assert session.direct_mcp_tools == {}
+        assert session.mcp_tool_summary == "old summary"
+        assert session.mcp_config_version == 1
+        assert manager._machine(_STUB_COMPUTER_ID).resolve_superseded == {"ws-1"}
+
+
+@pytest.fixture(autouse=True)
+def _local_lifecycle_capacity(monkeypatch):
+    # Lifecycle fakes have no platform or database; admission is tested separately.
+    monkeypatch.setattr("src.server.dependencies.usage_limits.platform_gating_active", lambda: False)

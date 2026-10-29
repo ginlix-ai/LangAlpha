@@ -7,10 +7,10 @@
  * changes rebuild the iframe (TV's embed scripts don't expose attribute
  * APIs for the legacy widget catalog).
  *
- * Locale: `getTVCommonConfig()` reads `i18n.language` at call time and maps
- * it into TV's locale grammar via `mapLocaleForTV()`. Embed effects must
- * include `i18n.language` in their dep array so the iframe rebuilds when
- * the user switches locale.
+ * Locale: `getTVCommonConfig(locale)` maps the reader's locale (from
+ * `useLocale()`) into TV's locale grammar via `mapLocaleForTV()`. Embed
+ * effects must include the mapped locale in their dep array so the iframe
+ * rebuilds when the user switches locale.
  *
  * Web-components alternative: `framework/TradingViewWebComponent.tsx` hosts
  * the newer `<tv-*>` catalog from `widgets.tradingview-widget.com`. Web
@@ -37,8 +37,6 @@
  *     marquee that users expect. Trade-off: symbol clicks bounce to
  *     tradingview.com instead of our `/market` route.
  */
-
-import i18n from '@/i18n';
 
 const TV_BASE = 'https://s3.tradingview.com/external-embedding/';
 
@@ -118,10 +116,9 @@ export function mapLocaleForTV(bcp47: string): string {
 
 /** Per-card config defaults baked into every TV embed payload.
  *
- * Function (not `as const`) so `locale` reflects the current `i18n.language`
- * each time an embed effect rebuilds. Consumers MUST include `i18n.language`
- * in their effect deps; the function reads it at call time, but React only
- * re-runs the effect when a tracked dep changes.
+ * Function (not `as const`) so `locale` reflects the reader's locale each
+ * time an embed effect rebuilds. Consumers MUST include the locale in their
+ * effect deps: React only re-runs the effect when a tracked dep changes.
  *
  * `largeChartUrl` overrides the "view full chart" button destination for the
  * subset of iframe widgets that honor it (symbol-overview, mini-chart,
@@ -130,14 +127,14 @@ export function mapLocaleForTV(bcp47: string): string {
  * clicks inside those widgets still bounce to tradingview.com. The full
  * symbol-link redirection (`symbol-url={tvsymbol}`) would require the
  * `<tv-*>` web-component variant — currently unreachable, see header. */
-export function getTVCommonConfig(): Record<string, unknown> {
+export function getTVCommonConfig(locale: string): Record<string, unknown> {
   return {
     autosize: true,
     width: '100%',
     height: '100%',
     isTransparent: true,
     backgroundColor: 'rgba(0,0,0,0)',
-    locale: mapLocaleForTV(i18n.language),
+    locale: mapLocaleForTV(locale),
     support_host: 'https://www.tradingview.com',
     largeChartUrl: largeChartUrl(),
   };

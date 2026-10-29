@@ -93,6 +93,78 @@ export function centerLatestBarView({
 }
 
 /**
+ * Visible logical range that fills the chart with the latest bars, leaving a
+ * right gutter after the last bar. A narrow host (a side panel) wants every
+ * pixel showing data; the centered view above spends half of them on empty
+ * future space. `rightGutter` is the fraction of the width kept empty: the
+ * default is just enough for the last-value label, a page that still wants
+ * some breathing room passes more. A series shorter than the window keeps
+ * its last bar at the gutter edge, so `from` goes negative rather than the
+ * bars packing left with the room on the wrong side.
+ */
+export function fillLatestBarsView({
+  chartWidth,
+  barSpacing,
+  dataLen,
+  rightGutter = 0.06,
+}: {
+  chartWidth: number;
+  barSpacing: number;
+  dataLen: number;
+  rightGutter?: number;
+}): { from: number; to: number } {
+  const bars = Math.max(1, Math.floor(chartWidth / barSpacing));
+  // The gutter never takes the whole window: the last bar always stays in it.
+  const gutter = Math.min(Math.max(2, Math.floor(bars * rightGutter)), bars - 1);
+  const from = dataLen - bars + gutter;
+  return { from, to: from + bars };
+}
+
+export type DefaultBarsView = 'centered' | 'fill';
+
+/**
+ * Below this chart width a `centered` default view packs the latest bars
+ * instead of leaving the right half empty: centering on 720px would show under
+ * 360px of bars, about 50 daily bars at the 7px target spacing
+ * (`TARGET_BAR_SPACING`). `NARROW_CENTERED_GUTTER` is the fraction of the
+ * width kept clear after the last bar in that case, wider than a `fill`
+ * host's flush gutter so the page still reads as "room to the right". This is
+ * a different measure from the toolbar's 710px breakpoint
+ * (`TOOLBAR_WIDTH_BREAKPOINTS` in MarketView/utils/toolbarTiers): that one
+ * takes the container minus the host's lead and trail slots and decides what
+ * the toolbar row can hold, this one takes the chart's own width and decides
+ * how much of it a centered view would waste.
+ */
+export const NARROW_CENTERED_VIEW_PX = 720;
+export const NARROW_CENTERED_GUTTER = 0.15;
+
+/**
+ * The visible logical range a chart frames its latest bars in after a load,
+ * from the host's preference and the width it actually has: `fill` packs the
+ * bars flush, `centered` centers the last bar while the chart is wide enough
+ * for that to leave a useful amount of history and packs with a wider gutter
+ * once it is not.
+ */
+export function defaultBarsView({
+  defaultView,
+  chartWidth,
+  barSpacing,
+  dataLen,
+}: {
+  defaultView: DefaultBarsView;
+  chartWidth: number;
+  barSpacing: number;
+  dataLen: number;
+}): { from: number; to: number } {
+  const frameArgs = { chartWidth, barSpacing, dataLen };
+  if (defaultView === 'fill') return fillLatestBarsView(frameArgs);
+  if (chartWidth < NARROW_CENTERED_VIEW_PX) {
+    return fillLatestBarsView({ ...frameArgs, rightGutter: NARROW_CENTERED_GUTTER });
+  }
+  return centerLatestBarView(frameArgs);
+}
+
+/**
  * Merge a set of newly-fetched bars into an existing, time-sorted timeline,
  * de-duplicating by `.time`. On a time collision the INCOMING bar wins — the
  * server (or a fresher delta poll) is authoritative, and the forming head bar

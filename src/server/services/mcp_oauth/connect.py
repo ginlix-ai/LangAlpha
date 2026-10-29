@@ -12,19 +12,23 @@ is an allowlisted relative path.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from typing import Any, NamedTuple
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx2
 from pydantic import BaseModel, ValidationError
 
-from mcp.client.auth import PKCEParameters
+from mcp.client.auth import OAuthFlowError, PKCEParameters
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
     build_protected_resource_metadata_discovery_urls,
+    create_client_info_from_metadata_url,
     create_client_registration_request,
     extract_resource_metadata_from_www_auth,
     extract_scope_from_www_auth,
@@ -32,6 +36,8 @@ from mcp.client.auth.utils import (
     handle_auth_metadata_response,
     handle_protected_resource_response,
     handle_registration_response,
+    is_valid_client_metadata_url,
+    should_use_client_metadata_url,
     validate_authorization_response_iss,
     validate_metadata_issuer,
 )
@@ -42,13 +48,37 @@ from mcp.shared.auth import (
     ProtectedResourceMetadata,
 )
 
+from src.config.env import MCP_CLIENT_METADATA_URL
+from src.server.database.egress_grants import apply_consent_to_active_grants
+from src.server.database.mcp_config_version import bump_user_workspaces_mcp_version
+from src.server.database.mcp_descriptions import drop_descriptions
 from src.server.database.mcp_oauth import Secrets, get_connection, upsert_connection
 from src.server.database.mcp_servers import (
-    bump_user_workspaces_mcp_version,
     get_catalog_server,
+    list_catalog_servers,
 )
+from src.server.database.order_attempts import refuse_attempts_on_connection_change
+from src.server.database.pool import get_db_connection
 from src.server.database.workspace import get_running_workspace_ids_for_user
+from src.server.services.brokerage_capabilities import (
+    group_keys_for,
+    required_groups,
+    vendor_for_url,
+)
+from src.server.services import mcp_saves
+from src.server.services.brokerages import Brokerage, brokerage_for_url
+from src.server.services.mcp_apply import schedule_proactive_apply
 from src.server.services.mcp_config import same_consented_url
+from src.server.services.mcp_descriptions.jobs import own_description_scope
+from src.server.services.mcp_probe import _scrub_url
+from src.server.services.mcp_oauth.finish import (
+    CallbackFailed,
+    CallbackFinish,
+    PreparedSignIn,
+    StoreConnection,
+    discard,
+    park,
+)
 from src.server.services.mcp_oauth.http import (
     OAuthHopBlocked,
     oauth_http_client,
@@ -57,9 +87,11 @@ from src.server.services.mcp_oauth.http import (
 )
 from src.server.services.mcp_oauth.redirects import (
     DEFAULT_RETURN_TO,
+    CallbackError,
     callback_is_loopback,
     callback_uri,
     redirect_to,
+    sanitize_loopback_redirect,
     sanitize_return_to,
     sanitize_web_origin,
 )
@@ -75,8 +107,9 @@ logger = logging.getLogger(__name__)
 
 STATE_TTL_SECONDS = 600
 _STATE_KEY_PREFIX = "mcp:oauth:state:"
+_INFLIGHT_KEY_PREFIX = "mcp:oauth:inflight:"
 
-CLIENT_NAME = "Langalpha"
+CLIENT_NAME = "LangAlpha"
 
 # The MCP endpoint probe advertises a protocol version so servers answer with
 # era-appropriate WWW-Authenticate hints.
@@ -94,6 +127,20 @@ class McpServerNotFound(McpOAuthError):
     """No such server in this user's catalog — the router's 404."""
 
 
+class McpServerMoved(McpOAuthError):
+    """The row is no longer at the address the caller answered for.
+
+    A connect can carry questions that were asked of a particular server --
+    above all the one a vendor allowing a single connected AI platform per
+    account forces, since agreeing to it costs the user a connection elsewhere.
+    The page asks them against the address it drew the row from, and that row is
+    the user's to edit from any tab. Move it in between and the connect the user
+    agreed to and the one about to start are for different servers, with the
+    warning belonging to neither. Refusing is what makes the question a gate
+    rather than a decoration.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class StartedConnect:
     """Phase 1's result.
@@ -107,6 +154,13 @@ class StartedConnect:
     authorize_url: str
     state: str
     browser_nonce: str
+    # The callback this flow was actually minted against, which is not always
+    # the one the caller asked for: a redirect_uri that is not loopback, or that
+    # this build does not understand, degrades to the hosted callback silently
+    # and by design. A desktop shell has already armed a listener by the time it
+    # finds out, so the effective value has to come back or it cannot tell a
+    # flow that will reach it from one that never can.
+    redirect_uri: str
 
 
 class ConnectState(BaseModel):
@@ -147,6 +201,17 @@ class ConnectState(BaseModel):
     # a victim's browser has no matching cookie and is refused. Defaulted so an
     # older-shaped record still validates (its callback simply skips the check).
     browser_nonce: str = ""
+    # Capability groups consented to in phase 1, for a vendor that has them.
+    # Carried across the browser round trip rather than re-read at the callback,
+    # so the grant that gets written is the one the user actually agreed to and
+    # not whatever a concurrent edit left on the row meanwhile. Defaulted so an
+    # older-shaped record still validates.
+    granted_capabilities: list[str] | None = None
+    # Set when the server is saved by this sign-in rather than already a row:
+    # what the save needs is parked in Postgres under this state (see
+    # ``services.mcp_saves``). A build without the field reads such a record as
+    # a reconnect, finds no row, and answers SERVER_CHANGED, writing nothing.
+    pending: bool = False
 
 
 def _cache_client():
@@ -162,15 +227,120 @@ async def _try_hop(client, url: str) -> httpx2.Response | None:
     """One discovery GET; None when that URL is simply absent or unusable.
 
     A blocked hop is not a miss — it aborts discovery rather than falling
-    through to the next candidate.
+    through to the next candidate. Its message quotes the URL dialled, the
+    row's own on the first hop and one built from its path after that, so it
+    leaves here cut to the host: the start route shows it to the user.
     """
     try:
         return await pinned_request(client, "GET", url, headers=_PROBE_HEADERS)
-    except OAuthHopBlocked:
-        raise
+    except OAuthHopBlocked as e:
+        raise OAuthHopBlocked(
+            _scrub_url(str(e), url), request_sent=e.request_sent
+        ) from None
     except Exception as e:
-        logger.info("[mcp_oauth] discovery hop %s failed: %s", url, e)
+        # Host only: the row's URL may carry a credential in its query.
+        logger.info(
+            "[mcp_oauth] discovery hop to %s failed: %s",
+            _scrub_url(url, url), _scrub_url(str(e), url),
+        )
         return None
+
+
+# So an issuer that names its default port compares equal to one that omits it.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _same_origin(a: str, b: str) -> bool:
+    def origin(url: str) -> tuple[str | None, str | None, int | None]:
+        parts = urlsplit(url)
+        return parts.scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(
+            parts.scheme
+        )
+
+    try:
+        return origin(a) == origin(b)
+    except ValueError:
+        # A malformed port. Unequal is the answer that refuses the correction.
+        return False
+
+
+def _require_issuer_match(meta: OAuthMetadata, expected: str) -> None:
+    """RFC 8414 §3.3, raised as something the route can report.
+
+    The SDK's check raises ``OAuthFlowError``, a bare ``Exception`` that
+    reaches the handler as a 500 with no detail — and an issuer mismatch is
+    precisely the line whoever is wiring the server up needs to read.
+    """
+    try:
+        validate_metadata_issuer(meta, expected)
+    except OAuthFlowError as e:
+        raise McpOAuthError(str(e)) from e
+
+
+async def _fetch_as_metadata(
+    client, identifier: str | None, server_url: str
+) -> OAuthMetadata | None:
+    """RFC 8414 discovery against one issuer identifier."""
+    for url in build_oauth_authorization_server_metadata_discovery_urls(
+        identifier, server_url
+    ):
+        resp = await _try_hop(client, url)
+        if resp is None:
+            continue
+        keep_trying, meta = await handle_auth_metadata_response(resp)
+        if meta is not None:
+            return meta
+        if not keep_trying:
+            break
+    return None
+
+
+async def _resolve_as_metadata(
+    client, advertised: str | None, server_url: str
+) -> tuple[str | None, OAuthMetadata | None]:
+    """AS metadata, plus the identifier its ``issuer`` is actually bound to.
+
+    RFC 8414 §3.3 wants the two identical, and that binding is the control that
+    stops a resource server from pointing at metadata some other authorization
+    server published. A deployment can still name itself one way in its resource
+    metadata and another in the AS document — the binding is intact, just held at
+    the identifier the AS itself claims.
+
+    So the mismatch is re-checked rather than waived: discovery runs again at the
+    claimed identifier and the result must be self-consistent *there*, which is
+    the same proof the first pass wanted. The origin gate is what keeps this from
+    becoming a redirect — a document may correct its own name, never hand the
+    flow to another host — and the returned identifier is the corrected one,
+    since registration and the stored client are keyed on it.
+    """
+    meta = await _fetch_as_metadata(client, advertised, server_url)
+    if meta is None or not advertised:
+        return advertised, meta
+
+    claimed = str(meta.issuer)
+    if claimed == advertised or not _same_origin(claimed, advertised):
+        _require_issuer_match(meta, advertised)  # raises on anything else
+        return advertised, meta
+
+    corrected = await _fetch_as_metadata(client, claimed, server_url)
+    if corrected is None:
+        # Nothing published there, so there is no second opinion to hold it
+        # to and the original mismatch stands — named here rather than by the
+        # generic issuer check, because which of the two hops came up empty is
+        # the part that tells the operator where to look.
+        raise McpOAuthError(
+            f"{server_url} advertises {advertised}, whose metadata is issued by "
+            f"{claimed}, which publishes no metadata of its own"
+        )
+    _require_issuer_match(corrected, claimed)
+    logger.info(
+        "[mcp_oauth] %s advertises %s but its metadata is issued by %s; "
+        "using the issuer, which discovery confirms",
+        server_url,
+        advertised,
+        claimed,
+    )
+    return claimed, corrected
 
 
 async def _discover(client, server_url: str) -> tuple[
@@ -202,21 +372,9 @@ async def _discover(client, server_url: str) -> tuple[
         else None
     )
 
-    as_metadata: OAuthMetadata | None = None
-    for url in build_oauth_authorization_server_metadata_discovery_urls(
-        auth_server_url, server_url
-    ):
-        resp = await _try_hop(client, url)
-        if resp is None:
-            continue
-        keep_trying, meta = await handle_auth_metadata_response(resp)
-        if meta is not None:
-            if auth_server_url:
-                validate_metadata_issuer(meta, auth_server_url)
-            as_metadata = meta
-            break
-        if not keep_trying:
-            break
+    auth_server_url, as_metadata = await _resolve_as_metadata(
+        client, auth_server_url, server_url
+    )
 
     if as_metadata is None:
         raise McpOAuthError(
@@ -224,6 +382,94 @@ async def _discover(client, server_url: str) -> tuple[
             "(RFC 8414 discovery failed) — it may not support OAuth."
         )
     return prm, as_metadata, auth_server_url, www_scope
+
+
+def _client_metadata_url() -> str | None:
+    """This deployment's CIMD URL, or None when it is unset or unusable.
+
+    An unusable value warns rather than raises: a typo here should cost the
+    servers that would have read the document, not the ones that register
+    dynamically and never look at it.
+    """
+    url = MCP_CLIENT_METADATA_URL.strip()
+    if not url:
+        return None
+    if not is_valid_client_metadata_url(url):
+        logger.warning(
+            "[mcp_oauth] ignoring MCP_CLIENT_METADATA_URL: a client metadata "
+            "document must be HTTPS on a non-root path"
+        )
+        return None
+    return url
+
+
+def _minimal_registration_request(
+    as_metadata: OAuthMetadata,
+    client_metadata: OAuthClientMetadata,
+    auth_base_url: str,
+) -> httpx2.Request:
+    """The same registration, cut back to the members RFC 7591 defines.
+
+    An AS is entitled to reject metadata it does not support, and it answers
+    with one opaque ``invalid_client_metadata`` for the whole body rather than
+    naming the member it disliked. There is nothing to negotiate against, so the
+    only sound recovery is to stop sending everything optional at once.
+
+    Two members are the likeliest offenders.
+
+    ``application_type`` ships on every registration whether or not we want it.
+    It is SEP-837, typed as a plain ``Literal`` with a ``"native"`` default
+    rather than an optional, so ``exclude_none`` never drops it and there is no
+    value meaning "unset" — an AS that does not know the member cannot be told
+    to ignore it.
+
+    ``scope`` is read by RFC 7591 as the set the client asks to be *allowed*,
+    which is not the question the resource server's ``WWW-Authenticate``
+    answers, and the MCP scope ladder feeds the second into the first. Dropping
+    it widens nothing: the authorize request still carries the scope, so what
+    the user is shown and approves still bounds the token.
+
+    No shipped brokerage needs this path today. It is interop hardening against
+    a refusal that cannot be diagnosed from the wire, not a fix for a known
+    server.
+    """
+    body: dict[str, Any] = {
+        "redirect_uris": [str(u) for u in (client_metadata.redirect_uris or [])],
+        "grant_types": list(client_metadata.grant_types),
+        "response_types": list(client_metadata.response_types),
+    }
+    # Kept because it is what the consent screen names as the thing being
+    # granted access; a registration without it asks the user to trust a blank.
+    if client_metadata.client_name:
+        body["client_name"] = client_metadata.client_name
+    if client_metadata.token_endpoint_auth_method:
+        body["token_endpoint_auth_method"] = client_metadata.token_endpoint_auth_method
+    url = (
+        str(as_metadata.registration_endpoint)
+        if as_metadata.registration_endpoint
+        else urljoin(auth_base_url, "/register")
+    )
+    return httpx2.Request(
+        "POST", url, json=body, headers={"Content-Type": "application/json"}
+    )
+
+
+class _Registration(NamedTuple):
+    """A client identity, plus the scope to authorize with if it is not its own.
+
+    Two values because they answer different questions and only one is stored.
+    ``info`` is the registration and is persisted as ``client_info``, so its
+    ``scope`` has to keep saying what the client is registered for -- that is
+    what the next connect's coverage check reads. ``authorize_scope`` is what
+    this authorize request should ask for, which on a reused registration is
+    narrower. Folding them into one field wrote the narrowed value back over
+    the registration's, and a later widening then failed a coverage check the
+    original client would have passed, costing a redundant registration at the
+    provider.
+    """
+
+    info: OAuthClientInformationFull
+    authorize_scope: str | None = None
 
 
 async def _register_client(
@@ -234,31 +480,82 @@ async def _register_client(
     as_metadata: OAuthMetadata,
     client_metadata: OAuthClientMetadata,
     auth_base_url: str,
-) -> OAuthClientInformationFull:
-    """Reuse the stored DCR registration when it still fits; else register.
+) -> _Registration:
+    """Identify this client to the AS: by hosted document where it takes one, else DCR.
 
-    "Fits" = same issuer AND the registration covers the redirect_uris we are
-    about to send. The second half matters after a SERVER_BASE_URL change:
-    the stored registration then carries the old callback URL, and reusing it
-    has the AS reject every authorize request with no path back in-product.
+    CIMD comes first and consults nothing stored. A URL-based client_id is one
+    value for every user and every authorization server, so there is no
+    registration to reuse, and a client_id left over from DCR against a server
+    that has since advertised CIMD is precisely what must not be reused.
+
+    The DCR path reuses a stored registration when it still fits: same issuer,
+    and it already covers the redirect_uris we are about to send. That second
+    half matters after a SERVER_BASE_URL change, where the stored registration
+    carries the old callback and the AS rejects every authorize request with no
+    path back in-product.
     """
+    metadata_url = _client_metadata_url()
+    if should_use_client_metadata_url(as_metadata, metadata_url):
+        logger.info(
+            "[mcp_oauth] %s reads a client metadata document; skipping DCR",
+            server_name,
+        )
+        return _Registration(
+            create_client_info_from_metadata_url(
+                metadata_url,  # type: ignore[arg-type]
+                redirect_uris=client_metadata.redirect_uris,
+            )
+        )
     existing = await get_connection(user_id, server_name, secrets=Secrets.FULL)
     if existing and existing.client_info:
         try:
             stored = OAuthClientInformationFull.model_validate(existing.client_info)
-            if stored.client_id and existing.as_metadata.get("issuer") == str(
+            if _is_metadata_document_id(stored.client_id):
+                logger.info(
+                    "[mcp_oauth] re-registering %s: the stored client id is a "
+                    "metadata document and this server is asking for DCR",
+                    server_name,
+                )
+            elif stored.client_id and existing.as_metadata.get("issuer") == str(
                 as_metadata.issuer
             ):
                 wanted = {str(u) for u in (client_metadata.redirect_uris or [])}
                 registered = {str(u) for u in (stored.redirect_uris or [])}
-                if wanted <= registered:
+                # A stored registration's scope overrides the one we just
+                # computed (see ``effective_scope`` below), so reusing one that
+                # predates a scope change silently undoes it. That is how a
+                # connection kept being issued tokens without
+                # ``offline_access`` after we started asking for it, and died
+                # at the first expiry with nothing in the logs to say why. An
+                # empty stored scope overrides nothing and is fine to reuse.
+                wanted_scope = set((client_metadata.scope or "").split())
+                stored_scope = set((stored.scope or "").split())
+                covers_scope = not stored_scope or wanted_scope <= stored_scope
+                if wanted <= registered and covers_scope:
                     # client_secret is stored encrypted, outside the JSONB blob.
                     stored.client_secret = existing.client_secret
-                    return stored
+                    # Authorize with the scope computed just now, not the one
+                    # the registration was made with. ``effective_scope`` below
+                    # prefers the stored value, so reusing a registration made
+                    # back when we asked for more restored precisely the
+                    # permissions the current metadata stopped asking for --
+                    # the widening half of the same bug the scope check above
+                    # closes in the narrowing direction. Asking for a subset of
+                    # what is registered is always allowed. A computed scope
+                    # that is empty has nothing to narrow to, and keeps the
+                    # stored value as its only signal.
+                    #
+                    # Carried beside the registration rather than written into
+                    # it, because ``stored`` is what gets persisted: overwriting
+                    # its scope makes the next connect believe the client is
+                    # registered for the narrower set and re-register the moment
+                    # we ask for anything the original already covered.
+                    return _Registration(stored, client_metadata.scope or None)
                 logger.info(
                     "[mcp_oauth] re-registering %s: stored registration lacks "
-                    "the current redirect_uri",
+                    "the current %s",
                     server_name,
+                    "redirect_uri" if not wanted <= registered else "scope",
                 )
         except Exception:
             logger.info(
@@ -267,14 +564,360 @@ async def _register_client(
             )
     if as_metadata.registration_endpoint is None:
         raise McpOAuthError(
-            "The authorization server does not support Dynamic Client "
-            "Registration; pre-registered clients are not supported yet."
+            "This authorization server does not support Dynamic Client "
+            "Registration. If it advertises a client metadata document, set "
+            "MCP_CLIENT_METADATA_URL to one this deployment serves."
         )
     request = create_client_registration_request(
         as_metadata, client_metadata, auth_base_url
     )
-    response = await pinned_send(client, request)
-    return await handle_registration_response(response)
+    response = await _send_registration(client, request, server_name)
+    if response.status_code not in (200, 201) and await _rejected_our_metadata(response):
+        logger.info(
+            "[mcp_oauth] %s refused the full registration metadata (%s); "
+            "retrying with the interoperable core",
+            server_name,
+            response.status_code,
+        )
+        request = _minimal_registration_request(
+            as_metadata, client_metadata, auth_base_url
+        )
+        response = await _send_registration(client, request, server_name)
+    if response.status_code not in (200, 201):
+        raise await _registration_refused(server_name, response)
+    try:
+        return _Registration(await handle_registration_response(response))
+    except OAuthFlowError:
+        # Not chained: the SDK's message quotes the parse failure, which on a
+        # 2xx can carry the client_secret the AS just issued.
+        logger.info(
+            "[mcp_oauth] %s answered its registration (%s) with a client that "
+            "does not parse",
+            server_name,
+            response.status_code,
+        )
+        raise McpOAuthError(
+            f"{_SIGN_IN_NOT_SET_UP}: its authorization server's answer to "
+            "registering this app could not be read."
+        ) from None
+
+
+# Leads every registration refusal, which the page shows as sent.
+_SIGN_IN_NOT_SET_UP = "This server's sign-in could not be set up"
+
+# An RFC 7591 ``error`` is a short code; anything else in that member is prose
+# the AS wrote, and is not shown.
+_REGISTRATION_ERROR_CODE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+async def _send_registration(
+    client, request: httpx2.Request, server_name: str
+) -> httpx2.Response:
+    """One registration POST, a failed hop refused in words the page can show."""
+    try:
+        return await pinned_send(client, request)
+    except (OAuthHopBlocked, httpx2.HTTPError) as e:
+        logger.info(
+            "[mcp_oauth] registering with %s for %s failed: %s",
+            request.url.host,
+            server_name,
+            e,
+        )
+        raise McpOAuthError(
+            f"{_SIGN_IN_NOT_SET_UP}: registering this app with its "
+            "authorization server failed."
+        ) from e
+
+
+async def _registration_refused(server_name: str, response) -> McpOAuthError:
+    """A registration the AS did not grant, as one line with its status.
+
+    Never the body. An AS that advertises a registration endpoint it does not
+    serve answers with its HTML error page, and the SDK's error embeds that
+    page whole; the route shows the message verbatim. The AS's RFC 7591
+    ``error`` code is kept when it sent a well-formed one, since it names what
+    was rejected.
+    """
+    error = _registration_error(await response.aread())
+    code = (
+        error
+        if isinstance(error, str) and _REGISTRATION_ERROR_CODE.fullmatch(error)
+        else None
+    )
+    status = f"HTTP {response.status_code}" + (f", {code}" if code else "")
+    logger.info("[mcp_oauth] registration for %s refused (%s)", server_name, status)
+    return McpOAuthError(
+        f"{_SIGN_IN_NOT_SET_UP}: its authorization server did not register "
+        f"this app ({status})."
+    )
+
+
+def _registration_error(body: bytes) -> Any:
+    """The ``error`` member of a registration answer's JSON body, or None."""
+    try:
+        parsed = json.loads(body or b"")
+    except ValueError:
+        return None
+    return parsed.get("error") if isinstance(parsed, dict) else None
+
+
+def _is_metadata_document_id(client_id: str | None) -> bool:
+    """Whether a stored client id came from CIMD rather than from registration.
+
+    A CIMD client id is the metadata document's own URL; a DCR one is opaque
+    and issued by the AS. Both land in the same column, so a server that
+    advertised CIMD once and has since stopped would otherwise have that URL
+    replayed as though it were a registration: a document satisfies the issuer,
+    redirect and scope checks trivially, no registration ever happens, and the
+    authorize request carries an identity the server no longer accepts.
+
+    Read from the shape rather than compared against the configured metadata
+    URL, because the document this deployment serves can move while an id
+    minted from the old one is still sitting in the row.
+
+    The shape is a heuristic, and it errs toward re-registering: an AS that
+    issues a URL as its opaque DCR client_id gets a fresh registration on every
+    reconnect rather than a reused one. Recording which mechanism produced the
+    id is the fix that needs no guess, and it needs a column to keep it in.
+    """
+    return bool(client_id) and client_id.lower().startswith(("http://", "https://"))
+
+
+async def _rejected_our_metadata(response) -> bool:
+    """Whether a failed registration is worth retrying with less metadata.
+
+    Only when the server said the metadata was the problem. Retrying on any
+    non-2xx meant a 429 was answered by immediately spending a second request
+    against the limit that produced it, and a 5xx that had already created the
+    client created a second one and orphaned the first. Neither is fixed by
+    sending different metadata, and both are reported honestly by
+    ``_registration_refused``, which carries the real status.
+
+    A 400 with no parseable error still retries: RFC 7591 names the codes
+    below, but a server that refuses our optional members with an empty 400 is
+    exactly the case this fallback exists for. The body is drained either way,
+    since the response is discarded on the retry path.
+
+    ``invalid_redirect_uri`` is not one of them. The minimal body carries the
+    same ``redirect_uris`` as the full one, so retrying asks the identical
+    question and spends a second registration attempt to be told the same
+    thing. The AS's own error, which names what it rejected, is the more useful
+    answer to surface.
+    """
+    body = await response.aread()
+    if response.status_code not in (400, 422):
+        return False
+    error = _registration_error(body)
+    if error is None:
+        return response.status_code == 400
+    return error == "invalid_client_metadata"
+
+
+def _inflight_scope(server_name: str, server_url: str | None) -> str:
+    """What a connect holds while it is out, and so what starting it retires.
+
+    Normally the row: two connects for one server are the same connect twice,
+    and the newer wins. A vendor that allows a single connected AI platform per
+    account is wider than that -- the grant it drops on a new one is the
+    account's, not the row's -- and nothing stops a user from owning two rows
+    at that vendor, the shipped one beside their own or one repointed onto the
+    other's host. Held by row, those two connects could not see each other and
+    both spent their codes; the second grant displaced the first as it landed,
+    leaving a row that still read connected with nothing live behind it. Held by
+    vendor, the older flow is retired before it spends anything.
+
+    A row name can never collide with the prefixed form: ``NAME_RE`` admits no
+    colon, which is also why the ordinary case stays the bare name rather than
+    growing a prefix of its own -- an in-flight connect keeps working across the
+    deploy that introduces this.
+    """
+    vendor = brokerage_for_url(server_url)
+    if vendor and vendor.exclusive_connection:
+        return f"vendor:{vendor.name}"
+    return server_name
+
+
+async def _supersede_inflight(user_id: str, scope: str, state: str) -> None:
+    """Leave this the only connect for the scope a callback can still finish.
+
+    Nothing stopped a user from running two connects for the same server at
+    once -- two tabs, or a browser tab and the desktop window -- and both would
+    finish: each exchanged its own code, and the connection row kept whichever
+    landed last. The row itself was fine, but the losing flow had by then been
+    granted real access that we then held no record of, and we do not revoke at
+    the vendor (see ``disconnect_server``). It stayed live on the brokerage
+    account, absent from every screen we show, until it expired on its own. A
+    vendor that allows one connected AI platform per account made it worse: the
+    second grant displaced the first, so one connection cost the user their
+    other platform twice.
+
+    Dropping the older flow's state record moves its failure to before the token
+    exchange, so the surplus access is never granted rather than granted and
+    forgotten. The marker holds a specific single-use state value, so a delete
+    can only ever spend the flow it names -- which is why it is left to expire
+    on its own TTL rather than cleared by the callback. Clearing it there would
+    buy nothing and would let a slow first callback retire the marker a second
+    flow had already replaced.
+
+    The delete alone reaches only a flow that has not claimed its state yet;
+    ``_is_superseded`` is the other half, and covers the one that had.
+    """
+    redis = _cache_client()
+    key = f"{_INFLIGHT_KEY_PREFIX}{user_id}:{scope}"
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.get(key)
+        pipe.set(key, state, ex=STATE_TTL_SECONDS)
+        previous, _ = await pipe.execute()
+    if not previous:
+        return
+    superseded = previous.decode() if isinstance(previous, bytes) else previous
+    state_key = f"{_STATE_KEY_PREFIX}{superseded}"
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.get(state_key)
+        pipe.delete(state_key)
+        retired, _ = await pipe.execute()
+    if not retired:
+        return
+    logger.info(
+        "[mcp_oauth] superseded an in-flight connect user=%s scope=%s",
+        user_id, scope,
+    )
+    # A retired flow that was saving a server leaves its payload behind, and
+    # that payload can hold secret values; the sweep would reach it only once
+    # it expired. Best effort, like the retirement itself.
+    try:
+        if json.loads(retired).get("pending"):
+            await discard(superseded)
+    except Exception:
+        logger.warning(
+            "[mcp_oauth] could not drop a superseded sign-in's payload user=%s",
+            user_id, exc_info=True,
+        )
+
+
+async def _is_superseded(user_id: str, scope: str, state: str) -> bool:
+    """Whether a newer connect for this scope started while this one was out.
+
+    Retiring the older flow's state record only reaches a flow that has not
+    claimed it yet. One that had -- its callback was already past the claim when
+    the newer connect began -- is beyond what a delete can stop, and would go on
+    to exchange its code and upsert over the connection the newer flow is about
+    to write. Reading the marker is what catches that flow, and it is read twice:
+    once before the code is spent, so an already-retired flow never gets a grant
+    issued, and again immediately before the write, because the first read
+    happens a whole round trip to the vendor earlier than the write does.
+
+    Two reads narrow the window; they do not close it. Closing it would need the
+    ownership test and the write to be one atomic step, and they cannot be: the
+    marker is in Redis and the connection is in Postgres, so no single
+    transaction sees both.
+
+    An absent marker allows the flow. It means the marker outlived nothing --
+    both it and the state record carry the same TTL, so a claimed state with no
+    marker beside it is a connect old enough to be answering for itself.
+    """
+    key = f"{_INFLIGHT_KEY_PREFIX}{user_id}:{scope}"
+    current = await _cache_client().get(key)
+    if not current:
+        return False
+    return (current.decode() if isinstance(current, bytes) else current) != state
+
+
+async def _drop_what_the_vendor_displaced(
+    user_id: str, server_name: str, vendor: Brokerage
+) -> None:
+    """Put this user's other rows at ``vendor`` where the vendor already put them.
+
+    Retiring an in-flight connect covers two of them running at once. Two a week
+    apart are not a race and never meet: the second is an ordinary connect, and
+    the first row goes on reading connected over a grant the vendor dropped the
+    moment the second one landed. Nothing on our side notices -- the sweeper
+    keeps trying to refresh it, every workspace still inherits it, and it fails
+    only at the point a turn actually calls the broker.
+
+    Which rows those are is a question about the address, not the name: the
+    shipped row and one the user pointed at the same host are both this vendor.
+
+    Already-revoked rows are skipped rather than re-revoked, so an ordinary
+    reconnect does not bump every workspace's config for a row nothing changed.
+    """
+    from src.server.database.mcp_oauth import ConnectionStatus
+    from src.server.services.mcp_oauth.lifecycle import disconnect_server
+
+    for row in await list_catalog_servers(user_id):
+        name = row.get("name")
+        if name == server_name or brokerage_for_url(row.get("url")) is not vendor:
+            continue
+        connection = await get_connection(user_id, name)
+        if connection is None or connection.status == ConnectionStatus.REVOKED:
+            continue
+        await disconnect_server(user_id, name)
+        logger.info(
+            "[mcp_oauth] disconnected user=%s server=%s: %s displaced it at %s",
+            user_id, name, server_name, vendor.name,
+        )
+
+
+def _consented_capabilities(
+    server_url: str | None, requested: Sequence[str] | None
+) -> list[str] | None:
+    """The subset of a vendor's real capability groups the caller asked for.
+
+    Keyed on the address, not the row's name, and the two disagree exactly where
+    it matters: a row the user named themselves at a broker's host was offered
+    that broker's consent dialog and then stored nothing, so its grant carried
+    no policy at all. Whatever the relay will dial is what the question was
+    about.
+
+    Intersected rather than trusted: these keys arrive from a browser, and one
+    we do not curate would be stored as consent to something with no meaning.
+    Order is the display order, so the stored record reads the way the dialog
+    that produced it did.
+
+    None only for a server that has no groups, which is every server that is
+    not a shipped brokerage. A brokerage always gets a list, empty included:
+    asking for nothing is a decision, and it must not be recorded as the
+    absence of one.
+
+    A caller that names no selection at all is refused rather than read as
+    either extreme. It is not the user declining everything -- nobody was asked
+    -- and it cannot be read as granting everything. An older page or a script
+    posting straight to this endpoint lands here, and a connector that says why
+    it stopped beats one that silently connects to a broker that then does
+    nothing.
+    """
+    vendor = vendor_for_url(server_url)
+    available = group_keys_for(vendor)
+    if not available:
+        return None
+    if requested is None:
+        raise McpOAuthError(
+            "this brokerage needs a capability selection before it can be "
+            "connected; reload the page (or update the app) and try again"
+        )
+    wanted = set(requested)
+    chosen = [key for key in available if key in wanted]
+    # Refused rather than repaired: adding the missing group would grant what
+    # the user switched off, and dropping the dependent one would store less
+    # than they asked for without telling them.
+    for key in chosen:
+        missing = [req for req in required_groups(vendor, key) if req not in wanted]
+        if missing:
+            needed = " and ".join(_group_words(req) for req in missing)
+            raise McpOAuthError(
+                f"{_group_words(key).capitalize()} can't be granted without "
+                f"{needed}. Turn on {needed}, or turn off {_group_words(key)}."
+            )
+    return chosen
+
+
+# What a refusal calls a group. The page shows the message as sent and the
+# labels are the client's, so these are plain words rather than the keys.
+_GROUP_WORDS = {"account": "account and positions", "trading": "live orders"}
+
+
+def _group_words(key: str) -> str:
+    return _GROUP_WORDS.get(key, key.replace("_", " "))
 
 
 async def start_connect(
@@ -283,8 +926,16 @@ async def start_connect(
     *,
     return_to: str | None = None,
     web_origin: str | None = None,
+    loopback_redirect: str | None = None,
+    expected_url: str | None = None,
+    granted_capabilities: Sequence[str] | None = None,
 ) -> StartedConnect:
-    """Phase 1: discovery + DCR + state/PKCE persist."""
+    """Phase 1: discovery + DCR + state/PKCE persist.
+
+    ``expected_url`` is the address the caller drew the row from, and connecting
+    is refused if the row has moved off it since. Optional because a caller that
+    does not name one has nothing to be wrong about; see ``McpServerMoved``.
+    """
     row = await get_catalog_server(user_id, server_name)
     if row is None:
         raise McpServerNotFound("MCP server not found")
@@ -294,18 +945,97 @@ async def start_connect(
     # sse-bound OAuth connection could never be used through the relay.
     if row.get("transport") != "http" or not server_url:
         raise McpOAuthError("OAuth connect requires a remote (http) MCP server")
-
-    redirect_uri = callback_uri()
-    async with oauth_http_client() as client:
-        prm, as_metadata, auth_server_url, www_scope = await _discover(
-            client, server_url
+    # Compared the way the callback compares its own record against the row, so
+    # the same edit reads the same on both ends of the flow.
+    if expected_url is not None and not same_consented_url(server_url, expected_url):
+        raise McpServerMoved(
+            "This server's address changed since the page was loaded"
         )
+    return await _start(
+        user_id,
+        server_name,
+        server_url,
+        return_to=return_to,
+        web_origin=web_origin,
+        loopback_redirect=loopback_redirect,
+        granted_capabilities=granted_capabilities,
+    )
 
-        scope = get_client_metadata_scopes(www_scope, prm, as_metadata)
+
+async def start_pending_connect(
+    user_id: str,
+    prepared: PreparedSignIn,
+    *,
+    return_to: str | None = None,
+    web_origin: str | None = None,
+    loopback_redirect: str | None = None,
+    granted_capabilities: Sequence[str] | None = None,
+) -> StartedConnect:
+    """Phase 1 for a server the sign-in itself saves (see ``services.mcp_saves``).
+
+    There is no row to read: ``prepared`` names the server and its address,
+    and carries what the callback writes once the user has signed in.
+    """
+    return await _start(
+        user_id,
+        prepared.server,
+        prepared.url,
+        return_to=return_to,
+        web_origin=web_origin,
+        loopback_redirect=loopback_redirect,
+        granted_capabilities=granted_capabilities,
+        pending=prepared,
+    )
+
+
+# The payload outlives its state record by this much, so a callback that
+# claims the state in its last second still finds what it is to save.
+_PENDING_GRACE_SECONDS = 60
+
+
+async def _start(
+    user_id: str,
+    server_name: str,
+    server_url: str,
+    *,
+    return_to: str | None,
+    web_origin: str | None,
+    loopback_redirect: str | None,
+    granted_capabilities: Sequence[str] | None,
+    pending: PreparedSignIn | None = None,
+) -> StartedConnect:
+    # Before the first packet leaves, not at the end beside the record it
+    # feeds. This raises for a caller that named no selection, and raising it
+    # after ``_register_client`` meant an older page or a script posting
+    # straight here had already created a DCR client at the vendor -- one
+    # nothing then persisted, since the state record is what carries it, and
+    # one more per retry. Nothing below depends on the answer, so there is no
+    # reason for it to wait.
+    consented = _consented_capabilities(server_url, granted_capabilities)
+
+    # One value, used for the authorize URL, the registration metadata and the
+    # state record alike — an AS is entitled to compare all three, and the token
+    # exchange in phase 2 reads it back from that record.
+    redirect_uri = sanitize_loopback_redirect(loopback_redirect) or callback_uri()
+    async with oauth_http_client() as client:
+        try:
+            prm, as_metadata, auth_server_url, www_scope = await _discover(
+                client, server_url
+            )
+        except OAuthHopBlocked as e:
+            logger.info("[mcp_oauth] discovery for %s refused: %s", server_name, e)
+            raise McpOAuthError(f"{_SIGN_IN_NOT_SET_UP}: {e}") from e
+
+        # Passing the grant types is what makes the SDK append ``offline_access``
+        # (SEP-2207). Without it, an AS that gates refresh tokens on that scope
+        # issues an access token that cannot be renewed, and the connection dies
+        # at the first expiry with no way back except a fresh authorize.
+        grant_types = ["authorization_code", "refresh_token"]
+        scope = get_client_metadata_scopes(www_scope, prm, as_metadata, grant_types)
         client_metadata = OAuthClientMetadata(
             client_name=CLIENT_NAME,
             redirect_uris=[redirect_uri],  # type: ignore[list-item]
-            grant_types=["authorization_code", "refresh_token"],
+            grant_types=grant_types,
             response_types=["code"],
             token_endpoint_auth_method="none",
             scope=scope,
@@ -317,7 +1047,7 @@ async def start_connect(
             as_metadata=as_metadata,
             auth_server_url=auth_server_url,
         )
-        client_info = await _register_client(
+        client_info, authorize_scope = await _register_client(
             client,
             user_id=user_id,
             server_name=server_name,
@@ -341,6 +1071,13 @@ async def start_connect(
     state = secrets.token_urlsafe(32)
     # Empty on a loopback callback: the record then takes the same skip path as
     # a pre-control record, so the verification logic needs no dev branch.
+    #
+    # This asks about the DEPLOYMENT, not about `redirect_uri`, and the two now
+    # differ: a loopback override means the AS answers a listener on the user's
+    # machine, which then drives that same browser to this deployment's own
+    # callback — where the cookie set here is present exactly as it always was.
+    # Deriving the skip from `redirect_uri` instead would drop the binding on
+    # precisely the flows that can still honor it.
     browser_nonce = "" if callback_is_loopback() else secrets.token_urlsafe(32)
 
     params: dict[str, str] = {
@@ -356,7 +1093,7 @@ async def start_connect(
     )
     if include_resource:
         params["resource"] = context.get_resource_url()
-    effective_scope = client_info.scope or scope
+    effective_scope = authorize_scope or client_info.scope or scope
     if effective_scope:
         params["scope"] = effective_scope
         # Refresh tokens hinge on offline_access for many providers; ask for
@@ -389,7 +1126,18 @@ async def start_connect(
         web_origin=sanitize_web_origin(web_origin),
         browser_nonce=browser_nonce,
         client_secret=client_info.client_secret or "",
+        granted_capabilities=consented,
+        pending=pending is not None,
     )
+    if pending is not None:
+        # Before the state record, so no callback can claim a state whose
+        # payload is not there yet.
+        await park(
+            state,
+            user_id=user_id,
+            prepared=pending,
+            ttl_seconds=STATE_TTL_SECONDS + _PENDING_GRACE_SECONDS,
+        )
     redis = _cache_client()
     stored = await redis.set(
         f"{_STATE_KEY_PREFIX}{state}",
@@ -398,7 +1146,13 @@ async def start_connect(
         ex=STATE_TTL_SECONDS,
     )
     if not stored:
+        if pending is not None:
+            await discard(state)
         raise McpOAuthError("state collision — retry the connect")
+    # Only now, with the new flow's record parked: an error on the way here
+    # leaves an older connect intact rather than retiring it for one that turned
+    # out not to exist.
+    await _supersede_inflight(user_id, _inflight_scope(server_name, server_url), state)
 
     # RFC 6749 §3.1 lets the authorization endpoint publish its own query
     # (tenant routing, etc.) and requires it be retained — appending with a bare
@@ -413,11 +1167,14 @@ async def start_connect(
         endpoint_parts.fragment,
     ))
     logger.info(
-        "[mcp_oauth] connect started user=%s server=%s issuer=%s",
-        user_id, server_name, record.issuer,
+        "[mcp_oauth] connect started user=%s server=%s issuer=%s pending=%s",
+        user_id, server_name, record.issuer, pending.kind if pending else "",
     )
     return StartedConnect(
-        authorize_url=authorize_url, state=state, browser_nonce=browser_nonce
+        authorize_url=authorize_url,
+        state=state,
+        browser_nonce=browser_nonce,
+        redirect_uri=redirect_uri,
     )
 
 
@@ -448,6 +1205,63 @@ async def _claim_state(state: str) -> ConnectState | None:
         return None
 
 
+class _ReconnectFinish:
+    """A connect for a row that already exists, which only the connection
+    is written for. A reconnect that lands switches the row back on."""
+
+    plugin = None
+
+    def __init__(self, record: ConnectState) -> None:
+        self.record = record
+        self.row: dict[str, Any] | None = None
+
+    async def before_exchange(self) -> None:
+        return None
+
+    async def after_exchange(self, bearer: str) -> None:
+        # The catalog row was validated in phase 1, up to STATE_TTL_SECONDS
+        # ago, long enough for the user to delete or re-point the server
+        # mid-consent. Persisting anyway would resurrect a connection with no
+        # catalog row behind it: invisible to the UI, refreshed forever by
+        # the sweeper, and silently inherited by a same-name recreate. The
+        # freshly exchanged token is dropped on the floor here; it simply
+        # expires.
+        row = await get_catalog_server(self.record.user_id, self.record.server_name)
+        if row is None or not same_consented_url(
+            row.get("url"), self.record.server_url
+        ):
+            raise CallbackFailed(CallbackError.SERVER_CHANGED)
+        self.row = row
+
+    async def write(self, store: StoreConnection) -> None:
+        try:
+            await store()
+        except Exception:
+            logger.exception(
+                "[mcp_oauth] could not settle consent for user=%s server=%s; "
+                "neither the connection nor its grant policy was written",
+                self.record.user_id, self.record.server_name,
+            )
+            raise CallbackFailed(CallbackError.INTERNAL) from None
+
+    async def after_connect(self) -> None:
+        if self.row is not None and self.row.get("enabled") is False:
+            # Connecting is how a user makes a server work, and their
+            # Disconnect is what switched it off, so a reconnect that lands
+            # brings it back.
+            await mcp_saves.switch_on(self.record.user_id, self.record.server_name)
+
+
+# A failure's sentence rides the redirect URL into a banner; past this it is
+# a log line, not something the user reads.
+_DETAIL_LIMIT = 200
+
+
+def _short(detail: str) -> str:
+    text = " ".join(detail.split())
+    return text if len(text) <= _DETAIL_LIMIT else text[: _DETAIL_LIMIT - 1] + "…"
+
+
 async def _resync_live_sandboxes(user_id: str) -> None:
     """Re-apply the config on the user's running workspaces after a connect.
 
@@ -459,12 +1273,8 @@ async def _resync_live_sandboxes(user_id: str) -> None:
     failure here delays convergence to the next turn.
     """
     try:
-        # Lazy: the scheduler lives in a router, and a service must not import
-        # an app module at import time.
-        from src.server.app.mcp_servers import _schedule_proactive_apply
-
         for workspace_id in await get_running_workspace_ids_for_user(user_id):
-            _schedule_proactive_apply(workspace_id, user_id)
+            schedule_proactive_apply(workspace_id, user_id)
     except Exception:
         logger.warning(
             "[mcp_oauth] post-connect sandbox resync failed for user=%s",
@@ -490,141 +1300,312 @@ async def complete_callback(
     ``browser_nonce`` is the value from the initiating browser's HttpOnly
     cookie; it must match the one minted into the state record, so a callback
     replayed in a different browser (which carries no such cookie) is refused.
+
+    What is written around the connection is the ``CallbackFinish``'s. A
+    reconnect writes the connection alone. A record marked ``pending`` saves
+    its server here (``services.mcp_saves``): the parked save is claimed with
+    the state, refused again before the code is spent, checked with the new
+    token, and only then written around the connection. Any failure leaves
+    none of it behind.
     """
     if not state:
-        return redirect_to(mcp_error="missing_state")
+        return redirect_to(mcp_error=CallbackError.MISSING_STATE)
     record = await _claim_state(state)
     if record is None:
+        # A payload whose state expired first; the sweep would reach it too,
+        # but it can hold secret values, so not later than now.
+        await discard(state)
         # Unknown, expired, or already used — uniform answer, no oracle.
-        return redirect_to(mcp_error="invalid_state")
+        return redirect_to(mcp_error=CallbackError.INVALID_STATE)
 
     server_name = record.server_name
+    finish: CallbackFinish = _ReconnectFinish(record)
 
-    def _fail(reason: str) -> str:
+    def _fail(reason: CallbackError, detail: str | None = None) -> str:
         logger.warning(
-            "[mcp_oauth] callback failed user=%s server=%s reason=%s",
-            record.user_id, server_name, reason,
+            "[mcp_oauth] callback failed user=%s server=%s reason=%s detail=%s",
+            record.user_id, server_name, reason, detail or "",
         )
+        extra: dict[str, str] = {}
+        if finish.plugin:
+            extra["plugin"] = finish.plugin
+        if detail:
+            extra["mcp_detail"] = _short(detail)
         # Absolute when the start request carried a browser Origin (split-port
         # dev: the callback's own origin is the API, which has no UI routes);
         # relative otherwise, resolving on the unified proxy/prod origin.
         return redirect_to(
             record.return_to, record.web_origin,
-            mcp_error=reason, server=server_name,
+            mcp_error=reason, server=server_name, **extra,
         )
 
-    # CSRF binding: the state is single-use and now claimed, so a mismatch here
-    # spends it (no retry oracle). An older-shaped record has an empty nonce and
-    # skips the check — it predates this control and can't be forged into one.
-    if record.browser_nonce and not secrets.compare_digest(
-        record.browser_nonce, browser_nonce or ""
-    ):
-        return _fail("state_mismatch")
+    # Everything past here can still fail in a way nothing above it planned
+    # for, and that failure is this flow's. The route that calls this is the
+    # last resort and has nothing to name -- the state is spent by now, so it
+    # cannot look the server back up -- and a redirect that names no server is
+    # one the return path refuses to attribute while another connect is out.
+    # That leaves the row this flow switched on standing with nothing behind
+    # it, and its marker to be reported as an abandoned connect on some later
+    # visit. So the promise in the docstring above is kept here rather than
+    # left to the caller.
+    async def _settle() -> str:
+        nonlocal finish
+        # Recomputed rather than carried on the record: the URL it reads is the
+        # consented one, pinned at phase 1, so both halves of the flow ask the
+        # same question of the same address.
+        scope = _inflight_scope(server_name, record.server_url)
 
-    if error:
-        # The AS reported denial/failure (user hit cancel, etc.).
-        logger.info(
-            "[mcp_oauth] authorization denied server=%s error=%s (%s)",
-            server_name, error, error_description or "",
-        )
-        return _fail("denied" if error == "access_denied" else "provider_error")
-    if not code:
-        return _fail("missing_code")
+        # First, so the payload is spent with the state whatever happens next.
+        if record.pending:
+            try:
+                finish = await mcp_saves.claim(state, record.user_id, server_name)
+            except CallbackFailed as e:
+                return _fail(e.reason, e.detail)
 
-    as_metadata = OAuthMetadata.model_validate(record.as_metadata)
+        # CSRF binding: the state is single-use and now claimed, so a mismatch here
+        # spends it (no retry oracle). An older-shaped record has an empty nonce and
+        # skips the check — it predates this control and can't be forged into one.
+        if record.browser_nonce and not secrets.compare_digest(
+            record.browser_nonce, browser_nonce or ""
+        ):
+            return _fail(CallbackError.STATE_MISMATCH)
+
+        # A record parked by a build that predates the consent field carries
+        # None here, and None is not a selection -- it is a flow that never
+        # asked. Stored, it becomes a connection granting none of the
+        # brokerage's curated groups: connected, and able to do nothing. The
+        # backfill cannot reach it either, since the connection row it would
+        # have corrected does not exist yet. So it fails the way ConnectState
+        # says an older-shaped record must, like an expired one, and the retry
+        # goes through a phase 1 that asks the question.
+        if record.granted_capabilities is None and group_keys_for(
+            vendor_for_url(record.server_url)
+        ):
+            return _fail(CallbackError.INVALID_STATE)
+
+        if error:
+            # The AS reported denial/failure (user hit cancel, etc.).
+            logger.info(
+                "[mcp_oauth] authorization denied server=%s error=%s (%s)",
+                server_name, error, error_description or "",
+            )
+            return _fail(
+                CallbackError.DENIED
+                if error == "access_denied"
+                else CallbackError.PROVIDER_ERROR
+            )
+        if not code:
+            return _fail(CallbackError.MISSING_CODE)
+
+        # The last thing checked before the code is spent. A newer connect for this
+        # pair may have started while this callback was in flight, and its supersede
+        # cannot reach a state record this flow had already claimed -- so ask here
+        # instead. Exchanging now would grant access that nothing on our side ends
+        # up pointing at, which is the whole failure the marker exists to prevent.
+        if await _is_superseded(record.user_id, scope, state):
+            return _fail(CallbackError.INVALID_STATE)
+
+        as_metadata = OAuthMetadata.model_validate(record.as_metadata)
+        try:
+            validate_authorization_response_iss(iss, as_metadata)
+        except Exception:
+            return _fail(CallbackError.ISSUER_MISMATCH)
+
+        # A save that can no longer land is refused while the code is unspent:
+        # spending it at a vendor that allows one connected platform per account
+        # costs the user their other one, for a server we then would not save.
+        try:
+            await finish.before_exchange()
+        except CallbackFailed as e:
+            return _fail(e.reason, e.detail)
+
+        client_info = OAuthClientInformationFull.model_validate(record.client_info)
+        # Re-attach the out-of-band secret (stripped from the blob at persist) so a
+        # confidential client authenticates its token exchange below.
+        if record.client_secret:
+            client_info.client_secret = record.client_secret
+
+        grant: dict[str, str] = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": record.redirect_uri,
+            "client_id": client_info.client_id or "",
+            "code_verifier": record.code_verifier,
+        }
+        if record.resource:
+            grant["resource"] = record.resource
+
+        try:
+            token = await exchange_token(
+                record.token_endpoint, grant, client_info=client_info
+            )
+        except TokenExchangeError as e:
+            # Both hop-block kinds: a policy rejection is always the pre-send one,
+            # so naming only the post-send kind here would report the case this
+            # error exists for as a generic exchange failure.
+            if e.kind in (TokenFailure.BLOCKED, TokenFailure.BLOCKED_PRE_SEND):
+                logger.warning("[mcp_oauth] token hop blocked: %s", e)
+                return _fail(CallbackError.BLOCKED_ENDPOINT)
+            logger.warning("[mcp_oauth] token exchange for %s: %s", server_name, e)
+            return _fail(CallbackError.TOKEN_EXCHANGE_FAILED)
+        except Exception:
+            logger.exception("[mcp_oauth] token exchange errored for %s", server_name)
+            return _fail(CallbackError.TOKEN_EXCHANGE_FAILED)
+
+        # Asked again across the exchange's round trip: a reconnect's row must
+        # still be the one consented to, and a save's server is checked with the
+        # token it just issued, so a sign-in the server does not accept saves
+        # nothing, the same rule every other save meets.
+        try:
+            await finish.after_exchange(token.access_token)
+        except CallbackFailed as e:
+            return _fail(e.reason, e.detail)
+
+        # Asked once more, with nothing but local statements left between here and
+        # the write. The read above happened before the token exchange, which is a
+        # network round trip to the vendor and room enough for a second connect to
+        # start -- and one starting there cannot retire a state this flow has
+        # already claimed. Without this the loser exchanges and then writes last,
+        # over the connection the winner just made.
+        if await _is_superseded(record.user_id, scope, state):
+            return _fail(CallbackError.INVALID_STATE)
+
+        # The consent and the policy that enforces it are one decision, so they
+        # commit together or not at all. Split across two transactions, a worker
+        # that dies between them leaves the row recording a narrowing that no
+        # grant enforces, and nothing later notices: the version bump below had
+        # not run either, so a warm session short-circuits on a matching version
+        # and never re-resolves.
+        #
+        # The consent write has to be here rather than left to the resync at the
+        # end, because everything below only makes sessions re-resolve
+        # *eventually* and the relay authorizes against the grant, not the
+        # connection. A reconnect that narrows consent must not leave the wider
+        # denial standing while a bump, a discovery round trip and a swallowed
+        # re-apply catch up -- that window is exactly long enough for the turn
+        # the user narrowed it for.
+        #
+        # The price is that a database failure discards a token exchange that
+        # already succeeded and the user authorizes again. That is the
+        # recoverable half of the trade; a withdrawn permission left live is
+        # not.
+        async def store() -> None:
+            async with get_db_connection() as db, db.transaction():
+                connection_id = await upsert_connection(
+                    record.user_id,
+                    server_name,
+                    server_url=record.server_url,
+                    access_token=token.access_token,
+                    refresh_token=token.refresh_token,
+                    client_secret=client_info.client_secret,
+                    token_type=token.token_type,
+                    scope=token.scope or record.scope,
+                    expires_at=token.expires_at,
+                    client_info=record.client_info,
+                    as_metadata=record.as_metadata,
+                    resource_metadata=record.resource_metadata,
+                    granted_capabilities=record.granted_capabilities,
+                    conn=db,
+                )
+                await apply_consent_to_active_grants(connection_id, conn=db)
+                # The exchange may have signed in another brokerage login.
+                await refuse_attempts_on_connection_change(
+                    record.user_id, server_name, conn=db
+                )
+                # So might the description: the one written for the account
+                # before is dropped, and the rediscovery below queues the next.
+                await drop_descriptions(
+                    await own_description_scope(record.user_id, server_name, conn=db),
+                    conn=db,
+                )
+            logger.info(
+                "[mcp_oauth] connected user=%s server=%s connection=%s "
+                "has_refresh=%s",
+                record.user_id, server_name,
+                connection_id, token.refresh_token is not None,
+            )
+
+        # A save writes its row around the connection, and takes the row back
+        # if the connection does not land.
+        try:
+            await finish.write(store)
+        except CallbackFailed as e:
+            return _fail(e.reason, e.detail)
+
+        # The connection is stored, and a save's row with it. Every step from
+        # here only makes it show up sooner, so each is best effort and none
+        # stops the next. Reported as a failure, a save that worked would send
+        # the user to retry, and a retry meets its own row as a name already
+        # taken.
+        try:
+            await finish.after_connect()
+        except Exception:
+            logger.warning(
+                "[mcp_oauth] post-connect step of the save failed for %s",
+                server_name, exc_info=True,
+            )
+
+        # Before the bump below rather than after it, so a session re-resolving
+        # on this row going live already sees whatever this grant cost the user
+        # elsewhere, instead of picking up a broker that is about to be torn
+        # down a moment later.
+        #
+        # Best effort: the grant is won and written by now, and failing the
+        # redirect over a sibling we could not tidy would report a connect that
+        # worked as an error. The row is left overstating itself, which is where
+        # it already was.
+        vendor = brokerage_for_url(record.server_url)
+        if vendor and vendor.exclusive_connection:
+            try:
+                await _drop_what_the_vendor_displaced(
+                    record.user_id, server_name, vendor
+                )
+            except Exception:
+                logger.warning(
+                    "[mcp_oauth] could not retire rows displaced by %s at %s",
+                    server_name, vendor.name, exc_info=True,
+                )
+
+        # Sessions must re-resolve: the server is now relay-bound. A bump
+        # that fails leaves warm sessions on the old config until the next.
+        try:
+            await bump_user_workspaces_mcp_version(record.user_id)
+        except Exception:
+            logger.warning(
+                "[mcp_oauth] post-connect version bump failed for user=%s",
+                record.user_id, exc_info=True,
+            )
+
+        # Best-effort host-side discovery so tools show up immediately; failure
+        # leaves a pending/error schema row, never a broken connection.
+        try:
+            from src.server.services.mcp_oauth.discovery import (
+                refresh_user_tool_schemas,
+            )
+
+            await refresh_user_tool_schemas(record.user_id, server_name)
+        except Exception:
+            logger.warning(
+                "[mcp_oauth] post-connect discovery failed for %s",
+                server_name, exc_info=True,
+            )
+
+        # After discovery either way: a success lands its schemas first, and the
+        # failure path is precisely the one that needs this — nothing was written to
+        # the user tier, so the read falls back to the pre-connect snapshot and the
+        # warm sandbox would otherwise never learn it is relay-bound.
+        await _resync_live_sandboxes(record.user_id)
+
+        done: dict[str, str] = {"mcp_connected": server_name}
+        if finish.plugin:
+            done["plugin"] = finish.plugin
+        return redirect_to(record.return_to, record.web_origin, **done)
+
     try:
-        validate_authorization_response_iss(iss, as_metadata)
+        return await _settle()
     except Exception:
-        return _fail("issuer_mismatch")
-
-    client_info = OAuthClientInformationFull.model_validate(record.client_info)
-    # Re-attach the out-of-band secret (stripped from the blob at persist) so a
-    # confidential client authenticates its token exchange below.
-    if record.client_secret:
-        client_info.client_secret = record.client_secret
-
-    grant: dict[str, str] = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": record.redirect_uri,
-        "client_id": client_info.client_id or "",
-        "code_verifier": record.code_verifier,
-    }
-    if record.resource:
-        grant["resource"] = record.resource
-
-    try:
-        token = await exchange_token(
-            record.token_endpoint, grant, client_info=client_info
+        logger.exception(
+            "[mcp_oauth] callback errored user=%s server=%s",
+            record.user_id, server_name,
         )
-    except TokenExchangeError as e:
-        # Both hop-block kinds: a policy rejection is always the pre-send one,
-        # so naming only the post-send kind here would report the case this
-        # error exists for as a generic exchange failure.
-        if e.kind in (TokenFailure.BLOCKED, TokenFailure.BLOCKED_PRE_SEND):
-            logger.warning("[mcp_oauth] token hop blocked: %s", e)
-            return _fail("blocked_endpoint")
-        logger.warning("[mcp_oauth] token exchange for %s: %s", server_name, e)
-        return _fail("token_exchange_failed")
-    except Exception:
-        logger.exception("[mcp_oauth] token exchange errored for %s", server_name)
-        return _fail("token_exchange_failed")
-
-    # The catalog row was validated in phase 1, up to STATE_TTL_SECONDS ago —
-    # long enough for the user to delete or re-point the server mid-consent.
-    # Persisting anyway would resurrect a connection with no catalog row behind
-    # it: invisible to the UI, refreshed forever by the sweeper, and silently
-    # inherited by a same-name recreate. The freshly exchanged token is dropped
-    # on the floor here; it simply expires.
-    catalog_row = await get_catalog_server(record.user_id, server_name)
-    if catalog_row is None or not same_consented_url(
-        catalog_row.get("url"), record.server_url
-    ):
-        return _fail("server_changed")
-
-    connection_id = await upsert_connection(
-        record.user_id,
-        server_name,
-        server_url=record.server_url,
-        access_token=token.access_token,
-        refresh_token=token.refresh_token,
-        client_secret=client_info.client_secret,
-        token_type=token.token_type,
-        scope=token.scope or record.scope,
-        expires_at=token.expires_at,
-        client_info=record.client_info,
-        as_metadata=record.as_metadata,
-        resource_metadata=record.resource_metadata,
-    )
-    logger.info(
-        "[mcp_oauth] connected user=%s server=%s connection=%s has_refresh=%s",
-        record.user_id, server_name,
-        connection_id, token.refresh_token is not None,
-    )
-
-    # Sessions must re-resolve: the server is now relay-bound.
-    await bump_user_workspaces_mcp_version(record.user_id)
-
-    # Best-effort host-side discovery so tools show up immediately; failure
-    # leaves a pending/error schema row, never a broken connection.
-    try:
-        from src.server.services.mcp_oauth.discovery import (
-            refresh_user_tool_schemas,
-        )
-
-        await refresh_user_tool_schemas(record.user_id, server_name)
-    except Exception:
-        logger.warning(
-            "[mcp_oauth] post-connect discovery failed for %s",
-            server_name, exc_info=True,
-        )
-
-    # After discovery either way: a success lands its schemas first, and the
-    # failure path is precisely the one that needs this — nothing was written to
-    # the user tier, so the read falls back to the pre-connect snapshot and the
-    # warm sandbox would otherwise never learn it is relay-bound.
-    await _resync_live_sandboxes(record.user_id)
-
-    return redirect_to(
-        record.return_to, record.web_origin, mcp_connected=server_name
-    )
+        return _fail(CallbackError.INTERNAL)

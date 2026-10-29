@@ -16,6 +16,7 @@ from src.server.models.chat import (
     SubagentMessageRequest,
     TTSRequest,
     _format_rejection_message,
+    rejection_feedback,
     serialize_hitl_response_map,
     summarize_hitl_response_map,
 )
@@ -83,6 +84,19 @@ class TestFormatRejectionMessage:
         assert "No specific feedback" in msg
 
 
+class TestRejectionFeedback:
+    """A tool that words its own result reads back only the user's words."""
+
+    def test_round_trips_the_users_words(self):
+        assert rejection_feedback(_format_rejection_message(" use my NVDA one ")) == (
+            "use my NVDA one"
+        )
+
+    def test_no_feedback_is_empty_not_the_placeholder(self):
+        assert rejection_feedback(_format_rejection_message(None)) == ""
+        assert rejection_feedback(None) == ""
+
+
 class TestSerializeHitlResponseMap:
     """serialize_hitl_response_map converts models to dicts."""
 
@@ -133,6 +147,30 @@ class TestSummarizeHitlResponseMap:
         raw = {"decisions": [123]}
         with pytest.raises(TypeError, match="Unsupported HITL decision type"):
             summarize_hitl_response_map({"i1": raw})
+
+    def test_an_order_reject_carries_its_reason_once(self):
+        # The client sends an order verdict in its positional slot and again
+        # under order_decisions; the reason must reach the stored message once.
+        raw = {
+            "decisions": [{"type": "reject", "message": "too rich"}],
+            "order_decisions": {
+                "11111111-2222-4333-8444-555555555555": {
+                    "type": "reject", "message": "too rich",
+                },
+            },
+        }
+        summary = summarize_hitl_response_map({"i1": raw})
+        assert summary["feedback_action"] == "DECLINED"
+        assert summary["content"] == "too rich"
+
+    def test_an_order_reject_alone_declines_the_turn(self):
+        raw = {
+            "decisions": [{"type": "approve"}],
+            "order_decisions": {
+                "11111111-2222-4333-8444-555555555555": {"type": "reject"},
+            },
+        }
+        assert summarize_hitl_response_map({"i1": raw})["feedback_action"] == "DECLINED"
 
 
 # ---------------------------------------------------------------------------
@@ -244,18 +282,20 @@ class TestChatRequest:
 
     def test_minimal(self):
         req = ChatRequest()
-        assert req.agent_mode is None
         assert req.messages == []
-        assert req.plan_mode is False
         assert req.hitl_response is None
 
-    def test_agent_mode_validation(self):
-        req = ChatRequest(agent_mode="flash")
-        assert req.agent_mode == "flash"
+    def test_retired_plan_mode_field_is_ignored(self):
+        # Channel gateways still send it; a 422 would drop their turns.
+        req = ChatRequest(plan_mode=True)
+        assert not hasattr(req, "plan_mode")
 
-    def test_invalid_agent_mode(self):
-        with pytest.raises(ValidationError):
-            ChatRequest(agent_mode="turbo")
+    def test_retired_agent_mode_field_is_ignored(self):
+        # Cached web clients and older CLI builds still send it; a 422 would
+        # drop their turns.
+        req = ChatRequest(agent_mode="flash", workspace_id="ws-1")
+        assert not hasattr(req, "agent_mode")
+        assert req.workspace_id == "ws-1"
 
     def test_reasoning_effort_values(self):
         for level in ("low", "medium", "high", "xhigh"):
@@ -310,6 +350,30 @@ class TestChatRequest:
         with pytest.raises(ValidationError):
             ChatRequest(platform=platform)
 
+    def test_surface_rules_defaults_to_none(self):
+        assert ChatRequest().surface_rules is None
+
+    def test_surface_rules_keeps_the_text_it_was_sent(self):
+        rules = "Surface slack: plain text, one message per answer."
+        assert ChatRequest(surface_rules=rules).surface_rules == rules
+
+    @pytest.mark.parametrize("sent", ["", "   ", "\n\t "])
+    def test_blank_surface_rules_are_no_rules(self, sent):
+        """A gateway with nothing to say and one that drops the key have to
+        land in the same state, or the model gets an empty paragraph."""
+        assert ChatRequest(surface_rules=sent).surface_rules is None
+
+    def test_surface_rules_are_stripped(self):
+        assert ChatRequest(surface_rules="  keep this  ").surface_rules == "keep this"
+
+    def test_surface_rules_are_capped(self):
+        """The text rides in every thread that changes it, so an unbounded
+        field is an unbounded prompt."""
+        assert ChatRequest(surface_rules="x" * 2000).surface_rules == "x" * 2000
+
+        with pytest.raises(ValidationError):
+            ChatRequest(surface_rules="x" * 2001)
+
 
 # ---------------------------------------------------------------------------
 # Utility request models
@@ -340,3 +404,50 @@ class TestSubagentMessageRequest:
     def test_content_required(self):
         with pytest.raises(ValidationError):
             SubagentMessageRequest()
+
+    def test_input_id_is_optional(self):
+        assert SubagentMessageRequest(content="Do X").input_id is None
+
+    def test_input_id_accepts_a_client_token(self):
+        req = SubagentMessageRequest(
+            content="Do X", input_id="1b4e28ba-2fa1-41d2-883f-0016d3cca427"
+        )
+        assert req.input_id == "1b4e28ba-2fa1-41d2-883f-0016d3cca427"
+
+    @pytest.mark.parametrize("input_id", ["", "a b", "../queue", "x" * 65, "id\n"])
+    def test_input_id_rejects_anything_but_a_short_safe_token(self, input_id):
+        with pytest.raises(ValidationError):
+            SubagentMessageRequest(content="Do X", input_id=input_id)
+
+
+# ---------------------------------------------------------------------------
+# Request keys
+# ---------------------------------------------------------------------------
+
+
+class TestRequestKey:
+    """The key lands in a UUID column, so the request model has to refuse what
+    the column would, as a validation error rather than a failed insert."""
+
+    @pytest.mark.parametrize("model", ["send", "retry"])
+    @pytest.mark.parametrize("key", ["not-a-uuid", "", "4f121907-7851-438c-93ea"])
+    def test_refuses_a_key_that_is_not_a_uuid(self, model, key):
+        with pytest.raises(ValidationError):
+            _request(model, key)
+
+    @pytest.mark.parametrize("model", ["send", "retry"])
+    def test_keeps_a_uuid_in_its_canonical_form(self, model):
+        key = "4F121907-7851-438C-93EA-023DD02A6914"
+        assert _request(model, key).request_key == key.lower()
+
+    @pytest.mark.parametrize("model", ["send", "retry"])
+    def test_a_key_is_optional(self, model):
+        assert _request(model, None).request_key is None
+
+
+def _request(model: str, key):
+    from src.server.models.workflow import RetryRequest
+
+    if model == "send":
+        return ChatRequest(messages=[], request_key=key)
+    return RetryRequest(workspace_id="ws", request_key=key)

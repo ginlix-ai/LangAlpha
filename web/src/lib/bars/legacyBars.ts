@@ -11,7 +11,7 @@
 import { api } from '@/api/client';
 
 import { coerceWatermark, rowsToChartBars } from './barsClient';
-import { timezoneForSymbol } from './exchanges';
+import { isIndexFamilySpelling, timezoneForSymbol } from './exchanges';
 import type { ChartBar, LoaderMeta } from './marketProtocol';
 
 export interface StockDataResult {
@@ -19,8 +19,9 @@ export interface StockDataResult {
   error?: string;
   /**
    * Cache/presentation metadata from the response envelope. Legacy endpoints
-   * ship `{watermark, complete, market_phase, truncated, cached}`; the protocol
-   * endpoint additionally carries currency/decimals.
+   * ship `{watermark, complete, market_phase, truncated, cached, revision}` in
+   * `cache` and currency, freshness and price treatment on the body; the
+   * protocol endpoint adds decimals and the next phase change.
    */
   meta?: LoaderMeta;
 }
@@ -38,8 +39,14 @@ function parseLoaderMeta(body: Record<string, unknown> | null | undefined): Load
     nextChangeAt: typeof envelope?.next_change_at === 'number' ? envelope.next_change_at : null,
     truncated: typeof envelope?.truncated === 'boolean' ? envelope.truncated : undefined,
     cached: typeof envelope?.cached === 'boolean' ? envelope.cached : undefined,
-    currency: (envelope?.price_currency as string) || undefined,
+    revision: typeof envelope?.revision === 'number' ? envelope.revision : undefined,
+    // `currency` rides the body (next to `symbol`/`data`), not the cache block.
+    currency: ((body?.currency ?? body?.price_currency ?? envelope?.price_currency) as string) || undefined,
     displayDecimals: typeof envelope?.display_decimals === 'number' ? envelope.display_decimals : undefined,
+    // Measured freshness rides the body (next to `symbol`/`data`), like currency.
+    freshness: (body?.freshness as LoaderMeta['freshness']) ?? null,
+    // So does the adjustment basis, which a live chart checks every poll against.
+    priceTreatment: typeof body?.price_treatment === 'string' ? body.price_treatment : undefined,
   };
 }
 
@@ -60,12 +67,11 @@ export async function fetchStockData(
   }
 
   const symbolUpper = symbol.trim().toUpperCase();
-  const isIndex = symbolUpper.startsWith('^');
 
   try {
     // Use daily endpoint for 1day interval, intraday endpoint for everything else
     const isDaily = interval === '1day';
-    const market = isIndex ? 'indexes' : 'stocks';
+    const market = isIndexFamilySpelling(symbolUpper) ? 'indexes' : 'stocks';
     const url = isDaily
       ? `/api/v1/market-data/daily/${market}/${encodeURIComponent(symbolUpper)}`
       : `/api/v1/market-data/intraday/${market}/${encodeURIComponent(symbolUpper)}`;
@@ -76,10 +82,16 @@ export async function fetchStockData(
 
     const { data } = await api.get(url, { params, signal });
 
-    const dataPoints = data?.data || [];
+    const dataPoints = data?.data;
 
-    if (!Array.isArray(dataPoints) || dataPoints.length === 0) {
+    // A body with no bars array (an HTML page answering in the backend's
+    // place, which the client hands over as text) is a failure, not an answer.
+    if (!Array.isArray(dataPoints)) {
       return { data: [], error: 'No data available' };
+    }
+    // No bars is an answer, not a failure: each caller words its own empty state.
+    if (dataPoints.length === 0) {
+      return { data: [] };
     }
 
     // Backend returns { time: <unix_ms>, open, high, low, close, volume } →
@@ -100,8 +112,8 @@ export async function fetchStockData(
       return { data: [], error: 'Request cancelled' };
     }
     console.error('Error fetching stock data from backend:', error);
-    const axiosError = error as { response?: { data?: { detail?: string } }; message?: string };
-    const errorMsg = axiosError?.response?.data?.detail || axiosError?.message || 'Failed to fetch stock data';
+    const apiError = error as { response?: { data?: { detail?: string } }; message?: string };
+    const errorMsg = apiError?.response?.data?.detail || apiError?.message || 'Failed to fetch stock data';
     return { data: [], error: errorMsg };
   }
 }

@@ -17,7 +17,6 @@ interface CryptoHeatmapConfig {
 function CryptoHeatmapWidget({ instance }: WidgetRenderProps<CryptoHeatmapConfig>) {
   return (
     <TradingViewEmbed
-      card
       scriptKey="crypto-coins-heatmap"
       config={{
         ...instance.config,

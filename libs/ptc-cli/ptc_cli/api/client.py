@@ -20,6 +20,23 @@ from ptc_cli.api.models import Message
 console = Console()
 
 
+class WorkspaceNameError(Exception):
+    """The server refused a workspace name; the message says why, for the user."""
+
+
+class WorkspaceNameTakenError(WorkspaceNameError):
+    """The user already has a workspace by this name; ``workspace_id`` is it."""
+
+    def __init__(self, message: str, workspace_id: str | None) -> None:
+        """Keep the holder's id so the caller can use that workspace instead."""
+        super().__init__(message)
+        self.workspace_id = workspace_id
+
+
+class WorkspaceNameInvalidError(WorkspaceNameError):
+    """The name is reserved, or has nothing left once made a folder name."""
+
+
 class SSEStreamClient:
     """
     Client for SSE streaming from PTC Agent server.
@@ -49,6 +66,7 @@ class SSEStreamClient:
         self.user_id = user_id or os.getenv("AUTH_USER_ID", "cli_user")
         self.timeout = timeout
         self.client = httpx.AsyncClient(timeout=timeout)
+        self._home_workspace_id: Optional[str] = None
 
         # Session state
         self.workspace_id: Optional[str] = None
@@ -57,7 +75,6 @@ class SSEStreamClient:
 
         # Message accumulation
         self.current_message: Message = Message()
-        self.last_plan_data: Optional[Dict[str, Any]] = None
 
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -171,8 +188,47 @@ class SSEStreamClient:
             json={"name": name},
             timeout=120.0,  # Extended timeout for sandbox creation
         )
+        if response.status_code in (httpx.codes.CONFLICT, httpx.codes.BAD_REQUEST):
+            try:
+                detail = response.json().get("detail")
+            except ValueError:
+                detail = None
+            code = detail.get("code") if isinstance(detail, dict) else None
+            if code == "workspace_name_taken":
+                raise WorkspaceNameTakenError(
+                    detail.get("message") or f'A workspace named "{name}" already exists.',
+                    detail.get("workspace_id"),
+                )
+            if code == "workspace_name_invalid":
+                raise WorkspaceNameInvalidError(
+                    detail.get("message") or f'"{name}" cannot be used as a workspace name.'
+                )
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            # The request model checks the name's length before the server's
+            # own name rules can answer with a code.
+            try:
+                errors = response.json().get("detail")
+            except ValueError:
+                errors = None
+            for error in errors if isinstance(errors, list) else ():
+                if isinstance(error, dict) and list(error.get("loc") or ())[-1:] == ["name"]:
+                    raise WorkspaceNameInvalidError(
+                        f'"{name}" cannot be used as a workspace name: {error.get("msg")}.'
+                    )
         response.raise_for_status()
         return response.json()
+
+    async def home_workspace_id(self) -> str:
+        """The id of the user's Home, where a turn outside any workspace runs.
+
+        It derives from the user, so one call per client is enough.
+        """
+        if self._home_workspace_id is None:
+            url = urljoin(self.base_url, "/api/v1/workspaces/home")
+            response = await self.client.post(url, headers=self._make_headers())
+            response.raise_for_status()
+            self._home_workspace_id = response.json()["workspace_id"]
+        return self._home_workspace_id
 
     async def get_workspace(self, workspace_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -205,21 +261,6 @@ class SSEStreamClient:
             Updated workspace dict
         """
         url = urljoin(self.base_url, f"/api/v1/workspaces/{workspace_id}/start")
-        response = await self.client.post(url, headers=self._make_headers(), timeout=30.0)
-        response.raise_for_status()
-        return response.json()
-
-    async def stop_workspace(self, workspace_id: str) -> Dict[str, Any]:
-        """
-        Stop a running workspace (keeps sandbox for later).
-
-        Args:
-            workspace_id: Workspace identifier
-
-        Returns:
-            Updated workspace dict
-        """
-        url = urljoin(self.base_url, f"/api/v1/workspaces/{workspace_id}/stop")
         response = await self.client.post(url, headers=self._make_headers(), timeout=30.0)
         response.raise_for_status()
         return response.json()
@@ -347,7 +388,7 @@ class SSEStreamClient:
         return response.json()
 
     async def replay_thread(self, thread_id: str) -> AsyncGenerator[tuple[str, Dict[str, Any]], None]:
-        """Replay a completed thread from persisted streaming chunks."""
+        """Replay a completed thread, projected from its checkpoints."""
         url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/messages/replay")
 
         async with self.client.stream(
@@ -369,9 +410,9 @@ class SSEStreamClient:
         message: str,
         thread_id: Optional[str] = None,
         hitl_response: Optional[Dict[str, Any]] = None,
-        plan_mode: bool = False,
         llm_model: Optional[str] = None,
-        agent_mode: Optional[str] = None,
+        *,
+        in_home: bool = False,
         **kwargs,
     ) -> AsyncGenerator[tuple[str, Dict[str, Any]], None]:
         """
@@ -381,9 +422,9 @@ class SSEStreamClient:
             message: User message (can be empty for resume)
             thread_id: Thread identifier for conversation continuity
             hitl_response: HITL interrupt response (for resume)
-            plan_mode: Whether to enable plan mode (agent submits plan for approval)
             llm_model: LLM model name from models.json (e.g., 'minimax-m3')
-            agent_mode: Agent mode ('flash' for Flash Agent, None for default)
+            in_home: Run the turn in the user's Home rather than the
+                client's workspace
             **kwargs: Additional request parameters
 
         Yields:
@@ -399,24 +440,15 @@ class SSEStreamClient:
         else:
             url = urljoin(self.base_url, f"/api/v1/threads/{effective_thread_id}/messages")
 
-        # Only require workspace for non-flash mode
-        if agent_mode != "flash":
-            workspace_id = self._require_workspace()
+        if in_home:
+            workspace_id = await self.home_workspace_id()
         else:
-            workspace_id = None
+            workspace_id = self._require_workspace()
 
         request_body = {
             "messages": [{"role": "user", "content": message}] if message else [],
-            "plan_mode": plan_mode,
+            "workspace_id": workspace_id,
         }
-
-        # Add workspace_id only if not flash mode
-        if workspace_id:
-            request_body["workspace_id"] = workspace_id
-
-        # Add agent_mode if specified
-        if agent_mode:
-            request_body["agent_mode"] = agent_mode
 
         # Add LLM model if specified
         if llm_model:
@@ -658,7 +690,3 @@ class SSEStreamClient:
 
         # Accumulate message chunks
         self.current_message.merge_event(event_type, event_data)
-
-        # Capture plan data
-        if self.current_message.plan_data:
-            self.last_plan_data = self.current_message.plan_data

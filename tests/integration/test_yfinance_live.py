@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.yahoo, pytest.mark.asyncio]
 
 _SYMBOL = "AAPL"
 
@@ -100,7 +100,7 @@ class TestYFinanceFinancialSourceLive:
         m = result[0]
         assert m["symbol"] == _SYMBOL
         assert m["marketCap"] and m["marketCap"] > 0
-        assert m["peRatio"] is not None
+        assert m["returnOnEquityTTM"] is not None
 
     async def test_get_financial_ratios(self):
         from src.data_client.yfinance.financial_source import YFinanceFinancialSource
@@ -110,7 +110,9 @@ class TestYFinanceFinancialSourceLive:
         assert len(result) == 1
         r = result[0]
         assert r["symbol"] == _SYMBOL
-        assert r["returnOnEquity"] is not None
+        assert r["priceToEarningsRatioTTM"] is not None
+        # A ratio, not the percent Yahoo reports it as.
+        assert 0 < r["debtToEquityRatioTTM"] < 10
 
     async def test_get_price_performance(self):
         from src.data_client.yfinance.financial_source import YFinanceFinancialSource

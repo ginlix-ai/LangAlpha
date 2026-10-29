@@ -1,11 +1,11 @@
 /**
- * Lightweight-charts v4 series primitive that draws the agent annotation
+ * Lightweight-charts series primitive that draws the agent annotation
  * shapes LWC has no native API for: rectangles (zones), vertical lines,
  * free-floating text, and Fibonacci retracement levels.
  *
  * Price lines, trendlines, and markers are handled elsewhere via native
- * LWC APIs (createPriceLine / addLineSeries / setMarkers); this primitive
- * only owns the canvas-drawn geometry.
+ * LWC APIs (createPriceLine / addSeries(LineSeries) / the markers plugin);
+ * this primitive only owns the canvas-drawn geometry.
  *
  * The hook (`useAgentAnnotations`) converts store annotations into the
  * coordinate-free item arrays below (times as unix seconds, prices as
@@ -24,9 +24,9 @@
  */
 
 import type {
-  ISeriesPrimitivePaneView,
-  ISeriesPrimitivePaneRenderer,
-  SeriesPrimitivePaneViewZOrder,
+  IPrimitivePaneView,
+  IPrimitivePaneRenderer,
+  PrimitivePaneViewZOrder,
   Time,
   IChartApiBase,
 } from 'lightweight-charts';
@@ -303,16 +303,16 @@ export class AgentAnnotationsPrimitive {
 
   updateAllViews(): void {}
 
-  paneViews(): ISeriesPrimitivePaneView[] {
+  paneViews(): IPrimitivePaneView[] {
     const source = this;
     // Two views: rectangle fills sit below the candles; everything else
     // (borders, lines, text, fib levels) draws on top.
     return [
       {
-        zOrder(): SeriesPrimitivePaneViewZOrder {
+        zOrder(): PrimitivePaneViewZOrder {
           return 'bottom';
         },
-        renderer(): ISeriesPrimitivePaneRenderer {
+        renderer(): IPrimitivePaneRenderer {
           return {
             draw(target: CanvasRenderingTarget2D): void {
               source._drawFills(target);
@@ -321,10 +321,10 @@ export class AgentAnnotationsPrimitive {
         },
       },
       {
-        zOrder(): SeriesPrimitivePaneViewZOrder {
+        zOrder(): PrimitivePaneViewZOrder {
           return 'top';
         },
-        renderer(): ISeriesPrimitivePaneRenderer {
+        renderer(): IPrimitivePaneRenderer {
           return {
             draw(target: CanvasRenderingTarget2D): void {
               source._drawForeground(target);

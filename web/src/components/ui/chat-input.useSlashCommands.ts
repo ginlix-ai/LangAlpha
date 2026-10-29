@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type RefObject, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getSkills } from '@/pages/ChatAgent/utils/api';
+import { useSkills } from '@/hooks/useSkills';
 import { BUILTIN_SLASH_COMMANDS, findTriggerIndex, slashRank } from './chat-input.helpers';
 import type { SlashCommand } from './chat-input.types';
 
@@ -13,12 +13,12 @@ export function useSlashCommands({
   textareaRef,
   message,
   setMessage,
-  mode,
+  workspaceId,
 }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
-  mode?: 'fast' | 'ptc';
+  workspaceId?: string | null;
 }) {
   const { t } = useTranslation();
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
@@ -26,14 +26,13 @@ export function useSlashCommands({
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const [slashStart, setSlashStart] = useState(-1);
-  const [skills, setSkills] = useState<Array<{ command?: string; name: string; description?: string }>>([]);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Fetch skills filtered by agent mode (re-fetches when mode changes; cached per mode in api.js)
-  const skillsMode = mode === 'fast' ? 'flash' : 'ptc';
-  useEffect(() => {
-    getSkills(skillsMode).then((s: unknown[]) => setSkills(s as typeof skills)).catch(() => { });
-  }, [skillsMode]);
+  // Enabled-only skills, via React Query so a skill uploaded or toggled on the
+  // Plugins page reaches this menu without a reload. Inside a workspace this
+  // is the workspace-effective view, so workspace-scoped skills surface here
+  // too.
+  const { data: skills = [] } = useSkills({ workspaceId });
 
   const filtered = useMemo(() => {
     if (!open) return [];

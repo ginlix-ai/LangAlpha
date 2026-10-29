@@ -70,7 +70,7 @@ export function RowAttachButton({ instanceId, rowId, className }: RowAttachButto
       title={t('dashboard.widgets.frame.addRowToContextTitle', { defaultValue: 'Attach to chat' })}
     >
       {busy ? (
-        <span aria-hidden="true" className="flex-shrink-0">
+        <span aria-hidden="true" className="shrink-0">
           <Loader size={12} className="text-current" />
         </span>
       ) : <Paperclip className="h-3 w-3" />}

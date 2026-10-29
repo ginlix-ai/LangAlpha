@@ -1,22 +1,68 @@
-import React, { useCallback, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { LayoutGrid, PanelLeftClose, PanelLeftOpen, SquarePen } from 'lucide-react';
+import { ArrowLeft, ArrowRight, LayoutGrid, PanelLeftClose, PanelLeftOpen, Plus, SquarePen } from 'lucide-react';
 import logoLight from '../../assets/img/logo.svg';
 import logoDark from '../../assets/img/logo-dark.svg';
 import { useTheme } from '../../contexts/ThemeContext';
-import { NAV_ITEMS } from '../nav/navItems';
 import { useNavActive } from '../nav/useNavActive';
+import { useNavItems } from '../nav/useNavItems';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import NavigationPanel from '@/pages/ChatAgent/components/NavigationPanel';
 import NavDisplayOptions from '@/pages/ChatAgent/components/NavDisplayOptions';
+import { useCreateWorkspace } from '@/pages/ChatAgent/hooks/useCreateWorkspace';
 import { useNavTreeProps } from '@/pages/ChatAgent/hooks/useNavTreeProps';
 import type { NavWorkspace } from '@/pages/ChatAgent/hooks/useNavigationData';
+import type { Workspace } from '@/types/api';
 import AccountMenu from './AccountMenu';
 import { useChatRoute } from './useChatRoute';
 import { useSidebarAgents } from '@/pages/ChatAgent/components/sidebarAgentsBridge';
+import { useWorkspaceLabel } from '@/hooks/useWorkspaceLabel';
+import { GettingStartedGate } from '@/pages/Onboarding';
 import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth } from './sidebarWidth';
 import './Sidebar.css';
+
+interface NavigationLike {
+  canGoBack: boolean;
+  canGoForward: boolean;
+  addEventListener: (type: string, fn: () => void) => void;
+  removeEventListener: (type: string, fn: () => void) => void;
+}
+
+/** Back/forward for the desktop titlebar row; hidden elsewhere by CSS. */
+function HistoryButtons() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  // Without the Navigation API the stack depth is unknowable, so both stay live.
+  const [can, setCan] = useState({ back: true, forward: true });
+  useEffect(() => {
+    if (!document.documentElement.classList.contains('desktop-mac')) return;
+    const nav = (window as unknown as { navigation?: NavigationLike }).navigation;
+    if (!nav) return;
+    const sync = () =>
+      setCan((prev) =>
+        prev.back === nav.canGoBack && prev.forward === nav.canGoForward
+          ? prev
+          : { back: nav.canGoBack, forward: nav.canGoForward },
+      );
+    sync();
+    nav.addEventListener('currententrychange', sync);
+    return () => nav.removeEventListener('currententrychange', sync);
+  }, []);
+  return (
+    <div className="sidebar-history">
+      <button type="button" className="sidebar-collapse-btn" disabled={!can.back} onClick={() => navigate(-1)} aria-label={t('sidebar.back', 'Back')} title={t('sidebar.back', 'Back')}>
+        <ArrowLeft className="h-4 w-4" />
+      </button>
+      <button type="button" className="sidebar-collapse-btn" disabled={!can.forward} onClick={() => navigate(1)} aria-label={t('sidebar.forward', 'Forward')} title={t('sidebar.forward', 'Forward')}>
+        <ArrowRight className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+// Off the entry chunk: the modal is only needed once the button is pressed.
+const CreateWorkspaceModal = lazy(() => import('@/pages/ChatAgent/components/CreateWorkspaceModal'));
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -31,7 +77,7 @@ interface AppSidebarProps {
  * App-shell sidebar combining the old icon rail and the chat-only overlay
  * thread panel into one Codex-style panel: primary nav up top, the
  * workspace/thread tree below, account row at the bottom. Collapses back to
- * the 80px icon rail (state owned by AuthenticatedShell, which also drives
+ * the icon rail (state owned by AuthenticatedShell, which also drives
  * --sidebar-width so the content column follows).
  */
 function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSidebarProps) {
@@ -39,6 +85,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
   const { t } = useTranslation();
   const { theme } = useTheme();
   const isActive = useNavActive();
+  const navItems = useNavItems();
   const logo = theme === 'light' ? logoDark : logoLight;
 
   const widthRef = useRef(width);
@@ -98,22 +145,18 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
   const sidebarAgents = useSidebarAgents();
   const agentsSlice = sidebarAgents && sidebarAgents.threadId === currentThreadId ? sidebarAgents : null;
 
-  // Read back the tree's rows without making the new-thread handler depend on
-  // them — the handler is an input to the hook that produces them.
-  const workspacesRef = useRef<NavWorkspace[]>([]);
-
   // DESKTOP INTENT: the tree's ✎ opens the workspace HOME (thread gallery —
   // centered composer + recent tasks, Codex-style D14), not a blank thread.
   // The mobile drawer deliberately differs; see ChatView's handleNewThread.
-  const openWorkspaceHome = useCallback((wsId: string) => {
-    const ws = workspacesRef.current.find((w) => w.workspace_id === wsId);
+  const workspaceLabel = useWorkspaceLabel();
+  const openWorkspaceHome = useCallback((wsId: string, ws: NavWorkspace | undefined) => {
     navigate(`/chat/${wsId}`, {
       state: {
-        workspaceName: ws?.name || 'Workspace',
+        workspaceName: workspaceLabel(ws) || 'Workspace',
         workspaceStatus: ws?.status || null,
       },
     });
-  }, [navigate]);
+  }, [navigate, workspaceLabel]);
 
   const navTreeProps = useNavTreeProps({
     currentWorkspaceId,
@@ -121,7 +164,6 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
     agents: agentsSlice,
     onNewThread: openWorkspaceHome,
   });
-  workspacesRef.current = navTreeProps.workspaces;
 
   // New chat opens the workspace gallery — picking (or creating) the workspace
   // is part of starting a conversation. The tree's per-workspace ✎ skips the
@@ -132,14 +174,22 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
 
   const openGallery = useCallback(() => navigate('/chat'), [navigate]);
 
+  // Same create flow as the gallery, without leaving the current page first.
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const createWorkspace = useCreateWorkspace();
+  const openCreatedWorkspace = useCallback((ws: Workspace) => {
+    navigate(`/chat/${ws.workspace_id}`, { state: { workspaceName: ws.name, workspaceStatus: null } });
+  }, [navigate]);
+
   // One persistent <aside> so the width transition runs across mode flips;
   // the keyed fragments force each mode's content to cleanly remount (React
   // would otherwise morph rail nodes into panel nodes in place), which lets
   // the sidebar-content-in mount animation choreograph the swap.
   if (collapsed) {
     return (
-      <aside className="sidebar">
+      <aside className="sidebar" data-chrome>
         <React.Fragment key="rail">
+        <div className="sidebar-window-drag" aria-hidden="true" />
         <button
           type="button"
           className="sidebar-logo"
@@ -158,7 +208,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
         </button>
         <nav className="sidebar-nav">
           <TooltipProvider delayDuration={300}>
-            {NAV_ITEMS.map((item) => {
+            {navItems.map((item) => {
               const Icon = item.icon;
               const label = t(item.labelKey);
               const active = isActive(item);
@@ -183,6 +233,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
           </TooltipProvider>
         </nav>
         <div className="sidebar-bottom">
+          <GettingStartedGate variant="rail" onExpand={onToggleCollapse} />
           <AccountMenu />
         </div>
         </React.Fragment>
@@ -191,9 +242,12 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
   }
 
   return (
-    <aside className="sidebar sidebar--panel">
+    <aside className="sidebar sidebar--panel" data-chrome>
       <React.Fragment key="panel">
-      <div className="sidebar-panel-header">
+      <div className="sidebar-window-drag" aria-hidden="true" />
+      {/* The brand row doubles as titlebar: the buttons inside it declare
+          no-drag for themselves, so only the gaps move the window. */}
+      <div className="sidebar-panel-header" data-chrome="drag">
         <button
           type="button"
           className="sidebar-brand"
@@ -211,6 +265,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
         >
           <PanelLeftClose className="h-4 w-4" />
         </button>
+        <HistoryButtons />
       </div>
 
       <nav className="sidebar-panel-nav">
@@ -218,7 +273,7 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
           <SquarePen className="sidebar-panel-item-icon" />
           <span>{t('sidebar.newChat')}</span>
         </button>
-        {NAV_ITEMS.filter((item) => item.key !== '/chat').map((item) => {
+        {navItems.filter((item) => item.key !== '/chat').map((item) => {
           const Icon = item.icon;
           const active = isActive(item);
           return (
@@ -240,6 +295,14 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
           {t('sidebar.workspaces')}
         </button>
         <div className="sidebar-section-actions">
+          <button
+            className="nav-panel-dismiss-btn sidebar-section-action-btn"
+            onClick={() => setIsCreateOpen(true)}
+            aria-label={t('workspace.newWorkspace')}
+            title={t('workspace.newWorkspace')}
+          >
+            <Plus className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+          </button>
           <NavDisplayOptions />
           <button
             className="nav-panel-dismiss-btn sidebar-section-action-btn"
@@ -256,9 +319,22 @@ function AppSidebar({ collapsed, onToggleCollapse, width, onWidthChange }: AppSi
         <NavigationPanel {...navTreeProps} />
       </div>
 
+      <GettingStartedGate variant="row" />
+
       <div className="sidebar-panel-bottom">
         <AccountMenu variant="row" />
       </div>
+
+      {isCreateOpen && (
+        <Suspense fallback={null}>
+          <CreateWorkspaceModal
+            isOpen
+            onClose={() => setIsCreateOpen(false)}
+            onCreate={createWorkspace}
+            onComplete={openCreatedWorkspace}
+          />
+        </Suspense>
+      )}
 
       {/* Edge drag = resize (double-click resets to the default width). */}
       <div

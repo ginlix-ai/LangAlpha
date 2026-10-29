@@ -1,19 +1,25 @@
 /**
- * History replay: rebuild the full transcript (main turns, interrupts,
- * compaction notices, task artifacts) from the server-side replay stream,
- * then hand replayed task events to the subagent projection. Extracted from
+ * History replay: rebuild the transcript (main turns, interrupts, compaction
+ * notices, task artifacts) from the server-side replay stream, then hand
+ * replayed task events to the subagent projection. Extracted from
  * useChatMessages (carve B); consumes the HistoryRuntime lane port.
+ *
+ * A long thread is replayed a page at a time: the newest page when the thread
+ * opens (loadConversationHistory), then older pages prepended as the reader
+ * scrolls up (olderPages, which replays each through this loader).
  */
 
+import i18n from '@/i18n';
+import { isOnline } from '@/lib/network';
 import type { AssistantMessage } from '@/types/chat';
 import { replayThreadHistory } from '../../utils/api';
 import { setStoredThreadId } from '../../hooks/utils/threadStorage';
 import { updateMessage } from '../../hooks/utils/messageHelpers';
-import type { HtmlWidgetData } from '../../hooks/utils/types';
+import type { HtmlWidgetData, MessageRecord } from '../../hooks/utils/types';
 import {
   buildModelFallbackSegment, appendNotificationSegmentOnce, mapToolCallIdToAgentId,
 } from '../../hooks/utils/messageFinalizers';
-import { handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
+import { applyCallUsage, handleContextWindowEvent } from '../../hooks/utils/contextWindowEvent';
 import { handleProvenance } from '../stream/mainEventHandlers';
 import {
   handleHistoryUserMessage,
@@ -21,19 +27,32 @@ import {
   handleHistoryReasoningContent,
   handleHistoryTextContent,
   handleHistoryToolCalls,
-  handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
   handleHistoryHtmlWidget,
   handleHistorySteeringDelivered,
   handleHistoryTaskArtifactStatus,
+  handleHistoryError,
   isSubagentHistoryEvent,
 } from './historyHandlers';
 import type {
-  TokenUsage, SSEEvent, HistoryInterruptInfo, SubagentHistoryData, PairState,
+  SSEEvent, HistoryInterruptInfo, SubagentHistoryData, PairState,
 } from '../types';
-import { PROPOSAL_INTERRUPT_TYPES, PROPOSAL_DATA_KEY_MAP } from '../interrupts/buckets';
+import { foldTaskArtifact } from '../subagents/taskArtifactHistory';
+import { taskRunFromWire } from '../subagents/taskRuns';
+import { createApprovalEvidence, recordApprovalEvidence } from '../interrupts/claims';
 import { projectHistoryInterrupt } from '../interrupts/fromHistoryEvent';
 import type { HistoryRuntime } from '../runtime';
+import type { HistoryPageInfo, LoadedHistoryPage } from './olderPages';
+import { applyHistoryToolResult, markSteeredResumeCards, settleResumedInterrupts } from './resumeSettlement';
+import { readStreamFailure } from '../stream/streamFailure';
+
+/** A bubble the replay opened for a turn that nothing has written to. */
+function isEmptyStub(m: MessageRecord): boolean {
+  const filled = (v: unknown) => !!v && Object.keys(v as object).length > 0;
+  return m.role === 'assistant' && !!m.isHistory && !m.content
+    && !filled(m.contentSegments) && !filled(m.toolCallProcesses) && !filled(m.reasoningProcesses)
+    && m.completedAt === undefined;
+}
 
 export interface ReplayHistoryDeps {
   /** Fold a model-fallback replay event into the fallback banner state. */
@@ -42,6 +61,19 @@ export interface ReplayHistoryDeps {
   loadFeedback: (targetThreadId?: string) => Promise<void>;
   /** Subagent-lane projection, bound to the runtime by the composition root. */
   projectSubagentHistory: (byTaskId: Map<string, SubagentHistoryData>) => void;
+  /** Runs in the commit that ends the load, after the replay's last write, with
+   *  what the load will return. The caller settles here what only it can judge
+   *  (a run that is over), so the transcript never appears unsettled first. */
+  beforeReveal?: (ok: boolean) => void;
+  /** Page size for the newest page; omitted replays the whole thread. */
+  limit?: number;
+  /** Replay the page before this turn instead, into a transcript of its own:
+   *  an older page (loadOlderHistoryPage), with `signal` to abort its fetch. */
+  beforeTurn?: number;
+  signal?: AbortSignal;
+  /** Where the loaded transcript starts, reported in the commit that reveals
+   *  it, on success only; null when it holds no turn. */
+  onPage?: (page: LoadedHistoryPage | null) => void;
 }
 
 export async function loadConversationHistory(
@@ -54,11 +86,30 @@ export async function loadConversationHistory(
   if (!rt.workspaceId || !rt.threadId || rt.threadId === '__default__' || rt.historyLoadingRef.current) {
     return false;
   }
+  // An older page replays into a transcript of its own, which it adds to
+  // rather than rebuilds, and its caller owns what a failure shows.
+  const olderPage = deps.beforeTurn !== undefined;
+  // A live frame naming a run while this replay runs saw a run the server
+  // may have started after reading the one this replay names.
+  const liveRunEpoch = rt.latestRunEpochRef.current;
+
+  // The todo card shows only the last state, so it is written once, with the
+  // transcript and the caller's settle step. Written per event, it showed the
+  // replay's in-progress todos over the loading transcript, then shrank when
+  // a run that was over got its leftovers marked stale.
+  let lastTodoCard: Record<string, unknown> | null = null;
+  const reveal = (ok: boolean) => {
+    if (lastTodoCard) rt.updateTodoListCard?.(lastTodoCard);
+    deps.beforeReveal?.(ok);
+    rt.setIsLoadingHistory(false);
+    rt.historyLoadingRef.current = false;
+  };
 
   try {
     rt.historyLoadingRef.current = true;
     rt.historyHasUnresolvedInterruptRef.current = false;
     rt.setIsLoadingHistory(true);
+    rt.setHistoryLoadFailed(false);
     rt.setMessageError(null);
 
     // Reset history-tracking state so a re-replay (e.g. after a failed
@@ -68,13 +119,23 @@ export async function loadConversationHistory(
     // newly deterministic bubble ids (`history-{role}-{pairIndex}`), the
     // duplicate insert would also trip React's same-key warnings.
     // ``isHistory: true`` only marks bubbles produced by this loader, so
-    // any in-flight streaming bubble survives the filter.
+    // any in-flight streaming bubble survives the filter. Older pages are
+    // history too, which is why a reload asks for every turn they held.
     rt.newMessagesStartIndexRef.current = 0;
     // A re-replay rebuilds every history bubble from persisted events, so the
     // rendered-interrupt set must start empty and be repopulated by this pass;
     // otherwise stale ids would suppress cards this replay legitimately renders.
-    rt.renderedInterruptIdsRef.current.clear();
-    rt.setMessages((prev) => prev.filter((m) => !m.isHistory));
+    // An older page starts from the ids the newer pages rendered.
+    if (!olderPage) rt.renderedInterruptIdsRef.current.clear();
+    // The old bubbles go when the replay's first rows arrive, not before the
+    // request: a replay that fails then leaves the transcript it found, under
+    // the load-failed state, rather than an empty thread.
+    let stripped = false;
+    const stripHistory = () => {
+      if (stripped) return;
+      stripped = true;
+      rt.setMessages((prev) => prev.filter((m) => !m.isHistory));
+    };
 
     // Fresh attach (refresh or thread switch): clear the live-stream cursor so
     // the subsequent reconnect replays the run's stream from the start. We
@@ -100,6 +161,10 @@ export async function loadConversationHistory(
     // rt.lastRenderedTurnIndexRef after the replay, so a post-fork re-replay can
     // lower the watermark. -1 = replay delivered zero turns.
     let maxReplayedTurnIndex = -1;
+    // Lowest, which is where an unpaged replay's transcript starts.
+    let minReplayedTurnIndex: number | null = null;
+    // The page header, when the replay was paged (null when it named no turn).
+    let page: HistoryPageInfo | null | undefined;
 
     // Run ids of the turns this replay rendered (the server stamps run_id on
     // a user_message only once its run is terminal — a live run's stub
@@ -108,17 +173,40 @@ export async function loadConversationHistory(
     // list alone can't cover the post-finalize/pre-ack outbox window, and a
     // wake-queued id attaches without ever consulting /status.
     const replayedRunIds: string[] = [];
+    // The turn of the latest stub without a run id, a run still going, which
+    // the replay gives an empty bubble for its attach to take over.
+    let runningTurn: number | null = null;
+
+    // When each replayed turn's run settled, keyed by turn. Applied after the
+    // dispatch loop rather than on arrival: the settle time belongs to the
+    // turn's LAST assistant bubble, and a steered turn keeps re-pointing its
+    // pair at a newer one, so only the finished map knows which bubble is the
+    // tail. A live turn's stub carries no stamp — its bubble is settled by the
+    // stream instead.
+    const runSettledAtByPair = new Map<number, number>();
 
     // Track pending HITL interrupts from history to resolve status on next user_message
     const pendingHistoryInterrupts: HistoryInterruptInfo[] = [];
+    // What each still-running resume turn answered, kept for the whole replay
+    // because the evidence can arrive BEFORE the interrupt it answers: the tip
+    // interrupt is appended once at the end of a checkpoint replay carrying no
+    // turn_index, so a reload taken before the resume commits its boundary
+    // replays it last — after the stamp that already answered it. See
+    // interrupts/claims.ts for why only a live resume records any.
+    const evidence = createApprovalEvidence();
 
     // Track subagent events by task ID for this history load
     // Map<taskId, { messages: Array, events: Array, description?: string, type?: string }>
     const subagentHistoryByTaskId = new Map<string, SubagentHistoryData>();
     // Track which agentIds had steering_accepted actions (for inline card "Updated" label)
     const steeredAgentIds = new Set<string>();
+    // Main-agent tool calls this replay rendered, so a result whose call it did
+    // not render can be left to the page that holds the call.
+    const seenToolCallIds = new Set<string>();
+    const carryEvents: SSEEvent[] = [];
     try {
-      await replayThreadHistory(threadIdToUse, (_rawEvent) => {
+      const onEvent = (_rawEvent: Record<string, unknown>): void => {
+      stripHistory();
       // Cast to SSEEvent for type-safe field access within this callback
       const event = _rawEvent as SSEEvent;
       const eventType = event.event;
@@ -135,6 +223,24 @@ export async function loadConversationHistory(
       // delivers zero events (frozen response). `rt.lastEventIdRef` must only ever
       // track ids received on the LIVE stream (set in the streaming
       // `processEvent` handler); history dedup uses deterministic bubble ids.
+
+      // A paged replay opens with where its page starts. An unpaged one never
+      // sends this, which leaves `page` undefined: the whole thread, nothing older.
+      if (eventType === 'history_page') {
+        page = typeof event.first_turn_index === 'number'
+          ? { firstTurnIndex: event.first_turn_index, hasMore: event.has_more === true }
+          : null;
+        return;
+      }
+
+      // The newest page ends naming the thread's newest run, read before the
+      // transcript it follows; a server that names none leaves forks unchecked.
+      if (eventType === 'replay_done') {
+        if ('latest_run_id' in event && rt.latestRunEpochRef.current === liveRunEpoch) {
+          rt.latestRunIdRef.current = typeof event.latest_run_id === 'string' ? event.latest_run_id : null;
+        }
+        return;
+      }
 
       // compaction_chunk is the side channel for LLM output from the
       // compaction middleware (bracketed by context_window summarize
@@ -154,6 +260,7 @@ export async function loadConversationHistory(
         currentActivePairIndex = pairIndex;
         currentActivePairState = pairStateByPair.get(pairIndex);
         if (pairIndex > maxReplayedTurnIndex) maxReplayedTurnIndex = pairIndex;
+        if (minReplayedTurnIndex === null || pairIndex < minReplayedTurnIndex) minReplayedTurnIndex = pairIndex;
       }
 
       // Handle context_window events from history (token_usage, summarize, offload)
@@ -173,6 +280,7 @@ export async function loadConversationHistory(
           },
           setMessages: rt.setMessages,
           setTokenUsage: rt.setTokenUsage,
+          live: false,
           setIsCompacting: null,  // no start events in replayed history
           insertNotification: () => {},  // standalone notifications not needed in replay
           t: rt.t,
@@ -206,27 +314,34 @@ export async function loadConversationHistory(
 
       // An errored turn replays its persisted error event: the fallback
       // model didn't save the turn, so drop any switch suggestion its
-      // model_fallback events set above. (No other replay reconstruction
-      // happens for error events today — deliberately no `return`.)
+      // model_fallback events set above, and mark the turn's reply failed
+      // as the live stream did, which is what offers its Retry.
       if (eventType === 'error' && !isSubagent) {
         rt.setFallbackSuggestion(null);
+        const msgId = currentActivePairIndex !== null
+          ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null;
+        if (msgId) {
+          // A failure the server classified carries only the text it chose to
+          // show, none for its own (internal) faults; an older row's raw text
+          // is all an unclassified one has.
+          const text = (event.error || event.message || '') as string;
+          handleHistoryError({
+            assistantMessageId: msgId,
+            failure: readStreamFailure(event, text)
+              ?? { message: text || 'An error occurred while processing your request.' },
+            unloaded: event.type === 'replay_unavailable',
+            setMessages: setMessagesForHandlers,
+          });
+        }
       }
 
       // Backward compat: handle old token_usage events from history
       if (eventType === 'token_usage') {
-        const callInput = event.input_tokens || 0;
-        const callOutput = event.output_tokens || 0;
-        rt.setTokenUsage((prev: TokenUsage | null) => ({
-          totalInput: (prev?.totalInput || 0) + callInput,
-          totalOutput: (prev?.totalOutput || 0) + callOutput,
-          lastOutput: callOutput,
-          total: event.total_tokens || 0,
-          threshold: event.threshold || prev?.threshold || 0,
-        }));
+        rt.setTokenUsage((prev) => applyCallUsage(prev, event, false));
         return;
       }
 
-      // Handle steering_delivered events from sse_events (main agent only;
+      // Handle replayed steering_delivered events (main agent only;
       // subagent steering_delivered events are routed through the isSubagent block below)
       if (eventType === 'steering_delivered' && hasPairIndex && !isSubagent) {
         handleHistorySteeringDelivered({
@@ -236,6 +351,7 @@ export async function loadConversationHistory(
           pairStateByPair,
           refs: { newMessagesStartIndexRef: rt.newMessagesStartIndexRef },
           setMessages: setMessagesForHandlers,
+          onCopyDelivered: (key) => rt.requestKeyRef.current.settle(key),
         });
         return;
       }
@@ -293,10 +409,19 @@ export async function loadConversationHistory(
       }
 
       // Handle user_message events from history
-      // Note: event.content may be empty for HITL resume pairs (plan approval/rejection)
+      // Note: event.content may be empty for HITL resume pairs (an approval carries no text)
       if (eventType === 'user_message' && hasPairIndex) {
         if (typeof event.run_id === 'string' && event.run_id) {
           replayedRunIds.push(event.run_id);
+          runningTurn = null;
+        } else {
+          runningTurn = event.turn_index!;
+        }
+        if (typeof event.run_completed_at === 'string') {
+          const settledAt = Date.parse(event.run_completed_at);
+          if (Number.isFinite(settledAt)) {
+            runSettledAtByPair.set(event.turn_index!, settledAt);
+          }
         }
         // New-turn boundary: the switch suggestion only reflects the most
         // recent turn, so any earlier turn's fallback suggestion is stale.
@@ -305,74 +430,15 @@ export async function loadConversationHistory(
         if (event.metadata?.llm_model) {
           const llmModel = event.metadata.llm_model as string;
           rt.setThreadModels(prev => prev.includes(llmModel) ? prev : [...prev, llmModel]);
-          // History replays chronologically, so the last write wins = most recent query's model.
-          rt.setLastThreadModel(llmModel);
         }
-        // Resolve pending plan_approval interrupt from content (empty = approved, non-empty = rejected).
-        {
-          const idx = pendingHistoryInterrupts.findIndex((p) => p.type === 'plan_approval');
-          if (idx !== -1) {
-            const matched = pendingHistoryInterrupts[idx];
-            const hasContent = typeof event.content === 'string' && event.content.trim();
-            const resolvedStatus = hasContent ? 'rejected' : 'approved';
-            rt.setMessages((prev) =>
-              updateMessage(prev,matched.assistantMessageId, (msg) => {
-                if (msg.role !== 'assistant') return msg;
-                const aMsg = msg as AssistantMessage;
-                const approvals = aMsg.planApprovals || {};
-                const key = matched.planApprovalId!;
-                return {
-                  ...aMsg,
-                  planApprovals: {
-                    ...approvals,
-                    [key]: {
-                      ...(approvals[key] || {}),
-                      status: resolvedStatus,
-                    },
-                  },
-                };
-              })
-            );
-            pendingHistoryInterrupts.splice(idx, 1);
-          }
-        }
+        // The resolvers below settle the cards already on screen; this keeps
+        // the same evidence for the interrupts still ahead of us.
+        recordApprovalEvidence(evidence, event);
 
-        // Resolve ask_user_question interrupts from resume query metadata (hitl_answers).
-        // Persisted immediately by persist_query_start(), keyed by interrupt_id.
-        {
-          const hitlAnswers = event.metadata?.hitl_answers as Record<string, unknown> | undefined;
-          if (hitlAnswers && pendingHistoryInterrupts.length > 0) {
-            for (const [interruptId, answerValue] of Object.entries(hitlAnswers)) {
-              const idx = pendingHistoryInterrupts.findIndex(
-                (p) => p.type === 'ask_user_question' && p.interruptId === interruptId
-              );
-              if (idx !== -1) {
-                const matched = pendingHistoryInterrupts[idx];
-                const resolvedStatus = answerValue !== null ? 'answered' : 'skipped';
-                const qKey = matched.questionId!;
-                rt.setMessages((prev) =>
-                  updateMessage(prev,matched.assistantMessageId, (msg) => {
-                    if (msg.role !== 'assistant') return msg;
-                    const aMsg = msg as AssistantMessage;
-                    const questions = aMsg.userQuestions || {};
-                    return {
-                      ...aMsg,
-                      userQuestions: {
-                        ...questions,
-                        [qKey]: {
-                          ...(questions[qKey] || {}),
-                          status: resolvedStatus,
-                          answer: answerValue as string | null,
-                        },
-                      },
-                    };
-                  })
-                );
-                pendingHistoryInterrupts.splice(idx, 1);
-              }
-            }
-          }
-        }
+        // The resume settles the cards it answered; when they sit on the page
+        // before this one, that page settles them from the carry instead.
+        if (event.metadata?.hitl_interrupt_ids || event.metadata?.hitl_answers) carryEvents.push(event);
+        settleResumedInterrupts(rt, pendingHistoryInterrupts, event);
 
         const pairIndex = event.turn_index!;
         const refs = {
@@ -387,7 +453,6 @@ export async function loadConversationHistory(
           assistantMessagesByPair,
           pairStateByPair,
           refs,
-          messages: rt.messages as unknown as Record<string, unknown>[],
           setMessages: setMessagesForHandlers,
         });
         return;
@@ -414,6 +479,7 @@ export async function loadConversationHistory(
             pairState,
             setMessages: setMessagesForHandlers,
             eventId: event._eventId as number | undefined,
+            elapsedMs: typeof event.elapsed_ms === 'number' ? event.elapsed_ms : undefined,
           });
           return;
         }
@@ -438,18 +504,22 @@ export async function loadConversationHistory(
             pairState,
             setMessages: setMessagesForHandlers,
             eventId: event._eventId as number | undefined,
+            phase: event.phase,
           });
           return;
         }
 
-        // Handle finish_reason (end of assistant message)
+        // A content-less close, a stopped turn's synthetic one included, goes
+        // through the text handler, which owns what a close stamps.
         if (event.finish_reason) {
-          rt.setMessages((prev) =>
-            updateMessage(prev,currentAssistantMessageId, (msg) => ({
-              ...msg,
-              isStreaming: false,
-            }))
-          );
+          handleHistoryTextContent({
+            assistantMessageId: currentAssistantMessageId,
+            content: '',
+            finishReason: event.finish_reason,
+            pairState,
+            setMessages: setMessagesForHandlers,
+            eventId: event._eventId as number | undefined,
+          });
           return;
         }
       }
@@ -464,26 +534,23 @@ export async function loadConversationHistory(
       //
       // NOTE: `chart_annotation` artifacts are intentionally NOT replayed here
       // (only the live stream applies them to the annotation store). On reload,
-      // MarketView's `useChartAnnotationSync` REST fetch is the authoritative
-      // source that repopulates the store from Postgres, and the inline card
-      // renders from the replayed `tool_call_result.artifact`. If a live chart
-      // surface is ever added to the standalone chat page, add a
-      // `chart_annotation` branch here so reloads stay consistent.
+      // every live chart (MarketView's, and the chat's chart tab through
+      // `MarketChartSurface`) repopulates the store from Postgres with
+      // `useChartAnnotationSync`, and the inline card renders from the
+      // replayed `tool_call_result.artifact`.
       if (eventType === 'artifact') {
         const artifactType = event.artifact_type;
         if (artifactType === 'todo_update') {
           const payload = event.payload || {};
 
-          // Update floating todo card from history (last event wins, shows final state)
-          if (rt.updateTodoListCard) {
-            rt.updateTodoListCard({
-              todos: Array.isArray(payload.todos) ? payload.todos : [],
-              total: payload.total || 0,
-              completed: payload.completed || 0,
-              in_progress: payload.in_progress || 0,
-              pending: payload.pending || 0,
-            });
-          }
+          // Floating todo card: last event wins, written at the reveal
+          lastTodoCard = {
+            todos: Array.isArray(payload.todos) ? payload.todos : [],
+            total: payload.total || 0,
+            completed: payload.completed || 0,
+            in_progress: payload.in_progress || 0,
+            pending: payload.pending || 0,
+          };
 
           // Artifacts in history replay have turn_index - use it!
           if (hasPairIndex) {
@@ -588,70 +655,36 @@ export async function loadConversationHistory(
           }
         }
         if (artifactType === 'task') {
-          const payload = event.payload || {};
-          const task_id = payload.task_id as string | undefined;
-          const rawAction = payload.action as string | undefined;
-          const description = payload.description as string | undefined;
-          const prompt = payload.prompt as string | undefined;
-          const type = payload.type as string | undefined;
-          // Backend stamps the task's real status on every replayed task artifact
-          // (payload.status). The top-level `status` is a hardcoded "completed"
-          // and MUST be ignored.
-          const stampedStatus = payload.status as string | undefined;
-          // Ledger failure reason, stamped only on an errored task artifact.
-          const stampedError = payload.error as string | undefined;
-          const stampedRunStartedMs =
-            typeof payload.projected_run_started_ms === 'number'
-              ? payload.projected_run_started_ms
-              : undefined;
-          const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'steering_accepted') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })();
-          if (task_id) {
-            const agentId = `task:${task_id}`;
-            if (!subagentHistoryByTaskId.has(agentId)) {
-              subagentHistoryByTaskId.set(agentId, {
-                messages: [],
-                events: [],
-                description: description || '',
-                prompt: prompt || description || '',
-                type: type || 'general-purpose',
-                status: stampedStatus,
-                error: stampedError,
-                projectedRunStartedMs: stampedRunStartedMs,
+          const folded = foldTaskArtifact(subagentHistoryByTaskId, event);
+          if (folded) {
+            const { agentId } = folded;
+            const payload = event.payload || {};
+            // The run this launch started, as the ledger kept it. A launch
+            // from before the ledger names none; its row draws the task's
+            // latest run, which is what the server stamped on it.
+            if (typeof payload.task_run_id === 'string' && payload.task_run_id) {
+              rt.subagentHistory.runs.put(payload.task_run_id, {
+                taskId: agentId, launchToolCallId: event.tool_call_id, ...taskRunFromWire(payload),
               });
-            } else {
-              const existing = subagentHistoryByTaskId.get(agentId)!;
-              if (description && !existing.description) existing.description = description;
-              if (prompt && !existing.prompt) existing.prompt = prompt || description || '';
-              if (type && !existing.type) existing.type = type;
-              if (stampedStatus) existing.status = stampedStatus;
-              if (stampedError) existing.error = stampedError;
-              // Monotonic max: artifacts stamp claims-through-their-turn, and
-              // page/artifact processing order must not regress the watermark.
-              if (stampedRunStartedMs != null) {
-                existing.projectedRunStartedMs =
-                  existing.projectedRunStartedMs != null
-                    ? Math.max(existing.projectedRunStartedMs, stampedRunStartedMs)
-                    : stampedRunStartedMs;
-              }
             }
             // Patch the inline card(s) for THIS artifact's tool_call_id so a
             // reborn "running" card reflects the stamped terminal status.
             handleHistoryTaskArtifactStatus({
-              toolCallId: event.tool_call_id as string | undefined,
-              taskId: task_id,
-              status: stampedStatus,
+              toolCallId: event.tool_call_id,
+              taskId: folded.taskId,
+              status: folded.status,
               setMessages: setMessagesForHandlers,
             });
             // Track steering_accepted actions for inline card "Updated" label
-            if (action === 'update') {
+            if (folded.action === 'update') {
               steeredAgentIds.add(agentId);
             }
             rt.historyPendingTaskToolCallIdsRef.current = mapToolCallIdToAgentId(
-              event.tool_call_id as string | undefined,
+              event.tool_call_id,
               agentId,
-              action,
+              folded.action,
               rt.historyPendingTaskToolCallIdsRef.current,
-              rt.toolCallIdToTaskIdMapRef.current,
+              rt.subagentHistory.toolCalls,
             );
           }
         }
@@ -688,6 +721,9 @@ export async function loadConversationHistory(
           }
         }
 
+        for (const tc of event.tool_calls || []) {
+          if (tc.id) seenToolCallIds.add(tc.id);
+        }
         handleHistoryToolCalls({
           assistantMessageId: currentAssistantMessageId,
           toolCalls: (event.tool_calls || []) as unknown as Record<string, unknown>[],
@@ -717,7 +753,7 @@ export async function loadConversationHistory(
         const artifact = event.artifact as Record<string, unknown> | undefined;
         if (artifact?.task_id && event.tool_call_id) {
           const agentId = `task:${artifact.task_id}`;
-          rt.toolCallIdToTaskIdMapRef.current.set(event.tool_call_id, agentId);
+          rt.subagentHistory.toolCalls.set(event.tool_call_id, agentId);
 
           // Ensure subagentHistoryByTaskId has description from artifact.
           // Resume calls are filtered out of the tool_calls handler, so this
@@ -739,108 +775,24 @@ export async function loadConversationHistory(
           }
         }
 
-        handleHistoryToolCallResult({
+        // A gated call is answered in the turn after it; when that turn opens
+        // this page, the call is on the page before, which applies the result.
+        if (event.tool_call_id && !seenToolCallIds.has(event.tool_call_id)) carryEvents.push(event);
+
+        applyHistoryToolResult({
+          event,
           assistantMessageId: currentAssistantMessageId,
-          toolCallId: event.tool_call_id as string,
-          result: {
-            content: event.content,
-            content_type: event.content_type,
-            tool_call_id: event.tool_call_id,
-            artifact: event.artifact,
-          },
           pairState,
-          setMessages: setMessagesForHandlers,
+          pending: pendingHistoryInterrupts,
+          setMessages: rt.setMessages,
         });
-
-        // Resolve pending ask_user_question interrupt from tool_call_result
-        // (fallback for conversations where hitl_answers wasn't persisted)
-        {
-          const idx = pendingHistoryInterrupts.findIndex((p) => p.type === 'ask_user_question');
-          if (idx !== -1 && typeof event.content === 'string' &&
-              (event.content.startsWith('User answered:') || event.content.startsWith('User skipped'))) {
-            const matched = pendingHistoryInterrupts[idx];
-            const content = event.content;
-            const isAnswered = content.startsWith('User answered:');
-            const answerText = isAnswered ? content.replace('User answered: ', '') : null;
-            const qKey = matched.questionId!;
-            rt.setMessages((prev) =>
-              updateMessage(prev, matched.assistantMessageId, (msg) => {
-                if (msg.role !== 'assistant') return msg;
-                const aMsg = msg as AssistantMessage;
-                const questions = aMsg.userQuestions || {};
-                return {
-                  ...aMsg,
-                  userQuestions: {
-                    ...questions,
-                    [qKey]: {
-                      ...(questions[qKey] || {}),
-                      status: isAnswered ? 'answered' : 'skipped',
-                      answer: answerText,
-                    },
-                  },
-                };
-              })
-            );
-            pendingHistoryInterrupts.splice(idx, 1);
-          }
-        }
-
-        // Resolve pending create_workspace, start_question, ptc_agent, or secretary action interrupt from tool_call_result
-        {
-          const idx = pendingHistoryInterrupts.findIndex((p) => PROPOSAL_INTERRUPT_TYPES.has(p.type));
-          if (idx !== -1 && typeof event.content === 'string') {
-            const matched = pendingHistoryInterrupts[idx];
-            const content = event.content;
-            const dataKey = PROPOSAL_DATA_KEY_MAP[matched.type] || 'questionProposals';
-
-            let resolvedStatus = 'approved';
-            let resultPayload: Record<string, unknown> | null = null;
-            if (content.startsWith('User declined')) {
-              resolvedStatus = 'rejected';
-            } else {
-              try {
-                const parsed = JSON.parse(content);
-                if (parsed?.success === false) resolvedStatus = 'rejected';
-                resultPayload = parsed;
-              } catch { /* non-JSON → treat as approved */ }
-            }
-
-            const pKey = matched.proposalId!;
-            // Extract thread_id/workspace_id from ptc_agent result for navigation
-            const extraFields: Record<string, unknown> = {};
-            if (matched.type === 'ptc_agent' && resultPayload) {
-              if (resultPayload.thread_id) extraFields.thread_id = resultPayload.thread_id;
-              if (resultPayload.workspace_id) extraFields.workspace_id = resultPayload.workspace_id;
-            }
-            rt.setMessages((prev) =>
-              updateMessage(prev,matched.assistantMessageId, (msg) => {
-                if (msg.role !== 'assistant') return msg;
-                const aMsg = msg as AssistantMessage;
-                const existing = ((aMsg as unknown as Record<string, unknown>)[dataKey] || {}) as Record<string, Record<string, unknown>>;
-                return {
-                  ...aMsg,
-                  [dataKey]: {
-                    ...existing,
-                    [pKey]: {
-                      ...(existing[pKey] || {}),
-                      status: resolvedStatus,
-                      ...extraFields,
-                    },
-                  },
-                };
-              })
-            );
-            pendingHistoryInterrupts.splice(idx, 1);
-          }
-        }
-
         return;
       }
 
       // Handle interrupt events during history replay
       if (eventType === 'interrupt') {
         projectHistoryInterrupt(rt, event, {
-          currentActivePairIndex, assistantMessagesByPair, pairStateByPair, pendingHistoryInterrupts,
+          currentActivePairIndex, assistantMessagesByPair, pairStateByPair, pendingHistoryInterrupts, evidence,
         });
         return;
       }
@@ -862,7 +814,14 @@ export async function loadConversationHistory(
           }
         }
       }
-    });
+    };
+      const result = await replayThreadHistory(threadIdToUse, onEvent, {
+        limit: deps.limit, beforeTurn: deps.beforeTurn, signal: deps.signal,
+      });
+      stripHistory();
+      // An older page that did not arrive whole is no page.
+      if (olderPage && result?.aborted) return false;
+      if (olderPage && result?.disconnected) throw new Error('History page interrupted');
 
       // If there's still a pending interrupt after replay (no subsequent user_message
       // resolved it), store it in a ref. loadAndMaybeReconnect will decide whether to
@@ -882,6 +841,7 @@ export async function loadConversationHistory(
       if ((replayError as Error).message && (replayError as Error).message.includes('404')) {
         // Thread not found (404) is expected for brand-new threads — skip silently.
         // Don't set error message for 404 - it's expected for new threads
+        stripHistory();
       } else {
         throw replayError; // Re-throw other errors
       }
@@ -892,26 +852,59 @@ export async function loadConversationHistory(
     rt.lastRenderedTurnIndexRef.current = maxReplayedTurnIndex;
     rt.replayedRunIdsRef.current = replayedRunIds;
 
-    // Post-process: update inline cards for steering_accepted actions to show "Updated"
-    if (steeredAgentIds.size > 0) {
-      rt.setMessages(prev => prev.map(msg => {
-        if (msg.role !== 'assistant') return msg;
-        const aMsg = msg as AssistantMessage;
-        if (!aMsg.subagentTasks) return msg;
-        let changed = false;
-        const newTasks = { ...aMsg.subagentTasks };
-        for (const [tcId, task] of Object.entries(newTasks)) {
-          if (task.resumeTargetId && steeredAgentIds.has(task.resumeTargetId) && task.action === 'resume') {
-            newTasks[tcId] = { ...task, action: 'update' };
-            changed = true;
-          }
-        }
-        return changed ? { ...aMsg, subagentTasks: newTasks } : msg;
-      }));
+    // An attach that opened while the replay was in flight already stands for
+    // the running turn, below the empty bubble the replay gave it. A stream
+    // whose own count names another turn is not that run.
+    const stubId = runningTurn !== null && runningTurn === maxReplayedTurnIndex
+      ? assistantMessagesByPair.get(runningTurn) : undefined;
+    const liveId = rt.currentMessageRef.current;
+    if (!olderPage && stubId && liveId && stubId !== liveId) {
+      const turn = runningTurn;
+      rt.setMessages((prev) => {
+        const live = prev.find((m) => m.id === liveId);
+        const at = prev.findIndex((m) => m.id === stubId);
+        if (!live || live.role !== 'assistant' || live.isHistory || at === -1 || !isEmptyStub(prev[at])) return prev;
+        if (live.turnIndex !== undefined && live.turnIndex !== turn) return prev;
+        if (at < rt.newMessagesStartIndexRef.current) rt.newMessagesStartIndexRef.current -= 1;
+        return prev.filter((_, i) => i !== at);
+      });
     }
 
-    rt.setIsLoadingHistory(false);
-    rt.historyLoadingRef.current = false;
+    // Post-process: stamp each settled turn's end on the bubble that closes it.
+    // Paired with the initiating user bubble's timestamp (the query's
+    // created_at) this is the turn's duration. A bubble still streaming is the
+    // live turn the replay ran alongside — the stream owns its stamp.
+    if (runSettledAtByPair.size > 0) {
+      const settledAtByMessageId = new Map<string, number>();
+      for (const [pairIndex, settledAt] of runSettledAtByPair) {
+        const tailId = assistantMessagesByPair.get(pairIndex);
+        if (tailId) settledAtByMessageId.set(tailId, settledAt);
+      }
+      if (settledAtByMessageId.size > 0) {
+        rt.setMessages(prev => prev.map(msg => {
+          if (msg.role !== 'assistant' || msg.isStreaming) return msg;
+          const settledAt = settledAtByMessageId.get(msg.id as string);
+          return settledAt === undefined ? msg : { ...msg, completedAt: settledAt };
+        }));
+      }
+    }
+
+    // Post-process: update inline cards for steering_accepted actions to show "Updated"
+    if (steeredAgentIds.size > 0) {
+      rt.setMessages(prev => markSteeredResumeCards(prev, steeredAgentIds));
+    }
+
+    // The page header, or for an unpaged replay, the whole thread from its
+    // first replayed turn.
+    const start = page !== undefined ? page
+      : minReplayedTurnIndex !== null ? { firstTurnIndex: minReplayedTurnIndex, hasMore: false }
+      : null;
+    deps.onPage?.(start && {
+      ...start,
+      lastTurnIndex: maxReplayedTurnIndex,
+      carry: { events: carryEvents, subagents: subagentHistoryByTaskId, steeredAgentIds },
+    });
+    reveal(true);
 
     // Fetch feedback state for the thread (best-effort)
     if (rt.threadId) {
@@ -919,6 +912,7 @@ export async function loadConversationHistory(
     }
     return true;
   } catch (error: unknown) {
+    if (olderPage) throw error;
     console.error('[History] Error loading conversation history:', error);
     // Only show error if it's not a 404 (404 is expected for new threads).
     // 404 still counts as a successful "no prior history" load — caller can
@@ -926,10 +920,21 @@ export async function loadConversationHistory(
     const errMsg = (error as Error).message || '';
     const isNotFound = errMsg.includes('404');
     if (errMsg && !isNotFound) {
-      rt.setMessageError(errMsg || 'Failed to load conversation history');
+      // A dropped link surfaces here as the browser's own string — "Failed to
+      // fetch", "Load failed" — which we then render in red as if the request
+      // were rejected. It was not: the turn is usually still running and the
+      // reconnect resumes it from the cursor once the link returns. Say what
+      // actually happened instead of quoting the transport at the user. Online,
+      // the text is a status line or the server's exception, so the view says
+      // it in its own words too.
+      rt.setMessageError(
+        isOnline() ? { message: rt.t('chat.historyLoadFailed'), kind: 'notice' } : i18n.t('chat.offlineHistoryLoad'),
+      );
     }
-    rt.setIsLoadingHistory(false);
-    rt.historyLoadingRef.current = false;
+    // Set with the flag below, so the render that ends the load says whether
+    // the transcript it left is the thread or what a failure stripped.
+    rt.setHistoryLoadFailed(!isNotFound);
+    reveal(isNotFound);
     return isNotFound;
   }
 }

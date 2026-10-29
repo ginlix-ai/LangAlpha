@@ -77,23 +77,25 @@ CONSTRUCTOR_NAMES = BARE_CONSTRUCTORS | ATTR_CONSTRUCTORS | CHAT_MODEL_CLASSES
 ALLOWLIST: dict[tuple[str, str], int] = {
     # get_llm_client lazy factory — OSS standalone path, no server resolution ran.
     ("src/ptc_agent/config/agent.py", "create_llm"): 1,
-    # flash standalone build.
-    ("src/ptc_agent/agent/flash/agent.py", "create_llm"): 1,
+    # market-insight research graph, Background model by name (no client
+    # resolved: the platform path, or a user with no BYOK/OAuth for it).
+    ("src/ptc_agent/agent/insight_graph.py", "create_llm"): 1,
     # fallback-model name path (build_fallback_pairs, OSS standalone — server
     # runs pre-resolve fallback_llm_clients via resolve_llm_config first).
     ("src/ptc_agent/agent/middleware/model_resilience.py", "get_llm_by_type"): 1,
-    # compaction summarizer name path (compact.py helper).
-    ("src/ptc_agent/agent/middleware/compaction/compact.py", "get_llm_by_type"): 1,
-    # compaction middleware fallback name path.
-    ("src/ptc_agent/agent/middleware/compaction/middleware.py", "get_llm_by_type"): 1,
-    # compaction middleware model coercion (string model -> chat model).
-    ("src/ptc_agent/agent/middleware/compaction/middleware.py", "init_chat_model"): 1,
+    # compaction summarizer name path (Summarizer.for_agent, shared by the
+    # middleware and manual /compact; reached only without a role client),
+    # built at the summary level.
+    ("src/ptc_agent/agent/middleware/compaction/compact.py", "create_llm"): 1,
     # non-BYOK fetch name path (reached only for non-credentialed users).
     ("src/tools/web/fetch.py", "get_llm"): 1,
-    # The resolution layer itself — the sanctioned constructor home. Entered
-    # scan scope when 3.1 moved it from handlers/chat (never a scan root).
-    ("src/server/services/llm/config.py", "create_llm"): 3,
-    ("src/server/services/llm/config.py", "create_llm_from_custom"): 2,
+    # The resolution layer itself, the sanctioned constructor home. Entered
+    # scan scope when 3.1 moved it from handlers/chat (never a scan root), and
+    # split out of config.py once building a client stopped sharing a module
+    # with choosing a model. Same five calls, same justification, plus a
+    # custom model a subscription serves, built on its sign-in.
+    ("src/server/services/llm/clients.py", "create_llm"): 3,
+    ("src/server/services/llm/clients.py", "create_llm_from_custom"): 3,
     # user_id=None system path AND resolved-None platform fallback (two calls).
     ("src/server/services/llm/service.py", "create_llm"): 2,
 }

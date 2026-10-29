@@ -1,9 +1,9 @@
-"""Coverage for ``read_thread_runtime_status``'s flash report-back resolution.
+"""Coverage for ``read_thread_runtime_status``'s report-back resolution.
 
-A flash thread polling ``/status`` must surface which report-back run to attach
-to (``report_back_run_id``), resolved from a live per-(flash, ptc) pointer of
-any pending watch member. Execution progress lives in the durable outbox — no
-in-process consumer remains to nudge.
+A thread polling ``/status`` must surface which report-back run to attach to
+(``report_back_run_id``), resolved from a live per-(watcher, analyst) pointer
+of any pending watch member. Execution progress lives in the durable outbox:
+no in-process consumer remains to nudge.
 """
 
 from __future__ import annotations
@@ -15,23 +15,43 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.server.services import thread_status
-from src.server.services.report_back.flash import keys, status
+from src.server.services.report_back.handoff import keys, status
 from tests.unit.server.handlers.chat.redis_fakes import FakeCache as _FakeCache
 
+# The thread owner, which scopes the owed threads' labels.
+OWNER = "user-1"
 
-def _seed(cache: _FakeCache, flash: str, members: list[str], run_pointers: dict[str, str]) -> None:
-    cache.client.sets[keys.flash_watch_key(flash)] = set(members)
+
+def _seed(cache: _FakeCache, dispatcher: str, members: list[str], run_pointers: dict[str, str]) -> None:
+    cache.client.sets[keys.watch_key(dispatcher)] = set(members)
     # A live member always carries an origin (reserve writes both atomically);
     # the status read treats originless members as orphans and reaps them.
     for ptc in members:
         cache.client.kv[keys.ptc_origin_key(ptc)] = json.dumps(
-            {"flash_thread_id": flash, "report_back": True}
+            {"home_thread_id": dispatcher, "report_back": True}
         )
     # Pointers are read via client.mget (raw serialized JSON), matching prod.
     for ptc, run_id in run_pointers.items():
-        cache.client.kv[keys.flash_rb_run_key(flash, ptc)] = json.dumps(
+        cache.client.kv[keys.rb_run_key(dispatcher, ptc)] = json.dumps(
             {"run_id": run_id}
         )
+
+
+def _no_open_jobs():
+    """No report_back job queued beyond the ones the pointers name."""
+    return patch(
+        "src.server.database.runs.outbox.list_open_notification_jobs",
+        AsyncMock(return_value=[]),
+    )
+
+
+def _no_drained_task_runs():
+    """The thread's own subagents drained nothing, so the merged slice is the
+    watch set's alone; an unread recents list would make it unknown."""
+    return patch(
+        "src.server.database.runs.outbox.get_recent_notification_run_ids",
+        AsyncMock(return_value=[]),
+    )
 
 
 def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
@@ -76,23 +96,29 @@ def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
             AsyncMock(return_value=latest_turn),
         ),
         patch(
+            "src.server.database.conversation.usage.get_thread_token_totals",
+            AsyncMock(return_value=None),
+        ),
+        patch(
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
         ),
+        _no_open_jobs(),
+        _no_drained_task_runs(),
     ]
 
 
 @pytest.mark.asyncio
 async def test_status_surfaces_member_pointer_and_recent_runs():
     cache = _FakeCache()
-    flash = "flash-1"
-    _seed(cache, flash, ["ptc-1"], {"ptc-1": "rb-1"})
+    dispatcher = "cos-1"
+    _seed(cache, dispatcher, ["ptc-1"], {"ptc-1": "rb-1"})
     # A previously drained run rides along in the same status payload.
-    cache.client.lists[keys.flash_rb_done_key(flash)] = ["rb-done-1"]
+    cache.client.lists[keys.rb_done_key(dispatcher)] = ["rb-done-1"]
 
     with contextlib.ExitStack() as stack:
         for p in _patches(cache):
             stack.enter_context(p)
-        resp = await thread_status.read_thread_runtime_status(flash)
+        resp = await thread_status.read_thread_runtime_status(dispatcher)
 
     assert resp["pending_report_back"] is True
     assert resp["report_back_run_id"] == "rb-1"
@@ -102,14 +128,14 @@ async def test_status_surfaces_member_pointer_and_recent_runs():
 @pytest.mark.asyncio
 async def test_status_falls_back_to_any_member_with_a_pointer():
     cache = _FakeCache()
-    flash = "flash-1"
+    dispatcher = "cos-1"
     # One member has no pointer yet (not dispatched); the one that does wins.
-    _seed(cache, flash, ["ptc-pending", "ptc-live"], {"ptc-live": "rb-live"})
+    _seed(cache, dispatcher, ["ptc-pending", "ptc-live"], {"ptc-live": "rb-live"})
 
     with contextlib.ExitStack() as stack:
         for p in _patches(cache):
             stack.enter_context(p)
-        resp = await thread_status.read_thread_runtime_status(flash)
+        resp = await thread_status.read_thread_runtime_status(dispatcher)
 
     assert resp["pending_report_back"] is True
     assert resp["report_back_run_id"] == "rb-live"
@@ -122,11 +148,12 @@ async def test_status_no_pending_report_back():
     with contextlib.ExitStack() as stack:
         for p in _patches(cache):
             stack.enter_context(p)
-        resp = await thread_status.read_thread_runtime_status("flash-x")
+        resp = await thread_status.read_thread_runtime_status("cos-x")
 
     assert resp["pending_report_back"] is False
     assert resp["report_back_run_id"] is None
     assert resp["recent_report_back_run_ids"] == []
+    assert resp["owed_threads"] == []
 
 
 class _BoomClient:
@@ -149,12 +176,13 @@ async def test_report_back_status_redis_error_returns_unknown_not_false():
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=_BoomCache()
     ):
-        resp = await status.read_report_back_status("flash-err")
+        resp = await status.read_report_back_status("cos-err", OWNER)
 
     assert resp["pending_report_back"] is None
     assert resp["pending_report_back"] is not False
     assert resp["report_back_run_id"] is None
     assert resp["recent_report_back_run_ids"] == []  # never omitted, [] on failure
+    assert resp["owed_threads"] is None
 
 
 @pytest.mark.asyncio
@@ -163,17 +191,18 @@ async def test_report_back_status_success_returns_real_bool():
     # Drained: empty watch SET + queue -> explicit False.
     empty = _FakeCache()
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=empty):
-        drained = await status.read_report_back_status("flash-empty")
+        drained = await status.read_report_back_status("cos-empty", OWNER)
     assert drained["pending_report_back"] is False
     assert drained["report_back_run_id"] is None
 
     # Pending: a watch member with a live run pointer -> explicit True + run id.
     pending = _FakeCache()
-    _seed(pending, "flash-pending", ["ptc-1"], {"ptc-1": "rb-1"})
-    with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=pending
+    _seed(pending, "cos-pending", ["ptc-1"], {"ptc-1": "rb-1"})
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=pending),
+        _no_open_jobs(),
     ):
-        live = await status.read_report_back_status("flash-pending")
+        live = await status.read_report_back_status("cos-pending", OWNER)
     assert live["pending_report_back"] is True
     assert live["report_back_run_id"] == "rb-1"
 
@@ -188,32 +217,35 @@ async def test_status_excludes_and_reaps_originless_members():
     cap while successful reserves keep refreshing the shared SET's TTL, so
     the read path itself filters and reaps."""
     cache = _FakeCache()
-    flash = "flash-1"
-    _seed(cache, flash, ["ptc-live", "ptc-orphan"], {"ptc-live": "rb-live"})
+    dispatcher = "cos-1"
+    _seed(cache, dispatcher, ["ptc-live", "ptc-orphan"], {"ptc-live": "rb-live"})
     del cache.client.kv[keys.ptc_origin_key("ptc-orphan")]
 
-    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await status.read_report_back_status(flash)
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        _no_open_jobs(),
+    ):
+        resp = await status.read_report_back_status(dispatcher, OWNER)
 
     assert resp["pending_report_back"] is True
     assert resp["report_back_run_id"] == "rb-live"
     # The orphan was reaped from the watch set, not just skipped.
-    assert cache.client.sets[keys.flash_watch_key(flash)] == {"ptc-live"}
+    assert cache.client.sets[keys.watch_key(dispatcher)] == {"ptc-live"}
 
 
 @pytest.mark.asyncio
 async def test_status_with_only_orphans_reads_drained():
     cache = _FakeCache()
-    flash = "flash-1"
-    _seed(cache, flash, ["ptc-orphan"], {})
+    dispatcher = "cos-1"
+    _seed(cache, dispatcher, ["ptc-orphan"], {})
     del cache.client.kv[keys.ptc_origin_key("ptc-orphan")]
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await status.read_report_back_status(flash)
+        resp = await status.read_report_back_status(dispatcher, OWNER)
 
     assert resp["pending_report_back"] is False
     assert resp["report_back_run_id"] is None
-    assert not cache.client.sets.get(keys.flash_watch_key(flash))
+    assert not cache.client.sets.get(keys.watch_key(dispatcher))
 
 
 @pytest.mark.asyncio
@@ -221,8 +253,8 @@ async def test_status_orphan_reap_failure_still_filters_the_derivation():
     """The reap is best-effort: an eval failure must not degrade the read to
     unknown — the origin MGET already established the truth."""
     cache = _FakeCache()
-    flash = "flash-1"
-    _seed(cache, flash, ["ptc-orphan"], {})
+    dispatcher = "cos-1"
+    _seed(cache, dispatcher, ["ptc-orphan"], {})
     del cache.client.kv[keys.ptc_origin_key("ptc-orphan")]
 
     async def _boom(*_a, **_k):
@@ -231,11 +263,11 @@ async def test_status_orphan_reap_failure_still_filters_the_derivation():
     cache.client.eval = _boom
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
-        resp = await status.read_report_back_status(flash)
+        resp = await status.read_report_back_status(dispatcher, OWNER)
 
     assert resp["pending_report_back"] is False  # filtered, not None/unknown
     # The unreaped member stays for a later reap attempt.
-    assert "ptc-orphan" in cache.client.sets[keys.flash_watch_key(flash)]
+    assert "ptc-orphan" in cache.client.sets[keys.watch_key(dispatcher)]
 
 
 # --- latest_turn_index (the cached-view terminal-staleness signal) -----------
@@ -314,6 +346,10 @@ def _live_patches(cache: _FakeCache, row: dict) -> list:
             AsyncMock(return_value=3),
         ),
         patch(
+            "src.server.database.conversation.usage.get_thread_token_totals",
+            AsyncMock(return_value=None),
+        ),
+        patch(
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
         ),
     ]
@@ -355,3 +391,311 @@ async def test_status_live_slot_with_cancel_intent_reads_stopping():
     assert resp["status"] == "stopping"
     assert resp["run_id"] == "run-live"
     assert resp["can_reconnect"] is True
+
+
+# --- token_totals (the chat's whole-thread token totals) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("row", "live_run_id"),
+    [
+        (
+            {
+                "conversation_response_id": "run-live",
+                "status": "in_progress",
+                "cancel_requested_at": None,
+                "created_at": None,
+            },
+            "run-live",
+        ),
+        (
+            {
+                "conversation_response_id": "run-done",
+                "status": "completed",
+                "created_at": None,
+            },
+            None,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_status_totals_leave_out_only_the_run_it_names_live(row, live_run_id):
+    """The client replays the live run's calls from its stream onto these
+    totals, so the read that rides the status must not count that run too."""
+    totals = AsyncMock(return_value={"input_tokens": 900, "output_tokens": 40})
+    with contextlib.ExitStack() as stack:
+        for p in _live_patches(_FakeCache(), row):
+            stack.enter_context(p)
+        stack.enter_context(
+            patch(
+                "src.server.database.conversation.usage.get_thread_token_totals",
+                totals,
+            )
+        )
+        resp = await thread_status.read_thread_runtime_status("t-1")
+
+    totals.assert_awaited_once_with("t-1", live_run_id=live_run_id)
+    assert resp["run_id"] == live_run_id
+    assert resp["token_totals"] == {"input_tokens": 900, "output_tokens": 40}
+
+
+LABELS = "src.server.database.conversation.threads_read.get_thread_labels"
+
+
+def _label(thread_id: str) -> dict:
+    return {
+        "thread_id": thread_id,
+        "workspace_id": f"ws-{thread_id}",
+        "workspace_name": f"Workspace {thread_id}",
+        "title": f"Title {thread_id}",
+    }
+
+
+def _task_slice(**over) -> dict:
+    return {
+        "thread_id": "cos-1",
+        "pending_report_back": False,
+        "report_back_run_id": None,
+        "recent_report_back_run_ids": [],
+        "active_tasks": [],
+        "owed_report_kinds": [],
+        **over,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_thread_is_pending_on_an_analyst_hand_off():
+    # The Chief of Staff's thread: its own subagents report back through the
+    # outbox, its analysts through the watch set.
+    cache = _FakeCache()
+    _seed(cache, "cos-1", ["analyst-1"], {"analyst-1": "rb-1"})
+
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        _no_open_jobs(),
+        patch(
+            "src.server.services.report_back.subagent.read_task_report_back_status",
+            AsyncMock(return_value=_task_slice(active_tasks=["task-1"], owed_report_kinds=["command"])),
+        ),
+        patch(
+            "src.server.database.runs.lifecycle.get_run",
+            AsyncMock(return_value={"status": "in_progress"}),
+        ),
+        patch(LABELS, AsyncMock(return_value=[_label("analyst-1")])),
+    ):
+        resp = await status.read_report_back_slice("cos-1", OWNER)
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] == "rb-1"
+    assert resp["active_tasks"] == ["task-1"]
+    assert resp["owed_threads"] == [_label("analyst-1")]
+    # Whose reports are owed, so the tray names the Analyst, not the command.
+    assert resp["owed_report_kinds"] == ["analyst", "command"]
+
+
+@pytest.mark.asyncio
+async def test_a_thread_lists_both_registries_drained_runs_in_thread_order():
+    cache = _FakeCache()
+    cache.client.lists[keys.rb_done_key("cos-1")] = ["hand-off-2", "hand-off-1"]
+    seqs = {"hand-off-1": 1, "task-1": 2, "hand-off-2": 3}
+
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        patch(
+            "src.server.services.report_back.subagent.read_task_report_back_status",
+            AsyncMock(return_value=_task_slice(recent_report_back_run_ids=["task-1"])),
+        ),
+        patch(
+            "src.server.database.runs.lifecycle.get_run_seqs",
+            AsyncMock(return_value=seqs),
+        ),
+    ):
+        resp = await status.read_report_back_slice("cos-1", OWNER)
+
+    assert resp["pending_report_back"] is False
+    assert resp["owed_report_kinds"] == []
+    assert resp["recent_report_back_run_ids"] == ["hand-off-2", "task-1", "hand-off-1"]
+
+
+# --- A member is owed until its summary run ends -----------------------------
+
+
+def _seed_summary(cache: _FakeCache, dispatcher: str, ptc: str, *, origin_gen, ptr_gen, run_id="rb-1"):
+    cache.client.sets[keys.watch_key(dispatcher)] = {ptc}
+    cache.client.kv[keys.ptc_origin_key(ptc)] = json.dumps(
+        {"home_thread_id": dispatcher, "report_back": True, "dispatch_gen": origin_gen}
+    )
+    cache.client.kv[keys.rb_run_key(dispatcher, ptc)] = json.dumps(
+        {"run_id": run_id, "dispatch_gen": ptr_gen}
+    )
+
+
+def _job(ptc: str, run_id: str | None = None) -> dict:
+    payload = {"ptc_thread_id": ptc, "dispatch_gen": "g1"}
+    if run_id:
+        payload["dispatched_run_id"] = run_id
+    return {"hook_type": "report_back", "payload": payload}
+
+
+async def _read(cache: _FakeCache, dispatcher: str, run_statuses, open_jobs=()):
+    with (
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        patch("src.server.database.runs.lifecycle.get_run_statuses", run_statuses),
+        patch(
+            "src.server.database.runs.outbox.list_open_notification_jobs",
+            AsyncMock(return_value=list(open_jobs)),
+        ),
+    ):
+        return await status.read_report_back_status(dispatcher, OWNER)
+
+
+@pytest.mark.asyncio
+async def test_an_ended_summary_settles_its_member_before_the_clear():
+    """The member stays in the watch set until watch_clear runs behind the
+    report_back job's terminal wait; the tip must drop with the summary."""
+    cache = _FakeCache()
+    _seed_summary(cache, "cos-1", "ptc-1", origin_gen="g1", ptr_gen="g1")
+
+    resp = await _read(
+        cache,
+        "cos-1",
+        AsyncMock(return_value={"rb-1": "completed"}),
+        open_jobs=[_job("ptc-1", "rb-1")],
+    )
+
+    assert resp["pending_report_back"] is False
+    assert resp["report_back_run_id"] is None
+    assert resp["recent_report_back_run_ids"] == ["rb-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_report_queued_behind_the_ended_summary_keeps_the_member_owed():
+    """A later run on the analyst's thread (a continuation, a subagent's
+    report) queues another report_back under the same dispatch. The pointer
+    still names the summary that ended, so only the queued job says a second
+    report is on its way."""
+    cache = _FakeCache()
+    _seed_summary(cache, "cos-1", "ptc-1", origin_gen="g1", ptr_gen="g1")
+    labels = AsyncMock(return_value=[_label("ptc-1")])
+
+    with patch(LABELS, labels):
+        resp = await _read(
+            cache,
+            "cos-1",
+            AsyncMock(return_value={"rb-1": "completed"}),
+            open_jobs=[_job("ptc-1", "rb-1"), _job("ptc-1")],
+        )
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] is None
+    assert resp["recent_report_back_run_ids"] == ["rb-1"]
+    # The member settled, but the queued job still names its thread.
+    assert resp["owed_threads"] == [_label("ptc-1")]
+    labels.assert_awaited_once_with(["ptc-1"], OWNER)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ptr_gen", ["g0", None])
+async def test_a_summary_of_an_earlier_dispatch_leaves_the_member_owed(ptr_gen):
+    """The analyst was handed work again since: its new report is still owed."""
+    cache = _FakeCache()
+    _seed_summary(cache, "cos-1", "ptc-1", origin_gen="g1", ptr_gen=ptr_gen)
+
+    resp = await _read(cache, "cos-1", AsyncMock(return_value={"rb-1": "completed"}))
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] is None
+    assert resp["recent_report_back_run_ids"] == ["rb-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "run_statuses",
+    [
+        AsyncMock(return_value={"rb-1": "in_progress"}),
+        AsyncMock(return_value={}),
+        AsyncMock(side_effect=RuntimeError("db down")),
+    ],
+    ids=["live", "no-row-yet", "read-failed"],
+)
+async def test_a_summary_not_known_to_have_ended_keeps_the_member_owed(run_statuses):
+    cache = _FakeCache()
+    _seed_summary(cache, "cos-1", "ptc-1", origin_gen="g1", ptr_gen="g1")
+
+    resp = await _read(cache, "cos-1", run_statuses)
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] == "rb-1"
+    assert resp["recent_report_back_run_ids"] == []
+
+
+# --- owed_threads: the analysts a thread is still waiting on -----------------
+
+
+def _seed_two(cache: _FakeCache, dispatcher: str) -> None:
+    """``ptc-owed``'s summary is still running; ``ptc-settled``'s has ended
+    for its current dispatch."""
+    cache.client.sets[keys.watch_key(dispatcher)] = {"ptc-owed", "ptc-settled"}
+    for ptc, run_id in (("ptc-owed", "rb-owed"), ("ptc-settled", "rb-settled")):
+        cache.client.kv[keys.ptc_origin_key(ptc)] = json.dumps(
+            {"home_thread_id": dispatcher, "report_back": True, "dispatch_gen": "g1"}
+        )
+        cache.client.kv[keys.rb_run_key(dispatcher, ptc)] = json.dumps(
+            {"run_id": run_id, "dispatch_gen": "g1"}
+        )
+
+
+_TWO_STATUSES = {"rb-owed": "in_progress", "rb-settled": "completed"}
+
+
+@pytest.mark.asyncio
+async def test_owed_threads_lists_only_unsettled_members_with_labels():
+    cache = _FakeCache()
+    _seed_two(cache, "cos-1")
+    labels = AsyncMock(return_value=[_label("ptc-owed")])
+
+    with patch(LABELS, labels):
+        resp = await _read(cache, "cos-1", AsyncMock(return_value=_TWO_STATUSES))
+
+    assert resp["pending_report_back"] is True
+    assert resp["owed_threads"] == [_label("ptc-owed")]
+    labels.assert_awaited_once_with(["ptc-owed"], OWNER)
+
+
+@pytest.mark.asyncio
+async def test_owed_threads_label_failure_is_unknown_but_pendingness_holds():
+    cache = _FakeCache()
+    _seed_two(cache, "cos-1")
+
+    with patch(LABELS, AsyncMock(side_effect=RuntimeError("db down"))):
+        resp = await _read(cache, "cos-1", AsyncMock(return_value=_TWO_STATUSES))
+
+    assert resp["owed_threads"] is None
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] == "rb-owed"
+
+
+@pytest.mark.asyncio
+async def test_the_watch_snapshot_scopes_labels_to_the_threads_owner():
+    """The snapshot does not hold the owner, so a thread read yields it."""
+    cache = _FakeCache()
+    _seed_two(cache, "cos-1")
+    meta = AsyncMock(return_value={"user_id": OWNER})
+    labels = AsyncMock(return_value=[_label("ptc-owed")])
+
+    with (
+        patch("src.server.database.conversation.get_thread_auth_meta", meta),
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        patch(
+            "src.server.database.runs.lifecycle.get_run_statuses",
+            AsyncMock(return_value=_TWO_STATUSES),
+        ),
+        _no_open_jobs(),
+        _no_drained_task_runs(),
+        patch(LABELS, labels),
+    ):
+        resp = await status.read_report_back_slice("cos-1")
+
+    assert resp["owed_threads"] == [_label("ptc-owed")]
+    meta.assert_awaited_once_with("cos-1")
+    labels.assert_awaited_once_with(["ptc-owed"], OWNER)

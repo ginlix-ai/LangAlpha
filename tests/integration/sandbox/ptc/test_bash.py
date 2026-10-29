@@ -27,12 +27,6 @@ class TestExecuteBashCommand:
         assert result["success"] is False
         assert result["exit_code"] == 1
 
-    async def test_bash_increments_counter(self, shared_sandbox):
-        wd = shared_sandbox._work_dir
-        initial = shared_sandbox.bash_execution_count
-        await shared_sandbox.execute_bash_command("echo 1", working_dir=wd)
-        assert shared_sandbox.bash_execution_count == initial + 1
-
     async def test_bash_with_pipe(self, shared_sandbox):
         wd = shared_sandbox._work_dir
         result = await shared_sandbox.execute_bash_command("echo 'a b c' | wc -w", working_dir=wd)

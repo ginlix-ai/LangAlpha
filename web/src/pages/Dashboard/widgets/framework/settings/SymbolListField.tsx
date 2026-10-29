@@ -2,6 +2,7 @@ import { useState, type KeyboardEvent, type ClipboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import '@/pages/Dashboard/components/dashForms.css';
 
 // Split incoming text on whitespace, comma, semicolon, or newline so a paste
 // of `NVDA, AAPL MSFT;TSLA` becomes 4 chips instead of 1 bad symbol that the
@@ -18,7 +19,7 @@ interface Props {
 }
 
 /**
- * Multi-symbol picker — chips with add-by-Enter and remove-by-X.
+ * Multi-symbol picker: chips with add-by-Enter and remove-by-X.
  * Symbols are uppercased and de-duplicated on add.
  */
 export function SymbolListField({
@@ -79,7 +80,7 @@ export function SymbolListField({
     }
   };
 
-  // Click-outside without Enter shouldn't drop the half-typed symbol — but
+  // Click-outside without Enter shouldn't drop the half-typed symbol, but
   // also shouldn't blindly commit. Commit only when there's a non-whitespace
   // draft AND we're under the cap. The schema layer (Zod regex on consumer
   // widgets) enforces the symbol grammar at sanitize-on-load time.
@@ -93,11 +94,11 @@ export function SymbolListField({
 
   return (
     <div>
-      <span className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+      <span className="term-label dash-form-label">
         {label}
       </span>
       <div
-        className="flex flex-wrap gap-1.5 p-1.5 rounded border"
+        className="rings-within owns-its-edge flex flex-wrap gap-1.5 p-1.5 rounded border"
         style={{
           backgroundColor: 'var(--color-bg-card)',
           borderColor: 'var(--color-border-default)',
@@ -137,7 +138,7 @@ export function SymbolListField({
                 ? placeholder ?? t('dashboard.widgets.settings.symbolListPlaceholder')
                 : ''
           }
-          className="flex-1 min-w-[100px] border-0 !p-0 !h-6 text-xs bg-transparent shadow-none focus-visible:ring-0 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="dash-form-figure flex-1 min-w-[100px] border-0 p-0! h-6! text-xs bg-transparent shadow-none disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             color: 'var(--color-text-primary)',
             textTransform: 'uppercase',
@@ -145,12 +146,12 @@ export function SymbolListField({
         />
       </div>
       {helper && (
-        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="dash-form-help">
           {helper}
         </span>
       )}
       {atCap && (
-        <span className="text-[0.6875rem] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
+        <span className="dash-form-help">
           {t('dashboard.widgets.settings.symbolListHelperAtCap', { max })}
         </span>
       )}

@@ -1,0 +1,18 @@
+/* The scenes' utilities. index.css leaves this folder out of its scan, so the
+   classes only a scene uses ship with the scenes rather than on every page
+   load. Scoped to the intro's visual panel, so a utility this sheet repeats
+   from index.css can never win a tie against an app rule elsewhere once it
+   has loaded; :where() keeps each at a plain utility's weight inside it.
+
+   Not a cascade layer: preflight is unlayered, so its reset would beat every
+   margin, padding and border here. The theme is imported, not referenced, so a
+   variable only a scene reads (--font-serif) is still declared, in the theme
+   layer index.css already holds, with the same values. Neither is index.css,
+   whose source list skips this folder. */
+@import '../../../../styles/tailwind-theme.css';
+@reference '../../../../styles/tokens.css';
+@source './';
+
+:where(.intro-visual) {
+  @tailwind utilities source(none);
+}

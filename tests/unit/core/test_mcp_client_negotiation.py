@@ -7,6 +7,7 @@ retry) must land on a working era or a clear error — never a hang.
 """
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -45,6 +46,12 @@ if MODE == "import_crash":
     )
     sys.stderr.flush()
     sys.exit(1)
+
+if MODE == "slow_start":
+    time.sleep(2.5)
+elif MODE == "never_reads":
+    time.sleep(60)
+record("listening", str(os.getpid()))
 
 MODERN = {"supportedVersions": ["2026-07-28"], "resultType": "complete"}
 seen_discover = False
@@ -158,23 +165,39 @@ while True:
 '''
 
 
-def _client_ns(tmp_path, mode, transport="stdio"):
+# Stands in for `uv run` / uvx / npx: the client's child is this launcher and
+# the server is its child.
+_LAUNCHER = '''
+import subprocess, sys
+sys.exit(subprocess.call([sys.executable] + sys.argv[1:]))
+'''
+
+
+def _client_ns(tmp_path, mode, transport="stdio", launched=False):
     """Generate the real client for a scripted server and exec it."""
     server_py = tmp_path / "fake_server.py"
     server_py.write_text(_FAKE_SERVER)
     state = tmp_path / f"state_{mode}"
     state.mkdir()
+    args = [str(server_py), mode, str(state)]
+    if launched:
+        launcher_py = tmp_path / "launcher.py"
+        launcher_py.write_text(_LAUNCHER)
+        args.insert(0, str(launcher_py))
     config = MCPServerConfig(
         name="fake",
         transport=transport,
         url="http://127.0.0.1:1/mcp" if transport != "stdio" else None,
         command=sys.executable,
-        args=[str(server_py), mode, str(state)],
+        args=args,
         env={},
     )
     code = ToolFunctionGenerator().generate_mcp_client_code(
         [config], working_dir=str(tmp_path)
     )
+    config_path = tmp_path / ".agents/tools/mcp_client_config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps({"workspace_id": "test", "servers": {"fake": {}}}))
     ns = {"__name__": "mcp_client_under_test"}
     exec(compile(code, "mcp_client.py", "exec"), ns)  # noqa: S102
     ns["_PROBE_TIMEOUT"] = 1.0  # keep silence/timeout scenarios fast
@@ -185,6 +208,29 @@ def _spawn_count(state):
     return len((state / "spawns").read_text().splitlines())
 
 
+def _alive(pid):
+    """Running, not a zombie waiting on whoever inherited it."""
+    if os.path.isdir("/proc"):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                state = f.read().rsplit(")", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            # The process can go between the open and the read.
+            return False
+    else:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
+        ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def _unread_until_listening(ns, state):
+    """The real check reads FIONREAD on the pipe's write end, which only Linux
+    answers; the marker the server writes before its loop stands in for it so
+    the startup budget is exercised on every platform."""
+    ns["_request_unread"] = lambda proc: not (state / "listening").exists()
+
+
 class TestNegotiation:
     def test_modern_server_negotiates_modern(self, tmp_path):
         ns, state = _client_ns(tmp_path, "modern")
@@ -192,6 +238,8 @@ class TestNegotiation:
         assert result == {"data": "structured"}  # structuredContent preferred
         assert ns["_PROTO"]["fake"] == {
             "mode": "modern", "version": "2026-07-28", "session_id": None,
+            # The 2026-era identity stamp is optional and this server omits it.
+            "server_info": None,
         }
         assert _spawn_count(state) == 1
         ns["cleanup_mcp_servers"]()
@@ -275,6 +323,70 @@ class TestNegotiation:
         assert results == [{"data": "structured"}] * 2
         assert _spawn_count(state) == 1  # one spawn + one negotiation total
         ns["cleanup_mcp_servers"]()
+
+
+class TestStartup:
+    """A cold disk or a uvx/npx fetch can keep a healthy server from reading for
+    longer than a handshake reply may take; that is slowness, not silence."""
+
+    def test_slow_start_negotiates_modern_without_restart(self, tmp_path):
+        ns, state = _client_ns(tmp_path, "slow_start")  # 2.5s > 1s probe budget
+        _unread_until_listening(ns, state)
+        assert ns["_call_mcp_tool"]("fake", "t", {}) == {"ok": True}
+        # A restart would have fallen back to the legacy handshake.
+        assert ns["_PROTO"]["fake"]["mode"] == "modern"
+        assert _spawn_count(state) == 1
+        ns["cleanup_mcp_servers"]()
+
+    def test_server_that_never_reads_fails_without_restart(self, tmp_path):
+        ns, state = _client_ns(tmp_path, "never_reads")
+        ns["_STARTUP_TIMEOUT"] = 2.0
+        _unread_until_listening(ns, state)
+        with pytest.raises(RuntimeError, match="did not start within 2s"):
+            ns["_call_mcp_tool"]("fake", "t", {})
+        assert _spawn_count(state) == 1
+
+    @pytest.mark.skipif(
+        sys.platform != "linux", reason="FIONREAD answers on a pipe's write end on Linux"
+    )
+    def test_unread_request_visible_until_the_server_reads(self, tmp_path):
+        ns, _ = _client_ns(tmp_path, "modern")
+        reader = "import sys, time; time.sleep(1); sys.stdin.readline(); time.sleep(5)"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", reader], stdin=subprocess.PIPE, text=True
+        )
+        try:
+            proc.stdin.write("{}\n")
+            proc.stdin.flush()
+            assert ns["_request_unread"](proc)
+            deadline = time.monotonic() + 5
+            while ns["_request_unread"](proc) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert not ns["_request_unread"](proc)
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+class TestKillReachesLaunchedServer:
+    """Builtins start behind ``uv run`` and third-party servers behind uvx/npx,
+    so the spawned process is a launcher. Killing only it orphaned the server,
+    which kept its memory until the computer stopped (on E2B, across pauses)."""
+
+    @pytest.mark.parametrize("kill", ["drop_server", "cleanup_mcp_servers"])
+    def test_kill_takes_down_the_server_behind_a_launcher(self, tmp_path, kill):
+        ns, state = _client_ns(tmp_path, "modern", launched=True)
+        assert ns["_call_mcp_tool"]("fake", "t", {}) == {"data": "structured"}
+        server_pid = int((state / "listening").read_text().split()[0])
+        assert _alive(server_pid)
+        if kill == "drop_server":
+            ns["drop_server"]("fake")
+        else:
+            ns["cleanup_mcp_servers"]()
+        deadline = time.monotonic() + 5
+        while _alive(server_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _alive(server_pid)
 
 
 class TestReplyHandling:

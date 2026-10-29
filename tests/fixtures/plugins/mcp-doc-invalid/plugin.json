@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mcp-doc-invalid",
+  "extensions": {
+    "ai.langalpha": {
+      "secrets": [
+        {
+          "name": "DOC_INVALID_TOKEN",
+          "label": "Upstream token",
+          "bind": [{ "server": "api", "header": "Authorization" }]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,472 @@
+{
+  "ScheduleWakeupArgs": {
+    "$defs": {
+      "PriceTarget": {
+        "additionalProperties": false,
+        "description": "Set exactly one of above, below, pct_up, pct_down.",
+        "properties": {
+          "above": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alert when the price rises to this level.",
+            "title": "Above"
+          },
+          "below": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alert when the price falls to this level.",
+            "title": "Below"
+          },
+          "pct_down": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alert on a fall of this many percent (3 means 3%).",
+            "title": "Pct Down"
+          },
+          "pct_from": {
+            "anyOf": [
+              {
+                "enum": [
+                  "previous_close",
+                  "now"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only with pct_up or pct_down: measure from \"now\", the price when you set it, instead of the previous close.",
+            "title": "Pct From"
+          },
+          "pct_up": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Alert on a rise of this many percent (3 means 3%).",
+            "title": "Pct Up"
+          },
+          "symbol": {
+            "description": "Ticker, spelled as you would watch it.",
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "title": "PriceTarget",
+        "type": "object"
+      },
+      "WakeupTrigger": {
+        "additionalProperties": false,
+        "description": "Set exactly one of at, cron, price, order.",
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fire once at this time, ISO 8601 (\"2026-10-21T08:30\"), read in timezone unless it carries an offset; 1 minute to 7 days ahead.",
+            "title": "At"
+          },
+          "cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fire repeatedly on this 5-field cron, read in timezone: \"*/5 * * * *\" every 5 minutes, \"0 9 * * 1-5\" weekdays at 9:00. Fires are at least 5 minutes apart, and market holidays still fire. A series fires at most 24 times and lasts at most 7 days, so every 5 minutes ends after 2 hours; set until to stop it sooner.",
+            "title": "Cron"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A few words naming what this wakeup is for, shown to the user (\"NVDA pullback entry\"). Optional.",
+            "title": "Label"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fire when this order first fills, even partly, or ends unfilled: the order id from the brokerage's reply to an order you placed in this conversation. It lasts until the order ends, at most 7 days.",
+            "title": "Order"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PriceTarget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fire when a price level or % move hits. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go."
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The IANA timezone at, cron and until are read in (\"America/New_York\"); the user's by default. For a market's hours, use its exchange's timezone and write the hours on that clock, so they hold for a user elsewhere and across daylight-saving changes.",
+            "title": "Timezone"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "With cron: stop the series after this time, ISO 8601 (\"2026-10-20T16:00\" for today only), read like at.",
+            "title": "Until"
+          }
+        },
+        "title": "WakeupTrigger",
+        "type": "object"
+      }
+    },
+    "description": "Arguments of `schedule_wakeup`; every one optional, none described.",
+    "properties": {
+      "cancel": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Cancel"
+      },
+      "quiet": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Quiet"
+      },
+      "triggers": {
+        "anyOf": [
+          {
+            "items": {
+              "$ref": "#/$defs/WakeupTrigger"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Triggers"
+      }
+    },
+    "title": "ScheduleWakeupArgs",
+    "type": "object"
+  },
+  "as_the_model_sees_it": {
+    "function": {
+      "description": "Come back to this conversation later, or when something happens, to carry on a task whose next step you already know: at a time, on a repeating schedule, on a price move, or when an order you placed fills or ends. Call with no arguments to see what is pending.\n\nA wakeup carries nothing but what fired, so before you end the turn tell the user what you set, when it stops, and what you will do when it fires; that reply is what you will pick up from. It is not for background tasks or hand-offs, which report back on their own. At most 10 can be pending in a conversation; a series counts as one.\n\nArgs:\n    triggers: Wakeups to set.\n    cancel: Ids of wakeups to cancel, or \"all\".\n    quiet: End a turn that a wakeup started, without a reply: one short line on what you checked and found, shown to the user in the list of quiet checks.\n\nReturns:\n    What is pending afterwards: each wakeup's id (for cancel; the user knows it by its label), what it waits for, and when it next fires and stops or lapses.\n\nA wakeup that fires while you are working arrives in this turn; otherwise it starts a new turn here with no user message. When that turn finds nothing the user needs to hear, end it with quiet instead of replying. Cancel your own wakeups once their goal is met, such as an entry taken or an order done.",
+      "name": "schedule_wakeup",
+      "parameters": {
+        "properties": {
+          "cancel": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "quiet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "triggers": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": false,
+                  "description": "Set exactly one of at, cron, price, order.",
+                  "properties": {
+                    "at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Fire once at this time, ISO 8601 (\"2026-10-21T08:30\"), read in timezone unless it carries an offset; 1 minute to 7 days ahead.",
+                      "title": "At"
+                    },
+                    "cron": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Fire repeatedly on this 5-field cron, read in timezone: \"*/5 * * * *\" every 5 minutes, \"0 9 * * 1-5\" weekdays at 9:00. Fires are at least 5 minutes apart, and market holidays still fire. A series fires at most 24 times and lasts at most 7 days, so every 5 minutes ends after 2 hours; set until to stop it sooner.",
+                      "title": "Cron"
+                    },
+                    "label": {
+                      "anyOf": [
+                        {
+                          "maxLength": 40,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "A few words naming what this wakeup is for, shown to the user (\"NVDA pullback entry\"). Optional.",
+                      "title": "Label"
+                    },
+                    "order": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Fire when this order first fills, even partly, or ends unfilled: the order id from the brokerage's reply to an order you placed in this conversation. It lasts until the order ends, at most 7 days.",
+                      "title": "Order"
+                    },
+                    "price": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "description": "Set exactly one of above, below, pct_up, pct_down.",
+                          "properties": {
+                            "above": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "description": "Alert when the price rises to this level.",
+                              "title": "Above"
+                            },
+                            "below": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "description": "Alert when the price falls to this level.",
+                              "title": "Below"
+                            },
+                            "pct_down": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "description": "Alert on a fall of this many percent (3 means 3%).",
+                              "title": "Pct Down"
+                            },
+                            "pct_from": {
+                              "anyOf": [
+                                {
+                                  "enum": [
+                                    "previous_close",
+                                    "now"
+                                  ],
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "description": "Only with pct_up or pct_down: measure from \"now\", the price when you set it, instead of the previous close.",
+                              "title": "Pct From"
+                            },
+                            "pct_up": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "description": "Alert on a rise of this many percent (3 means 3%).",
+                              "title": "Pct Up"
+                            },
+                            "symbol": {
+                              "description": "Ticker, spelled as you would watch it.",
+                              "title": "Symbol",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "symbol"
+                          ],
+                          "title": "PriceTarget",
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Fire when a price level or % move hits. It lasts through its market's next full session; shortly before it lapses unhit you are woken to set it again or let it go."
+                    },
+                    "timezone": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "The IANA timezone at, cron and until are read in (\"America/New_York\"); the user's by default. For a market's hours, use its exchange's timezone and write the hours on that clock, so they hold for a user elsewhere and across daylight-saving changes.",
+                      "title": "Timezone"
+                    },
+                    "until": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "With cron: stop the series after this time, ISO 8601 (\"2026-10-20T16:00\" for today only), read like at.",
+                      "title": "Until"
+                    }
+                  },
+                  "title": "WakeupTrigger",
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }
+}

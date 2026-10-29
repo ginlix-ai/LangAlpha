@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- None, on purpose: the remote-control helper is the one process in the
+       bundle that takes logins from the network, and it runs no JIT. Signed with
+       this instead of entitlements.mac.plist by scripts/sign-mac.mjs. -->
+</dict>
+</plist>

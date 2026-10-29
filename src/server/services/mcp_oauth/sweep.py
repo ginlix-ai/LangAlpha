@@ -4,7 +4,8 @@ Proactively refreshes connections approaching expiry so relay requests almost
 never pay the refresh on the hot path. Cross-worker dedup rides the same
 per-connection advisory try-lock ``ensure_fresh_access_token`` takes — this
 loop is just a pacemaker. Schema snapshots are refreshed only on connect and
-via the Connectors refresh action, never here.
+via the Plugins refresh action, never here. Expired pending sign-ins are
+dropped within one interval of expiry because their payload may hold secrets.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 SWEEP_INTERVAL_S = 300.0
 SWEEP_BATCH_LIMIT = 20
 # Refresh anything expiring inside this window (comfortably wider than the
-# hot path's 10-minute margin so the sweeper usually gets there first).
+# hot path's margin, at most 10 minutes, so the sweeper usually gets there first).
 DUE_MARGIN_SECONDS = 900
 STOP_GRACE = 30.0
 
@@ -101,6 +102,23 @@ class McpOAuthRefreshSweeper:
             TokenUnavailable,
             ensure_fresh_access_token,
         )
+
+        try:
+            from src.server.database.mcp_oauth_pending import (
+                delete_expired_pending,
+            )
+
+            dropped = await delete_expired_pending()
+            if dropped:
+                logger.info(
+                    "[McpOAuthRefreshSweeper] dropped %d expired sign-in(s)",
+                    dropped,
+                )
+        except Exception:
+            logger.warning(
+                "[McpOAuthRefreshSweeper] expired sign-in delete failed",
+                exc_info=True,
+            )
 
         rows = await list_due_refresh(
             margin_seconds=DUE_MARGIN_SECONDS, limit=SWEEP_BATCH_LIMIT

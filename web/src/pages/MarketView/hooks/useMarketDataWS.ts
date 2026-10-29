@@ -10,7 +10,8 @@
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { getMarketDataWSUrl, getWSAuthToken } from '../utils/api';
+import { getMarketDataWSUrl } from '../utils/api';
+import { getAccessToken } from '@/lib/authToken';
 import { writeQuoteFromWs } from '@/lib/quotes';
 import { timezoneForSymbol } from '@/lib/bars/exchanges';
 import { dateStrInTz, utcMsToChartSec } from '@/lib/utils';
@@ -247,7 +248,10 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
       }
     }
 
-    const token = await getWSAuthToken();
+    // From the shared cache, so this inherits the pre-expiry margin it never had
+    // on its own. Without it a tab resuming past expiry presented the same dead
+    // token on every reconnect, for as long as the hook lived.
+    const token = await getAccessToken();
     if (!mountedRef.current) return;
     const base = getMarketDataWSUrl('stock');
     const sep = base.includes('?') ? '&' : '?';
@@ -300,7 +304,17 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
         return;
       }
 
-      // Auth failure (1008) — mark as disabled, don't reconnect
+      // Auth failure (1008) -- mark as disabled, don't reconnect.
+      //
+      // Unreachable against this backend, and left as it was rather than built
+      // on: `authenticate_websocket` closes 1008 *before* `accept()`, which
+      // uvicorn turns into an HTTP 403 rejection of the upgrade, and a rejected
+      // handshake reaches the browser as 1006 with no code of its own. A
+      // refused credential therefore lands on the ordinary reconnect path
+      // below and backs off to 30s, which is also the only thing it can do:
+      // the browser deliberately does not tell a page why a handshake failed,
+      // so an auth failure here is indistinguishable from the server being
+      // down. Recovery is the cached token above renewing itself.
       if (event.code === 1008) {
         disabledRef.current = true;
         setConnectionStatus('disabled');

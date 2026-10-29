@@ -22,6 +22,8 @@ from ptc_agent.config.agent import (
 )
 
 HANDLER = "src.server.services.llm.config"
+USER_MODELS = "src.server.services.llm.user_models"
+CLIENTS = "src.server.services.llm.clients"
 
 
 def _make_config(*, compaction=None, fetch=None, fallback=None, subagents_enabled=None):
@@ -41,6 +43,7 @@ class _FakeClient:
 
     def __init__(self, label):
         self.label = label
+        self.metadata: dict | None = None
 
     def model_copy(self):
         c = _FakeClient(self.label)
@@ -57,33 +60,33 @@ def _common_patches(
     is_byok_active_val=False,
 ):
     """Bundle the standard patch set. ``classify_source`` is a ModelSource."""
-    from src.server.services.llm.config import ModelSource
+    from src.server.services.llm.user_models import ModelSource
 
     src = classify_source if classify_source is not None else ModelSource.SYSTEM
 
     patches = [
         patch(
-            f"{HANDLER}.classify_model",
+            f"{USER_MODELS}.classify_model",
             new_callable=AsyncMock,
             return_value=(src, {}),
         ),
         patch(
-            f"{HANDLER}.get_custom_provider_config",
+            f"{USER_MODELS}.get_custom_provider_config",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            f"{HANDLER}.get_model_preference",
+            f"{USER_MODELS}.get_model_preference",
             new_callable=AsyncMock,
             return_value={},
         ),
         patch(
-            f"{HANDLER}.resolve_oauth_llm_client",
+            f"{CLIENTS}.resolve_oauth_llm_client",
             new_callable=AsyncMock,
             return_value=oauth,
         ),
         patch(
-            f"{HANDLER}.resolve_byok_llm_client",
+            f"{CLIENTS}.resolve_byok_llm_client",
             new_callable=AsyncMock,
             return_value=byok,
         ),
@@ -168,7 +171,8 @@ async def test_non_byok_no_reasoning_is_none():
 @pytest.mark.asyncio
 async def test_byok_on_system_model_is_byok_source():
     """Orthogonality: BYOK key on a SYSTEM-catalog model → cred=BYOK."""
-    from src.server.services.llm.config import ModelSource, resolve_llm_config
+    from src.server.services.llm.config import resolve_llm_config
+    from src.server.services.llm.user_models import ModelSource
 
     byok_client = _FakeClient("byok")
     with _entered(_common_patches(byok=byok_client, classify_source=ModelSource.SYSTEM)):
@@ -203,27 +207,29 @@ async def test_platform_client_not_copied_into_roles():
 
 
 @pytest.mark.asyncio
-async def test_byok_main_copied_into_keyless_role():
-    """BYOK user with a compaction model they have no key for → role gets a main copy."""
+async def test_byok_keyless_compaction_runs_main_model_at_summary_level():
+    """BYOK user with a compaction model they have no key for → the summary
+    runs the main model on their key at the summary level, not a copy of the
+    main client at the turn's level."""
     from src.server.services.llm.config import resolve_llm_config
 
-    byok_client = _FakeClient("byok-main")
-
-    # OAuth None always; BYOK returns the main client for the main model, but
-    # None for the compaction role model.
-    async def _byok(user_id, model_name, is_byok, *a, **k):
-        return byok_client if model_name == "main-model" else None
+    async def _byok(user_id, model_name, is_byok, reasoning_effort=None, *a, **k):
+        return _FakeClient(f"main@{reasoning_effort}") if model_name == "main-model" else None
 
     with (
         patch(
-            f"{HANDLER}.classify_model",
+            f"{USER_MODELS}.classify_model",
             new_callable=AsyncMock,
-            return_value=(__import__(HANDLER, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
+            return_value=(__import__(USER_MODELS, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
         ),
-        patch(f"{HANDLER}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-        patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.resolve_byok_llm_client", side_effect=_byok),
+        patch(f"{USER_MODELS}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
+        patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+        patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+        patch(f"{CLIENTS}.resolve_byok_llm_client", side_effect=_byok),
+        patch(
+            f"{CLIENTS}._summary_effort",
+            side_effect=lambda pref, model: "medium" if model == "main-model" else None,
+        ),
         patch("src.server.database.api_keys.is_byok_active", new_callable=AsyncMock, return_value=True),
         patch("src.server.database.api_keys.get_byok_configs_for_providers", new_callable=AsyncMock, return_value={}),
         patch("src.llms.llm.create_llm", return_value=None),
@@ -233,11 +239,8 @@ async def test_byok_main_copied_into_keyless_role():
         )
 
     assert cfg.credential_source == CredentialSource.BYOK
-    assert "compaction" in cfg.subsidiary_llm_clients
-    # It is a COPY of the main client, not the same instance.
-    copy = cfg.subsidiary_llm_clients["compaction"]
-    assert copy is not byok_client
-    assert getattr(copy, "_copied_from", None) is byok_client
+    assert cfg.llm_client.label == "main@None"
+    assert cfg.subsidiary_llm_clients["compaction"].label == "main@medium"
 
 
 @pytest.mark.asyncio
@@ -271,14 +274,14 @@ async def test_is_byok_none_self_resolves():
     byok = AsyncMock(return_value=None)
     with (
         patch(
-            f"{HANDLER}.classify_model",
+            f"{USER_MODELS}.classify_model",
             new_callable=AsyncMock,
-            return_value=(__import__(HANDLER, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
+            return_value=(__import__(USER_MODELS, fromlist=["ModelSource"]).ModelSource.SYSTEM, {}),
         ),
-        patch(f"{HANDLER}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
-        patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
-        patch(f"{HANDLER}.resolve_byok_llm_client", byok),
+        patch(f"{USER_MODELS}.get_custom_provider_config", new_callable=AsyncMock, return_value=None),
+        patch(f"{USER_MODELS}.get_model_preference", new_callable=AsyncMock, return_value={}),
+        patch(f"{CLIENTS}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+        patch(f"{CLIENTS}.resolve_byok_llm_client", byok),
         patch("src.server.database.api_keys.is_byok_active", is_byok_active),
         patch("src.server.database.api_keys.get_byok_configs_for_providers", new_callable=AsyncMock, return_value={}),
         patch("src.llms.llm.create_llm", return_value=None),
@@ -294,17 +297,27 @@ async def test_is_byok_none_self_resolves():
 # ---------------------------------------------------------------------------
 
 
+def _roster(**models):
+    from ptc_agent.agent.subagents.definition import SubagentDefinition
+    from ptc_agent.agent.subagents.merge import ResolvedSubagents
+
+    return ResolvedSubagents(
+        definitions={
+            name: SubagentDefinition(name=name, description="", model=model)
+            for name, model in models.items()
+        },
+        enabled=tuple(models),
+    )
+
+
 def test_role_registry_compaction_fetch_and_subagents():
-    from src.server.services.llm.config import LLMRole, role_registry
+    from src.server.services.llm.clients import LLMRole, role_registry
+    from src.server.services.llm.subagents import subagent_roles
 
     cfg = _make_config(compaction="cm", fetch="fm")
-    sub_with_model = MagicMock()
-    sub_with_model.model = "sub-model"
-    sub_no_model = MagicMock()
-    sub_no_model.model = None
-    subagent_defs = {"research": sub_with_model, "writer": sub_no_model}
+    roster = _roster(research="sub-model", writer=None)
 
-    roles = role_registry(cfg, ["research", "writer"], subagent_defs)
+    roles = [*role_registry(cfg, {}), *subagent_roles(roster, {}, None)]
     keys = [r.key for r in roles]
 
     assert "compaction" in keys
@@ -315,21 +328,130 @@ def test_role_registry_compaction_fetch_and_subagents():
     assert all(isinstance(r, LLMRole) for r in roles)
 
 
-def test_role_registry_skips_missing_compaction_fetch():
-    from src.server.services.llm.config import role_registry
+def test_role_registry_gives_each_role_its_own_models_effort():
+    """A level set on a model is a fact about that model wherever it runs.
 
-    cfg = _make_config()  # no compaction, no fetch
-    roles = role_registry(cfg, [], {})
-    assert roles == []
+    The role list is where that gets attached, because it is the last point
+    that still knows which model each slot is for. Compaction is the
+    exception: a summary runs at the summary level whatever the user set.
+    """
+    from src.server.services.llm.clients import role_registry
+    from src.server.services.llm.subagents import subagent_roles
+
+    cfg = _make_config(compaction="cm", fetch="fm")
+    roster = _roster(research="sub-model")  # sets no level of its own
+    model_pref = {
+        "reasoning_effort": "low",
+        "profiles": {"sub-model": {"reasoning_effort": "high"}, "cm": {"reasoning_effort": "max"}},
+    }
+    model_entry = {"cm": {"reasoning": {"efforts": ["low", "medium", "high", "max"]}}}
+
+    with patch(
+        "src.server.services.llm.user_models.model_entry",
+        side_effect=lambda _pref, name: model_entry.get(name),
+    ):
+        roles = {
+            r.key: r
+            for r in [*role_registry(cfg, model_pref), *subagent_roles(roster, model_pref, None)]
+        }
+
+    # The subagent's model carries a profile; fetch falls to the account.
+    assert roles["subagent:research"].reasoning_effort == "high"
+    assert roles["fetch"].reasoning_effort == "low"
+    assert roles["compaction"].reasoning_effort == "medium"
 
 
-def test_role_registry_unknown_enabled_name_skipped():
-    """An enabled subagent absent from subagent_defs is skipped (no raise)."""
-    from src.server.services.llm.config import role_registry
+@pytest.mark.parametrize(
+    ("efforts", "expected"),
+    [
+        (["low", "medium", "high", "max"], "medium"),
+        # glm-shaped: no medium, so a summary runs at high, never max.
+        (["low", "high", "max"], "high"),
+        (["none", "low", "high", "max"], "high"),
+        # Neither on offer: the model keeps its own default.
+        (["low", "max"], None),
+        ([], None),
+    ],
+)
+def test_compaction_runs_at_medium_else_high(efforts, expected):
+    from src.server.services.llm.clients import role_registry
 
-    cfg = _make_config(compaction="cm")
-    # 'ghost' is enabled but not in defs (registry.get() returned None → absent)
-    roles = role_registry(cfg, ["ghost"], {})
-    keys = [r.key for r in roles]
-    assert keys == ["compaction"]
-    assert "subagent:ghost" not in keys
+    with patch(
+        "src.server.services.llm.user_models.model_entry",
+        return_value={"reasoning": {"efforts": efforts}},
+    ):
+        (compaction,) = [
+            r for r in role_registry(_make_config(compaction="cm"), {})
+            if r.key == "compaction"
+        ]
+
+    assert compaction.reasoning_effort == expected
+
+
+def test_role_registry_buys_no_priority_tier():
+    """Priority is bought per call, so one fast turn must not become N.
+
+    Decided rather than overlooked: the field exists on the role and is left
+    unset here, which is the one place to change it.
+    """
+    from src.server.services.llm.clients import role_registry
+
+    cfg = _make_config(compaction="cm", fetch="fm")
+    model_pref = {"fast_mode": True, "profiles": {"cm": {"fast_mode": True}}}
+
+    roles = role_registry(cfg, model_pref)
+
+    assert [r.service_tier for r in roles] == [None, None]
+
+
+def test_role_registry_compacts_on_the_turns_model_when_none_is_named():
+    from src.server.services.llm.clients import role_registry
+
+    cfg = _make_config()  # no compaction, no fetch, no background
+    roles = role_registry(cfg, {})
+    # A summary runs on the model the turn runs; fetch, with no background to
+    # follow, has no model and so no role.
+    assert [(r.key, r.model) for r in roles] == [("compaction", "main-model")]
+
+
+def test_role_registry_summary_falls_back_to_the_turns_fallback():
+    """A summary on the turn's own model falls back to the model the turn
+    falls back to, at the summary level. Never to a copy of the main client,
+    which is the model that just failed."""
+    from src.server.services.llm.clients import role_registry
+
+    cfg = _make_config(fallback=["fb-1", "fb-2"])
+    with patch(
+        f"{USER_MODELS}.model_entry",
+        side_effect=lambda _pref, name: (
+            {"reasoning": {"efforts": ["low", "high", "max"]}} if name == "fb-1" else None
+        ),
+    ):
+        roles = {r.key: r for r in role_registry(cfg, {}, "main-model")}
+
+    fallback = roles["compaction_fallback"]
+    assert (fallback.model, fallback.reasoning_effort, fallback.fallback_to_main) == (
+        "fb-1",
+        "high",
+        False,
+    )
+
+
+def test_role_registry_picked_summary_model_falls_back_to_the_turns_model():
+    """A summary written by a model picked for it falls back to the model the
+    turn runs, at the summary level rather than the turn's own."""
+    from src.server.services.llm.clients import role_registry
+
+    cfg = _make_config(compaction="cm", fallback=["fb-1"])
+    with patch(
+        f"{USER_MODELS}.model_entry",
+        side_effect=lambda _pref, name: {"reasoning": {"efforts": ["low", "medium", "max"]}},
+    ):
+        roles = {r.key: r for r in role_registry(cfg, {}, "main-model")}
+
+    fallback = roles["compaction_fallback"]
+    assert (fallback.model, fallback.reasoning_effort, fallback.fallback_to_main) == (
+        "main-model",
+        "medium",
+        False,
+    )

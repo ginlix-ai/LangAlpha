@@ -18,7 +18,6 @@ function StockHeatmapWidget({ instance }: WidgetRenderProps<StockHeatmapConfig>)
   const { dataSource, blockSize, blockColor } = instance.config;
   return (
     <TradingViewEmbed
-      card
       scriptKey="stock-heatmap"
       config={{
         dataSource,

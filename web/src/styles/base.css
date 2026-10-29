@@ -1,0 +1,89 @@
+/* ============================================
+   Base element styles, on top of Tailwind's preflight
+   ============================================
+
+   Imported straight after preflight (index.css) and, like it, outside any
+   cascade layer, so these win over preflight by source order and lose to every
+   utility and component rule by specificity. */
+
+/* ---------- Tailwind v3 preflight, where v4's differs ----------
+   The v4 preflight changed these defaults. Each rule puts back the v3 value so
+   the upgrade moves no pixels; drop one only as a deliberate visual change. */
+
+/* v4 makes form controls transparent, square and fully opaque; v3 left all
+   three to the browser, so a field with no background class showed the
+   platform's field color. Buttons were already transparent in v3. */
+input,
+select,
+optgroup,
+textarea {
+  background-color: revert;
+}
+
+input:where([type='button'], [type='reset'], [type='submit']) {
+  background-color: transparent;
+}
+
+button,
+input,
+select,
+optgroup,
+textarea {
+  border-radius: revert;
+  opacity: revert;
+}
+
+/* v4 zeroes every element's padding; v3 left options at the browser's. */
+option {
+  padding: revert;
+}
+
+/* v4's placeholder is half the text color; v3's was gray-400. */
+input::placeholder,
+textarea::placeholder {
+  color: #9ca3af;
+}
+
+/* v4 dropped the pointer cursor on buttons. */
+button,
+[role='button'] {
+  cursor: pointer;
+}
+
+:disabled {
+  cursor: default;
+}
+
+/* ---------- App base ---------- */
+
+* {
+  box-sizing: border-box;
+  @apply border-border;
+}
+
+body {
+  @apply bg-background text-foreground;
+  font-family: var(--font-ui);
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100vh;
+  min-width: 320px;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+}
+
+/* Tailwind's preflight carries `:-moz-focusring { outline: auto }` outside any
+   layer, so in Firefox it would beat the whole focus layer in tokens.css: its
+   own ring on a keyboard focus, and one on a clicked field the layer means to
+   keep quiet. Same specificity and later in source, so this wins, and
+   revert-layer hands the decision back to the layer. */
+:-moz-focusring {
+  outline: revert-layer;
+}

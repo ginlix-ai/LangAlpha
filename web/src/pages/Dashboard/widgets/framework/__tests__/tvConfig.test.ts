@@ -1,5 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import i18n from '@/i18n';
+import { describe, it, expect } from 'vitest';
 import { resolveScriptSrc, mapLocaleForTV, getTVCommonConfig } from '../tvConfig';
 
 describe('resolveScriptSrc', () => {
@@ -49,18 +48,13 @@ describe('mapLocaleForTV', () => {
 });
 
 describe('getTVCommonConfig', () => {
-  beforeEach(() => {
-    i18n.changeLanguage('en-US');
-  });
-
-  it('reads the active locale at call time', () => {
-    expect(getTVCommonConfig().locale).toBe('en');
-    i18n.changeLanguage('zh-CN');
-    expect(getTVCommonConfig().locale).toBe('zh_CN');
+  it('maps the given locale into TV grammar', () => {
+    expect(getTVCommonConfig('en-US').locale).toBe('en');
+    expect(getTVCommonConfig('zh-CN').locale).toBe('zh_CN');
   });
 
   it('always emits transparent backgrounds and full size hints', () => {
-    const cfg = getTVCommonConfig();
+    const cfg = getTVCommonConfig('en-US');
     expect(cfg.autosize).toBe(true);
     expect(cfg.isTransparent).toBe(true);
     expect(cfg.backgroundColor).toBe('rgba(0,0,0,0)');
@@ -69,7 +63,7 @@ describe('getTVCommonConfig', () => {
   });
 
   it('routes "view full chart" to our /market route', () => {
-    const cfg = getTVCommonConfig();
+    const cfg = getTVCommonConfig('en-US');
     expect(String(cfg.largeChartUrl)).toMatch(/\/market$/);
   });
 });

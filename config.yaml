@@ -15,8 +15,17 @@ cli:
 
 # Application Settings
 debug: false
-ptc_recursion_limit: 2000
-flash_recursion_limit: 500
+
+# Prompt scaffolding level. Frontier models perform better with less procedural
+# instruction; smaller models need the expanded version.
+#   auto      — follow each model's prompt_guidance in src/llms/manifest/models.json
+#               (unannotated models fall back to detailed)
+#   lean      — pin every model to the minimal prompt
+#   detailed  — pin every model to the expanded prompt
+# A per-user model_preference.prompt_guidance overrides this — a profile for
+# the running model first, then the account-wide value.
+prompt:
+  guidance: auto
 
 # Workflow Settings
 workflow_timeout: 21600  # seconds (6 hours) — matches background_execution.abandoned_workflow_timeout
@@ -25,6 +34,11 @@ sse_keepalive_interval: 15  # seconds
 # Feature Flags (operator-only infra toggles; never exposed to users)
 result_log_db_enabled: true
 redis_warm_on_startup: true
+# Fetch the built-in brokerages' logos at startup, so a cold cache never leaves
+# a viewer waiting on a broker's site. Off here, so a stack that never shows a
+# brokerage does not reach their sites as it boots; a deployment that does
+# turns it on in its APP_ENV overlay.
+brokerage_marks_warm_on_startup: false
 langsmith_tracing: false
 
 # User-facing product features. Each entry overrides the code catalog
@@ -113,12 +127,11 @@ background_execution:
   sse_drain_timeout: 30                 # Seconds to wait for per-task SSE drain before clearing events
   shutdown_timeout: 50                  # Max seconds for graceful shutdown of running workflows
   checkpoint_flush_timeout: 10          # Timeout for checkpoint state reads/writes
-  admission_compaction_wait_timeout: 180 # Max seconds a new turn waits at admission for an in-progress compaction before returning "compacting" -> 409. Summarize is a full LLM call over a large transcript and can run minutes, so this is generous to avoid spurious 409s; keep it under the governing in-request limits — the upstream nginx proxy_read_timeout and the client read timeout (the connection is held open this long while the new turn waits). NOTE: server.py timeout_keep_alive (300) is NOT the bound — it only caps idle time BETWEEN requests, not an in-flight request. Admission floors this at compaction_timeout + ~20s so a healthy compaction is never 409'd before its own call budget self-terminates
-  compaction_timeout: 180               # Wall-clock budget for a single compaction LLM call (auto Tier-2 summarize + manual /compact). Wrapped in asyncio.wait_for so a hung summarize fails naturally instead of blocking the thread forever; bounded below the httpx client timeout (600) and below admission_compaction_wait_timeout
+  admission_compaction_wait_timeout: 260 # Max seconds a new turn waits at admission for an in-progress compaction before returning "compacting" -> 409. Summarize is a full LLM call over a large transcript and can run minutes, so this is generous to avoid spurious 409s; keep it under the governing in-request limits — the upstream nginx proxy_read_timeout and the client read timeout (the connection is held open this long while the new turn waits). NOTE: server.py timeout_keep_alive (300) is NOT the bound — it only caps idle time BETWEEN requests, not an in-flight request. Admission floors this at compaction_timeout + ~20s so a healthy compaction is never 409'd before its own call budget self-terminates
+  compaction_timeout: 240               # Wall-clock budget for a single compaction LLM call (auto Tier-2 summarize + manual /compact). The slowest models take two and a half minutes over a long history even at the summary level, so this leaves them room while staying under the proxy and client read timeouts that manual /compact and a waiting turn are held to. Wrapped in asyncio.wait_for so a hung summarize fails naturally instead of blocking the thread forever; bounded below the httpx client timeout (600) and below admission_compaction_wait_timeout
   wait_for_persistence_timeout: 30      # Max seconds callers block waiting for persistence
   stop_drain_timeout: 4.0               # Max seconds to drain killed-subagent events before teardown sentinel. MUST stay above redis.pool_timeout (2.0) plus a real paged XRANGE: a shorter deadline is spent queueing for a cache connection under contention, so the drain reports a timeout having issued no read at all and the run finalizes without its subagent archive
   max_workflow_retries: 3               # Max transient-error retry count
-  merged_chunk_max_bytes: 16384         # Max bytes for merged SSE event chunks (16 KB)
 
 
 # =============================================================================
@@ -148,7 +161,6 @@ redis:
     workflow_events: 86400  # Workflow event buffer TTL (24 hours)
     workflow_status: 3600   # Completed/cancelled workflow status key TTL (1 hour)
     cancel_flag: 300        # Workflow cancel flag TTL (5 minutes)
-    steering: 3600          # Steering message key TTL (1 hour)
     market_watch: 21600     # Market watch list TTL (6 hours)
     memo_metadata_inflight: 300  # Cross-worker visibility of in-flight memo metadata tasks (5 minutes)
     memo_metadata_cancel: 60     # Cooperative cross-worker cancel flag for memo metadata (1 minute)
@@ -189,6 +201,13 @@ market_data:
   providers:
     - name: ginlix-data
       markets: [us]          # US equities only
+    - name: tushare
+      markets: [cn]          # A-share daily bars (qfq-adjusted), served by ginlix-data
+      intraday_markets: []   # ginlix-data's minute history is short, so intraday
+                             # stays on the fallbacks; the probe ruleset
+                             # (data_routing.yaml) can override this
+      snapshot_markets: [cn] # realtime A-share quotes (equities; indices/ETFs
+                             # fall through)
     - name: yfinance
       markets: []                 # priority slot: non-US intraday only —
       intraday_markets: [non-us]  # native session anchors incl. lunch gaps
@@ -219,6 +238,21 @@ news_poll:
       limit: 50
     - provider: null       # Provider-chain general feed / Market tab (news:general:<limit>)
       limit: 50
+    - provider: tushare    # CN market feed (news:tushare:general:<limit>), served only to
+      limit: 50            # zh-locale users opted into the a_share_pack feature; needs
+                           # GINLIX_DATA_URL, and is skipped at startup without it
+
+# Order reconciliation: asks each connected brokerage what became of an order
+# the host stopped watching, so a lost answer settles and a working order
+# becomes filled without a user in the loop. Reads only, never places anything.
+order_reconcile:
+  enabled: true
+  interval_seconds: 60            # How often a worker attempts a pass
+  submitting_grace_seconds: 120   # Age at which an unanswered call is presumed lost
+  approved_grace_seconds: 600     # Age at which an approval no call spent is refused
+  open_after_seconds: 60          # How often an unsettled order is re-read
+  batch_limit: 50                 # Attempts examined per pass
+  match_window_seconds: 900       # How long after the attempt a listed order may be placed
 
 # RunWorkflow programmatic subagent orchestration
 workflow:
@@ -247,11 +281,8 @@ workflow:
 market_watch:
   min_interval_seconds: 25
   max_symbols: 10
-  # The stamp is ephemeral (overrides each model request only; never enters
-  # checkpoints or history), so pin a provider cache breakpoint (Anthropic
-  # cache_control / OpenAI prompt_cache_breakpoint) on the last durable
-  # message so the ephemeral stamp doesn't break incremental caching.
-  cache_breakpoint_pin: true
+  max_targets: 10              # Armed price targets per thread
+  target_warning_minutes: 60   # Tell the thread this long before a target lapses
 
 
 # =============================================================================
@@ -269,14 +300,3 @@ market_insight:
     market_update_start: "10:00"  # Hourly updates start
     market_update_end: "20:00"    # Hourly updates end (inclusive)
     market_update_interval: 60    # Minutes between updates
-
-
-# =============================================================================
-# GITHUB BOT CONFIGURATION
-# =============================================================================
-# GitHub bot for agent self-improvement (issue reporting, PR proposals)
-github:
-  enabled: true
-  bot_name: "langalpha-bot"
-  bot_email: "bot@ginlix.ai"
-  token_env: "GITHUB_BOT_TOKEN"  # env var name holding the bot PAT (resolved from .env)

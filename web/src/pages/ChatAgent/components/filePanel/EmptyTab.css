@@ -1,0 +1,26 @@
+/* ====== Empty tab ====== */
+.file-panel-empty-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  min-height: 12rem;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  background-image: radial-gradient(var(--color-border-muted) 1px, transparent 0);
+  background-size: 18px 18px;
+}
+.file-panel-empty-tab-title {
+  max-width: 100%;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+.file-panel-empty-tab-hint {
+  max-width: min(22rem, 100%);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}

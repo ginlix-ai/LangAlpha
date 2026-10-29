@@ -1,44 +1,235 @@
-"""Backend filesystem offloading for evicted messages and truncated args."""
+"""Offloading: the view that re-applies recorded offloads to each model call,
+the choice of what Tier 1 hides, and the backend files that keep what inline
+attachments cut."""
 
 import base64
 import logging
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
-from langchain_core.messages import AIMessage, AnyMessage
-from langchain_core.messages.human import HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langgraph.config import get_config
 
-from ptc_agent.agent.middleware.compaction.utils import (
-    _extract_text_from_content,
-    strip_base64_from_messages,
+from ptc_agent.core.paths import WorkspaceLayout
+from ptc_agent.agent.middleware.file_operations.multimodal_strip import remove_attachments
+from ptc_agent.agent.middleware.thinking_binding import (
+    checked_thinking_end,
+    unsent_thinking,
+    without_thinking,
 )
+from src.llms.attachment_payload import FILE_BLOCK_TYPES
+from ptc_agent.agent.middleware.compaction.types import OffloadSettings, TRUNCATABLE_TOOLS
+from ptc_agent.agent.middleware.compaction.utils import (
+    get_effective_messages,
+    oversized_arg_calls,
+    pdf_pages,
+    read_ahead,
+    read_offload_marker,
+    stale_read_ids,
+    strip_base64_from_messages,
+    truncate_tool_call,
+)
+from ptc_agent.agent.transcript import TranscriptTarget, Window
+from ptc_agent.agent.transcript.pointer import TranscriptTurns
 
 logger = logging.getLogger(__name__)
 
+#: Tool call ids in two sets: the calls whose arguments are cut, and the
+#: Read calls whose results are hidden.
+Offloads = tuple[set[str], set[str]]
 
-def is_summary_message(msg: AnyMessage) -> bool:
-    """Check if a message is a previous summarization message.
 
-    Summary messages are tagged with lc_source='summarization' in additional_kwargs.
-    These should be filtered from offloads to avoid summary-of-summary noise.
+def tool_call_ids(messages: list[AnyMessage]) -> set[str]:
+    return {
+        tc["id"]
+        for msg in messages
+        if isinstance(msg, AIMessage)
+        for tc in msg.tool_calls or ()
+        if tc.get("id")
+    }
+
+
+def arg_offload_marker(path: str, call_id: str, *, shell: bool = True) -> str:
+    if not shell:
+        return (
+            f"... [argument cut here. Its full call is in {path}: Grep that file for "
+            f'{call_id} (output_mode="content"), then Read the tool_call line it names '
+            f"with offset set to its line number minus 1 and limit=1]"
+        )
+    return (
+        f"... [argument cut here. Its full call is in {path}; read it with "
+        f"jq -c 'select(.call_id==\"{call_id}\" and .type==\"tool_call\") "
+        f"| .args' {path}]"
+    )
+
+
+def recorded_offloads(state: Mapping[str, Any]) -> Offloads:
+    return (
+        set(state.get("_offloaded_tool_call_ids") or ()),
+        set(state.get("_offloaded_read_result_ids") or ()),
+    )
+
+
+def removed_attachments(state: Mapping[str, Any]) -> set[str]:
+    return set(state.get("_removed_attachment_ids") or ())
+
+
+def record_offloads(state: Mapping[str, Any], args: set[str], reads: set[str]) -> dict[str, Any]:
+    """The state update adding ``args`` and ``reads`` to what ``state`` has
+    recorded, and counting them in each set's running total, which outlives
+    the ids a compaction later drops. A set with nothing to add is left out:
+    each write is a new checkpoint blob, and they live as long as the thread.
+
+    New cuts also drop the cached token counts, which measured the view
+    before them: left in place, the next call would compact a context the
+    cuts may have brought under the threshold.
     """
-    if not isinstance(msg, HumanMessage):
-        return False
-    return msg.additional_kwargs.get("lc_source") == "summarization"
+    known_args, known_reads = recorded_offloads(state)
+    update: dict[str, Any] = {}
+    for ids, known, key, total_key in (
+        (args, known_args, "_offloaded_tool_call_ids", "_offloaded_args_total"),
+        (reads, known_reads, "_offloaded_read_result_ids", "_offloaded_reads_total"),
+    ):
+        if ids:
+            update[key] = known | ids
+            update[total_key] = _total(state, total_key) + len(ids - known)
+    if update:
+        update["_cached_input_tokens"] = update["_cached_output_tokens"] = 0
+    return update
 
 
-def filter_summary_messages(messages: list[AnyMessage]) -> list[AnyMessage]:
-    """Filter out previous summary messages from a message list."""
-    return [msg for msg in messages if not is_summary_message(msg)]
+def _total(state: Mapping[str, Any], key: str) -> int:
+    value = state.get(key)
+    return value if isinstance(value, int) else 0
 
 
-def get_thread_id() -> str:
-    """Extract short thread_id from langgraph config.
+def select_offloads(
+    effective: list[AnyMessage], settings: OffloadSettings, recorded: Offloads
+) -> Offloads:
+    """New (arg ids, read ids) to hide among the effective messages before
+    the newest ``settings.keep_messages``, leaving out those ``recorded``.
 
-    Returns:
-        First 8 characters of thread_id, or a generated session ID.
+    Only after the last answer whose thinking is checked
+    (``checked_thinking_end``): a cut ahead of it would invalidate that
+    thinking for good, which no saving is worth. On a Claude thread with
+    thinking on that leaves nothing older than the newest messages to hide.
     """
+    start = checked_thinking_end(effective)
+    cutoff = len(effective) - settings.keep_messages
+    if cutoff <= start:
+        return set(), set()
+    arg_ids, read_ids = recorded
+    after = effective[start:]
+    results = {msg.tool_call_id for msg in after if isinstance(msg, ToolMessage)}
+    return (
+        oversized_arg_calls(after, cutoff - start, settings.max_length) - arg_ids,
+        (stale_read_ids(effective, cutoff) & results) - read_ids,
+    )
+
+
+def is_idle(state: Mapping[str, Any], settings: OffloadSettings, now: float) -> bool:
+    """Whether the model last answered at least ``settings.idle_seconds``
+    before ``now``. A thread with no recorded answer time (its first turn,
+    or one from before the time was kept) waits for one."""
+    last = state.get("_last_model_response_at")
+    return settings.idle_seconds is not None and bool(last) and now - last >= settings.idle_seconds
+
+
+async def offload_view(
+    messages: list[AnyMessage],
+    state: Mapping[str, Any],
+    *,
+    max_length: int,
+    transcript: TranscriptTarget | None,
+    shell: bool = True,
+) -> list[AnyMessage]:
+    """What the model is sent of ``messages``: the view after ``state``'s
+    last summary, with every offload ``state`` recorded applied and the
+    attachments it removed to fit the context window taken out.
+
+    An offload is a view over the checkpoint, not a rewrite of it: the id sets
+    are the record, and every call cuts them again, so a call cut once stays
+    cut and the prompt cache holds. A cut argument points at its call in the
+    file of its turn in ``transcript``. Where nothing serves one
+    (``transcript`` is None) arguments stay whole until something does, since
+    a pointer there would name a file nothing can read. ``shell`` says whether
+    Bash sees that file, which decides how the pointer says to read it.
+    """
+    effective = get_effective_messages(messages, state.get("_summarization_event"))
+    arg_ids, read_ids = recorded_offloads(state)
+    turns = (
+        TranscriptTurns.of(transcript, messages, window=Window.of(state))
+        if arg_ids and transcript is not None
+        else None
+    )
+    view = apply_recorded_offloads(effective, arg_ids, read_ids, max_length, turns, shell=shell)
+    removed = removed_attachments(state)
+    # A removed PDF's placeholder gives its page count, which a block with no
+    # stamp is parsed for.
+    await read_ahead(msg for msg in view if getattr(msg, "id", None) in removed)
+    return without_thinking(
+        remove_attachments(view, removed, pages=pdf_pages), unsent_thinking(state)
+    )
+
+
+def apply_recorded_offloads(
+    messages: list[AnyMessage],
+    arg_ids: set[str],
+    read_ids: set[str],
+    max_length: int,
+    turns: TranscriptTurns | None,
+    *,
+    shell: bool = True,
+) -> list[AnyMessage]:
+    """Cut every recorded offload in ``messages``, an argument only where
+    ``turns`` names the file that keeps it. Each id is checked against its
+    tool, so an arg id never blanks a result and a read id only replaces a
+    Read result."""
+    if not read_ids and (not arg_ids or turns is None):
+        return messages
+
+    read_paths: dict[str, str] = {}
+    out: list[AnyMessage] = []
+    changed = False
+    for msg in messages:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            calls = []
+            msg_changed = False
+            path = turns.path(msg.id) if turns is not None else None
+            for tc in msg.tool_calls:
+                if tc["name"] == "Read" and tc["id"] in read_ids:
+                    read_paths[tc["id"]] = tc.get("args", {}).get("file_path", "")
+                if path and tc["id"] in arg_ids and tc["name"] in TRUNCATABLE_TOOLS:
+                    marker = arg_offload_marker(path, tc["id"], shell=shell)
+                    new_tc = truncate_tool_call(tc, max_length, marker)
+                    msg_changed = msg_changed or new_tc is not tc
+                    calls.append(new_tc)
+                else:
+                    calls.append(tc)
+            if msg_changed:
+                msg = msg.model_copy()
+                msg.tool_calls = calls
+                changed = True
+        elif isinstance(msg, ToolMessage) and msg.tool_call_id in read_paths:
+            marker = read_offload_marker(read_paths[msg.tool_call_id])
+            if msg.content != marker:
+                msg = msg.model_copy()
+                msg.content = marker
+                changed = True
+        out.append(msg)
+
+    return out if changed else messages
+
+
+def get_thread_id(thread_id: str | None = None) -> str:
+    """Short thread id: the one passed, else graph config's, else a session id.
+
+    Manual /compact runs outside the graph, so it passes the id;
+    the session fallback is fresh on every call and names no real thread.
+    """
+    if thread_id:
+        return str(thread_id)[:8]
     try:
         config = get_config()
         thread_id = config.get("configurable", {}).get("thread_id")
@@ -48,142 +239,6 @@ def get_thread_id() -> str:
         pass
 
     return f"session_{uuid.uuid4().hex[:8]}"
-
-
-async def aoffload_to_backend(backend: Any, messages: list[AnyMessage]) -> str | None:
-    """Persist evicted messages to sandbox before summarization (async).
-
-    Each message is written to its own file keyed by message ID:
-    `.agents/threads/{tid}/evicted_{message_id}.md`
-
-    Previous summary messages are filtered out to avoid summary-of-summary noise.
-    Individual messages are truncated at 5000 chars for storage.
-
-    Args:
-        backend: The Daytona backend for filesystem operations.
-        messages: Messages being summarized (evicted from context).
-
-    Returns:
-        The thread directory path where files were stored, or None if
-        offload failed or backend is not available.
-    """
-    if backend is None:
-        return None
-
-    # Filter out previous summary messages
-    filtered_messages = filter_summary_messages(messages)
-    if not filtered_messages:
-        return None
-
-    thread_id = get_thread_id()
-    thread_dir = f".agents/threads/{thread_id}"
-    written = 0
-
-    for msg in filtered_messages:
-        msg_id = msg.id or uuid.uuid4().hex[:8]
-        path = f"{thread_dir}/evicted_{msg_id}.md"
-
-        content = _extract_text_from_content(msg.content)
-        if len(content) > 5000:
-            content = content[:5000] + "\n...(truncated)"
-
-        # Include tool call info for AI messages
-        tool_info = ""
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            tool_names = [tc["name"] for tc in msg.tool_calls]
-            tool_info = f" [tools: {', '.join(tool_names)}]"
-
-        file_content = f"# {msg.type}{tool_info}\n\n{content}\n"
-
-        try:
-            result = await backend.awrite(path, file_content, overwrite=True)
-            if result is None or result.error:
-                error_msg = result.error if result else "backend returned None"
-                logger.warning(
-                    "Failed to offload evicted message %s to %s: %s",
-                    msg_id,
-                    path,
-                    error_msg,
-                )
-            else:
-                written += 1
-        except Exception as e:
-            logger.warning(
-                "Exception offloading evicted message %s to %s: %s",
-                msg_id,
-                path,
-                e,
-            )
-
-    if written > 0:
-        logger.debug(
-            "Offloaded %d/%d evicted messages to %s",
-            written,
-            len(filtered_messages),
-            thread_dir,
-        )
-        return thread_dir
-
-    return None
-
-
-async def aoffload_truncated_args(
-    backend: Any, originals: dict[str, dict[str, Any]]
-) -> None:
-    """Persist original tool call args to sandbox before truncation discards them.
-
-    Each truncated tool call gets its own file at
-    `.agents/threads/{tid}/truncated_args_{toolcall_id}.md`.
-
-    Non-fatal -- logs warnings on failure but never raises.
-
-    Args:
-        backend: The Daytona backend for filesystem operations.
-        originals: Mapping of tool_call_id -> {"name": str, "args": dict}
-                   as returned by truncate_message_args.
-    """
-    if backend is None or not originals:
-        return
-
-    thread_id = get_thread_id()
-
-    for tool_call_id, original in originals.items():
-        path = f".agents/threads/{thread_id}/truncated_args_{tool_call_id}.md"
-        tool_name = original["name"]
-        args = original["args"]
-
-        # Format each arg as a section
-        parts = [f"# {tool_name} (call {tool_call_id})\n"]
-        for key, value in args.items():
-            str_value = str(value) if not isinstance(value, str) else value
-            parts.append(f"## {key}\n\n```\n{str_value}\n```\n")
-
-        content = "\n".join(parts)
-
-        try:
-            result = await backend.awrite(path, content, overwrite=True)
-            if result is None or result.error:
-                error_msg = result.error if result else "backend returned None"
-                logger.warning(
-                    "Failed to offload truncated args for %s (%s): %s",
-                    tool_call_id,
-                    tool_name,
-                    error_msg,
-                )
-            else:
-                logger.debug(
-                    "Offloaded truncated args for %s (%s) to %s",
-                    tool_call_id,
-                    tool_name,
-                    path,
-                )
-        except Exception as e:
-            logger.warning(
-                "Exception offloading truncated args for %s (%s): %s",
-                tool_call_id,
-                tool_name,
-                e,
-            )
 
 
 # =============================================================================
@@ -203,10 +258,9 @@ _MIME_TO_EXT: dict[str, str] = {
 def _extract_base64_info(block: dict) -> tuple[str, str, str] | None:
     """Extract (base64_data, mime_type, label) from a content block.
 
-    Handles three provider-specific formats:
-    - ``image_url`` with ``data:...;base64,...`` URL (OpenAI style)
-    - ``file`` with ``base64`` key (PDF uploads)
-    - ``image`` with base64 source (Anthropic native)
+    Handles every provider format an attachment arrives in: an ``image_url``
+    data URI (OpenAI), a ``base64`` key (langchain v1), and a ``source`` object
+    (Anthropic native), under either name the block type goes by.
 
     Returns None if the block doesn't contain base64 data.
     """
@@ -222,19 +276,25 @@ def _extract_base64_info(block: dict) -> tuple[str, str, str] | None:
             return data, mime, "image"
         return None
 
+    source = block.get("source") or {}
+    if not isinstance(source, dict):
+        source = {}
+    inline = source.get("data") if source.get("type") == "base64" else None
+
     # PDF / file upload with inline base64
-    if block_type == "file" and "base64" in block:
-        data = block["base64"]
-        mime = block.get("mime_type", "application/pdf")
+    if block_type in FILE_BLOCK_TYPES:
+        data = block.get("base64") or inline
+        if data is None:
+            return None
+        mime = block.get("mime_type") or source.get("media_type") or "application/pdf"
         fname = block.get("filename", "file")
         return data, mime, f"pdf_{fname}"
 
     # Anthropic native image block
     if block_type == "image":
-        source = block.get("source") or {}
-        if source.get("type") == "base64" and "data" in source:
-            data = source["data"]
-            mime = source.get("media_type", "image/png")
+        data = block.get("base64") or inline
+        if data is not None:
+            mime = block.get("mime_type") or source.get("media_type") or "image/png"
             return data, mime, "image"
 
     return None
@@ -243,6 +303,8 @@ def _extract_base64_info(block: dict) -> tuple[str, str, str] | None:
 async def aoffload_base64_content(
     backend: Any,
     messages: list[AnyMessage],
+    *,
+    thread_id: str | None = None,
 ) -> list[AnyMessage]:
     """Offload base64 content blocks to sandbox files, replacing with path references.
 
@@ -251,7 +313,7 @@ async def aoffload_base64_content(
     2. Upload to ``.agents/threads/{thread_id}/`` via ``backend.aupload_files``
     3. Replace the block with a text reference to the saved file
 
-    When ``backend`` is None (e.g. flash agent with no sandbox), falls back to
+    When ``backend`` is None (a build with no sandbox), falls back to
     :func:`strip_base64_from_messages` which replaces base64 with simple
     ``[Image]`` / ``[PDF: name]`` placeholders.
 
@@ -266,8 +328,7 @@ async def aoffload_base64_content(
     if backend is None:
         return strip_base64_from_messages(messages)
 
-    thread_id = get_thread_id()
-    thread_dir = f".agents/threads/{thread_id}"
+    thread_dir = WorkspaceLayout.thread_subdir(get_thread_id(thread_id))
 
     result: list[AnyMessage] = []
     changed = False

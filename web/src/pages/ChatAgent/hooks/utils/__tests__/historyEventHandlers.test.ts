@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Pin the deterministic-bubble-id contract for history replay handlers.
  *
@@ -15,7 +16,7 @@
  * `loadConversationHistory` can clean up cleanly.
  */
 import { describe, it, expect } from 'vitest';
-import { handleHistoryUserMessage, handleHistoryTaskArtifactStatus } from '../historyEventHandlers';
+import { handleHistorySteeringDelivered, handleHistoryUserMessage, handleHistoryTaskArtifactStatus } from '../historyEventHandlers';
 import type { MessageRecord } from '../types';
 
 /** setMessages that applies the updater against a mutable backing array. */
@@ -55,7 +56,6 @@ describe('historyEventHandlers — bubble id determinism', () => {
       assistantMessagesByPair,
       pairStateByPair,
       refs,
-      messages: [],
       setMessages,
     });
 
@@ -81,7 +81,6 @@ describe('historyEventHandlers — bubble id determinism', () => {
       assistantMessagesByPair,
       pairStateByPair,
       refs,
-      messages: [],
       setMessages,
     });
 
@@ -115,13 +114,66 @@ describe('historyEventHandlers — bubble id determinism', () => {
         assistantMessagesByPair,
         pairStateByPair,
         refs,
-        messages: [],
         setMessages,
       });
       collector.push(...inserted.map((m) => m.id as string));
     }
 
     expect(idsRun1).toEqual(idsRun2);
+  });
+});
+
+describe('handleHistoryUserMessage, a copy a dead stream left', () => {
+  const live = (over: Partial<MessageRecord>): MessageRecord => ({
+    role: 'assistant', content: '', isStreaming: false, ...over,
+  } as MessageRecord);
+
+  function replayTurn(prev: MessageRecord[], content: string, turn: number, opts: { tracked?: boolean; streaming?: string } = {}) {
+    const { state, setMessages } = makeStore(prev);
+    const refs = makeRefs();
+    refs.recentlySentTracker = { isRecentlySent: () => opts.tracked ?? true };
+    refs.currentMessageRef.current = opts.streaming ?? null;
+    handleHistoryUserMessage({
+      event: { event: 'user_message', role: 'user', content, turn_index: turn },
+      pairIndex: turn,
+      assistantMessagesByPair: new Map(),
+      pairStateByPair: new Map(),
+      refs,
+      setMessages,
+    });
+    return state;
+  }
+
+  it('gives way to the replay when the reconnect was refused', () => {
+    // A send streamed partway, its reconnect bubble came after, and the
+    // reconnect was refused, so nothing marked either for the replay.
+    const state = replayTurn([
+      live({ id: 'user-1', role: 'user', content: 'go on', turnIndex: 1 }),
+      live({ id: 'assistant-1', content: 'The Nile', turnIndex: 1 }),
+      live({ id: 'assistant-reconnect-1', content: 'The Nile has', turnIndex: 1 }),
+    ], 'go on', 1);
+
+    expect(state.map((m) => m.id)).toEqual(['history-user-1', 'history-assistant-1']);
+  });
+
+  it('keeps a refused send, which holds the same count, with its error', () => {
+    const state = replayTurn([
+      live({ id: 'user-0', role: 'user', content: 'go on', turnIndex: 1 }),
+      live({ id: 'assistant-0', content: '', error: 'refused', turnIndex: 1 } as Partial<MessageRecord>),
+      live({ id: 'user-1', role: 'user', content: 'go on', turnIndex: 1 }),
+      live({ id: 'assistant-1', content: 'The Nile', turnIndex: 1 }),
+    ], 'go on', 1);
+
+    expect(state.map((m) => m.id)).toEqual(['history-user-1', 'history-assistant-1', 'user-0', 'assistant-0']);
+  });
+
+  it('leaves the bubbles of a stream still writing, with the tracker past its window', () => {
+    const state = replayTurn([
+      live({ id: 'user-1', role: 'user', content: 'go on', turnIndex: 1 }),
+      live({ id: 'assistant-1', content: 'The Nile', turnIndex: 1, isStreaming: true }),
+    ], 'go on', 1, { tracked: false, streaming: 'assistant-1' });
+
+    expect(state.map((m) => m.id)).toEqual(['history-user-1', 'history-assistant-1', 'user-1', 'assistant-1']);
   });
 });
 
@@ -186,5 +238,113 @@ describe('handleHistoryTaskArtifactStatus — born-correct inline card status', 
     const tasks = state[0].subagentTasks as Record<string, Record<string, unknown>>;
     expect(tasks.tc1.status).toBe('running'); // init card carries no resumeTargetId
     expect(tasks.tc2.status).toBe('completed');
+  });
+});
+
+describe('handleHistorySteeringDelivered — reply time', () => {
+  function replyAfterSteer(event: Record<string, unknown>): MessageRecord {
+    const { state, setMessages } = makeStore([]);
+    handleHistorySteeringDelivered({
+      event: { event: 'steering_delivered', turn_index: 2, ...event },
+      pairIndex: 2,
+      assistantMessagesByPair: new Map(),
+      pairStateByPair: new Map(),
+      refs: { newMessagesStartIndexRef: { current: 0 } },
+      setMessages,
+    });
+    return state.find((m) => m.role === 'assistant')!;
+  }
+
+  // The tray ages work handed off in this reply by its time, so a replay
+  // must not make it look new.
+  it('starts when the run took the steer in, not when the replay ran', () => {
+    const reply = replyAfterSteer({ timestamp: 1_700_000_100, messages: [{ content: 'go', timestamp: 1_700_000_000 }] });
+    expect((reply.timestamp as Date).getTime()).toBe(1_700_000_100_000);
+  });
+
+  it('falls back to the steer sent last when the delivery has no time', () => {
+    const reply = replyAfterSteer({ messages: [{ content: 'a', timestamp: 1_700_000_000 }, { content: 'b', timestamp: 1_700_000_050 }] });
+    expect((reply.timestamp as Date).getTime()).toBe(1_700_000_050_000);
+  });
+});
+
+describe('handleHistorySteeringDelivered — the copies a dead stream left of a delivered steer', () => {
+  const steerCopy = (id: string, extra: Partial<MessageRecord>): MessageRecord => ({
+    id, role: 'user', content: 'margins', contentType: 'text', timestamp: new Date(0), isStreaming: false, turnIndex: 2, ...extra,
+  });
+
+  function replayDelivery(initial: MessageRecord[], entry: Record<string, unknown>, startIndex = 0) {
+    const { state, setMessages } = makeStore(initial);
+    const delivered: string[] = [];
+    const refs = { newMessagesStartIndexRef: { current: startIndex } };
+    handleHistorySteeringDelivered({
+      event: { event: 'steering_delivered', turn_index: 3, messages: [entry] },
+      pairIndex: 3,
+      assistantMessagesByPair: new Map(),
+      pairStateByPair: new Map(),
+      refs,
+      setMessages,
+      onCopyDelivered: (key) => delivered.push(key),
+    });
+    return { state, delivered, refs };
+  }
+
+  it('removes every copy sent under the entry\'s key, in whatever turn it waits, and draws the replay\'s row', () => {
+    const { state, delivered, refs } = replayDelivery(
+      [
+        steerCopy('s1', { steering: true, requestKey: 'rk-1' }),
+        steerCopy('f1', { queueError: { message: 'x' }, queueRefused: true, requestKey: 'rk-1' }),
+      ],
+      { content: 'margins', request_key: 'rk-1' },
+    );
+    expect(state.map((m) => m.id)).toEqual(['history-steering-user-3-1-0', 'history-assistant-steering-3-1']);
+    expect(state[0]).toMatchObject({ isHistory: true, steeringDelivered: true, requestKey: 'rk-1', turnIndex: 3 });
+    expect(delivered).toEqual(['rk-1']);
+    // The replay's rows go where the replay writes; the copies it replaced move nothing past them.
+    expect(refs.newMessagesStartIndexRef.current).toBe(2);
+  });
+
+  it('draws the row where the replay writes, net of the copies removed ahead of it', () => {
+    const { state, refs } = replayDelivery(
+      [
+        steerCopy('h0', { isHistory: true, content: 'question', turnIndex: 2 }),
+        steerCopy('s1', { steering: true, requestKey: 'rk-1' }),
+      ],
+      { content: 'margins', request_key: 'rk-1' },
+      2,
+    );
+    expect(state.map((m) => m.id)).toEqual(['h0', 'history-steering-user-3-1-0', 'history-assistant-steering-3-1']);
+    expect(refs.newMessagesStartIndexRef.current).toBe(3);
+  });
+
+  it('leaves a copy with the same words under another key', () => {
+    const other = steerCopy('s2', { steering: true, requestKey: 'rk-2', turnIndex: 3 });
+    const { state, delivered } = replayDelivery([other], { content: 'margins', request_key: 'rk-1' });
+    expect(state.find((m) => m.id === 's2')).toMatchObject({ steering: true, requestKey: 'rk-2' });
+    expect(delivered).toEqual([]);
+  });
+
+  it('leaves a copy the replay already drew, and one already delivered', () => {
+    const { state } = replayDelivery(
+      [
+        steerCopy('h1', { isHistory: true, steering: true, requestKey: 'rk-1' }),
+        steerCopy('d1', { steeringDelivered: true, requestKey: 'rk-1' }),
+      ],
+      { content: 'margins', request_key: 'rk-1' },
+    );
+    expect(state.map((m) => m.id)).toEqual(['history-steering-user-3-1-0', 'history-assistant-steering-3-1', 'h1', 'd1']);
+  });
+
+  it('matches an entry with no key (an older checkpoint) by its words within the turn, the waiting copy first', () => {
+    const { state, delivered } = replayDelivery(
+      [
+        steerCopy('f1', { queueError: { message: 'x' }, requestKey: 'rk-f', turnIndex: 3 }),
+        steerCopy('s1', { steering: true, requestKey: 'rk-s', turnIndex: 3 }),
+        steerCopy('s0', { steering: true, requestKey: 'rk-0', turnIndex: 2 }),
+      ],
+      { content: 'margins' },
+    );
+    expect(state.map((m) => m.id)).toEqual(['history-steering-user-3-1-0', 'history-assistant-steering-3-1', 'f1', 's0']);
+    expect(delivered).toEqual(['rk-s']);
   });
 });

@@ -6,6 +6,8 @@ import logging
 
 
 
+from market_protocol import display_spelling
+
 from ._shared import _fmp_request
 
 logger = logging.getLogger(__name__)
@@ -20,13 +22,14 @@ async def fetch_earnings_transcript(symbol: str, year: int, quarter: int) -> str
     performance, future plans, and strategy.
 
     Args:
-        symbol: Stock ticker symbol (e.g., "AAPL", "600519.SS", "0700.HK")
+        symbol: Stock ticker symbol (e.g., "AAPL", "600519.SH", "0700.HK")
         year: Fiscal year (e.g., 2020) - REQUIRED
         quarter: Fiscal quarter (1, 2, 3, or 4) - REQUIRED
 
     Returns:
         Formatted string with earnings call transcript
     """
+    symbol = display_spelling(symbol)
     try:
         output_lines = []
 

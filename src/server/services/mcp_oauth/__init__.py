@@ -15,13 +15,6 @@ from src.server.database.mcp_oauth import (  # noqa: F401
     SERVABLE,
     ConnectionStatus,
 )
-from src.server.services.mcp_oauth.connect import (  # noqa: F401
-    McpOAuthError,
-    McpServerNotFound,
-    StartedConnect,
-    complete_callback,
-    start_connect,
-)
 from src.server.services.mcp_oauth.lifecycle import (  # noqa: F401
     AccessToken,
     TokenUnavailable,
@@ -30,3 +23,8 @@ from src.server.services.mcp_oauth.lifecycle import (  # noqa: F401
     ensure_fresh_access_token,
     mark_connection_needs_reauth,
 )
+
+# The connect flow is imported from ``mcp_oauth.connect``, not re-exported
+# here: its callback finishes the saves in ``services.mcp_saves``, which reach
+# the catalog and plugin services, and those import this package's lower
+# modules. Loaded with the package, it would close that loop.

@@ -7,6 +7,7 @@ OOM-killed with nothing to report. The bound is reachable from background
 discovery too, which spawns through the same path.
 """
 
+import io
 import json
 import queue
 import threading
@@ -62,6 +63,12 @@ class _Sink:
     def flush(self):
         pass
 
+    def close(self):
+        pass
+
+    def fileno(self):
+        raise io.UnsupportedOperation("fileno")  # as any in-memory stream does
+
 
 class _FakeProc:
     """The subset of subprocess.Popen the spawn/read path touches."""
@@ -110,6 +117,9 @@ def configured(monkeypatch):
     )
     monkeypatch.setattr(m, "_PROTO", {})
     monkeypatch.setattr(m, "_server_processes", {})
+    # A fake proc has no process group, and killpg on an invented pid could
+    # reach a real one.
+    monkeypatch.setattr(m, "_signal_group", lambda proc, sig: proc.kill())
 
 
 def _install(monkeypatch, *, stdout=(), stderr=()) -> _FakeSubprocess:

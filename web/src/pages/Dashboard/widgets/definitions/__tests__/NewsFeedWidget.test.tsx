@@ -6,10 +6,14 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string) => k }),
 }));
 
-// Peripheral widget plumbing the test doesn't exercise.
+type Exporter = { full: () => { text: string; data: { items: { publishedAt?: string }[] } } };
+let exporter: Exporter | undefined;
 vi.mock('@/pages/Dashboard/widgets/framework/contextSnapshot', () => ({
-  useWidgetContextExport: () => {},
+  useWidgetContextExport: (_id: string, exp: Exporter) => {
+    exporter = exp;
+  },
 }));
+// Peripheral widget plumbing the test doesn't exercise.
 vi.mock('@/pages/Dashboard/components/RowAttachButton', () => ({
   RowAttachButton: () => null,
 }));
@@ -24,7 +28,7 @@ import '../../index'; // populate widget registry
 import { getWidget } from '../../framework/WidgetRegistry';
 
 function makeItem(id: string, title: string, source: string) {
-  return { id, title, source, time: '1h', tickers: [], favicon: null, image: null, isHot: false, articleUrl: 'https://x' };
+  return { id, title, source, publishedAt: null, tickers: [], favicon: null, image: null, isHot: false, articleUrl: 'https://x' };
 }
 
 function baseCtx(overrides: Record<string, unknown> = {}) {
@@ -81,12 +85,12 @@ describe('NewsFeedWidget', () => {
   it('time filter buckets on the ISO publishedAt, not the "10m ago" display string', () => {
     const now = Date.now();
     const recent = {
-      id: 'r1', title: 'Recent story', source: 'Bloomberg', time: '10m',
+      id: 'r1', title: 'Recent story', source: 'Bloomberg',
       publishedAt: new Date(now - 10 * 60 * 1000).toISOString(),
       tickers: [], favicon: null, image: null, isHot: false, articleUrl: 'https://x',
     };
     const old = {
-      id: 'o1', title: 'Old story', source: 'Bloomberg', time: '3d',
+      id: 'o1', title: 'Old story', source: 'Bloomberg',
       publishedAt: new Date(now - 3 * 86400 * 1000).toISOString(),
       tickers: [], favicon: null, image: null, isHot: false, articleUrl: 'https://x',
     };
@@ -99,12 +103,55 @@ describe('NewsFeedWidget', () => {
     expect(screen.getByText('Recent story')).toBeInTheDocument();
     expect(screen.getByText('Old story')).toBeInTheDocument();
 
-    // Switch to 1H. The "10m" display string would not have matched the old
-    // parser (it expected "10 min"); filtering on publishedAt keeps the recent
-    // story and drops the 3-day-old one.
     fireEvent.click(screen.getByText('dashboard.widgets.newsFeed.range_1h'));
     expect(screen.getByText('Recent story')).toBeInTheDocument();
     expect(screen.queryByText('Old story')).not.toBeInTheDocument();
+  });
+
+  it('hands the agent the publish timestamp, not the reader\'s "5m ago"', () => {
+    const publishedAt = '2026-09-30T13:55:00.000Z';
+    ctx = baseCtx({
+      dashboard: {
+        curatedItems: [],
+        curatedLoading: false,
+        newsItems: [{ ...makeItem('m1', 'Market headline', 'CNBC'), publishedAt }],
+        newsLoading: false,
+      },
+    });
+    renderWidget({ source: 'market' });
+
+    const snapshot = exporter!.full();
+    expect(snapshot.data.items[0].publishedAt).toBe(publishedAt);
+    expect(snapshot.text).toContain(`| CNBC | ${publishedAt} |`);
+  });
+
+  it('Market tab reads its own paging state (spinner while fetching next page)', () => {
+    ctx = baseCtx({
+      dashboard: {
+        curatedItems: [],
+        curatedLoading: false,
+        newsItems: [makeItem('m1', 'Market headline', 'CNBC')],
+        newsLoading: false,
+        newsIsFetchingNextPage: true,
+      },
+    });
+    renderWidget({ source: 'market' });
+    expect(screen.getByRole('status')).toBeInTheDocument();
+  });
+
+  it('portfolio tab never pages (no spinner even with paging flags set)', () => {
+    ctx = baseCtx({
+      dashboard: {
+        curatedItems: [],
+        curatedLoading: false,
+        curatedIsFetchingNextPage: true,
+        newsItems: [],
+        newsLoading: false,
+        newsIsFetchingNextPage: true,
+      },
+    });
+    renderWidget({ source: 'portfolio' });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
   it('exposes "top" in the Zod source enum and the default config round-trips', () => {

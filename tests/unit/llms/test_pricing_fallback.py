@@ -157,19 +157,25 @@ class TestPricingFallback:
             assert result_none is None
 
     def test_subscription_pricing_type_skips_cost_calc(self):
-        """Models with pricing_type='subscription' contribute zero cost."""
+        """Seat-priced models meter tokens but contribute zero cost.
+
+        Rates are non-zero on purpose: the guard must key off pricing_type, not
+        on the entry happening to carry zeros.
+        """
         subscription_pricing = {
             "pricing_type": "subscription",
-            "input": 0,
-            "output": 0,
+            "input": 3.0,
+            "output": 15.0,
         }
 
-        token_usage = {
-            "sub-model": {
-                "input_tokens": 5000,
-                "output_tokens": 2000,
+        records = [
+            {
+                "model_name": "sub-model",
+                "usage": {"input_tokens": 5000, "output_tokens": 2000},
+                "billing_type": "platform",
+                "run_id": "run-1",
             },
-        }
+        ]
 
         with (
             patch(
@@ -177,12 +183,15 @@ class TestPricingFallback:
                 return_value=subscription_pricing,
             ),
             patch(
-                "src.llms.pricing_utils.detect_provider_for_model",
-                return_value="some-provider",
+                "src.llms.pricing_utils.resolve_pricing_identity",
+                return_value=("some-provider", "sub-model"),
             ),
         ):
-            from src.utils.tracking.core import add_cost_to_token_usage
+            from src.utils.tracking.core import calculate_cost_from_per_call_records
 
-            result = add_cost_to_token_usage(token_usage)
+            result = calculate_cost_from_per_call_records(records)
 
         assert result["total_cost"] == 0.0
+        assert result["platform_cost"] == 0.0
+        # Usage is still metered even though it bills nothing.
+        assert result["by_model"]["sub-model"]["input_tokens"] == 5000
