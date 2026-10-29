@@ -9,6 +9,7 @@ which callers holding one kind still read, must agree with it.
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,14 @@ loaded = sorted(
 print("LOADED=" + ",".join(loaded))
 """
 
+# The probe imports ``src``, which resolves from the repo root only: pytest's
+# ``pythonpath`` does not reach a child interpreter.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def test_the_sets_name_only_known_kinds():
+    assert set(METRIC_KINDS) <= set(METERED_KINDS) <= set(PROVIDER_KINDS)
+
 
 @pytest.mark.parametrize("kind", PROVIDER_KINDS)
 def test_the_registry_agrees_with_each_class(kind):
@@ -42,7 +51,12 @@ def test_the_registry_agrees_with_each_class(kind):
 
 def test_the_ledgers_kinds_load_no_provider_module():
     done = subprocess.run(
-        [sys.executable, "-c", _PROBE], capture_output=True, text=True, timeout=300, check=True
+        [sys.executable, "-c", _PROBE],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+        cwd=_REPO_ROOT,
     )
     (line,) = [ln for ln in done.stdout.splitlines() if ln.startswith("LOADED=")]
     assert line == "LOADED=", line
