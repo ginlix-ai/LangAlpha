@@ -269,7 +269,7 @@ async def test_a_turn_never_signs_in_with_the_machines_own_login(monkeypatch, tm
 
 
 class _SavedToken:
-    """A user's saved token as a turn reads it, and the refusals it is told of."""
+    """A user's saved token as a turn's launcher reads it, and the refusals it is told of."""
 
     def __init__(self, token: str) -> None:
         self.token, self.refusals = token, []
@@ -285,10 +285,10 @@ async def test_a_turn_runs_on_the_saved_token_and_reports_one_anthropic_refuses(
     revoked = "sk-ant-oat01-revoked"
     good, bad = _SavedToken(TOKEN), _SavedToken(revoked)
     async with FakeMessagesAPI(first_party=True, refused=frozenset({revoked})) as api:
-        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
-        await run_turn(SPEC, launcher, new_graph(), "t-saved", [HumanMessage("ECHO hi")], token=good)
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(SPEC, LocalLauncher(env=env, saved=good), new_graph(), "t-saved", [HumanMessage("ECHO hi")])
         with pytest.raises(ClaudeTurnFailed) as failed:
-            await run_turn(SPEC, launcher, new_graph(), "t-revoked", [HumanMessage("ECHO hi")], token=bad)
+            await run_turn(SPEC, LocalLauncher(env=env, saved=bad), new_graph(), "t-revoked", [HumanMessage("ECHO hi")])
     assert failed.value.kind == "auth_failed"
     assert (good.refusals, bad.refusals) == ([], [revoked])
     assert api.credentials[0] == TOKEN and set(api.credentials[1:]) == {revoked}

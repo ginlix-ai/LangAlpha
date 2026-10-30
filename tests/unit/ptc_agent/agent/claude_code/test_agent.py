@@ -12,6 +12,7 @@ from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
 
 from ptc_agent.agent.claude_code.agent import ClaudeCodeGraph, claude_code_graph
+from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY
 from src.llms.llm import create_llm
 
@@ -51,7 +52,7 @@ def _graph(**kw):
     target = create_llm("claude-haiku-5-5-code", reasoning_effort="low")
     return claude_code_graph(
         _agent(), system_prompt="the prompt", target=target, checkpointer=None,
-        **{"user_id": "user-1", "thread_id": "thread-1", **kw},
+        **{"user_id": "user-1", "thread_id": "thread-1", "launcher": LocalLauncher(), **kw},
     )
 
 
@@ -61,6 +62,7 @@ def test_the_turn_runs_the_agents_prompt_and_tools():
     assert turn is graph.turn
     assert graph.config["recursion_limit"] == 9999
     assert (turn.identity, turn.thread_key) == ("user-1", "thread-1")
+    assert isinstance(turn.launcher, LocalLauncher)
     assert (turn.spec.system_prompt, turn.spec.model, turn.spec.effort) == ("the prompt", "claude-haiku-5-5", "low")
     assert [t.name for t in turn.spec.tools] == ["Bash"]
     assert turn.spec.billing["billing_type"] == "oauth" and "lc_versions" not in turn.spec.billing
@@ -155,9 +157,10 @@ def _built(**kwargs) -> ClaudeCodeGraph:
         sandbox=SandboxConfig(daytona=DaytonaConfig(api_key="test-key")), mcp=MCPConfig(), filesystem=FilesystemConfig(),
     )
     target = create_llm("claude-haiku-5-5-code")
+    kwargs = {"sandbox": MagicMock(), "claude_code_launcher": lambda sandbox: LocalLauncher(), **kwargs}
     with patch.object(AgentConfig, "get_llm_client", return_value=target):
         graph = PTCAgent(config).create_agent(
-            llm=target, thread_id="t-1", user_id="u-1", sandbox=MagicMock(), mcp_registry=MagicMock(), **kwargs
+            llm=target, thread_id="t-1", user_id="u-1", mcp_registry=MagicMock(), **kwargs
         )
     assert isinstance(graph, ClaudeCodeGraph)
     return graph
@@ -202,3 +205,15 @@ def test_a_claude_code_turn_is_offered_no_tool_that_places_an_order():
     graph = _built(direct_mcp=toolset, order_ledger=MagicMock())
     names = {t.name for t in graph.turn.spec.tools}
     assert "mcp__broker__get_quote" in names and "mcp__broker__place_order" not in names
+
+
+def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox():
+    sandbox, launcher = MagicMock(), LocalLauncher()
+    seen = []
+    graph = _built(sandbox=sandbox, claude_code_launcher=lambda s: seen.append(s) or launcher)
+    assert seen == [sandbox] and graph.turn.launcher is launcher
+
+
+def test_a_claude_code_turn_built_with_no_launcher_is_refused():
+    with pytest.raises(RuntimeError, match="claude_code_launcher"):
+        _built(claude_code_launcher=None)

@@ -30,7 +30,6 @@ vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
     models: { anthropic: { models: ['claude-x'] }, 'claude-code': { models: ['claude-x-code'] } },
     slotModels: { anthropic: { models: ['claude-x'] } },
-    claudeCodeState: mocks.state,
     payers: {},
     validModelNames: new Set(['claude-x', 'claude-x-code']),
     metadata: {
@@ -44,6 +43,14 @@ vi.mock('@/hooks/useAllModels', () => ({
     rawApiResponse: {},
   }),
 }));
+
+// A self-hosted server, running the workspace's turns on the saved token: a
+// hosted computer, none of the user's own.
+vi.mock('@/hooks/useClaudeCode', () => ({
+  useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state }),
+  useClaudeCodeComputers: () => ({ computers: [], isLoading: false }),
+}));
+vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { computer_id: 'cmp-hosted' }, isPending: false }) }));
 
 vi.mock('@/hooks/useUpdatePreferences', () => ({
   useUpdatePreferences: () => ({ mutateAsync: vi.fn(), mutate: vi.fn() }),

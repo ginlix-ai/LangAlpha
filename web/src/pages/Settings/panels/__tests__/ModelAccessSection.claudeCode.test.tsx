@@ -11,7 +11,11 @@ import type { ClaudeCodeState } from '@/api/model';
 type Status = { state: ClaudeCodeState; email: string | null; expiresAt: string | null; isLoading: boolean };
 const status = vi.hoisted(() => ({ current: {} as Status }));
 
-vi.mock('@/hooks/useClaudeCode', () => ({ useClaudeCodeStatus: () => status.current }));
+// A self-hosted server, which runs turns on the saved token while Claude Code is on.
+vi.mock('@/hooks/useClaudeCode', () => ({
+  useClaudeCodeStatus: () => ({ ...status.current, enabled: status.current.state !== 'off', runsHere: status.current.state !== 'off', saved: false }),
+  useClaudeCodeComputers: () => ({ computers: [], isLoading: false }),
+}));
 vi.mock('@/hooks/useProviderCatalog', () => ({
   useProviderCatalog: () => ({ keyGroups: [], planGroups: [], localEntries: [], placeOf: () => undefined, optionFor: () => null }),
 }));

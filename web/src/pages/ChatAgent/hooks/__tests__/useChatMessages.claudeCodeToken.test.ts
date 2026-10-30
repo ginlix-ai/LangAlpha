@@ -1,7 +1,7 @@
 /**
  * A Claude Code turn refused for want of a working setup token, at admission
- * or mid-turn, links to where the user adds one; any other Claude Code
- * refusal keeps the server's words alone.
+ * or mid-turn, links to where the user adds one, which the view showing it
+ * resolves; any other Claude Code refusal keeps the server's words alone.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
@@ -52,8 +52,9 @@ async function send() {
   await act(async () => {
     await hook.result.current.handleSendMessage('hello');
   });
-  // Settings and the picker reread the token, which the server now calls rejected.
-  const reread = () => invalidate.mock.calls.some(([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(queryKeys.features.claudeCodeStatus()));
+  // Settings and the picker reread the tokens, saved and computers', which the
+  // server now calls rejected.
+  const reread = () => invalidate.mock.calls.some(([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(queryKeys.features.claudeCode()));
   return { result: hook.result, reread };
 }
 

@@ -296,8 +296,29 @@ describe('useComputerStatusFanout', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.computers.lists() });
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.workspaces.lists() });
-    // Reaching running re-reads a breakdown taken while the machine was down.
+    // Reaching running re-reads a breakdown taken while the machine was down,
+    // and Claude Code's list, which reads a computer's token only while it runs.
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.computers.storage(COMPUTER_ID) });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCodeComputers() });
+  });
+
+  it("leaves Claude Code's list alone on a frame that is not running", async () => {
+    mockGetComputers.mockResolvedValue(computer('stopping'));
+    mockStreamComputer.mockImplementation(async (_id: string, onFrame: ComputerOnFrame) => {
+      mockGetComputers.mockResolvedValue(computer('stopped'));
+      onFrame({ status: 'stopped' });
+    });
+    const { queryClient } = mount();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    await waitFor(() => {
+      const computers = queryClient.getQueryData<{ computers: Array<{ status: string }> }>(
+        queryKeys.computers.lists(),
+      );
+      expect(computers?.computers[0].status).toBe('stopped');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCodeComputers() });
   });
 
   // The server settles a failed start back to stopped and keeps why on the
