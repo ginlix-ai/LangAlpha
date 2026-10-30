@@ -327,7 +327,7 @@ export async function loadConversationHistory(
           const text = (event.error || event.message || '') as string;
           handleHistoryError({
             assistantMessageId: msgId,
-            failure: readStreamFailure(event, text)
+            failure: readStreamFailure(event, text, rt.workspaceId)
               ?? { message: text || 'An error occurred while processing your request.' },
             unloaded: event.type === 'replay_unavailable',
             setMessages: setMessagesForHandlers,

@@ -11,7 +11,7 @@ import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
-import { CLAUDE_CODE_TOKEN_LINK } from '@/lib/claudeCode';
+import { claudeCodeRefusal } from '@/lib/claudeCode';
 import { holdReload } from '@/lib/reloadHolds';
 import { useHomeTimezone } from '@/hooks/useHomeTimezone';
 import { useStableHandler } from '@/hooks/useStableHandler';
@@ -137,6 +137,8 @@ export function useChatMessages(
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  // A refused token can be the saved one or a computer's: all are read again.
+  const refreshClaudeCode = () => { void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCode() }); };
 
   // User locale/timezone — prefer saved preference, fall back to browser detection
   const { user } = useUser();
@@ -2015,11 +2017,11 @@ export function useChatMessages(
     const worded = typeof errorInfo?.message === 'string' && errorInfo.message ? errorInfo.message : null;
     // A Claude Code turn the server cannot run says what to change, and a
     // retry meets the same refusal. Without a working token, the change is
-    // one the user makes in Settings, which rereads the token's state.
+    // one the user makes in Settings.
     if (errorInfo?.type === 'claude_code_off' && worded) {
-      const signedOut = errorInfo.reason === 'signed_out';
-      if (signedOut) void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeStatus() });
-      return { banner: signedOut ? { message: worded, links: [CLAUDE_CODE_TOKEN_LINK] } : worded, answered: true };
+      const { reread, link } = claudeCodeRefusal(errorInfo.reason, workspaceId);
+      if (reread) refreshClaudeCode();
+      return { banner: link ? { message: worded, links: [link] } : worded, answered: true };
     }
     return { banner: worded, answered: false };
   };
@@ -3566,7 +3568,7 @@ export function useChatMessages(
     refreshWorkspaceFolder,
     armReportBack: (owed) => armReportBackWatch(threadIdRef.current, null, null, undefined, owed),
     refreshWorkspaces: () => invalidateNewWorkspace(queryClient),
-    refreshClaudeCodeStatus: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeStatus() }); },
+    refreshClaudeCode,
     // A turn other than the one this view counted for the run's bubble means
     // turns were added where the view never saw them. The stream stamps the
     // server's number, and only a reload shows those turns.

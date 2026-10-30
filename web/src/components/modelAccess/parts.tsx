@@ -42,6 +42,29 @@ export function StatusLabel({ status, className }: { status: AccessStatus; class
   );
 }
 
+/** The states a row has beside a connection's own, each a word in its colour:
+ *  a key a provider refused or no longer takes, or something not connected
+ *  now (nothing added yet, its computer offline, or off). */
+const WORDED_STATUS = {
+  refused: { key: 'modelAccess.status.keyRefused', color: 'var(--color-warning)' },
+  withdrawn: { key: 'modelAccess.status.withdrawn', color: 'var(--color-warning)' },
+  not_connected: { key: 'modelAccess.status.notConnected', color: 'var(--color-text-tertiary)' },
+  offline: { key: 'modelAccess.status.offline', color: 'var(--color-text-tertiary)' },
+  off: { key: 'modelAccess.status.off', color: 'var(--color-text-tertiary)' },
+} as const;
+
+/** Any row's status. */
+export type RowStatus = AccessStatus | keyof typeof WORDED_STATUS;
+
+const isWorded = (status: RowStatus): status is keyof typeof WORDED_STATUS => status in WORDED_STATUS;
+
+export function RowStatusLabel({ status, className }: { status: RowStatus; className?: string }) {
+  const { t } = useTranslation();
+  if (!isWorded(status)) return <StatusLabel status={status} className={className} />;
+  const { key, color } = WORDED_STATUS[status];
+  return <span className={cn('text-xs', className)} style={{ color }}>{t(key)}</span>;
+}
+
 /** A labelled block in a connect flow's Before panel. */
 export function FactRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (

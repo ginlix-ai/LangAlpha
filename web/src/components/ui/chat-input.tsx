@@ -30,7 +30,8 @@ import {
 } from './chat-input.composerParts';
 import { ChatInputEffortMenu, ChatInputModelMenu, ModelTriggerMeasure } from './chat-input.modelMenu';
 import type { ModelRowStatus } from './chat-input.modelPicker';
-import { CLAUDE_CODE_TOKEN_URL, isClaudeCodeModel } from '@/lib/claudeCode';
+import { claudeCodeTokenUrl, isClaudeCodeModel } from '@/lib/claudeCode';
+import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { deriveRecentModels } from './chat-input.models';
 import { modelGroups } from '@/lib/modelGroups';
 import { useToolbarItems } from './chat-input.toolbar';
@@ -211,7 +212,7 @@ function ChatInput({
   const isMobile = useIsMobile();
   const { preferences, isLoaded: preferencesRead } = usePreferences();
   const marketWatchEnabled = useFeatureEnabled('market_watch');
-  const { models: visibleModels, validModelNames, metadata: modelMetadata, payers, claudeCodeState, isLoading: modelsLoading } = useAllModels();
+  const { models: visibleModels, validModelNames, metadata: modelMetadata, payers, isLoading: modelsLoading } = useAllModels();
   const lapsedSignIn = useLapsedSignIn();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const [message, setMessage] = useState('');
@@ -701,15 +702,19 @@ function ChatInput({
   }), [turn.models, visibleModels, payers, entryFor]);
   const recentModels = deriveRecentModels({ selectedModel: pillModel, threadModels: threadModelsProp, validModelNames })
     .filter((m) => !favorites.models.includes(m) && turn.offers(m));
-  // A Claude Code model runs a turn while its token works or could not be
-  // checked, as admission lets it; otherwise its row says why, and where the
-  // user can fix it.
+  // A Claude Code model runs a turn while the token where the workspace's
+  // computer runs it works or could not be checked, as admission lets it;
+  // otherwise its row says why, and where the user can fix it: that
+  // computer's token, or the saved one.
+  const claudeCode = useWorkspaceClaudeCode(selectedWorkspaceId);
+  const tokenUrl = claudeCodeTokenUrl(claudeCode.computerId);
   const modelRowStatus = (m: string): ModelRowStatus => {
     if (isClaudeCodeModel(modelMetadata[m])) {
-      switch (claudeCodeState) {
+      switch (claudeCode.state) {
         case 'checking': return { unavailable: t('modelAccess.status.working') };
-        case 'no_token': return { unavailable: t('chat.modelSelector.claudeCodeSignedOut'), fix: () => navigate(CLAUDE_CODE_TOKEN_URL) };
-        case 'rejected': return { unavailable: t('chat.modelSelector.claudeCodeRejected'), fix: () => navigate(CLAUDE_CODE_TOKEN_URL) };
+        case 'no_token': return { unavailable: t('chat.modelSelector.claudeCodeSignedOut'), fix: () => navigate(tokenUrl) };
+        case 'rejected': return { unavailable: t('chat.modelSelector.claudeCodeRejected'), fix: () => navigate(tokenUrl) };
+        case 'needs_own_computer': return { unavailable: t('chat.modelSelector.claudeCodeNeedsOwnComputer') };
       }
     }
     return { tag: lapsedSignIn(m) ? t('modelAccess.status.needsReauth') : undefined };

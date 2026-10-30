@@ -7,13 +7,12 @@ import { Input } from '@/components/ui/input';
 import { Loader } from '@/components/ui/loader';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { useNow } from '@/hooks/useNow';
-import {
-  removeClaudeCodeToken, saveClaudeCodeToken, startClaudeCodeSignIn, submitClaudeCodeSignInCode, type ClaudeCodeStatus,
-} from '@/api/model';
 import { readOAuthError } from '@/api/oauth';
-import { queryKeys } from '@/lib/queryKeys';
+import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
 import { countdown } from './countdown';
 import { CopyButton, OpenProviderLink } from './parts';
+import { sheetActionOf, type TokenAction } from './tokenLine';
+import { SAVED_TOKEN, tokenSheetTitle, tokenTarget, type SheetAction, type TokenTarget, type TokenTargetRoutes } from './tokenTarget';
 
 /** Claude Code's install page, where step one sends anyone without it. */
 const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
@@ -23,10 +22,14 @@ const COMMAND = 'claude setup-token';
  *  code shows the server's sentence. A `<code>_spent` entry words the same
  *  refusal once it is no longer retryable. */
 const WORDED = {
-  'modelAccess.claudeCode': new Set(['token_missing', 'token_rejected', 'check_unavailable', 'check_in_progress', 'unavailable']),
+  'modelAccess.claudeCode': new Set([
+    'token_missing', 'token_rejected', 'check_unavailable', 'check_in_progress', 'unavailable', 'redis_unavailable',
+    'computer_not_found', 'cli_unavailable', 'needs_perl', 'write_failed',
+  ]),
   'modelAccess.claudeCode.signIn': new Set([
     'unavailable', 'redis_unavailable', 'code_missing', 'invalid_callback_input', 'state_mismatch', 'no_pending_flow',
     'code_rejected', 'check_unavailable', 'check_unavailable_spent', 'token_rejected', 'unexpected_grant', 'check_in_progress',
+    'computer_not_found', 'cli_unavailable', 'needs_perl', 'write_failed_spent',
   ]),
 };
 
@@ -44,13 +47,6 @@ function say(t: (key: string) => string, scope: keyof typeof WORDED, r: Refusal)
   return r.message || t(`${scope}.fail.unknown`);
 }
 
-/** Keeps the status a save answered with, which is the status itself: the
- *  row and the picker read it with no second request. */
-function useStoreStatus() {
-  const queryClient = useQueryClient();
-  return (status: ClaudeCodeStatus) => queryClient.setQueryData(queryKeys.features.claudeCodeStatus(), status);
-}
-
 /** The server keeps a sign-in this long when its answer has no usable time. */
 const FALLBACK_LIFETIME_MS = 10 * 60_000;
 
@@ -58,24 +54,77 @@ const FALLBACK_LIFETIME_MS = 10 * 60_000;
  * Adds or replaces the setup token Claude Code signs in with: what the token
  * is, then each way to get one in, top to bottom: signing in to Claude, which
  * makes the token here, or pasting one made with the CLI. Each way is a
- * section that saves on its own and calls `onSaved`.
+ * section that saves on its own and calls `onSaved`. For one of the user's
+ * own computers the token goes onto that computer, and the copy says so.
  */
-export function ClaudeCodeTokenSheet({ onSaved, onCancel }: { onSaved: () => void; onCancel: () => void }) {
+export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel }: {
+  target?: TokenTarget;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
   const { t } = useTranslation();
+  const routes = tokenTarget(target, useQueryClient());
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('modelAccess.claudeCode.intro')}</p>
+        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t(routes.copy.intro, routes.values)}</p>
         <p className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
           <Shield aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{t('modelAccess.claudeCode.separate')}</span>
+          <span>{t(routes.copy.separate, routes.values)}</span>
         </p>
       </div>
-      <SignInSection onSaved={onSaved} />
+      <SignInSection routes={routes} onSaved={onSaved} />
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('modelAccess.claudeCode.pasteHeading')}</h3>
-        <PastedTokenForm onSaved={onSaved} onCancel={onCancel} />
+        <PastedTokenForm routes={routes} onSaved={onSaved} onCancel={onCancel} />
       </section>
+    </div>
+  );
+}
+
+/** The sheet in a dialog of its own, for a surface with no sheet to open it
+ *  in, stacked over the dialog it was opened from. */
+export function ClaudeCodeTokenModal({ target, action, onClose }: { target: TokenTarget; action: SheetAction; onClose: () => void }) {
+  const { t } = useTranslation();
+  const titleId = useId();
+  return (
+    <ModalShell labelId={titleId} title={tokenSheetTitle(t, target, action)} onClose={onClose} stacked>
+      <ClaudeCodeTokenSheet target={target} onSaved={onClose} onCancel={onClose} />
+    </ModalShell>
+  );
+}
+
+const ACTION_LABEL: Record<TokenAction, string> = {
+  add: 'modelAccess.claudeCode.add',
+  addNew: 'modelAccess.claudeCode.addNew',
+  addOwn: 'modelAccess.claudeCode.computer.addOwn',
+  replace: 'modelAccess.claudeCode.replace',
+  remove: 'modelAccess.claudeCode.remove',
+};
+
+/** A token line's buttons: one that adds a token stands out until there is
+ *  one; Replace and Remove sit quiet beside a token that is there. Each
+ *  other than Remove opens the sheet for what it does. */
+export function TokenActions({ actions, onOpen, onRemove }: {
+  actions: TokenAction[];
+  onOpen: (action: SheetAction) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useTranslation();
+  if (actions.length === 0) return null;
+  return (
+    <div className="flex gap-1">
+      {actions.map((action) => (
+        <Button
+          key={action}
+          type="button"
+          variant={action === 'add' || action === 'addNew' ? 'outline' : 'ghost'}
+          size="sm"
+          onClick={action === 'remove' ? onRemove : () => onOpen(sheetActionOf(action))}
+        >
+          {t(ACTION_LABEL[action])}
+        </Button>
+      ))}
     </div>
   );
 }
@@ -95,9 +144,8 @@ const EXPIRED: Refusal = { code: 'no_pending_flow', message: '', retryable: fals
  * checks before saving. A refusal the same code cannot get past starts the sign-in over,
  * since the code is spent; any other leaves the code to fix or send again.
  */
-function SignInSection({ onSaved }: { onSaved: () => void }) {
+function SignInSection({ routes, onSaved }: { routes: TokenTargetRoutes; onSaved: () => void }) {
   const { t } = useTranslation();
-  const storeStatus = useStoreStatus();
   const fieldId = useId();
   const errorId = useId();
   const field = useRef<HTMLInputElement>(null);
@@ -132,7 +180,7 @@ function SignInSection({ onSaved }: { onSaved: () => void }) {
     setRefusal(null);
     let flow: { authorize_url: string; expires_at: string };
     try {
-      flow = await startClaudeCodeSignIn();
+      flow = await routes.start();
     } catch (err) {
       if (run.current === mine) setPhase({ kind: 'start', failure: refusalOf(err) });
       return;
@@ -150,9 +198,9 @@ function SignInSection({ onSaved }: { onSaved: () => void }) {
     const mine = run.current;
     setSubmitting(true);
     setRefusal(null);
-    let status: ClaudeCodeStatus;
     try {
-      status = await submitClaudeCodeSignInCode(value);
+      // Kept whether or not the sheet is still open: the save landed.
+      await routes.submit(value);
     } catch (err) {
       if (run.current !== mine) return;
       const r = refusalOf(err);
@@ -165,8 +213,6 @@ function SignInSection({ onSaved }: { onSaved: () => void }) {
       }
       return;
     }
-    // Whether or not the sheet is still open: the save landed.
-    storeStatus(status);
     if (run.current !== mine) return;
     setCode('');
     onSaved();
@@ -179,7 +225,7 @@ function SignInSection({ onSaved }: { onSaved: () => void }) {
     const failure = phase.kind === 'start' ? phase.failure : null;
     return (
       <section className="flex flex-col items-start gap-3 rounded-lg p-4" style={card}>
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('modelAccess.claudeCode.signIn.intro')}</p>
+        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t(routes.copy.signInIntro, routes.values)}</p>
         {failure && (
           <p role="alert" className="text-xs" style={{ color: 'var(--color-loss)' }}>{say(t, 'modelAccess.claudeCode.signIn', failure)}</p>
         )}
@@ -256,9 +302,8 @@ function SignInSection({ onSaved }: { onSaved: () => void }) {
  * Anthropic taking the token, so a refused one is never saved. The token
  * lives in this form's field alone, and leaves with it.
  */
-function PastedTokenForm({ onSaved, onCancel }: { onSaved: () => void; onCancel: () => void }) {
+function PastedTokenForm({ routes, onSaved, onCancel }: { routes: TokenTargetRoutes; onSaved: () => void; onCancel: () => void }) {
   const { t } = useTranslation();
-  const storeStatus = useStoreStatus();
   const fieldId = useId();
   const errorId = useId();
   const [token, setToken] = useState('');
@@ -276,9 +321,9 @@ function PastedTokenForm({ onSaved, onCancel }: { onSaved: () => void; onCancel:
     const mine = run.current;
     setSaving(true);
     setRefusal(null);
-    let status: ClaudeCodeStatus;
     try {
-      status = await saveClaudeCodeToken(value);
+      // Kept whether or not the form is still open: the save landed.
+      await routes.save(value);
     } catch (err) {
       if (run.current !== mine) return;
       const r = refusalOf(err);
@@ -289,8 +334,6 @@ function PastedTokenForm({ onSaved, onCancel }: { onSaved: () => void; onCancel:
       setRefusal(r);
       return;
     }
-    // Whether or not the form is still open: the save landed.
-    storeStatus(status);
     if (run.current !== mine) return;
     setToken('');
     onSaved();
@@ -393,36 +436,44 @@ function PastedTokenForm({ onSaved, onCancel }: { onSaved: () => void; onCancel:
   );
 }
 
-/** Confirms removing the setup token, runs it, and keeps the dialog open with
- *  the reason when it fails. Mounted only while open. */
-export function RemoveClaudeCodeTokenDialog({ onClose }: { onClose: () => void }) {
+/** Confirms removing the setup token, the saved one or a computer's, runs it,
+ *  and keeps the dialog open when it fails: with the server's sentence for a
+ *  computer it can't reach, which says what that computer's owner can do,
+ *  and in our words for anything else. Mounted only while open; `stacked`
+ *  over a dialog that opened it. */
+export function RemoveClaudeCodeTokenDialog({ target = SAVED_TOKEN, stacked = false, onClose }: {
+  target?: TokenTarget;
+  stacked?: boolean;
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const titleId = useId();
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<Refusal | null>(null);
+  const status = useClaudeCodeStatus();
+  const routes = tokenTarget(target, useQueryClient(), { fallsBackToSaved: status.runsHere && status.saved });
 
   const confirm = async () => {
     setBusy(true);
-    setFailed(false);
+    setFailure(null);
     try {
-      await removeClaudeCodeToken();
-    } catch {
-      setFailed(true);
+      await routes.remove();
+    } catch (err) {
+      setFailure(refusalOf(err));
       setBusy(false);
       return;
     }
-    await queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeStatus() });
     onClose();
   };
 
   return (
     <ModalShell
       labelId={titleId}
-      title={t('modelAccess.claudeCode.removeTitle')}
+      title={t(routes.copy.removeTitle, routes.values)}
       onClose={onClose}
       closeDisabled={busy}
       width="narrow"
+      stacked={stacked}
       footer={
         <div className="flex items-center justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
@@ -435,11 +486,11 @@ export function RemoveClaudeCodeTokenDialog({ onClose }: { onClose: () => void }
       }
     >
       <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-        {t('modelAccess.claudeCode.removeBody')}
+        {t(routes.copy.removeBody, routes.values)}
       </p>
-      {failed && !busy && (
+      {failure && !busy && (
         <p role="alert" className="text-sm" style={{ color: 'var(--color-loss)' }}>
-          {t('modelAccess.claudeCode.removeFailed')}
+          {failure.code === 'computer_unreachable' && failure.message ? failure.message : t('modelAccess.claudeCode.removeFailed')}
         </p>
       )}
     </ModalShell>

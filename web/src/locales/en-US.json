@@ -2422,7 +2422,8 @@
       "taskCostUnmeasured": "Not measured at this level. Costs no more than the level above.",
       "taskCostHeader": "Cost per task",
       "taskCostNote": "A rough estimate of how a typical task's cost changes with effort, compared with the default level.",
-      "claudeCodeRejected": "Claude refused your setup token. Add a new one in Settings to use this model"
+      "claudeCodeRejected": "Claude refused your setup token. Add a new one in Settings to use this model",
+      "claudeCodeNeedsOwnComputer": "Runs only on workspaces on your own computers"
     },
     "voice": {
       "start": "Start voice input",
@@ -6306,7 +6307,9 @@
       "keyRefused": "Key not accepted",
       "withdrawn": "No longer supported",
       "configured": "API key configured",
-      "notConnected": "Not connected"
+      "notConnected": "Not connected",
+      "offline": "Offline",
+      "off": "Off"
     },
     "before": {
       "need": "What you need",
@@ -6381,6 +6384,11 @@
         "check_unavailable": "Couldn't reach Claude to check the token, so nothing was saved. Try again.",
         "check_in_progress": "A token is already being checked. Wait a moment, then try again.",
         "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Experiments.",
+        "redis_unavailable": "Saving a token isn't available right now. Try again in a moment.",
+        "computer_not_found": "This computer isn't available anymore.",
+        "needs_perl": "Claude Code needs perl on this computer. Install perl, then try again.",
+        "cli_unavailable": "Couldn't set up Claude Code on this computer. Try again.",
+        "write_failed": "Couldn't save the token on this computer. Try again.",
         "unknown": "Couldn't save the token. Try again."
       },
       "removeTitle": "Remove the Claude Code setup token?",
@@ -6397,6 +6405,10 @@
         "fieldPlaceholder": "Paste the code",
         "fail": {
           "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Experiments.",
+          "computer_not_found": "This computer isn't available anymore.",
+          "needs_perl": "Claude Code needs perl on this computer. Install perl, then try again.",
+          "cli_unavailable": "Couldn't set up Claude Code on this computer. Send the code again.",
+          "write_failed_spent": "Couldn't save the token on this computer, and the code can't be used again. Sign in again.",
           "redis_unavailable": "Signing in isn't available right now. Try again in a moment.",
           "code_missing": "Paste the code from Claude first.",
           "invalid_callback_input": "That doesn't look like the code from Claude's page. Copy all of it and paste it again.",
@@ -6410,7 +6422,28 @@
           "check_in_progress": "A token is already being checked. Wait a moment, then try again.",
           "unknown": "Couldn't finish signing in. Try again."
         }
-      }
+      },
+      "computer": {
+        "intro": "Claude Code runs your Claude threads on {{name}}, on your own Claude plan. It signs in with a setup token made for LangAlpha, kept on that computer.",
+        "separate": "This token is a separate credential made for LangAlpha, never your Claude Code sign-in. Usage counts against your Claude plan. It stays on {{name}}, and LangAlpha doesn't keep a copy.",
+        "signInIntro": "Sign in to Claude in a new tab. LangAlpha then makes a setup token and puts it on {{name}}, so there's nothing to run in a terminal.",
+        "addTitle": "Add a setup token for {{name}}",
+        "replaceTitle": "Replace the setup token on {{name}}",
+        "removeTitle": "Remove the setup token from {{name}}?",
+        "removeBody": "LangAlpha deletes the token from {{name}}. Claude Code won't run there until you add a new one. Your own Claude Code sign-in isn't affected.",
+        "removeBodySaved": "LangAlpha deletes the token from {{name}}. Claude Code there then uses your saved token. Your own Claude Code sign-in isn't affected.",
+        "ownToken": "Uses its own token",
+        "savedToken": "Uses your saved token",
+        "noToken": "No setup token for this computer yet",
+        "savedRejected": "Claude refused your saved token. It may have expired or been revoked.",
+        "offline": "This computer isn't running, so its token can't be checked.",
+        "addOwn": "Add its own token"
+      },
+      "optOut": {
+        "saved": "Claude Code is off, but your setup token is still saved.",
+        "computer": "Claude Code is off, but this computer still has its setup token."
+      },
+      "savedTag": "Saved token"
     },
     "claude": {
       "name": "Claude",

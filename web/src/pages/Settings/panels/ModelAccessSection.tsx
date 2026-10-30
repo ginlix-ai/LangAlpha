@@ -1,21 +1,21 @@
-import { useId, useState, type ComponentProps, type ReactNode } from 'react';
+import { useId, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router';
-import { Trans, useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { isPlatformMode } from '@/config/hostMode';
-import { useLocale } from '@/hooks/useLocale';
-import { mediumDate } from '@/lib/format';
 import { useConfiguredProviders, type ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
-import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_TOKEN_PARAM } from '@/lib/claudeCode';
+import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
+import { CLAUDE_CODE, CLAUDE_CODE_CONNECTION, CLAUDE_CODE_TOKEN_PARAM, CLAUDE_CODE_WORKSPACE_PARAM } from '@/lib/claudeCode';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import type { ProviderCatalogEntry } from '@/components/model/types';
-import type { ClaudeCodeState } from '@/api/model';
 import { isSubscriptionProvider, subscriptionKey, type SubscriptionProvider } from '@/api/oauth';
 import { RemoveAccessDialog } from '@/components/modelAccess/RemoveAccessDialog';
-import { ClaudeCodeTokenSheet, RemoveClaudeCodeTokenDialog } from '@/components/modelAccess/ClaudeCodeToken';
+import { ClaudeCodeTokenSheet, RemoveClaudeCodeTokenDialog, TokenActions } from '@/components/modelAccess/ClaudeCodeToken';
+import { linkedSheetAction, useClaudeCodeTokenRows } from '@/components/modelAccess/tokenLine';
+import { tokenSheetTitle, type SheetAction, type TokenTarget } from '@/components/modelAccess/tokenTarget';
 import { planLabel } from '@/components/modelAccess/planLabel';
 import { regionTag } from '@/components/modelAccess/optionLabels';
 import { StatusLabel, type AccessStatus } from '@/components/modelAccess/parts';
@@ -34,14 +34,6 @@ const subscriptionName = (t: (k: string) => string, p: SubscriptionProvider) =>
  *  or the subscriptions for a coding plan. */
 type KeyOrigin = 'pick-key' | 'pick-subscription';
 
-/** The Claude Code row in one state, and the title its token sheet opens with. */
-interface ClaudeCodeRow {
-  status: ComponentProps<typeof AccessRow>['status'];
-  detail: ReactNode;
-  action: ReactNode;
-  title: string;
-}
-
 /** What the sheet is showing. */
 type Sheet =
   | { kind: 'pick-subscription' }
@@ -50,7 +42,7 @@ type Sheet =
   | { kind: 'pick-local' }
   | { kind: 'key'; group: ProviderGroup; option: KeyOption; origin: KeyOrigin }
   | { kind: 'local-key'; entry: ProviderCatalogEntry }
-  | { kind: 'claude-code-token' }
+  | { kind: 'claude-code-token'; target: TokenTarget; action: SheetAction }
   /** `from` the add-key flow keeps that flow's width for the key it just saved.
    *  `justConnected`: the flow before it made the connection, so its models
    *  start picked. */
@@ -91,20 +83,34 @@ export function ModelAccessSection() {
   const sheetTitleId = useId();
   const { keyGroups, planGroups, localEntries, placeOf, optionFor } = useProviderCatalog();
   const { providers, withdrawn, configuredSet, statusLoading, statusError } = useConfiguredProviders();
-  const locale = useLocale();
-  const claudeCode = useClaudeCodeStatus();
+  const tokenRows = useClaudeCodeTokenRows();
   const [opened, setSheet] = useState<Sheet | null>(null);
   const [removing, setRemoving] = useState<ConfiguredProvider | null>(null);
-  const [removingToken, setRemovingToken] = useState(false);
-  // A link elsewhere (the model picker, a refused turn) opens the setup-token
-  // sheet once Claude Code is known to be listed; closing it drops the link.
+  const [removingToken, setRemovingToken] = useState<TokenTarget | null>(null);
+  // A link elsewhere (the model picker, a refused turn) opens the sheet its
+  // row's first button would, once Claude Code is on, for the token the
+  // workspace it names runs its turns on: its computer's, where that is one
+  // of the user's own, else the saved one. Until the workspace and the
+  // computers are read (Home's placeholder row is no read) it opens none,
+  // so the saved token's never opens in its computer's place. A workspace gone or not the user's (403, 404) runs
+  // on no computer of theirs; any other failed read leaves which computer
+  // unknown, so it opens none and keeps the link for a reload. A row offering
+  // only Remove opens none either. Closing it drops the link.
   const [searchParams, setSearchParams] = useSearchParams();
-  const linkedToken = searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE;
-  const sheet: Sheet | null = opened ?? (linkedToken && claudeCode.state !== 'off' ? { kind: 'claude-code-token' } : null);
+  const claudeCode = useClaudeCodeStatus();
+  const linkedWorkspaceId = searchParams.get(CLAUDE_CODE_WORKSPACE_PARAM);
+  const linked = useWorkspaceClaudeCode(linkedWorkspaceId);
+  const linkResolved = !linkedWorkspaceId || linked.known;
+  const linkedRow = searchParams.get(CLAUDE_CODE_TOKEN_PARAM) === CLAUDE_CODE && claudeCode.enabled && linkResolved
+    ? tokenRows.find(({ target }) => (target.kind === 'computer' ? target.computerId === linked.computerId : !linked.computerId))
+    : undefined;
+  const linkedAction = linkedRow && linkedSheetAction(linkedRow.line);
+  const sheet: Sheet | null = opened ?? (linkedRow && linkedAction ? { kind: 'claude-code-token', target: linkedRow.target, action: linkedAction } : null);
   const closeSheet = () => {
     setSheet(null);
-    if (linkedToken) setSearchParams((params) => {
+    if (searchParams.has(CLAUDE_CODE_TOKEN_PARAM)) setSearchParams((params) => {
       params.delete(CLAUDE_CODE_TOKEN_PARAM);
+      params.delete(CLAUDE_CODE_WORKSPACE_PARAM);
       return params;
     }, { replace: true });
   };
@@ -130,71 +136,6 @@ export function ModelAccessSection() {
     return region ? `${p.display_name} · ${region}` : p.display_name;
   };
 
-  const claudeCodeExpiry = claudeCode.expiresAt && !Number.isNaN(Date.parse(claudeCode.expiresAt))
-    ? mediumDate(new Date(claudeCode.expiresAt), locale)
-    : null;
-  const openTokenSheet = () => setSheet({ kind: 'claude-code-token' });
-  const removeToken = (
-    <Button type="button" variant="ghost" size="sm" onClick={() => setRemovingToken(true)}>
-      {t('modelAccess.claudeCode.remove')}
-    </Button>
-  );
-  const tokenActions = (
-    <div className="flex gap-1">
-      <Button type="button" variant="ghost" size="sm" onClick={openTokenSheet}>
-        {t('modelAccess.claudeCode.replace')}
-      </Button>
-      {removeToken}
-    </div>
-  );
-  const addToken = (labelKey: string) => (
-    <Button type="button" variant="outline" size="sm" onClick={openTokenSheet}>{t(labelKey)}</Button>
-  );
-  // The account, then when the token lapses, as a subscription's row reads.
-  // A wrap falls around the date, never inside it.
-  const connected: ClaudeCodeRow = {
-    status: 'connected',
-    detail: claudeCodeExpiry ? (
-      <>
-        {claudeCode.email && `${claudeCode.email} · `}
-        <Trans
-          i18nKey="modelAccess.claudeCode.expiresBy"
-          values={{ date: claudeCodeExpiry }}
-          components={{ date: <span className="whitespace-nowrap" /> }}
-        />
-      </>
-    ) : claudeCode.email || t('modelAccess.claudeCode.detail'),
-    action: tokenActions,
-    title: 'modelAccess.claudeCode.replaceTitle',
-  };
-  // What the Claude Code row says in each state, and what it offers. Every
-  // state with a saved token offers Replace and Remove, whatever its check
-  // says; one the check could not reach runs turns, so it reads as connected.
-  const claudeCodeRows: Record<ClaudeCodeState, ClaudeCodeRow | null> = {
-    off: null,
-    no_token: {
-      status: 'not_connected',
-      detail: t('modelAccess.claudeCode.detail'),
-      action: addToken('modelAccess.claudeCode.add'),
-      title: 'modelAccess.claudeCode.addTitle',
-    },
-    checking: {
-      status: 'working',
-      detail: t('modelAccess.claudeCode.detail'),
-      action: tokenActions,
-      title: 'modelAccess.claudeCode.replaceTitle',
-    },
-    unverified: connected,
-    signed_in: connected,
-    rejected: {
-      status: 'not_connected',
-      detail: t('modelAccess.claudeCode.rejected'),
-      action: <div className="flex gap-1">{addToken('modelAccess.claudeCode.addNew')}{removeToken}</div>,
-      title: 'modelAccess.claudeCode.addTitle',
-    },
-  };
-  const claudeCodeRow = claudeCodeRows[claudeCode.state];
-
   const sheetTitle = (() => {
     if (!sheet) return null;
     const providerTitle = (name: string, markProvider: string) => (
@@ -208,7 +149,7 @@ export function ModelAccessSection() {
       case 'key': return providerTitle(sheet.group.name, sheet.group.markProvider);
       case 'local-key': return providerTitle(sheet.entry.display_name, sheet.entry.provider);
       case 'manage': return managed ? nameOf(managed) : null;
-      case 'claude-code-token': return t(claudeCodeRow?.title ?? 'modelAccess.claudeCode.addTitle');
+      case 'claude-code-token': return tokenSheetTitle(t, sheet.target, sheet.action);
     }
   })();
 
@@ -242,17 +183,24 @@ export function ModelAccessSection() {
           )),
           // Claude Code signs in with a setup token the user makes for it, so
           // the token is all there is to add, replace or remove.
-          ...(claudeCodeRow ? [
+          ...tokenRows.map(({ key, target, tag, line }) => (
             <AccessRow
-              key={CLAUDE_CODE}
+              key={`${CLAUDE_CODE}:${key}`}
               provider={CLAUDE_CODE}
               name={CLAUDE_CODE_CONNECTION.display_name}
-              detail={claudeCodeRow.detail}
+              tag={tag}
+              detail={line.detail}
               wrapDetail
-              status={claudeCodeRow.status}
-              action={claudeCodeRow.action}
-            />,
-          ] : []),
+              status={line.status}
+              action={(
+                <TokenActions
+                  actions={line.actions}
+                  onOpen={(action) => setSheet({ kind: 'claude-code-token', target, action })}
+                  onRemove={() => setRemovingToken(target)}
+                />
+              )}
+            />
+          )),
         ]}
       </Group>
 
@@ -394,7 +342,7 @@ export function ModelAccessSection() {
             />
           )}
           {sheet.kind === 'manage' && !managed && <StatusLabel status="working" />}
-          {sheet.kind === 'claude-code-token' && <ClaudeCodeTokenSheet onSaved={closeSheet} onCancel={closeSheet} />}
+          {sheet.kind === 'claude-code-token' && <ClaudeCodeTokenSheet target={sheet.target} onSaved={closeSheet} onCancel={closeSheet} />}
         </ModalShell>
       )}
 
@@ -408,7 +356,7 @@ export function ModelAccessSection() {
         />
       )}
 
-      {removingToken && <RemoveClaudeCodeTokenDialog onClose={() => setRemovingToken(false)} />}
+      {removingToken && <RemoveClaudeCodeTokenDialog target={removingToken} onClose={() => setRemovingToken(null)} />}
     </div>
   );
 }

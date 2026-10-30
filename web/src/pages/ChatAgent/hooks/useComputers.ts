@@ -220,12 +220,15 @@ export function patchComputerRow(
  * the storage breakdown sits under that prefix too, and refetching it runs
  * `du` over the whole machine, which a rename or an always-on toggle has no
  * reason to pay for. A change that does move bytes calls
- * {@link invalidateMachineStorage} alongside.
+ * {@link invalidateMachineStorage} alongside. Claude Code's list of the
+ * user's own computers names each one and is not polled when empty, so a
+ * machine added, renamed or removed is read there again too.
  */
 export function invalidateMachine(queryClient: QueryClient) {
   void queryClient.invalidateQueries({ queryKey: queryKeys.computers.lists() });
   void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
   void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.quota() });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
 }
 
 /** Re-read the per-folder breakdown, if anyone is looking at it. */
@@ -421,8 +424,13 @@ export function useComputerStatusFanout(): void {
               // even if the re-read below is slow or fails.
               if (frame.start_failure) patchComputerRow(queryClient, computerId, { start_failure: frame.start_failure });
               patchComputerStatusInCaches(queryClient, computerId, status);
-              // A breakdown read while the machine was down only says to start it.
-              if (status === 'running') invalidateMachineStorage(queryClient, computerId);
+              // A breakdown read while the machine was down only says to start
+              // it, and Claude Code's list, which reads a computer's token only
+              // while it runs, still says it is offline.
+              if (status === 'running') {
+                invalidateMachineStorage(queryClient, computerId);
+                void queryClient.invalidateQueries({ queryKey: queryKeys.features.claudeCodeComputers() });
+              }
               // A failed start still needs the row: the server keeps why on
               // it (`start_failure`) before it sends 'error', or 'stopped' for
               // a start that reverted. Asked here, not after the close: either

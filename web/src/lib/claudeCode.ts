@@ -22,8 +22,19 @@ export const CLAUDE_CODE_CONNECTION: ConfiguredProvider = {
 export const CLAUDE_CODE_TOKEN_PARAM = 'connect';
 export const CLAUDE_CODE_TOKEN_URL = `/settings?tab=model&${CLAUDE_CODE_TOKEN_PARAM}=${CLAUDE_CODE}`;
 
+/** With this too, the sheet opens for one of the user's own computers. */
+export const CLAUDE_CODE_COMPUTER_PARAM = 'computer';
+export const claudeCodeComputerTokenUrl = (computerId: string) =>
+  `${CLAUDE_CODE_TOKEN_URL}&${CLAUDE_CODE_COMPUTER_PARAM}=${encodeURIComponent(computerId)}`;
+
 export const CLAUDE_CODE_TOKEN_LINK: ErrorLinkSpec = {
   url: CLAUDE_CODE_TOKEN_URL,
   label: 'Add setup token',
   labelKey: 'modelAccess.claudeCode.add',
+  to: 'claude_code_token',
 };
+
+/** Where a turn's token is added: the computer's own sheet for one of the
+ *  user's own computers, the saved token's otherwise. */
+export const claudeCodeTokenUrl = (computerId: string | null) =>
+  (computerId ? claudeCodeComputerTokenUrl(computerId) : CLAUDE_CODE_TOKEN_URL);

@@ -28,8 +28,9 @@ export async function getAvailableModels(): Promise<ModelsResponse> {
   return data as ModelsResponse;
 }
 
-/** Where this user's Claude Code stands. `off`: their flag or the deployment
- *  does not run it. `checking`: a saved token Anthropic has not answered for
+/** Where this user's saved setup token stands. `off`: this server does not
+ *  run turns on a saved token (their flag is off, or the deployment runs
+ *  Claude Code only on the user's own computers). `checking`: a saved token Anthropic has not answered for
  *  yet. `unverified`: the check could not reach Anthropic, which a later read
  *  tries again; a turn runs meanwhile. `rejected`: Anthropic refused it. */
 export type ClaudeCodeState = 'off' | 'no_token' | 'checking' | 'unverified' | 'signed_in' | 'rejected';
@@ -37,11 +38,73 @@ export type ClaudeCodeState = 'off' | 'no_token' | 'checking' | 'unverified' | '
 /** `GET /api/v1/claude-code/status`, and the answer to a token saved. A
  *  server that predates it answers 404, which reads as `off`. */
 export interface ClaudeCodeStatus {
+  /** Claude Code models are on for the user, wherever they run. Absent from
+   *  a server that predates it, where on means `state` is not `off`. */
+  enabled?: boolean;
   state: ClaudeCodeState;
   /** The Claude account, known only for a token made through Sign in. */
   email: string | null;
   /** When the token stops working; for a pasted one, the latest it can last. */
   expires_at: string | null;
+  /** A token is saved, whatever `state` says: one is still there to remove
+   *  once Claude Code is off. Absent from a server that predates it. */
+  saved?: boolean;
+}
+
+/** Where Claude Code stands on one of the user's own computers. `off`: their
+ *  flag or the deployment does not run it. `offline`: the computer is not
+ *  running or cannot be reached, so its token cannot be read. The rest read
+ *  as the account's (`ClaudeCodeState`), for the token that computer uses. */
+export type ClaudeCodeComputerState = 'off' | 'offline' | ClaudeCodeState;
+
+/** One of the user's own computers (SSH, or a Mac through Remote control) as
+ *  Claude Code sees it. */
+export interface ClaudeCodeComputer {
+  computer_id: string;
+  name: string;
+  kind: 'ssh' | 'helper';
+  state: ClaudeCodeComputerState;
+  /** The token its turns use: its own (`machine`), or the one saved in
+   *  Settings (`saved`), which a self-hosted server uses on a computer with
+   *  none of its own. Null with neither. */
+  source: 'machine' | 'saved' | null;
+  email: string | null;
+  expires_at: string | null;
+}
+
+/** A server from before per-computer tokens has no such route, and runs
+ *  Claude Code on none of the user's computers. */
+export async function getClaudeCodeComputers(): Promise<{ computers: ClaudeCodeComputer[] }> {
+  try {
+    const { data } = await api.get('/api/v1/claude-code/computers');
+    return data as { computers: ClaudeCodeComputer[] };
+  } catch (err) {
+    if ((err as { response?: { status?: number } })?.response?.status === 404) return { computers: [] };
+    throw err;
+  }
+}
+
+const computerPath = (computerId: string) => `/api/v1/claude-code/computers/${encodeURIComponent(computerId)}`;
+
+/** Puts a setup token on the computer once Anthropic takes it; the refusals
+ *  are `saveClaudeCodeToken`'s. */
+export async function saveClaudeCodeComputerToken(computerId: string, token: string): Promise<ClaudeCodeComputer> {
+  const { data } = await api.put(`${computerPath(computerId)}/token`, { token });
+  return data as ClaudeCodeComputer;
+}
+
+export async function startClaudeCodeComputerSignIn(computerId: string): Promise<{ authorize_url: string; expires_at: string }> {
+  const { data } = await api.post(`${computerPath(computerId)}/sign-in`);
+  return data as { authorize_url: string; expires_at: string };
+}
+
+export async function submitClaudeCodeComputerSignInCode(computerId: string, code: string): Promise<ClaudeCodeComputer> {
+  const { data } = await api.post(`${computerPath(computerId)}/sign-in/code`, { code });
+  return data as ClaudeCodeComputer;
+}
+
+export async function removeClaudeCodeComputerToken(computerId: string): Promise<void> {
+  await api.delete(`${computerPath(computerId)}/token`);
 }
 
 export async function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {

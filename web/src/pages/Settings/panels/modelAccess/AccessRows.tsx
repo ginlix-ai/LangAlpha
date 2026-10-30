@@ -8,7 +8,7 @@ import type { KeyPlace } from '@/hooks/useProviderCatalog';
 import { useAvailableModels } from '@/hooks/useProviderModels';
 import { isKnownEndpoint, useKnownHosts } from '@/components/modelAccess/endpointTrust';
 import { regionTag } from '@/components/modelAccess/optionLabels';
-import { QuietNote, StatusLabel, type AccessStatus } from '@/components/modelAccess/parts';
+import { QuietNote, StatusActions, type RowStatus } from '@/components/modelAccess/parts';
 import { keyDetail } from './keyDetail';
 
 /** One connection's row: its mark and name, what it is, its live status, Manage. */
@@ -29,10 +29,9 @@ export function AccessRow({
   /** Reached through an endpoint we cannot vouch for, most often a proxy. */
   unverified?: boolean;
   detail?: React.ReactNode;
-  /** `withdrawn`: a key for a provider the catalog no longer has. */
   /** A detail worded as a sentence, which wraps rather than loses its end. */
   wrapDetail?: boolean;
-  status: AccessStatus | 'refused' | 'withdrawn' | 'not_connected';
+  status: RowStatus;
   action: React.ReactNode;
 }) {
   const { t } = useTranslation();
@@ -54,18 +53,9 @@ export function AccessRow({
           </span>
         )}
       </div>
-      <div className="ml-auto flex shrink-0 items-center gap-3">
-        {status === 'refused' || status === 'withdrawn' ? (
-          <span className="text-xs" style={{ color: 'var(--color-warning)' }}>
-            {t(status === 'refused' ? 'modelAccess.status.keyRefused' : 'modelAccess.status.withdrawn')}
-          </span>
-        ) : status === 'not_connected' ? (
-          <span className="shrink-0 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('modelAccess.status.notConnected')}</span>
-        ) : (
-          <StatusLabel status={status} className="shrink-0" />
-        )}
+      <StatusActions status={status}>
         <div className="shrink-0">{action}</div>
-      </div>
+      </StatusActions>
     </li>
   );
 }
@@ -76,7 +66,7 @@ export function KeyRow({ p, place, onManage }: { p: ConfiguredProvider; place?: 
   const listable = !p.is_custom && p.access_type !== 'local';
   const list = useAvailableModels(listable ? p.provider : null);
   const knownHosts = useKnownHosts();
-  const status: AccessStatus | 'refused' = list.isLoading
+  const status: RowStatus = list.isLoading
     ? 'working'
     : list.data?.status === 'fallback' && list.data.reason === 'unauthorized'
       ? 'refused'
