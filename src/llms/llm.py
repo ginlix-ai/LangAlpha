@@ -923,12 +923,20 @@ class LLM:
         """
         if self.api_key_override is not None:
             return self.api_key_override or "EMPTY"
+        env_keys = []
         if self.env_key:
-            key = os.getenv(self.env_key)
+            env_keys.append(self.env_key)
+        for env_key in self.provider_info.get("env_key_aliases", []):
+            if env_key and env_key not in env_keys:
+                env_keys.append(env_key)
+        for env_key in env_keys:
+            key = os.getenv(env_key)
             if key:
                 return key
+        if env_keys:
             if self.provider_info.get("access_type") != "local":
-                raise MissingProviderKeyError(f"{self.env_key} environment variable is not set")
+                joined = " or ".join(env_keys)
+                raise MissingProviderKeyError(f"{joined} environment variable is not set")
         return "EMPTY"
 
     def _hold_params_to_egress(self, params: dict, family: str) -> None:

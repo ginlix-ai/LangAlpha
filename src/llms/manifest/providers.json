@@ -507,6 +507,35 @@
     ],
     "lm-studio": [],
     "openrouter": [],
+    "atlascloud": [
+      {
+        "id": "qwen/qwen3.5-flash",
+        "name": "Qwen3.5 Flash (Atlas Cloud)",
+        "description": "Qwen3.5 Flash served through Atlas Cloud's OpenAI-compatible API",
+        "context_window": 1000000,
+        "max_output": 67072,
+        "pricing": {
+          "input": 0.1,
+          "cached_input": 0.1,
+          "output": 0.4,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "deepseek-ai/deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro (Atlas Cloud)",
+        "is_reasoning": true,
+        "description": "DeepSeek V4 Pro served through Atlas Cloud's OpenAI-compatible API",
+        "context_window": 1048576,
+        "max_output": 393216,
+        "pricing": {
+          "input": 1.68,
+          "cached_input": 0.13,
+          "output": 3.38,
+          "unit": "per_1m_tokens"
+        }
+      }
+    ],
     "deepseek": [
       {
         "id": "deepseek-flash",
@@ -1219,6 +1248,18 @@
       "byok_eligible": true,
       "display_name": "OpenRouter",
       "category": "inference"
+    },
+    "atlascloud": {
+      "sdk": "openai",
+      "base_url": "https://api.atlascloud.ai/v1",
+      "env_key": "ATLASCLOUD_API_KEY",
+      "env_key_aliases": [
+        "ATLAS_CLOUD_API_KEY"
+      ],
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "use_response_api": false,
+      "display_name": "Atlas Cloud"
     },
     "deepseek": {
       "operator_channel": "system",
