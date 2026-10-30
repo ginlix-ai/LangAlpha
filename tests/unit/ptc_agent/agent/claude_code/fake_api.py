@@ -7,7 +7,8 @@ request is answered from a script chosen by what the conversation holds, and
 every request body is kept so a test can check what the CLI sent.
 
 With ``first_party=True`` the CLI keeps its own API host and signs in with a
-dummy OAuth token, so it sends the request a Claude plan login sends (the
+dummy setup token (``TOKEN``, the launcher's to hand over), so it sends the
+request a Claude plan login sends (the
 1h cache, the billing header, request diagnostics): its ``HTTPS_PROXY`` is a
 tunnel to a TLS listener that answers as api.anthropic.com with a throwaway
 CA, trusted through ``NODE_EXTRA_CA_CERTS`` in the CLI's environment only.
@@ -36,6 +37,8 @@ from typing import Any
 from aiohttp import web
 
 API_HOST = "api.anthropic.com"
+#: The dummy setup token a first-party test launches with.
+TOKEN = "sk-ant-oat01-" + "0" * 80
 
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
@@ -128,9 +131,13 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
 class FakeMessagesAPI:
     """The server and the request bodies it was sent."""
 
-    def __init__(self, *, first_party: bool = False) -> None:
+    def __init__(self, *, first_party: bool = False, refused: frozenset[str] = frozenset()) -> None:
         self.first_party = first_party
+        #: Credentials answered with a 401, as Anthropic answers a revoked token.
+        self.refused = refused
         self.requests: list[dict[str, Any]] = []
+        #: The credential each request carried: its bearer token, else its API key.
+        self.credentials: list[str | None] = []
         self._runner: web.AppRunner | None = None
         self._tunnel: asyncio.Server | None = None
         self._dir = tempfile.TemporaryDirectory(prefix="fake-api-")
@@ -164,11 +171,11 @@ class FakeMessagesAPI:
         self._dir.cleanup()
 
     def cli_env(self) -> dict[str, str]:
-        """What the CLI's environment needs to reach this API, with a dummy credential."""
+        """What the CLI's environment needs to reach this API: a dummy key, or first-party the route to it alone."""
         if not self.first_party:
             return {"ANTHROPIC_BASE_URL": self.url, "ANTHROPIC_API_KEY": "sk-ant-test-fake"}
         proxy = f"http://127.0.0.1:{self._tunnel.sockets[0].getsockname()[1]}"  # type: ignore[union-attr]
-        return {"HTTPS_PROXY": proxy, "NODE_EXTRA_CA_CERTS": self._ca, "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-" + "0" * 80}
+        return {"HTTPS_PROXY": proxy, "NODE_EXTRA_CA_CERTS": self._ca}
 
     async def _connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int) -> None:
         """A CONNECT to api.anthropic.com reaches the TLS listener; any other host is refused."""
@@ -189,6 +196,11 @@ class FakeMessagesAPI:
     async def _messages(self, request: web.Request) -> web.StreamResponse:
         body = await request.json()
         self.requests.append(body)
+        auth = request.headers.get("authorization", "")
+        credential = auth.removeprefix("Bearer ") if auth else request.headers.get("x-api-key")
+        self.credentials.append(credential)
+        if credential in self.refused:
+            return web.json_response({"type": "error", "error": {"type": "authentication_error", "message": "invalid token"}}, status=401)
         prompt = " ".join(t for blocks in _user_blocks(body)[-1:] for t in _texts(blocks))
         for word, (status, kind) in {"FAIL_AUTH": (401, "authentication_error"), "FAIL_LIMIT": (429, "rate_limit_error")}.items():
             if word in prompt:

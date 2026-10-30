@@ -5,6 +5,9 @@ import re
 from typing import Any, Dict, Optional
 
 from src.config import settings as app_settings
+from src.llms.claude_code import ClaudeTurnFailed
+from src.llms.error_classification import iter_exception_chain
+from src.server.services.llm.claude_code import claude_code_refusal
 from src.server.services.oauth_health import subscription_token_refusal
 from src.server.utils.error_sanitization import sanitize_error_text
 
@@ -142,6 +145,11 @@ def model_call_failure(
     }
 
 
+#: The Claude Code CLI's own failures that are Anthropic's answer to the
+#: turn, with the status each reads as.
+_CLAUDE_CODE_UPSTREAM: dict[str, Optional[int]] = {"plan_exhausted": 429, "api_error": None}
+
+
 def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
     """Classify a chat-stream exception as ``upstream`` or ``internal``.
 
@@ -155,6 +163,8 @@ def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
     current: Optional[BaseException] = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        if isinstance(current, ClaudeTurnFailed) and current.kind in _CLAUDE_CODE_UPSTREAM:
+            return {"kind": "upstream", "status_code": _CLAUDE_CODE_UPSTREAM[current.kind], "provider_module": None}
         module = getattr(type(current), "__module__", "") or ""
         for prefix in _UPSTREAM_MODULE_PREFIXES:
             if module == prefix or module.startswith(prefix + "."):
@@ -205,13 +215,14 @@ def failure_kind_metadata(exc: BaseException) -> Dict[str, Any]:
     could carry no frame (its quota spent) sent none, and the row's own
     error item is then the only place the failure is worded.
 
-    ``{}`` for the turn's time limit: its own frame is worded for the user and
-    carries no kind, and the reload replays it unchanged.
+    ``{}`` for the turn's time limit and a Claude Code token refused mid-turn:
+    their frames are worded for the user and carry no kind, and the reload
+    replays them unchanged.
     """
     # Lazy: sse_producer imports this module.
     from src.server.services.runs.sse_producer import TurnTimeLimitError
 
-    if isinstance(exc, TurnTimeLimitError):
+    if isinstance(exc, TurnTimeLimitError) or claude_code_refusal(exc, None) is not None:
         return {}
     return {"error_kind": failure_kind(exc)["kind"]}
 
@@ -222,6 +233,7 @@ def error_event_data(
     *,
     exc: Optional[BaseException] = None,
     credential_source: Any = None,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The ``error`` frame's data.
 
@@ -232,7 +244,12 @@ def error_event_data(
     status and then filtered by who holds the credential (see
     ``user_owns_credential``), so a platform-billed turn never asks the user
     to check a key they do not have.
+
+    A Claude Code turn whose token Anthropic refused gets the admission
+    refusal's shape instead, ``model`` naming the turn's row.
     """
+    if exc is not None and (refusal := claude_code_refusal(exc, model)):
+        return {"thread_id": thread_id, "error": refusal["message"], **refusal}
     data: Dict[str, Any] = {
         "thread_id": thread_id,
         "error": sanitize_error_text(error_message),
@@ -257,6 +274,11 @@ def error_event_data(
             elif status == 404:
                 hints = ["model_access", "try_another_model"]
             elif status in _REQUEST_REFUSED_STATUSES:
+                hints = ["try_another_model"]
+            elif status == 429 and any(
+                isinstance(c, ClaudeTurnFailed) and c.kind == "plan_exhausted" for c in iter_exception_chain(exc)
+            ):
+                # The user's own plan is spent, not the provider down.
                 hints = ["try_another_model"]
             elif status == 429 or (isinstance(status, int) and status >= 500):
                 hints = ["provider_status", "try_another_model"]

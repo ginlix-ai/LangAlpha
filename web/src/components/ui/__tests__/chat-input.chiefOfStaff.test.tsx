@@ -23,6 +23,9 @@ vi.mock('@/pages/ChatAgent/utils/api', () => ({
 const mocks = vi.hoisted(() => ({
   preferences: null as unknown,
   mutateAsync: vi.fn(),
+  models: {} as Record<string, { models: string[] }>,
+  slotModels: {} as Record<string, { models: string[] }>,
+  metadata: {} as Record<string, { provider: string; sdk?: string }>,
 }));
 
 vi.mock('@/hooks/usePreferences', () => ({
@@ -31,10 +34,12 @@ vi.mock('@/hooks/usePreferences', () => ({
 
 vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
-    models: {},
+    models: mocks.models,
+    slotModels: mocks.slotModels,
+    claudeCodeState: 'off',
     payers: {},
     validModelNames: new Set(),
-    metadata: {},
+    metadata: mocks.metadata,
     isLoading: false,
     systemDefaults: { default_model: 'model-default', background_model: 'model-background-default' },
     offPlanModels: new Set(),
@@ -53,12 +58,14 @@ vi.mock('../use-toast', () => ({
 }));
 
 vi.mock('../chat-input.modelMenu', () => ({
-  ChatInputModelMenu: ({ onSelectModel, selectedModel }: {
+  ChatInputModelMenu: ({ onSelectModel, selectedModel, groups }: {
     onSelectModel: (m: string) => void;
     selectedModel: string | null;
+    groups: Array<{ connections: Array<{ models: string[] }> }>;
   }) => (
     <>
       <span>{`pill:${selectedModel}`}</span>
+      <span>{`offered:${groups.flatMap((g) => g.connections.flatMap((c) => c.models)).join(',')}`}</span>
       <button type="button" onClick={() => onSelectModel('model-beta')}>pick-beta</button>
     </>
   ),
@@ -109,7 +116,48 @@ describe('ChatInput scope picker', () => {
       model_preference: { preferred_model: 'model-alpha', preferred_background_model: 'model-bg' },
     };
     mocks.mutateAsync.mockReset().mockResolvedValue(undefined);
+    mocks.models = {};
+    mocks.slotModels = {};
+    mocks.metadata = {};
     vi.mocked(getSkills).mockClear();
+  });
+
+  // There a saved Claude Code Default reads as unset and a named one is
+  // refused, so the composer shows and sends the deployment's Default instead,
+  // whether the composer or a Home thread holds it.
+  it("shows and sends the deployment's Default over a Claude Code one on the Chief of Staff", () => {
+    mocks.metadata = { 'claude-x-code': { provider: 'claude-code', sdk: 'claude-code' } };
+    mocks.preferences = { model_preference: { preferred_model: 'claude-x-code' } };
+    const onSend = vi.fn();
+    const { rerender } = renderInput({ onSend });
+    expect(screen.getByText('pill:model-default')).toBeInTheDocument();
+    const box = screen.getByRole('textbox');
+    fireEvent.change(box, { target: { value: 'hello' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(onSend.mock.calls[0][3]).toMatchObject({ model: 'model-default' });
+
+    rerender(composer({ scope: 'workspace', inHome: true, model: 'claude-x-code', onSend }));
+    expect(screen.getByText('pill:model-default')).toBeInTheDocument();
+    rerender(composer({ scope: 'workspace', onSend }));
+    expect(screen.getByText('pill:claude-x-code')).toBeInTheDocument();
+  });
+
+  // The server refuses Claude Code on a Chief of Staff turn, so its composer
+  // never offers one: neither a send to all workspaces nor a Home thread's.
+  it('offers no Claude Code model on the Chief of Staff', () => {
+    mocks.models = { anthropic: { models: ['claude-x'] }, 'claude-code': { models: ['claude-x-code'] } };
+    mocks.slotModels = { anthropic: { models: ['claude-x'] } };
+    mocks.metadata = {
+      'claude-x': { provider: 'anthropic' },
+      'claude-x-code': { provider: 'claude-code', sdk: 'claude-code' },
+    };
+    const offered = () => screen.getByText(/^offered:/).textContent;
+    const { rerender } = renderInput();
+    expect(offered()).toBe('offered:claude-x');
+    rerender(composer({ scope: 'workspace', inHome: true }));
+    expect(offered()).toBe('offered:claude-x');
+    rerender(composer({ scope: 'workspace' }));
+    expect(offered()).toBe('offered:claude-x,claude-x-code');
   });
   afterEach(() => {
     ContextBus.__resetForTests();

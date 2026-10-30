@@ -20,6 +20,7 @@ import httpx
 from fastapi import HTTPException
 
 from src.config import settings
+from src.llms.claude_code import is_claude_code_model
 from src.llms.llm import get_configured_llm_models
 from src.llms.preferences import custom_model_names
 from src.server.database import automation as auto_db
@@ -41,6 +42,7 @@ from src.server.models.automation import (
 from src.server.services.automation_scheduler import AutomationScheduler
 from src.server.services.automation_settlement import Outcome, settle
 from src.server.services.llm import user_models
+from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, require_claude_code_continues
 from src.server.utils.api import (
     raise_not_found,
     require_thread_owner,
@@ -180,6 +182,24 @@ async def _require_pin_in(
         f"{_place(user_id, there)}",
         field="conversation_thread_id",
     )
+
+
+async def _check_claude_code_continues(name: str | None, pin: str | None) -> None:
+    """Refuse a Claude Code row continuing a thread another model last
+    replied on, which every firing would be refused."""
+    if not (pin and is_claude_code_model(name)):
+        return
+    try:
+        await require_claude_code_continues(pin, name)
+    except HTTPException as exc:
+        raise AutomationRefusal(exc.detail["message"], field="llm_model") from None
+
+
+def _check_home_model(user_id: str, name: str | None, workspace_id: str | None) -> None:
+    """Refuse a Claude Code row in Home, whose Chief of Staff does not run on
+    it, so every firing would fail until the automation is disabled."""
+    if name and workspace_id and is_claude_code_model(name) and is_home_id(user_id, workspace_id):
+        raise AutomationRefusal(CLAUDE_CODE_OFF["chief_of_staff"], field="llm_model")
 
 
 async def _check_model(user_id: str, name: str, pref: dict[str, Any] | None) -> None:
@@ -335,7 +355,10 @@ async def create_automation(
             user_id, str(data.conversation_thread_id), workspace_id, conn
         )
     if data.llm_model:
+        _check_home_model(user_id, data.llm_model, workspace_id)
         await _check_model(user_id, data.llm_model, model_pref)
+        if data.thread_strategy == "continue" and data.conversation_thread_id:
+            await _check_claude_code_continues(data.llm_model, str(data.conversation_thread_id))
     if data.delivery_config and not delivery_checked:
         methods = await check_delivery(user_id, data.delivery_config.methods)
         delivery = DeliveryConfig(methods=methods)
@@ -467,6 +490,17 @@ async def update_automation(
     # must not block an edit to anything else.
     if update.llm_model and update.llm_model != current.get("llm_model"):
         await _check_model(user_id, update.llm_model, model_pref)
+    # A model and a place are judged together, so a move into Home is too.
+    moved_to = normalize_uuid(update_kwargs.get("workspace_id")) or stored_in
+    runs_on = update_kwargs.get("llm_model", current.get("llm_model"))
+    if runs_on != current.get("llm_model") or moved_to != stored_in:
+        _check_home_model(user_id, runs_on, moved_to)
+    pinned = update_kwargs.get("conversation_thread_id", stored_pin)
+    strategy = update.thread_strategy or current.get("thread_strategy")
+    if strategy == "continue" and (runs_on, pinned, strategy) != (
+        current.get("llm_model"), stored_pin, current.get("thread_strategy")
+    ):
+        await _check_claude_code_continues(runs_on, pinned)
     # Likewise only a chat not already saved.
     delivery = update_kwargs.get("delivery_config")
     if isinstance(delivery, dict) and delivery.get("methods") and not delivery_checked:

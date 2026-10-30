@@ -319,6 +319,10 @@ def _flow(flow_id):
     return json.dumps({**json.loads(_pending_flow()), "flow_id": flow_id})
 
 
+def _claude_flow(state="state-1"):
+    return json.dumps({"verifier": "verifier", "state": state})
+
+
 def _restarted(first, second):
     # The poll read the first sign-in, then the user started again while it
     # waited on the provider.
@@ -402,11 +406,11 @@ async def test_a_stalled_code_request_ends_as_a_retryable_refusal(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_claude_callback_leaves_a_restarted_sign_in_alone():
-    cache = _restarted("verifier", "newer-verifier")
+    cache = _restarted(_claude_flow(), _claude_flow("newer-state"))
     store = AsyncMock()
     with patch.object(oauth_app, "store_tokens", store):
         with pytest.raises(HTTPException) as raised:
-            await _claude(cache, "code#verifier")
+            await _claude(cache, "code#state-1")
     assert raised.value.error["code"] == "no_pending_flow"
     store.assert_not_awaited()
 
@@ -428,9 +432,9 @@ async def _claude(cache, callback_input, exchange=None):
 @pytest.mark.parametrize(
     "stored, callback_input, code",
     [
-        (None, "code#verifier", "no_pending_flow"),
-        ("verifier", "garbage", "invalid_callback_input"),
-        ("verifier", "code#someone-else", "state_mismatch"),
+        (None, "code#state-1", "no_pending_flow"),
+        (_claude_flow(), "garbage", "invalid_callback_input"),
+        (_claude_flow(), "code#verifier", "state_mismatch"),
     ],
 )
 async def test_claude_callback_failures_have_codes(stored, callback_input, code):
@@ -441,8 +445,8 @@ async def test_claude_callback_failures_have_codes(stored, callback_input, code)
 
 
 async def _two_pastes(store_result):
-    flow, held = {"oauth:claude:u1": "verifier"}, set()
-    cache = _cache("verifier")
+    flow, held = {"oauth:claude:u1": _claude_flow()}, set()
+    cache = _cache(_claude_flow())
     cache.client.get = AsyncMock(side_effect=lambda k: flow.get(k))
     cache.client.set = AsyncMock(side_effect=lambda k, v, **_: flow.__setitem__(k, v))
 
@@ -468,7 +472,7 @@ async def _two_pastes(store_result):
     exchange_mock = AsyncMock(side_effect=exchange)
 
     def paste():
-        body = oauth_app.ClaudeCallbackRequest(callback_input="code#verifier")
+        body = oauth_app.ClaudeCallbackRequest(callback_input="code#state-1")
         return asyncio.create_task(oauth_app.claude_callback(user_id="u1", body=body))
 
     # Patched once around both: patches the two tasks entered and left in
@@ -511,7 +515,7 @@ async def test_a_second_paste_is_not_told_a_failed_save_worked():
 async def test_claude_exchange_outage_is_retryable():
     exchange = AsyncMock(side_effect=httpx.ConnectError("down", request=_REQ))
     with pytest.raises(HTTPException) as raised:
-        await _claude(_cache("verifier"), "code#verifier", exchange)
+        await _claude(_cache(_claude_flow()), "code#state-1", exchange)
     assert raised.value.status_code == 502
     # Pages loaded before the code existed show ``detail`` as text.
     assert raised.value.detail == "Claude could not be reached. Try again."
@@ -532,7 +536,7 @@ async def test_a_claude_exchange_that_outlasts_its_deadline_is_retryable(monkeyp
         await asyncio.sleep(5)
 
     with pytest.raises(HTTPException) as raised:
-        await _claude(_cache("verifier"), "code#verifier", AsyncMock(side_effect=trickle))
+        await _claude(_cache(_claude_flow()), "code#state-1", AsyncMock(side_effect=trickle))
     assert raised.value.error["code"] == "upstream_unavailable"
     assert raised.value.error["retryable"] is True
 
@@ -542,7 +546,7 @@ async def test_redis_down_has_a_code():
     cache = _cache()
     cache.enabled = False
     with pytest.raises(HTTPException) as raised:
-        await _claude(cache, "code#verifier")
+        await _claude(cache, "code#state-1")
     assert raised.value.status_code == 503
     assert raised.value.error["code"] == "redis_unavailable"
 

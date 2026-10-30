@@ -2401,6 +2401,7 @@
       "inThread": "本对话用过",
       "noMatch": "没有匹配的模型",
       "noFavorites": "给模型加星，即可收藏在这里",
+      "claudeCodeSignedOut": "在设置中添加 setup token 后即可使用此模型",
       "favorite": "收藏 {{model}}",
       "unfavorite": "取消收藏 {{model}}",
       "current": "当前模型",
@@ -2410,7 +2411,8 @@
       "taskCostAtMost": "≤{{value}}×",
       "taskCostUnmeasured": "该档位未实测，花费不超过上一档。",
       "taskCostHeader": "单个任务花费",
-      "taskCostNote": "粗略估计调整推理强度后，一个典型任务的花费相对默认档位如何变化。"
+      "taskCostNote": "粗略估计调整推理强度后，一个典型任务的花费相对默认档位如何变化。",
+      "claudeCodeRejected": "Claude 拒绝了您的 setup token，请在设置中添加新的 token 后使用此模型"
     },
     "voice": {
       "start": "开启语音输入",
@@ -6138,6 +6140,7 @@
   "payer": {
     "subscription": "订阅",
     "plan": "{{plan}} 订阅",
+    "claudeCode": "Claude Code",
     "ownKey": "你的密钥",
     "credits": "LangAlpha 积分",
     "serverKey": "服务器密钥",
@@ -6186,7 +6189,8 @@
       "unknownLong": "无法检查您的订阅，请刷新页面重试。",
       "keyRefused": "密钥未被接受",
       "withdrawn": "已不再支持",
-      "configured": "已配置 API 密钥"
+      "configured": "已配置 API 密钥",
+      "notConnected": "未连接"
     },
     "before": {
       "need": "您需要",
@@ -6233,6 +6237,64 @@
       "stepCopy": "复制代码",
       "stepCopied": "代码已复制到剪贴板",
       "open": "打开 OpenAI"
+    },
+    "claudeCode": {
+      "detail": "专用的 setup token，不使用你的 Claude Code 登录",
+      "rejected": "Claude 拒绝了此 token，它可能已过期或被撤销。",
+      "add": "添加 setup token",
+      "addNew": "添加新 token",
+      "replace": "替换",
+      "remove": "移除",
+      "addTitle": "添加 setup token",
+      "replaceTitle": "替换 setup token",
+      "intro": "Claude Code 模式让您的 Claude 对话使用您自己的 Claude 套餐运行。它通过专为 LangAlpha 生成的 setup token 登录。",
+      "separate": "此 token 是专为 LangAlpha 生成的独立凭据，绝不是您的 Claude Code 登录。用量计入您的 Claude 套餐。它经加密存储，仅用于您自己的请求。",
+      "stepInstall": "如果尚未安装 Claude Code，请先安装。",
+      "installLink": "安装指南",
+      "stepRun": "在本机或任意一台电脑的终端中运行：",
+      "stepSignIn": "在它打开的浏览器窗口中登录 Claude。",
+      "stepCopy": "复制它输出的 token。较长的 token 可能换到第二行，请完整复制。",
+      "stepPaste": "粘贴到下方并保存。",
+      "fieldLabel": "Setup token",
+      "fieldPlaceholder": "粘贴您的 setup token",
+      "save": "保存 token",
+      "checking": "正在向 Claude 验证…",
+      "fail": {
+        "token_missing": "请先粘贴您的 setup token。",
+        "token_rejected": "Claude 拒绝了此 token，它可能不完整、已过期或被撤销。请重新运行 claude setup-token 并粘贴新的 token。",
+        "check_unavailable": "无法连接 Claude 验证此 token，未做任何保存。请重试。",
+        "check_in_progress": "已有一个 token 正在验证，请稍候再试。",
+        "unavailable": "您的账户未开启 Claude Code。请在设置的实验功能中开启。",
+        "unknown": "无法保存 token，请重试。"
+      },
+      "removeTitle": "移除 Claude Code 的 setup token？",
+      "removeBody": "LangAlpha 将删除此 token。Claude Code 模型仍会列出，但在您添加新 token 前无法运行。您自己的 Claude Code 登录不受影响。",
+      "removeConfirm": "移除 token",
+      "removeFailed": "无法移除 token，请重试。",
+      "pasteHeading": "已有 setup token？直接粘贴",
+      "expiresBy": "最晚于 <date>{{date}}</date> 到期",
+      "signIn": {
+        "intro": "在新标签页中登录 Claude，LangAlpha 随后会为自己生成 setup token，无需在终端中运行任何命令。",
+        "start": "使用 Claude 登录",
+        "codeHint": "批准后，Claude 会显示一段代码。请完整复制并粘贴到这里。",
+        "fieldLabel": "来自 Claude 的代码",
+        "fieldPlaceholder": "粘贴代码",
+        "fail": {
+          "unavailable": "您的账户未开启 Claude Code。请在设置的实验功能中开启。",
+          "redis_unavailable": "登录暂时不可用，请稍后重试。",
+          "code_missing": "请先粘贴 Claude 显示的代码。",
+          "invalid_callback_input": "这看起来不是 Claude 页面上的代码。请完整复制后重新粘贴。",
+          "state_mismatch": "此代码属于另一次登录。请重新登录以获取新代码。",
+          "no_pending_flow": "此次登录已过期或已被使用，请重新登录。",
+          "code_rejected": "Claude 未接受此代码。代码只能使用一次且很快过期，请重新登录。",
+          "check_unavailable": "无法连接 Claude 验证 token，请重新提交代码。",
+          "check_unavailable_spent": "无法连接 Claude 验证 token，且此代码已无法再次使用。请重新登录。",
+          "token_rejected": "Claude 生成了 token，但拒绝了使用它的请求。您的 Claude 套餐可能不包含 Claude Code。",
+          "unexpected_grant": "Claude 的响应不符合预期，请重新登录。",
+          "check_in_progress": "已有一个 token 正在验证，请稍候再试。",
+          "unknown": "无法完成登录，请重试。"
+        }
+      }
     },
     "claude": {
       "name": "Claude",

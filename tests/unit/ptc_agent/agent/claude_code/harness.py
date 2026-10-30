@@ -21,13 +21,13 @@ def spec(model: str) -> RuntimeSpec:
     return RuntimeSpec(system_prompt="You are a test agent. Keep replies short.", model=model, tools=[bash], billing=billing)
 
 
-def new_graph():
-    return build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver())
+def new_graph(entry=()):
+    return build_claude_code_graph(ToolNode([bash]), entry=entry, checkpointer=InMemorySaver())
 
 
 async def run_turn(spec: RuntimeSpec, launcher: LocalLauncher, graph, thread: str, messages: list,
-                   callbacks: list | None = None) -> dict:
-    turn = ClaudeTurn(spec, launcher, identity="test-user", thread_key=thread)
+                   callbacks: list | None = None, baseline=None, token=None) -> dict:
+    turn = ClaudeTurn(spec, launcher, identity="test-user", thread_key=thread, baseline=baseline, token=token)
     config = {"configurable": {"thread_id": thread, TURN_KEY: turn}, "callbacks": callbacks or []}
     try:
         await graph.ainvoke({"messages": messages}, config)

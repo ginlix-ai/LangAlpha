@@ -1,4 +1,5 @@
 import { isUpstreamHint, RECONNECT_ACCOUNT_LINK, type StructuredError } from '@/utils/rateLimitError';
+import { CLAUDE_CODE_TOKEN_LINK } from '@/lib/claudeCode';
 import type { SSEEvent } from '../types';
 
 /**
@@ -9,6 +10,9 @@ import type { SSEEvent } from '../types';
  * reload both read it, so a failed turn shows the same card either way.
  */
 export function readStreamFailure(event: SSEEvent, message: string): StructuredError | undefined {
+  // Anthropic stopped taking the user's setup token mid-turn: a new one is
+  // added in Settings.
+  if (event.type === 'claude_code_off' && event.reason === 'signed_out') return { message, links: [CLAUDE_CODE_TOKEN_LINK] };
   const kind = event.error_kind;
   if (kind !== 'upstream' && kind !== 'internal') return undefined;
   // Models the resilience middleware tried this turn (primary + fallbacks).

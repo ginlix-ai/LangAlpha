@@ -21,14 +21,18 @@ const h = vi.hoisted(() => ({
   /** Whether it is still in flight; not loaded and not loading is a failed read. */
   loading: false,
   systemDefaults: null as { default_model: string } | null,
+  models: {
+    anthropic: { models: ['claude-big', 'claude-small'] },
+    openai: { models: ['gpt-sol', 'gpt-terra'] },
+  } as Record<string, { models: string[] }>,
+  /** What the slots list; null lists every model. */
+  slotModels: null as Record<string, { models: string[] }> | null,
 }));
 
 vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
-    models: {
-      anthropic: { models: ['claude-big', 'claude-small'] },
-      openai: { models: ['gpt-sol', 'gpt-terra'] },
-    },
+    models: h.models,
+    slotModels: h.slotModels ?? h.models,
     metadata: {},
     payers: {},
     systemDefaults: h.systemDefaults,
@@ -68,6 +72,7 @@ const background = () => screen.getByRole('combobox', { name: 'Background model'
 
 beforeEach(() => {
   h.mutateAsync.mockClear();
+  h.slotModels = null;
   h.preferences = null;
   h.systemDefaults = null;
   h.loaded = true;
@@ -87,6 +92,22 @@ describe('DefaultsStep first-run primary', () => {
     h.preferences = { other_preference: { starred_models: ['gpt-terra'] } };
     renderWithProviders(<DefaultsStep />);
     expect(primary().value).toBe('gpt-terra');
+  });
+
+  // A conversation-only model (Claude Code) is the user's to choose, never
+  // the fill's, even as the deployment's default or the first one listed.
+  it('fills from the slot models, leaving a conversation-only model to a pick by hand', () => {
+    h.models = { 'claude-code': { models: ['claude-code-row'] }, anthropic: { models: ['claude-big'] } };
+    h.slotModels = { anthropic: { models: ['claude-big'] } };
+    h.systemDefaults = { default_model: 'claude-code-row' };
+    try {
+      renderWithProviders(<DefaultsStep />);
+      expect(primary().value).toBe('claude-big');
+      fireEvent.change(primary(), { target: { value: 'claude-code-row' } });
+      expect(primary().value).toBe('claude-code-row');
+    } finally {
+      h.models = { anthropic: { models: ['claude-big', 'claude-small'] }, openai: { models: ['gpt-sol', 'gpt-terra'] } };
+    }
   });
 
   it('keeps a saved default', () => {

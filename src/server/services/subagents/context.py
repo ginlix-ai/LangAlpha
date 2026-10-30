@@ -60,9 +60,11 @@ class SubagentContext:
         return frozenset(c.name for c in self.connectors)
 
     def model_known(self, name: str) -> bool:
-        from src.server.services.llm.availability import model_resolves
+        """Whether a subagent can be pinned to ``name``. Never a Claude Code
+        row, which runs only as a thread's own model."""
+        from src.server.services.llm.claude_code import role_resolves
 
-        return model_resolves(self.model_pref, name)
+        return role_resolves(self.model_pref, name)
 
     async def model_on_plan(self, name: str) -> bool:
         """The turn's own plan check for a model the user chose.
@@ -141,12 +143,17 @@ class SubagentContext:
         return canonical_reasoning_efforts(reasoning_block(entry).get("efforts"))
 
     async def model_options(self) -> list[str]:
-        """The models this user can pick, for a refusal to list."""
+        """The models this user can pick, for a refusal to list. Never a
+        Claude Code row: a subagent does not run on the Claude Code runtime."""
         from src.config.settings import HOST_MODE
+        from src.llms.claude_code import is_claude_code_model
         from src.llms.llm import get_configured_llm_models
         from src.llms.preferences import custom_model_names
 
-        names = [n for group in get_configured_llm_models().values() for n in group]
+        names = [
+            n for group in get_configured_llm_models().values() for n in group
+            if not is_claude_code_model(n)
+        ]
         names += sorted(custom_model_names(self.model_pref))
         names = list(dict.fromkeys(names))
         if HOST_MODE != "platform":

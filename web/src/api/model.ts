@@ -28,6 +28,53 @@ export async function getAvailableModels(): Promise<ModelsResponse> {
   return data as ModelsResponse;
 }
 
+/** Where this user's Claude Code stands. `off`: their flag or the deployment
+ *  does not run it. `checking`: a saved token Anthropic has not answered for
+ *  yet. `unverified`: the check could not reach Anthropic, which a later read
+ *  tries again; a turn runs meanwhile. `rejected`: Anthropic refused it. */
+export type ClaudeCodeState = 'off' | 'no_token' | 'checking' | 'unverified' | 'signed_in' | 'rejected';
+
+/** `GET /api/v1/claude-code/status`, and the answer to a token saved. A
+ *  server that predates it answers 404, which reads as `off`. */
+export interface ClaudeCodeStatus {
+  state: ClaudeCodeState;
+  /** The Claude account, known only for a token made through Sign in. */
+  email: string | null;
+  /** When the token stops working; for a pasted one, the latest it can last. */
+  expires_at: string | null;
+}
+
+export async function getClaudeCodeStatus(): Promise<ClaudeCodeStatus> {
+  const { data } = await api.get('/api/v1/claude-code/status');
+  return data as ClaudeCodeStatus;
+}
+
+/** Saves the user's setup token once Anthropic takes it, which one real
+ *  request checks, so it answers in seconds. A refusal carries the OAuth
+ *  routes' `error` body (`readOAuthError`) and saves nothing. */
+export async function saveClaudeCodeToken(token: string): Promise<ClaudeCodeStatus> {
+  const { data } = await api.put('/api/v1/claude-code/token', { token });
+  return data as ClaudeCodeStatus;
+}
+
+/** Starts a Claude sign-in that ends in a setup token the server makes for
+ *  the user: the page to approve it on, and when the sign-in lapses. */
+export async function startClaudeCodeSignIn(): Promise<{ authorize_url: string; expires_at: string }> {
+  const { data } = await api.post('/api/v1/claude-code/sign-in');
+  return data as { authorize_url: string; expires_at: string };
+}
+
+/** Finishes that sign-in with the code Claude's page showed, which the server
+ *  exchanges for a token and checks before saving, so it answers in seconds. */
+export async function submitClaudeCodeSignInCode(code: string): Promise<ClaudeCodeStatus> {
+  const { data } = await api.post('/api/v1/claude-code/sign-in/code', { code });
+  return data as ClaudeCodeStatus;
+}
+
+export async function removeClaudeCodeToken(): Promise<void> {
+  await api.delete('/api/v1/claude-code/token');
+}
+
 export async function getUserApiKeys(): Promise<Record<string, unknown>> {
   const { data } = await api.get('/api/v1/users/me/api-keys');
   return data;

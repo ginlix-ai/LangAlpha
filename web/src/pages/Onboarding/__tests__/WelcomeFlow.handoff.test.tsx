@@ -406,6 +406,13 @@ describe('WelcomeFlow: starting the chat', () => {
       expect(instruction()).toContain('Action: first_task.');
     });
 
+    // Its first message opens a Chief of Staff thread, so the composer is
+    // Home's: it offers no Claude Code model and starts on Home's default.
+    it("is the Chief of Staff's composer", () => {
+      renderFlow({ initialStep: 'agent', profile: answered });
+      expect(screen.getByTestId('composer')).toHaveAttribute('data-in-home');
+    });
+
     it('Start with nothing written asks for suggestions on the model picked in the composer', async () => {
       composerSend.options = { model: 'model-x', reasoningEffort: 'high', fastMode: false };
       renderFlow({ initialStep: 'agent', profile: answered });

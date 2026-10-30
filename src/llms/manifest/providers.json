@@ -1013,6 +1013,18 @@
       },
       "operator_channel": "system"
     },
+    "claude-code": {
+      "sdk": "claude-code",
+      "base_url": "https://api.anthropic.com",
+      "env_key": null,
+      "access_type": "oauth",
+      "byok_eligible": false,
+      "display_name": "Claude Code",
+      "category": "closed_source",
+      "reasoning_compat_group": "anthropic",
+      "parent_provider": "anthropic",
+      "operator_channel": null
+    },
     "gemini": {
       "sdk": "gemini",
       "env_key": "GEMINI_API_KEY",

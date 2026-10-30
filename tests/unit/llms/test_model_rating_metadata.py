@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -19,7 +20,10 @@ def manifest() -> dict:
 
 @pytest.fixture(scope="module")
 def metadata() -> dict:
-    return ModelConfig().get_model_metadata()
+    # Every visible row, Claude Code's included, which only a deployment that
+    # runs Claude Code turns lists.
+    with patch("src.llms.claude_code.runtime_available", return_value=True):
+        return ModelConfig().get_model_metadata()
 
 
 class TestRatingMetadataSurfacing:

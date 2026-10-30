@@ -68,6 +68,7 @@ async def test_flush_excludes_messages_keeps_private_keys():
     }
     graph.aget_state = AsyncMock(return_value=snapshot)
     graph.aupdate_state = AsyncMock(return_value=None)
+    graph.channels = _build_graph(InMemorySaver()).channels
 
     mgr = _manager_with_graph(graph, "t", "r")
     await mgr._flush_checkpoint("t", "r")

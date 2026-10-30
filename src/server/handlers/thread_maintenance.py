@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.core.project_context import ProjectContext
+from src.llms.claude_code import ClaudeCodeTarget, claude_replied_last, is_claude_code_model
 from src.server.handlers.cancellation import cancellation_as_http
 from src.server.services.history.projector import context_window_record
 from src.server.services.thread_agent import thread_route
@@ -343,6 +344,22 @@ async def _summarize(agent: ThreadAgent, config):
     )
 
 
+def _refuse_claude_code(on_claude_code: bool) -> None:
+    """Refuse a summary or an offload on a Claude Code thread. Claude Code manages its own
+    session, and the thread's messages are only the record replay and
+    transcripts read, so rewriting them changes nothing Claude sees, while a
+    write through the ordinary graph drops what the runtime keeps beside them.
+    Called inside the mutation fence, which orders it against a model switch."""
+    if on_claude_code:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "claude_code_compacts_itself",
+                "message": "Claude Code manages this thread's context itself.",
+            },
+        )
+
+
 @cancellation_as_http("compact")
 async def trigger_compaction(
     thread_id: str,
@@ -374,6 +391,9 @@ async def trigger_compaction(
             if user_id and agent_cfg is not None:
                 meta, route = await thread_route(thread_id, user_id)
                 role = route.role
+                # Read off the thread too, so a resolve that falls back to
+                # the base config below cannot run a Claude Code thread's.
+                _refuse_claude_code(is_claude_code_model(meta.get("llm_model")))
                 try:
                     from src.server.services.llm import thread_model
 
@@ -397,6 +417,9 @@ async def trigger_compaction(
                         "falling back to base agent_config"
                     )
                     agent_cfg = setup.agent_config
+
+            # A thread following a Claude Code default holds no model of its own.
+            _refuse_claude_code(isinstance(getattr(agent_cfg, "llm_client", None), ClaudeCodeTarget))
 
             agent = await _thread_agent(
                 thread_id, "compact", config=agent_cfg,
@@ -487,6 +510,7 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             offload_tool_args,
             record_offloads,
         )
+        from src.server.database.conversation import get_thread_auth_meta
 
         # Same fence as /compact — /offload also writes checkpoint state and
         # could race a running workflow's _offloaded_tool_call_ids updates.
@@ -496,10 +520,13 @@ async def trigger_offload(thread_id: str, *, user_id: str | None = None) -> dict
             _hold_thread_mutation(thread_id, "offload") as mutation,
             AsyncExitStack() as held,
         ):
+            _refuse_claude_code(is_claude_code_model((await get_thread_auth_meta(thread_id) or {}).get("llm_model")))
             agent = await _thread_agent(
                 thread_id, "offload", checkpointer=mutation.saver, user_id=user_id, held=held
             )
             messages, state = agent.messages, agent.state
+            # A thread following a Claude Code default holds no model of its own.
+            _refuse_claude_code(claude_replied_last(messages))
 
             # Set: resolving the graph above refuses to run without it.
             settings = OffloadSettings.from_config(setup.agent_config.compaction)

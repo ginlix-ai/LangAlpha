@@ -95,11 +95,11 @@ def provider_catalog() -> list[dict]:
         # Local providers (Ollama, LM Studio, vLLM) are OSS-only
         if info.get("access_type") == "local" and HOST_MODE == "platform":
             continue
+        if not config.provider_listed(info):
+            continue
         parent_key = info.get("parent_provider")
-        if not parent_key:
-            catalog.append(_entry(key, info, key))
-        elif info.get("access_type", "api_key") != flat.get(parent_key, {}).get("access_type", "api_key"):
-            catalog.append(_entry(key, info, parent_key))
+        if not parent_key or info.get("access_type", "api_key") != flat.get(parent_key, {}).get("access_type", "api_key"):
+            catalog.append(_entry(key, info, config.brand_of(key)))
     return catalog
 
 

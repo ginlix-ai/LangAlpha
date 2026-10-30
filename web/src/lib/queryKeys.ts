@@ -26,6 +26,9 @@ export const queryKeys = {
   features: {
     all:  ['features'],
     list: () => [...queryKeys.features.all, 'list'],
+    /** What a read keyed under one flag is keyed by: toggling the flag rereads it. */
+    of: (key: string) => [...queryKeys.features.all, key],
+    claudeCodeStatus: () => [...queryKeys.features.of('claude_code_runtime'), 'status'],
   },
   platform: {
     all:    ['platform'],

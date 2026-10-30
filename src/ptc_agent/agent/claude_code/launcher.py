@@ -14,6 +14,13 @@ merges ``os.environ`` into it, which would hand the CLI every credential the
 backend holds and, through an inherited ``ANTHROPIC_API_KEY``, bill a plan
 thread to the platform's key. The child gets an allowlist plus what the
 runtime sets.
+
+The CLI signs in with a setup token of langalpha's own, never with the
+machine's Claude Code login: two clients refreshing one login's OAuth grant
+rotate its refresh token out from under each other, signing the person's own
+Claude Code out, or ours. A setup token never refreshes, and the CLI's
+credential lookup stays in the turn's private config dir, so the machine's
+login is neither read nor written.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import stat
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -49,14 +57,15 @@ from src.server.database.encryption import get_encryption_key
 
 #: Inherited from the worker because a process needs them to start or to
 #: reach the API from where the worker sits (its proxy and CA); nothing that
-#: authenticates to Anthropic. On macOS the CLI finds its Keychain login by the
-#: account name in USER, so without it a logged-in machine runs logged out.
+#: authenticates to Anthropic.
 _INHERITED = (
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "NODE_EXTRA_CA_CERTS",
 )
 _THREAD_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
-AUTH_STATUS_TIMEOUT_S = 30
+#: The CLI reads an OAuth token from the descriptor this names, directly when
+#: it is a socket (macOS has no /proc/self/fd), and then drops the variable.
+TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
 
 #: The sha256 of ``SubprocessCLITransport.connect``'s source that
 #: ``ScopedEnvTransport.connect`` was copied from; a test fails when it moves.
@@ -74,6 +83,23 @@ def device_id(identity: str) -> str:
     fails.
     """
     return hmac.new(get_encryption_key().encode(), f"claude-code-device:{identity}".encode(), hashlib.sha256).hexdigest()
+
+
+def _token_socket(token: str) -> socket.socket:
+    """The child's end of a socket pair holding the token, for ``pass_fds``.
+
+    Left non-inheritable: ``pass_fds`` hands it to the CLI alone, while under
+    uvloop, the backend's loop, every other process the worker spawns
+    meanwhile would inherit an inheritable one and could read the token.
+    """
+    child, ours = socket.socketpair()
+    try:
+        with ours:
+            ours.sendall(token.encode() + b"\n")
+    except BaseException:
+        child.close()
+        raise
+    return child
 
 
 @dataclass(frozen=True)
@@ -133,19 +159,21 @@ class ScopedEnvTransport(SubprocessCLITransport):
     extra pins the SDK exactly.
     """
 
-    def __init__(self, *, options: ClaudeAgentOptions, base_env: dict[str, str]) -> None:
+    def __init__(self, *, options: ClaudeAgentOptions, base_env: dict[str, str], token: str | None) -> None:
         super().__init__(prompt=_no_prompt(), options=options)
         self._base_env = base_env
+        self._token = token
 
     async def connect(self) -> None:
-        """The SDK's ``connect`` (``SDK_CONNECT_SHA256``), changed in three places only.
+        """The SDK's ``connect`` (``SDK_CONNECT_SHA256``), changed in four places only.
 
         The environment starts from ``base_env``, not ``os.environ``. The version
         probe is skipped: it would run the CLI with the worker's whole
         environment, and the CLI is the one the pinned SDK bundles. The child
         starts in its own session, so a terminal's Ctrl-C or a job-control
         signal to the worker's process group never stops a CLI mid-turn; the
-        run's close ends it.
+        run's close ends it. The token reaches it through an inherited socket,
+        never its argv or environment.
         """
         if self._process:
             return
@@ -191,16 +219,24 @@ class ScopedEnvTransport(SubprocessCLITransport):
 
             stderr_dest = PIPE if self._options.stderr is not None else None
 
-            self._process = await anyio.open_process(
-                cmd,
-                stdin=PIPE,
-                stdout=PIPE,
-                stderr=stderr_dest,
-                cwd=self._cwd,
-                env=process_env,
-                user=self._options.user,
-                start_new_session=True,
-            )
+            held = _token_socket(self._token) if self._token else None
+            if held is not None:
+                process_env[TOKEN_FD_ENV] = str(held.fileno())
+            try:
+                self._process = await anyio.open_process(
+                    cmd,
+                    stdin=PIPE,
+                    stdout=PIPE,
+                    stderr=stderr_dest,
+                    cwd=self._cwd,
+                    env=process_env,
+                    user=self._options.user,
+                    start_new_session=True,
+                    pass_fds=(held.fileno(),) if held is not None else (),
+                )
+            finally:
+                if held is not None:
+                    held.close()
             _ACTIVE_CHILDREN.add(self._process)
 
             if self._process.stdout:
@@ -234,22 +270,21 @@ class LocalLauncher:
     """Runs claude on this worker, in a private config dir per turn.
 
     The config dir holds the session file the CLI resumes from and appends
-    to; it is created for the turn and removed after it. The CLI names its
-    credential store after ``CLAUDE_CONFIG_DIR`` whenever that is set; with
-    ``machine_login``, ``CLAUDE_SECURESTORAGE_CONFIG_DIR=""`` points only the
-    credential lookup back at the machine's own login (``~/.claude``, or the
-    macOS Keychain item named for it).
+    to; it is created for the turn and removed after it. The CLI's credential
+    store (``.credentials.json`` on Linux, a Keychain item named for the dir on
+    macOS) is named after ``CLAUDE_SECURESTORAGE_CONFIG_DIR``, else
+    ``CLAUDE_CONFIG_DIR``, else the machine's default login. The child gets
+    ``CLAUDE_CONFIG_DIR`` set to the private dir and never the other, which
+    the allowlist leaves out, so its lookup never lands on the machine's login
+    and a turn given no token fails as logged out.
 
-    ``env`` holds what selects the credential (a token, an API key, a test
-    endpoint). The machine's own login is used only with ``machine_login``, a
-    choice for a deployment one person uses: otherwise the CLI looks for a
-    login only in the turn's empty config dir, so a turn given no credential
-    fails as logged out rather than run on whoever's login the worker holds.
+    ``token`` is the setup token the CLI signs in with. ``env`` is for a test
+    endpoint and its dummy credential.
     """
 
     env: dict[str, str] = field(default_factory=dict, repr=False)
     cli_path: str | None = None
-    machine_login: bool = False
+    token: str | None = field(default=None, repr=False)
 
     async def prepare(
         self, thread_key: str, session_id: str | None, entries: list[dict[str, Any]], *, identity: str,
@@ -286,34 +321,9 @@ class LocalLauncher:
     def _base_env(self) -> dict[str, str]:
         return {**{k: os.environ[k] for k in _INHERITED if k in os.environ}, **self.env}
 
-    def _child_options(self, options: ClaudeAgentOptions) -> ClaudeAgentOptions:
-        login = {"CLAUDE_SECURESTORAGE_CONFIG_DIR": ""} if self.machine_login else {}
-        return replace(options, cli_path=self.cli_path or options.cli_path, env={**options.env, **login})
-
     def transport(self, options: ClaudeAgentOptions) -> Transport:
-        return ScopedEnvTransport(options=self._child_options(options), base_env=self._base_env())
-
-    async def auth_status(self) -> dict[str, Any]:
-        """``claude auth status --json`` as a turn's CLI sees it.
-
-        Same binary, same environment and the same config-dir rule as a turn,
-        so a machine that is logged in for a person but not for the runtime
-        shows up here rather than as a failed turn.
-        """
-        config_dir = await anyio.to_thread.run_sync(lambda: tempfile.mkdtemp(prefix="claude-cfg-"))
-        try:
-            options = self._child_options(ClaudeAgentOptions(env={"CLAUDE_CONFIG_DIR": config_dir}))
-            cli = options.cli_path or await anyio.to_thread.run_sync(self.transport(options)._find_cli)
-            with anyio.fail_after(AUTH_STATUS_TIMEOUT_S):
-                done = await anyio.run_process(
-                    [str(cli), "auth", "status", "--json"], env={**self._base_env(), **options.env}, input=b"", check=False,
-                )
-        finally:
-            await anyio.to_thread.run_sync(lambda: shutil.rmtree(config_dir, ignore_errors=True))
-        try:
-            return json.loads(done.stdout.decode() or "{}")
-        except json.JSONDecodeError:
-            return {"loggedIn": False}
+        options = replace(options, cli_path=self.cli_path or options.cli_path)
+        return ScopedEnvTransport(options=options, base_env=self._base_env(), token=self.token)
 
 
 async def _no_prompt():

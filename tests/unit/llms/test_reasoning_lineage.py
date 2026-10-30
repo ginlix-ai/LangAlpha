@@ -78,7 +78,7 @@ class TestNoAccidentalMerges:
             for name, cfg in _providers().items()
             if cfg.get("reasoning_compat_group") and not cfg.get("platform")
         }
-        assert declared == {"anthropic", "claude-oauth", "openai", "codex-oauth"}
+        assert declared == {"anthropic", "claude-oauth", "claude-code", "openai", "codex-oauth"}
 
     def test_sibling_shim_variants_stay_separate(self):
         """Sibling variants of one brand are usually *different* upstreams.

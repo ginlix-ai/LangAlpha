@@ -2411,6 +2411,7 @@
       "inThread": "In this thread",
       "noMatch": "No models match",
       "noFavorites": "Star a model to keep it here",
+      "claudeCodeSignedOut": "Add a setup token in Settings to use this model",
       "favorite": "Add {{model}} to favorites",
       "unfavorite": "Remove {{model}} from favorites",
       "current": "Current model",
@@ -2420,7 +2421,8 @@
       "taskCostAtMost": "≤{{value}}×",
       "taskCostUnmeasured": "Not measured at this level. Costs no more than the level above.",
       "taskCostHeader": "Cost per task",
-      "taskCostNote": "A rough estimate of how a typical task's cost changes with effort, compared with the default level."
+      "taskCostNote": "A rough estimate of how a typical task's cost changes with effort, compared with the default level.",
+      "claudeCodeRejected": "Claude refused your setup token. Add a new one in Settings to use this model"
     },
     "voice": {
       "start": "Start voice input",
@@ -6254,6 +6256,7 @@
   "payer": {
     "subscription": "Subscription",
     "plan": "{{plan}} plan",
+    "claudeCode": "Claude Code",
     "ownKey": "Your key",
     "credits": "LangAlpha credits",
     "serverKey": "Server key",
@@ -6302,7 +6305,8 @@
       "unknownLong": "Couldn't check your subscriptions. Reload to try again.",
       "keyRefused": "Key not accepted",
       "withdrawn": "No longer supported",
-      "configured": "API key configured"
+      "configured": "API key configured",
+      "notConnected": "Not connected"
     },
     "before": {
       "need": "What you need",
@@ -6349,6 +6353,64 @@
       "stepCopy": "Copy the code",
       "stepCopied": "Code copied to your clipboard",
       "open": "Open OpenAI"
+    },
+    "claudeCode": {
+      "detail": "Its own setup token, not your Claude Code sign-in",
+      "rejected": "Claude refused this token. It may have expired or been revoked.",
+      "add": "Add setup token",
+      "addNew": "Add new token",
+      "replace": "Replace",
+      "remove": "Remove",
+      "addTitle": "Add a setup token",
+      "replaceTitle": "Replace setup token",
+      "intro": "Claude Code mode runs your Claude threads on your own Claude plan. It signs in with a setup token made for LangAlpha.",
+      "separate": "This token is a separate credential made for LangAlpha, never your Claude Code sign-in. Usage counts against your Claude plan. It's stored encrypted and used only for your requests.",
+      "stepInstall": "Install Claude Code if you don't have it yet.",
+      "installLink": "Install guide",
+      "stepRun": "In a terminal, on this computer or any other, run:",
+      "stepSignIn": "Sign in to Claude in the browser window it opens.",
+      "stepCopy": "Copy the token it prints. A long token can wrap onto a second line, so copy all of it.",
+      "stepPaste": "Paste it below and save.",
+      "fieldLabel": "Setup token",
+      "fieldPlaceholder": "Paste your setup token",
+      "save": "Save token",
+      "checking": "Checking with Claude…",
+      "fail": {
+        "token_missing": "Paste your setup token first.",
+        "token_rejected": "Claude refused this token. It may be incomplete, expired or revoked. Run claude setup-token again and paste the new one.",
+        "check_unavailable": "Couldn't reach Claude to check the token, so nothing was saved. Try again.",
+        "check_in_progress": "A token is already being checked. Wait a moment, then try again.",
+        "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Experiments.",
+        "unknown": "Couldn't save the token. Try again."
+      },
+      "removeTitle": "Remove the Claude Code setup token?",
+      "removeBody": "LangAlpha deletes the token. Claude Code models stay listed but won't run until you add a new token. Your own Claude Code sign-in isn't affected.",
+      "removeConfirm": "Remove token",
+      "removeFailed": "Couldn't remove the token. Try again.",
+      "pasteHeading": "Already have a setup token? Paste it",
+      "expiresBy": "Expires by <date>{{date}}</date>",
+      "signIn": {
+        "intro": "Sign in to Claude in a new tab. LangAlpha then makes a setup token for itself, so there's nothing to run in a terminal.",
+        "start": "Sign in with Claude",
+        "codeHint": "After you approve, Claude shows a code. Copy all of it and paste it here.",
+        "fieldLabel": "Code from Claude",
+        "fieldPlaceholder": "Paste the code",
+        "fail": {
+          "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Experiments.",
+          "redis_unavailable": "Signing in isn't available right now. Try again in a moment.",
+          "code_missing": "Paste the code from Claude first.",
+          "invalid_callback_input": "That doesn't look like the code from Claude's page. Copy all of it and paste it again.",
+          "state_mismatch": "That code belongs to a different sign-in. Sign in again to get a new one.",
+          "no_pending_flow": "This sign-in expired or was already used. Sign in again.",
+          "code_rejected": "Claude didn't accept the code. Codes work once and expire quickly, so sign in again.",
+          "check_unavailable": "Couldn't reach Claude to check the token. Send the code again.",
+          "check_unavailable_spent": "Couldn't reach Claude to check the token, and the code can't be used again. Sign in again.",
+          "token_rejected": "Claude made a token but refused a request on it. Your Claude plan may not include Claude Code.",
+          "unexpected_grant": "Claude answered in a way LangAlpha didn't expect. Sign in again.",
+          "check_in_progress": "A token is already being checked. Wait a moment, then try again.",
+          "unknown": "Couldn't finish signing in. Try again."
+        }
+      }
     },
     "claude": {
       "name": "Claude",

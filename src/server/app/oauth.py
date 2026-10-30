@@ -73,7 +73,7 @@ def _require_cache():
     return cache
 
 
-def _exchange_failure(upstream: str, e: Exception) -> OAuthRefusal:
+def exchange_failure(upstream: str, e: Exception) -> OAuthRefusal:
     """The token exchange's failure, by whether trying again can help."""
     if isinstance(e, httpx.HTTPStatusError):
         status = e.response.status_code
@@ -296,7 +296,7 @@ async def _poll_once(cache, flow: DeviceFlow, user_id: str) -> dict:
             f"[oauth] {flow.provider} device token exchange failed for user_id={user_id}: "
             f"{type(e).__name__}"
         )
-        failure = _exchange_failure(flow.upstream, e)
+        failure = exchange_failure(flow.upstream, e)
         if not failure.error["retryable"]:
             await cache.claim(key, raw)
         raise failure
@@ -340,11 +340,87 @@ def _claude_key(user_id: str) -> str:
     return f"oauth:claude:{user_id}"
 
 
-def _no_claude_flow() -> OAuthRefusal:
-    return _fail(
-        400, "no_pending_flow", "This sign-in has expired or was already used. Start again.",
-        retryable=False,
-    )
+class PendingSignIn:
+    """A Claude PKCE sign-in waiting for the code Claude's page shows, kept in
+    Redis under ``key``: its verifier and state, and once a paste of its code
+    saved, a marker naming that state, which answers a second paste of it.
+
+    The kept pair is the sign-in's id: starting again writes a new one, and a
+    save claims (compare-and-delete) the pair it read, so the approval of a
+    sign-in the user restarted cannot land.
+    """
+
+    def __init__(self, key: str) -> None:
+        self.cache = _require_cache()
+        self.key = key
+
+    @staticmethod
+    def expired() -> OAuthRefusal:
+        return _fail(
+            400, "no_pending_flow", "This sign-in has expired or was already used. Start again.",
+            retryable=False,
+        )
+
+    async def start(self, authorize) -> dict:
+        """Keep a new sign-in, replacing any pending one, and return its
+        authorize URL. Once the pair expires a pasted code has nothing to
+        match, so the page counts down to the same moment."""
+        authorize_url, verifier, state = authorize()
+        await self.cache.client.set(self.key, json.dumps({"verifier": verifier, "state": state}), ex=CLAUDE_FLOW_TTL)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=CLAUDE_FLOW_TTL)
+        return {"authorize_url": authorize_url, "expires_at": expires_at.isoformat()}
+
+    async def read(self) -> tuple[str, str, str]:
+        """The pending pair as kept (what ``claim`` compares), its verifier and its state."""
+        raw = await self.cache.client.get(self.key)
+        if raw is None:
+            raise PendingSignIn.expired()
+        raw = raw.decode() if isinstance(raw, bytes) else raw
+        try:
+            flow = json.loads(raw)
+            return raw, flow["verifier"], flow["state"]
+        except (TypeError, ValueError, KeyError):
+            # A sign-in a worker started before this format kept the bare
+            # verifier, which was also its state.
+            return raw, raw, raw
+
+    @staticmethod
+    def code(callback_input: str, state: str) -> str:
+        """The code in a paste from Claude's callback page, once its state names this sign-in."""
+        try:
+            code, pasted_state = claude_oauth.parse_callback_input(callback_input)
+        except ValueError:
+            raise _fail(
+                400, "invalid_callback_input",
+                "That doesn't look like the code from Claude's page. Paste the whole code.", retryable=True,
+            )
+        if not secrets.compare_digest(pasted_state.encode(errors="surrogatepass"), state.encode()):
+            raise _fail(
+                400, "state_mismatch", "That code belongs to a different sign-in. Start again.",
+                retryable=False,
+            )
+        return code
+
+    async def claim(self, raw: str) -> bool:
+        """End the sign-in ``read`` returned; False when a newer one replaced it."""
+        return await self.cache.claim(self.key, raw)
+
+    async def mark_saved(self, state: str, ttl: int) -> None:
+        await self.cache.client.set(f"{self.key}:saved", state, ex=ttl)
+
+    async def saved(self, callback_input: str) -> bool:
+        """Whether a paste just ahead of this one saved the sign-in it is for.
+
+        Read from the marker, which names its sign-in by its state, rather
+        than from the stored connection: on a reconnect whose save failed the
+        old connection still stands, and it is not this one.
+        """
+        try:
+            _, state = claude_oauth.parse_callback_input(callback_input)
+        except ValueError:
+            return False
+        saved = await self.cache.client.get(f"{self.key}:saved")
+        return (saved.decode() if isinstance(saved, bytes) else saved) == state
 
 
 @router.post("/claude/initiate")
@@ -354,15 +430,9 @@ async def claude_initiate(user_id: CurrentUserId):
     The frontend opens it in a new tab; once the user authorizes, Anthropic's
     page shows a code they paste back via POST /claude/callback.
     """
-    cache = _require_cache()
-    authorize_url, verifier = claude_oauth.generate_authorize_url()
-    # The verifier is the flow: once it expires, a pasted code has nothing
-    # to match, so the page counts down to the same moment.
-    await cache.client.set(_claude_key(user_id), verifier, ex=CLAUDE_FLOW_TTL)
-
+    started = await PendingSignIn(_claude_key(user_id)).start(claude_oauth.generate_authorize_url)
     logger.info(f"[oauth] Claude OAuth initiated for user_id={user_id}")
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=CLAUDE_FLOW_TTL)
-    return {"authorize_url": authorize_url, "expires_at": expires_at.isoformat()}
+    return started
 
 
 @router.post("/claude/callback")
@@ -377,8 +447,9 @@ async def claude_callback(user_id: CurrentUserId, body: ClaudeCallbackRequest):
     second waits instead, and answers as the first did when that one connected
     this same sign-in.
     """
-    cache = _require_cache()
-    lock_key = f"{_claude_key(user_id)}:callback"
+    flow = PendingSignIn(_claude_key(user_id))
+    cache = flow.cache
+    lock_key = f"{flow.key}:callback"
     lock_token = secrets.token_hex(16)
     deadline = asyncio.get_running_loop().time() + _CALLBACK_WAIT_S
     waited = False
@@ -395,27 +466,11 @@ async def claude_callback(user_id: CurrentUserId, body: ClaudeCallbackRequest):
             retryable=True,
         )
     try:
-        key = _claude_key(user_id)
-        if waited and await _claude_saved(cache, key, body):
+        if waited and await flow.saved(body.callback_input):
             return {"success": True}
-        return await _claude_exchange(cache, key, user_id, body)
+        return await _claude_exchange(flow, user_id, body)
     finally:
         await cache.release_lock(lock_key, lock_token)
-
-
-async def _claude_saved(cache, key: str, body: ClaudeCallbackRequest) -> bool:
-    """Whether the callback just ahead connected the sign-in this paste is for.
-
-    Read from the marker that save leaves, which names its sign-in (the state
-    is the verifier), rather than from the stored connection: on a reconnect
-    whose save failed the old connection still stands, and it is not this one.
-    """
-    try:
-        _, state = claude_oauth.parse_callback_input(body.callback_input)
-    except ValueError:
-        return False
-    saved = await cache.client.get(f"{key}:saved")
-    return (saved.decode() if isinstance(saved, bytes) else saved) == state
 
 
 # The exchange gets one deadline for the whole of it (httpx's timeout bounds
@@ -426,38 +481,21 @@ _CALLBACK_LOCK_TTL_MS = 45_000
 _CALLBACK_WAIT_S = 40.0
 
 
-async def _claude_exchange(cache, key: str, user_id: str, body: ClaudeCallbackRequest) -> dict:
-    stored = await cache.client.get(key)
-    if not stored:
-        raise _no_claude_flow()
-    verifier = stored.decode() if isinstance(stored, bytes) else stored
-
-    try:
-        code, state = claude_oauth.parse_callback_input(body.callback_input)
-    except ValueError:
-        raise _fail(
-            400, "invalid_callback_input",
-            "That doesn't look like the code from Claude's page. Paste the whole code.", retryable=True,
-        )
-    # Anthropic's PKCE convention: state is the verifier.
-    if state != verifier:
-        raise _fail(
-            400, "state_mismatch", "That code belongs to a different sign-in. Start again.",
-            retryable=False,
-        )
+async def _claude_exchange(flow: PendingSignIn, user_id: str, body: ClaudeCallbackRequest) -> dict:
+    stored, verifier, state = await flow.read()
+    code = flow.code(body.callback_input, state)
 
     try:
         async with asyncio.timeout(_CALLBACK_DEADLINE_S):
             tokens = await claude_oauth.exchange_code(code, state, verifier)
     except Exception as e:
         logger.error(f"[oauth] Claude token exchange failed for user_id={user_id}: {type(e).__name__}")
-        raise _exchange_failure("Claude", e)
+        raise exchange_failure("Claude", e)
 
-    # The verifier is the sign-in's id: starting again writes a new one.
-    if not await _save(cache, key, stored, user_id, claude_oauth.CLAUDE_PROVIDER, tokens):
-        raise _no_claude_flow()
-    # For a second paste of this code waiting on this one (``_claude_saved``).
-    await cache.client.set(f"{key}:saved", verifier, ex=int(_CALLBACK_WAIT_S * 2))
+    if not await _save(flow.cache, flow.key, stored, user_id, claude_oauth.CLAUDE_PROVIDER, tokens):
+        raise PendingSignIn.expired()
+    # For a second paste of this code waiting on this one (``PendingSignIn.saved``).
+    await flow.mark_saved(state, int(_CALLBACK_WAIT_S * 2))
     logger.info(f"[oauth] Claude connected for user_id={user_id}")
     return {"success": True}
 

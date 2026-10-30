@@ -117,6 +117,8 @@ vi.mock('@/hooks/usePreferences', async () => {
 vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
     models: {},
+    slotModels: {},
+    claudeCodeState: 'off',
     payers: {},
     validModelNames: new Set<string>(),
     catalogModelNames: new Set<string>(),

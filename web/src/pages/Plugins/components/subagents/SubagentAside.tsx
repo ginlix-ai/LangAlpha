@@ -74,7 +74,7 @@ export function ModelBlock({ view, models, write }: AsideProps) {
   const { metadata } = models;
   const unavailable = hasProblem(view, 'model_unavailable');
   const base = view.base;
-  const offered = offerBasePin(models.models, models.lockedModels, base?.model ?? null);
+  const offered = offerBasePin(models.slotModels, models.lockedModels, base?.model ?? null);
 
   // As a provider change does the depth: a set effort stays if the new model
   // offers it and goes if not, since a save holds it to that model's ladder.

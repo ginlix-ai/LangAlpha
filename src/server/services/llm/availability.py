@@ -211,20 +211,25 @@ def drop_dead_models(
     resolvable = _resolver(model_pref)
     if resolvable is None:
         return model_pref, []
+    return drop_models(model_pref, keys, resolvable)
 
+
+def drop_models(
+    model_pref: dict, keys: Iterable[str], keep: Callable[[str], bool]
+) -> tuple[dict, list[tuple[str, str]]]:
     live = dict(model_pref)
     dropped: list[tuple[str, str]] = []
     for key in keys:
         val = live.get(key)
-        if val and not resolvable(val):
+        if val and not keep(val):
             del live[key]
             dropped.append((key, val))
 
     fallback = live.get("fallback_models")
     if isinstance(fallback, list):
-        kept = [m for m in fallback if resolvable(m)]
+        kept = [m for m in fallback if keep(m)]
         if len(kept) != len(fallback):
-            dropped.extend(("fallback_models", m) for m in fallback if not resolvable(m))
+            dropped.extend(("fallback_models", m) for m in fallback if not keep(m))
             # Emptied stays empty: a user whose every pick is gone gets no
             # fallback, as when each dead one was skipped, rather than the
             # deployment's list on a key they never chose.

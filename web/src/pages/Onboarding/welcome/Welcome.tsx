@@ -685,6 +685,8 @@ export function WelcomeFlow({
     mode === 'new' ? (
       <ChatInput
         ref={composerRef}
+        // Its first message opens a Chief of Staff thread in Home.
+        inHome
         disabled={!composerOpen}
         placeholder={t(
           composerOpen ? 'onboarding.welcome.chat.composer.start' : 'onboarding.welcome.chat.composer.waiting',
