@@ -40,19 +40,15 @@ PAUSING_KINDS = ("e2b",)
 
 
 def metered_kinds() -> tuple[str, ...]:
-    from ptc_agent.core.sandbox.providers import PROVIDER_KINDS, provider_class
+    from ptc_agent.core.sandbox.providers import METERED_KINDS
 
-    return tuple(k for k in PROVIDER_KINDS if provider_class(k).metered)
+    return METERED_KINDS
 
 
 def metric_kinds() -> tuple[str, ...]:
-    from ptc_agent.core.sandbox.providers import PROVIDER_KINDS, provider_class
+    from ptc_agent.core.sandbox.providers import METRIC_KINDS
 
-    return tuple(
-        k
-        for k in PROVIDER_KINDS
-        if provider_class(k).metered and provider_class(k).reports_metrics
-    )
+    return METRIC_KINDS
 
 
 def resolve_spec(
