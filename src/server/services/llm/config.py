@@ -41,7 +41,7 @@ from .availability import (
 from . import logger
 
 from .capabilities import PlanTier, gate_capabilities
-from .claude_code import drop_claude_code_roles, require_runnable, require_signed_in
+from .claude_code import drop_claude_code_roles, require_runnable
 from .clients import resolve_clients
 from .subagents import (
     demote_clientless,
@@ -559,8 +559,9 @@ async def resolve_llm_config(
         await load_user_context(config, user_id, workspace_id, model_pref)
         selection = select_model(config, model_pref, slot, request_model)
         if is_claude_code_model(selection.effective_model):
-            require_runnable(config, selection.effective_model, role)
-            await require_signed_in(selection.effective_model, user_id)
+            await require_runnable(
+                config, selection.effective_model, role, user_id=user_id, workspace_id=workspace_id
+            )
             # A Claude Code turn stops when its plan runs out rather than move
             # to another model.
             config.llm.fallback = []

@@ -126,6 +126,7 @@ class SSHRuntime(ExecSessionRuntime):
     # Changes when every process on the machine was ended (see BOOT_KEY_SH).
     session_boot_key_sh = f'$({BOOT_KEY_SH}echo "$__la_k")'
     exec_output_cap = OUTPUT_CAP
+    says_config_home = True
 
     def __init__(
         self,
@@ -175,6 +176,11 @@ class SSHRuntime(ExecSessionRuntime):
         assert link.facts is not None
         return link.facts.home
 
+    async def login_config_home(self) -> str:
+        link = await self._link()
+        assert link.facts is not None
+        return link.facts.config_home
+
     # -- Connections --
 
     async def _connect(self) -> Link:
@@ -193,6 +199,11 @@ class SSHRuntime(ExecSessionRuntime):
                 "or macOS on x86_64 or arm64 can host a computer.",
             )
         return link
+
+    async def link(self) -> Link:
+        """The computer's pooled connection, for work that runs its own
+        channels on it (a Claude Code turn's CLI)."""
+        return await self._link()
 
     async def _link(self) -> Link:
         """``_connect`` for a call on a running computer: an unreachable

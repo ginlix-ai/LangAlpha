@@ -1,8 +1,8 @@
 """What a removed ssh computer leaves on its machine: the folders its owner
 asked to have deleted, LangAlpha's own files when they asked for those too,
-the key's line and the tunnel.
+its Claude Code token, the key's line and the tunnel.
 
-All three go after the computer's delete, on the connection the delete ran on
+All of them go after the computer's delete, on the connection the delete ran on
 (``ssh.removal_link``): a machine the delete could not reach is not dialed
 again. The folders go first, since the tunnel's uninstall may take this
 connection with it, then LangAlpha's files for the same reason: each leaves
@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional
 
 from ptc_agent.config.core import SSHConfig
-from ptc_agent.core.paths import LEFTOVERS_TRASH_PREFIX, workspace_root
+from ptc_agent.core.paths import (
+    CLAUDE_CODE_TOKEN_DIR,
+    LEFTOVERS_TRASH_PREFIX,
+    workspace_root,
+)
 from ptc_agent.core.sandbox.providers import ssh as ssh_provider
 from ptc_agent.core.sandbox.providers._ssh_authorized_key import remove_script
 from ptc_agent.core.sandbox.providers._ssh_shell import (
@@ -45,6 +49,7 @@ from src.server.database.workspace_folders import (
 from src.server.models.computer import (
     ComputerFilesRemoval,
     ComputerKeyRemoval,
+    ComputerTokenRemoval,
     KeyRemovalOutcome,
 )
 from src.server.services.ssh_computers import (
@@ -70,6 +75,7 @@ class MachineLeft:
     # another release or the sweep is taking it off.
     tunnel_released: bool
     files: Optional[ComputerFilesRemoval] = None
+    token: Optional[ComputerTokenRemoval] = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +137,7 @@ async def leave_machine(
                         "Could not delete the folders of removed computer %s",
                         computer.get("computer_id"),
                     )
+            token = await _remove_claude_code_token(computer, link)
             files = None
             if delete_files:
                 files = await _remove_files(computer, link)
@@ -145,7 +152,9 @@ async def leave_machine(
             key = None
             if line is not None:
                 key = await _take_key_line(line, link, ahead, tunnel_left=tunnel_left)
-            return MachineLeft(key=key, files=files, tunnel_released=released)
+            return MachineLeft(
+                key=key, files=files, token=token, tunnel_released=released
+            )
     except Exception:  # noqa: BLE001 - the removal it follows already succeeded
         logger.exception(
             "Could not finish leaving the machine of removed computer %s",
@@ -156,6 +165,51 @@ async def leave_machine(
             files=ComputerFilesRemoval(outcome="failed") if delete_files else None,
             tunnel_released=False,
         )
+
+
+async def _remove_claude_code_token(
+    computer: Dict[str, Any], link: Optional[Link]
+) -> Optional[ComputerTokenRemoval]:
+    """Take the computer's Claude Code token off the machine: it lives in the
+    login's config home, which no folder removal reaches, and signs in as
+    the user. Other computers on the login keep theirs.
+
+    A machine not reached, or one that could not delete it, keeps it, which
+    is told, with its path, when the computer's last answer named a token
+    file there: read first, since the removal drops that answer. The path is
+    in the folder that answer found, or the default config home's when it
+    found none.
+    """
+    from src.server.services.claude_code.machine import (
+        forget_answer,
+        read_answer,
+        remove_for_removed_computer,
+    )
+
+    computer_id = str(computer.get("computer_id"))
+    answer = await read_answer(computer_id)
+    path = None
+    if answer is not None and answer.names_file:
+        folder = answer.folder or f"~/.config/{CLAUDE_CODE_TOKEN_DIR}"
+        path = f"{folder}/{computer_id}"
+    if link is None:
+        await forget_answer(computer_id)
+        return ComputerTokenRemoval(outcome="unreached", path=path) if path else None
+    try:
+        removed = await remove_for_removed_computer(link, computer_id)
+    except Exception as e:  # noqa: BLE001 - the rest of the removal goes regardless
+        logger.warning(
+            "Could not remove the Claude Code token of removed computer %s: %s",
+            computer_id,
+            type(e).__name__,
+        )
+        if path is None:
+            return None
+        lost = isinstance(e, (TimeoutError, *TRANSPORT_ERRORS))
+        return ComputerTokenRemoval(outcome="unreached" if lost else "failed", path=path)
+    if removed:
+        logger.info("Removed the Claude Code token of removed computer %s", computer_id)
+    return None
 
 
 async def _remove_files(

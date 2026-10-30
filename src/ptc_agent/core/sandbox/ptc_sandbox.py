@@ -254,6 +254,16 @@ class PTCSandbox:
         a sandbox a lazy reconnect is still starting."""
         await self._wait_ready()
 
+    async def login_config_home(self) -> str:
+        """The runtime's ``login_config_home`` once the sandbox is ready, read
+        as a command reaches the machine: an unreachable one is retried and
+        reconnected, then raises. One that keeps none answers without reaching
+        the machine, so its read never counts as the machine serving again."""
+        await self._wait_ready()
+        if not self.runtime.says_config_home:
+            return ""
+        return await self._runtime_call(self.runtime.login_config_home, retry_policy=RetryPolicy.SAFE)
+
     async def _wait_ready(self) -> None:
         """Wait for sandbox to be ready. Call at start of methods needing sandbox.
 

@@ -17,9 +17,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 
 if TYPE_CHECKING:
+    from ptc_agent.agent.claude_code.launcher import Launcher
     from ptc_agent.agent.roles import AgentRole
     from ptc_agent.config.agent import AgentConfig
     from ptc_agent.core.project_context import ProjectContext
+    from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
     from src.server.services.computer_manager._types import WorkspaceToolView
     from src.server.services.egress.direct_tools import DirectMCPBinding
     from src.server.services.turn_runtime import TurnRoute
@@ -102,6 +104,8 @@ class AgentInputs:
     user_profile: dict[str, Any] | None
     #: The directly bound tools, unopened: a run opens them (``drive``).
     direct_mcp: DirectMCPBinding
+    #: The computer the session runs on, where a Claude Code turn's CLI may.
+    computer_id: str | None
 
     @classmethod
     async def read(
@@ -132,6 +136,7 @@ class AgentInputs:
             direct_mcp=await direct_tools_for_turn(
                 session, user_id=user_id, workspace_id=workspace_id, view=tool_view
             ),
+            computer_id=session.computer_id,
         )
 
     def build_kwargs(self) -> dict[str, Any]:
@@ -149,4 +154,12 @@ class AgentInputs:
             "project": self.project,
             "tool_view": self.tool_view,
             "role": self.role,
+            "claude_code_launcher": self.claude_code_launcher,
         }
+
+    def claude_code_launcher(self, sandbox: PTCSandbox) -> Launcher:
+        """Where a Claude Code turn's CLI runs, on the token it signs in with.
+        Imported here, never at the top: the SDK loads only for such a turn."""
+        from src.server.services.claude_code.launchers import turn_launcher
+
+        return turn_launcher(sandbox, computer_id=self.computer_id, user_id=self.user_id)

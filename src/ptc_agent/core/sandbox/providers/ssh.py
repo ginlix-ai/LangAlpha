@@ -116,6 +116,7 @@ _REQUIRED_TOOLS_DARWIN = (
     "install",
     "mktemp",
 )
+MUSL_UNSUPPORTED = "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet."
 # The installed runtime takes about this much of the home's filesystem.
 _DISK_NEEDED_BYTES = 3 * 1024**3
 # What the Computers dialog shows of a machine: its system and its hardware.
@@ -145,6 +146,7 @@ else case "$e" in *tty*) echo sudo=tty ;; *) echo sudo=0 ;; esac; fi
 if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then echo fetch=1; fi
 tools="TOOLS"; [ "$(uname -s)" = Darwin ] && tools="DARWIN_TOOLS"
 m=""; for t in $tools; do command -v "$t" >/dev/null 2>&1 || m="$m $t"; done; echo "missing=${m# }"
+if [ "$(uname -s)" = Linux ] && ! getconf GNU_LIBC_VERSION >/dev/null 2>&1 && { ls /lib/ld-musl-* >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; }; then echo libc=musl; fi
 [ -r /proc/sys/kernel/random/boot_id ] && echo bootid=1
 [ -n "$(sysctl -n kern.bootsessionuuid 2>/dev/null)" ] && echo bootid=1
 d="$HOME/.langalpha"; [ -d "$d" ] || d="$HOME"
@@ -640,6 +642,9 @@ def _probe_result(
     if os_name in SUPPORTED_OS:
         if facts.get("bash") != "1":
             blocking.append("bash is not installed, and every command runs in it.")
+        elif facts.get("libc") == "musl":
+            # The runtime's packages publish no musl wheels.
+            blocking.append(MUSL_UNSUPPORTED)
         else:
             if facts.get("fetch") != "1":
                 blocking.append(

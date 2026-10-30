@@ -46,7 +46,7 @@ from deepagents.backends.protocol import (
 )
 
 from ptc_agent.agent.backends.results import EditTextResult
-from ptc_agent.core.paths import on_file_mount, resolve_agent_path
+from ptc_agent.core.paths import langalpha_config_dir, on_file_mount, resolve_agent_path
 from ptc_agent.core.sandbox import PTCSandbox
 from ptc_agent.core.sandbox.grep_render import GrepLine
 from ptc_agent.core.sandbox.jobs import (
@@ -131,6 +131,15 @@ class SandboxBackend(SandboxBackendProtocol):
         if mount is None or not await mount.ready(workspace_id):
             return None
         return self.sandbox.livefs
+
+    async def config_folder(self) -> str | None:
+        """LangAlpha's config folder on the machine when the login's config
+        home is a custom one, which no fixed spelling names; None otherwise,
+        where ``LANGALPHA_CONFIG_SPELLINGS`` names it as ``.config/langalpha``.
+        Raises where the machine cannot say, so a command is never let past
+        the guard unread."""
+        config_home = await self.sandbox.login_config_home()
+        return langalpha_config_dir("", config_home) if config_home.startswith("/") else None
 
     @property
     def workspace_dir(self) -> str:

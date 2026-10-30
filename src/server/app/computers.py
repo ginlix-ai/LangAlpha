@@ -688,7 +688,8 @@ async def remove_computer(
     on an ssh computer anything else LangAlpha put on the machine, stay unless
     ``delete_files`` says to delete them too. A refusal the
     user can act on is a 409 whose ``code`` the client words. On an ssh computer,
-    ``key`` says what became of the key's line on its machine. The tunnel of
+    ``key`` says what became of the key's line on its machine, and ``token``
+    names a Claude Code token left there by a machine not reached. The tunnel of
     a machine left with no computer goes on the connection the delete ran
     on, or without one in the background, where a machine that does not
     answer holds up nobody.
@@ -716,7 +717,7 @@ async def remove_computer(
                 lambda: release_tunnel(x_user_id, computer, settings=settings),
             )
     return ComputerRemoveResponse(
-        key=left.key, files=left.files, workspaces_deleted=deleted
+        key=left.key, files=left.files, token=left.token, workspaces_deleted=deleted
     )
 
 

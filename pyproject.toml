@@ -226,6 +226,7 @@ markers = [
     "provider_e2b: tests requiring E2B API key",
     "provider_ssh: tests requiring an SSH machine (see tests/integration/sandbox/ssh_target)",
     "regression: locks live market-data API behavior against a running server + live providers — opt-in",
+    "macos_scripts: the scripts Claude Code runs on a user's own computer; the claude-code-scripts-macos CI job runs them on a real Mac",
 ]
 addopts = "-m 'not integration and not slow and not regression'"
 

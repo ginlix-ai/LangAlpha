@@ -24,6 +24,8 @@ _NON_SECRET_KEYS = frozenset({
 
 # Matches sandbox access tokens (gxsa_...) and refresh tokens (gxsr_...)
 _SANDBOX_TOKEN_RE = re.compile(r"gxs[ar]_[A-Za-z0-9_.\-]+")
+# Matches Claude Code setup tokens (sk-ant-oat01-...), as LeakDetectionMiddleware does.
+_SETUP_TOKEN_RE = re.compile(r"sk-ant-oat\d+-[A-Za-z0-9_-]+")
 
 
 class SecretRedactor:
@@ -80,6 +82,7 @@ class SecretRedactor:
                 if value and len(value) >= 8 and value in text:
                     text = text.replace(value, f"[REDACTED:{name}]")
         text = _SANDBOX_TOKEN_RE.sub("[REDACTED:SANDBOX_TOKEN]", text)
+        text = _SETUP_TOKEN_RE.sub("[REDACTED:CLAUDE_SETUP_TOKEN]", text)
         return text
 
     def redact_bytes(

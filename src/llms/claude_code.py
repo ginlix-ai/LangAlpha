@@ -91,25 +91,38 @@ def is_claude_code_model(name: object) -> bool:
     return bool(entry) and mc.get_provider_info(entry.get("provider", "")).get("sdk") == SDK
 
 
-def runtime_available() -> bool:
-    """Whether this deployment runs Claude Code turns at all.
+def rows_available() -> bool:
+    """Whether this deployment offers Claude Code rows at all: the operator
+    turned the feature on and the SDK extra is installed.
 
-    The operator turns the feature on, the server is self-hosted (the CLI
-    runs on the backend's own machine, on the setup token each user saves
-    in Settings), the SDK extra is installed, and the at-rest key is set,
-    since it encrypts each user's saved token and keys the device Claude
-    Code reports.
+    Where a turn on one may run is the turn's computer's question: a user's
+    own computer runs the CLI itself (``backend_available`` aside), a hosted
+    sandbox only where the backend does.
     """
     from src.config.features import is_feature_enabled_system
+
+    return is_feature_enabled_system(FEATURE) and importlib.util.find_spec("claude_agent_sdk") is not None
+
+
+def backend_available() -> bool:
+    """Whether the CLI may run on the backend's own machine, on the setup
+    token each user saves in Settings: only on a self-hosted server, whose
+    backend is the user's own, and with the at-rest key set, since it
+    encrypts that token and keys the device Claude Code reports.
+
+    The same holds for relaying that token to a user's own computer that has
+    none of its own.
+    """
     from src.config.settings import HOST_MODE
     from src.server.database.encryption import encryption_configured
 
-    return (
-        is_feature_enabled_system(FEATURE)
-        and HOST_MODE == "oss"
-        and importlib.util.find_spec("claude_agent_sdk") is not None
-        and encryption_configured()
-    )
+    return rows_available() and HOST_MODE == "oss" and encryption_configured()
+
+
+def is_token_text(text: str) -> bool:
+    """Whether ``text`` can be a setup token: one line of printable text with
+    no spaces, the one rule a paste, a machine's write and a relay share."""
+    return bool(text) and text.isprintable() and not any(c.isspace() for c in text)
 
 
 def token_check_model() -> str:

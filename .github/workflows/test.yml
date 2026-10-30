@@ -28,6 +28,19 @@ jobs:
           name: backend-unit-results
           path: test-results/
 
+  # The scripts Claude Code runs on a user's own computer, on a real Mac:
+  # BSD tools, bash 3.2, no flock, no sha256sum, no /proc. The Linux job
+  # emulates that userland; this one is the real thing.
+  claude-code-scripts-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --group dev --extra test --extra claude-code
+      - run: uv run pytest -v --tb=short -m macos_scripts tests/unit/ptc_agent/agent/claude_code
+
   # libs/market-protocol installs as a package of its own, so its suite runs in
   # its own environment: inside the backend's, a dependency it forgot to
   # declare would still import. It runs on the package's Python floor and on

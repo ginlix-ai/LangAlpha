@@ -26,13 +26,10 @@ import asyncio
 import contextlib
 import json
 import logging
-import shutil
-import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from functools import partial
+from dataclasses import dataclass
 from itertools import pairwise
-from typing import Annotated, Any, Protocol, TypeVar
+from typing import Annotated, Any, TypeVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -53,7 +50,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
-from ptc_agent.agent.claude_code.launcher import LocalLauncher, Prepared
+from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
 from ptc_agent.agent.claude_code.session import (
     Arrivals,
@@ -119,17 +116,16 @@ def turn_failure(
     return ClaudeTurnFailed("api_error", detail)
 
 
-async def token_works(launcher: LocalLauncher, model: str) -> bool:
-    """Whether Anthropic serves the launcher's token: one minimal turn on ``model``, through a turn's own transport.
+async def token_works(launcher: Launcher, model: str) -> bool:
+    """Whether Anthropic serves the token the launcher signs in with: one minimal turn on ``model``, through a turn's own transport.
 
     ``claude auth status`` reads only local state and reports any string as a
     login, so the check asks Anthropic. A served request or a used-up plan
-    means the token is good, a refused login that it is not; anything else
-    raises, so a network failure is never read as a bad token.
+    means the token is good, a refused login or none at all that it is not;
+    anything else raises, so a network failure is never read as a bad token. Over SSH the token is the computer's own or the one relayed to it,
+    whichever a turn there would use.
     """
-    if not launcher.token:
-        return False
-    config_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="claude-cfg-")
+    prepared = await launcher.scratch()
     result: ResultMessage | None = None
     errors: list[tuple[str, str]] = []
     limits: list[RateLimitEvent] = []
@@ -142,8 +138,8 @@ async def token_works(launcher: LocalLauncher, model: str) -> bool:
             extra_args={"disable-slash-commands": None},
             model=model,
             max_turns=1,
-            cwd=config_dir,
-            env={"CLAUDE_CONFIG_DIR": config_dir, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+            cwd=prepared.cwd,
+            env={"CLAUDE_CONFIG_DIR": prepared.config_dir, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
         )
         client = ClaudeSDKClient(options, transport=launcher.transport(options))
         try:
@@ -164,7 +160,7 @@ async def token_works(launcher: LocalLauncher, model: str) -> bool:
             with contextlib.suppress(Exception):
                 await client.disconnect()
     finally:
-        await asyncio.to_thread(shutil.rmtree, config_dir, ignore_errors=True)
+        await launcher.release(prepared)
     failure = turn_failure(result, errors, limits)
     if failure is None or failure.kind == "plan_exhausted":
         return True
@@ -283,25 +279,12 @@ class _Message:
                 return
 
 
-class TokenSource(Protocol):
-    """The setup token a user's turns run on (``SavedToken``)."""
-
-    async def read(self) -> str | None: ...
-
-    async def refused(self, token: str) -> None: ...
-
-
 class _Run:
-    """A started run: the CLI, the SDK client driving it, and what the CLI has said so far.
+    """A started run: the CLI, the SDK client driving it, and what the CLI has said so far."""
 
-    ``refused`` records that Anthropic refused the token the run signed in with.
-    """
-
-    def __init__(self, launcher: LocalLauncher, prepared: Prepared, store: CheckpointSessionStore,
-                 client: ClaudeSDKClient, results: ToolResults,
-                 refused: Callable[[], Awaitable[None]] | None = None) -> None:
+    def __init__(self, launcher: Launcher, prepared: Prepared, store: CheckpointSessionStore,
+                 client: ClaudeSDKClient, results: ToolResults) -> None:
         self.launcher = launcher
-        self.refused = refused
         self.prepared = prepared
         self.store = store
         self.client = client
@@ -316,12 +299,12 @@ class _Run:
         self._streamed: set[str] = set()
         self._assistant: dict[str, list[str]] = {}
         self._tool_results = Arrivals("tool result records")
+        self._closing: asyncio.Future[None] | None = None
         self._pump = asyncio.create_task(self._read())
 
     @classmethod
-    async def start(cls, spec: RuntimeSpec, pin: SessionPin, launcher: LocalLauncher, thread_key: str,
-                    identity: str, records: SessionRecords | None, prompt: Prompt | None,
-                    refused: Callable[[], Awaitable[None]] | None = None) -> _Run:
+    async def start(cls, spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, thread_key: str,
+                    identity: str, records: SessionRecords | None, prompt: Prompt | None) -> _Run:
         """Lay out the session, start the CLI and send the turn; nothing is left behind if any step fails.
 
         With no prompt the CLI is resumed as an interrupted turn: it carries on
@@ -351,7 +334,7 @@ class _Run:
                     await client.disconnect()
             await launcher.release(prepared)
             raise
-        return cls(launcher, prepared, store, client, results, refused)
+        return cls(launcher, prepared, store, client, results)
 
     async def _read(self) -> None:
         try:
@@ -460,11 +443,20 @@ class _Run:
             raise self.drift
         failed = turn_failure(self.result, self.assistant_errors, self.rate_limits)
         if failed is not None:
-            if failed.kind == "auth_failed" and self.refused is not None:
-                await self.refused()
+            if failed.kind == "auth_failed":
+                await self.launcher.refused()
             raise failed
 
     async def close(self) -> None:
+        """End the CLI and remove the turn's dir. Shielded: a close cancelled
+        midway (the SDK's disconnect stops at its first await) would leave
+        the CLI running, on a user's computer for as long as the connection
+        lasts."""
+        if self._closing is None:
+            self._closing = asyncio.ensure_future(self._close())
+        await asyncio.shield(self._closing)
+
+    async def _close(self) -> None:
         self.results.fail_all("The turn ended before this call ran.")
         with contextlib.suppress(Exception):
             await self.client.disconnect()
@@ -481,15 +473,13 @@ class ClaudeTurn:
     ``identity`` is who the turn runs for (their user id): Claude Code is told one
     device per identity. ``thread_key`` names the thread's working directory,
     which is part of the prompt Claude caches, so it is the same on every turn.
-    ``token`` is the setup token the run signs in with, read as it starts;
-    without one the launcher's own token stands.
+    The launcher picks the token the run signs in with.
     """
 
-    def __init__(self, spec: RuntimeSpec, launcher: LocalLauncher, *, identity: str, thread_key: str,
-                 baseline: Baseline | None = None, token: TokenSource | None = None) -> None:
+    def __init__(self, spec: RuntimeSpec, launcher: Launcher, *, identity: str, thread_key: str,
+                 baseline: Baseline | None = None) -> None:
         self.spec = spec
         self.launcher = launcher
-        self.token = token
         self.identity = identity
         self.thread_key = thread_key
         self._baseline = baseline
@@ -522,11 +512,8 @@ class ClaudeTurn:
     async def run(self, state: ClaudeCodeState) -> _Run:
         if self._run is None:
             pin, prompt = self.opening(state)
-            launcher, refused = self.launcher, None
-            if self.token is not None and (token := await self.token.read()):
-                launcher, refused = replace(launcher, token=token), partial(self.token.refused, token)
             self._run = await _Run.start(
-                self.spec, pin, launcher, self.thread_key, self.identity, state.get("claude_session"), prompt, refused
+                self.spec, pin, self.launcher, self.thread_key, self.identity, state.get("claude_session"), prompt
             )
         return self._run
 
