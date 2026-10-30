@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, ClassVar
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
@@ -36,11 +36,21 @@ class ClaudeTurnFailed(RuntimeError):
     text as the assistant's reply, so a logged-out machine or a spent plan
     would otherwise commit an empty turn. ``kind`` is what the user is told:
     ``auth_failed``, ``plan_exhausted``, ``interrupted``, ``api_error``,
-    ``no_result`` or ``nothing_to_resume``.
+    ``no_result``, ``nothing_to_resume``, ``policy_blocked``, ``needs_perl``,
+    ``computer_unsupported``, or one of
+    ``TEMPLATES``, which words it.
     """
 
+    #: The failures the machine's Claude Code ends a turn with, in words a
+    #: user reads; the detail takes the ``{}``.
+    TEMPLATES: ClassVar[dict[str, str]] = {
+        "model_unavailable": "Your organization's Claude Code policy does not allow {}. Pick another model.",
+        "startup_failed": "Claude Code could not start: {}",
+    }
+
     def __init__(self, kind: str, detail: str) -> None:
-        super().__init__(f"{kind}: {detail}")
+        template = self.TEMPLATES.get(kind)
+        super().__init__(template.format(detail) if template else f"{kind}: {detail}")
         self.kind = kind
         self.detail = detail
 
@@ -93,30 +103,36 @@ def is_claude_code_model(name: object) -> bool:
 
 def rows_available() -> bool:
     """Whether this deployment offers Claude Code rows at all: the operator
-    turned the feature on and the SDK extra is installed.
+    turned the feature on, the SDK extra is installed, and the at-rest key is
+    set, since it keys the device Claude Code reports on every turn and
+    without it no computer can run one: the backend's own CLI needs it for
+    the saved token, and an own computer for the SSH key it is reached with.
 
     Where a turn on one may run is the turn's computer's question: a user's
     own computer runs the CLI itself (``backend_available`` aside), a hosted
     sandbox only where the backend does.
     """
     from src.config.features import is_feature_enabled_system
+    from src.server.database.encryption import encryption_configured
 
-    return is_feature_enabled_system(FEATURE) and importlib.util.find_spec("claude_agent_sdk") is not None
+    return (
+        is_feature_enabled_system(FEATURE)
+        and importlib.util.find_spec("claude_agent_sdk") is not None
+        and encryption_configured()
+    )
 
 
 def backend_available() -> bool:
     """Whether the CLI may run on the backend's own machine, on the setup
     token each user saves in Settings: only on a self-hosted server, whose
-    backend is the user's own, and with the at-rest key set, since it
-    encrypts that token and keys the device Claude Code reports.
+    backend is the user's own.
 
     The same holds for relaying that token to a user's own computer that has
     none of its own.
     """
     from src.config.settings import HOST_MODE
-    from src.server.database.encryption import encryption_configured
 
-    return rows_available() and HOST_MODE == "oss" and encryption_configured()
+    return rows_available() and HOST_MODE == "oss"
 
 
 def is_token_text(text: str) -> bool:

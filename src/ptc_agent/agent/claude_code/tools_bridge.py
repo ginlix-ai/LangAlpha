@@ -1,10 +1,12 @@
 """langalpha's tools, offered to Claude Code through one in-process MCP server.
 
 Claude never runs a langalpha tool itself. The CLI asks the server for a
-call; the server waits for the runtime's ``tools`` step, which runs the
-calls of the assistant message through the same ``ToolNode`` and
-``wrap_tool_call`` middleware a langalpha turn uses, and hands each result
-back. So a tool's ``wrap_tool_call`` policy (provenance, protected paths,
+call; the server waits for the runtime's ``tools`` step, which runs each
+call the CLI asks for, with the arguments the CLI sends (a hook may have
+rewritten them), through the same ``ToolNode`` and ``wrap_tool_call``
+middleware a langalpha turn uses, and hands each result back. A call the
+CLI refuses itself (its permission rules, a hook, a tool it does not have)
+never reaches the server, and the step records the CLI's own answer instead. So a tool's ``wrap_tool_call`` policy (provenance, protected paths,
 large-result eviction) and its state updates are the ones the turn already
 has, and the ``tools`` step is the one place a call runs. Middleware that
 runs around the model call (the credit gate, order approval) does not run
@@ -18,10 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Sequence
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
-from claude_agent_sdk import McpSdkServerConfig
+from claude_agent_sdk import McpSdkServerConfig, ToolResultBlock
 from langchain_anthropic.chat_models import convert_to_anthropic_tool
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
@@ -60,36 +65,147 @@ def allow_rule(name: str) -> str:
     return f"mcp__{SERVER}__{name}"
 
 
+@dataclass(frozen=True)
+class Run:
+    """The CLI asked us to run the call, with these arguments (a hook may have rewritten them)."""
+
+    args: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Answered:
+    """The CLI gave Claude its own answer without asking: its refusal."""
+
+    block: ToolResultBlock
+
+
+@dataclass(frozen=True)
+class Ended:
+    """The CLI's query ended before it asked for the call or answered it."""
+
+
+#: What the CLI made of a call, whichever came first.
+Due = Run | Answered | Ended
+
+
+@dataclass
+class _Call:
+    due: asyncio.Future[Due]
+    #: The result the ``tools`` step produced for the call, which the CLI waits on.
+    result: asyncio.Future[CallToolResult]
+    #: The result the CLI gave Claude for the call.
+    given: ToolResultBlock | None = None
+
+
 class ToolResults:
-    """Results the ``tools`` step produced, waiting for the CLI to ask for them."""
+    """Each call between the CLI and the ``tools`` step.
+
+    The query's end and the run's close are two moments. Once the query
+    ends, a call the CLI has not asked for or answered never will be, while
+    a call the step is running still delivers its result. Once the run
+    closes, a result still owed fails with the reason.
+    """
 
     def __init__(self) -> None:
-        self._futures: dict[str, asyncio.Future[CallToolResult]] = {}
-        #: Why the turn ended, once it has: a call that arrives after that fails at once.
+        self._calls: dict[str, _Call] = {}
+        self._query_ended = False
         self._closed: str | None = None
 
-    def _future(self, tool_use_id: str) -> asyncio.Future[CallToolResult]:
-        fut = self._futures.get(tool_use_id)
-        if fut is None:
-            fut = asyncio.get_running_loop().create_future()
-            self._futures[tool_use_id] = fut
+    def _call(self, tool_use_id: str) -> _Call:
+        call = self._calls.get(tool_use_id)
+        if call is None:
+            loop = asyncio.get_running_loop()
+            call = self._calls[tool_use_id] = _Call(loop.create_future(), loop.create_future())
+            if self._query_ended:
+                call.due.set_result(Ended())
             if self._closed is not None:
-                fut.set_result(_failed(self._closed))
-        return fut
+                call.result.set_result(_failed(self._closed))
+        return call
 
     def resolve(self, message: ToolMessage) -> None:
-        fut = self._future(message.tool_call_id)
-        if not fut.done():
-            fut.set_result(to_call_result(message))
+        result = self._call(message.tool_call_id).result
+        if not result.done():
+            result.set_result(to_call_result(message))
 
     def fail_all(self, reason: str) -> None:
         self._closed = reason
-        for fut in self._futures.values():
-            if not fut.done():
-                fut.set_result(_failed(reason))
+        for call in self._calls.values():
+            if not call.result.done():
+                call.result.set_result(_failed(reason))
 
-    async def wait(self, tool_use_id: str) -> CallToolResult:
-        return await self._future(tool_use_id)
+    def due(self, tool_use_id: str) -> asyncio.Future[Due]:
+        return self._call(tool_use_id).due
+
+    def _settle(self, tool_use_id: str, due: Due) -> None:
+        future = self.due(tool_use_id)
+        if not future.done():
+            future.set_result(due)
+
+    async def wait(self, tool_use_id: str, arguments: dict[str, Any]) -> CallToolResult:
+        self._settle(tool_use_id, Run(arguments))
+        return await self._call(tool_use_id).result
+
+    def answered(self, blocks: Sequence[ToolResultBlock]) -> None:
+        for b in blocks:
+            self._call(b.tool_use_id).given = b
+            self._settle(b.tool_use_id, Answered(b))
+
+    def ended(self) -> None:
+        self._query_ended = True
+        for call in self._calls.values():
+            if not call.due.done():
+                call.due.set_result(Ended())
+
+    def given_instead(self, tool_use_id: str, name: str) -> ToolResultBlock | None:
+        """The CLI's answer to a call it ran through us, where Claude was given
+        other text than the step's result: a PostToolUse hook's replacement,
+        or the CLI's preview of a result past its size limit.
+
+        The CLI hands our text over as it is, keeps an image (re-encoded when
+        large, so only its place is compared) with a note of where it saved
+        it, puts a resource's note in its place, and words an empty result
+        itself; none of that is another answer.
+        """
+        call = self._calls.get(tool_use_id)
+        if call is None or call.given is None or not call.result.done():
+            return None
+        block, ours = call.given, call.result.result().content
+        given = [{"type": "text", "text": block.content}] if isinstance(block.content, str) else list(block.content or [])
+        if ours == [TextContent(type="text", text="")] and given == [{"type": "text", "text": f"({name} completed with no output)"}]:
+            return None
+        expected: list[Callable[[dict[str, Any]], bool]] = []
+        for c in ours:
+            if isinstance(c, TextContent):
+                expected.append(partial(_is_text, c.text))
+            elif isinstance(c, ImageContent):
+                expected += [_is_image, _is_image_note]
+            else:
+                expected.append(partial(_is_resource_note, str(c.resource.uri)))
+        return None if len(given) == len(expected) and all(is_ok(part) for is_ok, part in zip(expected, given, strict=True)) else block
+
+
+#: The notes the CLI puts in a result Claude is given for each image it
+#: saved, and in place of each resource it saved. Our own text is never
+#: read as a note, however it reads.
+_IMAGE_NOTE = re.compile(r"\[Image: source: [^\]\n]+\]")
+_RESOURCE_NOTE = re.compile(r"\[Resource from langalpha at (\S+)\] Binary content \([^)\n]*\) saved to [^\n]+")
+
+
+def _is_text(text: str, part: dict[str, Any]) -> bool:
+    return part.get("type") == "text" and part.get("text", "") == text
+
+
+def _is_image(part: dict[str, Any]) -> bool:
+    return part.get("type") == "image"
+
+
+def _is_image_note(part: dict[str, Any]) -> bool:
+    return part.get("type") == "text" and _IMAGE_NOTE.fullmatch(part.get("text", "")) is not None
+
+
+def _is_resource_note(uri: str, part: dict[str, Any]) -> bool:
+    found = _RESOURCE_NOTE.fullmatch(part.get("text", "")) if part.get("type") == "text" else None
+    return found is not None and found.group(1) == uri
 
 
 def _failed(reason: str) -> CallToolResult:
@@ -135,7 +251,9 @@ def tool_specs(tools: Sequence[BaseTool], read_only: frozenset[str] = frozenset(
 
 def build_tool_server(definitions: Sequence[ToolDefinition], results: ToolResults) -> McpSdkServerConfig:
     """The server offering ``definitions``. A call to one the current build no
-    longer has still reaches the ``tools`` step, whose tool node refuses it."""
+    longer has still reaches the ``tools`` step, whose tool node refuses it.
+    One this server answers itself never reaches the step, which records
+    the answer as the CLI passes it on."""
     specs = [
         Tool(
             name=d["name"],
@@ -158,7 +276,7 @@ def build_tool_server(definitions: Sequence[ToolDefinition], results: ToolResult
         tool_use_id = meta.get(TOOL_USE_ID_META)
         if params.name not in names or not tool_use_id:
             return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool call {params.name}")], isError=True)
-        return await results.wait(tool_use_id)
+        return await results.wait(tool_use_id, params.arguments or {})
 
     server = Server(SERVER, version="1", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
     return McpSdkServerConfig(type="sdk", name=SERVER, instance=server)

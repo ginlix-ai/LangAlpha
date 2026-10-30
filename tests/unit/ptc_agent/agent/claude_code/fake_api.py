@@ -15,6 +15,8 @@ CA, trusted through ``NODE_EXTRA_CA_CERTS`` in the CLI's environment only.
 
 - ``RUN_TOOL`` in the newest user text: call the ``Bash`` tool once; once the
   turn holds its result, answer quoting it.
+- ``CALLS <name>:<command> ...``: make each call in one message, in order, with
+  the command as its input; answer once the turn holds their results.
 - ``RECALL``: answer with every earlier ``FACT:`` line the CLI sent.
 - ``FAIL_AUTH`` / ``FAIL_LIMIT``: refuse with 401 / 429.
 - ``MAX_TOKENS``: answer ``part one`` and stop at the output limit, so the CLI
@@ -74,6 +76,10 @@ def plan(body: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(content, list):
             content = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
         return [think, {"type": "text", "text": f"The tool said: {str(content).strip()[:300]}"}]
+    if "CALLS" in prompt:
+        calls = [word.split(":", 1) for word in prompt.split("CALLS", 1)[1].split()]
+        return [think, *({"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": name, "input": {"command": command}}
+                         for name, command in calls)]
     if "RUN_TOOL" in prompt and any(t.get("name") == "Bash" for t in body.get("tools", [])):
         return [think, {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": "Bash",
                         "input": {"command": "echo spike-$((6*7))"}}]

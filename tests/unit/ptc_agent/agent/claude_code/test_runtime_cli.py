@@ -7,10 +7,13 @@ No credential and no network: the launcher points the real CLI at
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import hmac
+import base64
 import json
 import os
+import shlex
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -31,6 +34,10 @@ from .harness import new_graph, run_turn, spec
 pytestmark = [pytest.mark.enable_socket, pytest.mark.asyncio]
 
 SPEC = spec("claude-haiku-5-5")
+PNG = base64.b64encode(bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
+)).decode()
+PDF = base64.b64encode(b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF").decode()
 
 
 async def turn(api: FakeMessagesAPI, graph, thread: str, messages: list, callbacks: list | None = None,
@@ -320,3 +327,222 @@ async def test_the_token_check_has_stopped_its_cli_when_it_answers():
     async with FakeMessagesAPI(first_party=True) as api:
         assert await token_works(LocalLauncher(env=api.cli_env(), token=TOKEN), "claude-haiku-5-5")
         assert _children() == before
+
+
+@dataclasses.dataclass
+class _Configured(LocalLauncher):
+    """A launcher whose CLI also takes ``settings`` as flag settings, which the
+    CLI applies as it does a policy's: they stand in for one no file on the
+    machine shows, such as an organization's account's."""
+
+    settings: dict = dataclasses.field(default_factory=dict)
+
+    def transport(self, options):
+        merged = {**json.loads(options.settings or "{}"), **self.settings}
+        return super().transport(dataclasses.replace(options, settings=json.dumps(merged)))
+
+
+def _tool_results_sent(api: FakeMessagesAPI) -> dict[str, tuple]:
+    return {b["tool_use_id"]: (b["content"], b.get("is_error")) for m in api.model_requests[-1]["messages"]
+            if isinstance(m["content"], list) for b in m["content"] if b.get("type") == "tool_result"}
+
+
+async def test_a_call_the_cli_refuses_never_runs_and_keeps_the_answer_claude_was_given():
+    ran = []
+
+    @tool("Bash")
+    async def bash(command: str) -> str:
+        """Run a shell command."""
+        ran.append(command)
+        return f"ran: {command}"
+
+    async with FakeMessagesAPI() as api:
+        values = await turn(api, build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver()), "t-refused-call",
+                            [HumanMessage("CALLS Nope:never Bash:one")])
+        sent = _tool_results_sent(api)
+    call, refused, result = values["messages"][1:4]
+    assert [c["name"] for c in call.tool_calls] == ["Nope", "Bash"] and ran == ["one"]
+    assert refused.tool_call_id == call.tool_calls[0]["id"]
+    assert (refused.content, refused.status) == (sent[refused.tool_call_id][0], "error") and sent[refused.tool_call_id][1]
+    assert "No such tool available: Nope" in refused.content
+    assert (result.content, result.status) == ("ran: one", "success")
+
+
+async def test_calls_run_as_the_cli_asks_for_them_one_at_a_time_and_read_only_ones_together():
+    events = []
+
+    def recording(name: str):
+        @tool(name)
+        async def run(command: str) -> str:
+            """Run a command."""
+            events.append(("start", command))
+            await asyncio.sleep(0.3)
+            events.append(("end", command))
+            return f"{name}: {command}"
+
+        return run
+
+    bash, grep = recording("Bash"), recording("Grep")
+    spec_ = dataclasses.replace(SPEC, tools=[bash, grep], read_only=frozenset({"Grep"}))
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        values = await run_turn(spec_, launcher, build_claude_code_graph(ToolNode([bash, grep]), checkpointer=InMemorySaver()),
+                                "t-serial", [HumanMessage("CALLS Bash:one Bash:two Grep:a Grep:b")])
+    assert events[:4] == [("start", "one"), ("end", "one"), ("start", "two"), ("end", "two")]
+    assert set(events[4:6]) == {("start", "a"), ("start", "b")}
+    results = [m for m in values["messages"] if isinstance(m, ToolMessage)]
+    assert [m.content for m in results] == ["Bash: one", "Bash: two", "Grep: a", "Grep: b"]
+
+
+async def test_a_model_the_machines_settings_do_not_allow_fails_the_turn_before_any_reply():
+    graph = new_graph()
+    async with FakeMessagesAPI() as api:
+        launcher = _Configured(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, settings={"availableModels": ["claude-sonnet-5-5"]})
+        with pytest.raises(ClaudeTurnFailed) as failed:
+            await run_turn(SPEC, launcher, graph, "t-not-allowed", [HumanMessage("ECHO hi")])
+    assert failed.value.kind == "model_unavailable"
+    assert str(failed.value) == "Your organization's Claude Code policy does not allow claude-haiku-5-5. Pick another model."
+    values = (await graph.aget_state({"configurable": {"thread_id": "t-not-allowed"}})).values
+    assert not any(isinstance(m, AIMessage) for m in values.get("messages", []))
+
+
+async def test_a_cli_that_exits_at_startup_fails_the_turn_in_its_own_words(tmp_path, caplog):
+    leaked = "sk-ant-oat01-" + "7" * 40
+    cli = tmp_path / "claude"
+    cli.write_text("#!/bin/sh\n"
+                   f"echo 'starting with {leaked}' >&2\n"
+                   "echo 'You cannot use --strict-mcp-config when an enterprise MCP config is present' >&2\n"
+                   "exit 1\n")
+    cli.chmod(0o755)
+    launcher = LocalLauncher(cli_path=str(cli), token=TOKEN)
+    with pytest.raises(ClaudeTurnFailed) as failed:
+        await run_turn(SPEC, launcher, new_graph(), "t-no-start", [HumanMessage("ECHO hi")])
+    with pytest.raises(ClaudeTurnFailed) as checked:
+        await token_works(launcher, "claude-haiku-5-5")
+    for e in (failed.value, checked.value):
+        assert e.kind == "startup_failed"
+        assert str(e).startswith("Claude Code could not start: ")
+        assert str(e).endswith("You cannot use --strict-mcp-config when an enterprise MCP config is present")
+        assert leaked not in str(e)
+    assert leaked not in caplog.text
+    assert any(r.name == "ptc_agent.agent.claude_code.launcher" and "enterprise MCP config is present" in r.getMessage()
+               for r in caplog.records)
+
+
+async def test_a_call_that_raises_fails_the_turn_at_once_while_the_cli_waits_for_its_result():
+    @tool("Bash")
+    async def bash(command: str) -> str:
+        """Run a shell command."""
+        raise RuntimeError(f"broke on {command}")
+
+    async with FakeMessagesAPI() as api:
+        with pytest.raises(RuntimeError, match="broke on one"):
+            await asyncio.wait_for(turn(api, build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver()),
+                                        "t-raises", [HumanMessage("CALLS Bash:one Bash:two")]), 60)
+
+
+
+def _hook(event: str, output: dict) -> dict:
+    """Flag settings with one hook on every tool that answers ``output``."""
+    answer = json.dumps({"hookSpecificOutput": {"hookEventName": event, **output}})
+    return {"hooks": {event: [{"matcher": ".*", "hooks": [{"type": "command", "command": f"cat >/dev/null; echo {shlex.quote(answer)}"}]}]}}
+
+
+async def test_a_call_runs_with_the_arguments_a_hook_rewrote_it_to():
+    ran = []
+
+    @tool("Bash")
+    async def bash(command: str) -> str:
+        """Run a shell command."""
+        ran.append(command)
+        return f"ran: {command}"
+
+    rewrite = _hook("PreToolUse", {"permissionDecision": "allow", "updatedInput": {"command": "echo rewritten"}})
+    async with FakeMessagesAPI() as api:
+        launcher = _Configured(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, settings=rewrite)
+        values = await run_turn(SPEC, launcher, build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver()),
+                                "t-rewritten", [HumanMessage("RUN_TOOL please")])
+        sent = _tool_results_sent(api)
+    call, result = values["messages"][1:3]
+    assert call.tool_calls[0]["args"] == {"command": "echo spike-$((6*7))"}
+    assert ran == ["echo rewritten"] and result.content == "ran: echo rewritten"
+    assert sent[result.tool_call_id][0] == [{"type": "text", "text": "ran: echo rewritten"}]
+
+
+async def test_a_result_a_hook_replaced_is_kept_as_claude_was_given_it_with_the_tools_artifact():
+    @tool("Bash", response_format="content_and_artifact")
+    async def bash(command: str) -> tuple[str, dict]:
+        """Run a shell command."""
+        return f"ran: {command}", {"exit_code": 0}
+
+    replace = _hook("PostToolUse", {"updatedMCPToolOutput": "replaced by the hook"})
+    async with FakeMessagesAPI() as api:
+        launcher = _Configured(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, settings=replace)
+        values = await run_turn(SPEC, launcher, build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver()),
+                                "t-replaced", [HumanMessage("RUN_TOOL please")])
+        sent = _tool_results_sent(api)
+    result = values["messages"][2]
+    assert sent[result.tool_call_id][0] == "replaced by the hook"
+    assert (result.content, result.status, result.artifact) == ("replaced by the hook", "success", {"exit_code": 0})
+
+
+async def test_an_image_a_hook_replaced_with_text_is_kept_as_the_text_claude_was_given():
+    @tool("Bash")
+    async def bash(command: str):
+        """Run a shell command."""
+        return [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG}}]
+
+    redact = _hook("PostToolUse", {"updatedMCPToolOutput": "redacted by the hook"})
+    async with FakeMessagesAPI() as api:
+        launcher = _Configured(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, settings=redact)
+        values = await run_turn(SPEC, launcher, build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver()),
+                                "t-redacted", [HumanMessage("RUN_TOOL please")])
+    assert values["messages"][2].content == "redacted by the hook"
+
+
+@pytest.mark.parametrize("returned", [
+    "",
+    [{"type": "text", "text": "a chart"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG}}],
+    [{"type": "text", "text": "a pdf"}, {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": PDF}}],
+], ids=["empty", "image", "document"])
+async def test_a_result_the_cli_words_its_own_way_is_kept_as_the_tool_returned_it(returned):
+    @tool("Bash")
+    async def bash(command: str):
+        """Run a shell command."""
+        return returned
+
+    async with FakeMessagesAPI() as api:
+        values = await turn(api, build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver()), "t-own-words",
+                            [HumanMessage("RUN_TOOL please")])
+    assert values["messages"][2].content == returned
+
+
+async def test_a_cancelled_turn_ends_its_running_calls_before_the_turn_closes():
+    started, order = asyncio.Event(), []
+
+    @tool("Bash")
+    async def bash(command: str) -> str:
+        """Run a shell command."""
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            await asyncio.sleep(1)
+            order.append("call ended")
+        return "never"
+
+    graph = build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver())
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        claude = ClaudeTurn(SPEC, launcher, identity="test-user", thread_key="t-cancelled")
+        config = {"configurable": {"thread_id": "t-cancelled", TURN_KEY: claude}}
+        running = asyncio.ensure_future(graph.ainvoke({"messages": [HumanMessage("RUN_TOOL please")]}, config))
+        try:
+            await asyncio.wait_for(started.wait(), 60)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+            order.append("turn closing")
+        finally:
+            await claude.close()
+    assert order == ["call ended", "turn closing"]

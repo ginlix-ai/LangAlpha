@@ -407,7 +407,10 @@ class SSHTransport(Transport):
             if not self._ready or self._process is None:
                 raise CLIConnectionError("ProcessTransport is not ready for writing")
             if self._exited():
-                raise CLIConnectionError(f"Cannot write to terminated process (exit code: {self._exit_code()})")
+                if self._stderr_task is not None:
+                    await asyncio.wait({self._stderr_task}, timeout=EXIT_GRACE_S)
+                code = self._exit_code()
+                raise ProcessError(f"Command failed with exit code {code}", exit_code=code, stderr=self.diagnostics())
             try:
                 self._process.stdin.write(data.encode())
                 await self._process.stdin.drain()

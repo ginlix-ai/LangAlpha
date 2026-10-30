@@ -2,11 +2,10 @@
 and the ledger metadata a failed model call leaves on its run."""
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from src.config import settings as app_settings
 from src.llms.claude_code import ClaudeTurnFailed
-from src.llms.error_classification import iter_exception_chain
 from src.server.services.llm.claude_code import claude_code_refusal
 from src.server.services.oauth_health import subscription_token_refusal
 from src.server.utils.error_sanitization import sanitize_error_text
@@ -145,9 +144,19 @@ def model_call_failure(
     }
 
 
-#: The Claude Code CLI's own failures that are Anthropic's answer to the
-#: turn, with the status each reads as.
-_CLAUDE_CODE_UPSTREAM: dict[str, Optional[int]] = {"plan_exhausted": 429, "api_error": None}
+#: The Claude Code failures that were the answer the turn got, from Anthropic
+#: or the machine's Claude Code, by ``ClaudeTurnFailed.kind``: the status
+#: the frame carries and the hints it offers. Any other kind is either refused
+#: as admission refuses (``auth_failed``, ``policy_blocked``) or this
+#: service's own failure.
+_CLAUDE_CODE_ANSWERS: Dict[str, Tuple[Optional[int], Tuple[str, ...]]] = {
+    # The user's own plan is spent, not the provider down.
+    "plan_exhausted": (429, ("try_another_model",)),
+    # No status: could be anything.
+    "api_error": (None, ("api_key", "model_access", "provider_status", "try_another_model")),
+    "model_unavailable": (None, ("try_another_model",)),
+    "startup_failed": (None, ("try_another_model",)),
+}
 
 
 def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
@@ -157,14 +166,16 @@ def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
     a LangChain exception caused by ``anthropic.InternalServerError``) is
     still recognized as upstream. Returns a dict with ``kind``,
     ``status_code`` (when carried on the exception or parseable from its
-    message), and ``provider_module`` (the matched SDK prefix, or None).
+    message), and ``provider_module`` (the matched SDK prefix, or None);
+    a Claude Code failure the turn was answered with adds its ``hints``.
     """
     seen: set[int] = set()
     current: Optional[BaseException] = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, ClaudeTurnFailed) and current.kind in _CLAUDE_CODE_UPSTREAM:
-            return {"kind": "upstream", "status_code": _CLAUDE_CODE_UPSTREAM[current.kind], "provider_module": None}
+        if isinstance(current, ClaudeTurnFailed) and current.kind in _CLAUDE_CODE_ANSWERS:
+            status, hints = _CLAUDE_CODE_ANSWERS[current.kind]
+            return {"kind": "upstream", "status_code": status, "provider_module": None, "hints": list(hints)}
         module = getattr(type(current), "__module__", "") or ""
         for prefix in _UPSTREAM_MODULE_PREFIXES:
             if module == prefix or module.startswith(prefix + "."):
@@ -269,16 +280,13 @@ def error_event_data(
             # provider outages, not the user's credentials; showing
             # "check your API key" first on a 503 is misleading.
             status = info.get("status_code")
-            if status in (401, 403):
+            if "hints" in info:
+                hints = info["hints"]
+            elif status in (401, 403):
                 hints = ["api_key", "model_access", "try_another_model"]
             elif status == 404:
                 hints = ["model_access", "try_another_model"]
             elif status in _REQUEST_REFUSED_STATUSES:
-                hints = ["try_another_model"]
-            elif status == 429 and any(
-                isinstance(c, ClaudeTurnFailed) and c.kind == "plan_exhausted" for c in iter_exception_chain(exc)
-            ):
-                # The user's own plan is spent, not the provider down.
                 hints = ["try_another_model"]
             elif status == 429 or (isinstance(status, int) and status >= 500):
                 hints = ["provider_status", "try_another_model"]

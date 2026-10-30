@@ -5,8 +5,9 @@ like the graph ``create_agent`` builds: a ``model`` node per assistant
 message and a ``tools`` node per batch of tool calls. The difference is who
 decides. Claude Code runs the loop in its own process; each ``model`` step
 streams one assistant message from it, and each ``tools`` step runs the
-calls that message made through langalpha's own tool node and hands the
-results back to the CLI. Because the graph keeps the node names, the state
+calls of that message the CLI asks for through langalpha's own tool node and
+hands the results back to the CLI, keeping for the others the answer the CLI
+gave Claude itself. Because the graph keeps the node names, the state
 schema and the message shapes of a langalpha turn, the SSE producer, the
 checkpoint replay, transcripts and the run ledger take a Claude Code turn as
 they take any other.
@@ -27,7 +28,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import Annotated, Any, TypeVar
 
@@ -35,6 +36,8 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    Message,
+    ProcessError,
     RateLimitEvent,
     ResultMessage,
     StreamEvent,
@@ -42,7 +45,7 @@ from claude_agent_sdk import (
     ToolResultBlock,
     UserMessage,
 )
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
@@ -61,12 +64,22 @@ from ptc_agent.agent.claude_code.session import (
     SessionWrite,
     session_channel,
 )
-from ptc_agent.agent.claude_code.tools_bridge import SERVER, ToolResults, allow_rule, build_tool_server, tool_specs
+from ptc_agent.agent.claude_code.tools_bridge import (
+    SERVER,
+    Answered,
+    Ended,
+    Run,
+    ToolResults,
+    allow_rule,
+    build_tool_server,
+    tool_specs,
+)
 from ptc_agent.agent.main_state import MainAgentState
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
 from src.llms.claude_code import ClaudeTurnFailed, another_model_replied_last
+from src.server.utils.error_sanitization import sanitize_error_text
 
 TURN_KEY = "claude_turn"
 T = TypeVar("T")
@@ -74,6 +87,9 @@ logger = logging.getLogger(__name__)
 #: How long a step waits for the CLI's records behind the messages it commits.
 SETTLE_TIMEOUT_S = 10.0
 TOKEN_CHECK_TIMEOUT_S = 60
+#: How much of the CLI's stderr a failed start passes on.
+STARTUP_REASON_LINES = 5
+STARTUP_REASON_CHARS = 600
 
 
 #: Ends of a query that did what was asked. Anything else is a failed turn.
@@ -116,13 +132,48 @@ def turn_failure(
     return ClaudeTurnFailed("api_error", detail)
 
 
+def startup_failure(error: ProcessError) -> ClaudeTurnFailed:
+    """The CLI exiting before it took the turn, in its own words: the last
+    lines of its stderr, bounded, and scrubbed although a refusal to start
+    names no credential."""
+    lines = [line.strip() for line in (error.stderr or "").splitlines() if line.strip()]
+    reason = sanitize_error_text(" ".join(lines[-STARTUP_REASON_LINES:]))[:STARTUP_REASON_CHARS]
+    return ClaudeTurnFailed("startup_failed", reason or f"it exited with code {error.exit_code}")
+
+
+@contextlib.asynccontextmanager
+async def _open(client: ClaudeSDKClient) -> AsyncIterator[None]:
+    """Start the CLI for the body to send the query. A CLI that exits first,
+    or while the query goes, fails in its own words."""
+    try:
+        await client.connect()
+        yield
+    except ProcessError as e:
+        raise startup_failure(e) from None
+
+
+async def _received(client: ClaudeSDKClient) -> AsyncIterator[Message]:
+    """What the CLI says. One that exits before its init never took the
+    turn, so it fails in its own words as at the start."""
+    init_seen = False
+    try:
+        async for m in client.receive_messages():
+            init_seen = init_seen or (isinstance(m, SystemMessage) and m.subtype == "init")
+            yield m
+    except ProcessError as e:
+        if init_seen:
+            raise
+        raise startup_failure(e) from None
+
+
 async def token_works(launcher: Launcher, model: str) -> bool:
     """Whether Anthropic serves the token the launcher signs in with: one minimal turn on ``model``, through a turn's own transport.
 
     ``claude auth status`` reads only local state and reports any string as a
     login, so the check asks Anthropic. A served request or a used-up plan
     means the token is good, a refused login or none at all that it is not;
-    anything else raises, so a network failure is never read as a bad token. Over SSH the token is the computer's own or the one relayed to it,
+    anything else raises, so a network failure or a CLI that would not start
+    is never read as a bad token, nor as a good one. Over SSH the token is the computer's own or the one relayed to it,
     whichever a turn there would use.
     """
     prepared = await launcher.scratch()
@@ -144,15 +195,16 @@ async def token_works(launcher: Launcher, model: str) -> bool:
         client = ClaudeSDKClient(options, transport=launcher.transport(options))
         try:
             async with asyncio.timeout(TOKEN_CHECK_TIMEOUT_S):
-                await client.connect()
-                await client.query("Reply with OK.")
-                async for m in client.receive_response():
+                async with _open(client):
+                    await client.query("Reply with OK.")
+                async for m in _received(client):
                     if isinstance(m, AssistantMessage) and m.error:
                         errors.append((m.error, " ".join(getattr(b, "text", "") for b in m.content).strip()))
                     elif isinstance(m, RateLimitEvent):
                         limits.append(m)
                     elif isinstance(m, ResultMessage):
                         result = m
+                        break
         finally:
             # Outside the timeout, and before the dir goes: the close waits
             # for the CLI to exit, which would otherwise write its session
@@ -283,12 +335,13 @@ class _Run:
     """A started run: the CLI, the SDK client driving it, and what the CLI has said so far."""
 
     def __init__(self, launcher: Launcher, prepared: Prepared, store: CheckpointSessionStore,
-                 client: ClaudeSDKClient, results: ToolResults) -> None:
+                 client: ClaudeSDKClient, results: ToolResults, spec: RuntimeSpec) -> None:
         self.launcher = launcher
         self.prepared = prepared
         self.store = store
         self.client = client
         self.results = results
+        self.model = spec.model
         self.result: ResultMessage | None = None
         self.rate_limits: list[RateLimitEvent] = []
         #: (error, text) of each assistant message the CLI marked as an error.
@@ -300,6 +353,7 @@ class _Run:
         self._assistant: dict[str, list[str]] = {}
         self._tool_results = Arrivals("tool result records")
         self._closing: asyncio.Future[None] | None = None
+        self._finishing: asyncio.Future[None] | None = None
         self._pump = asyncio.create_task(self._read())
 
     @classmethod
@@ -325,21 +379,33 @@ class _Run:
             if prompt is None:
                 options.env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"] = "1"
             client = ClaudeSDKClient(options, transport=launcher.transport(options))
-            await client.connect()
-            if prompt is not None:
-                await client.query(prompt if isinstance(prompt, str) else _user_message(prompt))
+            async with _open(client):
+                if prompt is not None:
+                    await client.query(prompt if isinstance(prompt, str) else _user_message(prompt))
         except BaseException:
             if client is not None:
                 with contextlib.suppress(Exception):
                     await client.disconnect()
             await launcher.release(prepared)
             raise
-        return cls(launcher, prepared, store, client, results)
+        return cls(launcher, prepared, store, client, results, spec)
 
     async def _read(self) -> None:
+        """Read what the CLI says until the turn's result.
+
+        Its init comes ahead of its first request. One naming another model
+        than the turn's is a policy refusing it (``availableModels``), one
+        no file on the machine shows, such as the organization's account's,
+        where the CLI would run another in its place, so the turn fails before
+        anything is streamed.
+        """
         try:
-            async for m in self.client.receive_messages():
-                if isinstance(m, StreamEvent):
+            async for m in _received(self.client):
+                if isinstance(m, SystemMessage) and m.subtype == "init":
+                    if m.data.get("model") != self.model:
+                        logger.warning("[ClaudeCode] the CLI would run %s in place of %s", m.data.get("model"), self.model)
+                        raise ClaudeTurnFailed("model_unavailable", self.model)
+                elif isinstance(m, StreamEvent):
                     if m.parent_tool_use_id is None:
                         if m.event.get("type") == "message_start":
                             self._streamed.add((m.event.get("message") or {}).get("id", ""))
@@ -353,8 +419,9 @@ class _Run:
                             break
                         self._assistant.setdefault(m.message_id, []).append(m.uuid)
                 elif isinstance(m, UserMessage):
-                    ids = [b.tool_use_id for b in (m.content if isinstance(m.content, list) else []) if isinstance(b, ToolResultBlock)]
-                    await self._tool_results.add(dict.fromkeys(ids, m.uuid))
+                    blocks = [b for b in (m.content if isinstance(m.content, list) else []) if isinstance(b, ToolResultBlock)]
+                    self.results.answered(blocks)
+                    await self._tool_results.add(dict.fromkeys((b.tool_use_id for b in blocks), m.uuid))
                 elif isinstance(m, ResultMessage):
                     self.result = m
                     break
@@ -364,6 +431,7 @@ class _Run:
                     self.drift = SessionDrift(f"session mirror dropped a batch: {m.data.get('error')}")
                     break
         finally:
+            self.results.ended()
             await self._events.put(_END)
 
     async def _unless_crashed(self, awaitable: Awaitable[T]) -> T:
@@ -437,15 +505,25 @@ class _Run:
             raise self.drift
 
     async def finish(self) -> None:
-        """Wait for the query's end, and fail the turn unless it did its work."""
+        """Wait for the query's end, and fail the turn unless it did its work.
+
+        Once per run, however many calls of a step find the query over: a
+        refused token is reported once.
+        """
+        if self._finishing is None:
+            self._finishing = asyncio.ensure_future(self._finish())
+        await asyncio.shield(self._finishing)
+
+    async def _finish(self) -> None:
         await self._pump
         if self.drift is not None:
             raise self.drift
         failed = turn_failure(self.result, self.assistant_errors, self.rate_limits)
-        if failed is not None:
-            if failed.kind == "auth_failed":
-                await self.launcher.refused()
-            raise failed
+        if failed is None:
+            return
+        if failed.kind == "auth_failed":
+            await self.launcher.refused()
+        raise failed
 
     async def close(self) -> None:
         """End the CLI and remove the turn's dir. Shielded: a close cancelled
@@ -572,6 +650,8 @@ def _turn(config: RunnableConfig) -> ClaudeTurn:
 
 #: What a turn sends Claude: the user's text, or Anthropic content blocks.
 Prompt = str | list[dict[str, Any]]
+#: One output of the tool node, as the ``tools`` step returns it.
+_Update = dict[str, Any] | Command
 #: The thread's baseline as one block, with a key naming its epoch.
 Baseline = Callable[[Any], tuple[str, str]]
 
@@ -665,17 +745,40 @@ def build_claude_code_graph(
         )
 
     async def tools(state: ClaudeCodeState, config: RunnableConfig) -> Any:
+        """Run each call once the CLI asks for it, with the arguments it sends,
+        as ``create_agent``'s own ``Send`` of one call runs it, and keep the
+        CLI's own answer for each it refused, so the results read as Claude's
+        session has them, in call order. A call that raises fails the step at
+        once: the CLI waits for its result, and the rest are cancelled."""
         turn = _turn(config)
         run = turn.current
-        out = await tool_node.ainvoke(state, config)
-        for m in _tool_messages(out):
-            run.results.resolve(m)
-        uuids = await run.tool_result_records([tc["id"] for tc in state["messages"][-1].tool_calls])
+        calls = state["messages"][-1].tool_calls
+
+        async def call(c: ToolCall) -> list[_Update]:
+            match await run.results.due(c["id"]):
+                case Ended():
+                    await run.finish()
+                    raise ClaudeTurnFailed("api_error", f"the CLI ended the turn before it ran call {c['id']}")
+                case Answered(block):
+                    return [{"messages": [_as_given(ToolMessage(content="", tool_call_id=c["id"], name=c["name"]), block)]}]
+                case Run(args):
+                    out = await tool_node.ainvoke([{**c, "args": args}], config)
+                    for m in _tool_messages(out):
+                        run.results.resolve(m)
+                    return out if isinstance(out, list) else [out]
+
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks = [group.create_task(call(c)) for c in calls]
+        except BaseExceptionGroup as failed:
+            raise failed.exceptions[0] from None
+        uuids = await run.tool_result_records([c["id"] for c in calls])
         await run.settle(uuids)
         session = turn.commit(run.store.drain(through=uuids))
-        if isinstance(out, list):
-            return [*out, Command(update=session)]
-        return {**out, **session}
+        updates = [_given_instead(u, run.results, c) for c, t in zip(calls, tasks, strict=True) for u in t.result()]
+        if all(isinstance(u, dict) for u in updates):
+            return {"messages": [m for u in updates for m in u["messages"]], **session}
+        return [*updates, Command(update=session)]
 
     g = StateGraph(ClaudeCodeState)
     for name, node in entry:
@@ -687,6 +790,27 @@ def build_claude_code_graph(
         g.add_edge(a, b)
     g.add_edge("tools", "model")
     return g.compile(checkpointer=checkpointer)
+
+
+def _as_given(message: ToolMessage, block: ToolResultBlock) -> ToolMessage:
+    return message.model_copy(update={"content": block.content or "", "status": "error" if block.is_error else "success"})
+
+
+def _given_instead(update: _Update, results: ToolResults, call: ToolCall) -> _Update:
+    """A call's output with its result as the CLI gave it to Claude, where
+    that differs (``ToolResults.given_instead``); its state updates and
+    artifact stay the step's."""
+    block = results.given_instead(call["id"], call["name"])
+    if block is None:
+        return update
+    command = update if isinstance(update, Command) else None
+    values = command.update if command is not None else update
+    if not isinstance(values, dict):
+        return update
+    messages = [_as_given(m, block) if isinstance(m, ToolMessage) and m.tool_call_id == call["id"] else m
+                for m in values.get("messages", [])]
+    values = {**values, "messages": messages}
+    return replace(command, update=values) if command is not None else values
 
 
 def _tool_messages(out: Any) -> list[ToolMessage]:

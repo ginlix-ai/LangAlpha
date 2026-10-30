@@ -25,23 +25,26 @@ login is neither read nor written.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import shutil
 import socket
 import stat
 import tempfile
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 import anyio
 from anyio.streams.text import TextReceiveStream, TextSendStream
-from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError, CLINotFoundError
+from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError, CLINotFoundError, ProcessError
 from claude_agent_sdk._internal._task_compat import spawn_detached
 from claude_agent_sdk._internal.sessions import project_key_for_directory
 from claude_agent_sdk._internal.transport import Transport
@@ -54,7 +57,10 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
     logger,
 )
 
+from ptc_agent.core.claude_code_managed import local_managed
+from src.llms.claude_code import ClaudeTurnFailed
 from src.server.database.encryption import get_encryption_key
+from src.server.utils.error_sanitization import sanitize_error_text, single_line
 
 #: Inherited from the worker because a process needs them to start or to
 #: reach the API from where the worker sits (its proxy and CA); nothing that
@@ -67,6 +73,12 @@ _THREAD_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 #: The CLI reads an OAuth token from the descriptor this names, directly when
 #: it is a socket (macOS has no /proc/self/fd), and then drops the variable.
 TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+#: The lines of the CLI's stderr kept, how long an exit waits for the last
+#: of them, and how much of them its log line holds.
+STDERR_KEPT = 50
+EXIT_STDERR_WAIT_S = 5
+STDERR_LOG_CHARS = 2000
+_log = logging.getLogger(__name__)
 
 #: The sha256 of ``SubprocessCLITransport.connect``'s source that
 #: ``ScopedEnvTransport.connect`` and ``cli_env`` were copied from; a test fails
@@ -174,6 +186,26 @@ def write_session_file(config_dir: str, cwd: str, session_id: str, entries: list
     path.write_text(session_jsonl(entries), encoding="utf-8")
 
 
+def stderr_text(lines: Sequence[str]) -> str:
+    """The CLI's kept stderr as an error carries it: scrubbed, since the SDK
+    logs a reader's ``ProcessError`` whole."""
+    return sanitize_error_text("\n".join(lines))
+
+
+async def exit_error(code: int | None, stderr: Sequence[str], reader: Awaitable[Any] | None) -> ProcessError:
+    """The error of a CLI that exited with ``code``, carrying its kept
+    ``stderr`` once ``reader`` has read the last of it (or
+    ``EXIT_STDERR_WAIT_S`` passed). A failed exit logs it as well: piped
+    to us, the CLI's stderr reaches no other log."""
+    if reader is not None:
+        with anyio.move_on_after(EXIT_STDERR_WAIT_S), contextlib.suppress(Exception):
+            await reader
+    text = stderr_text(stderr)
+    if code:
+        _log.warning("[ClaudeCode] the CLI exited with code %s: %s", code, single_line(text[-STDERR_LOG_CHARS:]))
+    return ProcessError(f"Command failed with exit code {code}", exit_code=code, stderr=text)
+
+
 class Launcher(Protocol):
     """Where a turn's CLI runs: ``LocalLauncher`` on this worker, ``SSHLauncher`` on the user's own computer.
 
@@ -212,13 +244,38 @@ class ScopedEnvTransport(SubprocessCLITransport):
     """The SDK's subprocess transport with the child's environment built from scratch.
 
     The transport is the SDK's internal API, which is why the ``claude-code``
-    extra pins the SDK exactly.
+    extra pins the SDK exactly. The CLI's stderr is kept, its last lines
+    only, so a CLI that exits says why, as ``SSHTransport`` has it say.
     """
 
     def __init__(self, *, options: ClaudeAgentOptions, base_env: dict[str, str], token: str | None) -> None:
-        super().__init__(prompt=_no_prompt(), options=options)
+        self._stderr: deque[str] = deque(maxlen=STDERR_KEPT)
+        super().__init__(prompt=_no_prompt(), options=replace(options, stderr=self._stderr.append))
         self._base_env = base_env
         self._token = token
+
+    async def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        """The SDK's messages, with the CLI's own stderr on the ``ProcessError``
+        of a CLI that exits, where the SDK puts a placeholder."""
+        try:
+            async with contextlib.aclosing(super().read_messages()) as messages:
+                async for message in messages:
+                    yield message
+        except ProcessError as e:
+            raise await self._exited(e.exit_code) from None
+
+    async def write(self, data: str) -> None:
+        """The SDK's write, failing on a CLI that has exited as its read does:
+        it can exit before the first write, which then says why."""
+        try:
+            await super().write(data)
+        except CLIConnectionError:
+            if self._process is None or self._process.returncode is None:
+                raise
+            raise await self._exited(self._process.returncode) from None
+
+    async def _exited(self, code: int | None) -> ProcessError:
+        return await exit_error(code, self._stderr, self._stderr_task.wait() if self._stderr_task is not None else None)
 
     async def connect(self) -> None:
         """The SDK's ``connect`` (``SDK_CONNECT_SHA256``), changed in four places only.
@@ -323,7 +380,8 @@ class LocalLauncher:
     The CLI signs in with ``token``, a fixed one (the check of a token
     before it is saved), else the one ``saved`` holds as the run starts,
     which ``refused`` records as refused. ``env`` is for a test endpoint and
-    its dummy credential.
+    its dummy credential. A worker an organization's managed Claude Code
+    settings are installed on runs none (``local_managed``).
     """
 
     env: dict[str, str] = field(default_factory=dict, repr=False)
@@ -332,8 +390,12 @@ class LocalLauncher:
     saved: TokenStore | None = None
     _used: str | None = field(default=None, init=False, repr=False)
 
-    async def _take_token(self) -> None:
+    async def _ready(self) -> None:
+        """Take the run's token, then refuse the run, before the CLI starts,
+        where an organization's policy is installed, in admission's order."""
         self._used = self.token or (await self.saved.read() if self.saved is not None else None)
+        if sources := await local_managed():
+            raise ClaudeTurnFailed("policy_blocked", f"the worker holds managed Claude Code settings {list(sources)}")
 
     async def prepare(
         self, thread_key: str, session_id: str | None, entries: list[dict[str, Any]], *, identity: str,
@@ -345,8 +407,8 @@ class LocalLauncher:
         transcript, so writing it on the loop would stall every stream on the
         worker for as long as the thread is long.
         """
+        await self._ready()
         device = device_id(identity)
-        await self._take_token()
 
         def lay_out() -> Prepared:
             cwd = thread_dir(thread_key)
@@ -365,7 +427,7 @@ class LocalLauncher:
         return await anyio.to_thread.run_sync(lay_out)
 
     async def scratch(self) -> Prepared:
-        await self._take_token()
+        await self._ready()
         config_dir = await anyio.to_thread.run_sync(lambda: tempfile.mkdtemp(prefix="claude-cfg-"))
         return Prepared(config_dir=config_dir, cwd=config_dir)
 
