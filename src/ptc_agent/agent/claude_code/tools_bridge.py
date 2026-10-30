@@ -42,6 +42,12 @@ from ptc_agent.agent.claude_code.session import ToolDefinition
 
 SERVER = "langalpha"
 TOOL_USE_ID_META = "claudecode/toolUseId"
+#: The most of one tool result the CLI hands Claude whole. Past it the CLI
+#: saves the result to a file Claude has no tool to read and sends a 2 KB
+#: preview instead; its own limit is 50,000 characters, and 500,000 is the
+#: most it accepts. At that, our own eviction (about 160,000 characters by
+#: default) is what cuts a large result, as on any other turn.
+MAX_RESULT_CHARS = 500_000
 
 
 def allow_rule(name: str) -> str:
@@ -136,6 +142,7 @@ def build_tool_server(definitions: Sequence[ToolDefinition], results: ToolResult
             description=d["description"],
             inputSchema=d["input_schema"],
             annotations=ToolAnnotations(readOnlyHint=d["read_only"]),
+            _meta={"anthropic/maxResultSizeChars": MAX_RESULT_CHARS},
         )
         for d in definitions
     ]

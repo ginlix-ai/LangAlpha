@@ -14,9 +14,12 @@ import os
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import ToolNode
 
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
-from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, ClaudeTurnFailed, token_works
+from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, ClaudeTurnFailed, build_claude_code_graph, token_works
 from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
@@ -48,6 +51,23 @@ async def test_a_tool_call_runs_through_the_tool_node_under_its_own_name():
     assert [t["name"] for t in sent["tools"]] == ["Bash"]
     assert not any("Attribution for git" in str(m.get("content")) for m in sent["messages"])
     assert values["claude_session"]["session_id"]
+
+
+@pytest.mark.parametrize("size", [60_000, 150_000])
+async def test_a_tool_result_short_of_our_own_eviction_reaches_claude_whole(size):
+    @tool("Bash")
+    async def large(command: str) -> str:
+        """Run a shell command."""
+        return "x" * size
+
+    async with FakeMessagesAPI() as api:
+        await turn(api, build_claude_code_graph(ToolNode([large]), checkpointer=InMemorySaver()), f"t-large-{size}",
+                   [HumanMessage("RUN_TOOL please")])
+    (result,) = [b for m in api.model_requests[1]["messages"] if isinstance(m["content"], list)
+                 for b in m["content"] if b.get("type") == "tool_result"]
+    content = result["content"]
+    text = content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
+    assert text == "x" * size
 
 
 async def test_the_next_turn_resumes_claudes_session_from_the_checkpoint():
