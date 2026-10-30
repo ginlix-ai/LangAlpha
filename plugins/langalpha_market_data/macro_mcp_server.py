@@ -67,6 +67,18 @@ _OUT_GET_ECONOMIC_INDICATOR = output_model(
 )
 
 
+_FMP_CALENDAR_CAP = 4000
+
+
+def _mark_truncated_if_provider_cap_reached(result: dict, data: object) -> None:
+    if isinstance(data, list) and len(data) >= _FMP_CALENDAR_CAP:
+        result["truncated"] = True
+        result["note"] = (
+            f"Results capped at {_FMP_CALENDAR_CAP} records by the FMP provider. "
+            "Narrow the date range to ensure complete data."
+        )
+
+
 @mcp.tool()
 async def get_economic_indicator(
     name: str,
@@ -141,7 +153,9 @@ async def get_economic_calendar(
         currency, previous, estimate, actual, change, changePercentage, impact,
         unit. actual/estimate/previous are null for events not yet released.
         Field names are FMP-native camelCase; date is "YYYY-MM-DD HH:MM:SS";
-        order is as returned by FMP. On error: {error: <code>, detail}.
+        order is as returned by FMP. If FMP's 4000-record cap is reached,
+        truncated is true and a note asks for a narrower date range. On error:
+        {error: <code>, detail}.
     """
     try:
         client = await get_fmp_client()
@@ -152,14 +166,16 @@ async def get_economic_calendar(
         lo, hi = calendar_days(from_date, to_date)
         data = await client.get_economic_calendar(from_date=lo, to_date=hi)
 
-        return make_response(
+        result = make_response(
             data or [],
             source=_SOURCE,
             data_type="economic_calendar",
             from_date=from_date,
             to_date=to_date,
         )
+        _mark_truncated_if_provider_cap_reached(result, data)
 
+        return result
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED)
 
@@ -284,7 +300,8 @@ async def get_earnings_calendar(
         date, epsActual, epsEstimated, revenueActual, revenueEstimated,
         lastUpdated. actual fields are null before a company reports. Field names
         are FMP-native camelCase; date is "YYYY-MM-DD"; order is as returned by
-        FMP. On error: {error: <code>, detail}.
+        FMP. If FMP's 4000-record cap is reached, truncated is true and a note
+        asks for a narrower date range. On error: {error: <code>, detail}.
     """
     try:
         client = await get_fmp_client()
@@ -295,14 +312,16 @@ async def get_earnings_calendar(
         lo, hi = calendar_days(from_date, to_date)
         data = await client.get_earnings_calendar_by_date(from_date=lo, to_date=hi)
 
-        return make_response(
+        result = make_response(
             data or [],
             source=_SOURCE,
             data_type="earnings_calendar",
             from_date=from_date,
             to_date=to_date,
         )
+        _mark_truncated_if_provider_cap_reached(result, data)
 
+        return result
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED)
 

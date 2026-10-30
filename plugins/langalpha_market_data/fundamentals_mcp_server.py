@@ -162,6 +162,15 @@ async def _from_tushare(disp: str, fetch, *, data_type: str, **extra):
     )
 
 
+def _add_quarterly_empty_note(result: dict, period: str) -> None:
+    if period == "quarter" and result.get("count") == 0:
+        result["note"] = (
+            "Quarterly data returned 0 records. The symbol may have no "
+            "quarterly filings, or the FMP subscription tier may not include "
+            "quarterly fundamentals. Try period='annual'."
+        )
+
+
 _OUT_GET_FINANCIAL_STATEMENTS = output_model(
     "GetFinancialStatementsOut",
     envelope_schema(
@@ -193,8 +202,9 @@ async def get_financial_statements(
         One statement_type → a list of period records; "all" → {income_statement,
         balance_sheet, cash_flow} lists with count the total. Common camelCase
         fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.
-        date is "YYYY-MM-DD"; records are newest-first as returned by FMP. On
-        error: {error: <code>, detail, symbol}.
+        date is "YYYY-MM-DD"; records are newest-first as returned by FMP. When
+        period="quarter" returns 0 records, an optional note suggests
+        period="annual". On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -242,7 +252,7 @@ async def get_financial_statements(
                 "cash_flow": cash_flow or [],
             }
 
-        return make_response(
+        result = make_response(
             data if statement_type == "all" else (data or []),
             source=_SOURCE,
             symbol=disp,
@@ -250,6 +260,9 @@ async def get_financial_statements(
             statement_type=statement_type,
             period=period,
         )
+        _add_quarterly_empty_note(result, period)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
@@ -286,7 +299,8 @@ async def get_financial_ratios(
         freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,
         currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are
         FMP-native camelCase; date is "YYYY-MM-DD"; records are newest-first as
-        returned by FMP. On error: {error: <code>, detail, symbol}.
+        returned by FMP. When period="quarter" returns 0 records, an optional
+        note suggests period="annual". On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -325,6 +339,7 @@ async def get_financial_ratios(
     answer = make_response(
         data, source=_SOURCE, symbol=disp, data_type="financial_ratios", period=period
     )
+    _add_quarterly_empty_note(answer, period)
     return answer if populated(data) else await _or_cn(answer)
 
 
@@ -359,7 +374,8 @@ async def get_growth_metrics(
         epsgrowth; income_statement_growth fields: date, growthRevenue,
         growthNetIncome, growthEPS. Growth values are decimal fractions
         (0.1 = 10%). Field names are FMP-native camelCase; date is "YYYY-MM-DD";
-        records are newest-first as returned by FMP. On error:
+        records are newest-first as returned by FMP. When period="quarter"
+        returns 0 records, an optional note suggests period="annual". On error:
         {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
@@ -382,7 +398,7 @@ async def get_growth_metrics(
         financial_growth = await client.get_financial_growth(api, period=period, limit=limit)
         income_growth = await client.get_income_statement_growth(api, period=period, limit=limit)
 
-        return make_response(
+        result = make_response(
             {
                 "financial_growth": financial_growth or [],
                 "income_statement_growth": income_growth or [],
@@ -392,6 +408,9 @@ async def get_growth_metrics(
             data_type="growth_metrics",
             period=period,
         )
+        _add_quarterly_empty_note(result, period)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
