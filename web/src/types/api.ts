@@ -390,6 +390,8 @@ export interface ComputerRemoveResponse {
   key: ComputerKeyRemoval | null;
   /** What happened to LangAlpha's files on an SSH computer's machine; null unless delete_files was asked. */
   files?: ComputerFilesRemoval | null;
+  /** A Claude Code token left on an SSH computer's machine; null when none is, absent from an older backend. */
+  token?: ComputerTokenRemoval | null;
   /** The named workspaces it deleted, not one moved off it meanwhile; absent from an older backend. */
   workspaces_deleted?: string[];
 }
@@ -400,6 +402,13 @@ export interface ComputerFilesRemoval {
   root_kept: boolean;
   /** ~/.langalpha stays, since another computer on the login uses it. */
   runtime_kept: boolean;
+}
+
+export interface ComputerTokenRemoval {
+  /** The machine was not reached (unreached), or answered but could not delete it (failed); either way it last held a token file of the computer's. */
+  outcome: 'unreached' | 'failed';
+  /** The token file on the machine, for deleting it by hand. */
+  path: string;
 }
 
 export interface ComputerKeyRemoval {
@@ -551,6 +560,9 @@ export interface SshProbeResult {
   model?: string;
   /** Answered by LangAlpha's helper (remote control of a Mac) rather than the machine's own sshd. */
   helper: boolean;
+  /** Whether an organization's Claude Code policy is installed there, which
+   *  keeps Claude Code from running. Absent from an older server. */
+  claude_code_blocked?: boolean;
 }
 
 export type SshProbeErrorCode =

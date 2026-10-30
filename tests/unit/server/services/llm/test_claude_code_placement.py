@@ -9,10 +9,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
+from ptc_agent.core import claude_code_managed
+from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from src.server.services.claude_code import checks
 from src.server.services.claude_code.machine import ComputerToken, MachineAnswer, answer_key
 from src.server.services.claude_code.saved import token_check_key
-from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, require_runnable
+from src.llms.claude_code import ClaudeTurnFailed
+from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, claude_code_refusal, require_runnable
 from tests.unit.server.services.claude_code.fakes import Cache, serving
 
 SERVICE = "src.server.services.llm.claude_code"
@@ -80,6 +83,58 @@ async def test_an_own_computer_whose_token_works_or_could_not_be_checked_runs(fi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("present", [True, False])
+async def test_an_own_computer_with_any_organizations_policy_installed_is_refused_whatever_its_token(present):
+    """Refused before anything is installed or launched, while the answer is
+    fresh: once it is not, the turn runs and the launcher finds the policy
+    again."""
+    kept = {answer_key("c-1"): _answer("policy", present=present)}
+    with pytest.raises(HTTPException) as refused:
+        await _admit(OWN, backend=True, cache=_Cache(kept), saved="sk-ant-oat01-saved")
+    assert _reason(refused) == "policy_blocked"
+    assert refused.value.detail["message"] == CLAUDE_CODE_OFF["policy_blocked"] == (
+        "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here."
+    )
+    stale = {answer_key("c-1"): _answer("policy", present=present, age=checks.SHORT_TTL_S + 1)}
+    await _admit(OWN, backend=True, cache=_Cache(stale), saved="sk-ant-oat01-saved")
+
+
+@pytest.mark.asyncio
+async def test_an_answer_kept_with_a_field_no_longer_known_still_reads():
+    kept = {answer_key("c-1"): _answer("refused", managed=["settings"])}
+    with pytest.raises(HTTPException) as refused:
+        await _admit(OWN, cache=_Cache(kept))
+    assert _reason(refused) == "signed_out"
+
+
+@pytest.mark.asyncio
+async def test_a_backend_turn_is_refused_where_an_organizations_policy_is_installed_on_the_server(tmp_path, monkeypatch):
+    managed = tmp_path / "claude-code"
+    (managed / "managed-settings.d").mkdir(parents=True)
+    monkeypatch.setattr(claude_code_managed, "CLAUDE_CODE_MANAGED_DIR_LINUX", str(managed))
+    monkeypatch.setattr(claude_code_managed, "CLAUDE_CODE_MANAGED_DIR_MAC", str(managed))
+    await _admit(HOSTED, backend=True, saved="sk-ant-oat01-saved")
+    (managed / "managed-settings.d" / "10-org.json").write_text("{}")
+    with pytest.raises(HTTPException) as refused:
+        await _admit(HOSTED, backend=True, saved="sk-ant-oat01-saved")
+    assert _reason(refused) == "policy_blocked"
+
+
+@pytest.mark.parametrize(("kind", "reason"), [("auth_failed", "signed_out"), ("policy_blocked", "policy_blocked")])
+def test_a_turn_failing_for_what_admission_refuses_for_ends_with_admissions_refusal(kind, reason):
+    failed = RuntimeError("the turn failed")
+    failed.__cause__ = ClaudeTurnFailed(kind, "the CLI said so")
+    assert claude_code_refusal(failed, CODE) == {
+        "message": CLAUDE_CODE_OFF[reason], "type": "claude_code_off", "model": CODE, "reason": reason,
+    }
+
+
+@pytest.mark.parametrize("kind", ["plan_exhausted", "startup_failed", "api_error"])
+def test_any_other_turn_failure_is_left_to_the_stream_errors(kind):
+    assert claude_code_refusal(ClaudeTurnFailed(kind, "the CLI said so"), CODE) is None
+
+
+@pytest.mark.asyncio
 async def test_an_answer_gone_stale_is_not_held_against_a_turn():
     await _admit(OWN, cache=_Cache({answer_key("c-1"): _answer("refused", age=checks.TOKEN_CHECK_TTL_S + 1)}))
     await _admit(OWN, cache=_Cache({answer_key("c-1"): _answer("none", age=checks.SHORT_TTL_S + 1)}))
@@ -96,6 +151,37 @@ async def test_a_machine_without_a_token_runs_on_the_saved_one_only_where_it_is_
         await _admit(OWN, backend=True, cache=_Cache(refused_saved), saved="sk-ant-oat01-saved")
     with pytest.raises(HTTPException):
         await _admit(OWN, backend=True, cache=_Cache({answer_key("c-1"): _answer("refused")}), saved="sk-ant-oat01-saved")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kept", [None, "works"])
+async def test_a_turn_that_had_no_token_to_sign_in_with_refuses_the_next_but_one_relayed(kept):
+    """No status check yet, or the token taken off the machine by hand."""
+    cache = _Cache({answer_key("c-1"): _answer(kept, age=1)} if kept else {})
+    with serving(cache):
+        await ComputerToken("user-1", "c-1").announced("none")
+    with pytest.raises(HTTPException) as refused:
+        await _admit(OWN, cache=cache)
+    assert _reason(refused) == "signed_out"
+    with serving(cache):
+        await ComputerToken("user-1", "c-1").announced("relay")
+    await _admit(OWN, backend=True, cache=cache, saved="sk-ant-oat01-saved")
+
+
+@pytest.mark.asyncio
+async def test_a_machine_without_perl_is_refused_as_needing_perl_even_where_the_saved_token_is_relayed():
+    with pytest.raises(HTTPException) as refused:
+        await _admit(OWN, backend=True, cache=_Cache({answer_key("c-1"): _answer("no_perl")}), saved="sk-ant-oat01-saved")
+    assert _reason(refused) == "needs_perl"
+    assert refused.value.detail["message"] == CLAUDE_CODE_OFF["needs_perl"]
+
+
+@pytest.mark.asyncio
+async def test_a_machine_on_musl_is_refused_as_unsupported_even_where_the_saved_token_is_relayed():
+    with pytest.raises(HTTPException) as refused:
+        await _admit(OWN, backend=True, cache=_Cache({answer_key("c-1"): _answer("unsupported")}), saved="sk-ant-oat01-saved")
+    assert _reason(refused) == "computer_unsupported"
+    assert refused.value.detail["message"] == MUSL_UNSUPPORTED
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient } from '@tanstack/react-query';
 import { renderWithProviders } from '@/test/utils';
 import { queryKeys } from '@/lib/queryKeys';
-import { claudeCodeComputerTokenUrl } from '@/lib/claudeCode';
+import { claudeCodeTokenUrl } from '@/lib/claudeCode';
 import type { ClaudeCodeComputer, ClaudeCodeStatus } from '@/api/model';
 
 vi.mock('@/hooks/useProviderCatalog', () => ({
@@ -31,10 +31,16 @@ vi.mock('@/api/model', () => ({
   startClaudeCodeComputerSignIn: vi.fn(),
   submitClaudeCodeComputerSignInCode: vi.fn(),
 }));
+// A workspace a link names and the test did not seed is read here.
+vi.mock('@/pages/ChatAgent/utils/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/pages/ChatAgent/utils/api')>()),
+  getWorkspace: vi.fn(),
+}));
 
 import {
   getClaudeCodeComputers, getClaudeCodeStatus, removeClaudeCodeComputerToken, saveClaudeCodeComputerToken,
 } from '@/api/model';
+import { getWorkspace } from '@/pages/ChatAgent/utils/api';
 import { ModelAccessSection } from '../ModelAccessSection';
 
 const TOKEN = 'sk-ant-oat01-placeholder';
@@ -47,13 +53,18 @@ const BOX: ClaudeCodeComputer = {
 };
 const status = (s: Partial<ClaudeCodeStatus>): ClaudeCodeStatus => ({ enabled: true, state: 'no_token', email: null, expires_at: null, saved: false, ...s });
 
-function render({ flag = true, computers = [MAC, BOX], account = status({}), route = '/' }: {
-  flag?: boolean; computers?: ClaudeCodeComputer[]; account?: ClaudeCodeStatus; route?: string;
+const failed = (code: number) => Object.assign(new Error(`Request failed with status code ${code}`), { response: { status: code, data: {} } });
+const workspace = (workspaceId: string, computerId: string) => ({ workspace_id: workspaceId, name: 'Desk', is_home: false, computer_id: computerId });
+
+/** `workspaces`: the computer of each workspace already read. */
+function render({ flag = true, computers = [MAC, BOX], account = status({}), route = '/', workspaces = {} }: {
+  flag?: boolean; computers?: ClaudeCodeComputer[]; account?: ClaudeCodeStatus; route?: string; workspaces?: Record<string, string>;
 } = {}) {
   (getClaudeCodeStatus as Mock).mockResolvedValue(account);
   (getClaudeCodeComputers as Mock).mockResolvedValue({ computers });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
   queryClient.setQueryData(queryKeys.features.list(), [{ key: 'claude_code_runtime', enabled: flag }]);
+  for (const [id, computerId] of Object.entries(workspaces)) queryClient.setQueryData(queryKeys.workspaces.detail(id), workspace(id, computerId));
   return renderWithProviders(<ModelAccessSection />, { queryClient, route });
 }
 
@@ -96,6 +107,19 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     expect(buttonsOf(row)).toEqual(['Add its own token']);
   });
 
+  it('offers to remove a token file a computer refuses while it runs on the saved token', async () => {
+    (removeClaudeCodeComputerToken as Mock).mockResolvedValue(undefined);
+    render({ computers: [{ ...BOX, state: 'signed_in', source: 'saved', own_file: true }], account: status({ state: 'signed_in', saved: true }) });
+    const row = await rowOf('Lab box');
+    expect(within(row).getByText('Uses your saved token')).toBeInTheDocument();
+    expect(buttonsOf(row)).toEqual(['Add its own token', 'Remove']);
+    fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove the setup token from Lab box?' });
+    expect(within(dialog).getByText(/Claude Code there then uses your saved token/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove token' }));
+    await waitFor(() => expect(removeClaudeCodeComputerToken).toHaveBeenCalledWith('cmp-box'));
+  });
+
   it('offers a first token while a computer whose token is not known yet is checked', async () => {
     render({ computers: [{ ...BOX, state: 'checking' }] });
     const row = await rowOf('Lab box');
@@ -109,6 +133,54 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
     expect(within(row).getByText('Offline')).toBeInTheDocument();
     expect(within(row).getByText("This computer isn't running, so its token can't be checked.")).toBeInTheDocument();
     expect(buttonsOf(row)).toEqual([]);
+  });
+
+  it("says Claude Code can't run on a computer an organization's policy is installed on, and invites no token there", async () => {
+    render({ computers: [{ ...MAC, state: 'policy_blocked' }, { ...BOX, state: 'policy_blocked' }] });
+    const blocked = "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here.";
+    const mac = await rowOf('Studio Mac');
+    expect(within(mac).getByText('Unavailable')).toBeInTheDocument();
+    expect(within(mac).getByText(blocked)).toBeInTheDocument();
+    expect(buttonsOf(mac)).toEqual(['Remove']);
+    const box = await rowOf('Lab box');
+    expect(within(box).getByText(blocked)).toBeInTheDocument();
+    expect(buttonsOf(box)).toEqual([]);
+  });
+
+  it.each([[true, ['Remove']], [false, []]])(
+    "says Claude Code can't run on this server where an organization's policy is installed on it (saved %s)",
+    async (saved, buttons) => {
+      render({ computers: [BOX], account: status({ state: 'policy_blocked', saved }) });
+      const row = (await screen.findByText('Saved token')).closest('li') as HTMLElement;
+      expect(within(row).getByText('Unavailable')).toBeInTheDocument();
+      expect(within(row).getByText("Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here.")).toBeInTheDocument();
+      expect(buttonsOf(row)).toEqual(buttons);
+    },
+  );
+
+  it('says a computer without perl needs it, offers Remove only for a token left there, and invites no new token', async () => {
+    render({ computers: [{ ...MAC, state: 'needs_perl' }, { ...BOX, state: 'needs_perl' }] });
+    const needsPerl = 'Claude Code needs perl on this computer. Install perl, then try again.';
+    const mac = await rowOf('Studio Mac');
+    expect(within(mac).getByText('Unavailable')).toBeInTheDocument();
+    expect(within(mac).getByText(needsPerl)).toBeInTheDocument();
+    expect(within(mac).queryByText(/Claude refused this token/)).toBeNull();
+    expect(buttonsOf(mac)).toEqual(['Remove']);
+    const box = await rowOf('Lab box');
+    expect(within(box).getByText(needsPerl)).toBeInTheDocument();
+    expect(buttonsOf(box)).toEqual([]);
+  });
+
+  it('says a computer on musl is unsupported, offers Remove only for a token left there, and invites no new token', async () => {
+    render({ computers: [{ ...MAC, state: 'computer_unsupported' }, { ...BOX, state: 'computer_unsupported' }] });
+    const musl = "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet.";
+    const mac = await rowOf('Studio Mac');
+    expect(within(mac).getByText('Unavailable')).toBeInTheDocument();
+    expect(within(mac).getByText(musl)).toBeInTheDocument();
+    expect(buttonsOf(mac)).toEqual(['Remove']);
+    const box = await rowOf('Lab box');
+    expect(within(box).getByText(musl)).toBeInTheDocument();
+    expect(buttonsOf(box)).toEqual([]);
   });
 
   // As the saved token's row: a check that never answers keeps the token in reach.
@@ -170,10 +242,14 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
   });
 
   it.each([
-    ['no saved token runs here', status({ state: 'off', saved: true })],
-    ['none is saved', status({ state: 'no_token', saved: false })],
-  ])('says nothing of the saved token taking over where %s', async (_, account) => {
-    render({ account });
+    ['no saved token runs here', status({ state: 'off', saved: true }), MAC],
+    ['none is saved', status({ state: 'no_token', saved: false }), MAC],
+    ['Claude refused the saved token', status({ state: 'rejected', saved: true }), MAC],
+    ["the computer's policy keeps Claude Code from running", status({ state: 'signed_in', saved: true }), { ...MAC, state: 'policy_blocked' as const }],
+    ['the computer has no perl', status({ state: 'signed_in', saved: true }), { ...MAC, state: 'needs_perl' as const }],
+    ['the computer runs musl', status({ state: 'signed_in', saved: true }), { ...MAC, state: 'computer_unsupported' as const }],
+  ])('says nothing of the saved token taking over where %s', async (_, account, entry) => {
+    render({ account, computers: [entry] });
     fireEvent.click(within(await rowOf('Studio Mac')).getByRole('button', { name: 'Remove' }));
     expect(screen.getByText(/won't run there until you add a new one/)).toBeInTheDocument();
   });
@@ -182,9 +258,58 @@ describe('ModelAccessSection: Claude Code on own computers', () => {
   it.each([
     [MAC, 'Replace the setup token on Studio Mac'],
     [{ ...MAC, state: 'rejected' as const }, 'Add a setup token for Studio Mac'],
-  ])("opens a computer's sheet from a link that names it", async (entry, title) => {
-    render({ computers: [entry], route: claudeCodeComputerTokenUrl('cmp-mac') });
+  ])("opens the sheet of the own computer a linked workspace is on", async (entry, title) => {
+    render({ computers: [entry], route: claudeCodeTokenUrl('ws-mac'), workspaces: { 'ws-mac': 'cmp-mac' } });
     expect(await screen.findByRole('dialog', { name: title })).toBeInTheDocument();
+  });
+
+  it("opens the saved token's sheet from a link to a workspace on a hosted computer", async () => {
+    render({ route: claudeCodeTokenUrl('ws-cloud'), workspaces: { 'ws-cloud': 'cmp-hosted' } });
+    expect(await screen.findByRole('dialog', { name: 'Add a setup token' })).toBeInTheDocument();
+  });
+
+  // The saved token's row offers a sheet too, which must not open first.
+  it('opens no sheet from a link until the workspace it names is read', async () => {
+    let answer!: (w: unknown) => void;
+    (getWorkspace as Mock).mockReturnValue(new Promise((r) => { answer = r; }));
+    render({ route: claudeCodeTokenUrl('ws-mac') });
+    await rowOf('Studio Mac');
+    await act(async () => {});
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () => { answer(workspace('ws-mac', 'cmp-mac')); });
+    expect(await screen.findByRole('dialog', { name: 'Replace the setup token on Studio Mac' })).toBeInTheDocument();
+  });
+
+  // Which computer it runs on is unknown, so the saved token's sheet would
+  // stand in for its computer's; the link stays for a read that answers.
+  it('opens no sheet from a link while the workspace it names cannot be read, and keeps the link', async () => {
+    (getWorkspace as Mock).mockRejectedValue(failed(500));
+    const { queryClient } = render({ route: claudeCodeTokenUrl('ws-mac') });
+    await rowOf('Studio Mac');
+    await waitFor(() => expect(queryClient.getQueryState(queryKeys.workspaces.detail('ws-mac'))?.status).toBe('error'));
+    await act(async () => {});
+    expect(screen.queryByRole('dialog')).toBeNull();
+    (getWorkspace as Mock).mockResolvedValue(workspace('ws-mac', 'cmp-mac'));
+    await act(async () => { await queryClient.refetchQueries({ queryKey: queryKeys.workspaces.detail('ws-mac') }); });
+    expect(await screen.findByRole('dialog', { name: 'Replace the setup token on Studio Mac' })).toBeInTheDocument();
+  });
+
+  it("opens no sheet from a link while only Home's placeholder row is held", async () => {
+    let answer!: (w: unknown) => void;
+    (getWorkspace as Mock).mockReturnValue(new Promise((r) => { answer = r; }));
+    const { queryClient } = render({ route: claudeCodeTokenUrl('ws-home') });
+    queryClient.setQueryData(queryKeys.workspaces.home(), { ...workspace('ws-home', ''), computer_id: null, is_home: true });
+    await rowOf('Studio Mac');
+    await act(async () => {});
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () => { answer({ ...workspace('ws-home', 'cmp-mac'), is_home: true }); });
+    expect(await screen.findByRole('dialog', { name: 'Replace the setup token on Studio Mac' })).toBeInTheDocument();
+  });
+
+  it.each([403, 404])("opens the saved token's sheet from a link to a workspace the server answers %i for", async (code) => {
+    (getWorkspace as Mock).mockRejectedValue(failed(code));
+    render({ route: claudeCodeTokenUrl('ws-gone') });
+    expect(await screen.findByRole('dialog', { name: 'Add a setup token' })).toBeInTheDocument();
   });
 
   it("names the saved token beside computers' rows, and only there", async () => {

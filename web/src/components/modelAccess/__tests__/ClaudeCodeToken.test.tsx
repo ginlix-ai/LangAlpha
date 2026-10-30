@@ -86,6 +86,8 @@ describe('ClaudeCodeTokenSheet', () => {
     ['check_in_progress', /A token is already being checked/],
     ['unavailable', /Claude Code isn't on for your account/],
     ['redis_unavailable', "Saving a token isn't available right now. Try again in a moment."],
+    ['computer_unsupported', "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet."],
+    ['policy_blocked', "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here."],
   ])('words a %s refusal itself and stays open', async (code, text) => {
     save.mockRejectedValue(refusal(code));
     const { field, submit, onSaved } = setup();
@@ -240,6 +242,8 @@ describe('ClaudeCodeTokenSheet: Sign in with Claude', () => {
     ['unexpected_grant', false, /didn't expect/],
     ['unavailable', false, /isn't on for your account/],
     ['needs_perl', true, 'Claude Code needs perl on this computer. Install perl, then try again.'],
+    ['computer_unsupported', false, "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet."],
+    ['policy_blocked', false, "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here."],
   ])('a %s refusal (retryable %s) is worded here', async (code, retryable, text) => {
     sendCode.mockRejectedValue(refusal(code, 'server words', retryable));
     const { codeField, connect, onSaved } = await toCodeStep();

@@ -10,6 +10,7 @@ import { continuationChain } from './continuedBubbles';
 import { readRetryNotice } from './autoRetry';
 import { noteLiveRun } from '../latestRun';
 import type { StructuredError } from '@/utils/rateLimitError';
+import { claudeCodeRefusal } from '@/lib/claudeCode';
 import { applyAnnotationArtifact } from '@/pages/MarketView/stores/chartAnnotationStore';
 import type { AssistantMessage, ChatMessage } from '@/types/chat';
 import { CREDIT_STOP_ERROR_TYPE, isDeliveredNotice, isDeliveredReport, isDeliveredSteer } from '@/types/sse';
@@ -842,9 +843,9 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       // as a notice: the server's name the CLI's commands, and the reply's
       // Retry sends the message again.
       const busyCode = event.error_type === 'admission_conflict' && isBusyCode(event.code) ? event.code : null;
-      // Anthropic refused the user's setup token mid-turn, which the server's
-      // next read of it says: Settings and the picker take that now.
-      if (event.type === 'claude_code_off' && event.reason === 'signed_out') deps.refreshClaudeCode();
+      // A Claude Code refusal the server's next read of the tokens says:
+      // Settings and the picker take that now.
+      if (event.type === 'claude_code_off' && claudeCodeRefusal(event.reason, rt.workspaceId).reread) deps.refreshClaudeCode();
       // Only the frame that ends the server's own retries carries `max_retries`.
       const errorMessage = busyCode !== null
         ? rt.t(BUSY_REPLY_KEYS[busyCode])
@@ -863,7 +864,7 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
       const kind = event.error_kind as 'upstream' | 'internal' | undefined;
       const structured: StructuredError | undefined = busyCode !== null
         ? { message: errorMessage as string, kind: 'notice' }
-        : readStreamFailure(event, errorMessage as string);
+        : readStreamFailure(event, errorMessage as string, rt.workspaceId);
 
       // A server older than this view frames its time limit, then the same
       // stop again as an internal error: the card already says it, and a

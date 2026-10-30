@@ -29,6 +29,7 @@ from typing import Any
 import asyncssh
 
 from ptc_agent.config.core import PlatformSecretDefinition, SSHConfig
+from ptc_agent.core.claude_code_managed import claude_code_managed_sh, parse_managed
 from ptc_agent.core.paths import DEFAULT_SANDBOX_ROOT
 from ptc_agent.core.sandbox.providers._ssh_connect import (
     GatewayAccess,
@@ -52,7 +53,7 @@ from ptc_agent.core.sandbox.providers._ssh_shell import (
     root_dir_script,
     stop_script,
 )
-from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Link, pool
+from ptc_agent.core.sandbox.providers._ssh_transport import TRANSPORT_ERRORS, Link, Machine, pool
 from ptc_agent.core.sandbox.providers.ssh_errors import (
     MACHINE_ID_PATTERN,
     SSHConnectError,
@@ -117,6 +118,12 @@ _REQUIRED_TOOLS_DARWIN = (
     "mktemp",
 )
 MUSL_UNSUPPORTED = "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet."
+#: Defines is_musl, whether this Linux runs on musl: the probe and the Claude
+#: Code CLI's installer both tell it this way.
+IS_MUSL_SH = (
+    "is_musl() { ! getconf GNU_LIBC_VERSION >/dev/null 2>&1 && "
+    "{ ls /lib/ld-musl-* >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; }; }\n"
+)
 # The installed runtime takes about this much of the home's filesystem.
 _DISK_NEEDED_BYTES = 3 * 1024**3
 # What the Computers dialog shows of a machine: its system and its hardware.
@@ -133,7 +140,7 @@ echo "cpu=$({ sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo; 
 echo "cores=$(nproc 2>/dev/null)"
 echo "memory=$(awk '/^MemTotal:/ {printf "%.0f", $2 * 1024}' /proc/meminfo 2>/dev/null)"; fi
 """
-_PROBE_SCRIPT = (r"""
+_PROBE_SCRIPT = (IS_MUSL_SH + r"""
 echo "os=$(uname -s)"
 echo "hostname=$(hostname 2>/dev/null || uname -n)"
 """ + MACHINE_FACTS_SCRIPT + r"""
@@ -146,11 +153,12 @@ else case "$e" in *tty*) echo sudo=tty ;; *) echo sudo=0 ;; esac; fi
 if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then echo fetch=1; fi
 tools="TOOLS"; [ "$(uname -s)" = Darwin ] && tools="DARWIN_TOOLS"
 m=""; for t in $tools; do command -v "$t" >/dev/null 2>&1 || m="$m $t"; done; echo "missing=${m# }"
-if [ "$(uname -s)" = Linux ] && ! getconf GNU_LIBC_VERSION >/dev/null 2>&1 && { ls /lib/ld-musl-* >/dev/null 2>&1 || ldd --version 2>&1 | grep -qi musl; }; then echo libc=musl; fi
+if [ "$(uname -s)" = Linux ] && is_musl; then echo libc=musl; fi
 [ -r /proc/sys/kernel/random/boot_id ] && echo bootid=1
 [ -n "$(sysctl -n kern.bootsessionuuid 2>/dev/null)" ] && echo bootid=1
 d="$HOME/.langalpha"; [ -d "$d" ] || d="$HOME"
 echo "disk=$(df -Pk "$d" 2>/dev/null | awk 'NR==2 {print $4 * 1024}')"
+""" + claude_code_managed_sh() + r"""echo "claude_code_managed=${cm# }"
 """).replace("DARWIN_TOOLS", " ".join(_REQUIRED_TOOLS_DARWIN)).replace(
     "TOOLS", " ".join(_REQUIRED_TOOLS)
 )
@@ -228,6 +236,9 @@ class SSHProbe:
     # Whether the machine holds the computer the probe was asked about
     # (``known_as``); False when it was asked about none.
     knows_computer: bool = False
+    # Whether an organization's managed Claude Code settings there keep
+    # Claude Code from running on the computer.
+    claude_code_blocked: bool = False
 
     def machine(self) -> dict[str, Any]:
         """The facts kept on the computer for its details, only those read."""
@@ -703,6 +714,7 @@ def _probe_result(
         cpu=read.get("cpu", ""),
         cores=read.get("cores"),
         memory_bytes=read.get("memory_bytes"),
+        claude_code_blocked=bool(parse_managed(facts.get("claude_code_managed", ""))),
     )
 
 
@@ -821,6 +833,14 @@ class SSHProvider(SandboxProvider):
 
     async def get(self, sandbox_id: str) -> SSHRuntime:
         return self._runtime(sandbox_id)
+
+    def machine(self, sandbox_id: str) -> Machine:
+        """The computer's machine, for work that runs its own channels on it
+        (a Claude Code turn, its token). It holds nothing of this provider's,
+        since the connection pool is the process's, so it outlives the
+        provider."""
+        runtime = self._runtime(sandbox_id)
+        return Machine(runtime.link, lambda: runtime.working_dir)
 
     async def close(self) -> None:
         # The pool belongs to the process, and other runtimes still use it.

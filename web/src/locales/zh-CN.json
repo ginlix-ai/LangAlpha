@@ -1569,6 +1569,8 @@
     "keySkipped": "我们无法安全地移除密钥，它仍可用于登录这台机器。",
     "keyUnreached": "我们无法连接这台机器，密钥仍留在上面。",
     "keyRemoveYourself": "如需自行移除，请在 ~/.ssh/authorized_keys 中删除以 {{comment}} 结尾的那一行，其指纹为 {{fingerprint}}。",
+    "tokenUnreached": "我们无法连接这台机器，它的 Claude Code token 仍留在上面。如需自行移除，请在这台机器上删除 {{path}}。",
+    "tokenRemoveFailed": "我们无法从这台机器上移除它的 Claude Code token。如需自行移除，请在这台机器上删除 {{path}}。",
     "removed": "已移除 {{name}}",
     "removeFailed": "无法移除这台计算机，请重试。",
     "removeBlocked": {
@@ -1729,6 +1731,7 @@
       "sudoRoot": "以 root 身份连接。",
       "sudoYes": "可使用 sudo",
       "sudoNo": "无法使用 sudo，部分工具可能无法安装。",
+      "claudeCodePolicy": "这台电脑上装有你所在组织的 Claude Code 策略，因此 Claude Code 模型无法在这里运行。",
       "folder": "文件夹",
       "folderHint": "工作区在你机器上的存放位置。",
       "folderShown": "工作区存放在 {{folder}}。",
@@ -2453,7 +2456,8 @@
       "taskCostHeader": "单个任务花费",
       "taskCostNote": "粗略估计调整推理强度后，一个典型任务的花费相对默认档位如何变化。",
       "claudeCodeRejected": "Claude 拒绝了您的 setup token，请在设置中添加新的 token 后使用此模型",
-      "claudeCodeNeedsOwnComputer": "仅可在您自己电脑上的工作区中使用"
+      "claudeCodeNeedsOwnComputer": "仅可在您自己电脑上的工作区中使用",
+      "claudeCodePolicyBlocked": "你所在组织的 Claude Code 策略不允许它在这台电脑上运行"
     },
     "voice": {
       "start": "开启语音输入",
@@ -6230,6 +6234,7 @@
       "unknownLong": "无法检查您的订阅，请刷新页面重试。",
       "keyRefused": "密钥未被接受",
       "withdrawn": "已不再支持",
+      "unavailable": "不可用",
       "configured": "已配置 API 密钥",
       "notConnected": "未连接",
       "offline": "离线",
@@ -6311,6 +6316,7 @@
         "redis_unavailable": "暂时无法保存 token，请稍后重试。",
         "computer_not_found": "这台电脑已不可用。",
         "needs_perl": "这台电脑上的 Claude Code 需要 perl。请安装 perl 后重试。",
+        "computer_unsupported": "这台电脑运行的是 musl（例如 Alpine Linux），LangAlpha 的运行环境暂不支持。",
         "cli_unavailable": "无法在这台电脑上设置 Claude Code，请重试。",
         "write_failed": "无法在这台电脑上保存 token，请重试。",
         "unknown": "无法保存 token，请重试。"
@@ -6331,6 +6337,7 @@
           "unavailable": "您的账户未开启 Claude Code。请在设置的实验功能中开启。",
           "computer_not_found": "这台电脑已不可用。",
           "needs_perl": "这台电脑上的 Claude Code 需要 perl。请安装 perl 后重试。",
+          "computer_unsupported": "这台电脑运行的是 musl（例如 Alpine Linux），LangAlpha 的运行环境暂不支持。",
           "cli_unavailable": "无法在这台电脑上设置 Claude Code，请重新发送代码。",
           "write_failed_spent": "无法在这台电脑上保存 token，且此代码已无法再次使用。请重新登录。",
           "redis_unavailable": "登录暂时不可用，请稍后重试。",
@@ -6359,6 +6366,7 @@
         "ownToken": "使用这台电脑自己的 token",
         "savedToken": "使用您已保存的 token",
         "noToken": "这台电脑还没有 setup token",
+        "policyBlocked": "这台电脑上装有你所在组织的 Claude Code 策略，因此 LangAlpha 无法在这里运行 Claude Code。",
         "savedRejected": "Claude 拒绝了您已保存的 token，它可能已过期或被撤销。",
         "offline": "这台电脑未在运行，无法检查它的 token。",
         "addOwn": "为它添加 token"

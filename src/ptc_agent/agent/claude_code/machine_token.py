@@ -9,7 +9,7 @@ it removes the file, and asks whether a usable one is there, but never reads
 it back. Every script runs on the computer's pooled SSH connection, the token
 travelling on the exec channel's stdin only. What makes a token file usable is
 written once, in perl (``token_file.pl``), and both the status check
-(``machine_token_state``) and the shim a turn starts the CLI through
+(``machine_state``) and the shim a turn starts the CLI through
 (``token_shim.pl``, run by ``SSHLauncher``) read the file by it.
 """
 
@@ -21,10 +21,12 @@ import re
 import shlex
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, NamedTuple, cast, get_args
 
+from ptc_agent.core.claude_code_managed import claude_code_managed_sh, parse_managed
 from ptc_agent.core.paths import CLAUDE_CODE_TOKEN_DIR, LANGALPHA_CONFIG_DIR
 from ptc_agent.core.sandbox.providers._ssh_transport import Link
+from ptc_agent.core.sandbox.providers.ssh import IS_MUSL_SH
 from src.llms.claude_code import is_token_text
 
 #: Run by the login shell: reads one line of stdin as a script and runs it,
@@ -38,15 +40,35 @@ TOKEN_DIR_SH = (
     'c=${XDG_CONFIG_HOME:-}; case "$c" in /*) ;; *) c="$HOME/.config" ;; esac; '
     f'd="$c/{CLAUDE_CODE_TOKEN_DIR}"; '
 )
+#: Prints the tokens' folder ``$d`` on a line of its own, ``~`` for the login's home.
+FOLDER_SH = 's=$d; h=${HOME%/}; [ -n "$h" ] && case "$d" in "$h"/*) s="~/${d#"$h"/}" ;; esac; printf "%s\\n" "$s"; '
 NO_PERL = "Claude Code on this computer needs perl, which was not found on its PATH"
+#: Prints 1 if anything is at the token's path ``$f``, a file the shim
+#: ignores included, else 0. Needs no perl.
+TOKEN_THERE_SH = 'if [ -e "$f" ] || [ -L "$f" ]; then echo 1; else echo 0; fi; '
 #: Finds perl as ``$p``, or says it is missing and exits 127.
 FIND_PERL = f"p=$(command -v perl) || {{ echo {shlex.quote(NO_PERL)} >&2; exit 127; }}; "
 #: A staged token left this long belongs to a check that died with its connection.
 STAGED_STALE_MINUTES = 15
 _SCRIPT_S = 30
+#: What a token script may print on each stream: a name, a state, a line of
+#: error. A login whose shell prints more is not one these scripts can read.
+OUTPUT_CAP = 4096
 _STAGED = re.compile(r"\.staged\.[0-9a-f-]{36}\.[A-Za-z0-9]{6,}")
 
-TokenFile = Literal["file", "invalid", "none"]
+TokenFile = Literal["file", "invalid", "none", "policy", "no_perl", "unsupported"]
+
+
+class MachineState(NamedTuple):
+    """What the status check finds on the machine: the token file, as the shim
+    would read it, unless Claude Code cannot run there at all. ``present``
+    says whether anything is at the token's path, which ``policy``,
+    ``no_perl`` and ``unsupported`` cannot tell; ``folder`` is the
+    tokens' folder, with ``~`` for the login's home."""
+
+    file: TokenFile
+    present: bool = False
+    folder: str | None = None
 
 
 def token_name(computer_id: str) -> str:
@@ -86,25 +108,38 @@ def word(s: str) -> str:
     return f"$'{escaped}'"
 
 
+async def _capped(link: Link, stream: Any) -> bytes:
+    """``stream`` to its end, failing once it passes ``OUTPUT_CAP``."""
+    out = bytearray()
+    while chunk := await stream.read(OUTPUT_CAP):
+        out += chunk
+        if len(out) > OUTPUT_CAP:
+            raise RuntimeError(f"{link.target.host} printed more than {OUTPUT_CAP} bytes in reply to a token script")
+    return bytes(out)
+
+
 async def _run_stream(link: Link, script: str, data: bytes = b"") -> tuple[int | None, str, str]:
     """Run a one-line script with ``data`` after it on stdin, on the control channel."""
     async with link.in_use(), asyncio.timeout(_SCRIPT_S):
         process = await link.open_process(STREAM_BOOT, slot=link.control_slot)
+        reads = [asyncio.ensure_future(_capped(link, s)) for s in (process.stdout, process.stderr)]
         try:
             process.stdin.write(script.encode() + b"\n" + data)
             process.stdin.write_eof()
-            out, err = await asyncio.gather(process.stdout.read(), process.stderr.read())
+            out, err = await asyncio.gather(*reads)
             await process.wait_closed()
         finally:
+            for read in reads:
+                read.cancel()
             process.close()
     status = process.exit_status if process.exit_signal is None else None
     return status, out.decode(errors="replace"), err.decode(errors="replace").strip()
 
 
-async def has_perl(link: Link) -> bool:
-    """Whether the machine has the perl the shim and the status check run in."""
-    status, _, _ = await _run_stream(link, f"{FIND_PERL}exit 0")
-    return status == 0
+def _check(ok: bool, link: Link, doing: str, status: int | None, err: str) -> None:
+    """Raise unless ``ok``, naming what could not be done there in the machine's own words."""
+    if not ok:
+        raise RuntimeError(f"Could not {doing} on {link.target.host}: {err or f'exit {status}'}")
 
 
 async def stage_machine_token(link: Link, computer_id: str, token: str) -> str:
@@ -132,31 +167,31 @@ async def stage_machine_token(link: Link, computer_id: str, token: str) -> str:
     )
     status, out, err = await _run_stream(link, script, token.encode() + b"\n")
     name = out.strip()
-    if status != 0 or not _STAGED.fullmatch(name):
-        raise RuntimeError(f"Could not save the token on {link.target.host}: {err or f'exit {status}'}")
+    _check(status == 0 and _STAGED.fullmatch(name) is not None, link, "save the token", status, err)
     return name
 
 
-async def promote_machine_token(link: Link, computer_id: str, staged: str) -> None:
-    """Rename the staged token over the computer's, once its check passed. A
-    token path that is a symlink, not a file, or not the login's own is refused."""
+async def promote_machine_token(link: Link, computer_id: str, staged: str) -> str:
+    """Rename the staged token over the computer's, once its check passed; the
+    tokens' folder, as ``MachineState.folder`` spells it. A token path that is
+    a symlink or not a file is refused, as a removal refuses it; a file of
+    another owner's is replaced, as a removal would take it."""
     script = (
         f"{TOKEN_DIR_SH}f=\"$d/{token_name(computer_id)}\"; s=\"$d/{checked_name(staged)}\"; "
         'if [ -L "$s" ] || [ ! -f "$s" ] || [ ! -O "$s" ]; then echo "the token staged in $d is gone" >&2; exit 3; fi; '
-        'if [ -L "$f" ] || { [ -e "$f" ] && { [ ! -f "$f" ] || [ ! -O "$f" ]; }; }; then '
-        'echo "$f is a symbolic link, not a file, or not yours, so it was left as it is" >&2; exit 3; fi; '
-        'mv -f -- "$s" "$f"'
+        'if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then '
+        'echo "$f is a symbolic link or not a file, so it was left as it is" >&2; exit 3; fi; '
+        f'mv -f -- "$s" "$f" || exit 1; {FOLDER_SH}'
     )
-    status, _, err = await _run_stream(link, script)
-    if status != 0:
-        raise RuntimeError(f"Could not save the token on {link.target.host}: {err or f'exit {status}'}")
+    status, out, err = await _run_stream(link, script)
+    _check(status == 0, link, "save the token", status, err)
+    return out.strip()
 
 
 async def discard_staged_token(link: Link, staged: str) -> None:
     """Remove a staged token: the computer's own is never touched."""
     status, _, err = await _run_stream(link, f'{TOKEN_DIR_SH}rm -f -- "$d/{checked_name(staged)}"')
-    if status != 0:
-        raise RuntimeError(f"Could not remove a staged token on {link.target.host}: {err or f'exit {status}'}")
+    _check(status == 0, link, "remove a staged token", status, err)
 
 
 async def remove_machine_token(link: Link, computer_id: str) -> bool:
@@ -171,19 +206,22 @@ async def remove_machine_token(link: Link, computer_id: str) -> bool:
         'rm -f -- "$f" && echo 1'
     )
     status, out, err = await _run_stream(link, script)
-    if status != 0:
-        raise RuntimeError(f"Could not remove the token on {link.target.host}: {err or f'exit {status}'}")
+    _check(status == 0, link, "remove the token", status, err)
     return out.strip() == "1"
 
 
-async def machine_token_state(link: Link, computer_id: str) -> TokenFile:
+async def machine_state(link: Link, computer_id: str) -> MachineState:
     """Whether the machine holds a token for the computer that a turn would
-    use, by the rules the shim reads it by; the content never leaves the
-    machine.
+    use, by the rules the shim reads it by; its content never leaves the machine.
 
     ``invalid`` is a file the shim ignores: a symlink, not a regular file, not
-    the login's own, open to group or others, or holding nothing but space. A
-    machine with no perl has no token a turn could use, so it reads ``none``.
+    the login's own, open to group or others, or holding nothing but space.
+    ``policy`` is a machine an organization's managed Claude Code settings
+    are on (``claude_code_managed_sh``), whatever else holds there; else
+    ``unsupported`` one on musl, where no build of the CLI runs, told before
+    ``no_perl``, one with no perl, where the shim cannot start the CLI with
+    any token, its own or a relayed one. ``present`` still says whether a
+    token file is there, as found without perl.
     The computer's staged tokens a lost connection left behind are swept on the
     way, so call it only under the computer's change lock.
     """
@@ -191,11 +229,16 @@ async def machine_token_state(link: Link, computer_id: str) -> TokenFile:
     script = (
         f"{TOKEN_DIR_SH}find \"$d\" -maxdepth 1 -type f -name '.staged.{name}.*' -mmin +{STAGED_STALE_MINUTES} "
         "-exec rm -f {} + 2>/dev/null; "
-        f'p=$(command -v perl) || {{ echo none; exit 0; }}; '
-        f'exec "$p" -e {word(state_script())} "$d/{name}"'
+        f'{claude_code_managed_sh()}printf "%s\\n" "${{cm# }}"; '
+        f'f="$d/{name}"; {TOKEN_THERE_SH}'
+        f'{FOLDER_SH}{IS_MUSL_SH.strip()}; if [ "$(uname -s)" = Linux ] && is_musl; then echo unsupported; exit 0; fi; '
+        'p=$(command -v perl) || { echo no_perl; exit 0; }; '
+        f'exec "$p" -e {word(state_script())} "$f"'
     )
     status, out, err = await _run_stream(link, script)
-    state = out.strip()
-    if status != 0 or state not in ("file", "invalid", "none"):
-        raise RuntimeError(f"Could not read the token's state on {link.target.host}: {err or f'exit {status}'}")
-    return state  # type: ignore[return-value]
+    managed, _, rest = out.partition("\n")
+    present, _, rest = rest.partition("\n")
+    folder, _, found = rest.rstrip("\n").rpartition("\n")
+    ok = status == 0 and present in ("0", "1") and found in get_args(TokenFile)
+    _check(ok, link, "read the token's state", status, err)
+    return MachineState("policy" if parse_managed(managed) else cast(TokenFile, found), present == "1", folder)

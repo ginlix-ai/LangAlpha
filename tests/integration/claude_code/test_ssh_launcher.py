@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import asyncssh
 import pytest
@@ -29,13 +30,15 @@ from langgraph.prebuilt import ToolNode
 
 from ptc_agent.agent.claude_code.runtime import ClaudeTurnFailed, build_claude_code_graph, token_works
 from ptc_agent.agent.claude_code import ssh_launcher
+from ptc_agent.agent.claude_code.cli_install import CliMissing
 from ptc_agent.agent.claude_code.machine_token import (
-    machine_token_state,
+    machine_state,
     promote_machine_token,
     remove_machine_token,
     stage_machine_token,
 )
 from ptc_agent.agent.claude_code.ssh_launcher import SSHLauncher
+from ptc_agent.core.claude_code_managed import claude_code_managed_sh, parse_managed
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.providers import _ssh_transport
 from ptc_agent.core.sandbox.providers._ssh_connect import SSHTarget
@@ -54,6 +57,34 @@ OTHER = "5d0c1f2e-8a7b-4c3d-9e1f-0a2b3c4d5e6f"
 TOKEN_DIR = "/home/dev/.config/langalpha/claude-code"
 TOKEN_FILE = f"{TOKEN_DIR}/{CID}"
 SPEC = spec("claude-haiku-5-5")
+
+
+async def launcher_finds(link: Link) -> tuple[tuple[str, ...], bool]:
+    """What a launcher readying the machine finds there before it looks for
+    the CLI: the managed sources it refuses the machine for, as the snippet
+    it runs names them there, and whether it has perl, which a refused
+    machine is not asked."""
+
+    async def connect() -> Link:
+        return link
+
+    named = await link.run(claude_code_managed_sh() + 'printf %s "$cm"', timeout=30)
+    sources = parse_managed(named.stdout.decode())
+    on_blocked = AsyncMock()
+    launcher = SSHLauncher(_ssh_transport.Machine(connect, lambda: ROOT), identity="test-user", token_file=CID,
+                           install=False, on_blocked=on_blocked)
+    try:
+        await launcher.ready()
+    except ClaudeTurnFailed as e:
+        if e.kind == "needs_perl":
+            return (), False
+        assert e.kind == "policy_blocked" and sources and str(list(sources)) in e.detail
+        assert on_blocked.await_count == 1
+        return sources, True
+    except CliMissing:
+        pass
+    assert not sources
+    return (), True
 
 
 @dataclass
@@ -197,7 +228,7 @@ def _after_turn(m: Machine) -> None:
 async def test_a_turn_runs_its_tools_in_the_backend_and_the_next_resumes_from_the_checkpoint(machine, api):
     link = await machine.link()
     await write_machine_token(link, TOKEN)
-    assert await machine_token_state(link, CID) == "file"
+    assert (await machine_state(link, CID)).file == "file"
     graph = _graph(machine)
     launcher = _launcher(machine, api)
     SCAN.clear()
@@ -293,7 +324,7 @@ def _break(m: Machine, how: str) -> None:
 async def test_a_token_file_the_machine_does_not_keep_privately_is_refused(machine, api, how):
     _break(machine, how)
     try:
-        assert await machine_token_state(await machine.link(), CID) == "invalid"
+        assert (await machine_state(await machine.link(), CID)).file == "invalid"
         stored = "sk-ant-oat01-stored-" + uuid.uuid4().hex
         relay = Relay(stored)
         launcher, _ = await _turn(machine, api, "t-broken", "ECHO hi", relay)
@@ -427,7 +458,7 @@ async def test_the_token_is_written_privately_and_a_symlink_in_its_place_is_refu
         assert machine.sh(f"test -L {TOKEN_FILE} && echo link").strip() == "link"
     finally:
         machine.sh(f"rm -f {TOKEN_FILE} {TOKEN_DIR}/.staged.* /home/dev/target")
-    assert await machine_token_state(link, CID) == "none"
+    assert (await machine_state(link, CID)).file == "none"
     assert not await remove_machine_token(link, CID)
 
 
@@ -436,7 +467,7 @@ async def test_a_machine_without_perl_says_so(machine, api):
     try:
         with pytest.raises(Exception, match="needs perl"):
             await _turn(machine, api, "t-perl", "ECHO hi")
-        assert await machine_token_state(await machine.link(), CID) == "none", "no token a turn could use"
+        assert (await machine_state(await machine.link(), CID)).file == "no_perl", "no token a turn could use"
         _after_turn(machine)
     finally:
         machine.sh("mv /usr/bin/perl.off /usr/bin/perl", user="root")
@@ -450,7 +481,7 @@ async def test_two_computers_on_one_login_each_sign_in_with_their_own_token(mach
         await run_turn(SPEC, _launcher(machine, api, token_file=OTHER), _graph(machine), "t-other", [HumanMessage("ECHO hi")])
     await _turn(machine, api, "t-mine", "ECHO hi")
     assert set(api.credentials) == {"sk-ant-oat01-revoked", TOKEN} and api.credentials[-1] == TOKEN
-    assert await remove_machine_token(link, OTHER) and await machine_token_state(link, CID) == "file"
+    assert await remove_machine_token(link, OTHER) and (await machine_state(link, CID)).file == "file"
     _after_turn(machine)
 
 

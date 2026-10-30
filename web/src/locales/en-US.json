@@ -1534,6 +1534,8 @@
     "keySkipped": "We could not safely remove our key, so it still lets us log in there.",
     "keyUnreached": "We could not reach the machine, so our key is still there.",
     "keyRemoveYourself": "To remove it yourself, delete the line ending in {{comment}} from ~/.ssh/authorized_keys. Its fingerprint is {{fingerprint}}.",
+    "tokenUnreached": "We could not reach the machine, so its Claude Code token is still there. To remove it yourself, delete {{path}} on it.",
+    "tokenRemoveFailed": "We could not remove its Claude Code token from the machine. To remove it yourself, delete {{path}} on it.",
     "removed": "{{name}} removed",
     "removeFailed": "Couldn't remove this computer. Try again.",
     "removeBlocked": {
@@ -1694,6 +1696,7 @@
       "sudoRoot": "Connecting as root.",
       "sudoYes": "sudo available",
       "sudoNo": "sudo is not available. Some tools may not install.",
+      "claudeCodePolicy": "Your organization's Claude Code policy is installed on this computer, so Claude Code models won't run here.",
       "folder": "Folder",
       "folderHint": "Where workspaces are kept on your machine.",
       "folderShown": "Workspaces go in {{folder}}.",
@@ -2423,7 +2426,8 @@
       "taskCostHeader": "Cost per task",
       "taskCostNote": "A rough estimate of how a typical task's cost changes with effort, compared with the default level.",
       "claudeCodeRejected": "Claude refused your setup token. Add a new one in Settings to use this model",
-      "claudeCodeNeedsOwnComputer": "Runs only on workspaces on your own computers"
+      "claudeCodeNeedsOwnComputer": "Runs only on workspaces on your own computers",
+      "claudeCodePolicyBlocked": "Your organization's Claude Code policy keeps it from running on this computer"
     },
     "voice": {
       "start": "Start voice input",
@@ -6306,6 +6310,7 @@
       "unknownLong": "Couldn't check your subscriptions. Reload to try again.",
       "keyRefused": "Key not accepted",
       "withdrawn": "No longer supported",
+      "unavailable": "Unavailable",
       "configured": "API key configured",
       "notConnected": "Not connected",
       "offline": "Offline",
@@ -6387,6 +6392,7 @@
         "redis_unavailable": "Saving a token isn't available right now. Try again in a moment.",
         "computer_not_found": "This computer isn't available anymore.",
         "needs_perl": "Claude Code needs perl on this computer. Install perl, then try again.",
+        "computer_unsupported": "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet.",
         "cli_unavailable": "Couldn't set up Claude Code on this computer. Try again.",
         "write_failed": "Couldn't save the token on this computer. Try again.",
         "unknown": "Couldn't save the token. Try again."
@@ -6407,6 +6413,7 @@
           "unavailable": "Claude Code isn't on for your account. Turn it on in Settings, under Experiments.",
           "computer_not_found": "This computer isn't available anymore.",
           "needs_perl": "Claude Code needs perl on this computer. Install perl, then try again.",
+          "computer_unsupported": "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet.",
           "cli_unavailable": "Couldn't set up Claude Code on this computer. Send the code again.",
           "write_failed_spent": "Couldn't save the token on this computer, and the code can't be used again. Sign in again.",
           "redis_unavailable": "Signing in isn't available right now. Try again in a moment.",
@@ -6435,6 +6442,7 @@
         "ownToken": "Uses its own token",
         "savedToken": "Uses your saved token",
         "noToken": "No setup token for this computer yet",
+        "policyBlocked": "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here.",
         "savedRejected": "Claude refused your saved token. It may have expired or been revoked.",
         "offline": "This computer isn't running, so its token can't be checked.",
         "addOwn": "Add its own token"

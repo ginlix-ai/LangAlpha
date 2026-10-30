@@ -9,7 +9,7 @@ import type { ClaudeCodeComputer } from '@/api/model';
 import type { MachineActions } from '../computerParts';
 
 const mocks = vi.hoisted(() => ({ entry: null as ClaudeCodeComputer | null }));
-vi.mock('@/hooks/useClaudeCode', () => ({ useClaudeCodeComputer: () => mocks.entry }));
+vi.mock('@/hooks/useClaudeCode', () => ({ useClaudeCodeComputers: () => ({ computers: mocks.entry ? [mocks.entry] : [] }) }));
 
 import { ComputerClaudeCode } from '../ComputerClaudeCode';
 
@@ -41,6 +41,17 @@ describe('ComputerClaudeCode', () => {
     const { actions } = render();
     fireEvent.click(screen.getByRole('button', { name: 'Add setup token' }));
     expect(actions.claudeCodeToken).toHaveBeenCalledWith('add');
+  });
+
+  it("says Claude Code can't run where an organization's policy is installed, offering only to remove a token left there", () => {
+    mocks.entry = { ...MAC, state: 'policy_blocked' };
+    const { rerender } = render();
+    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    expect(screen.getByText("Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here.")).toBeInTheDocument();
+    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual(['Remove']);
+    mocks.entry = { ...MAC, state: 'policy_blocked', source: null };
+    rerender(<ComputerClaudeCode computerId="cmp-mac" actions={{} as MachineActions} />);
+    expect(screen.queryAllByRole('button')).toEqual([]);
   });
 
   it('with Claude Code off, keeps a token left on the computer to remove', () => {

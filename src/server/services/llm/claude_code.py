@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from ptc_agent.core.claude_code_managed import local_managed
+from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from src.llms.claude_code import (
     FEATURE,
     ClaudeTurnFailed,
@@ -21,7 +23,8 @@ from src.llms.claude_code import (
     rows_available,
 )
 from src.llms.error_classification import iter_exception_chain
-from src.server.services.claude_code.machine import read_answer
+from src.server.services.claude_code.flow import POLICY_BLOCKED
+from src.server.services.claude_code.machine import NEEDS_PERL, computer_state, read_answer
 from src.server.services.claude_code.saved import usable_token
 from src.server.services.ssh_computers import is_own_computer
 
@@ -41,6 +44,9 @@ CLAUDE_CODE_OFF = {
         "On this server, Claude Code models run only on your own computers. Move this workspace to one of them, "
         "or pick another model."
     ),
+    "policy_blocked": POLICY_BLOCKED,
+    "needs_perl": NEEDS_PERL,
+    "computer_unsupported": MUSL_UNSUPPORTED,
 }
 
 
@@ -61,13 +67,24 @@ def _refusal(model_name: str | None, reason: str) -> dict[str, Any]:
     return {"message": CLAUDE_CODE_OFF[reason], "type": "claude_code_off", "model": model_name, "reason": reason}
 
 
+#: The turn failures admission would have refused the turn for, by the
+#: reason it gives: Anthropic refused the setup token, the launcher found
+#: an organization's policy installed where the CLI would run, or a computer
+#: with no perl or on musl, or the turn's workspace is not on an own computer
+#: where the backend runs none.
+_ADMISSION_REASON = {
+    "auth_failed": "signed_out", "policy_blocked": "policy_blocked", "needs_own_computer": "needs_own_computer",
+    "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
+}
+
+
 def claude_code_refusal(exc: BaseException, model_name: str | None) -> dict[str, Any] | None:
-    """The refusal a turn ends with when Anthropic refused its setup token
-    after admission let it run, worded as admission would have refused it;
-    None for any other failure."""
+    """The refusal a turn ends with when it failed, after admission let it
+    run, for what admission refuses a turn for, worded as admission would
+    have refused it; None for any other failure."""
     for current in iter_exception_chain(exc):
-        if isinstance(current, ClaudeTurnFailed) and current.kind == "auth_failed":
-            return _refusal(model_name, "signed_out")
+        if isinstance(current, ClaudeTurnFailed) and current.kind in _ADMISSION_REASON:
+            return _refusal(model_name, _ADMISSION_REASON[current.kind])
     return None
 
 
@@ -77,7 +94,8 @@ async def require_runnable(config, model: str, role: AgentRole, *, user_id: str,
 
     A workspace on the user's own computer runs the CLI on that machine, on
     any server. Anywhere else the CLI runs on the backend, which only a
-    self-hosted server offers. Neither waits on Anthropic or dials a machine.
+    self-hosted server offers, and only where no organization's policy is
+    installed. Neither waits on Anthropic or dials a machine.
     """
     from src.server.database.computer import get_computer_for_workspace
 
@@ -93,6 +111,8 @@ async def require_runnable(config, model: str, role: AgentRole, *, user_id: str,
         return
     if not backend_available():
         raise_claude_code_off(model, "needs_own_computer")
+    if await local_managed():
+        raise_claude_code_off(model, "policy_blocked")
     await require_signed_in(model, user_id)
 
 
@@ -108,17 +128,24 @@ async def require_signed_in(model: str, user_id: str) -> None:
 
 
 async def require_computer_signed_in(model: str, user_id: str, computer_id: str) -> None:
-    """Refuse a turn on an own computer whose fresh answer says it has no
-    usable token: Claude refused the machine's, or it has none and nothing
-    can be relayed.
+    """Refuse a turn on an own computer whose fresh answer reads, as Settings
+    shows it (``computer_state``), as one that cannot run there: an
+    organization's policy is installed there, the machine has no
+    perl or runs musl, or it has no usable
+    token (Claude refused the machine's, or it has none and nothing can be
+    relayed). A relayed token not known to be refused runs, as on the backend.
 
     Never dials the machine: a computer not checked lately runs, and one
     refused there ends the turn with this same message.
     """
     answer = await read_answer(computer_id)
-    if answer is None or not answer.fresh or answer.file in ("works", "unknown"):
+    if answer is None or not answer.fresh:
         return
-    if answer.file == "refused" or not backend_available() or await usable_token(user_id) is None:
+    relayed = answer.relays and backend_available() and await usable_token(user_id) is not None
+    state = computer_state(answer, "signed_in" if relayed else None)
+    if state in ("policy_blocked", "needs_perl", "computer_unsupported"):
+        raise_claude_code_off(model, state)
+    if state in ("rejected", "no_token"):
         raise_claude_code_off(model, "signed_out")
 
 

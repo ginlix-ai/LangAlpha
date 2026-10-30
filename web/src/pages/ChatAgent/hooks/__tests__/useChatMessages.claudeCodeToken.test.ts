@@ -1,13 +1,14 @@
 /**
  * A Claude Code turn refused for want of a working setup token, at admission
- * or mid-turn, links to where the user adds one, which the view showing it
- * resolves; any other Claude Code refusal keeps the server's words alone.
+ * or mid-turn, links to where the user adds one for the turn's workspace,
+ * which Settings resolves; any other Claude Code refusal keeps the server's
+ * words alone.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { act, waitFor } from '@testing-library/react';
 import { renderHookWithProviders } from '@/test/utils';
-import { CLAUDE_CODE_TOKEN_LINK } from '@/lib/claudeCode';
+import { claudeCodeTokenLink } from '@/lib/claudeCode';
 import { queryKeys } from '@/lib/queryKeys';
 
 vi.mock('react-i18next', () => ({
@@ -66,7 +67,21 @@ describe('useChatMessages: a Claude Code turn without a working token', () => {
   it('at admission links to adding a token, and rereads the token', async () => {
     refuseAtAdmission('signed_out');
     const { result, reread } = await send();
-    await waitFor(() => expect(result.current.messageError).toEqual({ message: WORDS, links: [CLAUDE_CODE_TOKEN_LINK] }));
+    await waitFor(() => expect(result.current.messageError).toEqual({ message: WORDS, links: [claudeCodeTokenLink('ws-test')] }));
+    expect(reread()).toBe(true);
+  });
+
+  it("at admission on a computer whose organization's policy keeps Claude Code out rereads the computers, with nothing to add", async () => {
+    refuseAtAdmission('policy_blocked');
+    const { result, reread } = await send();
+    await waitFor(() => expect(result.current.messageError).toBe(WORDS));
+    expect(reread()).toBe(true);
+  });
+
+  it.each(['needs_perl', 'computer_unsupported'])('at admission on a computer refused with %s rereads the computers, with nothing to add', async (reason) => {
+    refuseAtAdmission(reason);
+    const { result, reread } = await send();
+    await waitFor(() => expect(result.current.messageError).toBe(WORDS));
     expect(reread()).toBe(true);
   });
 
@@ -86,7 +101,21 @@ describe('useChatMessages: a Claude Code turn without a working token', () => {
     expect(reread()).toBe(true);
     await waitFor(() => {
       const reply = result.current.messages.find((m) => m.role === 'assistant') as { structuredError?: unknown } | undefined;
-      expect(reply?.structuredError).toEqual({ message: WORDS, links: [CLAUDE_CODE_TOKEN_LINK] });
+      expect(reply?.structuredError).toEqual({ message: WORDS, links: [claudeCodeTokenLink('ws-test')] });
+    });
+  });
+
+  it("mid-turn on a computer whose organization's policy keeps Claude Code out rereads the computers, with nothing to add", async () => {
+    mockSendStream.mockImplementation(async (_m: string, _w: string, _t: string | null, { onEvent }: { onEvent: (e: Record<string, unknown>) => void }) => {
+      onEvent({ event: 'error', error: WORDS, message: WORDS, type: 'claude_code_off', model: 'claude-x-code', reason: 'policy_blocked' });
+      return { disconnected: false };
+    });
+    const { result, reread } = await send();
+    expect(reread()).toBe(true);
+    await waitFor(() => {
+      const reply = result.current.messages.find((m) => m.role === 'assistant') as { structuredError?: { links?: unknown } } | undefined;
+      expect(reply).toBeDefined();
+      expect(reply?.structuredError?.links).toBeUndefined();
     });
   });
 });

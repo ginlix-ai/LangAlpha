@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import partial
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol
+
+from pydantic import BaseModel
 
 from src.llms.claude_code import FEATURE, backend_available, is_token_text, rows_available
 from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn, exchange_failure
@@ -29,6 +32,9 @@ from src.server.services.features import user_feature_enabled
 from src.utils.cache.redis_cache import get_cache_client
 
 from .checks import CHECK_CLEANUP_S, CHECK_S, MARGIN_S, Held, holds, require_works
+
+if TYPE_CHECKING:
+    from ptc_agent.agent.claude_code.launcher import Launcher
 
 logger = logging.getLogger(__name__)
 
@@ -44,39 +50,47 @@ MINT_S = 30
 #: The longest a dial, a write to or a removal from a machine may take, and a
 #: removal of the saved token.
 MACHINE_IO_S = 30
+#: Why Claude Code is refused where an organization's managed Claude Code settings are installed.
+POLICY_BLOCKED = (
+    "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here."
+)
 
 
-class TokenHome(Protocol):
-    """Where a token is kept, as the flow changes it.
+class TokenHome[Status: BaseModel](Protocol):
+    """Where a token is kept, as the flow changes it, and ``Status`` how
+    Settings shows where it stands.
 
     ``lock`` keeps changes to one at a time, ``sign_in`` is the sign-in
-    whose token comes here, ``who`` names it in logs, and ``place_s`` is
-    what placing and taking a token back spend beyond its check.
+    whose token comes here, ``who`` names it in logs, ``place_s`` is
+    what placing and taking a token back spend beyond its check, and
+    ``remove_s`` what a removal spends.
     """
 
     lock: str
     sign_in: PendingSignIn
     who: str
     place_s: int
+    remove_s: int
 
     async def ready(self, *, install: bool = True) -> None:
-        """Anything the change needs before its hold: reaching a machine, and with ``install`` its CLI."""
+        """Anything the change needs before its hold: reaching a machine, and
+        with ``install`` its CLI."""
 
-    def placed(self, token: str, *, held: Held, retryable: bool) -> AbstractAsyncContextManager[Any]:
+    def placed(self, token: str, *, held: Held, retryable: bool) -> AbstractAsyncContextManager[Launcher]:
         """The token where its check can sign in with it, yielding that check's
         launcher; it is kept in place only once the check passes, and one the
         check refuses or cannot vouch for never replaces the token in use."""
 
     async def keep(
         self, token: str, *, held: Held, email: str | None, expires_at: datetime, token_uuid: str,
-    ) -> Any:
+    ) -> Status:
         """Keep a checked token, unless the hold lapsed; where it stands now."""
 
-    async def current(self) -> Any:
+    async def current(self) -> Status:
         """Where the token stands as last known, for a second paste of a sign-in already saved."""
 
-    async def remove(self) -> None:
-        """Remove the token, under the hold."""
+    async def remove(self, *, held: Held) -> None:
+        """Remove the token, under the hold, asked before what it keeps of the removal."""
 
 
 async def rows_on(user_id: str) -> bool:
@@ -99,16 +113,25 @@ def busy() -> OAuthRefusal:
 
 
 @asynccontextmanager
-async def changing(lock: str, *, hold_s: int) -> AsyncIterator[Held]:
+async def changing(lock: str, *, hold_s: int, wait_s: float = 0, required: bool = True) -> AsyncIterator[Held]:
     """One change to a token at a time, held for ``hold_s``, what the change
     spends at most, and ``MARGIN_S`` more; yields whether the hold still
-    stands, which a change asks before each write."""
+    stands, which a change asks before each write.
+
+    The hold is waited for up to ``wait_s``. One not taken by then refuses
+    the change, unless it is not ``required``: a change that must happen
+    whatever runs beside it goes on without the hold.
+    """
     cache = get_cache_client()
     holder = uuid.uuid4().hex
-    acquired = await cache.acquire_lock(lock, holder, (hold_s + MARGIN_S) * 1000)
-    if acquired is False:
+    deadline = time.monotonic() + wait_s
+    while (acquired := await cache.acquire_lock(lock, holder, (hold_s + MARGIN_S) * 1000)) is False:
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(1)
+    if required and acquired is False:
         raise busy()
-    if acquired is None:
+    if required and acquired is None:
         # Redis did not answer: without the hold a removal could land mid-save.
         raise OAuthRefusal(
             503, "redis_unavailable", "Connecting an account is unavailable right now. Try again shortly.",
@@ -117,7 +140,8 @@ async def changing(lock: str, *, hold_s: int) -> AsyncIterator[Held]:
     try:
         yield partial(holds, lock, holder)
     finally:
-        await cache.release_lock(lock, holder)
+        if acquired:
+            await cache.release_lock(lock, holder)
 
 
 def pasted_token(body: TokenBody) -> tuple[str, OAuthRefusal]:
@@ -188,16 +212,16 @@ async def _mint(flow: PendingSignIn, raw: str, who: str) -> tuple[claude_oauth.S
     return minted, state
 
 
-async def _save(
-    home: TokenHome, token: str, *, held: Held, rejected: OAuthRefusal, retryable: bool,
-    expires_at: datetime, email: str | None = None, token_uuid: str = "",
-) -> Any:
+async def _save[S: BaseModel](
+    home: TokenHome[S], token: str, *, held: Held, rejected: OAuthRefusal, retryable: bool, expires_at: datetime,
+    email: str | None = None, token_uuid: str = "",
+) -> S:
     async with home.placed(token, held=held, retryable=retryable) as launcher:
         await require_works(launcher, rejected=rejected, retryable=retryable)
     return await home.keep(token, held=held, email=email, expires_at=expires_at, token_uuid=token_uuid)
 
 
-async def start_sign_in(home: TokenHome) -> dict:
+async def start_sign_in(home: TokenHome[BaseModel]) -> dict:
     """Start a sign-in as ``claude setup-token`` does; the page Claude shows
     after it gives the code ``finish_sign_in`` takes."""
     started = await home.sign_in.start(claude_oauth.authorize_setup_token)
@@ -205,7 +229,7 @@ async def start_sign_in(home: TokenHome) -> dict:
     return started
 
 
-async def finish_sign_in(home: TokenHome, raw: str) -> Any:
+async def finish_sign_in[S: BaseModel](home: TokenHome[S], raw: str) -> S:
     """Exchange the pasted code for a setup token, check it, and keep it.
 
     The home is readied before the code is spent, so a machine that is off
@@ -225,18 +249,17 @@ async def finish_sign_in(home: TokenHome, raw: str) -> Any:
     return kept
 
 
-async def paste(home: TokenHome, token: str, rejected: OAuthRefusal) -> Any:
+async def paste[S: BaseModel](home: TokenHome[S], token: str, rejected: OAuthRefusal) -> S:
     """Keep a setup token the user made with ``claude setup-token``, once Claude serves it."""
     await home.ready()
     async with changing(home.lock, hold_s=CHECK_S + CHECK_CLEANUP_S + home.place_s) as held:
         return await _save(
-            home, token, held=held, rejected=rejected, retryable=True,
-            expires_at=datetime.now(timezone.utc) + TOKEN_LIFETIME,
+            home, token, held=held, rejected=rejected, retryable=True, expires_at=datetime.now(timezone.utc) + TOKEN_LIFETIME,
         )
 
 
-async def remove(home: TokenHome) -> None:
+async def remove(home: TokenHome[BaseModel]) -> None:
     """Remove the token, whether or not Claude Code is still on for the user."""
     await home.ready(install=False)
-    async with changing(home.lock, hold_s=MACHINE_IO_S):
-        await home.remove()
+    async with changing(home.lock, hold_s=home.remove_s) as held:
+        await home.remove(held=held)

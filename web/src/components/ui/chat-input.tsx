@@ -707,7 +707,7 @@ function ChatInput({
   // otherwise its row says why, and where the user can fix it: that
   // computer's token, or the saved one.
   const claudeCode = useWorkspaceClaudeCode(selectedWorkspaceId);
-  const tokenUrl = claudeCodeTokenUrl(claudeCode.computerId);
+  const tokenUrl = claudeCodeTokenUrl(selectedWorkspaceId);
   const modelRowStatus = (m: string): ModelRowStatus => {
     if (isClaudeCodeModel(modelMetadata[m])) {
       switch (claudeCode.state) {
@@ -715,6 +715,9 @@ function ChatInput({
         case 'no_token': return { unavailable: t('chat.modelSelector.claudeCodeSignedOut'), fix: () => navigate(tokenUrl) };
         case 'rejected': return { unavailable: t('chat.modelSelector.claudeCodeRejected'), fix: () => navigate(tokenUrl) };
         case 'needs_own_computer': return { unavailable: t('chat.modelSelector.claudeCodeNeedsOwnComputer') };
+        case 'policy_blocked': return { unavailable: t('chat.modelSelector.claudeCodePolicyBlocked') };
+        case 'needs_perl': return { unavailable: t('modelAccess.claudeCode.fail.needs_perl') };
+        case 'computer_unsupported': return { unavailable: t('modelAccess.claudeCode.fail.computer_unsupported') };
       }
     }
     return { tag: lapsedSignIn(m) ? t('modelAccess.status.needsReauth') : undefined };

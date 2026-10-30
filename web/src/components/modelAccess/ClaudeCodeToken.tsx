@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { ExternalLink, Shield } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,11 +7,12 @@ import { Loader } from '@/components/ui/loader';
 import { ModalShell } from '@/components/ui/ModalShell';
 import { useNow } from '@/hooks/useNow';
 import { readOAuthError } from '@/api/oauth';
-import { useClaudeCodeStatus } from '@/hooks/useClaudeCode';
+import { useClaudeCodeComputers, useClaudeCodeStatus } from '@/hooks/useClaudeCode';
+import { CLAUDE_CODE_UNRUNNABLE } from '@/lib/claudeCode';
 import { countdown } from './countdown';
 import { CopyButton, OpenProviderLink } from './parts';
-import { sheetActionOf, type TokenAction } from './tokenLine';
-import { SAVED_TOKEN, tokenSheetTitle, tokenTarget, type SheetAction, type TokenTarget, type TokenTargetRoutes } from './tokenTarget';
+import { TOKEN_ACTIONS, type TokenAction } from './tokenLine';
+import { SAVED_TOKEN, tokenCopy, tokenSheetTitle, useTokenRoutes, type SheetAction, type TokenRoutes, type TokenTarget } from './tokenTarget';
 
 /** Claude Code's install page, where step one sends anyone without it. */
 const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
@@ -24,12 +24,12 @@ const COMMAND = 'claude setup-token';
 const WORDED = {
   'modelAccess.claudeCode': new Set([
     'token_missing', 'token_rejected', 'check_unavailable', 'check_in_progress', 'unavailable', 'redis_unavailable',
-    'computer_not_found', 'cli_unavailable', 'needs_perl', 'write_failed',
+    'computer_not_found', 'cli_unavailable', 'needs_perl', 'computer_unsupported', 'write_failed',
   ]),
   'modelAccess.claudeCode.signIn': new Set([
     'unavailable', 'redis_unavailable', 'code_missing', 'invalid_callback_input', 'state_mismatch', 'no_pending_flow',
     'code_rejected', 'check_unavailable', 'check_unavailable_spent', 'token_rejected', 'unexpected_grant', 'check_in_progress',
-    'computer_not_found', 'cli_unavailable', 'needs_perl', 'write_failed_spent',
+    'computer_not_found', 'cli_unavailable', 'needs_perl', 'computer_unsupported', 'write_failed_spent',
   ]),
 };
 
@@ -41,11 +41,18 @@ const refusalOf = (err: unknown): Refusal => {
 };
 
 function say(t: (key: string) => string, scope: keyof typeof WORDED, r: Refusal): string {
+  if (r.code === 'policy_blocked') return t('modelAccess.claudeCode.computer.policyBlocked');
   const worded = WORDED[scope];
   const code = !r.retryable && worded.has(`${r.code}_spent`) ? `${r.code}_spent` : r.code;
   if (worded.has(code)) return t(`${scope}.fail.${code}`);
   return r.message || t(`${scope}.fail.unknown`);
 }
+
+/** A removal's refusal: in the server's sentence for a computer it can't
+ *  reach, which says what that computer's owner can do, and in our words
+ *  for anything else. */
+const sayRemoveFailed = (t: (key: string) => string, r: Refusal) =>
+  (r.code === 'computer_unreachable' && r.message ? r.message : t('modelAccess.claudeCode.removeFailed'));
 
 /** The server keeps a sign-in this long when its answer has no usable time. */
 const FALLBACK_LIFETIME_MS = 10 * 60_000;
@@ -63,17 +70,18 @@ export function ClaudeCodeTokenSheet({ target = SAVED_TOKEN, onSaved, onCancel }
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
-  const routes = tokenTarget(target, useQueryClient());
+  const routes = useTokenRoutes(target);
+  const { keys, values } = tokenCopy(target);
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t(routes.copy.intro, routes.values)}</p>
+        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t(keys.intro, values)}</p>
         <p className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
           <Shield aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{t(routes.copy.separate, routes.values)}</span>
+          <span>{t(keys.separate, values)}</span>
         </p>
       </div>
-      <SignInSection routes={routes} onSaved={onSaved} />
+      <SignInSection routes={routes} intro={t(keys.signInIntro, values)} onSaved={onSaved} />
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('modelAccess.claudeCode.pasteHeading')}</h3>
         <PastedTokenForm routes={routes} onSaved={onSaved} onCancel={onCancel} />
@@ -94,17 +102,7 @@ export function ClaudeCodeTokenModal({ target, action, onClose }: { target: Toke
   );
 }
 
-const ACTION_LABEL: Record<TokenAction, string> = {
-  add: 'modelAccess.claudeCode.add',
-  addNew: 'modelAccess.claudeCode.addNew',
-  addOwn: 'modelAccess.claudeCode.computer.addOwn',
-  replace: 'modelAccess.claudeCode.replace',
-  remove: 'modelAccess.claudeCode.remove',
-};
-
-/** A token line's buttons: one that adds a token stands out until there is
- *  one; Replace and Remove sit quiet beside a token that is there. Each
- *  other than Remove opens the sheet for what it does. */
+/** A token line's buttons, each as `TOKEN_ACTIONS` says. */
 export function TokenActions({ actions, onOpen, onRemove }: {
   actions: TokenAction[];
   onOpen: (action: SheetAction) => void;
@@ -114,17 +112,14 @@ export function TokenActions({ actions, onOpen, onRemove }: {
   if (actions.length === 0) return null;
   return (
     <div className="flex gap-1">
-      {actions.map((action) => (
-        <Button
-          key={action}
-          type="button"
-          variant={action === 'add' || action === 'addNew' ? 'outline' : 'ghost'}
-          size="sm"
-          onClick={action === 'remove' ? onRemove : () => onOpen(sheetActionOf(action))}
-        >
-          {t(ACTION_LABEL[action])}
-        </Button>
-      ))}
+      {actions.map((action) => {
+        const { label, sheet, prominent } = TOKEN_ACTIONS[action];
+        return (
+          <Button key={action} type="button" variant={prominent ? 'outline' : 'ghost'} size="sm" onClick={sheet ? () => onOpen(sheet) : onRemove}>
+            {t(label)}
+          </Button>
+        );
+      })}
     </div>
   );
 }
@@ -144,7 +139,7 @@ const EXPIRED: Refusal = { code: 'no_pending_flow', message: '', retryable: fals
  * checks before saving. A refusal the same code cannot get past starts the sign-in over,
  * since the code is spent; any other leaves the code to fix or send again.
  */
-function SignInSection({ routes, onSaved }: { routes: TokenTargetRoutes; onSaved: () => void }) {
+function SignInSection({ routes, intro, onSaved }: { routes: TokenRoutes; intro: string; onSaved: () => void }) {
   const { t } = useTranslation();
   const fieldId = useId();
   const errorId = useId();
@@ -225,7 +220,7 @@ function SignInSection({ routes, onSaved }: { routes: TokenTargetRoutes; onSaved
     const failure = phase.kind === 'start' ? phase.failure : null;
     return (
       <section className="flex flex-col items-start gap-3 rounded-lg p-4" style={card}>
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t(routes.copy.signInIntro, routes.values)}</p>
+        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{intro}</p>
         {failure && (
           <p role="alert" className="text-xs" style={{ color: 'var(--color-loss)' }}>{say(t, 'modelAccess.claudeCode.signIn', failure)}</p>
         )}
@@ -302,7 +297,7 @@ function SignInSection({ routes, onSaved }: { routes: TokenTargetRoutes; onSaved
  * Anthropic taking the token, so a refused one is never saved. The token
  * lives in this form's field alone, and leaves with it.
  */
-function PastedTokenForm({ routes, onSaved, onCancel }: { routes: TokenTargetRoutes; onSaved: () => void; onCancel: () => void }) {
+function PastedTokenForm({ routes, onSaved, onCancel }: { routes: TokenRoutes; onSaved: () => void; onCancel: () => void }) {
   const { t } = useTranslation();
   const fieldId = useId();
   const errorId = useId();
@@ -437,10 +432,8 @@ function PastedTokenForm({ routes, onSaved, onCancel }: { routes: TokenTargetRou
 }
 
 /** Confirms removing the setup token, the saved one or a computer's, runs it,
- *  and keeps the dialog open when it fails: with the server's sentence for a
- *  computer it can't reach, which says what that computer's owner can do,
- *  and in our words for anything else. Mounted only while open; `stacked`
- *  over a dialog that opened it. */
+ *  and keeps the dialog open with the reason when it fails. Mounted only
+ *  while open; `stacked` over a dialog that opened it. */
 export function RemoveClaudeCodeTokenDialog({ target = SAVED_TOKEN, stacked = false, onClose }: {
   target?: TokenTarget;
   stacked?: boolean;
@@ -451,7 +444,15 @@ export function RemoveClaudeCodeTokenDialog({ target = SAVED_TOKEN, stacked = fa
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Refusal | null>(null);
   const status = useClaudeCodeStatus();
-  const routes = tokenTarget(target, useQueryClient(), { fallsBackToSaved: status.runsHere && status.saved });
+  const { computers } = useClaudeCodeComputers();
+  const routes = useTokenRoutes(target);
+  const { keys, values } = tokenCopy(target);
+  // A computer's own token gone, the computer runs on the saved one where
+  // this server relays it, and the body says so: never one Claude refused,
+  // nor to a computer where Claude Code cannot run (`CLAUDE_CODE_UNRUNNABLE`).
+  const relays = target.kind === 'computer' && status.runsHere && status.saved && status.state !== 'rejected'
+    && !CLAUDE_CODE_UNRUNNABLE.has(computers.find((c) => c.computer_id === target.computerId)?.state ?? '');
+  const body = relays ? 'modelAccess.claudeCode.computer.removeBodySaved' : keys.removeBody;
 
   const confirm = async () => {
     setBusy(true);
@@ -469,7 +470,7 @@ export function RemoveClaudeCodeTokenDialog({ target = SAVED_TOKEN, stacked = fa
   return (
     <ModalShell
       labelId={titleId}
-      title={t(routes.copy.removeTitle, routes.values)}
+      title={t(keys.removeTitle, values)}
       onClose={onClose}
       closeDisabled={busy}
       width="narrow"
@@ -486,11 +487,11 @@ export function RemoveClaudeCodeTokenDialog({ target = SAVED_TOKEN, stacked = fa
       }
     >
       <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-        {t(routes.copy.removeBody, routes.values)}
+        {t(body, values)}
       </p>
       {failure && !busy && (
         <p role="alert" className="text-sm" style={{ color: 'var(--color-loss)' }}>
-          {failure.code === 'computer_unreachable' && failure.message ? failure.message : t('modelAccess.claudeCode.removeFailed')}
+          {sayRemoveFailed(t, failure)}
         </p>
       )}
     </ModalShell>

@@ -8,9 +8,31 @@ import { copyText } from '@/lib/clipboard';
 
 export type AccessStatus = 'connected' | 'needs_reauth' | 'working' | 'unknown';
 
+/** The states a row has beside a connection's own, each a word in its colour:
+ *  a key a provider refused or no longer takes, something that cannot run
+ *  where it is, or something not connected now (nothing added yet, its
+ *  computer offline, or off). */
+const WORDED_STATUS = {
+  refused: { key: 'modelAccess.status.keyRefused', color: 'var(--color-warning)' },
+  withdrawn: { key: 'modelAccess.status.withdrawn', color: 'var(--color-warning)' },
+  unavailable: { key: 'modelAccess.status.unavailable', color: 'var(--color-warning)' },
+  not_connected: { key: 'modelAccess.status.notConnected', color: 'var(--color-text-tertiary)' },
+  offline: { key: 'modelAccess.status.offline', color: 'var(--color-text-tertiary)' },
+  off: { key: 'modelAccess.status.off', color: 'var(--color-text-tertiary)' },
+} as const;
+
+/** Any row's status. */
+export type RowStatus = AccessStatus | keyof typeof WORDED_STATUS;
+
+const isWorded = (status: RowStatus): status is keyof typeof WORDED_STATUS => status in WORDED_STATUS;
+
 /** One connection's live state, worded the same on every surface. */
-export function StatusLabel({ status, className }: { status: AccessStatus; className?: string }) {
+export function StatusLabel({ status, className }: { status: RowStatus; className?: string }) {
   const { t } = useTranslation();
+  if (isWorded(status)) {
+    const { key, color } = WORDED_STATUS[status];
+    return <span className={cn('text-xs', className)} style={{ color }}>{t(key)}</span>;
+  }
   if (status === 'working') {
     return (
       <span className={cn('inline-flex items-center gap-1.5 text-xs', className)} style={{ color: 'var(--color-text-tertiary)' }}>
@@ -42,27 +64,15 @@ export function StatusLabel({ status, className }: { status: AccessStatus; class
   );
 }
 
-/** The states a row has beside a connection's own, each a word in its colour:
- *  a key a provider refused or no longer takes, or something not connected
- *  now (nothing added yet, its computer offline, or off). */
-const WORDED_STATUS = {
-  refused: { key: 'modelAccess.status.keyRefused', color: 'var(--color-warning)' },
-  withdrawn: { key: 'modelAccess.status.withdrawn', color: 'var(--color-warning)' },
-  not_connected: { key: 'modelAccess.status.notConnected', color: 'var(--color-text-tertiary)' },
-  offline: { key: 'modelAccess.status.offline', color: 'var(--color-text-tertiary)' },
-  off: { key: 'modelAccess.status.off', color: 'var(--color-text-tertiary)' },
-} as const;
-
-/** Any row's status. */
-export type RowStatus = AccessStatus | keyof typeof WORDED_STATUS;
-
-const isWorded = (status: RowStatus): status is keyof typeof WORDED_STATUS => status in WORDED_STATUS;
-
-export function RowStatusLabel({ status, className }: { status: RowStatus; className?: string }) {
-  const { t } = useTranslation();
-  if (!isWorded(status)) return <StatusLabel status={status} className={className} />;
-  const { key, color } = WORDED_STATUS[status];
-  return <span className={cn('text-xs', className)} style={{ color }}>{t(key)}</span>;
+/** A row's status and its actions at the row's end, laid out alike in
+ *  Settings and on a computer's page. */
+export function StatusActions({ status, children }: { status: RowStatus; children: React.ReactNode }) {
+  return (
+    <div className="ml-auto flex shrink-0 items-center gap-3">
+      <StatusLabel status={status} className="shrink-0" />
+      {children}
+    </div>
+  );
 }
 
 /** A labelled block in a connect flow's Before panel. */

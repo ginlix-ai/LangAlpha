@@ -6,6 +6,7 @@ import { api } from '@/api/client';
 import type { KeyCandidates, ProviderCatalogEntry, ReasoningDeclaration } from '@/components/model/types';
 import type { GatewayIndex, ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import type { CompactionProfileCatalog, SearchProviderCatalog, SystemDefaults } from '@/hooks/useAllModels';
+import { apiErrorStatus } from '@/api/errors';
 
 /** `GET /api/v1/models`: the deployment's catalog, the same for every user. */
 export interface ModelsResponse {
@@ -32,8 +33,10 @@ export async function getAvailableModels(): Promise<ModelsResponse> {
  *  run turns on a saved token (their flag is off, or the deployment runs
  *  Claude Code only on the user's own computers). `checking`: a saved token Anthropic has not answered for
  *  yet. `unverified`: the check could not reach Anthropic, which a later read
- *  tries again; a turn runs meanwhile. `rejected`: Anthropic refused it. */
-export type ClaudeCodeState = 'off' | 'no_token' | 'checking' | 'unverified' | 'signed_in' | 'rejected';
+ *  tries again; a turn runs meanwhile. `rejected`: Anthropic refused it.
+ *  `policy_blocked`: an organization's Claude Code policy is installed where
+ *  it would run, so Claude Code does not run there, whatever the token. */
+export type ClaudeCodeState = 'off' | 'no_token' | 'checking' | 'unverified' | 'signed_in' | 'rejected' | 'policy_blocked';
 
 /** `GET /api/v1/claude-code/status`, and the answer to a token saved. A
  *  server that predates it answers 404, which reads as `off`. */
@@ -53,9 +56,12 @@ export interface ClaudeCodeStatus {
 
 /** Where Claude Code stands on one of the user's own computers. `off`: their
  *  flag or the deployment does not run it. `offline`: the computer is not
- *  running or cannot be reached, so its token cannot be read. The rest read
- *  as the account's (`ClaudeCodeState`), for the token that computer uses. */
-export type ClaudeCodeComputerState = 'off' | 'offline' | ClaudeCodeState;
+ *  running or cannot be reached, so its token cannot be read. `needs_perl`:
+ *  the computer has no perl, so no token can be used there.
+ *  `computer_unsupported`: it runs musl, which no build of Claude Code runs
+ *  on. The rest read as the account's (`ClaudeCodeState`), for the token
+ *  that computer uses, `policy_blocked` for a policy installed on it. */
+export type ClaudeCodeComputerState = 'off' | 'offline' | 'needs_perl' | 'computer_unsupported' | ClaudeCodeState;
 
 /** One of the user's own computers (SSH, or a Mac through Remote control) as
  *  Claude Code sees it. */
@@ -68,6 +74,9 @@ export interface ClaudeCodeComputer {
    *  Settings (`saved`), which a self-hosted server uses on a computer with
    *  none of its own. Null with neither. */
   source: 'machine' | 'saved' | null;
+  /** Whether its own token file is on the computer, one it refuses
+   *  included, which can be removed while it runs on the saved token. */
+  own_file?: boolean;
   email: string | null;
   expires_at: string | null;
 }
@@ -79,7 +88,7 @@ export async function getClaudeCodeComputers(): Promise<{ computers: ClaudeCodeC
     const { data } = await api.get('/api/v1/claude-code/computers');
     return data as { computers: ClaudeCodeComputer[] };
   } catch (err) {
-    if ((err as { response?: { status?: number } })?.response?.status === 404) return { computers: [] };
+    if (apiErrorStatus(err) === 404) return { computers: [] };
     throw err;
   }
 }

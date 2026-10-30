@@ -33,7 +33,7 @@ import unicodedata
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import KW_ONLY, dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError, ProcessError
 from claude_agent_sdk._errors import CLIJSONDecodeError
@@ -50,17 +50,31 @@ from ptc_agent.agent.claude_code import cli_install
 from ptc_agent.agent.claude_code.launcher import (
     _INHERITED,
     _THREAD_KEY,
+    STDERR_KEPT,
     Prepared,
     _no_prompt,
     cli_env,
     device_id,
+    exit_error,
     session_jsonl,
+    stderr_text,
 )
-from ptc_agent.agent.claude_code.machine_token import FIND_PERL, STREAM_BOOT, TOKEN_DIR_SH, checked_name, shim, word
+from ptc_agent.agent.claude_code.machine_token import (
+    FIND_PERL,
+    NO_PERL,
+    STREAM_BOOT,
+    TOKEN_DIR_SH,
+    TOKEN_THERE_SH,
+    checked_name,
+    shim,
+    word,
+)
+from ptc_agent.core.claude_code_managed import claude_code_managed_sh, parse_managed
 from ptc_agent.core.paths import SandboxLayout
 from ptc_agent.core.sandbox.providers._ssh_shell import check_env
 from ptc_agent.core.sandbox.providers._ssh_transport import _CLI_SLOTS, TRANSPORT_ERRORS, Link, Machine, write_atomic
-from src.llms.claude_code import is_token_text
+from ptc_agent.core.sandbox.providers.ssh import IS_MUSL_SH, MUSL_UNSUPPORTED
+from src.llms.claude_code import ClaudeTurnFailed, is_token_text
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +88,7 @@ EXIT_GRACE_S = 5
 #: its start: as long as another turn there may take to finish.
 CLI_SLOT_WAIT_S = 600
 CLI_SLOTS_FULL = f"Claude Code is already running {_CLI_SLOTS} turns on this computer. Try again when one finishes."
+COMMAND_SLOTS_FULL = "This computer is busy running other commands. Try again when one finishes."
 #: A turn's config dir left this long is one a lost connection orphaned.
 _STALE_MINUTES = 2 * 24 * 60
 _SCRIPT_S = 30
@@ -123,9 +138,13 @@ class SSHLauncher:
     no token of its own. ``on_announced(origin)`` is told where the run's
     token comes from as the shim announces it, and ``on_refused(origin)``
     that Anthropic refused it, by where it came from (``file`` or ``relay``),
-    never the token. ``source`` is where the last run's token came from. A relayed
-    token is held only until it is written to the channel. One launcher
-    serves one run at a time. ``env`` is for a test endpoint.
+    never the token. ``on_blocked(present)`` is told that an organization's
+    policy is installed on the computer, before the run is refused,
+    ``on_no_perl(present)`` that the computer has no perl, and
+    ``on_unsupported(present)`` that it runs musl, each with whether
+    anything is at ``token_file``'s path there. ``source`` is where the last
+    run's token came from. A relayed token is held only until it is written to the channel.
+    One launcher serves one run at a time. ``env`` is for a test endpoint.
     """
 
     machine: Machine
@@ -137,6 +156,9 @@ class SSHLauncher:
     relay: Callable[[], Awaitable[str | None]] | None = None
     on_announced: Callable[[TokenOrigin], Awaitable[None]] | None = None
     on_refused: Callable[[TokenOrigin], Awaitable[None]] | None = None
+    on_blocked: Callable[[bool], Awaitable[None]] | None = None
+    on_no_perl: Callable[[bool], Awaitable[None]] | None = None
+    on_unsupported: Callable[[bool], Awaitable[None]] | None = None
     env: dict[str, str] = field(default_factory=dict, repr=False)
     source: TokenOrigin | None = field(default=None, init=False)
     _link: Link | None = field(default=None, init=False, repr=False)
@@ -152,7 +174,14 @@ class SSHLauncher:
             raise RuntimeError("the computer root is read once the connection is resolved")
         return SandboxLayout.for_root(self._root).claude_code
 
-    async def _connection(self) -> Link:
+    async def ready(self) -> Link:
+        """The computer's connection, with the CLI ready there: what a run,
+        and a change of the computer's token, needs before it starts.
+
+        The first call reads the root and refuses a machine where the CLI
+        could not start (``_refuse_unless_runnable``) before anything is
+        installed there.
+        """
         self._link = await self.machine.link()
         if self._root is None:
             root = self.machine.root()
@@ -160,8 +189,48 @@ class SSHLauncher:
                 raise ValueError(f"the computer root {root!r} is not an absolute path")
             self._root = root
         if self._cli is None:
-            self._cli = await cli_install.ensure_cli(self._link, self._root, install=self.install)
+            await self._refuse_unless_runnable(self._link)
+            try:
+                self._cli = await cli_install.ensure_cli(self._link, self._root, install=self.install)
+            except cli_install.CliUnsupported as e:
+                raise ClaudeTurnFailed("computer_unsupported", str(e)) from e
         return self._link
+
+    async def _refuse_unless_runnable(self, link: Link) -> None:
+        """Refuse the machine where an organization's managed Claude Code
+        sources are, telling ``on_blocked``, where it runs musl, which no
+        build of the CLI runs on, telling ``on_unsupported``, or where it
+        has no perl for the shim, telling ``on_no_perl``; each is told
+        whether the token file is there, as the status check would say, and
+        the machine is refused as admission refuses it. One round trip, read
+        by name only."""
+        found = await link.run(
+            f'{TOKEN_DIR_SH}{IS_MUSL_SH}{claude_code_managed_sh()}printf "%s\\n" "${{cm# }}"; '
+            f'f="$d/{self.token_file}"; {TOKEN_THERE_SH}'
+            'if [ "$(uname -s)" = Linux ] && is_musl; then echo musl; '
+            'elif command -v perl >/dev/null; then echo perl; else echo none; fi',
+            timeout=_SCRIPT_S,
+        )
+        managed, _, rest = found.stdout.decode(errors="replace").partition("\n")
+        present, _, runs = rest.partition("\n")
+        runs = runs.strip()
+        if found.exit_code != 0 or present not in ("0", "1") or runs not in ("perl", "none", "musl"):
+            detail = found.stderr.decode(errors="replace").strip() or f"exit {found.exit_code}"
+            raise RuntimeError(f"Could not read Claude Code's managed settings on {link.target.host}: {detail}")
+        sources = parse_managed(managed)
+        if not sources and runs == "perl":
+            return
+        told = self.on_blocked if sources else self.on_unsupported if runs == "musl" else self.on_no_perl
+        if told is not None:
+            try:
+                await told(present == "1")
+            except Exception as e:  # noqa: BLE001 - what the backend keeps of it never changes the refusal
+                logger.warning("[ClaudeCode] could not record why Claude Code cannot run on a computer: %s", type(e).__name__)
+        if sources:
+            raise ClaudeTurnFailed("policy_blocked", f"the computer holds managed Claude Code settings {list(sources)}")
+        if runs == "musl":
+            raise ClaudeTurnFailed("computer_unsupported", MUSL_UNSUPPORTED)
+        raise ClaudeTurnFailed("needs_perl", f"Claude Code did not start on {link.target.host}: {NO_PERL}")
 
     async def _lay_out(self, link: Link, thread_key: str | None) -> Prepared:
         """A fresh config dir and, for a thread, its working dir, which is its real path there.
@@ -216,8 +285,8 @@ class SSHLauncher:
         """
         if not _THREAD_KEY.fullmatch(thread_key):
             raise ValueError(f"thread key {thread_key!r} is not a plain id")
+        link = await self.ready()
         device = device_id(identity)
-        link = await self._connection()
         prepared = await self._lay_out(link, thread_key)
         files = [
             (posixpath.join(prepared.config_dir, ".claude.json"), json.dumps({"userID": device})),
@@ -229,8 +298,8 @@ class SSHLauncher:
         return prepared
 
     async def scratch(self) -> Prepared:
+        link = await self.ready()
         device = device_id(self.identity)
-        link = await self._connection()
         prepared = await self._lay_out(link, None)
         await self._write(link, prepared, [(posixpath.join(prepared.config_dir, ".claude.json"), json.dumps({"userID": device}))])
         return prepared
@@ -274,8 +343,15 @@ class SSHLauncher:
             + " ".join(map(word, argv))
         )
 
-    def _started(self, how: str, *, relayed: bool) -> None:
-        self.source = "none" if how == "relay" and not relayed else how  # type: ignore[assignment]
+    async def started(self, source: TokenOrigin) -> None:
+        """The run's CLI started on a token from ``source``, as the shim announced it."""
+        self.source = source
+        if self.on_announced is None:
+            return
+        try:
+            await self.on_announced(source)
+        except Exception as e:  # noqa: BLE001 - what the backend keeps of it never stops the turn
+            logger.warning("[ClaudeCode] could not record where a turn's token came from: %s", type(e).__name__)
 
 
 class SSHTransport(Transport):
@@ -298,10 +374,11 @@ class SSHTransport(Transport):
         self._process: Any = None
         self._ready = False
         self._pid: int | None = None
-        self._stderr: deque[str] = deque(maxlen=50)
+        self._stderr: deque[str] = deque(maxlen=STDERR_KEPT)
         self._stderr_task: asyncio.Task[None] | None = None
         self._closing: asyncio.Task[None] | None = None
         self._holds = contextlib.AsyncExitStack()
+        self._command_slot = False
         self._write_lock = asyncio.Lock()
         self._max_buffer_size = options.max_buffer_size or _DEFAULT_MAX_BUFFER_SIZE
 
@@ -312,15 +389,14 @@ class SSHTransport(Transport):
         script = self._launcher.command(self._options)
         try:
             await self._hold(self._launcher.slot_wait_s)
-        except BaseException as e:
+        except BaseException:
             await self.close()
-            if isinstance(e, TimeoutError):
-                raise CLIConnectionError(CLI_SLOTS_FULL) from None
             raise
         relayed = False
         try:
             async with asyncio.timeout(START_TIMEOUT_S):
-                self._process = await self._link.open_process(STREAM_BOOT)
+                self._command_slot = False
+                self._process = await self._link.open_process(STREAM_BOOT, held=True)
                 self._stderr_task = asyncio.ensure_future(self._read_stderr())
                 self._process.stdin.write(script.encode() + b"\n")
                 await self._process.stdin.drain()
@@ -337,22 +413,37 @@ class SSHTransport(Transport):
             if isinstance(e, CLIConnectionError | asyncio.CancelledError):
                 raise
             raise CLIConnectionError(f"Claude Code did not start on {self._link.target.host}: {e or type(e).__name__}") from e
-        self._launcher._started(how, relayed=relayed)
-        if self._launcher.on_announced is not None and self._launcher.source is not None:
-            try:
-                await self._launcher.on_announced(self._launcher.source)
-            except Exception as e:  # noqa: BLE001 - what the backend keeps of it never stops the turn
-                logger.warning("[ClaudeCode] could not record where a turn's token came from: %s", type(e).__name__)
+        await self._launcher.started("none" if how == "relay" and not relayed else how)
         self._ready = True
 
     async def _hold(self, wait_s: float) -> None:
-        """Keep the link in use, then wait up to ``wait_s`` for one of its CLI slots."""
+        """Keep the link in use, then wait up to ``wait_s`` in all for one of
+        its CLI slots and the command slot its channel takes: commands filling
+        every command slot are a wait like any other, not a start that timed
+        out. Out of time, it says which slots were full."""
         await self._holds.enter_async_context(self._link.in_use())
-        async with asyncio.timeout(wait_s):
-            await self._link.cli_slots.acquire()
+        deadline = asyncio.get_running_loop().time() + wait_s
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self._link.cli_slots.acquire()
+        except TimeoutError:
+            raise CLIConnectionError(CLI_SLOTS_FULL) from None
         self._holds.callback(self._link.cli_slots.release)
+        self._holds.callback(self._give_back_command_slot)
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self._link.slots.acquire()
+        except TimeoutError:
+            raise CLIConnectionError(COMMAND_SLOTS_FULL) from None
+        self._command_slot = True
 
-    async def _announced(self) -> str:
+    def _give_back_command_slot(self) -> None:
+        """The command slot ``_hold`` took, unless its channel took it over."""
+        if self._command_slot:
+            self._command_slot = False
+            self._link.slots.release()
+
+    async def _announced(self) -> TokenOrigin:
         """The token source the shim announces, past anything the login shell printed first."""
         seen = 0
         while True:
@@ -366,14 +457,14 @@ class SSHTransport(Transport):
                 )
             found = _ANNOUNCE.fullmatch(line.rstrip(b"\r\n"))
             if found:
-                return found.group(1).decode()
+                return cast(TokenOrigin, found.group(1).decode())
             seen += len(line)
             if seen > _NOISE_MAX:
                 raise CLIConnectionError(f"Claude Code did not start on {self._link.target.host}: its shell printed too much")
 
     def diagnostics(self) -> str:
-        """The last of what the machine wrote to stderr."""
-        return "\n".join(self._stderr)
+        """The last of what the machine wrote to stderr, scrubbed."""
+        return stderr_text(self._stderr)
 
     def _stderr_line(self, line: str) -> None:
         line = line.rstrip()
@@ -407,10 +498,7 @@ class SSHTransport(Transport):
             if not self._ready or self._process is None:
                 raise CLIConnectionError("ProcessTransport is not ready for writing")
             if self._exited():
-                if self._stderr_task is not None:
-                    await asyncio.wait({self._stderr_task}, timeout=EXIT_GRACE_S)
-                code = self._exit_code()
-                raise ProcessError(f"Command failed with exit code {code}", exit_code=code, stderr=self.diagnostics())
+                raise await self._exit_error()
             try:
                 self._process.stdin.write(data.encode())
                 await self._process.stdin.drain()
@@ -455,9 +543,12 @@ class SSHTransport(Transport):
             if (data := _parse_stdout_line(framer.flush())) is not None:
                 yield data
         await self._ended(EXIT_GRACE_S)
-        code = self._exit_code()
-        if code not in (None, 0):
-            raise ProcessError(f"Command failed with exit code {code}", exit_code=code, stderr=self.diagnostics())
+        if self._exit_code() not in (None, 0):
+            raise await self._exit_error()
+
+    async def _exit_error(self) -> ProcessError:
+        reader = asyncio.shield(self._stderr_task) if self._stderr_task is not None else None
+        return await exit_error(self._exit_code(), self._stderr, reader)
 
     def _exited(self) -> bool:
         return self._process.exit_status is not None or self._process.exit_signal is not None

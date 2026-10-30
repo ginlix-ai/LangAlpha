@@ -15,10 +15,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING
 
-from src.llms.claude_code import backend_available
-from src.server.services.oauth_signin import PendingSignIn
+from src.llms.claude_code import ClaudeTurnFailed, backend_available
+from ptc_agent.core.claude_code_managed import local_managed
+from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
 from src.server.database.oauth_tokens import (
     CLAUDE_CODE_PROVIDER,
     connection_change,
@@ -31,7 +32,10 @@ from src.server.models.claude_code import ClaudeCodeStatus, State
 from src.utils.cache.redis_cache import get_cache_client
 
 from .checks import CHECK_CLEANUP_S, CHECK_S, CHECKED, Held, in_background, keep_check, read_check, run_check
-from .flow import busy, rows_on
+from .flow import MACHINE_IO_S, POLICY_BLOCKED, busy, rows_on
+
+if TYPE_CHECKING:
+    from ptc_agent.agent.claude_code.launcher import LocalLauncher
 
 logger = logging.getLogger(__name__)
 
@@ -65,18 +69,22 @@ async def usable_token(user_id: str) -> str | None:
 class SavedToken:
     """The setup token ``user_id`` saved, as a backend turn's launcher reads
     it (``launcher.TokenStore``): as each run starts, and recorded as refused
-    when Anthropic refuses it, so Settings and admission say so from then on."""
+    when Anthropic refuses it, so Settings and admission say so from then on.
+    A server whose backend runs no CLI refuses the run as admission does: the
+    workspace may have moved off the own computer admission found it on."""
 
     user_id: str
 
     async def read(self) -> str | None:
+        if not backend_available():
+            raise ClaudeTurnFailed("needs_own_computer", "this server runs Claude Code only on the user's own computers")
         return await stored_token(self.user_id)
 
     async def refused(self, token: str) -> None:
         await keep_check(token_check_key(token), "refused")
 
 
-def _launcher(token: str) -> Any:
+def _launcher(token: str) -> LocalLauncher:
     """The backend's own CLI, signed in with ``token`` alone, as its check needs."""
     from ptc_agent.agent.claude_code.launcher import LocalLauncher
 
@@ -118,11 +126,16 @@ async def _current(row: dict | None) -> ClaudeCodeStatus:
 
 
 async def status(user_id: str) -> ClaudeCodeStatus:
-    """Whether the user's Claude Code models can run on the backend, for Settings and the picker."""
+    """Whether the user's Claude Code models can run on the backend, for
+    Settings and the picker. Where an organization's policy is installed on
+    the backend's machine, none can, whatever the token, which is not checked."""
     enabled = await rows_on(user_id)
     if not (enabled and backend_available()):
         saved = await get_oauth_connection(user_id, CLAUDE_CODE_PROVIDER) is not None
         return ClaudeCodeStatus(state="off", saved=saved, enabled=enabled)
+    if await local_managed():
+        saved = await get_oauth_connection(user_id, CLAUDE_CODE_PROVIDER) is not None
+        return ClaudeCodeStatus(state="policy_blocked", saved=saved, enabled=True)
     return await _current(await stored_row(user_id))
 
 
@@ -130,6 +143,7 @@ class SavedHome:
     """The token store's row, as the flow changes it: a token is checked before it is stored."""
 
     place_s = 0
+    remove_s = MACHINE_IO_S
 
     def __init__(self, user_id: str) -> None:
         self.user_id = user_id
@@ -138,10 +152,14 @@ class SavedHome:
         self.who = f"user_id={user_id}"
 
     async def ready(self, *, install: bool = True) -> None:
-        return None
+        """Refuse a sign-in or a paste, before its code is spent or its token
+        checked, where an organization's policy is installed on the backend's
+        machine; a removal goes on."""
+        if install and await local_managed():
+            raise OAuthRefusal(400, "policy_blocked", POLICY_BLOCKED, retryable=False)
 
     @asynccontextmanager
-    async def placed(self, token: str, *, held: Held, retryable: bool) -> AsyncIterator[Any]:
+    async def placed(self, token: str, *, held: Held, retryable: bool) -> AsyncIterator[LocalLauncher]:
         yield _launcher(token)
 
     async def keep(
@@ -172,7 +190,7 @@ class SavedHome:
     async def current(self) -> ClaudeCodeStatus:
         return await _current(await stored_row(self.user_id))
 
-    async def remove(self) -> None:
+    async def remove(self, *, held: Held) -> None:
         try:
             previous = await stored_token(self.user_id)
         except Exception:

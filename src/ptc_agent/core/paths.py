@@ -48,6 +48,23 @@ def langalpha_config_dir(home: str, config_home: str | None = None) -> str:
     return f"{base.rstrip('/')}/{LANGALPHA_CONFIG_DIR}"
 
 
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+#: How a command or a listing spells LangAlpha's config folder: the folder of
+#: the default config home or of one named by the variable, as a whole path
+#: component, and a Claude Code token file under any config home, a custom one
+#: included, by its folder and its name (a computer id, or a staged copy of
+#: one). A workspace folder named like them holds no file so named. Text
+#: matching is all a tool call's arguments and output allow, so this stands
+#: beside the exact path `langalpha_config_dir` gives the file tools; matched
+#: case-insensitively, as a Mac's disk matches names.
+LANGALPHA_CONFIG_SPELLINGS: re.Pattern[str] = re.compile(
+    rf"(?:(?<![\w.-])\.config|\$xdg_config_home|\$\{{xdg_config_home\}})/{re.escape(LANGALPHA_CONFIG_DIR)}(?![\w.-])"
+    rf"|{re.escape(CLAUDE_CODE_TOKEN_DIR)}/(?:\.staged\.)?{_UUID}",
+    re.IGNORECASE,
+)
+
+
 # Reused sandboxes retain root-level tools until migration; name-based filters
 # must recognize it alongside _internal.
 LEGACY_ROOT_TOOLS_DIR: str = "tools"
