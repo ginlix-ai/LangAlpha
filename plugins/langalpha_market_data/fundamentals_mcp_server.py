@@ -165,8 +165,9 @@ async def _from_tushare(disp: str, fetch, *, data_type: str, **extra):
 def _add_quarterly_empty_note(result: dict, period: str) -> None:
     if period == "quarter" and result.get("count") == 0:
         result["note"] = (
-            "Quarterly data returned 0 records. Some FMP subscription tiers do "
-            "not include quarterly fundamentals. Try period='annual'."
+            "Quarterly data returned 0 records. The symbol may have no "
+            "quarterly filings, or the FMP subscription tier may not include "
+            "quarterly fundamentals. Try period='annual'."
         )
 
 
@@ -201,8 +202,9 @@ async def get_financial_statements(
         One statement_type → a list of period records; "all" → {income_statement,
         balance_sheet, cash_flow} lists with count the total. Common camelCase
         fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.
-        date is "YYYY-MM-DD"; records are newest-first as returned by FMP. On
-        error: {error: <code>, detail, symbol}.
+        date is "YYYY-MM-DD"; records are newest-first as returned by FMP. When
+        period="quarter" returns 0 records, an optional note suggests
+        period="annual". On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -297,7 +299,8 @@ async def get_financial_ratios(
         freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,
         currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are
         FMP-native camelCase; date is "YYYY-MM-DD"; records are newest-first as
-        returned by FMP. On error: {error: <code>, detail, symbol}.
+        returned by FMP. When period="quarter" returns 0 records, an optional
+        note suggests period="annual". On error: {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
     api = _fmp_symbol(symbol)
@@ -371,7 +374,8 @@ async def get_growth_metrics(
         epsgrowth; income_statement_growth fields: date, growthRevenue,
         growthNetIncome, growthEPS. Growth values are decimal fractions
         (0.1 = 10%). Field names are FMP-native camelCase; date is "YYYY-MM-DD";
-        records are newest-first as returned by FMP. On error:
+        records are newest-first as returned by FMP. When period="quarter"
+        returns 0 records, an optional note suggests period="annual". On error:
         {error: <code>, detail, symbol}.
     """
     disp = _canonical(symbol)
