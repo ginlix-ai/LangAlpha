@@ -160,10 +160,10 @@ def test_the_cache_clock_starts_at_the_later_of_the_last_answer_and_the_last_run
     run ledger's settle time covers it."""
     settled = datetime.fromtimestamp(1_200, UTC)
 
-    assert _plan(_due_request(), now=1_400.0).cold
-    assert not _plan(_due_request(), now=1_400.0, settled_at=settled).cold
-    assert not _plan(_due_request(), now=1_400.0, settled_at=settled.replace(tzinfo=None)).cold
-    assert not _plan(_due_request(last_answer_at=1_200.0), now=1_400.0).cold
+    assert _plan(_due_request(), now=1_400.0).scope == "last_tool"
+    assert _plan(_due_request(), now=1_400.0, settled_at=settled).scope is None
+    assert _plan(_due_request(), now=1_400.0, settled_at=settled.replace(tzinfo=None)).scope is None
+    assert _plan(_due_request(last_answer_at=1_200.0), now=1_400.0).scope is None
 
 
 def test_a_deploy_is_forced_under_the_threshold_only_large_and_cold():
@@ -285,6 +285,16 @@ def _system(payload: dict) -> str:
     return json.dumps([block["text"] for block in payload["system"]])
 
 
+def _last_tool_only(payload: dict) -> bool:
+    """Whether the request marks the last tool and nothing else for the cache."""
+    return (
+        "cache_control" not in payload
+        and not any("cache_control" in block for block in payload["system"])
+        and [("cache_control" in tool) for tool in payload["tools"]][-1:] == [True]
+        and "cache_control" not in json.dumps(payload["messages"])
+    )
+
+
 def _instructions(payload: dict) -> str:
     return payload["extra_body"]["compaction"]["instructions"]
 
@@ -306,19 +316,24 @@ async def _pin(saver: InMemorySaver) -> dict:
     return state.values.get(STATE_SYSTEM_PIN) or {}
 
 
+@pytest.mark.parametrize(("idle", "cold"), [(60.0, False), (600.0, True)], ids=["warm", "cold"])
 @pytest.mark.asyncio
-async def test_a_deploy_while_idle_is_rebuilt_by_the_threshold_summary_on_the_first_call(monkeypatch, clock):
-    """The pin is not stale yet on that call: only the digest says it is due."""
+async def test_a_deploy_while_idle_is_rebuilt_by_the_threshold_summary_on_the_first_call(monkeypatch, clock, idle, cold):
+    """The pin is not stale yet on that call: only the digest says it is due.
+    A warm cache gives the summary the history from it; a cold one writes
+    only the tools, which the call after it reads back."""
     wire = Wire(_script(9_995, _compaction, _measured(reply(4, text="Done."), 1_500))).install(monkeypatch)
     saver = InMemorySaver()
     await _first_turn(saver)
     _deploy(monkeypatch)
+    clock.now += idle
     await _agent(saver, "Prompt B.").ainvoke({"messages": [HumanMessage("Get b.")]}, CFG)
 
     summary, after = wire.payloads[2], wire.payloads[3]
     assert is_compaction_request(summary)
     assert _instructions(summary) == NO_TAIL
     assert "Prompt A." in _system(summary)
+    assert _last_tool_only(summary) is cold and not _last_tool_only(after)
     assert "Prompt B." in _system(after) and [m["role"] for m in after["messages"]] == ["assistant", "user"]
     assert api_drops(wire) == {}
     pin = await _pin(saver)
@@ -386,7 +401,9 @@ async def test_a_deploy_rebuilds_a_large_thread_under_its_threshold_once_the_cac
     await _agent(saver, "Prompt B.", floor=FLOOR).ainvoke({"messages": [HumanMessage("Get b.")]}, CFG)
 
     assert is_compaction_request(wire.payloads[2]) is rebuilt
+    assert _last_tool_only(wire.payloads[2]) is rebuilt
     assert ("Prompt B." in _system(wire.payloads[-1])) is rebuilt
+    assert not _last_tool_only(wire.payloads[-1])
     assert api_drops(wire) == {}
 
 

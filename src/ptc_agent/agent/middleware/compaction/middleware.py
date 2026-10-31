@@ -56,6 +56,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
+from src.llms.cache_markers import CacheScope, cache_scope
 from src.llms.error_classification import is_context_overflow
 from src.llms.provider_compaction import (
     compaction_settings,
@@ -420,7 +421,9 @@ class CompactionMiddleware(AgentMiddleware):
                 request, fitted.response, fitted.update(request.state), spared=fitted.spared
             )
 
-        compaction = await self._summarize(request, handler, view, cutoff, rebuild=bool(plan.cut))
+        compaction = await self._summarize(
+            request, handler, view, cutoff, rebuild=bool(plan.cut), scope=plan.scope
+        )
         note = compaction.note_row()
         # A refusal of the view says nothing of what the summary made room
         # for, so its messages are fitted by estimate like any others. The
@@ -448,6 +451,7 @@ class CompactionMiddleware(AgentMiddleware):
         cutoff: int,
         *,
         rebuild: bool = False,
+        scope: CacheScope | None = None,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, first by the agent's own
         model: its provider compacting the conversation where it can, else the
@@ -456,7 +460,10 @@ class CompactionMiddleware(AgentMiddleware):
         the setting says. ``rebuild`` is True for a summary that keeps no
         turn, whose cut is the user's new message: Claude's cut stays there
         rather than move back onto the answer before it. Whether turns stay
-        after the summary is read from what it keeps (``keeps_turns``)."""
+        after the summary is read from what it keeps (``keeps_turns``).
+
+        ``scope`` places the cache markers of the provider's own summary
+        call (``RebuildPlan.scope``)."""
         own: Own | None = None
         kind = native_kind(request.model)
         # Claude reads its block only where the kept turns can follow it.
@@ -464,7 +471,7 @@ class CompactionMiddleware(AgentMiddleware):
         if kind is not None and self._native and cut > 0:
             cutoff = cut
             own = functools.partial(
-                self._provider_summary, request, handler, notes=self._notes_dir is not None
+                self._provider_summary, request, handler, notes=self._notes_dir is not None, scope=scope
             )
         elif kind is None and self._writes_own(request):
             own = functools.partial(
@@ -519,7 +526,9 @@ class CompactionMiddleware(AgentMiddleware):
         # takes the new prompt.
         plan = self._rebuilds.between_turns(request, view, time.time())
         if plan.cut:
-            compaction = await self._summarize(request, handler, view, plan.cut, rebuild=True)
+            compaction = await self._summarize(
+                request, handler, view, plan.cut, rebuild=True, scope=plan.scope
+            )
             _log_rebuild("yes", plan.reason)
             return compaction
         cutoff = self._cutoff(view, request.model)
@@ -614,6 +623,7 @@ class CompactionMiddleware(AgentMiddleware):
         kept: bool,
         *,
         notes: bool,
+        scope: CacheScope | None = None,
     ) -> NativeAnswer:
         """The agent's provider compacting ``to_summarize`` itself, with the
         summary prompt in place of its own where it takes one (Claude), the
@@ -626,13 +636,14 @@ class CompactionMiddleware(AgentMiddleware):
         own model writes, and the summarizer is the fallback here. It stays
         out of the turn's message stream, where its reply would read as the
         answer. OpenAI's goes after the user's own messages it summarized.
+        ``scope`` places its cache markers (``cache_markers.cache_scope``).
         """
         settings = compaction_settings(
             request.model,
             request.model_settings,
             summary_prompt("native", kept, notes),
         )
-        with as_sent(), _unstreamed():
+        with as_sent(), _unstreamed(), cache_scope(scope):
             response = await handler(
                 request.override(messages=to_summarize, model_settings=settings)
             )

@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, AnyMessage
 
-from src.llms.cache_markers import route_ttl_seconds, written_ttl_seconds
+from src.llms.cache_markers import CacheScope, route_ttl_seconds, written_ttl_seconds
 
 from ptc_agent.agent.middleware.compaction.utils import settled_end, turn_start_cut
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import (
@@ -58,7 +58,8 @@ class RebuildPlan:
         forced: Summarize at ``cut`` even under the threshold.
         waits: Why a due turn start under the threshold does not, logged
             once its call lands.
-        cold: The thread's prompt cache has expired.
+        scope: The cache markers of the summary's own native call:
+            ``last_tool`` once the main agent's prompt cache has expired.
     """
 
     due: bool = False
@@ -66,7 +67,7 @@ class RebuildPlan:
     reason: str = ""
     forced: bool = False
     waits: str | None = None
-    cold: bool = False
+    scope: CacheScope | None = None
 
 
 class StalePinRebuilds:
@@ -104,10 +105,10 @@ class StalePinRebuilds:
         cut = settled_end(view)
         if not cut:
             return RebuildPlan(due=True, waits="unanswered_tool_call")
-        return RebuildPlan(due=True, cut=cut, reason="manual", cold=self._cold(request, view, now))
+        return RebuildPlan(due=True, cut=cut, reason="manual", scope=self._scope(request, view, now))
 
-    def _cold(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> bool:
-        return False
+    def _scope(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> CacheScope | None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -146,13 +147,13 @@ class TurnStartRebuilds(StalePinRebuilds):
         cut = turn_start_cut(view, after_tools=first_call)
         if not cut:
             return RebuildPlan(due=True)
-        cold = self._cold(request, view, now)
+        scope = self._scope(request, view, now)
         if tokens >= threshold:
-            return RebuildPlan(due=True, cut=cut, reason="digest", cold=cold)
-        waits = self._waits(request, view, tokens, cold=cold)
+            return RebuildPlan(due=True, cut=cut, reason="digest", scope=scope)
+        waits = self._waits(request, view, tokens, cold=scope is not None)
         if waits is None:
-            return RebuildPlan(due=True, cut=cut, reason="deploy_cold", forced=True, cold=cold)
-        return RebuildPlan(due=True, cut=cut, reason="digest", waits=waits, cold=cold)
+            return RebuildPlan(due=True, cut=cut, reason="deploy_cold", forced=True, scope=scope)
+        return RebuildPlan(due=True, cut=cut, reason="digest", waits=waits, scope=scope)
 
     def _waits(self, request: ModelRequest, view: Sequence[AnyMessage], tokens: int, *, cold: bool) -> str | None:
         """Why a due turn start under the threshold is not forced, or None.
@@ -173,8 +174,10 @@ class TurnStartRebuilds(StalePinRebuilds):
             return "warm"
         return None
 
-    def _cold(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> bool:
-        """Whether the thread's prompt cache has expired: longer than its ttl since the later of the last answer compaction stamped and
+    def _scope(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> CacheScope | None:
+        """``last_tool`` once the thread's prompt cache has expired, since the
+        call after the summary sends neither the old prompt nor the history
+        again: longer than its ttl since the later of the last answer compaction stamped and
         the previous run's settling. Both are read at a response's end while
         an entry's life counts from its request's start, so the estimate errs
         towards warm: it skips a rebuild it could have taken rather than force
@@ -182,4 +185,4 @@ class TurnStartRebuilds(StalePinRebuilds):
         settled = self.settled_at
         settled_ts = settled.replace(tzinfo=settled.tzinfo or UTC).timestamp() if settled else 0.0
         last = max(request.state.get("_last_model_response_at") or 0.0, settled_ts)
-        return now - last > cache_ttl(view, request.model)
+        return "last_tool" if now - last > cache_ttl(view, request.model) else None
