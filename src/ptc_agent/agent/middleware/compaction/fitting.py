@@ -23,6 +23,7 @@ from ptc_agent.agent.middleware.compaction.measure import Estimate
 from ptc_agent.agent.middleware.compaction.offloading import removed_attachments
 from ptc_agent.agent.middleware.thinking_binding import (
     checked_thinking_end,
+    holds_bound_thinking,
     thinking_after,
     unsent_thinking,
     without_thinking,
@@ -53,13 +54,15 @@ def reported_usage(response: ModelResponse) -> tuple[AIMessage, int, int] | None
 class Fitted(NamedTuple):
     """A fitted send: its response, the ids of the messages that lose their
     attachments and of the answers whose thinking goes with them (see
-    ``thinking_after``), and what the provider counted for the ones this send
-    still carried (see ``Fit._measured``)."""
+    ``thinking_after``), what the provider counted for the ones this send
+    still carried (see ``Fit._measured``), and whether what it sent held bound
+    thinking, which decides whether the pin takes a new system message."""
 
     response: ModelResponse
     removed: set[str]
     unsent: set[str]
     spared: int
+    sent_bound_thinking: bool
 
     def update(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """The update recording ``removed`` and ``unsent`` beside what
@@ -161,22 +164,21 @@ class Fit:
         if refusal is None:
             removed = self._to_remove(messages, everything=False, start=start)
             unsent = thinking_after(messages, removed)
+            sent = _without(messages, removed, unsent)
             try:
-                response = await handler(
-                    request.override(messages=_without(messages, removed, unsent))
-                )
+                response = await handler(request.override(messages=sent))
             except Exception as exc:
                 if not is_context_overflow(exc):
                     raise
                 refusal = exc
             else:
                 if self.lossless:
-                    return Fitted(response, removed, unsent, 0)
+                    return Fitted(response, removed, unsent, 0, holds_bound_thinking(sent))
                 more, spared = self._measured(response, messages, removed)
                 if more:
                     answered = [*messages, *ensure_message_ids(list(response.result or ()))]
                     unsent |= thinking_after(answered, more)
-                return Fitted(response, removed | more, unsent, spared)
+                return Fitted(response, removed | more, unsent, spared, holds_bound_thinking(sent))
         everything = self._to_remove(messages, everything=True, start=start)
         if everything == removed:
             everything = self._to_remove(messages, everything=True)
@@ -184,10 +186,9 @@ class Fit:
             raise refusal
         logger.warning("[Compaction] Context overflow, removing every attachment kept")
         unsent = thinking_after(messages, everything)
-        response = await handler(
-            request.override(messages=_without(messages, everything, unsent))
-        )
-        return Fitted(response, everything, unsent, 0)
+        sent = _without(messages, everything, unsent)
+        response = await handler(request.override(messages=sent))
+        return Fitted(response, everything, unsent, 0, holds_bound_thinking(sent))
 
     def _measured(
         self, response: ModelResponse, messages: list[AnyMessage], removed: set[str]
