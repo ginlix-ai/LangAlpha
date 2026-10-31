@@ -16,9 +16,11 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from ptc_agent.agent.middleware.runtime_context import TurnContext
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.core.project_context import ProjectContext
 from src.llms.claude_code import ClaudeCodeTarget, claude_replied_last, is_claude_code_model
+from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
 from src.server.services.history.projector import context_window_record
 from src.server.services.thread_agent import thread_route
@@ -178,6 +180,8 @@ async def _thread_agent(
         session=session,
         config=effective_config,
         checkpointer=checkpointer,
+        # Only a summary reads the cache clock (see ``_previous_run``).
+        turn_context=await _previous_run(thread_id) if verb == "compact" else None,
         **inputs.build_kwargs(),
     )
 
@@ -307,6 +311,21 @@ async def _hold_thread_mutation(thread_id: str, verb: str):
         raise HTTPException(status_code=409, detail=e.detail)
     except MutationUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+async def _previous_run(thread_id: str) -> TurnContext:
+    """What a turn's build knows of the thread's previous run, which a call
+    between turns needs too: when it settled, by the run ledger, which a
+    cancelled call refreshed the provider's cache at without a stamp in the
+    checkpoint. A failed read leaves it unknown."""
+    from src.server.database.runs import lifecycle as tl_db
+
+    try:
+        attempt = await tl_db.get_latest_attempt(thread_id)
+    except Exception:
+        logger.debug("previous run read failed for thread %s", thread_id, exc_info=True)
+        return TurnContext()
+    return TurnContext(previous_run_settled_at=run_settled_at(attempt))
 
 
 async def _resolver(user_id: str, thread_id: str, meta: dict, route):

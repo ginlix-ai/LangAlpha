@@ -1,7 +1,7 @@
 """ChatAnthropic variant that uses OAuth Bearer auth (auth_token) instead of API key (X-Api-Key)."""
 
 from functools import cached_property
-from typing import Any
+from typing import Any, ClassVar
 
 import anthropic
 from langchain_anthropic import ChatAnthropic
@@ -35,6 +35,9 @@ class ChatAnthropicOAuth(ChatAnthropic):
     falling back to the ``ANTHROPIC_API_KEY`` environment variable, and prepends
     the Claude Code identity to the system prompt (required for Sonnet/Opus access).
     """
+
+    #: The ttl every cache marker it sends asks for (``_with_cache_ttl``).
+    cache_ttl: ClassVar[str] = _CACHE_TTL
 
     @property
     def _client_params(self) -> dict[str, Any]:

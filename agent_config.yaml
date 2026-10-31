@@ -258,6 +258,11 @@ compaction:
   truncate_args_idle_minutes: null
   truncate_args_keep_messages: 10 # Protect last N messages from Tier 1
   truncate_args_max_length: 2000 # Per-arg-value max chars before truncation
+  # A thread whose system prompt a deploy changed takes the new one through a
+  # summary that keeps no turns. At a turn start under token_threshold, with
+  # the prompt cache expired, that summary runs anyway from this many tokens
+  # of context. 0: only when the threshold or an overflow fires one.
+  rebuild_floor_tokens: 150000
 
 # =============================================================================
 # TOOL CONFIGURATION

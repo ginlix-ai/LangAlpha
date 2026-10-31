@@ -1433,3 +1433,20 @@ async def test_a_thread_claude_code_last_replied_on_is_not_offloaded(base_config
         await trigger_offload("thread-1")
     assert refused.value.detail["type"] == "claude_code_compacts_itself"
     stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_between_turns_reads_when_the_previous_run_settled():
+    """A run cancelled mid-call refreshed the provider's cache without a stamp
+    in the checkpoint, so the build's cache clock reads the ledger, as a
+    turn's does; a failed read leaves it unknown."""
+    from datetime import UTC, datetime
+
+    from src.server.handlers.thread_maintenance import _previous_run
+
+    settled = datetime(2026, 3, 1, 14, 31, tzinfo=UTC)
+    latest = "src.server.database.runs.lifecycle.get_latest_attempt"
+    with patch(latest, new=AsyncMock(return_value={"status": "cancelled", "usage_settled_at": settled})):
+        assert (await _previous_run("t-1")).previous_run_settled_at == settled
+    with patch(latest, new=AsyncMock(side_effect=RuntimeError("pool down"))):
+        assert (await _previous_run("t-1")).previous_run_settled_at is None

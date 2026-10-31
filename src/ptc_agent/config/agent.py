@@ -81,6 +81,10 @@ class CompactionConfig(BaseModel):
     truncate_args_idle_minutes: int | None = None
     truncate_args_keep_messages: int = 20
     truncate_args_max_length: int = 2000
+    #: The least context at which a turn start under the threshold rebuilds
+    #: a thread whose system prompt a deploy changed, once its prompt cache
+    #: has expired (see ``compaction.rebuild``); 0 never does.
+    rebuild_floor_tokens: int = 150_000
 
     #: Which named preset the numbers above came from, stamped by
     #: ``resolve_llm_config``. None means they are the deployment's own YAML
