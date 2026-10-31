@@ -41,6 +41,35 @@ def is_reasoning_block(block: Any) -> bool:
     return isinstance(block, dict) and block.get("type") in REASONING_BLOCK_TYPES
 
 
+# Set from the response the terminal ``response.completed`` or
+# ``response.incomplete`` event carries, never from ``response.created``. Any
+# one of them shows the terminal event arrived, so a server that leaves one out
+# still reads as finished.
+_TERMINAL_FIELDS = ("status", "object", "created_at")
+
+
+def is_unfinished_reply(msg: Any) -> bool:
+    """Whether ``msg`` is a Responses API reply whose stream ended before the
+    response did.
+
+    ``response.created`` gives the reply its ``resp_`` id and nothing else; the
+    terminal event gives it the rest (``_TERMINAL_FIELDS``). A stream
+    the server closes between the two ends without an error, so the client
+    hands back whatever items had started: a reasoning item with its id but
+    none of the ``encrypted_content`` its ``done`` event carries. The server
+    never kept those items, and a later request naming them is a 404.
+    """
+    if not isinstance(msg, AIMessage):
+        return False
+    meta = msg.response_metadata or {}
+    response_id = meta.get("id")
+    return (
+        isinstance(response_id, str)
+        and response_id.startswith("resp_")
+        and not any(field in meta for field in _TERMINAL_FIELDS)
+    )
+
+
 def drop_if_empty(msg: AIMessage) -> AIMessage | None:
     """``None`` once nothing sendable is left — the single emptiness rule.
 
