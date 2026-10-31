@@ -27,6 +27,7 @@ from langgraph.types import Command
 
 from ptc_agent.agent.middleware.background_subagent.middleware import current_background_tool_call_id
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTaskRegistry
+from src.llms.reasoning_payload import is_unfinished_reply
 from src.server.utils.content_normalizer import normalize_text_content
 
 logger = structlog.get_logger(__name__)
@@ -142,7 +143,9 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
         if tool_call_id and self.registry:
             try:
                 ai_msg = response.result[0] if response.result else None
-                if ai_msg:
+                # Model resilience, outside this middleware, retries a reply
+                # cut off before its response finished, so its calls never run.
+                if ai_msg and not is_unfinished_reply(ai_msg):
                     tool_calls = getattr(ai_msg, "tool_calls", None) or []
                     agent_id = _agent_id(self.registry, tool_call_id)
                     msg_id = getattr(ai_msg, "id", f"msg-{tool_call_id}")

@@ -52,6 +52,18 @@ _OVERFLOW_PHRASES = (
 )
 
 
+class UnfinishedReplyError(RuntimeError):
+    """A reply whose stream ended before the response did, refused as an answer.
+
+    Kept, it would name items the server never stored on every later request
+    to that provider, so it is retried instead. Carries no status, so it is
+    retryable, and ``mid_stream`` because the provider accepted the request:
+    stripping its reasoning repairs nothing.
+    """
+
+    mid_stream = True
+
+
 def iter_exception_chain(exc: BaseException):
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -120,6 +132,16 @@ def is_mid_stream_error(exc: BaseException) -> bool:
         getattr(current, "mid_stream", False) is True
         for current in iter_exception_chain(exc)
     )
+
+
+def refuses_input(exc: BaseException) -> bool:
+    """Whether the provider named the request's ``input`` as what it refused.
+
+    OpenAI's Responses API answers 404 for an item the input names that it
+    does not hold, a reasoning item it never stored among them. Read from the
+    error's ``param``, which the SDK takes from the body, never from prose.
+    """
+    return any(getattr(current, "param", None) == "input" for current in iter_exception_chain(exc))
 
 
 def is_programming_error(exc: BaseException) -> bool:

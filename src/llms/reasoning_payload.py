@@ -139,6 +139,41 @@ def pad_tool_turn(msg: AIMessage) -> AIMessage:
     return msg.model_copy(update={"content": [dict(EMPTY_THINKING_BLOCK), *blocks]})
 
 
+def strip_reasoning_references(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Drop the Responses reasoning items a history sends by id alone.
+
+    An item with its ``encrypted_content`` carries itself; one without is sent
+    as a reference the server has to resolve, so it is the only kind a server
+    can answer "not found". Every other reasoning payload is kept. Returns the
+    original list when there was nothing to drop, as ``strip_all_reasoning`` does.
+    """
+    result: list[AnyMessage] = []
+    changed = False
+    for msg in messages:
+        content = msg.content if isinstance(msg, AIMessage) else None
+        if not isinstance(content, list):
+            result.append(msg)
+            continue
+        kept = [
+            b
+            for b in content
+            if not (
+                isinstance(b, dict)
+                and b.get("type") == "reasoning"
+                and b.get("id")
+                and not b.get("encrypted_content")
+            )
+        ]
+        if len(kept) == len(content):
+            result.append(msg)
+            continue
+        changed = True
+        stripped = drop_if_empty(msg.model_copy(update={"content": kept}))
+        if stripped is not None:
+            result.append(stripped)
+    return result if changed else messages
+
+
 def strip_all_reasoning(messages: list[AnyMessage]) -> list[AnyMessage]:
     """Drop every reasoning payload from a history, regardless of origin.
 
