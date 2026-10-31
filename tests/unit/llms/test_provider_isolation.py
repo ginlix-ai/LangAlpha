@@ -706,3 +706,26 @@ async def test_every_stamp_claude_is_sent_stays_turn_scoped(monkeypatch, target)
     assert len(stamps) > len(network.calls)
     for call, message in stamps:
         assert message["role"] == "system" and message.get("clear_at") == "next_user_message", call
+
+
+def _cache_markers(value: Any) -> list[dict]:
+    """Every ``cache_control`` in a request body, except inside a tool call's
+    arguments, which are the model's own bytes."""
+    if isinstance(value, list):
+        return [marker for item in value for marker in _cache_markers(item)]
+    if not isinstance(value, dict):
+        return []
+    own = [value["cache_control"]] if "cache_control" in value else []
+    return own + [marker for key, item in value.items() if key != "input" for marker in _cache_markers(item)]
+
+
+@pytest.mark.asyncio
+async def test_the_subscription_route_caches_every_marker_for_an_hour(monkeypatch):
+    """A subscription's turns are paced by a person, so claude-oauth asks for
+    a 1-hour cache on every marker the stack places. The API-key route's bytes,
+    5-minute markers included, are held by its recorded render above."""
+    network, _ = await _run_thread(monkeypatch, "claude-sonnet-5-5-oauth")
+    markers = [marker for call in network.calls if call.kind == "anthropic" for marker in _cache_markers(call.body)]
+
+    assert markers, "the thread sent no cache marker"
+    assert all(marker == {"type": "ephemeral", "ttl": "1h"} for marker in markers), markers
