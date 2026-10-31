@@ -39,6 +39,7 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage, AnyMessage
 from langgraph.types import Command
 
+from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.thinking_binding import (
     UNSENT_THINKING_KEY,
     UnsentThinkingState,
@@ -110,15 +111,6 @@ def _last_message_id(request: ModelRequest) -> str | None:
     return getattr(messages[-1], "id", None) if messages else None
 
 
-def _thread_id() -> str | None:
-    try:
-        from langgraph.config import get_config
-
-        return (get_config().get("configurable") or {}).get("thread_id")
-    except Exception:
-        return None
-
-
 def _stripped_ids(sent: list[AnyMessage], stripped: list[AnyMessage]) -> list[str]:
     """The ids of the messages in ``sent`` the strip changed or removed."""
     kept = {id(message) for message in stripped}
@@ -155,10 +147,12 @@ def _report_drops(response: ModelResponse, model: str, sent: list[AnyMessage]) -
         if not counts:
             continue
         log = logger.info if set(counts) <= _BY_DESIGN_DROPS | {REPEATED} else logger.warning
+        thread_id, agent = run_ids()
         log(
             "[ModelResilience] earlier thinking dropped by the provider",
             model=model,
-            thread_id=_thread_id(),
+            thread_id=thread_id,
+            agent=agent,
             **counts,
         )
         stamp_run(thinking_dropped=counts)
@@ -633,7 +627,7 @@ class ModelResilienceMiddleware(AgentMiddleware):
                     "[ModelResilience] retrying without reasoning after a refused request",
                     status=status,
                     model=_model_display_name(req.model),
-                    thread_id=_thread_id(),
+                    thread_id=run_ids()[0],
                     error=(str(exc) or type(exc).__name__)[:_STRIP_ERROR_MAX_CHARS],
                 )
                 return status, _Recovery(request=stripped)

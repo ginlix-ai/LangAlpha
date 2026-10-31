@@ -29,10 +29,11 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
 )
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
+from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.runtime_context.epoch import BaselineEpoch
 from ptc_agent.agent.middleware.runtime_context.state import (
     STATE_BASELINE,
@@ -146,7 +147,7 @@ class SystemPinMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse | ExtendedModelResponse:
         try:
-            pinned, update = _pin(request)
+            pinned, update, change = _pin(request)
         except Exception:  # noqa: BLE001 - the stack's message is still a whole one
             logger.warning("[SystemPin] pin failed; sending the stack's message", exc_info=True)
             return await handler(request)
@@ -155,13 +156,53 @@ class SystemPinMiddleware(AgentMiddleware):
         response = await handler(request)
         if update is None:
             return response
+        if change is not None:
+            update = {**update, "change": change, "changed_at": _answer_id(response)}
         return ExtendedModelResponse(
             model_response=response, command=Command(update={STATE_SYSTEM_PIN: update})
         )
 
+    def after_model(self, state: Any, runtime: Any = None) -> dict[str, Any] | None:
+        _log_committed_change(state)
+        return None
 
-def _pin(request: ModelRequest) -> tuple[SystemMessage | None, dict[str, Any] | None]:
-    """The kept message to send instead of the stack's, and the pin to store.
+    async def aafter_model(self, state: Any, runtime: Any = None) -> dict[str, Any] | None:
+        _log_committed_change(state)
+        return None
+
+
+def _answer_id(response: Any) -> str | None:
+    """The id of the answer a call returned, which marks the pin change it made."""
+    result = getattr(response, "result", None) or ()
+    return next((m.id for m in reversed(result) if isinstance(m, AIMessage)), None)
+
+
+def _log_committed_change(state: Any) -> None:
+    """Log the pin change the model step just stored, once.
+
+    Logged after the step rather than inside the call: a call can be made and
+    its update thrown away (a summary's own request, a response the outer
+    middleware refuses and retries), and only the step's stored pin says which
+    change happened. The change is the step's when it names the step's answer.
+    """
+    pin = as_dict(state_get(state, STATE_SYSTEM_PIN))
+    change = pin.get("change")
+    messages = state_get(state, "messages") or []
+    answer = next((m.id for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    if change is None or answer is None or pin.get("changed_at") != answer:
+        return
+    thread_id, agent = run_ids()
+    logger.info("[SystemPin] change=%s model=%s thread_id=%s agent=%s", change, pin.get("model"), thread_id, agent)
+
+
+def _pin(
+    request: ModelRequest,
+) -> tuple[SystemMessage | None, dict[str, Any] | None, str | None]:
+    """The kept message to send instead of the stack's, the pin to store, and
+    which change storing it makes: ``stale`` (the build differs while thinking
+    bound to the kept message is in view), ``cleared`` (the build matches it
+    again), or what let the build's message replace it: ``first``,
+    ``model_changed``, ``no_bound_thinking``.
 
     Kept only for Claude, whose thinking is the only kind bound to the system
     message. A call to another model leaves the stored pin as it is: it may be
@@ -172,18 +213,25 @@ def _pin(request: ModelRequest) -> tuple[SystemMessage | None, dict[str, Any] | 
 
     built = request.system_message
     if built is None:
-        return None, None
+        return None, None, None
     stored = as_dict(state_get(getattr(request, "state", None), STATE_SYSTEM_PIN))
     if not is_claude(request.model):
-        return None, None
+        return None, None, None
     model = model_label(request.model) or ""
     content = stored.get("content")
     if content is not None and stored.get("model") == model:
         if _unmarked(content) == _unmarked(built.content):
-            return None, {"model": model, "content": content} if stored.get("stale") else None
+            if not stored.get("stale"):
+                return None, None, None
+            return None, {"model": model, "content": content}, "cleared"
         if holds_bound_thinking(request.messages):
-            return SystemMessage(content=content), None if stored.get("stale") else {**stored, "stale": True}
-    return None, {"model": model, "content": built.content}
+            if stored.get("stale"):
+                return SystemMessage(content=content), None, None
+            return SystemMessage(content=content), {**stored, "stale": True}, "stale"
+        change = "no_bound_thinking"
+    else:
+        change = "first" if content is None else "model_changed"
+    return None, {"model": model, "content": built.content}, change
 
 
 def _unmarked(content: Any) -> list[Any]:

@@ -64,9 +64,11 @@ from src.llms.provider_compaction import (
 )
 
 from ptc_agent.agent.state import ensure_message_ids
+from ptc_agent.agent.middleware._utils import run_ids
+from ptc_agent.agent.middleware.model_resilience import FALLBACK_KEY
 from ptc_agent.agent.middleware.compaction.between_turns import Ask, HandOff, asked
 from ptc_agent.agent.middleware.compaction.types import CompactionState, OffloadSettings
-from ptc_agent.agent.middleware.compaction.fitting import Fit, reported_usage
+from ptc_agent.agent.middleware.compaction.fitting import Fit, Fitted, reported_usage
 from ptc_agent.agent.middleware.compaction.compact import (
     NOTHING_TO_COMPACT,
     Compaction,
@@ -138,6 +140,32 @@ logger = logging.getLogger(__name__)
 # boundaries, which takes tens of milliseconds; past this the trim waits for
 # the next pass rather than hold the turn.
 _COVERAGE_TIMEOUT_S = 5.0
+
+
+def _log_rebuild(decision: str, reason: str) -> None:
+    """Whether a summary on a stale pin rebuilds the prompt or keeps the tail,
+    and why, so the rebuilds a thread misses can be counted from the logs."""
+    thread_id, agent = run_ids()
+    logger.info("[Compaction] rebuild=%s reason=%s thread_id=%s agent=%s", decision, reason, thread_id, agent)
+
+
+def _log_rebuild_after(fitted: Fitted, rebuild: str | None, waits: str) -> None:
+    """Log what a send on a stale pin did with it. SystemPin takes the new
+    prompt when Claude answers a request that holds no bound thinking: always
+    after a rebuild (``rebuild`` names why), and after a kept tail whose
+    thinking the summary or the fit left unsent. A fallback's answer leaves
+    the pin as it was, and otherwise the tail keeps it (``waits`` says why)."""
+    if any(
+        isinstance(message, AIMessage) and FALLBACK_KEY in (message.response_metadata or {})
+        for message in fitted.response.result or ()
+    ):
+        _log_rebuild("deferred", "fallback")
+    elif rebuild:
+        _log_rebuild("yes", rebuild)
+    elif not fitted.sent_bound_thinking:
+        _log_rebuild("yes", "no_bound_thinking")
+    else:
+        _log_rebuild("deferred", waits)
 
 
 @contextmanager
@@ -341,16 +369,27 @@ class CompactionMiddleware(AgentMiddleware):
                 # classify as an overflow.
                 if not is_context_overflow(exc):
                     raise
-                logger.warning("[Compaction] Context overflow, summarizing: %s", exc)
+                thread_id, agent = run_ids()
+                logger.warning(
+                    "[Compaction] trigger=overflow thread_id=%s agent=%s: %s", thread_id, agent, exc
+                )
                 refusal = exc
         else:
-            logger.info("[Compaction] Triggered: %d >= %d tokens", tokens, self._token_threshold)
+            thread_id, agent = run_ids()
+            logger.info(
+                "[Compaction] trigger=threshold tokens=%d threshold=%d thread_id=%s agent=%s",
+                tokens,
+                self._token_threshold,
+                thread_id,
+                agent,
+            )
 
         # A stale system prompt stays while any thinking it bound is in view,
         # so at a turn start the summary keeps none: its own request still
         # carries the old prompt and tools, which the thinking it summarizes
         # is checked against, and the call after it takes the new ones.
-        rebuild = turn_start_cut(view) if rebuild_pending(request.state) else 0
+        stale = rebuild_pending(request.state)
+        rebuild = turn_start_cut(view) if stale else 0
         cutoff = rebuild or self._cutoff(view, request.model)
         fit = Fit(
             self._token_threshold,
@@ -358,13 +397,13 @@ class CompactionMiddleware(AgentMiddleware):
             estimate,
             lossless=self._native and native_kind(request.model) == "anthropic",
         )
-        if rebuild:
-            logger.info("[Compaction] Rebuild: the summary keeps no turns")
-        elif fit.lossless:
+        if not rebuild and fit.lossless:
             cutoff = fit.cut(view, cutoff, tokens, refused=refusal is not None)
         if cutoff <= 0:
             # All of it is the kept tail: the attachments are all that can go.
             fitted = await fit.send(request, handler, view, refusal=refusal)
+            if stale:
+                _log_rebuild_after(fitted, None, "no_cut")
             return self._answered(
                 fitted.response, fitted.update(request.state), spared=fitted.spared
             )
@@ -382,6 +421,8 @@ class CompactionMiddleware(AgentMiddleware):
                 response=dataclasses.replace(fitted.response, result=[note, *fitted.response.result])
             )
         self._stamp_summary(fitted.response, compaction)
+        if stale:
+            _log_rebuild_after(fitted, "turn_start" if rebuild else None, "no_turn_start_cut")
         update = compaction.update(request.state)
         return self._answered(
             fitted.response, {**update, **fitted.update(update)}, spared=fitted.spared
@@ -465,7 +506,10 @@ class CompactionMiddleware(AgentMiddleware):
         cutoff = self._cutoff(view, request.model)
         if cutoff <= 0:
             raise ValueError(NOTHING_TO_COMPACT)
-        return await self._summarize(request, handler, view, cutoff)
+        compaction = await self._summarize(request, handler, view, cutoff)
+        if rebuild_pending(request.state):
+            _log_rebuild("deferred", "between_turns")
+        return compaction
 
     @staticmethod
     async def _hand_off(

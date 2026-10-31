@@ -17,6 +17,7 @@ notes folder.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import posixpath
 import re
@@ -30,9 +31,12 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    ToolCallRequest,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.types import Command
 
+from ptc_agent.agent.middleware._utils import run_ids
 from ptc_agent.agent.middleware.compaction.measure import context_tokens
 from ptc_agent.agent.middleware.compaction.utils import read_ahead
 from ptc_agent.agent.middleware.runtime_context.changes import UPDATE_SCHEMA_VERSION
@@ -283,6 +287,27 @@ class NotesDueMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         return await handler(_without_answered(request))
 
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Log each successful call on the notes by the check-in's own rule
+        (``_writes_notes``, which counts a Bash ``cat`` of a note too), with
+        the row it follows, so the rows asked and the note calls after them can
+        be counted from the logs."""
+        result = await handler(request)
+        if _writes_notes(request.tool_call, self._notes_folder) and _succeeded(result):
+            thread_id, agent = run_ids()
+            logger.info(
+                "[Notes] call tool=%s after=%s thread_id=%s agent=%s",
+                request.tool_call.get("name"),
+                _answered_row(request.state or {}, self._notes_folder, request.tool_call.get("id")),
+                thread_id,
+                agent,
+            )
+        return result
+
     async def abefore_model(self, state: Any, runtime: Any = None) -> dict[str, Any] | None:
         fill = await self._fill(state)
         # At 1.0 the summary runs on this very call, too late to write anything.
@@ -295,6 +320,10 @@ class NotesDueMiddleware(AgentMiddleware):
                 update["_notes_below_mark"] = since
         row = self._notes_due(state, fill, since) or self._check_in(state)
         if row is not None:
+            thread_id, agent = run_ids()
+            logger.info(
+                "[Notes] asked kind=%s fill=%.2f thread_id=%s agent=%s", row.kind, fill, thread_id, agent
+            )
             update["messages"] = [build_update_message(row)]
         return update or None
 
@@ -379,6 +408,61 @@ class NotesOffMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         return await handler(_without_notes_rows(request))
+
+
+def _succeeded(result: Any) -> bool:
+    """Whether a tool's result reports success. Tools report a refusal in their
+    result rather than as an error: the file tools as text that starts with
+    ``ERROR``, the JSON tools as ``"success": false``, either inside a
+    ``Command`` that carries the result."""
+    if isinstance(result, Command):
+        update = result.update if isinstance(result.update, dict) else {}
+        return all(_succeeded(m) for m in update.get("messages") or () if isinstance(m, ToolMessage))
+    if not isinstance(result, ToolMessage):
+        return True
+    text = str(result.content).lstrip()
+    if result.status == "error" or text.startswith("ERROR"):
+        return False
+    try:
+        reported = json.loads(text) if text.startswith("{") else None
+    except (ValueError, RecursionError):
+        return True
+    return not (isinstance(reported, dict) and reported.get("success") is False)
+
+
+def _answered_row(state: Mapping[str, Any], folder: re.Pattern[str], call_id: str | None) -> str:
+    """The kind of the notes row the note call ``call_id`` in the newest answer
+    follows, or ``none`` when an earlier successful note call came after it.
+
+    Only rows the model's requests still carry count: a row a summary has
+    answered is kept out of them (``_without_answered``), so a call after it
+    is not an answer to it. The note calls of one answer run together and see
+    the same state, so only the first of them follows the row.
+    """
+    messages = state.get("messages") or []
+    asking = max((i for i, m in enumerate(messages) if isinstance(m, AIMessage)), default=len(messages))
+    if asking < len(messages):
+        batch = [call.get("id") for call in messages[asking].tool_calls if _writes_notes(call, folder)]
+        if batch and batch[0] != call_id:
+            return "none"
+    current = _summary_id(state)
+    gone = unanswered_notes_rows(state)
+    legacy = current is not None and "_unanswered_notes_rows" not in state
+    failed: set[str] = set()
+    for message in reversed(messages[:asking]):
+        if isinstance(message, ToolMessage) and not _succeeded(message):
+            failed.add(message.tool_call_id)
+        elif (row := _notes_row(message)) is not None:
+            # ``_without_answered``'s rule for a call that answers from the
+            # current summary: an older summary's row stays unless that
+            # summary answered it, or the thread predates the record.
+            if row.provenance.get("summary") == current or not (legacy or message.id in gone):
+                return row.kind
+        elif isinstance(message, AIMessage) and any(
+            _writes_notes(call, folder) and call.get("id") not in failed for call in message.tool_calls
+        ):
+            return "none"
+    return "none"
 
 
 def _notes_row(message: Any) -> DurableUpdate | None:
