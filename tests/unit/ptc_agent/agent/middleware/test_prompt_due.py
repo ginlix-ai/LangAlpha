@@ -111,9 +111,10 @@ def test_only_a_change_of_the_prompt_sources_is_a_deploy():
     assert sources_changed({STATE_SYSTEM_PIN: _pinned("Prompt A.")})
 
 
-def test_a_pin_records_its_builds_sources_and_keeps_them_while_stale():
+def test_a_pin_records_its_builds_sources_and_keeps_them_while_stale(monkeypatch):
+    monkeypatch.setattr(release, "prompt_version", lambda: 4)
     first = _pin(_request(_built("Prompt B."), None, messages=[HumanMessage("Hi.")]))[1]
-    assert first["source_digest"] == release.source_digest()
+    assert (first["source_digest"], first["prompt_version"]) == (release.source_digest(), 4)
 
     stale = _pin(_request(SystemMessage("Prompt C."), first, messages=[reply(1, text="Hi.")]))[1]
     assert stale == {**first, "stale": True}
@@ -122,13 +123,20 @@ def test_a_pin_records_its_builds_sources_and_keeps_them_while_stale():
 @pytest.mark.parametrize("stale", [False, True], ids=["fresh", "stale"])
 def test_a_pin_the_build_composes_again_takes_its_sources(monkeypatch, stale):
     """Otherwise a thread no deploy touched keeps the sources of the build it
-    was pinned on, and its next due from an input alone reads as a deploy."""
+    was pinned on, and its next due from an input alone reads as a deploy, or
+    as urgent once ``rebuild_before`` passes the version it recorded. A pin
+    an old worker cleared, without a version, is refreshed the same way."""
     pinned = _pinned("Prompt A.", source_digest=release.source_digest(), **({"stale": True} if stale else {}))
     monkeypatch.setattr(release, "source_digest", lambda: "the next deploy")
+    monkeypatch.setattr(release, "prompt_version", lambda: 2)
 
     _, update, change = _pin(_request(_built("Prompt A."), pinned, messages=[reply(1, text="Hi.")]))
 
-    assert update == {**{k: v for k, v in pinned.items() if k != "stale"}, "source_digest": "the next deploy"}
+    assert update == {
+        **{k: v for k, v in pinned.items() if k != "stale"},
+        "source_digest": "the next deploy",
+        "prompt_version": 2,
+    }
     assert change == ("cleared" if stale else None)
     assert not sources_changed({STATE_SYSTEM_PIN: update})
     assert _pin(_request(_built("Prompt A."), update, messages=[reply(1, text="Hi.")])) == (None, None, None)

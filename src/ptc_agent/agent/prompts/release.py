@@ -13,6 +13,9 @@ from __future__ import annotations
 import functools
 import hashlib
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from ptc_agent.config.plugins import BUNDLES_DIR
 from src.config.features import FEATURES, system_flag
@@ -59,3 +62,21 @@ def source_digest() -> str:
     for key in sorted(FEATURES):
         digest.update(repr((key, *system_flag(key))).encode())
     return digest.hexdigest()
+
+
+@functools.cache
+def _config() -> dict[str, Any]:
+    return yaml.safe_load((_PROMPTS / "config" / "prompts.yaml").read_text()) or {}
+
+
+def prompt_version() -> int:
+    """The hand-set version of this build's prompt, which a pin records."""
+    return int(_config().get("prompt_version") or 0)
+
+
+def rebuild_before() -> int:
+    """The least ``prompt_version`` a thread may keep: one pinned below it
+    rebuilds at its next turn start, however small or warm. Never above this
+    build's own version, which a rebuilt pin records: past it, a rebuilt
+    thread would stay below it and be forced again on every due."""
+    return min(int(_config().get("rebuild_before") or 0), prompt_version())

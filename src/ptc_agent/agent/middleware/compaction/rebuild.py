@@ -6,7 +6,9 @@ turn start, or between turns. Under its threshold that summary would run only
 for this, so the main agent forces it only where it costs little: the prompt
 changed by a deploy, never by a per-turn input that may flip back, the context
 is at least ``floor_tokens``, and the provider's prompt cache has expired, so
-the turn's first call would write the whole context again in any case.
+the turn's first call would write the whole context again in any case. A
+thread pinned below the build's ``rebuild_before`` is forced whatever its
+size or cache, and a build older than the pin, a rollback, forces nothing.
 """
 
 from __future__ import annotations
@@ -23,10 +25,13 @@ from src.llms.cache_markers import CacheScope, route_ttl_seconds, written_ttl_se
 
 from ptc_agent.agent.middleware.compaction.utils import settled_end, turn_start_cut
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import (
+    STATE_SYSTEM_PIN,
     due,
     rebuild_pending,
     sources_changed,
 )
+from ptc_agent.agent.middleware.runtime_context.state import as_dict, state_get
+from ptc_agent.agent.prompts import release
 
 
 def _claude(message: Any) -> bool:
@@ -150,29 +155,39 @@ class TurnStartRebuilds(StalePinRebuilds):
         scope = self._scope(request, view, now)
         if tokens >= threshold:
             return RebuildPlan(due=True, cut=cut, reason="digest", scope=scope)
-        waits = self._waits(request, view, tokens, cold=scope is not None)
-        if waits is None:
-            return RebuildPlan(due=True, cut=cut, reason="deploy_cold", forced=True, scope=scope)
-        return RebuildPlan(due=True, cut=cut, reason="digest", waits=waits, scope=scope)
+        forced, reason = self._under_threshold(request, view, tokens, cold=scope is not None)
+        if forced:
+            return RebuildPlan(due=True, cut=cut, reason=reason, forced=True, scope=scope)
+        return RebuildPlan(due=True, cut=cut, reason="digest", waits=reason, scope=scope)
 
-    def _waits(self, request: ModelRequest, view: Sequence[AnyMessage], tokens: int, *, cold: bool) -> str | None:
-        """Why a due turn start under the threshold is not forced, or None.
+    def _under_threshold(
+        self, request: ModelRequest, view: Sequence[AnyMessage], tokens: int, *, cold: bool
+    ) -> tuple[bool, str]:
+        """Whether a due turn start under the threshold is forced, and why:
+        ``urgent`` or ``deploy_cold``, or why it waits.
 
         A thread whose last answer came from a fallback of another provider
-        waits: the pin only follows Claude, so a summary that a fallback
-        answers after would leave the thread due, and force again next turn.
+        waits unless urgent: the pin only follows Claude, so a summary that a
+        fallback answers after would leave the thread due, and force again
+        next turn. An urgent one cannot loop: the summary leaves no bound
+        thinking in view, and a thread without any is not due.
         """
+        pinned = as_dict(state_get(request.state, STATE_SYSTEM_PIN)).get("prompt_version") or 0
+        if release.prompt_version() < pinned:
+            return False, "rollback"
+        if pinned < release.rebuild_before():
+            return True, "urgent"
         if not _claude(next((m for m in reversed(view) if isinstance(m, AIMessage)), None)):
-            return "fallback"
+            return False, "fallback"
         if not sources_changed(request.state):
-            return "inputs_only"
+            return False, "inputs_only"
         if not self.floor_tokens:
-            return "off"
+            return False, "off"
         if tokens < self.floor_tokens:
-            return "under_floor"
+            return False, "under_floor"
         if not cold:
-            return "warm"
-        return None
+            return False, "warm"
+        return True, "deploy_cold"
 
     def _scope(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> CacheScope | None:
         """``last_tool`` once the thread's prompt cache has expired, since the

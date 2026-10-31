@@ -451,3 +451,57 @@ async def test_a_manual_compaction_after_a_cancel_mid_tool_keeps_its_tail(monkey
     assert compaction.preserved
     assert _instructions(wire.payloads[2]) == KEEPS_TAIL
     assert "rebuild=deferred reason=unanswered_tool_call" in caplog.text
+
+
+# -- the urgency marker --------------------------------------------------------
+
+
+def _release(monkeypatch, version: int, before: int) -> None:
+    monkeypatch.setattr(release, "prompt_version", lambda: version)
+    monkeypatch.setattr(release, "rebuild_before", lambda: before)
+
+
+def test_a_thread_pinned_below_rebuild_before_rebuilds_however_small_or_warm(monkeypatch):
+    _release(monkeypatch, 1, 1)
+
+    for pinned in ({"prompt_version": 0}, {}):
+        urgent = _plan(_due_request(source=release.source_digest(), **pinned), tokens=100, now=1_010.0)
+        assert (urgent.forced, urgent.reason) == (True, "urgent")
+    assert _plan(_due_request(prompt_version=1), tokens=100, now=1_010.0).waits == "under_floor"
+
+
+def test_an_urgent_rebuild_does_not_wait_for_claude_to_answer_again(monkeypatch):
+    """A fallback answered last, but the summary leaves no bound thinking in
+    view, so the thread is not due again on the next turn."""
+    _release(monkeypatch, 1, 1)
+    view = [*TURN[:2], HumanMessage("Again."), _answer("deepseek-chat"), TURN[2]]
+
+    urgent = _plan(_due_request(prompt_version=0), view=view, tokens=100, now=1_010.0)
+
+    assert (urgent.forced, urgent.reason) == (True, "urgent")
+    assert _plan(_due_request(prompt_version=1), view=view).waits == "fallback"
+
+
+def test_rebuild_before_never_passes_the_builds_own_version(monkeypatch):
+    """A rebuilt pin records ``prompt_version``, so a higher ``rebuild_before``
+    would force that thread again on every due."""
+    assert release._config().get("rebuild_before", 0) <= release._config().get("prompt_version", 0)
+
+    monkeypatch.setattr(release, "_config", lambda: {"prompt_version": 2, "rebuild_before": 5})
+    assert release.rebuild_before() == 2
+
+
+def test_a_build_older_than_the_pin_forces_nothing(monkeypatch):
+    """After a rollback the thread is due again, and waits for a summary
+    that runs anyway rather than rebuild back."""
+    _release(monkeypatch, 1, 3)
+
+    assert _plan(_due_request(prompt_version=2)).waits == "rollback"
+
+
+def test_a_pin_the_build_refreshed_after_a_bump_waits_on_an_input(monkeypatch):
+    """The pin took the bumped version while its content still matched, so
+    an input that later changes the prompt is not mistaken for urgent."""
+    _release(monkeypatch, 1, 1)
+
+    assert _plan(_due_request(source=release.source_digest(), prompt_version=1)).waits == "inputs_only"

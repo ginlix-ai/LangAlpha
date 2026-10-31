@@ -168,8 +168,9 @@ def sources_changed(state: Any) -> bool:
 
 
 def _build_sources() -> dict[str, Any]:
-    """What a pin records of the build whose static prompt it holds."""
-    return {"source_digest": release.source_digest()}
+    """What a pin records of the build whose static prompt it holds: the
+    digest of its sources and its hand-set ``prompt_version``."""
+    return {"source_digest": release.source_digest(), "prompt_version": release.prompt_version()}
 
 
 # Cache markers are outside the prefix check, so they are outside the
