@@ -1276,3 +1276,37 @@ async def test_a_call_kept_out_of_the_stream_captures_no_tool_calls(hidden) -> N
 
     captured = [c.args[1]["event"] for c in registry.append_captured_event.await_args_list]
     assert captured == ([] if hidden else ["tool_calls"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finished", [True, False], ids=["a finished reply", "a cut-off reply"])
+async def test_a_cut_off_reply_captures_no_tool_calls(finished) -> None:
+    """Model resilience retries a reply whose stream ended before its response
+    did, so a tool call it carries is never run and the task's card must not
+    show it."""
+    from langchain_core.messages import AIMessage
+    from langchain.agents.middleware.types import ModelResponse
+
+    registry = _capture_registry()
+    middleware = SubagentEventCaptureMiddleware(registry=registry)
+    metadata = {"id": "resp_1", **({"status": "completed"} if finished else {})}
+
+    async def model(_req):
+        return ModelResponse(
+            result=[
+                AIMessage(
+                    "",
+                    tool_calls=[{"name": "Bash", "id": "c1", "args": {}}],
+                    response_metadata=metadata,
+                )
+            ]
+        )
+
+    task = current_background_tool_call_id.set("task-tc")
+    try:
+        await middleware.awrap_model_call(MagicMock(), model)
+    finally:
+        current_background_tool_call_id.reset(task)
+
+    captured = [c.args[1]["event"] for c in registry.append_captured_event.await_args_list]
+    assert captured == (["tool_calls"] if finished else [])

@@ -169,6 +169,52 @@ class TestItemIds:
         assert out is msgs
 
 
+class TestUnfinishedReply:
+    """A reply cut off mid-stream names items its own server never stored.
+
+    Its reasoning arrives as an id alone, which OpenAI answers with a 404 on
+    every later request, so it is stripped for every target, its own lineage
+    included, and the finished replies beside it keep theirs.
+    """
+
+    BARE = {"type": "reasoning", "id": "rs_cut", "summary": [], "index": 0}
+    SEALED = {"type": "reasoning", "id": "rs_done", "summary": [], "encrypted_content": "opaque"}
+
+    def _cut(self, *content, **kwargs):
+        return AIMessage(
+            content=list(content),
+            response_metadata={"id": "resp_cut", "model_provider": "openai", ORIGIN_KEY: "openai"},
+            **kwargs,
+        )
+
+    def _finished(self):
+        return AIMessage(
+            content=[self.SEALED, TEXT],
+            response_metadata={"id": "resp_done", "status": "completed", ORIGIN_KEY: "openai"},
+        )
+
+    @pytest.mark.parametrize("target", ["openai", "dashscope", "anthropic", "unknown"])
+    def test_a_reply_with_only_its_reasoning_is_dropped(self, target):
+        finished = self._finished()
+        msgs = [HumanMessage("q"), finished, self._cut(self.BARE), HumanMessage("what happened?")]
+
+        out, stats = _sanitize(msgs, target)
+
+        assert len(out) == 3
+        assert stats.msgs_removed == 1
+        if target == "openai":
+            assert out[1] is finished
+
+    def test_its_tool_calls_survive_without_their_item_ids(self):
+        msgs = [HumanMessage("q"), self._cut(self.BARE, FUNCTION_CALL, tool_calls=[TOOL_CALL])]
+
+        out, _ = _sanitize(msgs, "openai")
+
+        assert types_of(out[1]) == ["function_call"]
+        assert "id" not in out[1].content[0]
+        assert out[1].tool_calls == [TOOL_CALL]
+
+
 class TestToolTurnPadding:
     def test_foreign_tool_turn_is_padded_after_its_reasoning_goes(self):
         msgs = [

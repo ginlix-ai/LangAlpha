@@ -4,10 +4,12 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.llms.reasoning_payload import (
+    is_unfinished_reply,
     pad_tool_turn,
     strip_all_reasoning,
     strip_item_ids,
     strip_reasoning,
+    strip_reasoning_references,
 )
 
 TEXT = {"type": "text", "text": "answer"}
@@ -191,3 +193,131 @@ class TestPadToolTurn:
     )
     def test_left_alone(self, msg):
         assert pad_tool_turn(msg) is msg
+
+
+# What a Responses stream leaves when the server closes it after the first item
+# started: the reasoning item's id, none of its content.
+BARE_REASONING = {"type": "reasoning", "id": "rs_cut", "summary": [], "index": 0}
+SEALED_REASONING = {"type": "reasoning", "id": "rs_done", "summary": [], "encrypted_content": "opaque"}
+
+
+class TestUnfinishedReply:
+    """A Responses reply is finished once its terminal event set ``status``."""
+
+    def test_a_reply_cut_before_its_terminal_event(self):
+        msg = AIMessage(content=[BARE_REASONING], response_metadata={"id": "resp_1", "model_provider": "openai"})
+        assert is_unfinished_reply(msg)
+
+    @pytest.mark.parametrize(
+        "terminal",
+        [{"status": "completed"}, {"status": "incomplete"}, {"object": "response", "created_at": 1.0}],
+        ids=["completed", "incomplete", "a server leaving out status"],
+    )
+    def test_a_reply_its_terminal_event_reached(self, terminal):
+        msg = AIMessage(content=[SEALED_REASONING], response_metadata={"id": "resp_1", **terminal})
+        assert not is_unfinished_reply(msg)
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {},
+            {"id": "chatcmpl-1"},
+            {"id": "msg_01abc", "stop_reason": "end_turn"},
+            {"id": "gen-17"},
+        ],
+    )
+    def test_replies_from_other_apis_never_count(self, metadata):
+        assert not is_unfinished_reply(AIMessage(content="answer", response_metadata=metadata))
+
+    def test_only_a_model_reply_counts(self):
+        assert not is_unfinished_reply(HumanMessage("q"))
+
+
+class TestStripReasoningReferences:
+    """Only reasoning sent by id alone goes; everything else is kept."""
+
+    def test_drops_the_bare_item_and_keeps_the_sealed_one(self):
+        earlier = AIMessage(content=[SEALED_REASONING, TEXT], id="a-1")
+        cut = AIMessage(content=[BARE_REASONING], id="a-2")
+        later = AIMessage(content=[THINKING, TEXT], id="a-3")
+
+        result = strip_reasoning_references([HumanMessage("q"), earlier, cut, later])
+
+        assert [getattr(m, "id", None) for m in result] == [None, "a-1", "a-3"]
+        assert result[1] is earlier
+        assert result[2] is later
+
+    def test_a_message_keeping_other_content_survives(self):
+        msg = AIMessage(content=[BARE_REASONING, TEXT])
+        (result,) = strip_reasoning_references([msg])
+        assert types_of(result) == ["text"]
+
+    def test_returns_the_same_list_when_nothing_is_bare(self):
+        messages = [HumanMessage("q"), AIMessage(content=[SEALED_REASONING, TEXT]), AIMessage("plain")]
+        assert strip_reasoning_references(messages) is messages
+
+
+class TestAgainstTheOpenAIClient:
+    """The predicate reads metadata langchain-openai builds from the stream, so
+    an upgrade that stopped copying the terminal event's fields would make every
+    Responses reply look unfinished. Streamed through the real client here."""
+
+    RESPONSE = {"id": "resp_1", "object": "response", "created_at": 1.0, "status": "in_progress", "model": "gpt-test", "output": []}
+    ITEM = {"type": "reasoning", "id": "rs_1", "summary": []}
+    SEALED = {**ITEM, "encrypted_content": "opaque"}
+    USAGE = {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "total_tokens": 2,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 1},
+    }
+
+    def _events(self, *, finished):
+        events = [
+            {"type": "response.created", "sequence_number": 0, "response": self.RESPONSE},
+            {"type": "response.output_item.added", "sequence_number": 1, "output_index": 0, "item": self.ITEM},
+        ]
+        if finished:
+            events += [
+                {"type": "response.output_item.done", "sequence_number": 2, "output_index": 0, "item": self.SEALED},
+                {
+                    "type": "response.completed",
+                    "sequence_number": 3,
+                    "response": {**self.RESPONSE, "status": "completed", "output": [self.SEALED], "usage": self.USAGE},
+                },
+            ]
+        return events
+
+    async def _streamed(self, *, finished):
+        import json
+
+        import httpx
+        from langchain_openai import ChatOpenAI
+
+        body = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in self._events(finished=finished))
+        transport = httpx.MockTransport(
+            lambda _request: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+        )
+        llm = ChatOpenAI(
+            model="gpt-test",
+            api_key="test",
+            output_version="responses/v1",
+            use_responses_api=True,
+            streaming=True,
+            http_async_client=httpx.AsyncClient(transport=transport),
+        )
+        reply = None
+        async for chunk in llm.astream([HumanMessage("q")]):
+            reply = chunk if reply is None else reply + chunk
+        return reply
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_reached_its_terminal_event(self):
+        assert not is_unfinished_reply(await self._streamed(finished=True))
+
+    @pytest.mark.asyncio
+    async def test_a_stream_closed_before_it(self):
+        reply = await self._streamed(finished=False)
+        assert is_unfinished_reply(reply)
+        assert [b["type"] for b in reply.content] == ["reasoning"]

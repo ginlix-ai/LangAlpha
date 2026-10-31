@@ -1248,6 +1248,142 @@ class TestReasoningPayloadEscalation:
         assert len(calls) == 1
 
 
+class TestUnfinishedReply:
+    """A reply whose stream ended before the response did is retried, never
+    returned: kept, it would name items the server never stored on every later
+    request to that provider."""
+
+    @staticmethod
+    def _reply(**metadata):
+        return ModelResponse(
+            result=[AIMessage(content=[{"type": "reasoning", "id": "rs_cut", "summary": []}], response_metadata=metadata)]
+        )
+
+    @pytest.mark.asyncio
+    async def test_is_retried_on_the_same_model(self, events):
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client)
+        finished = ModelResponse(result=[AIMessage("ok", response_metadata={"id": "resp_2", "status": "completed"})])
+        replies = [self._reply(id="resp_1"), finished]
+
+        async def handler(req):
+            return replies.pop(0)
+
+        result = await mw.awrap_model_call(_FakeRequest(client), handler)
+
+        assert result is finished
+        assert [e["type"] for e in events] == ["model_retry"]
+
+    @pytest.mark.asyncio
+    async def test_a_cut_that_repeats_gets_one_retry(self, events):
+        """A server that closes every stream at the same point is not asked a
+        third time: each attempt is billed and none can finish."""
+        from src.llms.error_classification import UnfinishedReplyError
+
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client)
+        calls = []
+
+        async def handler(req):
+            calls.append(req)
+            return self._reply(id="resp_1")
+
+        with pytest.raises(UnfinishedReplyError):
+            await mw.awrap_model_call(_FakeRequest(client), handler)
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_finished_reply_passes_untouched(self, events):
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client)
+        finished = self._reply(id="resp_1", status="incomplete")
+
+        async def handler(req):
+            return finished
+
+        assert await mw.awrap_model_call(_FakeRequest(client), handler) is finished
+        assert events == []
+
+
+class TestMissingItem:
+    """A 404 naming the request's ``input``: the server does not hold an item
+    the history sends. Only reasoning sent by id alone can be that item, so only
+    it is stripped, and the rest of the history keeps its reasoning."""
+
+    SEALED = {"type": "reasoning", "id": "rs_done", "summary": [], "encrypted_content": "opaque"}
+    BARE = {"type": "reasoning", "id": "rs_cut", "summary": []}
+
+    def _history(self):
+        from langchain_core.messages import HumanMessage
+
+        return [
+            HumanMessage("q", id="h-1"),
+            AIMessage(content=[self.SEALED, {"type": "text", "text": "a"}], id="a-1"),
+            AIMessage(content=[self.BARE], id="a-2"),
+            HumanMessage("what happened?", id="h-2"),
+        ]
+
+    @staticmethod
+    def _not_found(param="input"):
+        exc = _status_error("Item with id 'rs_cut' not found.", status=404)
+        exc.param = param
+        return exc
+
+    @pytest.mark.asyncio
+    async def test_strips_only_the_bare_item_and_remembers_it(self, events):
+        from langchain.agents.middleware.types import ExtendedModelResponse
+
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client)
+        answer = ModelResponse(result=[AIMessage("ok", id="a-3")])
+        seen = []
+
+        async def handler(req):
+            seen.append([m.id for m in req.messages])
+            if len(seen) == 1:
+                raise self._not_found()
+            return answer
+
+        result = await mw.awrap_model_call(_FakeRequest(client, self._history()), handler)
+
+        assert seen == [["h-1", "a-1", "a-2", "h-2"], ["h-1", "a-1", "h-2"]]
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command.update == {"_unsent_thinking_ids": {"a-2"}}
+
+    @pytest.mark.asyncio
+    async def test_with_nothing_bare_it_strips_all_reasoning(self, events):
+        from langchain_core.messages import HumanMessage
+
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client)
+        history = [HumanMessage("q", id="h-1"), AIMessage(content=[self.SEALED, {"type": "text", "text": "a"}], id="a-1")]
+        seen = []
+
+        async def handler(req):
+            seen.append([b["type"] for m in req.messages if isinstance(m, AIMessage) for b in m.content])
+            if len(seen) == 1:
+                raise self._not_found()
+            return ModelResponse(result=[AIMessage("ok")])
+
+        await mw.awrap_model_call(_FakeRequest(client, history), handler)
+
+        assert seen == [["reasoning", "text"], ["text"]]
+
+    @pytest.mark.asyncio
+    async def test_a_404_on_anything_else_is_not_retried(self, events):
+        client = _FakeModel("primary-model")
+        mw = _make_middleware(client)
+        calls = []
+
+        async def handler(req):
+            calls.append(req)
+            raise self._not_found(param="model")
+
+        with pytest.raises(Exception, match="not found"):
+            await mw.awrap_model_call(_FakeRequest(client, self._history()), handler)
+        assert len(calls) == 1
+
+
 class TestAStripIsKept:
     """A stripped retry the primary answered stays stripped for the thread.
 
