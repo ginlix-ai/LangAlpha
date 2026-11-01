@@ -431,12 +431,13 @@ async def test_retry_route_reruns_a_pending_input_and_replays_otherwise(
             "t-1",
             Principal("u-1", "session"),
             AsyncMock(return_value=auth),
-            RetryRequest(workspace_id="ws-1", run_id="run-1"),
+            RetryRequest(workspace_id="ws-1", run_id="run-1", keep_full_context=True),
         )
 
     request = send.await_args.args[0]
     assert send.await_args.kwargs == {"retry_of_run_id": "run-1"}
     assert request.subagents_enabled == ["research"]
+    assert request.keep_full_context is True
     if pending and not pending.get("replay"):
         # A new thread's first send has no checkpoint to look up at all.
         checkpoint.assert_not_awaited()

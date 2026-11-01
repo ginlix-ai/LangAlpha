@@ -45,6 +45,7 @@ function setup({ banner: initialBanner = null, reply = {} }: { banner?: unknown;
     pendingPTCBackfillRef: { current: new Map() },
     subagentHistory: { toolCalls: new Map() },
     setTokenUsage: vi.fn(),
+    setNextSummary: vi.fn(),
     setMessageError,
     setFallbackSuggestion: vi.fn(),
     t: (k: string) => k,

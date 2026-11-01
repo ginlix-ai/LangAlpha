@@ -38,6 +38,7 @@ function setup() {
     pendingPTCBackfillRef: { current: new Map() },
     subagentHistory: { toolCalls: new Map() },
     setTokenUsage: vi.fn(),
+    setNextSummary: vi.fn(),
     setMessageError,
     setFallbackSuggestion: vi.fn(),
     t: (k: string) => k,

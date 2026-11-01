@@ -340,6 +340,45 @@ class TestEnsureThread:
         assert ctx.previous_run_settled_at == settled
 
     @pytest.mark.asyncio
+    async def test_an_attempt_whose_input_never_reached_the_graph_leaves_the_cache_clock(self):
+        """It made no model call, so the cache counts from the attempt before."""
+        from src.server.handlers.chat.request_prep import ensure_thread
+
+        request = MagicMock()
+        request.external_thread_id = None
+        request.platform = None
+        request.origin = None
+        request.subagents_allowed = None
+        called = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+        refused = datetime(2026, 3, 1, 14, 31, tzinfo=UTC)
+
+        async def _latest(_thread_id, before_turn=None, without_key=None):
+            if without_key == "pending_input":
+                return {"created_at": called, "status": "completed", "usage_settled_at": called}
+            return {
+                "created_at": refused,
+                "status": "error",
+                "usage_settled_at": refused,
+                "metadata": {"pending_input": {"checkpoint_id": None}},
+            }
+
+        with (
+            patch(
+                f"{PREP}.qr_db.get_thread_by_id",
+                new_callable=AsyncMock,
+                return_value={"updated_at": refused},
+            ),
+            patch(f"{PREP}.qr_db.ensure_thread_exists", new_callable=AsyncMock),
+            patch(f"{PREP}.tl_db.get_latest_attempt", new=_latest),
+            patch("src.server.database.runs.lifecycle.get_latest_attempt", new=_latest),
+        ):
+            prior = await ensure_thread(
+                request, "t-1", "ws-1", "u-1", initial_query=""
+            )
+
+        assert (prior.last_turn_at, prior.last_run_settled_at) == (refused, called)
+
+    @pytest.mark.asyncio
     async def test_a_forks_cache_clock_reads_the_newest_attempt(self):
         """A regenerate soon after the attempt it discards finds the cache
         that attempt refreshed, so its settle time is the one that counts."""
