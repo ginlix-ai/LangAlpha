@@ -366,7 +366,7 @@ async def test_the_run_after_a_turn_that_ended_on_tool_results_starts_a_turn(mon
 @pytest.mark.asyncio
 async def test_mid_run_a_row_after_tool_results_is_no_turn_start(monkeypatch, clock, caplog):
     """The run's first call is past, so a summary at the threshold on a due
-    thread keeps the step under way with its tail."""
+    thread ends after the step under way and carries it, as mid-turn."""
     caplog.set_level("INFO")
     wire = Wire(
         _script(
@@ -381,12 +381,12 @@ async def test_mid_run_a_row_after_tool_results_is_no_turn_start(monkeypatch, cl
     _deploy(monkeypatch)
     await _agent(saver, "Prompt B.", rows=True).ainvoke({"messages": [HumanMessage("Get b.")]}, CFG)
 
-    summary = wire.payloads[3]
-    assert "market-watch" in json.dumps(wire.payloads[4]["messages"])
-    assert _instructions(summary) == KEEPS_TAIL
-    assert "Prompt A." in _system(wire.payloads[4])
+    summary, after = wire.payloads[3], json.dumps(wire.payloads[4]["messages"])
+    assert "market-watch" in after and "Your last step" in after
+    assert _instructions(summary) == summary_prompt("native", False, notes=False, carried=True)
+    assert "Prompt B." in _system(wire.payloads[4])
     assert api_drops(wire) == {}
-    assert "rebuild=deferred reason=no_turn_start_cut" in caplog.text
+    assert "rebuild=yes reason=mid_turn" in caplog.text
 
 
 @pytest.mark.parametrize(("idle", "rebuilt"), [(600.0, True), (60.0, False)], ids=["cold", "warm"])
