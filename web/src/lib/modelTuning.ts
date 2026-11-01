@@ -117,6 +117,9 @@ export interface ModelProfile {
   reasoning_effort?: string | null;
   fast_mode?: boolean | null;
   native_compaction?: boolean | null;
+  /** Account-wide only: summarize a long thread before the first send after a
+   *  break. Absent or null is on. */
+  cold_compaction?: boolean | null;
 }
 
 export type TuningField = keyof ModelProfile;
@@ -128,6 +131,7 @@ export const TUNING_FIELDS: readonly TuningField[] = [
   'reasoning_effort',
   'fast_mode',
   'native_compaction',
+  'cold_compaction',
 ];
 
 /** What the server runs when neither the account nor the model declares a
