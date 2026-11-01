@@ -25,10 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import replace
 from functools import partial
 from itertools import pairwise
 from typing import Annotated, Any, TypeVar
@@ -37,9 +36,6 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
-    HookMatcher,
-    Message,
-    ProcessError,
     RateLimitEvent,
     ResultMessage,
     StreamEvent,
@@ -49,13 +45,13 @@ from claude_agent_sdk import (
 )
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolCall, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
+from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, TurnSteering
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
@@ -68,17 +64,13 @@ from ptc_agent.agent.claude_code.session import (
     session_channel,
 )
 from ptc_agent.agent.claude_code.tools_bridge import (
-    SERVER,
     Answered,
     Ended,
     Run,
     ToolResults,
-    allow_rule,
-    build_tool_server,
     tool_specs,
 )
 from ptc_agent.agent.main_state import MainAgentState
-from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
@@ -86,7 +78,6 @@ from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, reentry_trigger
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
 from src.llms.claude_code import ClaudeTurnFailed, another_model_replied_last
-from src.server.utils.error_sanitization import sanitize_error_text
 
 TURN_KEY = "claude_turn"
 T = TypeVar("T")
@@ -100,9 +91,6 @@ DRAIN_TIMEOUT_S = 5.0
 #: (``BackgroundSubagentOrchestrator.max_iterations``).
 TURN_QUERIES = 3
 TOKEN_CHECK_TIMEOUT_S = 60
-#: How much of the CLI's stderr a failed start passes on.
-STARTUP_REASON_LINES = 5
-STARTUP_REASON_CHARS = 600
 
 
 #: Ends of a query that did what was asked. Anything else is a failed turn.
@@ -145,39 +133,6 @@ def turn_failure(
     return ClaudeTurnFailed("api_error", detail)
 
 
-def startup_failure(error: ProcessError) -> ClaudeTurnFailed:
-    """The CLI exiting before it took the turn, in its own words: the last
-    lines of its stderr, bounded, and scrubbed although a refusal to start
-    names no credential."""
-    lines = [line.strip() for line in (error.stderr or "").splitlines() if line.strip()]
-    reason = sanitize_error_text(" ".join(lines[-STARTUP_REASON_LINES:]))[:STARTUP_REASON_CHARS]
-    return ClaudeTurnFailed("startup_failed", reason or f"it exited with code {error.exit_code}")
-
-
-@contextlib.asynccontextmanager
-async def _open(client: ClaudeSDKClient) -> AsyncIterator[None]:
-    """Start the CLI for the body to send the query. A CLI that exits first,
-    or while the query goes, fails in its own words."""
-    try:
-        await client.connect()
-        yield
-    except ProcessError as e:
-        raise startup_failure(e) from None
-
-
-async def _received(client: ClaudeSDKClient, *, init_seen: bool = False) -> AsyncIterator[Message]:
-    """What the CLI says. One that exits before its init never took the
-    turn, so it fails in its own words as at the start."""
-    try:
-        async for m in client.receive_messages():
-            init_seen = init_seen or (isinstance(m, SystemMessage) and m.subtype == "init")
-            yield m
-    except ProcessError as e:
-        if init_seen:
-            raise
-        raise startup_failure(e) from None
-
-
 async def token_works(launcher: Launcher, model: str) -> bool:
     """Whether Anthropic serves the token the launcher signs in with: one minimal turn on ``model``, through a turn's own transport.
 
@@ -207,9 +162,9 @@ async def token_works(launcher: Launcher, model: str) -> bool:
         client = ClaudeSDKClient(options, transport=launcher.transport(options))
         try:
             async with asyncio.timeout(TOKEN_CHECK_TIMEOUT_S):
-                async with _open(client):
+                async with connected(client):
                     await client.query("Reply with OK.")
-                async for m in _received(client):
+                async for m in received(client):
                     if isinstance(m, AssistantMessage) and m.error:
                         errors.append((m.error, " ".join(getattr(b, "text", "") for b in m.content).strip()))
                     elif isinstance(m, RateLimitEvent):
@@ -237,86 +192,6 @@ class ClaudeCodeState(MainAgentState):
     """A Claude Code thread's checkpoint: a main-agent thread's, plus Claude's session."""
 
     claude_session: NotRequired[Annotated[SessionRecords, session_channel()]]
-
-
-@dataclass(frozen=True)
-class RuntimeSpec:
-    """What this build runs a Claude Code turn with.
-
-    The system prompt and the tool list are part of the prefix every earlier
-    thinking block is bound to, so they only start a session: its later turns
-    run on the copy it keeps (``session.SessionPin``), and what changes
-    reaches Claude as appended messages.
-    """
-
-    system_prompt: str
-    model: str
-    tools: Sequence[BaseTool]
-    #: The client metadata usage is recorded under (``billing_attribution``),
-    #: as the LLM layer stamps it for the thread's catalog entry.
-    billing: Mapping[str, str]
-    effort: str | None = None
-    read_only: frozenset[str] = frozenset()
-
-
-def options_for(
-    spec: RuntimeSpec,
-    *,
-    pin: SessionPin,
-    server: Any,
-    store: CheckpointSessionStore,
-    session_id: str | None,
-    prepared: Prepared,
-    after_tool: AfterTool,
-) -> ClaudeAgentOptions:
-    """The SDK options: Claude Code with none of its own prompt, settings or tools.
-
-    The system prompt goes as a file in the turn's config dir, never on the
-    command line, where Linux caps one argument at 128 KiB and any local
-    account can read it. ``after_tool`` is the hook the CLI calls once each
-    of our calls returns, whether it succeeded or failed. A line the CLI
-    writes can carry a whole result, a PDF's document block included, so
-    the SDK reads lines up to twice the largest one a tool returns.
-    """
-    hooks = {event: [HookMatcher(matcher=None, hooks=[after_tool])] for event in ("PostToolUse", "PostToolUseFailure")}
-    return ClaudeAgentOptions(
-        tools=[],
-        system_prompt={"type": "file", "path": prepared.system_prompt_file},
-        setting_sources=[],
-        strict_mcp_config=True,
-        extra_args={"disable-slash-commands": None},
-        mcp_servers={SERVER: server},
-        allowed_tools=[allow_rule(t["name"]) for t in pin["tools"]],
-        permission_mode="dontAsk",
-        model=spec.model,
-        effort=spec.effort,
-        thinking={"type": "adaptive", "display": "summarized"},
-        include_partial_messages=True,
-        session_store=store,
-        session_store_flush="eager",
-        resume=session_id,
-        # User text reaches Claude as written: no @path expansion reading files
-        # on this machine, and no slash commands.
-        verbatim_prompts=True,
-        cwd=prepared.cwd,
-        env={
-            "CLAUDE_CONFIG_DIR": prepared.config_dir,
-            "ENABLE_TOOL_SEARCH": "false",
-            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0",
-            "MCP_TOOL_TIMEOUT": "3600000",
-            "MAX_MCP_OUTPUT_TOKENS": "200000",
-            # Claude sees our tools under the names the prompt and the
-            # docstrings use. With the CLI's mcp__langalpha__ prefix they would
-            # read as the prompt's "MCP tools", which have no tool-call form.
-            "CLAUDE_AGENT_SDK_MCP_NO_PREFIX": "1",
-        },
-        # A tool named Bash makes the CLI add its own git attribution reminder.
-        settings=json.dumps({"includeGitInstructions": False}),
-        hooks=hooks,
-        max_buffer_size=2 * MAX_CONTENT_BYTES,
-    )
 
 
 _END = object()
@@ -382,36 +257,14 @@ class _Run:
     @classmethod
     async def start(cls, spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, thread_key: str,
                     identity: str, records: SessionRecords | None, prompt: Prompt | None) -> _Run:
-        """Lay out the session, start the CLI and send the turn; nothing is left behind if any step fails.
-
-        With no prompt the CLI is resumed as an interrupted turn: it carries on
-        from the tool results that end its session without a new query.
-        """
-        session_id = (records or {}).get("session_id")
-        prepared = await launcher.prepare(
-            thread_key, session_id, (records or {}).get("entries") or [],
-            identity=identity, system_prompt=pin["system_prompt"],
+        """Start the CLI on the turn (``cli.launch``); with no prompt it carries
+        on from the tool results that end its session."""
+        store, results = CheckpointSessionStore(), ToolResults()
+        query = prompt if prompt is None or isinstance(prompt, str) else _user_message(prompt)
+        prepared, client, after_tool = await launch(
+            spec, pin, launcher, thread_key=thread_key, identity=identity, records=records, store=store,
+            results=results, query=query,
         )
-        client: ClaudeSDKClient | None = None
-        try:
-            store, results = CheckpointSessionStore(), ToolResults()
-            after_tool = AfterTool(results, send=lambda text: client.query(text))
-            options = options_for(
-                spec, pin=pin, server=build_tool_server(pin["tools"], results), store=store,
-                session_id=session_id, prepared=prepared, after_tool=after_tool,
-            )
-            if prompt is None:
-                options.env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"] = "1"
-            client = ClaudeSDKClient(options, transport=launcher.transport(options))
-            async with _open(client):
-                if prompt is not None:
-                    await client.query(prompt if isinstance(prompt, str) else _user_message(prompt))
-        except BaseException:
-            if client is not None:
-                with contextlib.suppress(Exception):
-                    await client.disconnect()
-            await launcher.release(prepared)
-            raise
         return cls(launcher, prepared, store, client, results, spec, after_tool)
 
     async def again(self, prompt: Prompt) -> None:
@@ -434,7 +287,7 @@ class _Run:
         anything is streamed.
         """
         try:
-            async for m in _received(self.client, init_seen=self._init_seen):
+            async for m in received(self.client, init_seen=self._init_seen):
                 if isinstance(m, SystemMessage) and m.subtype == "init":
                     self._init_seen = True
                     if m.data.get("model") != self.model:

@@ -21,14 +21,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+from ptc_agent.agent.claude_code.cli import RuntimeSpec
 from ptc_agent.agent.claude_code.launcher import Launcher
-from ptc_agent.agent.claude_code.runtime import (
-    TURN_KEY,
-    Baseline,
-    ClaudeTurn,
-    RuntimeSpec,
-    build_claude_code_graph,
-)
+from ptc_agent.agent.claude_code.runtime import TURN_KEY, Baseline, ClaudeTurn, build_claude_code_graph
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from src.llms.claude_code import ClaudeCodeTarget
 
