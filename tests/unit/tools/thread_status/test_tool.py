@@ -474,3 +474,31 @@ class TestStop:
 
         db.stop_thread_command.assert_not_awaited()
         assert message.content.startswith("ERROR: Task-k7Xm2p is not a background command.")
+
+
+def _source(kind: str, *items: Any) -> SimpleNamespace:
+    return SimpleNamespace(type=kind, items=AsyncMock(return_value=list(items)))
+
+
+@pytest.mark.asyncio
+async def test_pending_work_counts_what_runs_or_comes_due_before_the_cutoff(monkeypatch):
+    """Only an item due before the cutoff would find the context as the
+    agent left it; one due later wakes the thread on a cold cache anyway."""
+    from src.tools.thread_status import tool
+
+    now = datetime.now(UTC)
+    cutoff = now + timedelta(minutes=15)
+    tomorrow = SimpleNamespace(status="pending", at=now + timedelta(days=1))
+    soon = SimpleNamespace(status="pending", at=now + timedelta(minutes=5))
+    running = SimpleNamespace(status="running", at=now - timedelta(minutes=1))
+
+    def sources(*found):
+        monkeypatch.setattr(tool, "_sources", lambda reader, analysts: list(found))
+
+    sources(_source("automation", tomorrow))
+    assert await tool.pending_work(THREAD, "u-1", analysts=False, before=cutoff) is None
+    sources(_source("automation", tomorrow), _source("wakeup", soon))
+    assert await tool.pending_work(THREAD, "u-1", analysts=False, before=cutoff) == "wakeup"
+    sources(_source("command", running))
+    assert await tool.pending_work(THREAD, "u-1", analysts=False, before=cutoff) == "command"
+
