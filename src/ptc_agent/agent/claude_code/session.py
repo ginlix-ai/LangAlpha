@@ -81,8 +81,8 @@ class SessionWrite(TypedDict):
 
 
 def compacted(entry: Mapping[str, Any]) -> bool:
-    """Whether a record is the CLI compacting the session, which rewrites
-    the prefix its pin and baseline were part of."""
+    """Whether a record is the CLI compacting the session, which summarizes
+    away the turn its baseline was sent in."""
     return entry.get("subtype") == "compact_boundary" or bool(entry.get("isCompactSummary"))
 
 
@@ -99,7 +99,10 @@ def session_records_reducer(
     baseline included: the CLI mints a new id only when it starts a new
     session, and nothing of the old one is resumed after that. A write's pin
     and baseline apply ahead of its records, and a compaction among them
-    voids both.
+    voids the baseline. The pin holds: the CLI records the prompt and tools
+    of the launch that compacted on its next request and replays that record
+    from then on, whatever a later launch passes, so the session goes on
+    running on the pin it was launched with.
     """
     state = state or {}
     session_id = state.get("session_id")
@@ -118,7 +121,7 @@ def session_records_reducer(
             if uid:
                 seen.add(uid)
             if compacted(entry):
-                pinned = baseline = None
+                baseline = None
             entries.append(entry)
     out: SessionRecords = {"entries": entries}
     if session_id:

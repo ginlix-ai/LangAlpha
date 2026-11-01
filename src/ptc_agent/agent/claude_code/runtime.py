@@ -555,8 +555,8 @@ class ClaudeTurn:
     def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:
         """What the run starts Claude on: the session's own pin, else this
         build's, which the session holds from the run's first records on (a
-        new session, one from before sessions kept theirs, or one Claude Code
-        compacted), and the turn's prompt."""
+        new session, or one from before sessions kept theirs), and the turn's
+        prompt."""
         records = state.get("claude_session") or {}
         key, block = self._baseline_due(state)
         prompt = turn_prompt(state, baseline=block)
