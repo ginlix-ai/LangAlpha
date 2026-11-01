@@ -59,6 +59,7 @@ from src.server.services.workspace_layout import (
 )
 from src.server.services.user_skills import sandbox_skill_sync_params
 
+from src.server.services.computer_manager._attach_only import refuse_start
 from src.server.services.computer_manager._types import (
     ComputerBinding,
     _PROJECTS_ATTACHED_CAP,
@@ -627,6 +628,7 @@ class ProvisioningMixin:
         project shadow that lags a resize would rebuild at the old size.
         ``outage_since`` is the host outage that authorized replacing the old
         sandbox, if one did; the bind holds only while that outage runs."""
+        refuse_start(binding.computer_id)
         if binding.provider_ref and not binding.provider.recreatable:
             # Every path that replaces a sandbox checks this first; all of
             # them end here, so a new one that forgets cannot replace a
@@ -1395,6 +1397,7 @@ class ProvisioningMixin:
                 "a bound workspace still has active work"
             )
             return None
+        refuse_start(binding.computer_id)
 
         logger.info(
             f"Migrating workspace {workspace_id} sandbox: {actual_wd} -> {expected_wd}"

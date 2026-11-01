@@ -8,6 +8,11 @@ one class in ``manager``. The mixins share ``self`` and are not usable on
 their own.
 """
 
+from src.server.services.computer_manager._attach_only import (
+    ComputerNotRunning,
+    attach_only,
+    attaching_only,
+)
 from src.server.services.computer_manager._types import (
     ComputerBinding,
     MachineTarget,
@@ -16,6 +21,9 @@ from src.server.services.computer_manager._types import (
 from src.server.services.computer_manager.manager import ComputerManager
 
 __all__ = [
+    "ComputerNotRunning",
+    "attach_only",
+    "attaching_only",
     "ComputerBinding",
     "ComputerManager",
     "MachineTarget",
