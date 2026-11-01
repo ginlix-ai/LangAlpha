@@ -1,8 +1,10 @@
-"""A step another agent left waiting on the user, resumed by the Chief of Staff.
+"""A step another agent left waiting on the user, resumed by one that cannot run it.
 
 Threads the retired Flash agent ran continue in Home. A step it left waiting
 on the user (dispatching work, deleting a workspace) can name a tool the Chief
-of Staff does not have, so it is answered as cancelled before the thread
+of Staff does not have. A step Claude Code left waiting runs in a node only
+its own graph has, so a turn on another model cannot resume any of it. Either
+is answered as cancelled before the thread
 resumes.
 """
 
@@ -15,6 +17,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, ToolMessage
 
 from ptc_agent.agent.state import ensure_message_ids
+from src.llms.claude_code import claude_replied_last
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +27,18 @@ _CANCELLED = (
 )
 
 
-async def cancel_tool_calls_it_lacks(graph: Any, thread_id: str) -> list[ToolMessage]:
+async def cancel_tool_calls_it_lacks(graph: Any, thread_id: str, *, by_name: bool = True) -> list[ToolMessage]:
     """Answer a waiting step the resuming agent cannot run, before a resume.
+
+    ``by_name`` also answers the calls naming a tool the agent lacks, which
+    only a thread Flash ran holds.
 
     Best effort: a failure leaves the step as it is, and the resume then
     answers the call as a tool the agent does not have. Returns the cancelled
     results, which the turn streams (see ``_cancel_tool_calls``).
     """
     try:
-        return await _cancel_tool_calls(graph, thread_id, _tool_names(graph))
+        return await _cancel_tool_calls(graph, thread_id, _tool_names(graph) if by_name else None)
     except Exception:
         logger.warning(
             f"[CHAT] Cancelling another agent's waiting step failed: "
@@ -53,7 +59,7 @@ def _tool_names(graph: Any) -> frozenset[str]:
 async def _cancel_tool_calls(
     graph: Any,
     thread_id: str,
-    tool_names: Collection[str],
+    tool_names: Collection[str] | None,
 ) -> list[ToolMessage]:
     """Answer every call of the waiting step that the graph cannot resume.
 
@@ -64,9 +70,11 @@ async def _cancel_tool_calls(
     """
     config = {"configurable": {"thread_id": thread_id}}
     state = await graph.aget_state(config)
-    if not state.interrupts:
-        return []
     messages = state.values.get("messages") or []
+    # This graph sees no step of Claude Code's graph waiting: it lacks the node.
+    claude_waits = claude_replied_last(messages)
+    if not state.interrupts and not claude_waits:
+        return []
     last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
     if last_ai is None or not last_ai.tool_calls:
         return []
@@ -85,7 +93,9 @@ async def _cancel_tool_calls(
     unanswered = [call for call in last_ai.tool_calls if call["id"] not in answered]
     # By name, as the resume runs a call: the agents share some names (a
     # question, the workspace tool), and each resumes those itself.
-    if all(call["name"] in tool_names for call in unanswered):
+    if not unanswered or not (
+        claude_waits or (tool_names is not None and any(call["name"] not in tool_names for call in unanswered))
+    ):
         return []
     # The update ends the step, so every call still waiting in it is answered,
     # or the next model call finds one without a result.

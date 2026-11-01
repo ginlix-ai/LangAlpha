@@ -455,6 +455,23 @@ def _refuse_claude_code(on_claude_code: bool) -> None:
         )
 
 
+def _refuse_while_awaiting_user(agent: ThreadAgent) -> None:
+    """Refuse a compaction while a call Claude Code deferred waits for the
+    user: the compaction's CLI would load the session with that call pending
+    and nothing to run it, and run until the compaction budget."""
+    from ptc_agent.agent.claude_code.session import awaiting_user
+
+    if awaiting_user(agent.state.values.get("claude_session"), agent.messages):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "awaiting_input",
+                "verb": "compact",
+                "message": "Cannot compact while a question or approval is waiting on this thread. Answer or dismiss it, then try again.",
+            },
+        )
+
+
 def _claude_code_failure(e: ClaudeTurnFailed, model: str) -> HTTPException:
     """A compaction the CLI failed, answered as a turn that failed the same
     way is: in admission's words for what admission refuses, else with the
@@ -578,6 +595,7 @@ async def trigger_compaction(
             on_claude_code = isinstance(getattr(agent_cfg, "llm_client", None), ClaudeCodeTarget)
             _refuse_claude_code(on_claude_code != claude_replied_last(agent.messages))
             if on_claude_code:
+                _refuse_while_awaiting_user(agent)
                 try:
                     session = await agent.compact_claude_code()
                 except ClaudeTurnFailed as e:

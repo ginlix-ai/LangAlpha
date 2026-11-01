@@ -14,6 +14,8 @@ from langgraph.types import Command, interrupt
 
 from src.server.models.chat import rejection_feedback
 
+TOOL_NAME = "AskUserQuestion"
+
 try:
     from langchain.tools import InjectedToolCallId
 except ImportError:
@@ -32,7 +34,7 @@ class AskUserMiddleware(AgentMiddleware):
         self._ask_user_tool = self._create_ask_user_tool()
 
     def _create_ask_user_tool(self) -> BaseTool:
-        @tool("AskUserQuestion")
+        @tool(TOOL_NAME)
         def ask_user_question(
             question: str,
             options: list[str],

@@ -7,6 +7,7 @@ user's approval, the same pattern the onboarding tools use.
 
 import json
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from langchain_core.messages import ToolMessage
@@ -25,6 +26,7 @@ __all__ = [
     "decline_routing_command",
     "error_command",
     "hitl_confirm",
+    "puts_card",
     "success_command",
     "verify_thread_owner",
     "verify_workspace_owner",
@@ -54,6 +56,23 @@ def hitl_confirm(
             approved = True
 
     return approved, response if isinstance(response, dict) else {}
+
+
+#: The tools that put a card to the user through ``hitl_confirm``, by the
+#: actions that do (None for every action).
+_CARDS: dict[str, frozenset[str] | None] = {
+    "delegate_to_analyst": None,
+    "manage_workspaces": frozenset({"create", "delete"}),
+    "manage_threads": frozenset({"delete"}),
+}
+
+
+def puts_card(name: str, args: Mapping[str, Any]) -> bool:
+    """Whether a call may stop for the user's answer on a card."""
+    if name not in _CARDS:
+        return False
+    actions = _CARDS[name]
+    return actions is None or args.get("action") in actions
 
 
 def decline_command(message: str, tool_call_id: str) -> Command:

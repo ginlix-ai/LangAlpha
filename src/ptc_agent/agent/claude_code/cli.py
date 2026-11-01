@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from collections.abc import AsyncIterable, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,10 +25,11 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
 )
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
-from ptc_agent.agent.claude_code.mid_turn import AfterTool
+from ptc_agent.agent.claude_code.mid_turn import AfterTool, BeforeTool, Waits
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionPin, SessionRecords
 from ptc_agent.agent.claude_code.tools_bridge import SERVER, ToolResults, allow_rule, build_tool_server
 from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
@@ -44,8 +45,9 @@ _CLI_COMPACT_RESERVE = 20_000 + 13_000
 #: The window sizes the CLI accepts; it reads anything outside as the bound.
 _CLI_WINDOW_BOUNDS = (100_000, 1_000_000)
 
-#: Ends of a query that did what was asked. Anything else is a failed turn.
-_DONE = {None, "completed", "tool_deferred"}
+#: Ends of a query that did what was asked: done, a call deferred, or a
+#: hook ending the turn after a result. Anything else is a failed turn.
+_DONE = {None, "completed", "tool_deferred", "hook_stopped"}
 #: The CLI's own login messages; a word like "authentication" alone also turns up in tool and MCP errors.
 _AUTH_TEXT = ("not logged in", "run /login", "invalid api key", "oauth token has been revoked")
 #: How the CLI says a session holds nothing it can summarize.
@@ -67,6 +69,10 @@ _CLI_TRANSCRIPT = re.compile(
 _CLI_TRANSCRIPT_ASIDE = " (the full transcript mentioned above still has it)"
 
 
+def _never(*_: Any) -> bool:
+    return False
+
+
 @dataclass(frozen=True)
 class RuntimeSpec:
     """What this build runs a Claude Code turn with.
@@ -85,6 +91,12 @@ class RuntimeSpec:
     billing: Mapping[str, str]
     effort: str | None = None
     read_only: frozenset[str] = frozenset()
+    #: The calls that may wait for the user, which the CLI defers (``BeforeTool``).
+    waits: Waits = _never
+    #: The results that end the turn (a quiet wake turn's), after which the CLI stops.
+    ends_turn: Callable[[ToolMessage], bool] = _never
+    #: The calls that end the turn once accepted, which the credit gate lets run.
+    ends_turn_call: Waits = _never
 
 
 def is_haiku(model: str) -> bool:
@@ -145,6 +157,7 @@ def options_for(
     session_id: str | None,
     prepared: Prepared,
     after_tool: AfterTool,
+    before_tool: BeforeTool | None = None,
     compact_at: int = 0,
     auto_compact: bool = True,
     compaction: bool = False,
@@ -153,8 +166,10 @@ def options_for(
 
     The system prompt goes as a file in the turn's config dir, never on the
     command line, where Linux caps one argument at 128 KiB and any local
-    account can read it. ``after_tool`` is the hook the CLI calls once each
-    of our calls returns, whether it succeeded or failed. A line the CLI
+    account can read it. ``before_tool``, a turn's and never a compaction's,
+    is the hook the CLI calls before each of our calls runs, and
+    ``after_tool`` the one it calls once each returns, whether it succeeded
+    or failed. A line the CLI
     writes can carry a whole result, a PDF's document block included, so
     the SDK reads lines up to twice the largest one a tool returns.
     ``compact_at``, the thread's threshold, sets the window that turns the
@@ -169,6 +184,8 @@ def options_for(
     hooks = {event: [HookMatcher(matcher=None, hooks=[after_tool])] for event in ("PostToolUse", "PostToolUseFailure")}
     if is_haiku(spec.model):
         hooks["PreCompact"] = [HookMatcher(matcher=None, hooks=[compact_instructions])]
+    if before_tool is not None:
+        hooks["PreToolUse"] = [HookMatcher(matcher=None, hooks=[before_tool])]
     return ClaudeAgentOptions(
         tools=[],
         system_prompt={"type": "file", "path": prepared.system_prompt_file},
@@ -312,6 +329,7 @@ async def launch(
     store: CheckpointSessionStore,
     results: ToolResults,
     query: str | AsyncIterable[dict[str, Any]] | None,
+    before_tool: BeforeTool | None = None,
     compact_at: int = 0,
     auto_compact: bool = True,
     compaction: bool = False,
@@ -335,8 +353,8 @@ async def launch(
         after_tool = AfterTool(results, send=lambda text: client.query(text))
         options = options_for(
             spec, pin=pin, server=build_tool_server(pin["tools"], results), store=store, session_id=session_id,
-            prepared=prepared, after_tool=after_tool, compact_at=compact_at, auto_compact=auto_compact,
-            compaction=compaction,
+            prepared=prepared, after_tool=after_tool, before_tool=before_tool, compact_at=compact_at,
+            auto_compact=auto_compact, compaction=compaction,
         )
         if query is None:
             options.env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"] = "1"

@@ -45,6 +45,7 @@ from ptc_agent.agent.middleware.direct_mcp import (
 )
 from ptc_agent.agent.middleware.tool.argument_parsing import parse_tool_args
 from ptc_agent.agent.middleware.tool.error_handling import format_tool_error
+from ptc_agent.agent.pending_calls import pending_calls
 
 # What the interrupt payload calls itself, and the artifact key a receipt
 # rides under. Both are read by the client.
@@ -213,16 +214,11 @@ class OrderGovernanceMiddleware(AgentMiddleware):
     # -- proposal and verdict ------------------------------------------------
 
     def _order_calls(self, state: Any) -> tuple[AIMessage | None, list[dict[str, Any]]]:
+        """The last assistant message and its order calls still waiting on a result."""
         messages = (state or {}).get("messages") or []
-        last_ai = next(
-            (m for m in reversed(messages) if isinstance(m, AIMessage)), None
-        )
-        if last_ai is None or not last_ai.tool_calls:
-            return None, []
-        calls = [
-            call for call in last_ai.tool_calls if call.get("name") in self._stamps
-        ]
-        return last_ai, calls
+        at, pending = pending_calls(messages)
+        calls = [call for call in pending if call.get("name") in self._stamps]
+        return (messages[at], calls) if calls else (None, [])
 
     def _blocked(
         self,

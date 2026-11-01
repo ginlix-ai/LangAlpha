@@ -1,4 +1,4 @@
-"""What reaches a Claude Code turn while it runs.
+"""What reaches a Claude Code turn while it runs, and what holds it.
 
 The agent's steering takes in what is sent into the thread for the run, as it
 does before each model call of a langalpha turn. A Claude Code turn reads it
@@ -6,6 +6,11 @@ in the hook the CLI calls as each of langalpha's tool calls returns, which is
 also where a result MCP cannot carry is handed to the CLI in the form Claude
 reads, and as a query ends, where it decides as the orchestrator does whether
 the turn goes on.
+
+The hook the CLI calls before each call is where a turn stops for the user:
+a call that may wait on them, or one the credit gate stops, is deferred, so
+the CLI ends its query with the call open instead of holding it across the
+pause, and asks for it again once the turn resumes.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from langgraph.config import get_stream_writer
 
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
 from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker, config_own_run_id
+from ptc_agent.agent.middleware.credit_gate import current_credit_gate
 from ptc_agent.agent.middleware.steering import SteeringMiddleware, announce, opened_with
 from ptc_agent.agent.transcript.steer_text import report_text, sender_block, sender_runs, sent_steers
 
@@ -73,6 +79,68 @@ class TurnSteering:
             await self._steering.confirm_read(messages)
 
 
+#: Whether a call, by name and arguments, may wait for the user.
+Waits = Callable[[str, Mapping[str, Any]], bool]
+
+#: What a call that would wait beside another one in its batch is answered
+#: with: the CLI resumes one deferred call, so a batch holds at most one.
+NOT_RUN = "Not run: only one call can wait for the user at a time. Call this again after the user answers."
+
+
+def _decision(decision: str, reason: str | None = None) -> dict[str, Any]:
+    out = {"hookEventName": "PreToolUse", "permissionDecision": decision}
+    return {"hookSpecificOutput": {**out, "permissionDecisionReason": reason} if reason else out}
+
+
+def credit_stops() -> bool:
+    """Whether the turn's credit gate says stop, as it does at a langalpha
+    model boundary; the CLI's next request is the one a call leads to."""
+    gate = current_credit_gate.get()
+    return gate is not None and gate.kind == "run" and gate.lease.should_stop(gate.lease.spend())
+
+
+class BeforeTool:
+    """The hook the CLI calls before each of our calls runs.
+
+    The first call of a query that may wait for the user (``waits``), or
+    that the credit gate stops, is deferred: the CLI ends the query with it
+    open, and a resumed CLI asks for it again. The CLI resumes one deferred
+    call only, so another call of that batch that would wait is answered as
+    not run, and one only the gate stops runs, a batch past the boundary as
+    the gate allows. A call that ends the turn (``ends_turn_call``) gets past
+    the gate, as a langalpha turn's quiet end does: no request follows it.
+    When its tool refuses to end the turn, the CLI stops at the result and the
+    turn at the gate (``ToolResults.owes_gate``). A call whose result is
+    already here, the one a resumed CLI asks for again, runs.
+    """
+
+    def __init__(self, results: ToolResults, waits: Waits, ends_turn_call: Waits) -> None:
+        self.results = results
+        self.waits = waits
+        self.ends_turn_call = ends_turn_call
+        self._deferred: str | None = None
+
+    def reopen(self) -> None:
+        """The turn sent the CLI another query, which may defer a call of its own."""
+        self._deferred = None
+
+    async def __call__(self, hook_input: Mapping[str, Any], tool_use_id: str | None, context: Any) -> dict[str, Any]:
+        if tool_use_id is None or self.results.holds(tool_use_id):
+            return {}
+        name, args = hook_input.get("tool_name") or "", hook_input.get("tool_input") or {}
+        waits = self.waits(name, args)
+        if not waits and not credit_stops():
+            return {}
+        if not waits and self.ends_turn_call(name, args):
+            self.results.pass_gate(tool_use_id)
+            return {}
+        if self._deferred is None:
+            self._deferred = tool_use_id
+            self.results.defer(tool_use_id)
+            return _decision("defer")
+        return _decision("deny", NOT_RUN) if waits else {}
+
+
 class AfterTool:
     """The hook the CLI calls as each of our calls returns, before it goes on.
 
@@ -84,7 +152,10 @@ class AfterTool:
     mid-turn (``send``), which the CLI frames as the user's, and any report
     ahead of them as the hook's context, which it frames as a tool hook's.
     The CLI waits for the hook, so nothing is taken after it has moved on,
-    and the step commits what was taken with those results.
+    and the step commits what was taken with those results. A result that
+    ends the turn (a quiet wake turn's), or one the credit gate is owed for,
+    stops the CLI before it asks Claude again, and takes nothing in: what
+    waits is for the next turn, or for the turn once the gate lets it on.
     """
 
     def __init__(self, results: ToolResults, send: Callable[[str], Awaitable[None]]) -> None:
@@ -121,6 +192,8 @@ class AfterTool:
         out: dict[str, Any] = {"hookEventName": event}
         if event == "PostToolUse" and (blocks := self.results.blocks(tool_use_id)) is not None:
             out["updatedMCPToolOutput"] = blocks
+        if self.results.ends_turn(tool_use_id) or self.results.owes_gate(tool_use_id):
+            return {"continue": False, **({"hookSpecificOutput": out} if len(out) > 1 else {})}
         self._returned.add(tool_use_id)
         if self._take is not None and self._taking is None and all(
             t in self._returned or self.results.refused(t) for t in self._batch
