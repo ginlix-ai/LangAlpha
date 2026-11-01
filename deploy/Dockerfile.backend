@@ -3,6 +3,16 @@
 # 3.13, a waiter cancelled at its own deadline consumed a notify without
 # re-delivering it, so a caller could time out — and be reported as pool
 # exhaustion — while a connection sat free. See pyproject requires-python.
+# The `la` CLI's bundle, which each computer gets with the internal packages.
+FROM node:24-slim AS cli
+WORKDIR /cli
+COPY cli/package.json cli/pnpm-lock.yaml cli/pnpm-workspace.yaml ./
+# The pnpm the lockfile was written by, as deploy/Dockerfile.web installs it.
+RUN npm install -g "$(node -p 'require("./package.json").packageManager')"
+RUN pnpm install --frozen-lockfile
+COPY cli/ ./
+RUN pnpm build
+
 FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1
@@ -25,11 +35,6 @@ WORKDIR /app
 
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock README.md ./
-# Copied but not installed: the CLI is the `cli` extra. uv.lock still lists it
-# as a path source, and every unfrozen `uv run` reads it to check the lock, MCP
-# servers included; they start with a filtered environment, so setting
-# UV_FROZEN here would not reach them.
-COPY libs/ptc-cli/ libs/ptc-cli/
 COPY libs/market-protocol/ libs/market-protocol/
 
 # Install dependencies (frozen = use lockfile exactly).
@@ -56,6 +61,8 @@ COPY agent_config*.yaml ./
 COPY mcp_servers/ mcp_servers/
 COPY plugins/ plugins/
 COPY workflows/ workflows/
+COPY cli/sandbox/ cli/sandbox/
+COPY --from=cli /cli/dist/la.mjs cli/dist/la.mjs
 
 # The commit this image was built from, stamped on every LangSmith run so a
 # regression can be pinned to a deploy. Last, so a new SHA rebuilds only this.

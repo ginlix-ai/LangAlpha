@@ -41,12 +41,34 @@ services:
       timeout: 3s
       retries: 5
 
+  # Builds cli/dist/la.mjs, the `langalpha` CLI each computer gets, then exits;
+  # the backend starts after it. Its dependencies stay in volumes, apart from
+  # any the host installed, and the bundle is handed to whoever owns cli/.
+  cli:
+    image: node:24-slim
+    working_dir: /cli
+    command:
+      - sh
+      - -c
+      - >-
+        npm install -g "$$(node -p 'require("./package.json").packageManager')" &&
+        pnpm install --frozen-lockfile --store-dir /pnpm-store &&
+        pnpm build &&
+        chown -R "$$(stat -c %u:%g package.json)" dist
+    volumes:
+      - ./cli:/cli
+      - cli_node_modules:/cli/node_modules
+      - cli_pnpm_store:/pnpm-store
+
   backend:
     build:
       context: .
       dockerfile: deploy/Dockerfile.dev
       args:
         INSTALL_OBSERVABILITY: ${INSTALL_OBSERVABILITY:-${OTEL_EXPORTER_OTLP_ENDPOINT:+true}}
+    depends_on:
+      cli:
+        condition: service_completed_successfully
     extra_hosts:
       - "host.docker.internal:host-gateway"
     init: true
@@ -72,6 +94,8 @@ services:
       - ./libs/market-protocol:/app/libs/market-protocol
       - ./server.py:/app/server.py
       - ./agent_config.yaml:/app/agent_config.yaml
+      # The `langalpha` CLI each computer gets, built by the cli service.
+      - ./cli:/app/cli:ro
       # Required when SANDBOX_PROVIDER=docker and the backend auto-builds
       # langalpha-sandbox:latest on first workspace creation.
       - ./Dockerfile.sandbox:/app/Dockerfile.sandbox:ro
@@ -166,3 +190,5 @@ volumes:
   langalpha-redis-data:
   frontend_node_modules:
   frontend_pnpm_store:
+  cli_node_modules:
+  cli_pnpm_store:

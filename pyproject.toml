@@ -21,8 +21,7 @@ dependencies = [
     # tracers.context._get_tracer_kwargs, which replaced _get_tracer_project there.
     "langchain-core>=1.6.11",
     "langchain-openai>=1.6.0",
-    # Declared directly because src/llms/vendor/langchain_zai and libs/ptc-cli
-    # import it; the 3.x floor is the HTTPX2 client migration.
+    # Declared directly because src/llms/vendor/langchain_zai imports it; the 3.x floor is the HTTPX2 client migration.
     "openai>=3.8.0",
     "langchain-anthropic>=1.0.0",
     "langchain_google_genai>=2.0.0",
@@ -134,15 +133,9 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-langalpha-cli = { path = "libs/ptc-cli", editable = true }
 langalpha-market-protocol = { path = "libs/market-protocol", editable = true }
 
 [project.optional-dependencies]
-# The interactive TUI (libs/ptc-cli). An extra, not a runtime dependency: the
-# server imports nothing from it, and as a main dependency it inverted the
-# package graph. langalpha-cli depends on langalpha-core, so the root project
-# depending back on it formed a cycle every backend install had to build.
-cli = ["langalpha-cli"]
 dev = [
     "ruff",
     "black>=24.2.0",
