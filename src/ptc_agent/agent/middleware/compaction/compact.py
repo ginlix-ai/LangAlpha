@@ -128,6 +128,10 @@ class NativeAnswer(NamedTuple):
 Own = Callable[[list[AnyMessage], bool], Awaitable[NativeAnswer | str]]
 
 
+class NoOwnSummary(RuntimeError):
+    """The agent's own model wrote no summary where no other may."""
+
+
 @dataclass(frozen=True)
 class Compaction:
     """A summary in place of the start of the view."""
@@ -241,12 +245,14 @@ class Summarizer:
         progress: Progress | None = None,
         own: Own | None = None,
         carried: bool = False,
+        own_only: bool = False,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, ``messages`` being the
         agent's checkpoint list (what ``window`` trimmed of it aside), by
         ``own`` when given (the agent's own model, from its own request),
         else from this model, then the next one (see ``_next``), then the
-        server (see ``summarize``).
+        server (see ``summarize``). With ``own_only``, ``own`` alone,
+        within the whole budget, and ``NoOwnSummary`` when it writes none.
 
         The transcript is saved first: the summary cites its turn files and
         ends pointing at it only if that save lands and ``workspace_id``'s
@@ -292,7 +298,11 @@ class Summarizer:
         try:
             # The agent's model gets the summary model's share, leaving the
             # summarizer a real call when it writes none.
-            summary = await _own_summary(own, to_summarize, kept, server, remaining * FIRST_SHARE)
+            summary = await _own_summary(
+                own, to_summarize, kept, server, remaining if own_only else remaining * FIRST_SHARE
+            )
+            if summary is None and own_only:
+                raise NoOwnSummary("the agent's own model wrote no summary")
             remaining = budget - (time.monotonic() - started)
             summary = summary or await awrite_summary(
                 model=self.model,

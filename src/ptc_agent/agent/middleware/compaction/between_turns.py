@@ -48,11 +48,26 @@ class Measure:
     view the state makes now."""
 
 
-Ask = Compact | HandOff | Measure
+@dataclass(frozen=True)
+class IdleCompact:
+    """Summarize a thread gone idle after a turn, while the provider still
+    caches its prompt: what the next turn start would force once the cache
+    expires, natively, or nothing (see ``rebuild.TurnStartRebuilds.idle``)."""
+
+
+Ask = Compact | HandOff | Measure | IdleCompact
 
 
 class NoCompaction(RuntimeError):
     """The agent's model chain holds no ``CompactionMiddleware`` to answer."""
+
+
+class IdleSkipped(RuntimeError):
+    """An ``IdleCompact`` the thread does not take now, for ``reason``."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass

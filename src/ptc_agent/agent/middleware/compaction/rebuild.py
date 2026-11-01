@@ -27,6 +27,11 @@ due thread's threshold summary does. A send that asks to keep the full context
 keeps the threshold its own for its turn alone. Between turns,
 ``next_summary`` tells the composer what the next send will summarize, from
 what the last answer left in state (``answer_reading``).
+
+On a route whose cache entries live an hour, the same summaries run between
+turns instead, while the thread is idle and its cache still warm (see
+``TurnStartRebuilds.idle``), so they read the history at the cached rate and
+the user's next turn does not wait for them.
 """
 
 from __future__ import annotations
@@ -40,9 +45,10 @@ from typing import Any, ClassVar, Literal, NotRequired, TypedDict
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, AnyMessage
 
-from src.llms.cache_markers import CacheScope, route_ttl_seconds, written_ttl_seconds
+from src.llms.cache_markers import CacheScope, route_ttl_seconds, ttl_seconds, written_ttl_seconds
 
 from ptc_agent.agent.middleware._utils import run_ids
+from ptc_agent.agent.middleware.compaction.between_turns import IdleSkipped
 from ptc_agent.agent.middleware.compaction.measure import is_claude, measured_tokens
 from ptc_agent.agent.middleware.compaction.notes import summary_id
 from ptc_agent.agent.middleware.compaction.types import RebuildArm
@@ -98,6 +104,12 @@ def _armed(state: Any) -> bool:
     since, a manual compaction, already rebuilt the thread or kept its tail."""
     stored = state.get("_rebuild_armed")
     return isinstance(stored, dict) and stored.get("summary") == summary_id(state)
+
+
+#: The only cache life an idle compaction runs on. With five minutes the slot
+#: would come minutes after the answer: a pause to read it, whose next message
+#: would usually arrive while the summary ran, on a cache still warm.
+IDLE_TTL_SECONDS = ttl_seconds("1h")
 
 
 @dataclass(frozen=True)
@@ -159,6 +171,12 @@ class StalePinRebuilds:
             return RebuildPlan()
         return RebuildPlan(due=True, cut=turn_start_cut(view), reason="turn_start")
 
+    def idle(
+        self, request: ModelRequest, view: Sequence[AnyMessage], tokens: int, threshold: int
+    ) -> RebuildPlan:
+        """A subagent's run is bounded: nothing of it is summarized idle."""
+        raise IdleSkipped("not_main")
+
     def between_turns(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> RebuildPlan:
         """What a manual compaction does for a due prompt: all of the view, once
         its last step is complete; until then, the tail stays."""
@@ -197,6 +215,8 @@ class TurnStartRebuilds(StalePinRebuilds):
             coming only once the cache has expired, so a send made before then
             meets neither. An urgent rebuild is not waited on. None judges
             them at the call.
+        idle_tokens: The least context an idle thread is summarized at
+            keeping its tail (``CompactionConfig.idle_tokens``); 0 never.
     """
 
     reads_first_call: ClassVar[bool] = True
@@ -206,6 +226,7 @@ class TurnStartRebuilds(StalePinRebuilds):
     cold_tokens: int = 0
     keep_full_context: bool = False
     sent_at: float | None = None
+    idle_tokens: int = 0
 
     def due(self, request: ModelRequest, view: Sequence[AnyMessage]) -> bool:
         return due(request, view)
@@ -253,6 +274,39 @@ class TurnStartRebuilds(StalePinRebuilds):
         if not due:
             return RebuildPlan(threshold=lowered, scope="system_and_tools" if cold and claude else None)
         return RebuildPlan(due=True, cut=at_turn_start, reason="digest", waits=reason, scope=scope, threshold=lowered)
+
+    def idle(
+        self, request: ModelRequest, view: Sequence[AnyMessage], tokens: int, threshold: int
+    ) -> RebuildPlan:
+        """What a thread idle after a turn is summarized as while its cache is
+        warm: what its next turn start would run once the cache expired, so
+        the summary reads the history at the cached rate. A thread due by a
+        deploy, or due at all from ``cold_threshold``, rebuilds keeping no
+        turns (I1), and one not due keeps the tail from ``idle_tokens``
+        (I2). Only on Claude, on a route whose entries live an hour
+        (``IDLE_TTL_SECONDS``).
+
+        Raises:
+            IdleSkipped: Naming why the thread is summarized at none.
+        """
+        if not _claude_answered_last(view):
+            raise IdleSkipped("not_claude")
+        if cache_ttl(view, request.model) != IDLE_TTL_SECONDS:
+            raise IdleSkipped("short_ttl")
+        if tokens >= threshold:
+            raise IdleSkipped("over_threshold")
+        cut = settled_end(view)
+        if not cut:
+            raise IdleSkipped("unanswered_tool_call")
+        if not self.due(request, view):
+            if tokens >= cold_threshold(threshold, self.idle_tokens):
+                return RebuildPlan(forced=True)
+            raise IdleSkipped("under_cold")
+        large = tokens >= cold_threshold(threshold, self.cold_tokens)
+        forced, reason = forced_under_threshold(request.state, tokens, self.floor_tokens, claude=True, cold=True)
+        if forced or large:
+            return RebuildPlan(due=True, cut=cut, reason="idle", forced=True)
+        raise IdleSkipped(reason)
 
     def _lowered(self, threshold: int, tokens: int) -> int | None:
         """``cold_threshold`` where it is under the call's own, unless the
@@ -335,8 +389,8 @@ def answer_reading(
     and whether the call was to a Claude model (a fallback's answer can be
     Claude's on a call to another), what ``cache_ttl`` reads from the view
     and the route (the ttl the newest Claude answer that wrote the cache
-    wrote, and the route's), and the turn's own ``cold_tokens`` and
-    ``floor_tokens``, the user's settings included."""
+    wrote, and the route's), and the turn's own ``cold_tokens``,
+    ``floor_tokens`` and ``idle_tokens``, the user's settings included."""
     claude = _claude(message)
     written = written_ttl_seconds(message.usage_metadata) if claude else None
     return {
@@ -347,6 +401,7 @@ def answer_reading(
         "route_ttl": route_ttl_seconds(model),
         "cold_tokens": rebuilds.cold_tokens,
         "floor_tokens": rebuilds.floor_tokens,
+        "idle_tokens": rebuilds.idle_tokens,
     }
 
 

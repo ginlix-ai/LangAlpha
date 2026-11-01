@@ -186,6 +186,24 @@ FEATURES: dict[str, FeatureSpec] = {
         enabled=False,
         gate=FeatureGate.OPT_IN,
     ),
+    # Off in every deployment until an operator turns it on in config.yaml's
+    # ``features:``; no user toggle, since "Summarize long threads after a
+    # break" (``Tuning.cold_compaction``) already decides it per user. On, a
+    # completed turn arms its thread's summary while the thread is idle on a
+    # warm cache (``services.idle_compaction``), on routes whose cache entries
+    # live an hour only.
+    "idle_compaction": FeatureSpec(
+        key="idle_compaction",
+        label="Idle compaction",
+        description=(
+            "Summarizes a long Claude thread while it sits idle, before its "
+            "hour-long prompt cache expires, so the next message neither waits "
+            "for a summary nor sends the whole conversation again. Applies only "
+            "where the cache lasts an hour, such as a Claude subscription."
+        ),
+        enabled=False,
+        gate=FeatureGate.NONE,
+    ),
     "a_share_pack": FeatureSpec(
         key="a_share_pack",
         label="A-share market pack",
