@@ -73,7 +73,7 @@ export interface FeatureState {
   key: string;
   label: string;
   description: string;
-  /** Honest cost of opting in to an experimental feature; English-only, null when none. */
+  /** Honest cost of opting in to an experimental feature, null when none. */
   tradeoffs: string | null;
   enabled: boolean;
   gate: 'none' | 'opt_in' | 'opt_out' | 'plan';

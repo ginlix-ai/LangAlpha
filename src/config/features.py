@@ -15,7 +15,9 @@ Each feature carries two orthogonal controls:
 Three definition layers, resolved in order:
 
 1. **Catalog** (this module): every feature the codebase knows about, with its
-   hard defaults and the frontend-facing label/description. A feature must be
+   hard defaults and the frontend-facing label/description/tradeoffs, in
+   English; a web locale translates them under ``settings.featureCatalog.<key>``
+   (``web/src/locales``) and falls back to this copy. A feature must be
    declared here to exist anywhere else.
 2. **Deployment posture** (``config.yaml`` ``features:`` section): per-deploy
    override of ``enabled`` / ``gate`` / ``min_tier``; unset fields inherit
@@ -82,7 +84,7 @@ FEATURES: dict[str, FeatureSpec] = {
         key="market_watch",
         label="Market watch",
         description=(
-            "Adds a Watch toggle to chat: keep a per-thread list of symbols "
+            "Adds a Market watch toggle to chat: keep a per-thread list of symbols "
             "whose live quotes stream into the conversation while you work, "
             "so the agent reasons from current intraday prices instead of "
             "stale lookups."
@@ -92,7 +94,7 @@ FEATURES: dict[str, FeatureSpec] = {
         tradeoffs=(
             "Quotes are re-injected into the model's context as they update, "
             "which can occasionally distract the agent from its main task and "
-            "invalidate the prompt cache — expect slightly slower, costlier "
+            "invalidate the prompt cache. Expect slightly slower, costlier "
             "turns while a watch list is active."
         ),
     ),
@@ -108,7 +110,7 @@ FEATURES: dict[str, FeatureSpec] = {
         gate=FeatureGate.OPT_IN,
         tradeoffs=(
             "Crawling bills per delivered page up to the call's page limit, "
-            "so a broad crawl costs more than targeted fetches. Experimental — "
+            "so a broad crawl costs more than targeted fetches. Experimental: "
             "behavior and pricing may change."
         ),
     ),

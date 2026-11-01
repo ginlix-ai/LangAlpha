@@ -182,7 +182,7 @@
     "experiments": "Experiments",
     "experimentsIntro": "Early-access features still in development. Turn one on to enable it for your account. You can switch it off at any time.",
     "experimentsEmpty": "No experiments are available right now.",
-    "experimentTradeoff": "Trade-off",
+    "experimentTradeoff": "<lead>Trade-off:</lead> <text/>",
     "theme": "Theme",
     "dark": "Dark",
     "light": "Light",
