@@ -5,18 +5,6 @@
   overflow: hidden;
 }
 
-/* Iframe preview */
-.html-viewer-frame {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  border: none;
-  /* Shows through transparent-bodied documents (widgets mandate a transparent
-     shell) and before the document paints — must follow the app theme, not
-     hardcode white against a dark surface. */
-  background: var(--color-bg-page);
-}
-
 /* Source view — wraps the shared SyntaxHighlighter */
 .html-viewer-source {
   flex: 1;
@@ -24,4 +12,22 @@
   overflow: auto;
   padding: 12px;
   tab-size: 2;
+}
+
+/* The owner's frames. Under Source they stay laid out at their size, unseen,
+   so the place read and a comment being written are where they were on the
+   way back. */
+.html-viewer {
+  position: relative;
+}
+.html-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.html-viewer-stage[data-shown='false'] {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
 }

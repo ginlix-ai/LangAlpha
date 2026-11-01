@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite'
 import { reactPlugins } from './scripts/react-plugins.ts'
 import path from 'path'
 import { criticalPathGroups } from './scripts/chunking.ts'
+import { framePolicy } from './scripts/vite-plugins/framePolicy.ts'
 import { localePreload } from './scripts/locale-preload.ts'
 import { monacoVersionDefine } from './scripts/monaco-version.ts'
 import { pdfjsData } from './scripts/vite-plugins/pdfjsData.ts'
@@ -36,6 +37,9 @@ export default defineConfig(({ mode }) => {
       skipEntryPreload(),
       pdfjsData(import.meta.dirname),
       localePreload(path.resolve(import.meta.dirname, 'src/locales')),
+      // Read from the same variable the API client is built with, so the policy
+      // names the origin the app's API frames really load from.
+      framePolicy(env.VITE_API_BASE_URL),
     ],
     resolve: {
       // `@/` and the tests' `@e2e/` come from the tsconfig projects' `paths`,

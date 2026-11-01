@@ -11,3 +11,11 @@ export const SERVED_HTML_SANDBOX = 'allow-scripts allow-popups allow-popups-to-e
  * needs.
  */
 export const APP_PREVIEW_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals';
+
+/**
+ * A published page on a host of its own keeps `allow-same-origin`, which
+ * there is the page's origin, not the app's: its storage lasts between visits
+ * and cannot reach the app's. Forms, since a page may carry one. Without a
+ * host of its own a page is framed as served HTML is (`SERVED_HTML_SANDBOX`).
+ */
+export const ISOLATED_PAGE_SANDBOX = 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms';
