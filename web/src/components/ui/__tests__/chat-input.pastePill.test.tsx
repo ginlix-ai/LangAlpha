@@ -77,7 +77,7 @@ describe('ChatInput — paste pill', () => {
     paste(textarea, LONG_TEXT);
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(onSend).toHaveBeenCalledTimes(1);
-    const sent = onSend.mock.calls[0][0] as string;
+    const sent = onSend.mock.calls[0][0].message as string;
     expect(sent).toContain('<summary>[Pasted text]</summary>');
     expect(sent).toContain('line 40 of the pasted document');
   });
@@ -94,6 +94,6 @@ describe('ChatInput — paste pill', () => {
     // standalone "@") stays exactly as typed.
     expect(textarea.value).toBe('summarize @ noon');
     fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(onSend.mock.calls[0][0]).toBe('summarize @ noon');
+    expect(onSend.mock.calls[0][0].message).toBe('summarize @ noon');
   });
 });

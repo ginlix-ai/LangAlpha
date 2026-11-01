@@ -101,12 +101,12 @@ describe('ChatInput: the Subagents pill', () => {
     };
     expect(pill()).toHaveAttribute('aria-pressed', 'true');
     sendText('left alone');
-    expect(onSend.mock.calls[0][3].subagentsAllowed).toBeUndefined();
+    expect(onSend.mock.calls[0][0].modelOptions.subagentsAllowed).toBeUndefined();
 
     fireEvent.click(pill()!);
     expect(pill()).toHaveAttribute('aria-pressed', 'false');
     sendText('flipped');
-    expect(onSend.mock.calls[1][3]).toMatchObject({ subagentsAllowed: false });
+    expect(onSend.mock.calls[1][0].modelOptions).toMatchObject({ subagentsAllowed: false });
   });
 
   it("hands its own pick to a start that reads the composer's options, and a host's none", () => {
@@ -130,7 +130,7 @@ describe('ChatInput: the Subagents pill', () => {
     expect(pill()).toHaveAttribute('aria-pressed', 'true');
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unread' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(onSend.mock.calls[0][3]).toMatchObject({ subagentsAllowed: true });
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ subagentsAllowed: true });
   });
 });
 

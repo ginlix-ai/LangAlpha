@@ -198,6 +198,19 @@ describe('useFileTabs running apps', () => {
   });
 });
 
+describe('useFileTabs pages', () => {
+  it('drops a page tab a build with published pages stored, keeping the file beside it', () => {
+    userLocalStorage.setItem(tabsStorageKey('ws'), JSON.stringify({
+      tabs: [{ kind: 'file', path: 'a.md' }, { kind: 'page', pageId: '6f1c2a7e-3b4d-4e5f-8a9b-0c1d2e3f4a5b', version: 2 }],
+      active: 1,
+    }));
+    const { result } = renderHook(() => useFileTabs('ws'));
+
+    expect(paths(result.current.tabs)).toEqual(['a.md']);
+    expect(result.current.activeTab).toMatchObject({ kind: 'file', path: 'a.md' });
+  });
+});
+
 describe('useFileTabs closing', () => {
   it('leaves an empty tab rather than a panel with no way back', () => {
     const { result } = renderHook(() => useFileTabs('ws'));

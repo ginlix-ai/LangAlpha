@@ -55,7 +55,7 @@ function sendRaises(interrupt: Record<string, unknown>) {
 function renderChat(initial: { onFileArtifact: (e: unknown) => void; readComposerOptions?: () => ModelOptions | undefined }) {
   let props = initial;
   const rendered = renderHookWithProviders(() =>
-    useChatMessages('ws-test', 'thread-1', null, null, null, props.onFileArtifact, null, null, null, null, props.readComposerOptions ?? null),
+    useChatMessages('ws-test', 'thread-1', { onFileArtifact: props.onFileArtifact, readComposerOptions: props.readComposerOptions ?? null }),
   );
   const flip = (next: Partial<typeof initial>) => {
     props = { ...props, ...next };

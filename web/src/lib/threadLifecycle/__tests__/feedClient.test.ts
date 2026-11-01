@@ -230,6 +230,20 @@ describe('threadLifecycleFeed — thread_archived', () => {
     });
   });
 
+  it.each(['thread_archived', 'thread_deleted', 'thread_unarchived'])(
+    'reads comments and destinations again on %s, which no artifact event says',
+    async (type) => {
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+      startThreadLifecycleFeed(queryClient);
+      await flush();
+      invalidate.mockClear();
+      conns[0].emit({ event: 'thread_lifecycle', type, thread_id: 't-x', workspace_id: 'w1' });
+      await flush(400);
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.artifacts.allDestinations });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.artifacts.allQueued });
+    },
+  );
+
   it('drops the row from cached lists and the Show-more store, sparing the archived view', async () => {
     // Cross-tab archive: the invalidate only reaches enabled observers, so the
     // event must remove the row from the caches + the nav store directly —
@@ -725,6 +739,45 @@ describe('threadLifecycleFeed — cache-only list refetch', () => {
 });
 
 describe('threadLifecycleFeed — snapshot invalidation', () => {
+  it('a reconnect reads open artifacts again, their events having no replay', async () => {
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    const commentsKey = queryKeys.artifacts.comments('a1');
+    const queuedKey = queryKeys.artifacts.queued('t1');
+    const statusKey = queryKeys.artifacts.status('a1');
+    const sharedKey = queryKeys.shareLinks.shared('w1');
+    for (const key of [commentsKey, queuedKey, statusKey, sharedKey]) queryClient.setQueryData(key, []);
+
+    conns[0].emit({ event: 'snapshot', as_of_seq: 1, oldest_included_unseen_seq: 0, live: [], unseen: [] });
+    await flush(400);
+
+    expect(queryClient.getQueryState(commentsKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(queuedKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(sharedKey)?.isInvalidated).toBe(true);
+    // It reads the computer, so only a view that needs it asks.
+    expect(queryClient.getQueryState(statusKey)?.isInvalidated).toBe(false);
+  });
+
+  it.each([
+    ['names no thread, as Mark all read does', undefined, true],
+    ['names a thread, whose deck alone reads again', 't1', false],
+  ])('a comment change that %s', async (_rule, threadId, every) => {
+    startThreadLifecycleFeed(queryClient);
+    await flush();
+    const named = queryKeys.artifacts.queued('t1');
+    const other = queryKeys.artifacts.queued('t2');
+    for (const key of [named, other]) queryClient.setQueryData(key, []);
+
+    conns[0].emit({
+      event: 'thread_lifecycle', type: 'artifact_comment', artifact_id: 'a1', workspace_id: 'w1', path: 'r.html',
+      thread_id: threadId, comment_ids: ['c1'],
+    });
+    await flush();
+
+    expect(queryClient.getQueryState(named)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(other)?.isInvalidated).toBe(every);
+  });
+
   it('a snapshot scopes its invalidate to the workspaces it touches', async () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     startThreadLifecycleFeed(queryClient);

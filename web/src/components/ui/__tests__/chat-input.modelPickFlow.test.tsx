@@ -175,12 +175,12 @@ describe('ChatInput: the thread owns the model', () => {
     const { rerender } = render(tree({ onSend, ref, model: 'model-thread', onPickModel }));
 
     send('hello');
-    expect(onSend.mock.calls[0][3]).toMatchObject({ model: 'model-thread' });
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: 'model-thread' });
 
     rerender(tree({ onSend, ref, model: 'model-beta', onPickModel }));
     expect(ref.current?.getModelOptions()).toMatchObject({ model: 'model-beta' });
     send('again');
-    expect(onSend.mock.calls[1][3]).toMatchObject({ model: 'model-beta' });
+    expect(onSend.mock.calls[1][0].modelOptions).toMatchObject({ model: 'model-beta' });
   });
 
   it('opens on the account default with no host, and follows it when it changes', () => {
@@ -209,7 +209,7 @@ describe('ChatInput: the thread owns the model', () => {
     fireEvent.click(screen.getByText('pick-beta'));
     expect(screen.getByText('pill:model-beta')).toBeInTheDocument();
     send('start a thread');
-    expect(onSend.mock.calls[0][3]).toMatchObject({ model: 'model-beta' });
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: 'model-beta' });
     expectNoModelPreferenceWrite();
   });
 

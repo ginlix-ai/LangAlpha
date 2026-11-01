@@ -115,7 +115,7 @@ function send(text: string) {
 }
 
 function sentOptions(onSend: ReturnType<typeof vi.fn>) {
-  return onSend.mock.calls.at(-1)?.[3] as Record<string, unknown>;
+  return onSend.mock.calls.at(-1)?.[0].modelOptions as Record<string, unknown>;
 }
 
 describe('ChatInput: the thread owns its effort and fast mode', () => {

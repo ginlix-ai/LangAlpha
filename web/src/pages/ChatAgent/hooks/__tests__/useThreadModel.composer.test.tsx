@@ -12,6 +12,7 @@ import { useState } from 'react';
 import { MemoryRouter } from 'react-router';
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import ChatInput from '@/components/ui/chat-input';
+import type { ComposerSend } from '@/components/ui/chat-input.types';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
 import { queryKeys } from '@/lib/queryKeys';
 import { createTestQueryClient } from '@/test/utils';
@@ -104,7 +105,7 @@ const failure = () => Object.assign(new Error('400'), { response: { status: 400 
 /** A thread host as the chat view builds one: the hook owns the model, the
  *  composer is controlled by it, and the fallback pill's switch is a pick
  *  that clears the suggestion once saved. */
-function Host({ threadId, onSend }: { threadId: string; onSend: (...args: unknown[]) => void }) {
+function Host({ threadId, onSend }: { threadId: string; onSend: (send: ComposerSend) => void }) {
   const threadModel = useThreadModel({ threadId, isLoading: false });
   const [suggestion, setSuggestion] = useState<FallbackSuggestion | null>(SUGGESTION);
   const { pickModel } = threadModel;
@@ -124,7 +125,7 @@ function Host({ threadId, onSend }: { threadId: string; onSend: (...args: unknow
 
 let queryClient: QueryClient;
 
-function renderHost(threadId: string, onSend = vi.fn()) {
+function renderHost(threadId: string, onSend = vi.fn<(send: ComposerSend) => void>()) {
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
@@ -187,7 +188,7 @@ describe('the composer on a thread-owned model', () => {
     expect(screen.getByRole('button', { name: 'Switch to Model Fallback' })).toBeInTheDocument();
 
     send('next');
-    expect(onSend.mock.calls[0][3]).toMatchObject({ model: 'model-y' });
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: 'model-y' });
 
     await waitFor(() => expect(mocks.updateThread).toHaveBeenLastCalledWith(THREAD, { llm_model: 'model-y' }));
     await act(async () => { y.resolve(row('model-y')); });
@@ -214,7 +215,7 @@ describe('the composer on a thread-owned model', () => {
     await act(async () => { x1.reject(failure()); });
     expect(screen.getByText('pill:model-x')).toBeInTheDocument();
     send('next');
-    expect(onSend.mock.calls[0][3]).toMatchObject({ model: 'model-x' });
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: 'model-x' });
 
     await waitFor(() => expect(mocks.updateThread).toHaveBeenCalledTimes(2));
     await act(async () => { y.resolve(row('model-y')); });
@@ -234,7 +235,7 @@ describe('the composer on a thread-owned model', () => {
     expect(screen.getByText('pill:model-y')).toBeInTheDocument();
     send('start a thread');
 
-    expect(onSend.mock.calls[0][3]).toMatchObject({ model: 'model-y' });
+    expect(onSend.mock.calls[0][0].modelOptions).toMatchObject({ model: 'model-y' });
     expect(mocks.updateThread).not.toHaveBeenCalled();
   });
 });
