@@ -37,6 +37,7 @@ from src.server.contracts.turn_kinds import (
 from src.server.database import conversation as qr_db
 from src.server.database.conversation.threads_write import remember_thread_llm_model
 from src.server.services.llm.thread_model import NamedModel
+from src.server.services.runs.pending_input import cache_clock_attempt
 from src.server.database.runs import lifecycle as tl_db
 from src.server.models.chat import CommandReport, summarize_hitl_response_map
 from src.server.utils.skill_context import (
@@ -401,10 +402,11 @@ class PriorThread(NamedTuple):
     # The surface the latest attempt recorded it ran on (``surface_stamp``).
     # Stands in for a resume's, which continues that attempt.
     attempt_platform: Optional[str] = None
-    # When the thread's newest attempt settled, by the run ledger. A cancelled
-    # or failed call still refreshed the provider's prompt cache but stamped
-    # nothing in the checkpoint, so compaction's cold-cache estimate reads
-    # this as well.
+    # When the thread's newest attempt settled, by the run ledger, passing over
+    # one whose input never reached the graph (``cache_clock_attempt``). A
+    # cancelled or failed call still refreshed the provider's prompt cache but
+    # stamped nothing in the checkpoint, so compaction's cold-cache estimate
+    # reads this as well.
     last_run_settled_at: Optional[datetime] = None
 
 
@@ -442,6 +444,7 @@ async def _read_prior_thread(
         reads.append(tl_db.get_latest_attempt(thread_id))
     try:
         row, attempt, *newest = await asyncio.gather(*reads)
+        clock = await cache_clock_attempt(thread_id, newest[0] if newest else attempt)
     except Exception:
         logger.debug("thread runtime-context read failed", exc_info=True)
         return PriorThread()
@@ -465,7 +468,7 @@ async def _read_prior_thread(
             if isinstance(attempt_platform, str) and attempt_platform
             else None
         ),
-        last_run_settled_at=run_settled_at(newest[0] if newest else attempt),
+        last_run_settled_at=run_settled_at(clock),
     )
 
 
@@ -567,6 +570,7 @@ def build_turn_context(
     return TurnContext(
         last_turn_at=prior.last_turn_at,
         previous_run_settled_at=prior.last_run_settled_at,
+        keep_full_context=request.keep_full_context,
         platform=request.platform,
         origin=request.origin.type if request.origin else None,
         origin_agent=request.origin.agent if request.origin else None,

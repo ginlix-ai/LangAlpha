@@ -1147,6 +1147,7 @@ async def get_latest_attempt(
     *,
     before_turn: Optional[int] = None,
     wait_for_finalize: bool = False,
+    without_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """The thread's most recent attempt row — /retry's validation target.
 
@@ -1161,12 +1162,17 @@ async def get_latest_attempt(
     ``wait_for_finalize`` reads the row ``FOR SHARE``, which waits out a
     finalize in flight: its terminal CAS holds the row until it commits, so
     a run whose finalize has already run its release pass never reads live.
+
+    ``without_key`` passes over attempts whose metadata holds that key.
     """
     clauses = ["conversation_thread_id = %s"]
     params: list[Any] = [thread_id]
     if before_turn is not None:
         clauses.append("turn_index < %s")
         params.append(before_turn)
+    if without_key is not None:
+        clauses.append("NOT (COALESCE(metadata, '{}'::jsonb) ? %s)")
+        params.append(without_key)
     lock = "FOR SHARE" if wait_for_finalize else ""
     async with pool.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:

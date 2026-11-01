@@ -23,22 +23,27 @@ A cold Claude thread's turn start summarizes at ``cold_tokens`` when that is
 under its threshold (``cold_threshold``), due or not: otherwise each turn
 after a pause writes the whole context to the cache again. One that is not
 due keeps its tail, as at the threshold, and one that is due keeps none, as a
-due thread's threshold summary does.
+due thread's threshold summary does. A send that asks to keep the full context
+keeps the threshold its own for its turn alone. Between turns,
+``next_summary`` tells the composer what the next send will summarize, from
+what the last answer left in state (``answer_reading``).
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, AnyMessage
 
 from src.llms.cache_markers import CacheScope, route_ttl_seconds, written_ttl_seconds
 
-from ptc_agent.agent.middleware.compaction.measure import is_claude
+from ptc_agent.agent.middleware._utils import run_ids
+from ptc_agent.agent.middleware.compaction.measure import is_claude, measured_tokens
 from ptc_agent.agent.middleware.compaction.notes import summary_id
 from ptc_agent.agent.middleware.compaction.types import RebuildArm
 from ptc_agent.agent.middleware.compaction.utils import settled_end, step_cut, turn_start_cut
@@ -50,6 +55,8 @@ from ptc_agent.agent.middleware.runtime_context.frozen_prompt import (
 )
 from ptc_agent.agent.middleware.runtime_context.state import as_dict, state_get
 from ptc_agent.agent.prompts import release
+
+logger = logging.getLogger(__name__)
 
 
 def _claude(message: Any) -> bool:
@@ -182,6 +189,8 @@ class TurnStartRebuilds(StalePinRebuilds):
             ledger, a naive one read as UTC; None when it has none.
         cold_tokens: The threshold a cold thread's turn start summarizes at
             when under its own (``cold_threshold``); 0 never lowers it.
+        keep_full_context: The turn's send asked not to be summarized for a
+            cold cache alone; the threshold and a deploy's rebuild still are.
     """
 
     reads_first_call: ClassVar[bool] = True
@@ -189,6 +198,7 @@ class TurnStartRebuilds(StalePinRebuilds):
     floor_tokens: int
     settled_at: datetime | None = None
     cold_tokens: int = 0
+    keep_full_context: bool = False
 
     def due(self, request: ModelRequest, view: Sequence[AnyMessage]) -> bool:
         return due(request, view)
@@ -229,15 +239,30 @@ class TurnStartRebuilds(StalePinRebuilds):
                 return RebuildPlan(due=True, cut=at_turn_start, reason=reason, forced=True, scope=scope)
         # The call's own model too: another provider's pays no premium to
         # write its cache again, so a summary would cost it context for nothing.
-        lowered = self._lowered(threshold) if cold and claude and is_claude(request.model) else None
+        lowered = self._lowered(threshold, tokens) if cold and claude and is_claude(request.model) else None
         if not due:
             return RebuildPlan(threshold=lowered, scope="system_and_tools" if cold and claude else None)
         return RebuildPlan(due=True, cut=at_turn_start, reason="digest", waits=reason, scope=scope, threshold=lowered)
 
-    def _lowered(self, threshold: int) -> int | None:
-        """``cold_threshold`` where it is under the call's own."""
+    def _lowered(self, threshold: int, tokens: int) -> int | None:
+        """``cold_threshold`` where it is under the call's own, unless the
+        turn's send asked to keep the full context, which is logged where it
+        spared a summary."""
         lowered = cold_threshold(threshold, self.cold_tokens)
-        return lowered if lowered < threshold else None
+        if lowered >= threshold:
+            return None
+        if not self.keep_full_context:
+            return lowered
+        if lowered <= tokens < threshold:
+            thread_id, agent = run_ids()
+            logger.info(
+                "[Compaction] trigger=cold skipped=user tokens=%d threshold=%d thread_id=%s agent=%s",
+                tokens,
+                threshold,
+                thread_id,
+                agent,
+            )
+        return None
 
     def _cold(self, request: ModelRequest, view: Sequence[AnyMessage], now: float) -> bool:
         return now > cache_expires_at(
@@ -286,3 +311,87 @@ def cache_expires_at(ttl: int, last_answer_at: float | None, settled_at: datetim
     settled_ts = settled_at.replace(tzinfo=settled_at.tzinfo or UTC).timestamp() if settled_at else 0.0
     return max(last_answer_at or 0.0, settled_ts) + ttl
 
+
+#: The state key holding ``answer_reading``.
+LAST_ANSWER_KEY = "_last_answer"
+
+
+def answer_reading(
+    message: AIMessage, threshold: int, model: Any, previous: Mapping[str, Any] | None, rebuilds: TurnStartRebuilds
+) -> dict[str, Any]:
+    """What ``next_summary`` reads of the main agent's newest answer, kept in
+    state so a read between turns replays no messages and resolves no
+    settings: the threshold it was measured against, whether Claude gave it
+    and whether the call was to a Claude model (a fallback's answer can be
+    Claude's on a call to another), what ``cache_ttl`` reads from the view
+    and the route (the ttl the newest Claude answer that wrote the cache
+    wrote, and the route's), and the turn's own ``cold_tokens`` and
+    ``floor_tokens``, the user's settings included."""
+    claude = _claude(message)
+    written = written_ttl_seconds(message.usage_metadata) if claude else None
+    return {
+        "threshold": threshold,
+        "claude": claude,
+        "claude_model": is_claude(model),
+        "written_ttl": written or as_dict(previous).get("written_ttl"),
+        "route_ttl": route_ttl_seconds(model),
+        "cold_tokens": rebuilds.cold_tokens,
+        "floor_tokens": rebuilds.floor_tokens,
+    }
+
+
+def offloaded_reading(state: Any, tokens: int) -> dict[str, Any] | None:
+    """The stamp with what an offload between turns leaves of the context,
+    ``tokens`` as the next turn start reads it, which ``next_summary`` reads
+    while the offload has zeroed the measurement. It holds under the summary
+    the offload saw: a summary since, a manual compaction, has cut the
+    context again, and the next answer stamps afresh. None without a stamp."""
+    reading = as_dict(state_get(state, LAST_ANSWER_KEY))
+    if not reading:
+        return None
+    return {**reading, "offloaded": {"tokens": tokens, "summary": summary_id(state)}}
+
+
+class NextSummary(TypedDict):
+    """What the next turn start summarizes: ``threshold`` now, ``cold`` or
+    ``rebuild`` from ``at``, when the cache expires (epoch seconds), an
+    urgent ``rebuild`` now, without one. Only ``cold`` gives way to a send
+    that keeps the full context."""
+
+    reason: Literal["threshold", "cold", "rebuild"]
+    at: NotRequired[float]
+
+
+def next_summary(state: Any, *, settled_at: datetime | None) -> NextSummary | None:
+    """What the main agent's next turn start summarizes, read between turns
+    so the composer can say so before the user sends, from the turn start's
+    own rules. A pin marked stale or built from other sources may be due,
+    which the state alone cannot tell, so its cold summary reads as the
+    rebuild a due thread would be forced into, if any (``rebuild``), whatever
+    the user's ``cold_tokens``: a send cannot skip that one. Only a call to a
+    Claude model keeps a pin, or summarizes a cold thread early. The context
+    is the last call's measurement, or after an offload that zeroed it, what
+    the offload left (``offloaded_reading``).
+    """
+    reading = as_dict(state_get(state, LAST_ANSWER_KEY))
+    tokens = measured_tokens(as_dict(state))
+    offloaded = as_dict(reading.get("offloaded"))
+    if tokens is None and offloaded and offloaded.get("summary") == summary_id(as_dict(state)):
+        tokens = offloaded.get("tokens")
+    threshold = reading.get("threshold")
+    if tokens is None or not threshold:
+        return None
+    if tokens >= threshold:
+        return {"reason": "threshold"}
+    if not reading.get("claude_model"):
+        return None
+    claude = bool(reading.get("claude"))
+    ttl = reading.get("written_ttl") or reading.get("route_ttl") or route_ttl_seconds(None)
+    at = cache_expires_at(ttl, state_get(state, "_last_model_response_at"), settled_at)
+    if rebuild_pending(state) or sources_changed(state):
+        forced, why = forced_under_threshold(state, tokens, reading.get("floor_tokens") or 0, claude=claude, cold=True)
+        if forced:
+            return {"reason": "rebuild"} if why == "urgent" else {"reason": "rebuild", "at": at}
+    if not claude or tokens < cold_threshold(threshold, reading.get("cold_tokens") or 0):
+        return None
+    return {"reason": "cold", "at": at}
