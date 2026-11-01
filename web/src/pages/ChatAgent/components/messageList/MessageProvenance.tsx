@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { ArrowUpRight, Bot, Clock, CornerDownRight, Merge, MessageCircle, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { DispatchingAgent } from '@/types/api';
 import type { MessageProvenance } from '@/types/chat';
 import { useRouteLeaveGuard } from '../../contexts/RouteLeaveGuardContext';
 import { Favicon } from '../Favicon';
@@ -28,6 +29,13 @@ const LINKED = cn(
   '-my-0.5 translate-x-1.5 cursor-pointer rounded-md px-1.5 py-0.5 text-left outline-hidden transition-colors',
   'hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) focus-visible:ring-2 focus-visible:ring-ring',
 );
+
+// Each agent that hands a turn out names itself here, so a new one cannot ship
+// without a caption; `cli` is another thread's agent through the `la` CLI.
+const AGENT_LABEL = {
+  chief_of_staff: 'chat.provenance.fromChiefOfStaff',
+  cli: 'chat.provenance.fromAnotherThread',
+} as const satisfies Record<DispatchingAgent, string>;
 
 interface MessageProvenanceProps {
   provenance: MessageProvenance;
@@ -53,9 +61,9 @@ export function MessageProvenanceLabel({ provenance, readOnly, className }: Mess
       // as shares have always shown it.
       if (!provenance.agent && readOnly) return null;
       Icon = Bot;
-      // Only the Chief of Staff hands turns out. A row recorded before it named
-      // its dispatcher reads the same, as the thread's back button does.
-      label = t('chat.provenance.fromChiefOfStaff');
+      // A row recorded before the dispatcher was named is the Chief of Staff's,
+      // as the thread's back button reads it.
+      label = t(AGENT_LABEL[provenance.agent ?? 'chief_of_staff']);
       const { threadId } = provenance;
       if (threadId && onOpenDispatcher) open = () => guardLeave(() => onOpenDispatcher(threadId));
       break;

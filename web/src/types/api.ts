@@ -623,8 +623,9 @@ export interface ReorderItem {
 
 // --- Thread ---
 
-/** An agent that hands turns to a workspace's thread. */
-export type DispatchingAgent = 'chief_of_staff';
+/** An agent that hands turns to a workspace's thread. `cli` is a computer's
+ *  agent through the `la` CLI, and `id` the thread whose command sent it. */
+export type DispatchingAgent = 'chief_of_staff' | 'cli';
 
 /**
  * Who initiated a thread, or one turn of it (a query row's metadata carries
