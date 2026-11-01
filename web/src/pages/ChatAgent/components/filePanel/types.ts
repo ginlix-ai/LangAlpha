@@ -71,6 +71,18 @@ export interface ApiAdapter {
   servePrefix?: string;
 }
 
+/**
+ * Who the panel shows the files to, decided once by the panel and handed to
+ * whatever acts on it. Only the owner publishes, comments, and has a file's
+ * record made by looking at it. A read-only panel is the owner looking at a
+ * sibling's files, served under the grant like their own but changed in no
+ * way, a record included. A share's visitor reads under the share's prefix.
+ */
+export type PanelAccess =
+  | { kind: 'owner' }
+  | { kind: 'readOnly' }
+  | { kind: 'share'; servePrefix: string };
+
 export type { UnsavedFile, UnsavedReason } from '@/types/api';
 
 /** A finished backup, or the reason it did not run. */
@@ -137,6 +149,11 @@ export type PanelTarget =
     seq?: number;
     /** Open in a tab of its own rather than the preview slot. */
     pin?: boolean;
+    /**
+     * A comment on the file to bring forward once its pin is placed, its card
+     * open: a chat line naming it was clicked. HTML files only.
+     */
+    comment?: string | null;
   }
   /** A dev server the agent started in the sandbox; it opens as a tab in the
    *  Files panel. `seq` counts the asks, so the same port twice is two. */
@@ -177,10 +194,10 @@ export function stampTarget(target: UnsequencedTarget, seq: number): PanelTarget
 
 export function fileTarget(
   path: string,
-  { location = null, pin = false }: { location?: FileLocation | null; pin?: boolean },
+  { location = null, pin = false, comment = null }: { location?: FileLocation | null; pin?: boolean; comment?: string | null },
   seq: number,
 ): PanelTarget {
-  return stampTarget({ kind: 'file', path, location, pin }, seq);
+  return stampTarget({ kind: 'file', path, location, pin, ...(comment && { comment }) }, seq);
 }
 
 /** `''` is the workspace root, not the absence of a folder. */

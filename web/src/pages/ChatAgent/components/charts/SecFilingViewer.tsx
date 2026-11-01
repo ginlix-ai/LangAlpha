@@ -56,7 +56,10 @@ function AnnualQuarterlyView({ filing }: { filing: Extract<SecFiling, { kind: 'p
               className="w-full h-full"
               style={{ border: 'none', background: 'var(--color-bg-chart-placeholder)' }}
               onLoad={() => setIframeLoading(false)}
-              sandbox="allow-same-origin allow-scripts"
+              // No scripts: the proxy serves the filing from the API origin,
+              // which is the app's own in a same-origin deployment, and a
+              // filing is static HTML that needs none.
+              sandbox="allow-same-origin"
             />
           </div>
         </TermCard>

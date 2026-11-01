@@ -40,7 +40,7 @@ interface ActiveTabBodyProps {
   canUpload: boolean;
 }
 
-/** What fills the viewer slot for the active tab. Preview panes are rendered beside this, always mounted. */
+/** What fills the viewer slot for the active tab. Preview panes are rendered beside this, kept mounted. */
 export function ActiveTabBody({
   activeTab, tabs, workspaceId, apiAdapter, target, onTargetMemoryHandled, onTargetMemoHandled, marketWatch,
   threadId, isActive, onOpenFile, onOpenSubagentTask, transcript, onAddContext,

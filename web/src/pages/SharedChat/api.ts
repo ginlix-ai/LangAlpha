@@ -7,6 +7,7 @@
  */
 
 import { getAuthHeaders } from '@/lib/authToken';
+import type { SharedArtifactVisitorMetadata } from '@/types/api';
 import { buildServeUrl } from '../ChatAgent/components/viewers/html/wsfilesUrl';
 import type { BodyReaders } from '../ChatAgent/components/filePanel/fileBody';
 import type { FileRefResolution } from '../ChatAgent/components/filePanel/types';
@@ -44,14 +45,16 @@ interface SharedFileFields {
   frame_base: string;
 }
 
-/** What everyone but a private link's owner is answered: a share's prefix, which does not lapse. */
-export interface SharedPublicFileMetadata extends SharedFileFields {
-  access: 'public';
-}
+/** What everyone but the owner is answered: the latest version, read only. */
+export type SharedPublicFileMetadata = SharedArtifactVisitorMetadata;
 
 /** The owner's answer, whose prefix is a grant. */
 export interface SharedOwnerFileMetadata extends SharedFileFields {
   access: 'owner';
+  artifact_id: string;
+  workspace_id: string;
+  shared: boolean;
+  latest_seq: number;
   /** Seconds the grant behind `frame_base` has left when it is answered. */
   expires_in: number;
 }

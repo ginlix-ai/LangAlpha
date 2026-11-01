@@ -111,6 +111,12 @@
   flex-shrink: 0;
   background-color: var(--color-status-modified);
 }
+/* An HTML file's tab: the agent answered a comment on it, and the owner has not
+   read it. Amber, the one unread mark the file's pins and the chat's reply
+   lines carry too. */
+.file-panel-tab-dot.is-unread {
+  background-color: var(--color-accent-primary);
+}
 /* A tool tab whose call failed carries the mark beside its name, in front or
    not: the strip is where the reader learns which of the open calls to look at. */
 .file-panel-tab-failed {
