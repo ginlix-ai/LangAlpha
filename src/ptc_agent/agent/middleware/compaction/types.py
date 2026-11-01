@@ -118,6 +118,10 @@ class CompactionState(UnsentThinkingState):
     _cached_input_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _cached_output_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _last_model_response_at: Annotated[NotRequired[float], PrivateStateAttr]
+    #: Set when a run starts and cleared by its first model call, which
+    #: alone may take a turn that ended on tool results as a turn start (see
+    #: ``utils.turn_start_cut``). Main agent only.
+    _run_first_call: Annotated[NotRequired[bool], PrivateStateAttr]
     _window: Annotated[NotRequired[WindowState], PrivateStateAttr]
     #: The summary anchor and cut the server last refused a trim at, so the
     #: next turns do not ask again until a summary or a trim moves them.

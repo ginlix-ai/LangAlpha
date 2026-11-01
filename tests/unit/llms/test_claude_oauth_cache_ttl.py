@@ -8,7 +8,8 @@ route's unchanged bytes, are in ``test_provider_isolation``.
 
 from __future__ import annotations
 
-from src.llms.extension.anthropic_oauth import _with_cache_ttl
+from src.llms.cache_markers import with_ttl
+from src.llms.extension.anthropic_oauth import ChatAnthropicOAuth
 
 _FIVE = {"type": "ephemeral"}
 _HOUR = {"type": "ephemeral", "ttl": "1h"}
@@ -38,7 +39,7 @@ def _payload(marker: dict) -> dict:
 
 
 def test_every_marker_asks_for_an_hour_wherever_it_sits():
-    sent = _with_cache_ttl(_payload(_FIVE))
+    sent = with_ttl(_payload(_FIVE), ChatAnthropicOAuth.cache_ttl)
 
     assert sent["cache_control"] == _HOUR
     assert sent["system"][0]["cache_control"] == _HOUR
@@ -49,7 +50,7 @@ def test_every_marker_asks_for_an_hour_wherever_it_sits():
 
 
 def test_a_tool_schema_and_the_models_own_arguments_are_left_as_they_are():
-    sent = _with_cache_ttl(_payload(_FIVE))
+    sent = with_ttl(_payload(_FIVE), ChatAnthropicOAuth.cache_ttl)
 
     assert sent["tools"][0]["input_schema"] == {"properties": {"cache_control": {"type": "object"}}}
     assert sent["tools"][0]["input_examples"] == [{"cache_control": _FIVE}]
@@ -62,7 +63,7 @@ def test_the_request_it_was_built_from_is_not_changed():
     marker = dict(_FIVE)
     payload = _payload(marker)
 
-    sent = _with_cache_ttl(payload)
+    sent = with_ttl(payload, ChatAnthropicOAuth.cache_ttl)
 
     assert sent["system"][0]["cache_control"] == _HOUR
     assert marker == _FIVE

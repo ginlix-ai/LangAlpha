@@ -63,6 +63,7 @@ from ptc_agent.agent.middleware.compaction.notes import (
     ThreadScratchpad,
     notes_window_carry,
 )
+from ptc_agent.agent.middleware.compaction.rebuild import TurnStartRebuilds
 from ptc_agent.agent.middleware.compaction.window import WindowCoverage
 from ptc_agent.agent.middleware.direct_mcp import (
     DirectToolSet,
@@ -884,6 +885,13 @@ class PTCAgent:
                     subagents_window_carry,
                     wakeup_cancels_window_carry,
                 ],
+            )
+        if main_compaction is not None:
+            main_compaction = main_compaction.with_turn_start_rebuilds(
+                TurnStartRebuilds(
+                    self.config.compaction.rebuild_floor_tokens,
+                    settled_at=turn_context.previous_run_settled_at if turn_context else None,
+                )
             )
 
         model_resilience = [build_model_resilience_middleware(self.config, turn)]

@@ -186,6 +186,18 @@ sees — move it outside the fence, or register it as an either/or.
   own text on the request (`ChatRequest.surface_rules`) and the template renders
   that verbatim in place of a built-in line.
 
+- **A static prompt change reaches a running thread at its next rebuild, not
+  at the deploy.** A Claude thread keeps sending the static prompt its thinking
+  was produced under until a summary that keeps no turns lets it take the
+  current one (`runtime_context/frozen_prompt.py`), so most edits reach it at
+  its next compaction. When the old text is unsafe or contradicts the deployed
+  code (a safety or trading rule, a tool or path that no longer exists), raise
+  `prompt_version` in `../config/prompts.yaml` by one and set
+  `rebuild_before` to the new value: every thread pinned below it rebuilds at
+  its next turn start, whatever its size, at one summary each. Leave both
+  alone for any other change. A build whose `prompt_version` is below a
+  thread's pin, a rollback, never forces that rebuild.
+
 ## `templates/envelope/`
 
 Fragments of the runtime context, rendered by `middleware/runtime_context/`

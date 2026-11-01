@@ -15,7 +15,8 @@ from datetime import datetime
 
 @dataclass(frozen=True, slots=True)
 class TurnContext:
-    """Per-turn runtime context for the turn anchor row. Every field is optional.
+    """Per-turn runtime context for the turn anchor row, and the previous
+    run's settle time for compaction's cache clock. Every field is optional.
 
     A context-free build (thread maintenance, a subagent stack, a test) passes
     no context at all, which is the same thing as passing one whose fields are
@@ -23,6 +24,11 @@ class TurnContext:
     """
 
     last_turn_at: datetime | None = None
+    # When the thread's previous run settled, by the run ledger, which a call
+    # that was cancelled or failed still counts toward: it refreshed the
+    # provider's prompt cache. Read by the main agent's compaction to judge
+    # whether that cache has expired at this turn's start.
+    previous_run_settled_at: datetime | None = None
     platform: str | None = None
     origin: str | None = None
     # The agent that sent an agent-origin turn (``chief_of_staff``),

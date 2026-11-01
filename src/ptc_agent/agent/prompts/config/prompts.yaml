@@ -1,6 +1,13 @@
 # Prompt configuration and defaults
 # Variables defined here are available in all templates
 
+# A Claude thread keeps the static prompt it was pinned with until its next
+# rebuild. A thread pinned below rebuild_before rebuilds at its next turn
+# start, whatever its size; a build below a thread's pinned version, a
+# rollback, never forces one. When to bump: templates/AGENTS.md.
+prompt_version: 0
+rebuild_before: 0
+
 defaults:
   # Runtime variables (set at render time, these are just documentation)
   # NOTE: date/datetime are auto-injected by PromptLoader - do NOT set here

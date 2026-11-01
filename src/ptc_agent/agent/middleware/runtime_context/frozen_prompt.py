@@ -13,12 +13,18 @@ composed it, is kept in checkpointed state and sent again for as long as any
 of that thinking is in view. A build whose message differs marks the kept one
 stale, and the next summary at a turn start keeps no turns, so the call after
 it takes the new message (see ``rebuild_pending``).
+
+The pin also records a digest of the prompt's sources, so a thread is known
+to be due for that summary before the call that would mark it stale, and a
+deploy is told apart from a per-turn input (see ``due`` and
+``sources_changed``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any
 
 from langchain.agents.middleware import AgentState
@@ -29,7 +35,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
 )
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
@@ -41,6 +47,7 @@ from ptc_agent.agent.middleware.runtime_context.state import (
     state_get,
 )
 from ptc_agent.agent.middleware.thinking_binding import holds_bound_thinking
+from ptc_agent.agent.prompts import release
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +113,65 @@ def rebuild_pending(state: Any) -> bool:
     """Whether the thread's kept system message is one a build no longer
     composes, which only a summary that keeps no thinking can replace."""
     return bool(as_dict(state_get(state, STATE_SYSTEM_PIN)).get("stale"))
+
+
+def static_digest(content: Any) -> str | None:
+    """sha256 of the static prompt in a system message's ``content``: its
+    first text block, or all of it when it is a string. FrozenPrompt sets
+    that block and every writer inside it appends after it, so compaction and
+    the pin, which see the message at different depths, read the same one."""
+    first = content[0] if isinstance(content, list) and content else content
+    text = first.get("text") if isinstance(first, dict) else first
+    return hashlib.sha256(text.encode()).hexdigest() if isinstance(text, str) else None
+
+
+def _kept(request: ModelRequest) -> dict[str, Any] | None:
+    """The pin kept for the model this call goes to, or None. Only Claude's
+    thinking is bound to the system message, and a call to another model
+    takes the build's message at once."""
+    from ptc_agent.agent.middleware.compaction.measure import is_claude
+    from ptc_agent.agent.middleware.compaction.summarize import model_label
+
+    pin = as_dict(state_get(getattr(request, "state", None), STATE_SYSTEM_PIN))
+    if pin.get("content") is None or not is_claude(request.model):
+        return None
+    return pin if pin.get("model") == (model_label(request.model) or "") else None
+
+
+def due(request: ModelRequest, view: Sequence[AnyMessage]) -> bool:
+    """Whether the thread's kept system message is one this build would not
+    send and only a summary can replace: marked stale, or its static prompt
+    differs from the build's while thinking bound to it is in ``view``, what
+    the call sends. Read before the call that would mark it stale, so a deploy
+    that landed while the thread was idle counts from its next first call. A
+    thread with no bound thinking takes the build's message on its own call
+    (see ``_pin``)."""
+    pin = _kept(request)
+    if pin is None:
+        return False
+    if pin.get("stale"):
+        return True
+    built = request.system_message
+    return (
+        built is not None
+        and static_digest(pin["content"]) != static_digest(built.content)
+        and holds_bound_thinking(view)
+    )
+
+
+def sources_changed(state: Any) -> bool:
+    """Whether the prompt's sources changed since the kept message's build,
+    which a pin without ``source_digest`` counts as. Only a due thread whose
+    sources changed may be forced to rebuild: a due that per-turn inputs
+    alone caused would force one on every turn an input flips."""
+    return as_dict(state_get(state, STATE_SYSTEM_PIN)).get("source_digest") != release.source_digest()
+
+
+def _build_sources() -> dict[str, Any]:
+    """What a pin records of the build whose static prompt it holds: the
+    digest of its sources and its hand-set ``prompt_version``."""
+    return {"source_digest": release.source_digest(), "prompt_version": release.prompt_version()}
+
 
 # Cache markers are outside the prefix check, so they are outside the
 # comparison too.
@@ -212,26 +278,28 @@ def _pin(
     from ptc_agent.agent.middleware.compaction.summarize import model_label
 
     built = request.system_message
-    if built is None:
+    if built is None or not is_claude(request.model):
         return None, None, None
-    stored = as_dict(state_get(getattr(request, "state", None), STATE_SYSTEM_PIN))
-    if not is_claude(request.model):
-        return None, None, None
-    model = model_label(request.model) or ""
-    content = stored.get("content")
-    if content is not None and stored.get("model") == model:
+    stored = _kept(request)
+    if stored is not None:
+        content = stored["content"]
         if _unmarked(content) == _unmarked(built.content):
-            if not stored.get("stale"):
+            # The build composes the kept message again: the pin takes its
+            # sources, so a later due on this thread is read against them.
+            current = {**{k: v for k, v in stored.items() if k != "stale"}, **_build_sources()}
+            if current == stored:
                 return None, None, None
-            return None, {"model": model, "content": content}, "cleared"
+            return None, current, "cleared" if stored.get("stale") else None
         if holds_bound_thinking(request.messages):
             if stored.get("stale"):
                 return SystemMessage(content=content), None, None
             return SystemMessage(content=content), {**stored, "stale": True}, "stale"
         change = "no_bound_thinking"
     else:
-        change = "first" if content is None else "model_changed"
-    return None, {"model": model, "content": built.content}, change
+        previous = as_dict(state_get(getattr(request, "state", None), STATE_SYSTEM_PIN))
+        change = "first" if previous.get("content") is None else "model_changed"
+    model = model_label(request.model) or ""
+    return None, {"model": model, "content": built.content, **_build_sources()}, change
 
 
 def _unmarked(content: Any) -> list[Any]:
