@@ -6,6 +6,7 @@ applicability (ordinary runs no-op) and RAISE on transport failure so the
 drainer's nack/backoff — not a swallowed log line — is the retry path.
 """
 
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -54,6 +55,18 @@ def _jobs(final_status, **kw):
 
 def _types(jobs):
     return sorted(j.hook_type for j in jobs)
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_a_completed_turn_owes_the_idle_compaction_job_only_with_the_feature_on(monkeypatch, on):
+    """Off, a turn writes nothing for it; on, only a completed one does."""
+    from src.config import features
+
+    spec = features.FEATURES["idle_compaction"]
+    monkeypatch.setitem(features.FEATURES, "idle_compaction", dataclasses.replace(spec, enabled=on))
+
+    assert ("idle_compact" in _types(_jobs("completed"))) is on
+    assert all("idle_compact" not in _types(_jobs(status)) for status in ("error", "cancelled", "interrupted"))
 
 
 _RELEASES_ITS_PAIR = {

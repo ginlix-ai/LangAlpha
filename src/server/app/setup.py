@@ -551,7 +551,7 @@ async def lifespan(app: FastAPI):
     from src.server.services.report_back import command as command_report
     from src.server.services.report_back import steer_executor, subagent
     from src.server.services.report_back.handoff import core as handoff_core
-    from src.server.services import automation_settlement, thread_lifecycle_feed
+    from src.server.services import automation_settlement, idle_compaction, thread_lifecycle_feed
     from src.server.services.features import register_feature_off_hook
     from src.server.services.hook_outbox import HookOutboxDrainer
     from src.server.services.market_targets import delivery as market_target_delivery
@@ -568,6 +568,7 @@ async def lifespan(app: FastAPI):
     market_target_delivery.register_outbox_executors()
     # Registered with push off too: its rows then ack as no-ops.
     push_notify.register_outbox_executors()
+    idle_compaction.register_outbox_executors()
     wakeup_delivery.register_wakeup_executors()
     # Turning wakeups off ends what the agent set, on every thread.
     register_feature_off_hook("wakeups", wakeups_cancel.setting_off)
@@ -659,6 +660,19 @@ async def lifespan(app: FastAPI):
         logger.info("WakeupSweeper started")
     except Exception as e:
         logger.warning(f"Failed to start WakeupSweeper: {e}")
+
+    # Start IdleCompactionSweeper (summarizes idle threads while their prompt
+    # cache is warm). Every worker runs one: a claim deletes its row.
+    try:
+        from src.server.handlers.idle_compaction import fire as fire_idle_compaction
+        from src.server.services.idle_compaction import start_sweeper
+
+        if await start_sweeper(fire_idle_compaction):
+            logger.info("IdleCompactionSweeper started")
+        else:
+            logger.info("IdleCompactionSweeper not started: the idle_compaction feature is off")
+    except Exception as e:
+        logger.warning(f"Failed to start IdleCompactionSweeper: {e}")
 
     # Start MarketInsightService (schedule-based market news gathering)
     try:
@@ -894,6 +908,13 @@ async def lifespan(app: FastAPI):
         await WakeupSweeper.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error shutting down WakeupSweeper: {e}")
+
+    try:
+        from src.server.services.idle_compaction import IdleCompactionSweeper
+
+        await IdleCompactionSweeper.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error shutting down IdleCompactionSweeper: {e}")
 
     # 1. Shutdown AutomationScheduler
     try:

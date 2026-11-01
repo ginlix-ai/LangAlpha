@@ -105,16 +105,7 @@ def build_thread_status_tool(
         )
         if stop:
             return reader.answer(*await reader.stop(stop.strip()))
-        # In the order an id is looked for: a bare task id can also be a
-        # wakeup's short id or a file name, so tasks come first, and any id
-        # can be an automation's file name, so automations come last.
-        sources: list[Source] = [
-            _Commands(reader),
-            _Tasks(reader),
-            _Wakeups(reader),
-            *([_Analysts(reader)] if analysts else []),
-            _Automations(reader),
-        ]
+        sources = _sources(reader, analysts)
         if id:
             return reader.answer(*await reader.detail(sources, id.strip()))
         return reader.answer(*await reader.listing(sources, type, status))
@@ -125,6 +116,42 @@ def build_thread_status_tool(
         description=inspect.cleandoc(THREAD_STATUS_DOC),
         response_format="content_and_artifact",
     )
+
+
+def _sources(reader: _Reader, analysts: bool) -> list[Source]:
+    """Every type of item, in the order an id is looked for: a bare task id
+    can also be a wakeup's short id or a file name, so tasks come first, and
+    any id can be an automation's file name, so automations come last."""
+    return [
+        _Commands(reader),
+        _Tasks(reader),
+        _Wakeups(reader),
+        *([_Analysts(reader)] if analysts else []),
+        _Automations(reader),
+    ]
+
+
+async def pending_work(
+    thread_id: str, user_id: str | None, *, analysts: bool, before: datetime
+) -> ItemType | None:
+    """The first type of item set to report back to the thread, as
+    ThreadStatus lists it, that is running or comes due by ``before``, or None.
+    A type that cannot be read counts as one: the thread may be coming back
+    on its own."""
+    reader = _Reader(thread_id=thread_id, user_id=user_id, user_tz="UTC", registry=None)
+    for source in _sources(reader, analysts):
+        try:
+            items = await source.items()
+        except Exception:
+            logger.warning("[ThreadStatus] %s read failed thread_id=%s", source.type, thread_id, exc_info=True)
+            return source.type
+        if any(item.status == "running" or (item.status == "pending" and _utc(item.at) <= before) for item in items):
+            return source.type
+    return None
+
+
+def _utc(at: datetime) -> datetime:
+    return at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)
 
 
 class Shown(NamedTuple):
@@ -476,4 +503,4 @@ def _unknown(item_id: str) -> str:
     return f"No {item_id} in this conversation. ThreadStatus lists the ids."
 
 
-__all__ = ["THREAD_STATUS_DOC", "TOOL_NAME", "build_thread_status_tool"]
+__all__ = ["THREAD_STATUS_DOC", "TOOL_NAME", "build_thread_status_tool", "pending_work"]
