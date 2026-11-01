@@ -130,7 +130,7 @@ async def files_client(mock_session, sandbox):
             "src.server.services.workspace_files.WorkspaceManager"
         ) as MockWMShared,
         patch(
-            "src.server.app.workspace_files.serve.WorkspaceManager"
+            "src.server.services.warm_files.WorkspaceManager"
         ) as MockWMServe,
     ):
         MockWM.get_instance.return_value = mock_manager

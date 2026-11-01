@@ -1,10 +1,10 @@
 """Unit tests for the owner's share-link routes (``share_links.py``).
 
-The router is mounted on a bare test app with the DB and the manifest walk
-patched where ``share_links`` imports them. What is locked here is the HTTP
-contract the dialog relies on: the 409s that refuse a silently widened share
-and a share that would undo a Stop, the order-insensitive equality that
-accepts a reviewed list, the refusals for app links and hidden paths, and the
+The router is mounted on a bare test app with the DB patched where
+``share_links`` imports it. What is locked here is the HTTP contract: a file
+is shared only by publishing, so a share asked for here is a 409 naming the
+artifact; a stop ends a file's share through its artifact record; a file
+link names its artifact; app links and hidden paths are refused; and the
 owner check, including the lookup by code that answers for any of the
 owner's workspaces and for no one else's.
 """
@@ -20,11 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.server.app.share_links import owner_router as share_link_owner_router
 from src.server.app.share_links import router as share_links_router
-from src.server.app.share_manifest import (
-    ManifestEntry,
-    ManifestEntryMissing,
-    ManifestTooLarge,
-)
+from src.server.database.artifacts import Artifact, ArtifactNotFound
 from src.server.database.share_links import ShareLink
 from src.server.utils.api import get_current_user_id
 from tests.conftest import create_test_app
@@ -34,6 +30,7 @@ pytestmark = pytest.mark.asyncio
 _OWNER = "test-user-123"
 _WS_ID = "ws-fake-0001"
 _CODE = "k3Vq9ZtR2mXa"
+_ARTIFACT = "11111111-2222-4333-8444-555555555555"
 _BASE = f"/api/v1/workspaces/{_WS_ID}/share-links"
 
 _M = "src.server.app.share_links"
@@ -42,10 +39,11 @@ _DBWS = f"{_M}.db_get_workspace"
 # included.
 _OWNED_DBWS = "src.server.services.workspace_files.db_get_workspace"
 _GET_LINK = f"{_M}.get_link"
-_CREATE = f"{_M}.ensure_file_link"
-_SET_SHARED = f"{_M}.set_shared"
+_CREATE = f"{_M}.artifacts_db.ensure_artifact"
+_UNSHARE = f"{_M}.artifacts_db.unshare"
+_CHANGED = f"{_M}.publish_artifact_change"
 _SET_PRIVATE = f"{_M}.set_private"
-_MANIFEST = f"{_M}.build_manifest"
+_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def _workspace(**overrides) -> dict:
@@ -70,20 +68,32 @@ def _link(**overrides) -> ShareLink:
         "title": None,
         "files": None,
         "shared_at": None,
-        "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "created_at": _AT,
+        "artifact": _artifact(),
     }
     row.update(overrides)
     return ShareLink(**row)
 
 
 def _app_link(**overrides) -> ShareLink:
-    return _link(kind="app", path=None, port=8080, **overrides)
+    return _link(kind="app", path=None, port=8080, artifact=None, **overrides)
 
 
-_ENTRIES = [
-    ManifestEntry("report.html", 10, "entry"),
-    ManifestEntry("style.css", 5, "style"),
-]
+def _artifact() -> Artifact:
+    return Artifact(
+        artifact_id=_ARTIFACT,
+        code=_CODE,
+        workspace_id=_WS_ID,
+        path="report.html",
+        created_thread_id=None,
+        bound_thread_id=None,
+        keep_updated=False,
+        latest_seq=0,
+        shared_at=None,
+        files=None,
+        revision=1,
+        created_at=_AT,
+    )
 
 
 @pytest_asyncio.fixture
@@ -101,122 +111,83 @@ async def stranger_client():
         yield c
 
 
-# --- PATCH: share with a reviewed list, or stop --------------------------
+# --- PATCH: stop; a file is shared by publishing ---------------------------
 
 
-async def test_patch_refuses_a_list_that_differs_from_the_recomputed_one(client):
+async def test_patch_share_on_a_file_link_points_to_publish(client):
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
         patch(_GET_LINK, AsyncMock(return_value=_link())),
-        patch(_MANIFEST, AsyncMock(return_value=_ENTRIES)),
-        patch(_SET_SHARED, AsyncMock()) as set_shared,
-    ):
-        resp = await client.patch(
-            f"{_BASE}/{_CODE}", json={"shared": True, "files": ["report.html"]}
-        )
-    assert resp.status_code == 409
-    detail = resp.json()["detail"]
-    assert detail["code"] == "files_changed"
-    assert detail["files"] == [e.as_dict() for e in _ENTRIES]
-    set_shared.assert_not_awaited()
-
-
-async def test_patch_accepts_the_same_set_in_another_order(client):
-    stored = _link(files=("report.html", "style.css"), shared_at=datetime.now(timezone.utc))
-    with (
-        patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_GET_LINK, AsyncMock(return_value=_link())),
-        patch(_MANIFEST, AsyncMock(return_value=_ENTRIES)),
-        patch(_SET_SHARED, AsyncMock(return_value=stored)) as set_shared,
-    ):
-        resp = await client.patch(
-            f"{_BASE}/{_CODE}",
-            json={"shared": True, "files": ["style.css", "report.html"]},
-        )
-    assert resp.status_code == 200
-    set_shared.assert_awaited_once_with(
-        _CODE, ["report.html", "style.css"], expected_revision=0
-    )
-    body = resp.json()
-    assert body["shared"] is True
-    assert body["shared_files"] == ["report.html", "style.css"]
-    assert body["title"] == "report.html"
-
-
-async def test_patch_that_lost_a_race_with_a_stop_is_409(client):
-    """The share was read before the manifest walk; a Stop that landed since holds."""
-    was_shared = _link(
-        files=("report.html",),
-        shared_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
-        revision=5,
-    )
-    with (
-        patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_GET_LINK, AsyncMock(return_value=was_shared)),
-        patch(_MANIFEST, AsyncMock(return_value=_ENTRIES)),
-        patch(_SET_SHARED, AsyncMock(return_value=None)) as set_shared,
-    ):
-        resp = await client.patch(
-            f"{_BASE}/{_CODE}",
-            json={"shared": True, "files": ["report.html", "style.css"]},
-        )
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == {"code": "link_changed"}
-    assert set_shared.await_args.kwargs["expected_revision"] == was_shared.revision
-
-
-async def test_patch_share_without_a_list_is_422(client):
-    with (
-        patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_GET_LINK, AsyncMock(return_value=_link())),
-        patch(_MANIFEST, AsyncMock(return_value=_ENTRIES)) as manifest,
-        patch(_SET_SHARED, AsyncMock()) as set_shared,
+        patch(_UNSHARE, AsyncMock()) as unshare,
     ):
         resp = await client.patch(f"{_BASE}/{_CODE}", json={"shared": True})
-    assert resp.status_code == 422
-    manifest.assert_not_awaited()
-    set_shared.assert_not_awaited()
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {
+        "code": "publish_required",
+        "artifact_id": _ARTIFACT,
+    }
+    unshare.assert_not_awaited()
 
 
-async def test_patch_unshare_makes_the_link_private(client):
+async def test_patch_stop_on_a_file_link_unshares_its_artifact(client):
+    shared = _link(files=("report.html",), shared_at=_AT)
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_GET_LINK, AsyncMock(return_value=_link(files=("report.html",)))),
-        patch(_SET_PRIVATE, AsyncMock(return_value=_link())) as set_private,
+        patch(_GET_LINK, AsyncMock(side_effect=[shared, _link()])),
+        patch(_UNSHARE, AsyncMock(return_value=_artifact())) as unshare,
+        patch(_CHANGED, AsyncMock()) as changed,
+        patch(_SET_PRIVATE, AsyncMock()) as set_private,
     ):
         resp = await client.patch(f"{_BASE}/{_CODE}", json={"shared": False})
     assert resp.status_code == 200
-    set_private.assert_awaited_once_with(_CODE)
+    unshare.assert_awaited_once_with(user_id=_OWNER, artifact_id=_ARTIFACT)
+    changed.assert_awaited_once_with(_OWNER, _artifact())
+    set_private.assert_not_awaited()
     body = resp.json()
     assert body["shared"] is False
     assert body["shared_files"] is None
+    assert body["artifact_id"] == _ARTIFACT
 
 
-# --- app links have no file list and cannot be shared --------------------
+async def test_patch_stop_on_a_record_gone_since_is_404(client):
+    with (
+        patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
+        patch(_GET_LINK, AsyncMock(return_value=_link())),
+        patch(_UNSHARE, AsyncMock(side_effect=ArtifactNotFound(_ARTIFACT))),
+    ):
+        resp = await client.patch(f"{_BASE}/{_CODE}", json={"shared": False})
+    assert resp.status_code == 404
+
+
+# --- app links cannot be shared and name no artifact ------------------------
 
 
 async def test_patch_share_on_an_app_link_is_400(client):
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
         patch(_GET_LINK, AsyncMock(return_value=_app_link())),
-        patch(_SET_SHARED, AsyncMock()) as set_shared,
+        patch(_SET_PRIVATE, AsyncMock()) as set_private,
     ):
-        resp = await client.patch(
-            f"{_BASE}/{_CODE}", json={"shared": True, "files": ["index.html"]}
-        )
+        resp = await client.patch(f"{_BASE}/{_CODE}", json={"shared": True})
     assert resp.status_code == 400
-    set_shared.assert_not_awaited()
+    set_private.assert_not_awaited()
 
 
-async def test_files_on_an_app_link_is_400(client):
+async def test_the_file_list_route_is_gone(client):
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_GET_LINK, AsyncMock(return_value=_app_link())),
-        patch(_MANIFEST, AsyncMock()) as manifest,
+        patch(_GET_LINK, AsyncMock(return_value=_link())),
     ):
         resp = await client.get(f"{_BASE}/{_CODE}/files")
-    assert resp.status_code == 400
-    manifest.assert_not_awaited()
+    assert resp.status_code in (404, 405)
+
+
+async def test_a_page_link_cannot_be_made(client):
+    with patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())):
+        resp = await client.post(
+            _BASE, json={"kind": "page", "page_id": _ARTIFACT}
+        )
+    assert resp.status_code == 422
 
 
 # --- POST: create ---------------------------------------------------------
@@ -232,52 +203,32 @@ async def test_create_refuses_a_hidden_path(client):
     create.assert_not_awaited()
 
 
-async def test_create_returns_the_short_url(client):
+async def test_create_makes_the_files_record_and_returns_its_link(client):
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CREATE, AsyncMock(return_value=_link())),
+        patch(_CREATE, AsyncMock(return_value=_artifact())),
+        patch(_GET_LINK, AsyncMock()) as get_link,
     ):
         resp = await client.post(_BASE, json={"kind": "file", "path": "report.html"})
     assert resp.status_code == 200
+    # The record is the link: no second read.
+    get_link.assert_not_awaited()
     body = resp.json()
     assert body["url"] == f"/a/{_CODE}"
     assert body["shared"] is False
+    assert body["artifact_id"] == _ARTIFACT
 
 
 async def test_create_folds_a_sandbox_absolute_path(client):
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_CREATE, AsyncMock(return_value=_link())) as create,
+        patch(_CREATE, AsyncMock(return_value=_artifact())) as create,
     ):
         resp = await client.post(
             _BASE, json={"kind": "file", "path": "/home/workspace/proj/report.html"}
         )
     assert resp.status_code == 200
     create.assert_awaited_once_with(_WS_ID, "report.html")
-
-
-# --- GET files: manifest caps map to HTTP --------------------------------
-
-
-async def test_files_too_large_is_422_with_the_cap(client):
-    with (
-        patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_GET_LINK, AsyncMock(return_value=_link())),
-        patch(_MANIFEST, AsyncMock(side_effect=ManifestTooLarge("too_many_files", 200))),
-    ):
-        resp = await client.get(f"{_BASE}/{_CODE}/files")
-    assert resp.status_code == 422
-    assert resp.json()["detail"] == {"code": "too_many_files", "limit": 200}
-
-
-async def test_files_missing_entry_is_404(client):
-    with (
-        patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
-        patch(_GET_LINK, AsyncMock(return_value=_link())),
-        patch(_MANIFEST, AsyncMock(side_effect=ManifestEntryMissing("report.html"))),
-    ):
-        resp = await client.get(f"{_BASE}/{_CODE}/files")
-    assert resp.status_code == 404
 
 
 # --- ownership ------------------------------------------------------------
@@ -295,29 +246,27 @@ async def test_non_owner_cannot_create(stranger_client):
     create.assert_not_awaited()
 
 
-async def test_non_owner_cannot_share(stranger_client):
+async def test_non_owner_cannot_stop(stranger_client):
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
         patch(_GET_LINK, AsyncMock(return_value=_link())) as get_link,
-        patch(_SET_SHARED, AsyncMock()) as set_shared,
+        patch(_UNSHARE, AsyncMock()) as unshare,
     ):
-        resp = await stranger_client.patch(
-            f"{_BASE}/{_CODE}", json={"shared": True, "files": ["report.html"]}
-        )
+        resp = await stranger_client.patch(f"{_BASE}/{_CODE}", json={"shared": False})
     assert resp.status_code == 403
     get_link.assert_not_awaited()
-    set_shared.assert_not_awaited()
+    unshare.assert_not_awaited()
 
 
 async def test_link_of_another_workspace_is_404(client):
     with (
         patch(_OWNED_DBWS, AsyncMock(return_value=_workspace())),
         patch(_GET_LINK, AsyncMock(return_value=_link(workspace_id="ws-fake-0002"))),
-        patch(_SET_PRIVATE, AsyncMock()) as set_private,
+        patch(_UNSHARE, AsyncMock()) as unshare,
     ):
         resp = await client.patch(f"{_BASE}/{_CODE}", json={"shared": False})
     assert resp.status_code == 404
-    set_private.assert_not_awaited()
+    unshare.assert_not_awaited()
 
 
 # --- GET by code: any of the owner's workspaces --------------------------
@@ -333,6 +282,7 @@ async def test_lookup_answers_for_a_sibling_workspace_with_its_id(client):
     assert resp.status_code == 200
     assert resp.json()["workspace_id"] == "ws-fake-0002"
     assert resp.json()["port"] == 8080
+    assert resp.json()["artifact_id"] is None
     get_ws.assert_awaited_once_with("ws-fake-0002")
 
 
