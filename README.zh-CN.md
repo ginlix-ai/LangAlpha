@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../web/public/logo_words.png" alt="LangAlpha" height="110" />
+  <img src="web/public/logo_words.png" alt="LangAlpha" height="110" />
 </p>
 
 <h3 align="center">面向 Agent 交易的 harness。</h3>
@@ -17,7 +17,7 @@
   <a href="#全栈架构"><strong>全栈架构</strong></a> ·
   <a href="#安全"><strong>安全</strong></a>
   <br />
-  <a href="../README.md">English</a> · 简体中文 · <a href="README.ja-JP.md">日本語</a>
+  <a href="README.md">English</a> · 简体中文 · <a href="README.ja-JP.md">日本語</a>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/hero-cbrs-research-dashboard.webp" alt="demo-cbrs 工作区：左侧是 Agent 查询 CBRS 报价、拉取披露文件并派出两个分析师，右侧是基于这些研究搭建的 CBRS 仪表盘，当前显示 IPO 以来的股价和事件标记，以及选中事件的注释和来源" width="900" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/hero-cbrs-research-dashboard.webp" alt="demo-cbrs 工作区：左侧是 Agent 查询 CBRS 报价、拉取披露文件并派出两个分析师，右侧是基于这些研究搭建的 CBRS 仪表盘，当前显示 IPO 以来的股价和事件标记，以及选中事件的注释和来源" width="900" />
 </p>
 
 ## 为什么选择 LangAlpha
@@ -42,7 +42,7 @@
 - **自主需要由你划定边界**。Agent 只在你授予的权限内行动，每一笔订单都走同一条受控路径。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/loop.webp" alt="一笔交易是一个循环：一个直觉引出研究和保存在工作区里的投资假设，接着是仓位与风险、下单和盯盘，盯盘再把新证据反馈给投资假设，改变对它的信心" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/loop.webp" alt="一笔交易是一个循环：一个直觉引出研究和保存在工作区里的投资假设，接着是仓位与风险、下单和盯盘，盯盘再把新证据反馈给投资假设，改变对它的信心" width="880" />
 </p>
 
 ## 功能亮点
@@ -54,7 +54,7 @@
 提出一个问题，LangAlpha 会把它拆给多个并行的分析师：阅读披露文件，拉取价格、期权和宏观数据，再用代码完成计算。运行途中随时可以追加消息，调整它们的方向。在 CBRS 这个例子里，这次运行最终产出了[一份 HTML 入门报告](https://app.langalpha.ai/a/lep06ly8Qjfa)，讲清 Cerebras 卖什么、增长有多快、谁在付钱。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-research-subagents-primer.webp" alt="一个 CBRS 问题分派给四个子 Agent，在侧边栏中列于主 Agent 之下，旁边是入门报告中关于谁在为 Cerebras 付费的章节" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-research-subagents-primer.webp" alt="一个 CBRS 问题分派给四个子 Agent，在侧边栏中列于主 Agent 之下，旁边是入门报告中关于谁在为 Cerebras 付费的章节" width="800" />
   <br />
   <sub><b>子 Agent</b>：四个分析师在主 Agent 之下分头处理这个问题，每张卡片统计各自的工具调用和 token 用量，一条 <code>/html-report</code> 把它们的发现整理成右侧的入门报告</sub>
 </p>
@@ -69,8 +69,8 @@
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-workspace-data-files.webp" alt="研究进行中的 demo-cbrs 工作区：Agent 正在加载 xlsx 和 dcf-model 技能并运行代码获取市场输入数据，旁边打开的是 overview 任务 data 文件夹里的 revenue_history.json，文件树中每个任务各占一个文件夹" /><br /><sub><b>工作区文件</b>：大批量数据落在文件里，而不是 Agent 的上下文中。价格、披露文件和模型输入都放进文件树里各个任务的 data/ 文件夹</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dashboard-openai-exposure.webp" alt="仪表盘对话：搭建请求，以及一条合并另一段对话事件文件的追加消息，旁边是实时 CBRS 仪表盘中关于 OpenAI 依赖程度的页面，含敞口明细和在手订单压力测试" /><br /><sub><b>运行中的应用</b>：Agent 会搭建交互式仪表盘。点击柱子、标记或表格行可以查看来源，可以拖动 OpenAI 在手订单压力测试，也可以用 @ 引用另一段对话的文件，把它们合并进来</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-workspace-data-files.webp" alt="研究进行中的 demo-cbrs 工作区：Agent 正在加载 xlsx 和 dcf-model 技能并运行代码获取市场输入数据，旁边打开的是 overview 任务 data 文件夹里的 revenue_history.json，文件树中每个任务各占一个文件夹" /><br /><sub><b>工作区文件</b>：大批量数据落在文件里，而不是 Agent 的上下文中。价格、披露文件和模型输入都放进文件树里各个任务的 data/ 文件夹</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-dashboard-openai-exposure.webp" alt="仪表盘对话：搭建请求，以及一条合并另一段对话事件文件的追加消息，旁边是实时 CBRS 仪表盘中关于 OpenAI 依赖程度的页面，含敞口明细和在手订单压力测试" /><br /><sub><b>运行中的应用</b>：Agent 会搭建交互式仪表盘。点击柱子、标记或表格行可以查看来源，可以拖动 OpenAI 在手订单压力测试，也可以用 @ 引用另一段对话的文件，把它们合并进来</sub></td>
   </tr>
 </table>
 
@@ -84,8 +84,8 @@ Agent 在工作区里创建了四个自动化：每周一次的假设检查，Q3
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-schedules-price-watches.webp" alt="自动化页面，包含每周一次的 CBRS 检查、一次财报后的模型更新和两个价格触发" /><br /><sub><b>自动化</b>：所有定时任务和价格监控集中在一个页面，显示每个监控离触发还差多少，以及结果发往哪里</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-new-price-move.webp" alt="一个新的自动化：CBRS 较前收盘价上涨 15% 时唤醒 Agent，附带指令，结果推送到 Slack 私信" /><br /><sub><b>价格触线时</b>：股价相对前收盘价或当日开盘价的涨跌幅达到设定百分比时唤醒 Agent，并显示今日涨跌幅与你设定阈值的对比</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/automations-cbrs-schedules-price-watches.webp" alt="自动化页面，包含每周一次的 CBRS 检查、一次财报后的模型更新和两个价格触发" /><br /><sub><b>自动化</b>：所有定时任务和价格监控集中在一个页面，显示每个监控离触发还差多少，以及结果发往哪里</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/automations-cbrs-new-price-move.webp" alt="一个新的自动化：CBRS 较前收盘价上涨 15% 时唤醒 Agent，附带指令，结果推送到 Slack 私信" /><br /><sub><b>价格触线时</b>：股价相对前收盘价或当日开盘价的涨跌幅达到设定百分比时唤醒 Agent，并显示今日涨跌幅与你设定阈值的对比</sub></td>
   </tr>
 </table>
 
@@ -99,15 +99,15 @@ Agent 在工作区里创建了四个自动化：每周一次的假设检查，Q3
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-report.webp" alt="对话旁打开的十页 CBRS 首次覆盖报告，含营收和客户集中度图表" /><br /><sub><b>文件面板</b>：HTML 报告既可以看渲染效果，也可以看源码，背后引用的披露文件和新闻稿以内联方式标注</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dcf-comps-workbook.webp" alt="表格面板中的 CBRS 反向 DCF 工作簿，选中的单元格可以直接加入对话" /><br /><sub><b>表格</b>：一份真实的工作簿，DCF、WACC、Comps 和 Checks 各表公式联动，旁边是为可比公司部分提供数据的研究过程</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-initiation-report.webp" alt="对话旁打开的十页 CBRS 首次覆盖报告，含营收和客户集中度图表" /><br /><sub><b>文件面板</b>：HTML 报告既可以看渲染效果，也可以看源码，背后引用的披露文件和新闻稿以内联方式标注</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-dcf-comps-workbook.webp" alt="表格面板中的 CBRS 反向 DCF 工作簿，选中的单元格可以直接加入对话" /><br /><sub><b>表格</b>：一份真实的工作簿，DCF、WACC、Comps 和 Checks 各表公式联动，旁边是为可比公司部分提供数据的研究过程</sub></td>
   </tr>
 </table>
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-peers.webp" alt="首次覆盖请求旁边是 PDF 查看器中的 CBRS 报告，停在用可比公司估值和利润率检验乐观情景的那一页" /><br /><sub><b>PDF 查看器</b>：在对话旁翻页、缩放查看成品 PDF，图中是用可比公司估值倍数和利润率检验乐观情景的那一页</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/slack-cbrs-deliverables-dm.webp" alt="Agent 把首次覆盖报告、工作簿、仪表盘和研究笔记发到 Slack 私信，报告已在 Slack 中打开" /><br /><sub><b>Slack</b>：整套材料分两条消息发送，先是交付物，再是研究笔记，每个文件都是消息下的一条单独回复</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-initiation-peers.webp" alt="首次覆盖请求旁边是 PDF 查看器中的 CBRS 报告，停在用可比公司估值和利润率检验乐观情景的那一页" /><br /><sub><b>PDF 查看器</b>：在对话旁翻页、缩放查看成品 PDF，图中是用可比公司估值倍数和利润率检验乐观情景的那一页</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/slack-cbrs-deliverables-dm.webp" alt="Agent 把首次覆盖报告、工作簿、仪表盘和研究笔记发到 Slack 私信，报告已在 Slack 中打开" /><br /><sub><b>Slack</b>：整套材料分两条消息发送，先是交付物，再是研究笔记，每个文件都是消息下的一条单独回复</sub></td>
   </tr>
 </table>
 
@@ -120,7 +120,7 @@ Agent 在任意对话中都能读取实时行情图表，并在上面绘制支�
 Agent 先弄清每个大幅波动日的驱动因素，再把它画到实时图表上：18 个事件徽标、4 个解禁标记，以及 $185 IPO 价和一致预期目标价两条线。鼠标悬停在徽标上即可查看注释。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chart-cbrs-post-ipo-event-annotations.webp" alt="CBRS 实时日线图，带有 Agent 绘制的 IPO 以来事件徽标、解禁标记和参考线" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chart-cbrs-post-ipo-event-annotations.webp" alt="CBRS 实时日线图，带有 Agent 绘制的 IPO 以来事件徽标、解禁标记和参考线" width="800" />
   <br />
   <sub><b>实时图表</b>：每条注释都标在股价有反应的那一天，对话中再用表格列出每次波动及其来源</sub>
 </p>
@@ -130,7 +130,7 @@ Agent 先弄清每个大幅波动日的驱动因素，再把它画到实时图�
 数据来源面板会列出 Agent 在一轮中访问过的每份披露文件、每个网页、每次数据调用和每个文件，连它在自己的 Python 和 Bash 里发起的数据调用也包括在内。你可以核查它的工作，而不只是选择相信。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-sources-panel.webp" alt="数据来源面板，列出一轮背后的子 Agent 读取、SEC 文件、市场数据和数据工具调用" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-sources-panel.webp" alt="数据来源面板，列出一轮背后的子 Agent 读取、SEC 文件、市场数据和数据工具调用" width="800" />
   <br />
   <sub><b>数据来源</b>：在本轮的 14 个来源和整段对话的 560 个来源之间切换，按网页搜索与抓取、SEC 文件、市场数据和数据工具分组，每条都附有当时使用的提示词或参数</sub>
 </p>
@@ -148,10 +148,10 @@ Agent 先弄清每个大幅波动日的驱动因素，再把它画到实时图�
 | --- | :---: | :---: | :---: | :---: |
 | 账户、持仓、历史记录 | ✅ | ✅ | ✅ | ✅ |
 | 行情与自选列表 | ✅ | ✅ | ✅ | ✅ |
-| 订单预览 | ✅ | | | |
+| 订单预览 | ✅ | ✅ | | |
 | 模拟交易 | | | ✅ | |
-| 预设订单，在券商 App 内确认 | | ✅ | | |
-| 实盘下单 | ✅ | | ✅ | |
+| 预设订单，在券商 App 内确认 | | ✅ | | ✅ |
+| 实盘下单 | ✅ | ✅ | ✅ | |
 
 Robinhood 需要通过桌面应用连接，因为 Robinhood 只接受回跳到本地应用的登录。moomoo 覆盖美国、大中华区、日本和东南亚市场。
 
@@ -159,8 +159,8 @@ Robinhood 需要通过桌面应用连接，因为 Robinhood 只接受回跳到�
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-brokerages-capabilities.webp" alt="插件页面的券商标签页，显示每个券商连接能做什么" /><br /><sub><b>券商</b>：连接你的券商账户；关联之前，每张卡片都会列出 Agent 在该券商能做什么</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-robinhood-connect-capabilities.webp" alt="连接 Robinhood 时，Agent 可做的每件事都有一个开关，从行情数据到实盘下单，其中实盘下单保持关闭" /><br /><sub><b>能力</b>：只开启你信任的功能。根据你的持仓确定数量的订单会停在审批卡片上，你同意之前，什么都不会发到券商</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/plugins-brokerages-capabilities.webp" alt="插件页面的券商标签页，显示每个券商连接能做什么" /><br /><sub><b>券商</b>：连接你的券商账户；关联之前，每张卡片都会列出 Agent 在该券商能做什么</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/plugins-robinhood-connect-capabilities.webp" alt="连接 Robinhood 时，Agent 可做的每件事都有一个开关，从行情数据到实盘下单，其中实盘下单保持关闭" /><br /><sub><b>能力</b>：只开启你信任的功能。根据你的持仓确定数量的订单会停在审批卡片上，你同意之前，什么都不会发到券商</sub></td>
   </tr>
 </table>
 
@@ -209,7 +209,7 @@ make up       # Postgres, Redis, backend and web app
 | `X_BEARER_TOKEN` | X 帖子搜索和推文串查询。在插件页面把它存入密钥库 |
 | `LANGSMITH_API_KEY`、`OTEL_EXPORTER_OTLP_ENDPOINT` | 追踪和指标 |
 
-即使不配置任何数据 key，你仍然可以使用 Yahoo Finance 的价格、基本面、分析师数据和选股，SEC EDGAR 文件，以及本地 Docker 沙箱。运行 `make help` 查看全部命令，或参阅 [CONTRIBUTING.md](../CONTRIBUTING.md#quick-start) 在本机直接运行后端和 Web 应用。
+即使不配置任何数据 key，你仍然可以使用 Yahoo Finance 的价格、基本面、分析师数据和选股，SEC EDGAR 文件，以及本地 Docker 沙箱。运行 `make help` 查看全部命令，或参阅 [CONTRIBUTING.md](CONTRIBUTING.md#quick-start) 在本机直接运行后端和 Web 应用。
 
 </details>
 
@@ -244,7 +244,7 @@ LangAlpha 从 2026 年 1 月首次发布起，就围绕程序化工具调用（p
 - **金融数据是表格，不是文字**。十来只股票十年的日线数据大约有 30,000 行。模型没法把这些当作文本来处理，直接贴进去也会占满上下文窗口。在代码里，Agent 可以对数据做聚合和转换、绘制图表，再输入估值模型或回测，只有结果会回到上下文中。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/ptc.webp" alt="程序化工具调用：模型编写代码，在沙箱中把 MCP server 作为 Python 模块导入，原始数据行留在沙箱里，只有结果返回给模型" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/ptc.webp" alt="程序化工具调用：模型编写代码，在沙箱中把 MCP server 作为 Python 模块导入，原始数据行留在沙箱里，只有结果返回给模型" width="880" />
 </p>
 
 代码是默认路径，但不是唯一路径。任何 MCP 工具都可以改为普通的 JSON 工具调用，在插件页面按工具设置。这适合账户操作这类敏感操作，每次调用都应该单独可见；下单工具则始终以这种方式运行，走[受控路径](#受控订单)。
@@ -289,7 +289,7 @@ LangAlpha 自己的数据 server 专为代码处理而设计：每个市场数�
 **工作流**让规模更进一步。遇到大型研究时，Agent 会运行一个工作流：一段简短的 JavaScript 程序，在服务器上沙箱化的 QuickJS 运行时中，用 `agent()`、`parallel()` 和 `pipeline()` 把工作分发给子 Agent。它可以按名称运行已保存的工作流，也可以当场写一个新的。驱动循环的是程序而不是对话，所以筛选一百家公司不需要一百轮对话，不过仍然要消耗一百个子 Agent 的 token。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/teams.webp" alt="主 Agent 的上下文中只有投资假设、计划和发现，它把工作交给子 Agent，以及一个分发出一百个 agent() 调用的工作流；每个都只交回发现而不是工具调用，子 Agent 之间共享工作区文件" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/teams.webp" alt="主 Agent 的上下文中只有投资假设、计划和发现，它把工作交给子 Agent，以及一个分发出一百个 agent() 调用的工作流；每个都只交回发现而不是工具调用，子 Agent 之间共享工作区文件" width="880" />
 </p>
 
 ### 上下文如何构建
@@ -297,7 +297,7 @@ LangAlpha 自己的数据 server 专为代码处理而设计：每个市场数�
 每次模型调用都按层组装，从最稳定到最易变依次排列，因此长时间的会话也能持续命中服务商的提示词缓存。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/context.webp" alt="一次模型调用由五层组成，从最稳定到最易变依次为：工具、系统提示词、冻结的对话基线、历史记录和行情时间戳尾部，前四层之后各有一个缓存点" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/context.webp" alt="一次模型调用由五层组成，从最稳定到最易变依次为：工具、系统提示词、冻结的对话基线、历史记录和行情时间戳尾部，前四层之后各有一个缓存点" width="880" />
 </p>
 
 - **系统提示词**。只有一份模板，按当前所用模型的提示词档位渲染。
@@ -332,26 +332,26 @@ Key 和 OAuth token 都使用 pgcrypto 静态加密存储。
 
 ### 技能与插件
 
-技能遵循 [Agent Skills](https://agentskills.io/specification) 规范，插件遵循 [Agent Plugins 1.0.0](https://agent-plugins.org) 格式。内置的 MCP server 和技能以插件包的形式放在 [`plugins/`](../plugins/) 中，和你在插件页面上传或通过 git URL 安装的格式完全相同。在这些标准之上，LangAlpha 还增加了：
+技能遵循 [Agent Skills](https://agentskills.io/specification) 规范，插件遵循 [Agent Plugins 1.0.0](https://agent-plugins.org) 格式。内置的 MCP server 和技能以插件包的形式放在 [`plugins/`](plugins/) 中，和你在插件页面上传或通过 git URL 安装的格式完全相同。在这些标准之上，LangAlpha 还增加了：
 
 - **技能按需加载**。提示词中每个技能只占一行清单条目，完整技能在使用斜杠命令或 Agent 读取其 `SKILL.md` 时才加载。技能自带的工具（例如自动化工具）在技能加载前保持隐藏。
 - **你的技能，你的命令**。把技能打包成 zip 上传，为它指定你想要的斜杠命令；也可以让 Agent 从 GitHub 安装技能到某个工作区。
-- **插件只有一个扩展块**。`mcp.json` 只接受该格式自身定义的字段。LangAlpha 增加的所有内容都放在 `plugin.json` 的 `extensions["ai.langalpha"]` 下，这是该格式唯一的扩展点：每个 server 的 `description` 和 `instruction`，会进入提示词；`tool_exposure_mode`，取值 `summary` 或 `detailed`，决定 Agent 预先能看到每个工具的多少信息；以及 `secrets`，列出 server 需要的每项凭据及其绑定位置。去掉这个扩展块，包仍然可以安装到任何 Agent Plugins 宿主中。详见 [`plugins/README.md`](../plugins/README.md)。
+- **插件只有一个扩展块**。`mcp.json` 只接受该格式自身定义的字段。LangAlpha 增加的所有内容都放在 `plugin.json` 的 `extensions["ai.langalpha"]` 下，这是该格式唯一的扩展点：每个 server 的 `description` 和 `instruction`，会进入提示词；`tool_exposure_mode`，取值 `summary` 或 `detailed`，决定 Agent 预先能看到每个工具的多少信息；以及 `secrets`，列出 server 需要的每项凭据及其绑定位置。去掉这个扩展块，包仍然可以安装到任何 Agent Plugins 宿主中。详见 [`plugins/README.md`](plugins/README.md)。
 - **第三方 server 隔离运行**。代码不归 LangAlpha 所有的 server 通过 `uvx` 或 `npx` 以固定版本启动，从不使用应用自身的环境，因此一侧的 SDK 升级不会影响另一侧。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-builtin-packages.webp" alt="插件页面的软件包标签页，列出六个内置插件包" width="720" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/plugins-builtin-packages.webp" alt="插件页面的软件包标签页，列出六个内置插件包" width="720" />
   <br />
   <sub><b>软件包</b>：六个内置的 MCP server 与技能组合包，每个包整体开启或关闭，另外还能添加最多 50 个你自己的包</sub>
 </p>
 
-内置 38 个技能：
+内置 35 个技能：
 
 | 包 | 技能 |
 | --- | --- |
-| 研究 | DCF 模型、可比公司分析、三表模型、模型更新与检查、首次覆盖、财报前瞻与分析、投资假设跟踪、交易推介、公司概况、竞争分析、板块概览、影响分析、催化剂日历、选股思路生成、晨报、盯盘、演示文稿检查 |
+| 研究 | DCF 模型、可比公司分析、三表模型、模型更新与检查、首次覆盖、财报前瞻与分析、投资假设跟踪、交易推介、公司概况、竞争分析、板块概览、影响分析、催化剂日历、选股思路生成、晨报、盯盘、演示文稿检查、投资组合诊断、研究规范 |
 | 交付物 | Excel、Word、PowerPoint、PDF、HTML 报告、交互式仪表盘、内嵌小组件、图表标注、UI 设计 |
-| 服务 | 自动化、新手引导、用户资料与投资组合、秘书、工作流、产品帮助、自我改进 |
+| 服务 | 新手引导、工作流、产品帮助 |
 | 另类数据 | X 研究、网页抓取 |
 
 致谢：部分研究技能改编自 [anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins)。
@@ -359,7 +359,7 @@ Key 和 OAuth token 都使用 pgcrypto 静态加密存储。
 ## 全栈架构
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/architecture.webp" alt="架构：Web、桌面端和聊天渠道连接到多 worker 的 FastAPI 后端，由后端的运行生命周期驱动 Agent；Agent 在沙箱化的计算机中工作，其文件持久化到 Postgres 和对象存储，券商和远程 MCP 调用经由出口中继发出，由中继附加凭据" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/architecture.webp" alt="架构：Web、桌面端和聊天渠道连接到多 worker 的 FastAPI 后端，由后端的运行生命周期驱动 Agent；Agent 在沙箱化的计算机中工作，其文件持久化到 Postgres 和对象存储，券商和远程 MCP 调用经由出口中继发出，由中继附加凭据" width="880" />
 </p>
 
 每一轮都作为后台运行执行，与发起它的 HTTP 连接相互独立。事件经由每次运行专属的 Redis stream，通过 SSE 推送，所以关掉标签页或网络中断都不会丢失任何内容：客户端重新连接后会补上进度，已完成的轮次则从 LangGraph checkpoint 回放。Postgres 是唯一可信的数据源，Redis 只负责传输，因此后端可以运行多个 worker，任何一个都能提供事件流、消费队列或接管孤立的运行。完成配置后，Agent 的运行会追踪到 LangSmith，后端也会通过 OpenTelemetry 导出 trace 和指标。
@@ -373,7 +373,7 @@ Key 和 OAuth token 都使用 pgcrypto 静态加密存储。
 订单动用的是真金白银，所以它有自己专属的路径。下单工具固定为直接的 JSON 调用：一次调用就是一笔订单，系统可以看到、展示，也可以拦下。沙箱脚本一次执行就可能下任意多笔订单，因此下单工具从不在沙箱中开放。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/orders.webp" alt="一笔受控订单：模型的下单调用会记录下来并展示给你审批，批准后签发一个执行令牌，出口中继验证令牌、占用唯一一次发送机会，再用已存储的凭据发出订单" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/orders.webp" alt="一笔受控订单：模型的下单调用会记录下来并展示给你审批，批准后签发一个执行令牌，出口中继验证令牌、占用唯一一次发送机会，再用已存储的凭据发出订单" width="880" />
 </p>
 
 - **按连接授权**。连接券商时，由你选择它具备哪些能力组。不管模型请求什么，中继都会拒绝这些能力组之外的调用。
@@ -398,7 +398,7 @@ Key 和 OAuth token 都使用 pgcrypto 静态加密存储。
 
 ## 参与贡献
 
-欢迎提交 issue 和 pull request，详见 [CONTRIBUTING.md](../CONTRIBUTING.md)。仓库包含后端和 Agent 核心（[`src/`](../src/)）、Web 应用（[`web/`](../web/)）、桌面端外壳（[`desktop/`](../desktop/)）以及内置插件（[`plugins/`](../plugins/)）。商务合作请发邮件至 [contact@ginlix.ai](mailto:contact@ginlix.ai)。
+欢迎提交 issue 和 pull request，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。仓库包含后端和 Agent 核心（[`src/`](src/)）、Web 应用（[`web/`](web/)）、桌面端外壳（[`desktop/`](desktop/)）以及内置插件（[`plugins/`](plugins/)）。商务合作请发邮件至 [contact@ginlix.ai](mailto:contact@ginlix.ai)。
 
 <a href="https://star-history.com/#ginlix-ai/langalpha&Date">
   <picture>
@@ -413,4 +413,4 @@ LangAlpha 是软件，不是投资顾问。它产出的任何内容都不构成�
 
 ## 许可证
 
-[Apache 2.0](../LICENSE)
+[Apache 2.0](LICENSE)
