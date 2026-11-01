@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
 
-from ptc_agent.agent.claude_code.agent import ClaudeCodeGraph, claude_code_graph
+from ptc_agent.agent.claude_code.agent import ClaudeCodeGraph, claude_code_graph, waits_for_user
 from ptc_agent.agent.claude_code.compaction import NO_RULES
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY
@@ -180,7 +180,7 @@ def test_a_claude_code_turn_opens_with_the_skills_turn_and_baseline_hooks():
     assert path == ["SkillsMiddleware.before_agent", "TurnContextMiddleware.before_agent",
                     "BaselineContextMiddleware.before_agent", "model"]
     assert graph.turn._baseline.__self__.__class__.__name__ == "BaselineContextMiddleware"
-    assert "AskUserQuestion" not in {t.name for t in graph.turn.spec.tools}
+    assert "AskUserQuestion" in {t.name for t in graph.turn.spec.tools}
     assert not {"Task", "RunWorkflow"} & {t.name for t in graph.turn.spec.tools}
 
 
@@ -189,8 +189,8 @@ def test_a_claude_code_turn_can_answer_comments_on_a_file():
     assert "reply_to_comment" in {t.name for t in _built().turn.spec.tools}
 
 
-def test_a_claude_code_turn_is_offered_no_tool_that_places_an_order():
-    """An order is put to the user before it runs, which a Claude Code turn cannot do yet."""
+def test_a_claude_code_turn_waits_for_the_user_on_a_call_that_places_an_order():
+    """An order is put to the user before it runs, so its call waits for the user's answer."""
     from langchain_core.tools import StructuredTool
 
     from ptc_agent.agent.middleware.direct_mcp import METADATA_KEY
@@ -211,7 +211,49 @@ def test_a_claude_code_turn_is_offered_no_tool_that_places_an_order():
     toolset = MagicMock(tools=[order, quote])
     graph = _built(direct_mcp=toolset, order_ledger=MagicMock())
     names = {t.name for t in graph.turn.spec.tools}
-    assert "mcp__broker__get_quote" in names and "mcp__broker__place_order" not in names
+    assert {"mcp__broker__get_quote", "mcp__broker__place_order"} <= names
+    assert graph.turn.spec.waits("mcp__broker__place_order", {"symbol": "AAPL"})
+    assert not graph.turn.spec.waits("mcp__broker__get_quote", {"symbol": "AAPL"})
+    edges = {a: b for a, b in graph.graph.builder.edges}
+    path, node = ["CreditGateMiddleware.before_model"], "CreditGateMiddleware.before_model"
+    while node in edges:
+        node = edges[node]
+        path.append(node)
+    assert path[0] == "CreditGateMiddleware.before_model" and path[-1] == "held"
+    assert "OrderGovernanceMiddleware.after_model" in path
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_turn_refuses_the_order_cards_a_later_run_cut_off():
+    """A message sent over an order card cuts its call off, and nothing will
+    answer that card now, so its attempt is refused; other calls are not orders."""
+    from unittest.mock import AsyncMock
+
+    from langchain_core.tools import StructuredTool
+
+    from ptc_agent.agent.middleware.direct_mcp import METADATA_KEY
+
+    order = StructuredTool.from_function(func=lambda symbol: "placed", name="mcp__broker__place_order", description="t")
+    order.metadata = {METADATA_KEY: {"server": "broker", "tool": "place_order", "approval": True,
+                                     "order": {"action": "place", "mode": "paper"}}}
+    ledger = MagicMock(abandon=AsyncMock())
+    built = []
+    with patch("ptc_agent.agent.claude_code.agent.build_claude_code_graph", side_effect=lambda node, **kw: built.append(kw) or MagicMock()):
+        _built(direct_mcp=MagicMock(tools=[order]), order_ledger=ledger)
+    calls = [{"id": "c1", "name": "mcp__broker__place_order", "args": {"symbol": "AAPL"}},
+             {"id": "c2", "name": "Bash", "args": {"command": "ls"}}]
+    await built[0]["abandon"](AIMessage("", id="m1", tool_calls=calls), calls)
+    ledger.abandon.assert_awaited_once_with("m1", "c1")
+
+
+def test_a_chief_of_staff_call_waits_for_the_user_only_with_an_action_that_puts_a_card_to_them():
+    waits = waits_for_user(frozenset())
+    assert waits("AskUserQuestion", {}) and waits("delegate_to_analyst", {})
+    assert waits("manage_workspaces", {"action": "create"}) and not waits("manage_workspaces", {"action": "list"})
+    assert waits("manage_threads", {"action": "delete"}) and not waits("manage_threads", {"action": "list"})
+    assert not waits("manage_workspaces", {"action": ["create"]}) and not waits("manage_threads", {"action": {"x": 1}})
+    assert waits("delegate_to_analyst", {"action": ["create"]})
+    assert not waits("Bash", {})
 
 
 def test_a_claude_code_turn_takes_reports_and_steers_in_but_no_task_resume():
