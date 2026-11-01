@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 
@@ -106,6 +107,15 @@ def build_update_message(update: DurableUpdate) -> HumanMessage:
             },
         },
     )
+
+
+def written_row(update: DurableUpdate) -> HumanMessage:
+    """The message carrying ``update`` for a writer outside a hook, such as
+    a model call that puts it into history ahead of its answer, which no
+    Pregel path stamps an id on."""
+    row = build_update_message(update)
+    row.id = str(uuid4())
+    return row
 
 
 def is_runtime_update_message(message: Any) -> bool:
