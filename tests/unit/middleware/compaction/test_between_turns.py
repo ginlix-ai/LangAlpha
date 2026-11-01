@@ -14,7 +14,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 
 from ptc_agent.agent.middleware import model_resilience
@@ -23,10 +23,13 @@ from ptc_agent.agent.middleware.compaction import (
     NoCompaction,
     Compaction,
     HandOff,
+    Measure,
     ask_between_turns,
+    record_offloads,
 )
 from ptc_agent.agent.middleware.compaction.compact import Summarizer
 from ptc_agent.agent.middleware.compaction.middleware import CompactionMiddleware
+from ptc_agent.agent.middleware.compaction.rebuild import LAST_ANSWER_KEY, next_summary, offloaded_reading
 from ptc_agent.agent.middleware.compaction.summary_request import summary_prompt
 from ptc_agent.agent.middleware.compaction.utils import (
     build_summary_message,
@@ -280,3 +283,66 @@ class TestHandOff:
 
         with pytest.raises(ValueError, match="no hand-off summary"):
             await ask_between_turns(agent, _summarized(_opaque()), HandOff(), thread_id="t-1")
+
+
+def _chars(messages) -> int:
+    return sum(len(str(m.content)) for m in messages)
+
+
+class TestMeasure:
+    """What an offload leaves of the context, read as the next turn start
+    reads it, which the composer's hint reads while the offload has zeroed
+    the measurement."""
+
+    def _thread(self, kept: str) -> dict:
+        read = AIMessage("", id="a0", tool_calls=[{"name": "Read", "args": {"file_path": "/w/data.csv"}, "id": "r1"}])
+        return {
+            "messages": [
+                HumanMessage("q0", id="h0"),
+                read,
+                ToolMessage("x" * 5_000, tool_call_id="r1", name="Read", id="t0"),
+                AIMessage("r0", id="a1"),
+                HumanMessage(kept, id="h1"),
+                AIMessage("r1", id="a2"),
+            ],
+            "_last_model_response_at": 1_000.0,
+            LAST_ANSWER_KEY: {
+                "threshold": 2_000,
+                "claude": True,
+                "claude_model": True,
+                "written_ttl": 300,
+                "route_ttl": 300,
+                "cold_tokens": 1_000,
+                "floor_tokens": 0,
+            },
+        }
+
+    async def _offloaded(self, state: dict) -> dict:
+        summarizer = Summarizer(_model(), limit=100_000, counter=_chars)
+        compaction = CompactionMiddleware(summarizer, token_threshold=10**9, keep_tokens=2)
+        agent = create_agent(model=_model(), tools=[], middleware=[compaction])
+        after = {**state, **record_offloads(state, set(), {"r1"})}
+        tokens = await ask_between_turns(agent, after, Measure(), thread_id="t-1")
+        return {**after, LAST_ANSWER_KEY: offloaded_reading(after, tokens)}
+
+    @pytest.mark.parametrize(
+        ("kept", "told"),
+        [
+            ("y" * 3_000, {"reason": "threshold"}),
+            ("y" * 1_500, {"reason": "cold", "at": 1_300.0}),
+            ("q1", None),
+        ],
+        ids=["still_over", "still_cold", "under"],
+    )
+    async def test_the_hint_reads_what_the_offload_left(self, kept, told):
+        after = await self._offloaded(self._thread(kept))
+
+        assert after["_cached_input_tokens"] == 0
+        assert after[LAST_ANSWER_KEY]["offloaded"]["tokens"] < 5_000
+        assert next_summary(after, settled_at=None) == told
+
+    async def test_a_summary_since_the_offload_drops_what_it_left(self):
+        after = await self._offloaded(self._thread("y" * 3_000))
+        summarized = {**after, "_summarization_event": {"summary_message": HumanMessage("s", id="s-1"), "cutoff_index": 4}}
+
+        assert next_summary(summarized, settled_at=None) is None

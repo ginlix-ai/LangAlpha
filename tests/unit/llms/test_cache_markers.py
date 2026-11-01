@@ -8,9 +8,10 @@ alone: what the next call, and every thread with the same tools, reads back.
 from __future__ import annotations
 
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.llms.cache_markers import cache_scope, scoped
+from src.llms.extension import ChatOpenRouterClient
 from src.llms.extension.anthropic_oauth import ChatAnthropicOAuth
 
 _MARK = {"type": "ephemeral", "ttl": "5m"}
@@ -89,6 +90,31 @@ def test_a_deferred_tool_stays_unmarked_since_the_api_refuses_a_marker_there():
         assert _placed(scoped({**payload, "tools": [payload["tools"][2]]}))["tools"] == [False]
 
 
+def test_the_system_and_tools_scope_keeps_their_markers_and_drops_the_rest():
+    """A cold compaction that keeps the tail: the call after it sends the same
+    system and tools again, never the history it summarizes."""
+    payload = _payload()
+
+    with cache_scope("system_and_tools"):
+        sent = scoped(payload)
+
+    assert _placed(sent) == {
+        "top": False, "system": [True, True], "tools": [False, True], "document": False, "tool_result": False
+    }
+    assert sent["system"][0]["cache_control"] == _MARK and sent["tools"][1]["cache_control"] == _MARK
+    assert sent["messages"][1]["content"][0]["input"] == {"cache_control": _MARK}
+    assert _payload() == payload
+
+
+def test_the_system_and_tools_scope_marks_the_last_tool_the_api_caches():
+    payload = _payload()
+    del payload["tools"][1]["cache_control"]
+    payload["tools"].append({"name": "stored", "input_schema": {"type": "object"}, "defer_loading": True})
+
+    with cache_scope("system_and_tools"):
+        assert _placed(scoped(payload))["tools"] == [False, True, False]
+
+
 def _request(client: ChatAnthropic) -> dict:
     tools = [{"name": "probe", "description": "Probe.", "input_schema": {"type": "object"}, "cache_control": dict(_MARK)}]
     return client._get_request_payload([HumanMessage("hi")], tools=tools, cache_control=dict(_MARK))
@@ -105,3 +131,22 @@ def test_each_anthropic_client_sends_the_scope_and_the_oauth_one_its_hour_after_
     assert "cache_control" not in sent and sent["tools"][0]["cache_control"] == _MARK
     assert "cache_control" not in subscription
     assert subscription["tools"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_openrouters_claude_sends_the_scope_on_its_system_messages_alone():
+    """Its markers sit on content blocks, the system's among the messages."""
+    client = ChatOpenRouterClient(model="anthropic/claude-opus-5-5", api_key="sk-or-test")
+    messages = [
+        SystemMessage([{"type": "text", "text": "prompt", "cache_control": {"type": "ephemeral"}}]),
+        HumanMessage([{"type": "text", "text": "history", "cache_control": {"type": "ephemeral"}}]),
+    ]
+
+    def marked() -> list[bool]:
+        sent, _params = client._create_message_dicts(messages, None)
+        return ["cache_control" in message["content"][0] for message in sent]
+
+    assert marked() == [True, True]
+    with cache_scope("system_and_tools"):
+        assert marked() == [True, False]
+    with cache_scope("last_tool"):
+        assert marked() == [False, False]
