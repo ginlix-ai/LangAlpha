@@ -47,6 +47,9 @@ export interface TurnRequest {
   /** The send's subagents pick. A resend may be what creates the thread, so
    * it carries the pick too. */
   subagentsAllowed?: boolean;
+  /** The turn skips the summary a cold thread gets first, and so does
+   * another attempt at it. */
+  keepFullContext?: boolean;
   /** A send the server may never have seen goes again under its first key,
    * so a copy that did arrive is adopted rather than doubled. */
   requestKey?: string;
@@ -55,13 +58,15 @@ export interface TurnRequest {
   artifactComments?: CommentSend;
 }
 
+/** What a turn carries besides what it sends and where it runs from. */
+type TurnFlags = Pick<TurnRequest, 'keepFullContext'>;
+
 export const sendRequest = (
   message: string,
   additionalContext: Record<string, unknown>[] | null,
-  subagentsAllowed?: boolean,
-  artifactComments?: CommentSend,
+  { artifactComments, ...flags }: TurnFlags & Pick<TurnRequest, 'subagentsAllowed' | 'artifactComments'> = {},
 ): TurnRequest => ({
-  message, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: null, subagentsAllowed,
+  message, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: null, ...flags,
   ...(artifactComments?.ids.length ? { artifactComments } : {}),
 });
 
@@ -69,13 +74,15 @@ export const forkRequest = (
   message: string | null,
   checkpointId: string,
   forkFromTurn: number,
-): TurnRequest => ({ message, additionalContext: null, checkpointId, forkFromTurn, retryOf: null });
+  flags: TurnFlags = {},
+): TurnRequest => ({ message, additionalContext: null, checkpointId, forkFromTurn, retryOf: null, ...flags });
 
 /** A Retry of the run `runId`, or of the thread's latest one for null. */
 export const retryRequest = (
   runId: string | null,
   additionalContext: Record<string, unknown>[] | null,
-): TurnRequest => ({ message: null, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: { runId } });
+  flags: TurnFlags = {},
+): TurnRequest => ({ message: null, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: { runId }, ...flags });
 
 /** The Retry a reply gets when nothing better is known: the thread's latest
  * failed run, from where its checkpoint left off. */
@@ -94,7 +101,7 @@ export function recoveryRequest(
   failedRunId: string | null,
 ): TurnRequest | null {
   if (notice.recovery === 'resend') return request;
-  return retryRequest(failedRunId, request?.additionalContext ?? null);
+  return retryRequest(failedRunId, request?.additionalContext ?? null, { keepFullContext: request?.keepFullContext });
 }
 
 /** The Retry a failed reply holds, kept for the bubble it would replace. */

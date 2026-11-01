@@ -2,6 +2,8 @@ import type React from 'react';
 import type { DefaultModelOffer, LapsedSignIn, RetiredModel } from '../../hooks/useThreadModel';
 import { LapsedSignInNotice, RetiredModelNotice, ThreadModelBanner } from './ThreadModelBanner';
 import { ThreadSubagentsBanner } from './ThreadSubagentsBanner';
+import { NextSummaryRow } from './NextSummaryRow';
+import type { NextSummaryHint } from '../../hooks/useNextSummaryHint';
 
 /** What `useThreadModel` raises above a composer. */
 interface ModelNotices {
@@ -27,15 +29,18 @@ interface SubagentsNotices {
 export function ThreadNotices({
   model,
   subagents,
+  summary,
 }: {
   model: ModelNotices;
   subagents: SubagentsNotices;
+  /** What the next send summarizes first, from `useNextSummary`. */
+  summary?: NextSummaryHint;
 }): React.ReactElement {
   return (
     <>
       {/* Inset like the offer rows beside it. */}
       {model.retired && <RetiredModelNotice {...model.retired} className="px-3" />}
-      <ThreadOffers model={model} subagents={subagents} />
+      <ThreadOffers model={model} subagents={subagents} summary={summary} />
     </>
   );
 }
@@ -43,9 +48,12 @@ export function ThreadNotices({
 export function ThreadOffers({
   model,
   subagents,
+  summary,
 }: {
   model: Omit<ModelNotices, 'retired'>;
   subagents: SubagentsNotices;
+  /** What the next send summarizes first, from `useNextSummary`. */
+  summary?: NextSummaryHint;
 }): React.ReactElement {
   return (
     <>
@@ -60,6 +68,9 @@ export function ThreadOffers({
           onDismiss={subagents.closeOffer}
           onExpire={subagents.expireOffer}
         />
+      )}
+      {summary?.reason && (
+        <NextSummaryRow reason={summary.reason} skipped={summary.skipped} onToggleSkip={summary.toggleSkip} />
       )}
     </>
   );

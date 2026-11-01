@@ -82,6 +82,8 @@ export interface SendChatMessageOptions extends StreamTurnOptions {
    *  person reads sets how much the agent answers in the chat and how much
    *  under each comment. */
   artifactComments?: CommentSend | null;
+  /** Start this turn without the summary a cold thread would get first. */
+  keepFullContext?: boolean;
 }
 
 export type SendHitlResponseOptions = StreamTurnOptions;
@@ -128,6 +130,7 @@ export async function sendChatMessageStream(
     threadSettings = {},
     steerOnly = false,
     artifactComments = null,
+    keepFullContext = false,
   }: SendChatMessageOptions = {},
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
@@ -145,6 +148,7 @@ export async function sendChatMessageStream(
     const fields: ArtifactCommentSendFields = { artifact_comment_ids: [...artifactComments.ids], reading: artifactComments.reading };
     Object.assign(body, fields);
   }
+  if (keepFullContext) body.keep_full_context = true;
   if (additionalContext) {
     body.additional_context = additionalContext;
   }
@@ -193,6 +197,7 @@ export async function sendRetryStream(
   requestKey: string | null = null,
   runId: string | null = null,
   additionalContext: Record<string, unknown>[] | null = null,
+  keepFullContext = false,
 ) {
   const body: Record<string, unknown> = { workspace_id: workspaceId };
   if (llmModel) body.llm_model = llmModel;
@@ -201,6 +206,7 @@ export async function sendRetryStream(
   if (requestKey) body.request_key = requestKey;
   if (runId) body.run_id = runId;
   if (additionalContext) body.additional_context = additionalContext;
+  if (keepFullContext) body.keep_full_context = true;
   return await postSSEStream(`/api/v1/threads/${threadId}/retry`, body, { onEvent, onRunIdResolved, signal });
 }
 
@@ -297,6 +303,18 @@ export type { ReportBackSignal } from '../reportBackSignal';
 /** Tokens a thread has used, as the server counts them. */
 export type ThreadTokenTotals = { input_tokens: number; output_tokens: number };
 
+/**
+ * What a thread's next send summarizes before it runs (`next_summary` on the
+ * status and on a run's closing frame): the context at its threshold, which
+ * nothing skips; a long thread after a break, once the provider's cache
+ * expires at `at`, which a send can skip (`keepFullContext`); or a summary
+ * that runs from `at` as a break's does, or at once without one, but cannot
+ * be skipped. `at` and `now`, the time of the reading, are epoch ms on the
+ * server's clock.
+ */
+type From = { at: number; now: number };
+export type NextSummary = { reason: 'threshold' } | ({ reason: 'cold' } & From) | { reason: 'rebuild' } | ({ reason: 'rebuild' } & From);
+
 /** Full workflow status for a thread (the `/status` response); the report-back
  *  fields are optional here (the full status may omit them). */
 export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
@@ -316,6 +334,7 @@ export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
   // live one, whose calls the reconnect replays from its stream. null when the
   // backend's read failed.
   token_totals?: ThreadTokenTotals | null;
+  next_summary?: NextSummary | null;
   // The user's steers an errored turn left queued, oldest first: the next
   // turn on the thread reads them. Absent on older backends.
   pending_steers?: HeldSteer[];

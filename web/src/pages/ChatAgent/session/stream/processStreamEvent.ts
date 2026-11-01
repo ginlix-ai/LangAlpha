@@ -292,6 +292,11 @@ export const createStreamEventProcessor = (rt: StreamRuntime, deps: StreamRouter
     if (eventType === 'run_end' && !isSubagent) {
       const counted = event.token_totals;
       if (counted) rt.setTokenUsage((prev) => withServerTotals(prev, counted));
+      // A frame without the field could not read it, and the stream's end
+      // reads the status for it instead.
+      const told = 'next_summary' in event;
+      if (told) rt.setNextSummary(event.next_summary ?? null);
+      rt.nextSummaryOwedRef.current = !told;
       if (event.outcome === 'cancelled') {
         settleStoppedBubble({ assistantMessageId, refs, setMessages: setMessagesForHandlers });
       } else if (event.outcome === 'error' && !refs.retryNotice && !turnShowsFailure()) {
