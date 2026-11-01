@@ -1,0 +1,20 @@
+/* Every comment on the page, in a panel over the frame's right side: inset
+   from the frame's edges and lifted off the page, so the page still reads
+   around it. It comes out of its top right, under the toolbar's list button. */
+.page-comments-panel {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  width: 19rem;
+  max-width: calc(100% - 16px);
+  min-height: 0;
+  transform-origin: top right;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background-color: var(--color-bg-popover);
+  pointer-events: auto;
+}

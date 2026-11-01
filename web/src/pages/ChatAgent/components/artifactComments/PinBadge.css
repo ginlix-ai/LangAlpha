@@ -1,0 +1,187 @@
+/* A comment's pin: a ring around a disc. The ring carries the state and the
+   disc the comment's number, which the chat and the agent's replies name it
+   by. On the page one corner is drawn to a point, and that corner is the spot:
+   the bubble sits up and to the right, so the words it is about stay
+   readable. In a list, a card's head or the chat it is a round badge.
+
+   A keyline in the app's ground keeps the page's pin legible over whatever the
+   page draws. A ring between two keylines marks the open pin, and a lighter
+   one the pin under the pointer, so either shows on a dark page and a light
+   one alike. The rings are the same three shadows in every state, so a change
+   of state tweens rather than swaps; `press` carries the transitions. */
+.page-comment-pin {
+  --pin-band: var(--color-accent-primary);
+  --pin-disc: var(--color-bg-elevated);
+  --pin-num: var(--color-text-primary);
+  --pin-ring: transparent;
+  --pin-ring-width: 1.5px;
+  --pin-halo-width: 1.5px;
+  position: relative;
+  display: inline-flex;
+  box-sizing: border-box;
+  min-width: 22px;
+  height: 22px;
+  padding: 3px;
+  border: 0 dashed transparent;
+  border-radius: 11px 11px 11px 0;
+  transform-origin: 0 100%;
+  background-color: var(--pin-band);
+  pointer-events: auto;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1.5px var(--color-bg-page),
+    0 0 0 var(--pin-ring-width) var(--pin-ring),
+    0 0 0 var(--pin-halo-width) var(--color-bg-page),
+    var(--shadow-card);
+}
+.page-comment-pin-disc {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-width: 16px;
+  padding: 0 2px;
+  overflow: hidden;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--pin-num);
+  background-color: var(--pin-disc);
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.page-comment-pin:not(.is-static):hover {
+  --pin-ring: var(--color-text-tertiary);
+  --pin-ring-width: 2.5px;
+  --pin-halo-width: 4px;
+}
+.page-comment-pin.is-open:not(.is-static),
+.page-comment-pin:focus-visible {
+  --pin-ring: var(--color-text-primary);
+  --pin-ring-width: 3px;
+  --pin-halo-width: 4.5px;
+  outline: none;
+}
+
+/* A badge beside text: round, a size down, no keyline. */
+.page-comment-pin.is-static {
+  flex-shrink: 0;
+  min-width: 20px;
+  height: 20px;
+  padding: 2.5px;
+  border-radius: 10px;
+  pointer-events: none;
+  cursor: default;
+  box-shadow: none;
+  transition: background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+}
+.page-comment-pin.is-static .page-comment-pin-disc {
+  min-width: 15px;
+  border-radius: 7.5px;
+  font-size: 9.5px;
+}
+
+/* Sent: the agent has it, so the ring wears the annotation colour. */
+.page-comment-pin[data-pin-state='sent'] {
+  --pin-band: var(--color-accent-primary);
+}
+/* Queued: waiting for the next send, so the ring is a dashed edge, not a fill. */
+.page-comment-pin[data-pin-state='queued'] {
+  --pin-band: var(--color-bg-page);
+  --pin-disc: var(--color-bg-page);
+  padding: 1.5px;
+  border-width: 1.5px;
+  border-color: var(--color-text-secondary);
+}
+/* Beside text it sits on whatever the row is drawn on; on the page it has to
+   hide what is under it. */
+.page-comment-pin.is-static[data-pin-state='queued'] {
+  --pin-band: transparent;
+  --pin-disc: transparent;
+  padding: 1px;
+}
+/* A note stays with the owner: a quiet neutral ring. */
+.page-comment-pin[data-pin-state='note'] {
+  --pin-band: var(--color-text-quaternary);
+  --pin-num: var(--color-text-secondary);
+}
+/* Resolved: it recedes, and comes forward under the pointer or open. */
+.page-comment-pin[data-pin-state='resolved'] {
+  --pin-band: var(--color-border-default);
+  --pin-disc: var(--color-bg-page);
+  --pin-num: var(--color-text-tertiary);
+}
+/* Unread, it stays forward, or the dot it wears would fade with it. */
+.page-comment-pin[data-pin-state='resolved']:not(.is-static, .is-open, :hover, [data-unread]) {
+  opacity: 0.62;
+}
+/* The comment being written, before it has a number. */
+.page-comment-pin[data-pin-state='draft'] {
+  --pin-band: var(--color-text-primary);
+  --pin-disc: var(--color-bg-page);
+  pointer-events: none;
+  cursor: default;
+}
+/* The agent is on it: the Loader takes the disc, in the annotation colour. */
+.page-comment-pin[data-working] {
+  --pin-num: var(--color-accent-primary);
+}
+
+/* Unread: an agent message the owner has not opened. The amber dot on the
+   upper right is the one mark unread wears, on the page and beside text
+   alike. It cuts into whatever the pin sits on, so a surface names its own
+   ground as --pin-ground; the page's pin keeps the app's ground, as its
+   keyline does. It comes in on the entrance beat and leaves on the exit's. */
+.page-comment-pin::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-accent-primary);
+  box-shadow: 0 0 0 2px var(--pin-ground, var(--color-bg-page));
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.3);
+  transition: opacity var(--motion-exit) var(--ease-collapse), transform var(--motion-exit) var(--ease-collapse);
+}
+.page-comment-pin[data-unread]::after {
+  opacity: 1;
+  transform: none;
+  transition-duration: var(--motion-enter);
+  transition-timing-function: var(--ease-out);
+}
+.page-comment-pin.is-static::after {
+  top: -1.5px;
+  right: -1.5px;
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 1.5px var(--pin-ground, var(--color-bg-page));
+}
+
+/* A reply landing while the page is open: the pin swells once from its point
+   and a ring leaves it. Reduced motion stills both (animations.css). */
+.page-comment-pin::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 1.5px solid var(--color-accent-primary);
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+.page-comment-pin[data-pulse] {
+  animation: page-comment-pin-bump var(--motion-reveal) var(--ease-out);
+}
+.page-comment-pin[data-pulse]::before {
+  animation: page-comment-pin-ripple calc(var(--motion-reveal) * 2) var(--ease-reveal);
+}
+@keyframes page-comment-pin-bump {
+  45% { scale: 1.14; }
+}
+@keyframes page-comment-pin-ripple {
+  from { opacity: 0.75; transform: scale(1); }
+  to { opacity: 0; transform: scale(1.9); }
+}

@@ -1,0 +1,140 @@
+/* A comment's card. In the list it sits on the panel shut, a step raised,
+   and takes the card fill and an edge once open; over its pin the box around
+   it is the card, so it draws neither. Over a pin its box has a height cap,
+   and the thread scrolls under the head while the reply field stays. */
+.page-comment-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 9px 8px 10px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background-color: var(--color-bg-elevated);
+  text-align: left;
+  transition: background-color var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
+  /* What the unread dot on the badge cuts into (PinBadge.css). */
+  --pin-ground: var(--color-bg-elevated);
+}
+.page-comment-card:not([data-open]):hover {
+  border-color: var(--color-border-default);
+}
+.page-comment-card[data-open] {
+  background-color: var(--color-bg-card);
+  border-color: var(--color-border-default);
+  --pin-ground: var(--color-bg-card);
+}
+.page-comment-card[data-pin] {
+  padding: 10px 10px 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  --pin-ground: var(--color-bg-popover);
+}
+
+.page-comment-card-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+/* Shut, the whole card is the toggle, its words and all. */
+.page-comment-card:not([data-open]) .page-comment-card-toggle::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.page-comment-card:not([data-open]) {
+  cursor: pointer;
+}
+/* What acts on its own sits over the toggle. */
+.page-comment-card-over {
+  position: relative;
+  z-index: 1;
+}
+
+.page-comment-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background-color var(--motion-quick) var(--ease-out), color var(--motion-quick) var(--ease-out);
+}
+.page-comment-icon-btn:hover,
+.page-comment-icon-btn[data-state='open'] {
+  color: var(--color-text-primary);
+  background-color: var(--color-border-subtle);
+}
+.page-comment-card[data-open] .page-comment-icon-btn:hover,
+.page-comment-card[data-open] .page-comment-icon-btn[data-state='open'],
+.page-comment-card[data-pin] .page-comment-icon-btn:hover,
+.page-comment-card[data-pin] .page-comment-icon-btn[data-state='open'] {
+  background-color: var(--color-bg-elevated);
+}
+.page-comment-icon-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Its room above and below is a clear border, not padding: a clamped quote
+   clips at the padding's outer edge, so the next line showed in the padding. */
+.page-comment-quote {
+  padding: 0 8px;
+  border-block: 4px solid transparent;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Selected words in full: about four lines of the quote's 1rem line, then
+   it scrolls within the box. */
+.page-comment-quote-full {
+  max-height: calc(4rem + 8px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Queued, beside the thread it waits for: the pin's dashed edge as a tag,
+   so the card says it in the same mark the pin wears. */
+.page-comment-queued-tag {
+  padding: 0 6px;
+  border: 1px dashed var(--color-text-secondary);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--color-text-primary);
+}
+
+/* "for <thread> ↗" or "Sent to <thread> ↗": the way to the thread the
+   comment waits for or went to, when that is not the chat beside the file. */
+.page-comment-thread-link {
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  transition: color var(--motion-quick) var(--ease-out);
+}
+.page-comment-thread-link:hover {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* A comment whose spot the file no longer shows, as GitHub marks one. */
+.page-comment-outdated {
+  padding: 0 6px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--color-text-secondary);
+}
