@@ -12,6 +12,7 @@ from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
 
 from ptc_agent.agent.claude_code.agent import ClaudeCodeGraph, claude_code_graph
+from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY
 from ptc_agent.agent.claude_code.tools_bridge import tool_specs
@@ -53,7 +54,7 @@ def _graph(**kw):
     target = create_llm("claude-haiku-5-5-code", reasoning_effort="low")
     return claude_code_graph(
         _agent(), system_prompt="the prompt", target=target, checkpointer=None,
-        **{"user_id": "user-1", "thread_id": "thread-1", "launcher": LocalLauncher(), **kw},
+        **{"user_id": "user-1", "thread_id": "thread-1", "launcher": LocalLauncher(), "compaction": NO_RULES, **kw},
     )
 
 
@@ -213,6 +214,12 @@ def test_a_claude_code_turn_takes_reports_and_steers_in_but_no_task_resume():
     a wakeup or an alert still reaches it while it runs."""
     graph = _built()
     assert graph.turn.steering._steering.kinds == ("report", "steer")
+
+
+def test_a_claude_code_turn_moves_its_session_to_a_new_prompt_by_the_main_agents_floor():
+    from ptc_agent.config.agent import CompactionConfig
+
+    assert _built().turn.compaction == CompactionRules(CompactionConfig().rebuild_floor_tokens)
 
 
 #: The CLI cuts an MCP tool's description past this many characters and adds

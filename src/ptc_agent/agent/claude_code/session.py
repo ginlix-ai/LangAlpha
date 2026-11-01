@@ -27,6 +27,8 @@ from typing_extensions import NotRequired
 from langgraph.channels import DeltaChannel
 
 SESSION_SNAPSHOT_FREQUENCY = 250
+#: How long a step waits for the CLI's records behind the messages it commits.
+SETTLE_TIMEOUT_S = 10.0
 
 
 class SessionDrift(RuntimeError):
@@ -53,11 +55,15 @@ class SessionPin(TypedDict):
     Claude's thinking is bound to the prefix in front of it, so every turn of
     a session is launched from these rather than from what the current build
     would send: a deploy that changes the prompt or a tool reaches a session
-    only where its prefix is rewritten anyway.
+    only where its prefix is rewritten anyway. The build's prompt sources and
+    ``prompt_version`` are kept beside them, to tell a deploy's change from
+    a change of per-turn inputs (``compaction.py``).
     """
 
     system_prompt: str
     tools: list[ToolDefinition]
+    source_digest: NotRequired[str]
+    prompt_version: NotRequired[int]
 
 
 class SessionRecords(TypedDict, total=False):

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import replace
 from functools import partial
@@ -51,16 +52,19 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
-from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received
+from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
+from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules, compact, same_pin
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, TurnSteering
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
 from ptc_agent.agent.claude_code.session import (
+    SETTLE_TIMEOUT_S,
     CheckpointSessionStore,
     SessionDrift,
     SessionPin,
     SessionRecords,
     SessionWrite,
+    compacted,
     session_channel,
 )
 from ptc_agent.agent.claude_code.tools_bridge import (
@@ -76,14 +80,13 @@ from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, reentry_trigger
+from ptc_agent.agent.prompts import release
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
 from src.llms.claude_code import ClaudeTurnFailed, another_model_replied_last
 
 TURN_KEY = "claude_turn"
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
-#: How long a step waits for the CLI's records behind the messages it commits.
-SETTLE_TIMEOUT_S = 10.0
 #: How long a run's close waits for the CLI to end the query it interrupted.
 DRAIN_TIMEOUT_S = 5.0
 #: The most queries one turn sends the CLI: its own, then one for each time
@@ -92,45 +95,6 @@ DRAIN_TIMEOUT_S = 5.0
 TURN_QUERIES = 3
 TOKEN_CHECK_TIMEOUT_S = 60
 
-
-#: Ends of a query that did what was asked. Anything else is a failed turn.
-_DONE = {None, "completed", "tool_deferred"}
-#: The CLI's own login messages; a word like "authentication" alone also turns up in tool and MCP errors.
-_AUTH_TEXT = ("not logged in", "run /login", "invalid api key", "oauth token has been revoked")
-_ASSISTANT_ERROR_KIND = {"authentication_failed": "auth_failed", "rate_limit": "plan_exhausted", "billing_error": "plan_exhausted"}
-
-
-def turn_failure(
-    result: ResultMessage | None,
-    assistant_errors: Sequence[tuple[str, str]],
-    rate_limits: Sequence[RateLimitEvent] = (),
-) -> ClaudeTurnFailed | None:
-    """Why a finished query did not do its turn, or None if it did."""
-    if assistant_errors:
-        error, text = assistant_errors[0]
-        return ClaudeTurnFailed(_ASSISTANT_ERROR_KIND.get(error, "api_error"), text or error)
-    if result is not None and not result.is_error and result.subtype == "success" and result.terminal_reason in _DONE:
-        return None
-    # Only a query that failed reads the rate limits: a rejected plan window
-    # beside a served request means extra usage paid for it.
-    rejected = [e.rate_limit_info for e in rate_limits if e.rate_limit_info.status == "rejected"]
-    if rejected:
-        info = rejected[-1]
-        return ClaudeTurnFailed("plan_exhausted", f"{info.rate_limit_type} limit reached, resets at {info.resets_at}")
-    if result is None:
-        return ClaudeTurnFailed("no_result", "the CLI ended without a result")
-    text = str(result.result or "") or "; ".join(result.errors or [])
-    detail = f"{result.subtype}/{result.terminal_reason}: {text or 'no detail'}"
-    if str(result.terminal_reason or "").startswith("aborted"):
-        return ClaudeTurnFailed("interrupted", detail)
-    # The login text is read only where the CLI's request failed: any other
-    # end's text is the model's or a tool's, which can quote a vendor's.
-    cli_said = result.terminal_reason == "api_error" and any(s in text.lower() for s in _AUTH_TEXT)
-    if result.api_error_status in (401, 403) or cli_said:
-        return ClaudeTurnFailed("auth_failed", detail)
-    if result.api_error_status == 429:
-        return ClaudeTurnFailed("plan_exhausted", detail)
-    return ClaudeTurnFailed("api_error", detail)
 
 
 async def token_works(launcher: Launcher, model: str) -> bool:
@@ -195,6 +159,7 @@ class ClaudeCodeState(MainAgentState):
 
 
 _END = object()
+
 
 
 class _Message:
@@ -483,17 +448,20 @@ class ClaudeTurn:
     ``identity`` is who the turn runs for (their user id): Claude Code is told one
     device per identity. ``thread_key`` names the thread's working directory,
     which is part of the prompt Claude caches, so it is the same on every turn.
-    The launcher picks the token the run signs in with. ``steering`` takes in
-    what is sent into the thread while the turn runs (``TurnSteering``).
+    The launcher picks the token the run signs in with, and ``compaction``
+    when the session compacts and moves to this build's prompt and tools.
+    ``steering`` takes in what is sent into the thread while the turn runs
+    (``TurnSteering``).
     """
 
     def __init__(self, spec: RuntimeSpec, launcher: Launcher, *, identity: str, thread_key: str,
-                 baseline: Baseline | None = None, steering: SteeringMiddleware | None = None,
-                 alert_senders: frozenset[str] = frozenset()) -> None:
+                 baseline: Baseline | None = None, compaction: CompactionRules = NO_RULES,
+                 steering: SteeringMiddleware | None = None, alert_senders: frozenset[str] = frozenset()) -> None:
         self.spec = spec
         self.launcher = launcher
         self.identity = identity
         self.thread_key = thread_key
+        self.compaction = compaction
         self._baseline = baseline
         self.steering = TurnSteering(steering, alert_senders)
         #: The session this run writes records to, and what its next write
@@ -552,28 +520,69 @@ class ClaudeTurn:
         self.steering.delivered(config, message)
         return sent
 
+
+    async def _repin(self, state: ClaudeCodeState) -> list[SessionWrite]:
+        """The records of the compaction that moves the session to this
+        build's pin, when this turn start is due one
+        (``CompactionRules.repin_plan``) and the CLI made it."""
+        records = state.get("claude_session") or {}
+        messages = state["messages"]
+        if not records.get("session_id") or not (messages and isinstance(messages[-1], HumanMessage)):
+            return []
+        if another_model_replied_last(messages):
+            return []
+        plan = self.compaction.repin_plan(records, self.current_pin(), time.time())
+        if plan is None:
+            return []
+        moves, reason = plan
+        if not moves:
+            logger.info("[ClaudeCode] re-pin=waits reason=%s", reason)
+            return []
+        try:
+            held = await self._compact(records)
+        except Exception:  # noqa: BLE001 - a session that did not move runs the turn on its own pin
+            logger.warning("[ClaudeCode] the session's compaction failed; the turn runs on its pin", exc_info=True)
+            return []
+        logger.info("[ClaudeCode] re-pin=%s reason=%s", "yes" if held else "no_compaction", reason)
+        return held
+
+    async def _compact(self, records: SessionRecords) -> list[SessionWrite]:
+        """The CLI compacting the session under the pin it runs on, its
+        records carrying this build's pin, which the session runs on from
+        then on: the CLI records a launch's prompt and tools after a compaction."""
+        writes = await compact(self.spec, records.get("pinned") or self.current_pin(), self.launcher,
+                               thread_key=self.thread_key, identity=self.identity, records=records)
+        return _pinned_after(writes, self.current_pin())
+
     def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:
-        """What the run starts Claude on: the session's own pin, else this
-        build's, which the session holds from the run's first records on (a
-        new session, or one from before sessions kept theirs), and the turn's
-        prompt."""
+        """What the run starts Claude on: the session's own pin, unless the
+        session has none (a new session, or one from before sessions kept
+        theirs) or it sends the prefix this build's does. This build's pin is
+        then the one the session holds from the run's first records on, so a
+        pin names the last build that sent its prefix. And the turn's prompt."""
         records = state.get("claude_session") or {}
         key, block = self._baseline_due(state)
         prompt = turn_prompt(state, baseline=block)
         self._session = records.get("session_id")
         kept = records.get("pinned") if self._session else None
-        pin = kept or self.current_pin()
+        current = self.current_pin()
+        pin = current if not kept or same_pin(kept, current) else kept
         sent = {"baseline": key} if prompt is not None and block else {}
         self._fresh = {"pinned": pin, **sent}
-        self._owed = sent if kept else self._fresh
+        self._owed = sent if pin == kept else self._fresh
         return pin, prompt
 
     def current_pin(self) -> SessionPin:
         """The prompt and tools this build would start a session on."""
-        return {"system_prompt": self.spec.system_prompt, "tools": tool_specs(self.spec.tools, self.spec.read_only)}
+        return {
+            "system_prompt": self.spec.system_prompt,
+            "tools": tool_specs(self.spec.tools, self.spec.read_only),
+            "source_digest": release.source_digest(),
+            "prompt_version": release.prompt_version(),
+        }
 
     def commit(self, session: list[SessionWrite]) -> dict[str, Any]:
-        """A step's session records, the first of them carrying what the
+        """A step's session records, the first of its own carrying what the
         session holds from then on that it did not before."""
         for write in session:
             if write["session_id"] != self._session:
@@ -581,7 +590,7 @@ class ClaudeTurn:
             if self._owed:
                 write.update(self._owed)
                 self._owed = {}
-        return {"claude_session": session}
+        return {"claude_session": _pinned_after(session, self._fresh.get("pinned"))}
 
     def _baseline_due(self, state: ClaudeCodeState) -> tuple[str, str | None]:
         """The thread's baseline, unless Claude's session already holds its epoch."""
@@ -599,6 +608,15 @@ class ClaudeTurn:
     async def close(self) -> None:
         if self._run is not None:
             await self._run.close()
+
+
+def _pinned_after(writes: list[SessionWrite], pin: SessionPin | None) -> list[SessionWrite]:
+    """``writes``, and the pin the session runs on after a compaction among
+    them on a write of its own behind them: a build whose reducer voids a
+    pin at a compaction, as earlier ones did, then keeps it too."""
+    if pin and any(compacted(e) for w in writes for e in w["entries"]):
+        return [*writes, {"session_id": writes[-1]["session_id"], "entries": [], "pinned": pin}]
+    return writes
 
 
 def _turn(config: RunnableConfig) -> ClaudeTurn:
@@ -681,11 +699,18 @@ def build_claude_code_graph(
     The run's first step answers the calls a run before it cut off (a stop, a
     worker that died mid-tool) as the CLI did when it resumed, so the thread's
     messages say what Claude was told.
+
+    A turn start due a new pin compacts in a ``model`` step of its own, ahead
+    of the launch, so a launch that fails after it leaves the compaction
+    saved: the next turn neither makes nor bills it again. The session then
+    holds this build's pin, so the next step finds nothing to move.
     """
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
         turn = _turn(config)
         opening = not turn.started
+        if opening and (compacted := await turn._repin(state)):
+            return Command(update={"claude_session": compacted}, goto="model")
         run = await turn.run(state)
         if opening:
             turn.steering.opened(state, config)

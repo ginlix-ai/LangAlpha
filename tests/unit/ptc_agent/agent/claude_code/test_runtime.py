@@ -11,11 +11,12 @@ from langchain_core.tools import tool
 
 from pathlib import Path
 
-from ptc_agent.agent.claude_code.cli import RuntimeSpec, options_for
+from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, is_haiku, options_for, turn_failure
+from ptc_agent.agent.claude_code import compaction as compaction_module
 from ptc_agent.agent.claude_code.launcher import LocalLauncher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, mid_turn_messages
 from ptc_agent.agent.claude_code.runtime import (
-    _END, ClaudeCodeState, ClaudeTurn, ClaudeTurnFailed, _Message, _Run, turn_failure, turn_prompt,
+    _END, ClaudeCodeState, ClaudeTurn, ClaudeTurnFailed, _Message, _Run, turn_prompt,
 )
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionDrift
 from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
@@ -118,7 +119,7 @@ def test_a_session_the_cli_compacted_forgets_the_baseline_it_was_handed():
 
     turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[], billing={}), LocalLauncher(),
                       identity="u", thread_key="t", baseline=lambda _s: ("e1", "BASE"))
-    held = {"session_id": "s", "entries": [], "pinned": {"system_prompt": "s", "tools": []}}
+    held = {"session_id": "s", "entries": [], "pinned": turn.current_pin()}
     turn.opening({"messages": [HumanMessage("hi")], "claude_session": held})
     plain = [{"session_id": "s", "entries": [{"uuid": "a", "type": "assistant"}]}]
     first = turn.commit([dict(w) for w in plain])["claude_session"]
@@ -189,6 +190,14 @@ async def _unsent(text: str) -> None:
 def _run(client, spec, launcher=None, results=None, store=None) -> _Run:
     results = results or ToolResults()
     return _Run(launcher, None, store or CheckpointSessionStore(), client, results, spec, AfterTool(results, send=_unsent))
+
+
+@pytest.mark.parametrize(("model", "haiku"), [
+    ("claude-haiku-5-5", True), ("claude-haiku-4-5-20251001", True),
+    ("claude-sonnet-5-5", False), ("claude-opus-5-5", False), ("claude-fable-5-1", False),
+])
+def test_only_a_claude_haiku_is_haiku(model, haiku):
+    assert is_haiku(model) is haiku
 
 
 class _NoTransport(LocalLauncher):
@@ -308,7 +317,8 @@ def test_a_session_keeps_its_pin_through_a_compaction_and_adopts_one_once():
     adopting = turn()
     adopting.opening({"messages": asked, "claude_session": {"session_id": "s", "entries": []}})
     first = adopting.commit([dict(w) for w in step])["claude_session"]
-    assert first[0]["pinned"] == {"system_prompt": "now", "tools": []}
+    assert {k: first[0]["pinned"][k] for k in ("system_prompt", "tools")} == {"system_prompt": "now", "tools": []}
+    assert first[0]["pinned"]["source_digest"] and "prompt_version" in first[0]["pinned"]
     assert "pinned" not in adopting.commit([dict(w) for w in step])["claude_session"][0]
     state = session_records_reducer({"session_id": "s", "entries": []}, [first])
     assert state["pinned"]["system_prompt"] == "now"
@@ -427,3 +437,227 @@ def test_steers_go_to_the_cli_as_the_user_wrote_them_and_another_senders_under_i
         "second",
         "The Chief of Staff sent a new message on the user's behalf while you were working:\ncheck the filing",
     ]
+
+
+def test_a_session_on_this_builds_prefix_takes_this_builds_pin_so_the_pin_names_its_build():
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t")
+    stale = {"system_prompt": "now", "tools": [], "source_digest": "an older build", "prompt_version": 0}
+    launched, _ = turn.opening({"messages": [HumanMessage("hi")], "claude_session": {"session_id": "s", "entries": [], "pinned": stale}})
+    first = turn.commit([{"session_id": "s", "entries": [{"uuid": "a"}]}])["claude_session"][0]
+    assert launched == first["pinned"] == turn.current_pin() != stale
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_last_reply_is_another_models_does_not_compact_claudes_session():
+    """The turn fails on that history, so a summary made first would be paid for and dropped."""
+    from ptc_agent.agent.claude_code.compaction import CompactionRules
+
+    class Due(CompactionRules):
+        def repin_plan(self, records, current, now):
+            return True, "due"
+
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t", compaction=Due(0))
+    compacted = []
+
+    async def compact(records):
+        compacted.append(records)
+        return []
+
+    turn._compact = compact
+    session = {"session_id": "s", "entries": [], "pinned": {"system_prompt": "then", "tools": []}}
+    replied = AIMessage("hello", response_metadata={"claude_message_id": "msg_1"})
+    assert await turn._repin({"messages": [HumanMessage("hi"), AIMessage("other"), HumanMessage("again")], "claude_session": session}) == []
+    assert compacted == []
+    await turn._repin({"messages": [HumanMessage("hi"), replied, HumanMessage("again")], "claude_session": session})
+    assert compacted == [session]
+
+
+@pytest.mark.parametrize(("error", "kind"), [
+    ("Not enough messages to compact.", None),
+    ("No messages to compact", None),
+    ("Error during compaction: Failed to authenticate. API Error: 401 invalid token", "auth_failed"),
+    ("Error during compaction: API Error: 429 rate limited", "plan_exhausted"),
+    ("Error during compaction: Connection error.", "api_error"),
+    ("", "api_error"),
+])
+def test_a_failed_compaction_reads_as_a_turns_failure_unless_there_was_nothing_to_summarize(error, kind):
+    failed = compaction_failure(error)
+    assert (failed and failed.kind) == kind
+
+
+def _old_reducer(state, writes):
+    """The reducer of builds that voided a session's pin at a compaction."""
+    from ptc_agent.agent.claude_code.session import compacted
+
+    state = dict(state)
+    for w in writes:
+        state["pinned"] = w.get("pinned", state.get("pinned"))
+        if any(compacted(e) for e in w["entries"]):
+            state["pinned"] = None
+    return state
+
+
+def test_a_compaction_leaves_its_pin_behind_its_records_so_an_earlier_reducer_keeps_it():
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t")
+    pin, _ = turn.opening({"messages": [HumanMessage("hi")], "claude_session": {"session_id": "s", "entries": []}})
+    boundary = [{"session_id": "s", "entries": [{"uuid": "a"}, {"uuid": "b", "subtype": "compact_boundary"}]}]
+    writes = turn.commit(boundary)["claude_session"]
+    assert _old_reducer({}, writes)["pinned"] == pin
+    plain = turn.commit([{"session_id": "s", "entries": [{"uuid": "c"}]}])["claude_session"]
+    assert plain == [{"session_id": "s", "entries": [{"uuid": "c"}]}]
+
+
+class _Released:
+    async def release(self, prepared):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_a_cli_that_exits_after_its_init_fails_a_compaction_as_its_request_failing_does(monkeypatch):
+    async def launched(*args, **kwargs):
+        return Prepared("/c", "/w"), object(), None
+
+    async def received(client):
+        yield SystemMessage(subtype="init", data={"model": "m"})
+        raise ProcessError("Command failed with exit code 1", exit_code=1, stderr="Authorization: Bearer abcdefgh12345")
+
+    monkeypatch.setattr(compaction_module, "launch", launched)
+    monkeypatch.setattr(compaction_module, "received", received)
+    with pytest.raises(ClaudeTurnFailed) as failed:
+        await compaction_module.compact(RuntimeSpec(system_prompt="s", model="m", tools=[], billing={}),
+                                        {"system_prompt": "s", "tools": []}, _Released(), thread_key="t",
+                                        identity="u", records={"session_id": "s", "entries": []})
+    assert failed.value.kind == "api_error" and "exited with code 1" in str(failed.value) and "abcdefgh12345" not in str(failed.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"])
+async def test_only_a_haiku_compaction_is_handed_its_session_ending_on_one_more_answer(monkeypatch, model):
+    """So the part the CLI summarizes ends on the session's last answer; the
+    thread's records never hold the one it is handed."""
+    handed = []
+
+    async def launched(spec, pin, launcher, **kwargs):
+        handed.append(kwargs["records"])
+        raise RuntimeError("launched")
+
+    monkeypatch.setattr(compaction_module, "launch", launched)
+    answered = {"uuid": "a1", "type": "assistant", "requestId": "req_1", "sessionId": "s",
+                "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "hello"}],
+                            "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 2}}}
+    records = {"session_id": "s", "entries": [{"uuid": "u1", "type": "user", "message": {"role": "user", "content": "hi"}},
+                                              answered, {"type": "last-prompt"}]}
+    with pytest.raises(RuntimeError, match="launched"):
+        await compaction_module.compact(RuntimeSpec(system_prompt="s", model=model, tools=[], billing={}),
+                                        {"system_prompt": "s", "tools": []}, _Released(), thread_key="t", identity="u",
+                                        records=records)
+    (given,) = handed
+    if not is_haiku(model):
+        assert given is records
+        return
+    *kept, answer = given["entries"]
+    assert kept == records["entries"] and len(records["entries"]) == 3
+    assert (answer["type"], answer["parentUuid"], answer["sessionId"], answer["message"]["content"], answer["message"]["stop_reason"]) == (
+        "assistant", "a1", "s", [{"type": "text", "text": "Noted."}], "end_turn",
+    )
+    assert "requestId" not in answer and answer["uuid"] not in ("u1", "a1") and answer["message"]["id"] != "msg_1"
+
+
+@pytest.mark.asyncio
+async def test_a_compactions_summary_request_is_metered_as_a_turns_requests_are(monkeypatch):
+    """Off the messages stream and under the run's billing stamp, failed or
+    not: the CLI streams the request to no one and its result's usage is empty."""
+    from langchain_core.callbacks import AsyncCallbackHandler
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    from src.utils.tracking import TokenTrackingManager
+
+    async def launched(*args, **kwargs):
+        return Prepared("/c", "/w"), object(), None
+
+    async def received(client):
+        yield SystemMessage(subtype="init", data={"model": "m"})
+        yield SystemMessage(subtype="status", data={"compact_result": "failed", "compact_error": "overloaded"})
+        yield ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=0,
+                            session_id="s", usage={"input_tokens": 0, "output_tokens": 0},
+                            model_usage={"m": {"inputTokens": 2035, "outputTokens": 823, "cacheReadInputTokens": 14685,
+                                               "cacheCreationInputTokens": 12129, "webSearchRequests": 0, "costUSD": 0.01}})
+
+    seen = []
+
+    class Tags(AsyncCallbackHandler):
+        async def on_chat_model_start(self, *args, tags=None, **kwargs):
+            seen.append(tags)
+
+    monkeypatch.setattr(compaction_module, "launch", launched)
+    monkeypatch.setattr(compaction_module, "received", received)
+    tracker = TokenTrackingManager.initialize_tracking(thread_id="t")
+    tracker.run_inline = True
+    ambient = var_child_runnable_config.set({"callbacks": [tracker, Tags()]})
+    try:
+        with pytest.raises(ClaudeTurnFailed):
+            await compaction_module.compact(
+                RuntimeSpec(system_prompt="s", model="m", tools=[], billing={"billing_type": "oauth", "manifest_model": "m"}),
+                {"system_prompt": "s", "tools": []}, _Released(), thread_key="t", identity="u",
+                records={"session_id": "s", "entries": []})
+    finally:
+        var_child_runnable_config.reset(ambient)
+    (record,) = tracker.get_per_call_records()
+    assert (record["model_name"], record["billing_type"]) == ("m", "oauth")
+    assert {k: record["usage"][k] for k in ("input_tokens", "cached_tokens", "cache_5m_tokens", "output_tokens")} == {
+        "input_tokens": 2035 + 14685 + 12129, "cached_tokens": 14685, "cache_5m_tokens": 12129, "output_tokens": 823,
+    }
+    assert seen == [["nostream"]]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_start_compaction_is_saved_before_the_launch_it_moves_the_session_for(monkeypatch):
+    """A step of its own: a launch that fails after it leaves the session
+    compacted, so the next turn neither makes nor bills it again."""
+    from ptc_agent.agent.claude_code.compaction import CompactionRules
+    from ptc_agent.agent.claude_code.runtime import TURN_KEY
+
+    from .harness import new_graph
+
+    class Due(CompactionRules):
+        def repin_plan(self, records, current, now):
+            return (True, "due") if records["pinned"]["system_prompt"] != current["system_prompt"] else None
+
+    made = []
+
+    def new_turn():
+        turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                          identity="u", thread_key="t", compaction=Due(0))
+
+        async def compact(_):
+            made.append("compacted")
+            return [{"session_id": "s", "entries": [
+                {"uuid": "b", "type": "system", "subtype": "compact_boundary"},
+                {"uuid": "sum", "type": "user", "isCompactSummary": True, "message": {"role": "user", "content": "the summary"}},
+            ]}, {"session_id": "s", "entries": [], "pinned": turn.current_pin()}]
+
+        turn._compact = compact
+        return turn
+
+    async def start(cls, *args, **kwargs):
+        raise ClaudeTurnFailed("api_error", "the launch failed")
+
+    monkeypatch.setattr(_Run, "start", classmethod(start))
+    graph = new_graph()
+    config = {"configurable": {"thread_id": "t-repin-saved"}}
+    await graph.aupdate_state(config, {
+        "messages": [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"})],
+        "claude_session": [{"session_id": "s", "pinned": {"system_prompt": "then", "tools": []}, "entries": [
+            {"uuid": "u1", "type": "user", "message": {"role": "user", "content": "hi"}},
+            {"uuid": "a1", "type": "assistant", "message": {"id": "msg_1"}},
+        ]}],
+    }, as_node="model")
+    for text in ("again", "and again"):
+        with pytest.raises(ClaudeTurnFailed, match="the launch failed"):
+            await graph.ainvoke({"messages": [HumanMessage(text)]}, {"configurable": {**config["configurable"], TURN_KEY: new_turn()}})
+    session = (await graph.aget_state(config)).values["claude_session"]
+    assert made == ["compacted"]
+    assert [e["uuid"] for e in session["entries"]][-2:] == ["b", "sum"] and session["pinned"]["system_prompt"] == "now"
