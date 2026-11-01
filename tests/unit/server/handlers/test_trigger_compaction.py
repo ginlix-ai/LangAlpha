@@ -1450,3 +1450,211 @@ async def test_a_compaction_between_turns_reads_when_the_previous_run_settled():
         assert (await _previous_run("t-1")).previous_run_settled_at == settled
     with patch(latest, new=AsyncMock(side_effect=RuntimeError("pool down"))):
         assert (await _previous_run("t-1")).previous_run_settled_at is None
+
+
+async def _compact_by_the_user(base_config, ask, summarizer=None):
+    """Manual /compact by user-1 on a thread resolving to ``base_config``,
+    ``ask`` and ``summarizer`` standing in for the agent's model chain and
+    the summarizer alone."""
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=_stub_thread_agent()),
+        patch(ASK, new=ask),
+        patch(
+            COMPACT_MESSAGES,
+            new=summarizer or AsyncMock(side_effect=AssertionError("the summarizer alone ran")),
+        ),
+        patch("src.server.database.api_keys.is_byok_active", new=AsyncMock(return_value=False)),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new=AsyncMock(return_value=base_config)),
+    ):
+        return await trigger_compaction("thread-1", user_id="user-1")
+
+
+def _spending(spend, answer=None, *, billing_type="platform", error=None):
+    """A stand-in for the agent's model chain or the summarizer that calls the
+    model once, then answers ``answer`` (a fresh compaction by default) or
+    raises ``error``."""
+
+    async def _call(*_args, **_kwargs):
+        await spend(billing_type)
+        if error is not None:
+            raise error
+        return answer if answer is not None else _compaction()
+
+    return AsyncMock(side_effect=_call)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("billing_type", "is_byok"), [("platform", False), ("byok", True), ("oauth", True)]
+)
+async def test_the_summary_calls_land_in_the_usage_records_as_a_turns_do(
+    base_config, usage_rows, spend, billing_type, is_byok
+):
+    """On a row of their own: no run is open between turns to hold them. It is
+    the thread's, in its workspace, under the caller, split by whose key ran
+    the calls as a turn's row is, and says it is the compact's."""
+    from uuid import UUID
+
+    await _compact_by_the_user(base_config, _spending(spend, billing_type=billing_type))
+
+    (row,) = usage_rows
+    assert (row["user_id"], row["conversation_thread_id"], row["workspace_id"]) == (
+        "user-1",
+        "thread-1",
+        "ws-1",
+    )
+    assert UUID(row["conversation_response_id"])
+    assert (row["msg_type"], row["status"], row["is_byok"]) == ("ptc", "completed", is_byok)
+    usage = row["token_usage"]
+    assert usage["between_turns"] == "compact"
+    tokens = usage["by_model"]["claude-test"]
+    assert (tokens["input_tokens"], tokens["cached_tokens"], tokens["output_tokens"]) == (
+        1200,
+        1000,
+        300,
+    )
+    (call,) = usage["per_call_costs"]
+    assert call["billing_type"] == billing_type
+
+
+@pytest.mark.asyncio
+async def test_the_callers_own_callbacks_still_see_the_summary_calls(base_config, usage_rows, spend):
+    """The tracker joins the callbacks of the runnable config around it, so a
+    caller tracing the operation still sees its calls."""
+    from langchain_core.callbacks import AsyncCallbackHandler
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    class _Observer(AsyncCallbackHandler):
+        ended = 0
+
+        async def on_llm_end(self, *_args, **_kwargs) -> None:
+            self.ended += 1
+
+    observer = _Observer()
+    token = var_child_runnable_config.set({"callbacks": [observer]})
+    try:
+        await _compact_by_the_user(base_config, _spending(spend))
+    finally:
+        var_child_runnable_config.reset(token)
+
+    assert observer.ended == 1
+    (row,) = usage_rows
+    assert row["token_usage"]["by_model"]["claude-test"]["output_tokens"] == 300
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_fails_to_write_is_reported_lost(base_config, usage_rows, spend, caplog):
+    """The writer reports a failed insert by returning False, and the calls
+    have no other place to land, so the loss is logged rather than passed
+    over as a success."""
+    from src.server.services.persistence.usage import UsagePersistenceService
+
+    with patch.object(UsagePersistenceService, "persist_usage", AsyncMock(return_value=False)):
+        await _compact_by_the_user(base_config, _spending(spend))
+
+    assert "compact row not written for thread_id=thread-1; 1 record(s) are unrecoverable" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_summarizer_alone_is_recorded_too(base_config, usage_rows, spend):
+    """An agent that compacts nothing leaves the summary to the summarizer,
+    whose calls are the compact's as much as the agent's would be."""
+    await _compact_by_the_user(
+        base_config,
+        _asked(error=NoCompaction("the agent has no compaction to ask")),
+        summarizer=_spending(spend),
+    )
+
+    (row,) = usage_rows
+    assert row["token_usage"]["between_turns"] == "compact"
+    assert row["token_usage"]["by_model"]["claude-test"]["output_tokens"] == 300
+
+
+@pytest.mark.asyncio
+async def test_a_compact_that_fails_after_calling_the_model_records_the_calls(
+    base_config, usage_rows, spend
+):
+    with pytest.raises(HTTPException) as caught:
+        await _compact_by_the_user(
+            base_config, _spending(spend, error=RuntimeError("provider down"))
+        )
+
+    assert caught.value.status_code == 500
+    (row,) = usage_rows
+    assert row["status"] == "error"
+    assert row["token_usage"]["by_model"]["claude-test"]["input_tokens"] == 1200
+
+
+@pytest.mark.asyncio
+async def test_a_summary_that_fails_to_install_is_recorded_as_an_error(
+    base_config, usage_rows, spend
+):
+    """The row is written once the compact has ended, so its status is the
+    compact's, not only its model call's."""
+    with (
+        patch(f"{HANDLER}._update_graph_state", new=AsyncMock(side_effect=RuntimeError("lock lost"))),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await _compact_by_the_user(base_config, _spending(spend))
+
+    assert caught.value.status_code == 500
+    (row,) = usage_rows
+    assert row["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_fails_to_price_keeps_the_calls_billing_type(
+    base_config, usage_rows, spend
+):
+    with patch(
+        "src.utils.tracking.core.calculate_cost_from_per_call_records",
+        side_effect=RuntimeError("no rate card"),
+    ):
+        await _compact_by_the_user(base_config, _spending(spend, billing_type="byok"))
+
+    (row,) = usage_rows
+    assert row["is_byok"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_stop_as_the_summary_arrives_records_the_call(base_config, usage_rows, spend):
+    """The call's end is reported in a shielded callback the Stop does not
+    wait for, so the record has to land before the row is written, however
+    long the tracker takes over it."""
+    import time
+
+    from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
+
+    on_llm_end = PerCallTokenTracker.on_llm_end
+
+    def _slow_end(self, *args, **kwargs):
+        time.sleep(0.2)
+        return on_llm_end(self, *args, **kwargs)
+
+    async def _stopped(*_args, **_kwargs):
+        await spend(stopped=True)
+
+    with (
+        patch.object(PerCallTokenTracker, "on_llm_end", _slow_end),
+        pytest.raises(HTTPException) as caught,
+    ):
+        await _compact_by_the_user(base_config, AsyncMock(side_effect=_stopped))
+
+    assert caught.value.status_code == 409
+    (row,) = usage_rows
+    assert row["status"] == "cancelled"
+    assert row["token_usage"]["by_model"]["claude-test"]["output_tokens"] == 300
+
+
+@pytest.mark.asyncio
+async def test_a_compact_that_calls_no_model_records_nothing(base_config, usage_rows):
+    with pytest.raises(HTTPException) as caught:
+        await _compact_by_the_user(
+            base_config, _asked(error=ValueError("Cannot determine valid cutoff point"))
+        )
+
+    assert caught.value.status_code == 400
+    assert usage_rows == []
