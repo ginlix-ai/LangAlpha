@@ -97,10 +97,10 @@ async def generate_thread_title(
     thread_id: str,
     user_id: str,
     first_query: str,
-    expected_title: str,
+    expected_title: str | None,
     llm_service,
     timezone: str | None = None,
-) -> tuple[str, bool]:
+) -> tuple[str | None, bool]:
     """Generate + CAS-persist a title. Never raises (except CancelledError).
 
     ``timezone`` (IANA) localizes the current-time context injected into the
@@ -202,7 +202,7 @@ def schedule_title_generation(
     thread_id: str,
     user_id: str,
     first_query: str,
-    expected_title: str,
+    expected_title: str | None,
     timezone: str | None = None,
 ) -> asyncio.Task | None:
     """Detach a title generation for *thread_id*; None when no LLM is wired.

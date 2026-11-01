@@ -363,10 +363,12 @@ async def _take_steers(
 
 def _steer_offer(job: dict) -> SteeredReport:
     payload = job.get("payload") or {}
+    artifact_comments = payload.get("artifact_comments")
     return SteeredReport(
         job_id=str(job["hook_outbox_id"]),
         content=payload.get("content") or "",
         kind="steer",
+        shown={"artifact_comments": artifact_comments} if artifact_comments else {},
         sender=payload.get("sender") or "user",
         platform=payload.get("platform") or None,
         request_key=payload.get("request_key") or None,

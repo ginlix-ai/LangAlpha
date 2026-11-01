@@ -138,6 +138,7 @@ from ptc_agent.agent.tools.computer_reach import (
     ComputerTarget,
     ComputerTools,
 )
+from ptc_agent.agent.tools.artifact_comments import create_reply_to_comment_tool
 from src.llms.claude_code import ClaudeCodeTarget
 from src.tools.web.search import get_web_search_tool
 from src.tools.web.fetch import web_fetch_tool
@@ -492,6 +493,7 @@ class PTCAgent:
         read_file, write_file, edit_file = create_filesystem_tools(
             filesystem_backend,
             operation_callback=operation_callback,
+            record_creators=True,
         )
         search_tools = [
             create_glob_tool(filesystem_backend),  # overrides middleware glob
@@ -511,7 +513,11 @@ class PTCAgent:
             filesystem_tools
             if subagent_files is filesystem_backend
             else [
-                *create_filesystem_tools(subagent_files, operation_callback=operation_callback),
+                *create_filesystem_tools(
+                    subagent_files,
+                    operation_callback=operation_callback,
+                    record_creators=True,
+                ),
                 *search_tools,
             ]
         )
@@ -1075,6 +1081,13 @@ class PTCAgent:
         # thread, and a subagent has no thread of its own to come back to.
         if wakeups_on:
             tools.append(build_schedule_wakeup_tool())
+
+        # Answering the user's comments on files, main agent only and added
+        # after the subagent snapshot: comments are sent to a thread, and a
+        # subagent has no thread of its own. On every turn, not only those
+        # carrying comments, so the tool list holds still for the prompt cache.
+        if thread_id:
+            tools.append(create_reply_to_comment_tool())
 
         # What will report back to the thread, main agent only for the same
         # reason: a subagent's own commands wait, and its result covers them.

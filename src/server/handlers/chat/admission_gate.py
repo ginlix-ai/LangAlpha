@@ -26,7 +26,7 @@ from src.server.services.runs.admission import (
 
 if TYPE_CHECKING:
     from src.server.handlers.chat.request_prep import HandOffSteered
-    from src.server.models.chat import ChatRequest
+    from src.server.models.chat import ChatRequest, ShownSend
     from src.server.services.runs.executor import LocalRunExecutor
 
 
@@ -53,6 +53,8 @@ ADMISSION_CONFLICT_CODES = {
     "steer_taken",
     # START refused because the workspace is moving to another computer.
     "workspace_moving",
+    # A send of file comments that another send, or a delete, left empty.
+    "comments_unavailable",
 }
 
 
@@ -193,6 +195,7 @@ async def wait_or_steer(
     workspace_id: str | None = None,
     steer_job_id: str | None = None,
     agent: AgentSteer | None = None,
+    artifact_comments: ShownSend | None = None,
 ) -> tuple[bool, str | HandOffSteered | None]:
     """Admit a new turn, steer the running one, or 409.
 
@@ -226,6 +229,8 @@ async def wait_or_steer(
     ``HandOffSteered``, naming the run and the steer, for the dispatch
     primer, which has no SSE reader, as does a copy of it that finds its
     steer still one; a run that reports to another Home thread is a 409.
+    ``artifact_comments`` rides a steer of a send carrying file comments, for
+    the reader to be shown them rather than the message.
 
     Admission states (see ``LocalRunExecutor.wait_for_admission``):
     - ``"fresh"``     → start a new turn ``(True, None)``; with ``steer_only``,
@@ -271,6 +276,7 @@ async def wait_or_steer(
             platform=platform,
             request_key=request_key,
             origin=agent.origin if agent else None,
+            artifact_comments=artifact_comments,
         )
         if agent is not None:
             idempotency_key = agent.idempotency_key
@@ -290,13 +296,16 @@ async def wait_or_steer(
 
             return False, HandOffSteered(active_run_id, result["job_id"])
         if result["state"] == "accepted":
-            event_data = json.dumps(
-                {
-                    "thread_id": thread_id,
-                    "content": payload["content"],
-                    "position": result["position"],
-                }
-            )
+            accepted = {
+                "thread_id": thread_id,
+                "content": payload["content"],
+                "position": result["position"],
+            }
+            if artifact_comments is not None:
+                accepted["artifact_comments"] = artifact_comments.model_dump(
+                    mode="json"
+                )
+            event_data = json.dumps(accepted)
             return False, f"event: steering_accepted\ndata: {event_data}\n\n"
         if result["state"] == "duplicate":
             # Another copy of this send steered between the recheck and here.
