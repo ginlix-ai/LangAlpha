@@ -2,7 +2,7 @@
 
 ``ChatOpenRouter`` talks to OpenRouter through the ``openrouter`` SDK rather
 than the OpenAI one, so none of what the OpenAI-family clients give the agent
-for free comes with it. This subclass adds the three the request path relies on:
+for free comes with it. This subclass adds the four the request path relies on:
 
 - **A transport of the factory's choosing.** Upstream builds a fresh httpx
   client pair per model instance, and the factory builds an instance per turn
@@ -16,6 +16,10 @@ for free comes with it. This subclass adds the three the request path relies on:
 - **Typed stream failures.** Upstream raises a bare ``ValueError`` for an error
   event and yields a chunk with ``finish_reason="error"`` as if it were output.
   Both become :class:`OpenRouterStreamError`, with the status the event gave.
+- **A compaction call's cache markers.** A Claude model here takes the markers
+  the Anthropic clients do, so a summary on an expired cache drops them where
+  its scope says (``cache_markers.cache_scope``) rather than write the
+  history it replaces.
 """
 
 from __future__ import annotations
@@ -32,6 +36,8 @@ import httpx
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_openrouter import ChatOpenRouter
 from pydantic import Field
+
+from src.llms.cache_markers import scoped_messages
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +285,10 @@ class ChatOpenRouterClient(ChatOpenRouter):
         config.client_supplied = True
         config.async_client_supplied = True
         return sdk
+
+    def _create_message_dicts(self, messages, stop):
+        message_dicts, params = super()._create_message_dicts(messages, stop)
+        return scoped_messages(message_dicts), params
 
     def _stream(self, messages, stop=None, run_manager=None, **kwargs) -> Iterator[ChatGenerationChunk]:
         received = 0
