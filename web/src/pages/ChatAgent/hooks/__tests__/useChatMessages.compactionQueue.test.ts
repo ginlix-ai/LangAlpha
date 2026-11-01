@@ -202,6 +202,27 @@ describe('useChatMessages – queued send during compaction', () => {
     expect((userMsgs[0] as { queued?: boolean }).queued).toBeUndefined();
   });
 
+  it.each([true, false])('keeps a Skip (keepFullContext=%s) on a message queued during compaction', async (skip) => {
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
+
+    act(() => {
+      result.current.setIsCompacting('offload');
+    });
+    await act(async () => {
+      await result.current.handleSendMessage('deferred question', null, null, { keepFullContext: skip });
+    });
+    expect(mockSendStream).not.toHaveBeenCalled();
+
+    await act(async () => {
+      result.current.setIsCompacting(false);
+    });
+
+    await waitFor(() => {
+      expect(mockSendStream).toHaveBeenCalledTimes(1);
+    });
+    expect((mockSendStream.mock.lastCall?.[3] as { keepFullContext?: boolean }).keepFullContext).toBe(skip);
+  });
+
   it('drops the queued message when the user stops mid-compaction', async () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-test'));
 

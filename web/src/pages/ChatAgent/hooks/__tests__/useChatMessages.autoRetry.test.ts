@@ -61,6 +61,7 @@ const failureFrame = (recovery: 'retry' | 'resend') =>
 const metadataFrame = (runId: string, turn?: number) =>
   `id: 1\nevent: metadata\ndata: {"thread_id": "${TID}", "run_id": "${runId}"${turn === undefined ? '' : `, "turn_index": ${turn}`}}\n\n`;
 const ANSWER = `id: 2\nevent: message_chunk\ndata: {"agent": "main", "role": "assistant", "content": "Recovered answer", "content_type": "text"}\n\n`;
+const RUN_END = `id: 3\nevent: run_end\ndata: {"outcome": "completed", "next_summary": null}\n\n`;
 
 /** A 200 SSE response. `drop` ends the body the way the server's re-raise
  * does: the read rejects with a TypeError instead of finishing. */
@@ -271,7 +272,7 @@ describe('useChatMessages: a turn the server ends with `retry`', () => {
   it('resends the same message as a send when the server started no run', async () => {
     onSend = (n) => n === 1
       ? sse('run-1', [STARTING, retryFrame(1, 'resend')], { drop: true })
-      : sse('run-2', [metadataFrame('run-2'), ANSWER], { drop: false });
+      : sse('run-2', [metadataFrame('run-2'), ANSWER, RUN_END], { drop: false });
 
     const { result, published, statusCallsAtMount } = await mountAndSend(CONTEXT);
     await advance(1000);

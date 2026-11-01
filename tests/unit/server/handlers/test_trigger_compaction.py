@@ -802,6 +802,41 @@ async def test_manual_offload_writes_its_marker_with_the_ids(base_config):
         "offloaded_reads": 1,
     }
 
+
+@pytest.mark.asyncio
+async def test_manual_offload_stamps_what_it_leaves_and_answers_with_the_next_summary(base_config):
+    from ptc_agent.agent.middleware.compaction import Measure
+    from ptc_agent.agent.middleware.compaction.rebuild import LAST_ANSWER_KEY
+    from src.server.database.runs import lifecycle as tl_db
+    from src.server.handlers.thread_maintenance import ThreadAgent, trigger_offload
+
+    stub_resolve = _stub_thread_agent()
+    stub_resolve.state.values = {
+        "_cached_input_tokens": 9_000,
+        LAST_ANSWER_KEY: {"threshold": 2_000, "claude": False, "claude_model": False},
+    }
+    measure = AsyncMock(return_value=3_000)
+
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub_resolve),
+        patch(
+            "ptc_agent.agent.middleware.compaction.offload_tool_args",
+            new=AsyncMock(return_value=(set(), {"r1"})),
+        ),
+        patch.object(ThreadAgent, "ask", measure),
+        patch.object(tl_db, "get_latest_attempt", AsyncMock(return_value=None)),
+    ):
+        result = await trigger_offload("thread-1")
+
+    (ask, values), _ = measure.await_args
+    assert isinstance(ask, Measure)
+    assert (values["_offloaded_read_result_ids"], values["_cached_input_tokens"]) == ({"r1"}, 0)
+    update = stub_resolve.graph.aupdate_state.await_args.args[1]
+    assert update[LAST_ANSWER_KEY]["offloaded"] == {"tokens": 3_000, "summary": None}
+    assert result["next_summary"] == {"reason": "threshold"}
+
+
 # ---------------------------------------------------------------------------
 # Gate: reject manual /compact + /offload while a workflow is streaming
 # ---------------------------------------------------------------------------
@@ -1447,6 +1482,13 @@ async def test_a_compaction_between_turns_reads_when_the_previous_run_settled():
     settled = datetime(2026, 3, 1, 14, 31, tzinfo=UTC)
     latest = "src.server.database.runs.lifecycle.get_latest_attempt"
     with patch(latest, new=AsyncMock(return_value={"status": "cancelled", "usage_settled_at": settled})):
+        assert (await _previous_run("t-1")).previous_run_settled_at == settled
+    refused = {"status": "error", "usage_settled_at": datetime(2026, 3, 1, 15, 0, tzinfo=UTC), "metadata": {"pending_input": {}}}
+
+    async def _latest(thread_id, *, without_key=None):
+        return {"status": "completed", "usage_settled_at": settled} if without_key == "pending_input" else refused
+
+    with patch(latest, new=_latest):
         assert (await _previous_run("t-1")).previous_run_settled_at == settled
     with patch(latest, new=AsyncMock(side_effect=RuntimeError("pool down"))):
         assert (await _previous_run("t-1")).previous_run_settled_at is None

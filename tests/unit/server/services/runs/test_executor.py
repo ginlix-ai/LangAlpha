@@ -2278,6 +2278,44 @@ class TestAppendRunEndEvent:
             "output_tokens": 20,
         }
 
+    @pytest.mark.parametrize(
+        ("outcome", "reading", "field"),
+        [
+            ("completed", {"reason": "threshold"}, {"reason": "threshold"}),
+            ("completed", None, None),
+            ("completed", "unread", "absent"),
+            ("interrupted", "unread", None),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_terminal_frame_says_nothing_to_summarize_apart_from_a_failed_read(
+        self, outcome, reading, field
+    ):
+        """A null hint says the next send summarizes nothing; a read that
+        failed leaves the field out, which sends the client to the status. An
+        interrupted run resumes past its turn start, so it reads nothing."""
+        import json as _json
+
+        from src.server.services.thread_status import UNREAD
+
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.runs.stream_writer.get_cache_client",
+            return_value=_sentinel_cache(calls),
+        ), patch(
+            "src.server.services.thread_status.read_next_summary",
+            new_callable=AsyncMock,
+            return_value=UNREAD if reading == "unread" else reading,
+        ):
+            await btm.append_run_end_event("t-1", "r-1", outcome)
+
+        wire = next(c for c in calls if c[0] == "xadd")[2][b"event"].decode("utf-8")
+        frame = _json.loads(wire.split("data: ", 1)[1])
+        assert frame.get("next_summary", "absent") == field
+
     @pytest.mark.asyncio
     async def test_no_truth_frame_reads_no_totals(self, totals):
         btm = _make_btm()
