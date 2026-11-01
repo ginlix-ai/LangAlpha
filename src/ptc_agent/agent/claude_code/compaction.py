@@ -61,6 +61,7 @@ from src.config.settings import get_compaction_timeout
 from src.llms.cache_markers import ttl_seconds
 from src.llms.claude_code import ClaudeTurnFailed
 from src.llms.token_counter import extract_token_usage
+from src.server.utils.error_sanitization import sanitize_error_text
 
 if TYPE_CHECKING:
     from ptc_agent.agent.backends.sandbox import SandboxBackend
@@ -366,15 +367,48 @@ class SessionCompaction:
     def original_count(self) -> int:
         return len(set(_messages(self.entries).values()))
 
+    @classmethod
+    def at(cls, entries: Sequence[Mapping[str, Any]], boundary: str) -> SessionCompaction:
+        """The compaction at the ``boundary`` record among a session's records."""
+        cut = next((i for i, e in enumerate(entries) if e.get("uuid") == boundary), len(entries))
+        return cls(entries[:cut], [{"session_id": "", "entries": [dict(e) for e in entries[cut:]]}])
+
+    @property
+    def _boundary(self) -> Mapping[str, Any]:
+        return next((e for w in self.writes for e in w["entries"] if e.get("subtype") == "compact_boundary"), {})
+
+    @property
+    def boundary(self) -> str:
+        """The uuid of the compaction's boundary record."""
+        return self._boundary.get("uuid") or ""
+
     @property
     def new_count(self) -> int:
         """The summary and the messages the CLI kept after it."""
-        boundary = next((e for w in self.writes for e in w["entries"] if e.get("subtype") == "compact_boundary"), {})
-        kept = set(((boundary.get("compactMetadata") or {}).get("preservedMessages") or {}).get("uuids") or [])
+        kept = set(((self._boundary.get("compactMetadata") or {}).get("preservedMessages") or {}).get("uuids") or [])
         return 1 + len({key for uuid, key in _messages(self.entries).items() if uuid in kept})
+
+    def notice(self) -> dict[str, Any]:
+        """The summarize complete signal's payload, the shape the compaction
+        middleware gives an API thread's, which replay reads off the reply
+        that follows the compaction too."""
+        text = self.summary_text
+        return {"summary_length": len(text), "original_message_count": self.original_count, "summary_text": text,
+                "source": "provider"}
 
     def update(self) -> dict[str, Any]:
         return {"claude_session": self.writes}
+
+
+def context_signal(action: str, signal: str, **fields: Any) -> None:
+    """Emit a ``context_window`` signal as the compaction middleware emits an
+    API thread's. An ``error`` is the CLI's own text, which can quote a request."""
+    if "error" in fields:
+        fields["error"] = sanitize_error_text(str(fields["error"]))
+    try:
+        get_stream_writer()({"type": "context_window", "action": action, "signal": signal, **fields})
+    except Exception:  # noqa: BLE001 - a signal is never worth failing a step for
+        logger.debug("[ClaudeCode] %s %s signal not emitted", action, signal, exc_info=True)
 
 
 def report_usage(ai: AIMessage, threshold: int) -> None:
@@ -388,10 +422,5 @@ def report_usage(ai: AIMessage, threshold: int) -> None:
     if input_tokens <= 0:
         return
     stamp_context_threshold(ai, threshold)
-    try:
-        get_stream_writer()({
-            "type": "context_window", "action": "token_usage", "signal": "complete", "input_tokens": input_tokens,
-            "output_tokens": output_tokens, "total_tokens": input_tokens + output_tokens, "threshold": threshold,
-        })
-    except Exception:  # noqa: BLE001 - the ring is never worth failing a step for
-        logger.debug("[ClaudeCode] token_usage emit failed", exc_info=True)
+    context_signal("token_usage", "complete", input_tokens=input_tokens, output_tokens=output_tokens,
+                   total_tokens=input_tokens + output_tokens, threshold=threshold)

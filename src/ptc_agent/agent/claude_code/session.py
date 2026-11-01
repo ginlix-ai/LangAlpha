@@ -218,6 +218,10 @@ class CheckpointSessionStore:
     async def load(self, key: dict[str, Any]) -> None:
         return None
 
+    def pending(self) -> list[dict[str, Any]]:
+        """The records appended since the last drain."""
+        return [e for _, e in self._pending]
+
     def drain(self, through: Sequence[str] = ()) -> list[SessionWrite]:
         """The records appended since the last drain, as channel writes.
 

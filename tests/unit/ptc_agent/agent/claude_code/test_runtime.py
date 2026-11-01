@@ -714,6 +714,25 @@ def test_a_compaction_leaves_its_pin_behind_its_records_so_an_earlier_reducer_ke
     assert plain == [{"session_id": "s", "entries": [{"uuid": "c"}]}]
 
 
+def _repinning_turn(compact):
+    from ptc_agent.agent.claude_code.compaction import CompactionRules
+
+    class Due(CompactionRules):
+        def repin_plan(self, records, current, now):
+            return True, "due"
+
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="now", model="m", tools=[], billing={}), LocalLauncher(),
+                      identity="u", thread_key="t", compaction=Due(0))
+    turn._compact = compact
+    state = {"messages": [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"}),
+                          HumanMessage("again")],
+             "claude_session": {"session_id": "s", "pinned": {"system_prompt": "then", "tools": []}, "entries": [
+                 {"uuid": "u1", "type": "user", "message": {"role": "user", "content": "hi"}},
+                 {"uuid": "a1", "type": "assistant", "message": {"id": "msg_1"}},
+             ]}}
+    return turn, state
+
+
 class _Released:
     async def release(self, prepared):
         pass
@@ -818,6 +837,47 @@ async def test_a_compactions_summary_request_is_metered_as_a_turns_requests_are(
 
 
 @pytest.mark.asyncio
+async def test_a_turn_start_compaction_is_signalled_and_its_summary_rides_the_reply_after_it(monkeypatch):
+    """As an API thread's: live, the compacting indicator and then the notice;
+    on replay, the notice read off the reply's stamp."""
+    from ptc_agent.agent.claude_code import runtime
+    from ptc_agent.agent.middleware.compaction.utils import compaction_summary
+
+    signals = []
+    monkeypatch.setattr(runtime, "context_signal", lambda action, signal, **f: signals.append((action, signal, f)))
+
+    async def compact(records):
+        return [{"session_id": "s", "entries": [
+            {"uuid": "b", "type": "system", "subtype": "compact_boundary"},
+            {"uuid": "sum", "type": "user", "isCompactSummary": True, "message": {"role": "user", "content": "the summary"}},
+        ]}]
+
+    turn, state = _repinning_turn(compact)
+    assert await turn._repin(state)
+    notice = {"summary_length": 11, "original_message_count": 2, "summary_text": "the summary", "source": "provider"}
+    assert signals == [("summarize", "start", {}), ("summarize", "complete", notice)]
+    reply, later = AIMessage("ok"), AIMessage("more")
+    turn.stamp(reply)
+    turn.stamp(later)
+    assert compaction_summary(reply) == {"summary_message_id": "b", **notice} and compaction_summary(later) is None
+
+
+@pytest.mark.asyncio
+async def test_a_turn_start_compaction_that_fails_closes_its_signal_and_the_turn_runs_on(monkeypatch):
+    from ptc_agent.agent.claude_code import runtime
+
+    signals = []
+    monkeypatch.setattr(runtime, "context_signal", lambda action, signal, **f: signals.append((action, signal)))
+
+    async def compact(records):
+        raise ClaudeTurnFailed("api_error", "overloaded")
+
+    turn, state = _repinning_turn(compact)
+    assert await turn._repin(state) == []
+    assert signals == [("summarize", "start"), ("summarize", "error")]
+
+
+@pytest.mark.asyncio
 async def test_a_turn_start_compaction_is_saved_before_the_launch_it_moves_the_session_for(monkeypatch):
     """A step of its own: a launch that fails after it leaves the session
     compacted, so the next turn neither makes nor bills it again."""
@@ -865,3 +925,48 @@ async def test_a_turn_start_compaction_is_saved_before_the_launch_it_moves_the_s
     session = (await graph.aget_state(config)).values["claude_session"]
     assert made == ["compacted"]
     assert [e["uuid"] for e in session["entries"]][-2:] == ["b", "sum"] and session["pinned"]["system_prompt"] == "now"
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_failure_is_signalled_without_the_credentials_its_text_carried(monkeypatch):
+    from ptc_agent.agent.claude_code.runtime import _Compacting
+
+    emitted = []
+    monkeypatch.setattr(compaction_module, "get_stream_writer", lambda: emitted.append)
+
+    async def compact(records):
+        raise ClaudeTurnFailed("api_error", "Authorization: Bearer abcdefgh12345")
+
+    turn, state = _repinning_turn(compact)
+    assert await turn._repin(state) == []
+    await turn.compacting(state, _Compacting(error="Authorization: Bearer abcdefgh12345"))
+    errors = [s["error"] for s in emitted if s["signal"] == "error"]
+    assert len(errors) == 2 and all("Authorization" in e and "abcdefgh12345" not in e for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_whose_records_arrive_late_is_announced_with_the_reply_after_it(monkeypatch):
+    """Not with an empty notice when the wait runs out: the reply's own
+    records arrive behind the compaction's."""
+    from ptc_agent.agent.claude_code import runtime
+    from ptc_agent.agent.claude_code.runtime import _Compacting
+    from ptc_agent.agent.middleware.compaction.utils import compaction_summary
+
+    signals = []
+    monkeypatch.setattr(runtime, "context_signal", lambda action, signal, **f: signals.append((action, signal, f)))
+    monkeypatch.setattr(runtime, "SETTLE_TIMEOUT_S", 0.01)
+    turn, state = _repinning_turn(None)
+    turn._run = SimpleNamespace(store=CheckpointSessionStore())
+    await turn.compacting(state, _Compacting(boundary="b"))
+    assert signals == []
+    await turn._run.store.append({"session_id": "s"}, [
+        {"uuid": "b", "type": "system", "subtype": "compact_boundary"},
+        {"uuid": "sum", "type": "user", "isCompactSummary": True, "message": {"role": "user", "content": "the summary"}},
+    ])
+    reply = AIMessage("ok")
+    turn.settled(state)
+    turn.stamp(reply)
+    notice = {"summary_length": 11, "original_message_count": 2, "summary_text": "the summary", "source": "provider"}
+    assert signals == [("summarize", "complete", notice)]
+    assert compaction_summary(reply) == {"summary_message_id": "b", **notice}
+

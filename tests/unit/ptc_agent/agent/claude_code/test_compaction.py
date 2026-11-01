@@ -108,7 +108,7 @@ def test_the_summary_a_user_is_shown_keeps_the_clis_words_but_not_its_transcript
     content = [{"type": "text", "text": _CLI_SUMMARY}] if blocks else _CLI_SUMMARY
     summary = {"uuid": "sum", "type": "user", "isCompactSummary": True, "message": {"role": "user", "content": content}}
     shown = SessionCompaction([], [{"session_id": "s", "entries": [summary]}])
-    assert shown.summary_text == (
+    assert shown.notice()["summary_text"] == shown.summary_text == (
         "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\nthe work"
         "\n\nNote: the earliest part of the conversation was too large to include and is NOT covered by this summary. "
         "Say so.\nContinue the conversation from where it left off."
