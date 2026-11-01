@@ -17,7 +17,8 @@ on the one before.
   and mid-turn up to the step under way, which that call is sent as a row
   (see ``carry``), after a step on the notes when they are on,
   and on the main agent at a turn start under the threshold too, after a
-  deploy, once the prompt cache has expired (see ``rebuild``), and
+  deploy, once the prompt cache has expired, or once an expired cache holds
+  a large context, keeping the tail where nothing is due (see ``rebuild``), and
   the attachments in what it keeps are taken out until it fits; on Claude,
   whose kept turns are sent as they were, the summary takes them instead
   (see ``fitting.Fit``); and between turns when the user asks (see
@@ -393,13 +394,16 @@ class CompactionMiddleware(AgentMiddleware):
             first_call=bool(request.state.get("_run_first_call")),
         )
         refusal: Exception | None = None
-        over = tokens >= self._token_threshold
+        threshold = plan.threshold or self._token_threshold
+        over = tokens >= threshold
         if over and not plan.forced:
             thread_id, agent = run_ids()
+            cold = tokens < self._token_threshold
             logger.info(
-                "[Compaction] trigger=threshold tokens=%d threshold=%d thread_id=%s agent=%s",
+                "[Compaction] trigger=%s tokens=%d threshold=%d thread_id=%s agent=%s",
+                "cold" if cold else "threshold",
                 tokens,
-                self._token_threshold,
+                threshold if cold else self._token_threshold,
                 thread_id,
                 agent,
             )
@@ -510,8 +514,8 @@ class CompactionMiddleware(AgentMiddleware):
         rather than move back onto the answer before it. Whether turns stay
         after the summary is read from what it keeps (``keeps_turns``).
 
-        ``scope`` places the cache markers of the provider's own summary
-        call (``RebuildPlan.scope``), and ``carried`` says the step it ends on
+        ``scope`` places the cache markers of the agent's own summary call
+        (``RebuildPlan.scope``), and ``carried`` says the step it ends on
         is carried after it (``RebuildPlan.carry``)."""
         own: Own | None = None
         kind = native_kind(request.model)
@@ -529,7 +533,12 @@ class CompactionMiddleware(AgentMiddleware):
             )
         elif kind is None and self._writes_own(request):
             own = functools.partial(
-                self._self_summary, request, handler, notes=self._notes_dir is not None, carried=carried
+                self._self_summary,
+                request,
+                handler,
+                notes=self._notes_dir is not None,
+                scope=scope,
+                carried=carried,
             )
         return await self._compact(request, view, cutoff, self._transcript_target(), own, carried=carried)
 
@@ -721,6 +730,7 @@ class CompactionMiddleware(AgentMiddleware):
         kept: bool,
         *,
         notes: bool,
+        scope: CacheScope | None = None,
         carried: bool = False,
     ) -> str:
         """The agent's model writing the summary of ``to_summarize`` as text,
@@ -731,9 +741,10 @@ class CompactionMiddleware(AgentMiddleware):
         be called. It goes to this model as sent: a fallback model would read
         none of it from a cache, and the summarizer is the fallback here. It
         stays out of the turn's message stream. A summary that stops before
-        its closing line was cut off, and counts as none.
+        its closing line was cut off, and counts as none. ``scope`` places
+        its cache markers (``cache_markers.cache_scope``).
         """
-        with as_sent(), _unstreamed():
+        with as_sent(), _unstreamed(), cache_scope(scope):
             response = await handler(
                 request.override(
                     messages=[
