@@ -27,7 +27,19 @@ _TTL_SECONDS = {"5m": 300, "1h": 3600}
 #: summary in place of that history, so writing the history would buy
 #: nothing; the tools prefix is what that call, and every thread with the
 #: same tools, reads back.
-CacheScope = Literal["last_tool"]
+#:
+#: ``system_and_tools``: the system's and the tools' markers. A compaction on
+#: an expired cache that keeps the newest turns reads the history once at the
+#: base rate too, and the call after it sends the same system and tools again
+#: before the summary and the kept turns, so their entries are read back and
+#: the history's would never be.
+CacheScope = Literal["last_tool", "system_and_tools"]
+
+#: The payload keys whose markers each scope keeps.
+_KEPT: dict[CacheScope, frozenset[str]] = {
+    "last_tool": frozenset({"tools"}),
+    "system_and_tools": frozenset({"system", "tools"}),
+}
 
 _scope: ContextVar[CacheScope | None] = ContextVar("cache_marker_scope", default=None)
 
@@ -46,10 +58,11 @@ def cache_scope(scope: CacheScope | None) -> Iterator[None]:
 def scoped(payload: dict[str, Any]) -> dict[str, Any]:
     """``payload`` with its markers where the call's scope puts them, as a
     copy; the payload itself, untouched, outside any scope."""
-    if _scope.get() != "last_tool":
+    scope = _scope.get()
+    if scope is None:
         return payload
     sent = {
-        key: value if key == "tools" else _rewrite(value, lambda _marker: None)
+        key: value if key in _KEPT[scope] else _rewrite(value, lambda _marker: None)
         for key, value in payload.items()
         if key != "cache_control"
     }
