@@ -114,3 +114,24 @@ request is recorded with that thread, refused ones included
 it sends, is marked as from that thread (`origin: {type: agent, agent: cli}`),
 which the app shows as "From another thread". The thread is the command's
 own report: another process on the computer could send a sibling's id.
+
+## Releasing
+
+Releases go to npm from `.github/workflows/cli-release.yml`, never from a
+laptop. Computers don't install from npm: the backend image builds the CLI
+from this folder, so a release only reaches people's own machines.
+
+1. Set `version` in `package.json` and merge it to `main`.
+2. Tag that commit `cli-v<version>` and push the tag:
+   `git tag cli-v0.1.0 && git push origin cli-v0.1.0`.
+3. The workflow refuses a tag that doesn't match `package.json`, then
+   typechecks, tests, builds and checks what the package would ship
+   (`scripts/check-package.mjs`, which the test workflow runs too).
+4. A maintainer approves the `npm` environment's deployment, and the exact
+   tarball that was checked is published: a prerelease (`0.2.0-rc.1`) under
+   `next`, anything else under `latest`.
+
+npm trusts the workflow by name, so no npm token is stored anywhere. That
+trust is set on npmjs.com, under the package's trusted publishers: GitHub
+Actions, repository `ginlix-ai/LangAlpha`, workflow `cli-release.yml`,
+environment `npm`, with `npm publish` allowed.
