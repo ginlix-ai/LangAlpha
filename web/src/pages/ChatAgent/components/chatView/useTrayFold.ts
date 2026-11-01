@@ -30,6 +30,10 @@ interface TrayFoldInputs {
   contents: TrayContents | null;
   /** The transcript's scroller, which a peek watches. */
   getScroller: () => HTMLElement | null;
+  /** The composer is at a page's foot, under the page rather than the
+   *  transcript: the tray stays in its dock there, where a row of chips would
+   *  take the page's room. A peek still pours it out until the composer moves. */
+  docked?: boolean;
 }
 
 export interface TrayFold {
@@ -49,13 +53,21 @@ function foldDrop(tray: HTMLElement | null): number {
   return next instanceof HTMLElement ? next.offsetTop - tray.offsetTop : tray.offsetHeight;
 }
 
-export function useTrayFold({ scrolledUp, jumping, contents, getScroller }: TrayFoldInputs): TrayFold {
+export function useTrayFold({ scrolledUp, jumping, contents, getScroller, docked = false }: TrayFoldInputs): TrayFold {
   // Framer reads the setting once, at mount: a change applies from the next
   // thread opened.
   const reducedMotion = useReducedMotion();
   const up = scrolledUp || jumping;
   const [peeking, setPeeking] = useState(false);
-  if (peeking && !up) setPeeking(false);
+  if (peeking && !up && !docked) setPeeking(false);
+  // The composer moving is a new place: a peek was for the old one. It
+  // arrives already folded or open rather than running its chips across.
+  const [wasDocked, setWasDocked] = useState(docked);
+  const moved = wasDocked !== docked;
+  if (moved) {
+    setWasDocked(docked);
+    if (peeking) setPeeking(false);
+  }
   // A fold takes the tray out of the transcript's bottom padding, and a reader
   // nearer the end than that is clamped to it. The clamp reads as a scroll back
   // to the end, which pours the tray straight back out, so a tray in the layout
@@ -64,10 +76,10 @@ export function useTrayFold({ scrolledUp, jumping, contents, getScroller }: Tray
   if (clearOfTray && !up) setClearOfTray(false);
   const [phase, setPhase] = useState<TrayFoldPhase>(up ? 'folded' : 'open');
   const inLayout = phase === 'open' || phase === 'unfolding';
-  const folded = up && !peeking && (clearOfTray || !inLayout);
+  const folded = !(peeking && !moved) && (docked || (up && (clearOfTray || !inLayout)));
   // Instant under reduced motion, and while the tray is empty: a liquid run
   // started with no chips has no shapes to draw for its whole length.
-  const animate = !reducedMotion && !!contents;
+  const animate = !reducedMotion && !!contents && !moved;
 
   // A run in flight finishes before the next one starts: its shapes are on
   // their way between two places and can only arrive at one of them.

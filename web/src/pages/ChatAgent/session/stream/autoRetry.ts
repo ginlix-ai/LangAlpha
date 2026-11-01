@@ -11,6 +11,7 @@
 
 import { failAssistantMessage } from './finalizeMessage';
 import { updateMessage } from '../../hooks/utils/messageHelpers';
+import type { CommentSend } from '@/types/api';
 import type { ChatMessage } from '@/types/chat';
 import type { SSEEvent, SetMessages } from '../types';
 
@@ -49,13 +50,20 @@ export interface TurnRequest {
   /** A send the server may never have seen goes again under its first key,
    * so a copy that did arrive is adopted rather than doubled. */
   requestKey?: string;
+  /** The file comments the send carries, which a resend carries again,
+   * and where the person read as they sent them. */
+  artifactComments?: CommentSend;
 }
 
 export const sendRequest = (
   message: string,
   additionalContext: Record<string, unknown>[] | null,
   subagentsAllowed?: boolean,
-): TurnRequest => ({ message, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: null, subagentsAllowed });
+  artifactComments?: CommentSend,
+): TurnRequest => ({
+  message, additionalContext, checkpointId: null, forkFromTurn: null, retryOf: null, subagentsAllowed,
+  ...(artifactComments?.ids.length ? { artifactComments } : {}),
+});
 
 export const forkRequest = (
   message: string | null,
@@ -131,6 +139,8 @@ export interface RetrySettlerDeps {
   resend: (request: TurnRequest, truncateIndex: number, snapshot: readonly ChatMessage[], spent: number) => void;
   /** Hands the reply's Retry what to send, once the client stops on its own. */
   holdRetry: (held: HeldRetry | null) => void;
+  /** The scheduled resend will not go: a stop or another session took the chat while it waited. */
+  abandoned: () => void;
   wasStoppedRef: { readonly current: boolean };
   sessionEpochRef: { readonly current: number };
   threadIdRef: { readonly current: string | null };
@@ -173,11 +183,15 @@ export function settleRetryNotice(
   const tid = deps.threadIdRef.current;
   setTimeout(() => {
     // A stop during the wait already settled the bubble and the session.
-    if (deps.wasStoppedRef.current) return;
+    if (deps.wasStoppedRef.current) {
+      deps.abandoned();
+      return;
+    }
     // A newer turn, another thread or leaving the chat took the session, and
     // that owner manages the loading state; only this bubble is left to settle.
     if (deps.sessionEpochRef.current !== epoch || deps.threadIdRef.current !== tid) {
       failReply(deps, bubbleId, deps.failedText);
+      deps.abandoned();
       return;
     }
     // The resend replaces the bubble in the same write that adds its own, so

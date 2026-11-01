@@ -16,6 +16,7 @@ import { CHART_SURFACE_MIN_WIDTH } from '@/pages/MarketView/components/chartSurf
 import type { FileTab } from '../filePanel/useFileTabs';
 import type { ChartTabSpec, UnsequencedTarget } from '../filePanel/types';
 import type { PreviewData } from '../../hooks/utils/types';
+import { readArtifactCommentReply, type ArtifactCommentRef } from '../artifactComments/artifactCommentReply';
 import { NO_TRANSCRIPTS, useToolCallLookup, type TranscriptMessage } from './toolCallLookup';
 import { useTranscriptReader } from '../filePanel/transcriptStore';
 import { DEFAULT_PANEL_WIDTH, detailPanelWidth } from '../filePanel/detailWidth';
@@ -528,7 +529,7 @@ export function useRightPanel({
             reloadToken: ++reloadCounterRef.current,
             workspaceId: sibling,
           });
-        } else {
+        } else if (link.kind === 'file') {
           handleOpenFileFromChat(link.path, sibling);
         }
       })
@@ -610,10 +611,19 @@ export function useRightPanel({
     landInFilePanel({ kind: 'chart', ...spec }, { maxRatio: PREVIEW_MAX_RATIO });
   }, [isMobile, handleOpenInMarketView, landInFilePanel]);
 
+  /** Opens a file beside the chat on one of its comments. The path is the
+   *  file's own in its workspace, so it is not read against an open file. */
+  const handleOpenArtifactComment = useCallback(({ workspaceId: fileWorkspaceId, path, commentId }: ArtifactCommentRef) => {
+    if (!path) return;
+    const sibling = fileWorkspaceId && fileWorkspaceId !== workspaceId ? fileWorkspaceId : undefined;
+    handleOpenFileFromChat(path, sibling, undefined, { rooted: true, pin: true, comment: commentId });
+  }, [workspaceId, handleOpenFileFromChat]);
+
   /**
    * Show a tool call's result. On desktop it lands as a tab in the file panel
    * beside the files the call produced, sized for what it holds. Mobile keeps
-   * the bottom sheet. A published app opens as a preview instead.
+   * the bottom sheet. A published app opens as a preview instead, and a reply
+   * to a file comment opens the file on that comment.
    */
   const handleToolCallDetailClick = useCallback((toolCallId: string) => {
     const toolCallProcess = getToolCallProcess(toolCallId);
@@ -624,6 +634,12 @@ export function useRightPanel({
       return;
     }
     const artifact = toolCallProcess.toolCallResult?.artifact as Record<string, unknown> | undefined;
+    // A reply to a file comment opens the file on that comment.
+    const reply = readArtifactCommentReply(artifact);
+    if (reply) {
+      handleOpenArtifactComment(reply);
+      return;
+    }
     if (artifact?.type === 'preview_url' && artifact.port && workspaceId) {
       const port = artifact.port as number;
       const title = artifact.title as string | undefined;
@@ -660,7 +676,7 @@ export function useRightPanel({
     applyPanelWidth(detailPanelWidth(toolCallProcess));
     setRightPanelType('detail');
     pushPanelHistory();
-  }, [isMobile, getToolCallProcess, landInFilePanel, applyPanelWidth, pushPanelHistory, workspaceId, handleOpenPreview, watching]);
+  }, [isMobile, getToolCallProcess, landInFilePanel, applyPanelWidth, pushPanelHistory, workspaceId, handleOpenPreview, watching, handleOpenArtifactComment]);
 
   // Close the mobile detail sheet
   const handleCloseDetailPanel = useCallback(() => {
@@ -758,6 +774,7 @@ export function useRightPanel({
     handleActiveTabKindChange,
     leaveFiles,
     handleOpenPreview,
+    handleOpenArtifactComment,
     handleOpenShareLink,
     handleOpenChart,
     handleOpenInMarketView,

@@ -351,7 +351,7 @@ export async function loadConversationHistory(
           pairStateByPair,
           refs: { newMessagesStartIndexRef: rt.newMessagesStartIndexRef },
           setMessages: setMessagesForHandlers,
-          onCopyDelivered: (key) => rt.requestKeyRef.current.settle(key),
+          onCopyDelivered: (key) => rt.requestKeyRef.current.settle(key, 'accepted'),
         });
         return;
       }

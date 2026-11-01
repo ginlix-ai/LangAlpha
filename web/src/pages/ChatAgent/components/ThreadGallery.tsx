@@ -24,6 +24,7 @@ import { useThreadDeleteConfirm } from './threadDeleteAction';
 import { deleteThreadRow } from '../hooks/deleteThreadRow';
 import ChatInput from '../../../components/ui/chat-input';
 import type { ChatInputHandle } from '../../../components/ui/chat-input';
+import type { ComposerSend } from '../../../components/ui/chat-input.types';
 import { attachmentsToContexts } from '../utils/fileUpload';
 import FilePanel, { SYSTEM_DIR_PREFIXES } from './FilePanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
@@ -681,7 +682,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
             <div className="w-full relative z-20">
               <ChatInput
                 ref={chatInputRef}
-                onSend={handleSendMessage as any} // TODO: type properly — ChatInput expects strict ReadyAttachment[]
+                onSend={({ message, files, commands, modelOptions }: ComposerSend) => handleSendMessage(message, files, commands, modelOptions)}
                 disabled={isSendingMessage || !workspaceId}
                 files={ownFiles}
                 dropdownDirection="down"

@@ -525,6 +525,11 @@ export type UserMessage = {
    * re-renders these cards (see serialize_chart_selections_for_metadata).
    */
   chartSelections?: import('@/pages/MarketView/stores/chartSelectionStore').ChartSelectionSnapshot[];
+  /** The file comments this message sent, drawn under its note. `content`
+   *  is that note wherever the row came from: the server keeps the block the
+   *  agent read as the query, and every way a row comes in (a replay, a
+   *  delivery) puts the note in its place. */
+  artifactComments?: import('./api').ArtifactCommentsShown;
   /** Who sent it, when not the user in this view. A report-back's row has
    *  empty content and is drawn as this label alone. */
   provenance?: MessageProvenance;

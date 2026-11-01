@@ -8,7 +8,7 @@ import { ErrorBanner } from '@/components/ui/error-banner';
 import { Loader } from '@/components/ui/loader';
 import LogoLoading from '@/components/ui/logo-loading';
 import ChatInput, { type ChatInputHandle } from '@/components/ui/chat-input';
-import type { ComposerScope } from '@/components/ui/chat-input.types';
+import type { ComposerScope, ComposerSend } from '@/components/ui/chat-input.types';
 import { useStableHandler } from '@/hooks/useStableHandler';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -17,6 +17,7 @@ import { compactNumber } from '@/lib/format';
 import { readTurnEndScroll } from '@/lib/turnEndScroll';
 import { LiveMessageList } from '../../ChatAgent/components/MessageList';
 import { MessageActionsProvider, type MessageActions } from '../../ChatAgent/components/messageList/MessageActionsContext';
+import { usePublishFile } from '../../ChatAgent/components/chatView/usePublishFile';
 import { SubagentTelemetryContext, useHistoryTelemetry } from '../../ChatAgent/components/SubagentTelemetryContext';
 import { ChartSurfaceContext, type ChartSurface } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
@@ -72,12 +73,6 @@ interface ActionCommandLike {
   name: string;
   type?: string;
 }
-interface ModelOptionsLike {
-  model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-}
-
 interface AttachmentItem {
   dataUrl: string;
   file: { name: string; size: number };
@@ -385,19 +380,11 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   }, [symbol]);
 
   const readComposerOptions = useCallback(() => chatInputRef.current?.getModelOptions?.(), []);
-  const chat = useChatMessages(
-    activeWorkspaceId,
-    initialThreadId,
-    null,                       // updateTodoListCard
-    null,                       // updateSubagentCard
-    null,                       // finalizePendingTodos
-    null,                       // onFileArtifact
-    handlePreview,              // onPreviewUrl
-    null,                       // clearSubagentCards
-    null,                       // onWorkspaceCreated
-    platformValue,
+  const chat = useChatMessages(activeWorkspaceId, initialThreadId, {
+    onPreviewUrl: handlePreview,
+    platform: platformValue,
     readComposerOptions,
-  );
+  });
 
   const {
     messages,
@@ -489,12 +476,9 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   // Send: shape attachments + chart screenshot like ChatAgent does.
   const handleSend = useCallback(
-    (
-      message: string,
-      attachments: AttachmentItem[] = [],
-      slashCommands: SlashCommandLike[] = [],
-      modelOptions: ModelOptionsLike = {},
-    ) => {
+    ({ message, files, commands, modelOptions }: ComposerSend) => {
+      const attachments = files as unknown as AttachmentItem[];
+      const slashCommands = commands as SlashCommandLike[];
       // The drawing tools are always bound; inject the chart-annotation skill
       // every send for its drawing guide and to tell the agent which ticker +
       // timeframe "the chart" is (chart_id = SYMBOL:timeframe — drawing on the
@@ -693,6 +677,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     handleSendMessage(text, null, null, {});
   });
 
+  const { onPublishFile, dialog: publishDialog } = usePublishFile(activeWorkspaceId);
   const messageActions = useMemo<MessageActions>(() => ({
     onOpenSubagentTask: stableOpenSubagentTask,
     onToolCallDetailClick: stableToolCallDetail,
@@ -717,6 +702,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     onThumbDown: stableThumbDown,
     onWidgetSendPrompt: stableWidgetSendPrompt,
     onRevealMessage: follow.reveal,
+    onPublishFile,
   }), [
     stableOpenSubagentTask, stableToolCallDetail,
     stableAnswerQuestion, stableSkipQuestion, stableApproveCreateWorkspace,
@@ -724,7 +710,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     stableApprovePTCAgent, stableRejectPTCAgent, stableApproveSecretaryAction,
     stableRejectSecretaryAction, stableResumeCreditPause, stableApproveToolCall, stableRejectToolCall,
     stableEditMessage, stableRegenerate, stableRetry, editDrafts,
-    stableThumbUp, stableThumbDown, stableWidgetSendPrompt, follow.reveal,
+    stableThumbUp, stableThumbDown, stableWidgetSendPrompt, follow.reveal, onPublishFile,
   ]);
 
   // In the Chief of Staff, carry the source thread/workspace into a PTC-agent
@@ -873,6 +859,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
                     />
                   </DispatchStatusProvider>
                 </MessageActionsProvider>
+                {publishDialog}
               </SubagentTelemetryContext>
             </ChartSurfaceContext>
             {messageError && (
@@ -952,7 +939,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       {/* Input */}
       <ChatInput
         ref={chatInputRef}
-        onSend={handleSend as never}
+        onSend={handleSend}
         disabled={isLoadingHistory || !!pendingInterrupt}
         onStop={handleStop}
         onAction={handleAction}

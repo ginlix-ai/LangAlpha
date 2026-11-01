@@ -77,6 +77,29 @@ export interface ReadyAttachment {
 }
 
 /**
+ * What the box held when a send took it, as the person wrote it: the text
+ * before any snippet is spelled out into it, and the pills beside it. A host
+ * whose send fails out of the person's sight hands it back (`giveBack`).
+ */
+export interface ComposerDraft {
+  text: string;
+  files: ReadyAttachment[];
+  mentions: MentionedFile[];
+  commands: SlashCommand[];
+}
+
+/**
+ * One send from the box: the box as the person wrote it, which a host whose
+ * send fails out of their sight hands back whole, and what the send carries
+ * beyond it.
+ */
+export interface ComposerSend extends ComposerDraft {
+  /** The text the send carries: the person's, with each snippet spelled out into it. */
+  message: string;
+  modelOptions: ModelOptions;
+}
+
+/**
  * Where a send goes: the Chief of Staff, which answers in Home,
  * or the selected workspace's analyst. Both run the full agent, so the scope
  * is a target, not a mode.

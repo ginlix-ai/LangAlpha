@@ -1,3 +1,4 @@
+import type { ArtifactCommentsShown } from '@/types/api';
 import type { ContentSegmentRecord } from './types';
 import { inChunkOrder } from '../../session/stream/textChunks';
 
@@ -12,4 +13,16 @@ export function assistantText(message: { contentSegments?: unknown; content?: un
     }
   }
   return text || (typeof message.content === 'string' ? message.content.slice(0, max) : '');
+}
+
+/** A user message's text as its bubble shows it: its words, then a line for each file comment it sent. For Copy and the minimap preview. */
+export function userMessageText(message: { content?: unknown; artifactComments?: unknown }): string {
+  const words = typeof message.content === 'string' ? message.content : '';
+  const shown = message.artifactComments as ArtifactCommentsShown | undefined;
+  if (!shown) return words;
+  const lines = shown.comments.map((c) => {
+    const on = [c.label, c.quote ? `"${c.quote}"` : null].filter(Boolean).join(' ');
+    return `${c.number}. ${on ? `${on}: ` : ''}${c.text}`;
+  });
+  return [words.trim(), ...lines].filter(Boolean).join('\n');
 }

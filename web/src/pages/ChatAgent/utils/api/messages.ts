@@ -3,7 +3,7 @@
  * status, thread watch, reconnect, turns, and the v2 thread mux.
  */
 import { api } from '@/api/client';
-import type { WorkflowRunStatus } from '@/types/api';
+import type { ArtifactCommentSendFields, CommentSend, WorkflowRunStatus } from '@/types/api';
 import type { CancelOutcome, HeldSteer } from '../cancelOutcome';
 import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
@@ -76,6 +76,12 @@ export interface SendChatMessageOptions extends StreamTurnOptions {
   /** Only steer a running turn: with none running the server refuses the
    *  send as `not_running` instead of starting one. */
   steerOnly?: boolean;
+  /** File comments the message sends, which the server takes under the
+   *  request key: a retransmit under the same key sends them once. The
+   *  message is then the note typed with them, and may be empty. Where the
+   *  person reads sets how much the agent answers in the chat and how much
+   *  under each comment. */
+  artifactComments?: CommentSend | null;
 }
 
 export type SendHitlResponseOptions = StreamTurnOptions;
@@ -121,18 +127,24 @@ export async function sendChatMessageStream(
     requestKey = null,
     threadSettings = {},
     steerOnly = false,
+    artifactComments = null,
   }: SendChatMessageOptions = {},
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
   const messages = checkpointId && !message ? [] : [{ role: 'user', content: message }];
   const body: Record<string, unknown> = {
-    workspace_id: workspaceId,
     messages,
     locale,
     timezone,
   };
+  // A send to a thread may leave the workspace out: the server reads it off the thread.
+  if (workspaceId) body.workspace_id = workspaceId;
   if (requestKey) body.request_key = requestKey;
   if (steerOnly) body.steer_only = true;
+  if (artifactComments?.ids.length) {
+    const fields: ArtifactCommentSendFields = { artifact_comment_ids: [...artifactComments.ids], reading: artifactComments.reading };
+    Object.assign(body, fields);
+  }
   if (additionalContext) {
     body.additional_context = additionalContext;
   }

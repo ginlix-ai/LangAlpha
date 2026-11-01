@@ -161,6 +161,12 @@ interface ModelOptions {
    */
   reasoningEffortOverride?: string;
   fastModeOverride?: boolean;
+  /**
+   * The file comments this send carries, as its bubble shows them. Their ids
+   * go out as `artifact_comment_ids` with its `reading`, and the message is
+   * the note typed with them, which may be empty.
+   */
+  artifactComments?: import('@/types/api').ArtifactCommentsShown;
 }
 
 /** What a fresh send takes beyond the model options an edit or regenerate does. */
@@ -174,6 +180,13 @@ interface SendOptions extends ModelOptions {
   /** The title of the thread this send creates, in place of one generated
    *  from its message. A send on a live thread leaves the title alone. */
   threadTitle?: string;
+  /**
+   * What the composer held when it sent this. Should the server not keep the
+   * send while the host has the transcript out of view (`returnsUnsent`), it
+   * goes back to the composer as this, and the message leaves the transcript,
+   * where a failed reply's Retry would wait unseen.
+   */
+  draft?: import('@/components/ui/chat-input.types').ComposerDraft;
 }
 
 /** Offload batch ref state. */

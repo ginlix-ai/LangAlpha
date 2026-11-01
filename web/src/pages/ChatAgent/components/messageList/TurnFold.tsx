@@ -109,7 +109,7 @@ export const TurnFold = memo(function TurnFold({ state, startedAt, completedAt, 
  * effect, so the first painted frame already carries the text while render
  * stays free of the clock.
  */
-function WorkingLabel({ startedAt }: { startedAt: number }): React.ReactElement {
+export function WorkingLabel({ startedAt }: { startedAt: number }): React.ReactElement {
   const { t } = useTranslation();
   const ref = useRef<HTMLSpanElement>(null);
 

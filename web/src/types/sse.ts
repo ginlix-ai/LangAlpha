@@ -7,7 +7,7 @@ import type {
   OrderStatus,
   OrderSummary,
 } from './orders';
-import type { ReportSource, ThreadOrigin } from './api';
+import type { ArtifactCommentsShown, ReportSource, ThreadOrigin } from './api';
 import type { MarketTargetNotice } from '@/pages/ChatAgent/session/wakeupEvents';
 import type { WakeNotice } from './wakeups';
 
@@ -265,6 +265,8 @@ export interface DeliveredSteer {
   request_key?: string;
   /** The agent that sent it (the Chief of Staff, Flash); absent when the user did. */
   origin?: ThreadOrigin;
+  /** On a steer that sent file comments, what the chat shows for it. */
+  artifact_comments?: ArtifactCommentsShown;
   report_source?: never;
   market_alert?: never;
   wakeup?: never;
