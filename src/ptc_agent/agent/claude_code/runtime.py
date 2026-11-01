@@ -53,7 +53,7 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
-from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules, compact, same_pin
+from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules, compact, report_usage, same_pin
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, TurnSteering
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
@@ -742,6 +742,7 @@ def build_claude_code_graph(
             raise ClaudeTurnFailed("api_error", f"tool calls that did not parse: {[c.get('name') for c in ai.invalid_tool_calls]}")
         ai.response_metadata.setdefault("model_name", turn.spec.model)
         ai.response_metadata[CLAUDE_MESSAGE_ID] = message.id
+        report_usage(ai, turn.compaction.threshold)
         uuids = run.assistant_records(message.id)
         await run.settle(uuids)
         return Command(

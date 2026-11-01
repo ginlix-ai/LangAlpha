@@ -1,5 +1,5 @@
-"""How a Claude Code session compacts: when the CLI does it, and the launch
-that has it compact between requests of ours.
+"""How a Claude Code session compacts: when the CLI does it, the launch that
+has it compact between requests of ours, and what a compaction reports.
 
 The CLI compacts a session on its own once the context reaches the thread's
 threshold, given the window ``cli.options_for`` sets from it. A session runs
@@ -37,6 +37,8 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
 )
+from langchain_core.messages import AIMessage
+from langgraph.config import get_stream_writer
 from langgraph.constants import TAG_NOSTREAM
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, is_haiku, launch, received, turn_failure
@@ -50,12 +52,14 @@ from ptc_agent.agent.claude_code.session import (
     SessionWrite,
 )
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
+from ptc_agent.agent.middleware.compaction.utils import stamp_context_threshold
 from ptc_agent.agent.prompts import release
 from ptc_agent.agent.transcript import Window
 from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_note, transcript_target
 from src.config.settings import get_compaction_timeout
 from src.llms.cache_markers import ttl_seconds
 from src.llms.claude_code import ClaudeTurnFailed
+from src.llms.token_counter import extract_token_usage
 
 if TYPE_CHECKING:
     from ptc_agent.agent.backends.sandbox import SandboxBackend
@@ -328,3 +332,23 @@ async def _metered(spec: RuntimeSpec, result: ResultMessage) -> None:
             await relay.feed(events()).ainvoke([], {"tags": [TAG_NOSTREAM]})
         except Exception:
             logger.warning("[ClaudeCode] the compaction's usage was not reported", exc_info=True)
+
+
+def report_usage(ai: AIMessage, threshold: int) -> None:
+    """Stamp ``ai`` with the threshold its context fills and emit its usage,
+    with the payload the compaction middleware emits for an API thread's
+    call, so the live ring and replay show the threshold the CLI compacts at."""
+    if not threshold:
+        return
+    usage = extract_token_usage(ai)
+    input_tokens, output_tokens = usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+    if input_tokens <= 0:
+        return
+    stamp_context_threshold(ai, threshold)
+    try:
+        get_stream_writer()({
+            "type": "context_window", "action": "token_usage", "signal": "complete", "input_tokens": input_tokens,
+            "output_tokens": output_tokens, "total_tokens": input_tokens + output_tokens, "threshold": threshold,
+        })
+    except Exception:  # noqa: BLE001 - the ring is never worth failing a step for
+        logger.debug("[ClaudeCode] token_usage emit failed", exc_info=True)

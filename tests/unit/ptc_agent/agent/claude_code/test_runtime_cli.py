@@ -284,6 +284,28 @@ async def test_the_cli_compacts_before_a_request_only_at_the_threshold_it_was_gi
     assert isinstance(values["messages"][-1], AIMessage)
 
 
+async def test_each_reply_carries_and_streams_the_threshold_the_cli_compacts_at():
+    """The live ring reads the event and replay reads the stamp, so both show
+    the thread's threshold rather than a default."""
+    from ptc_agent.agent.middleware.compaction.utils import context_threshold
+
+    graph = new_graph()
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        turn_ = ClaudeTurn(SPEC, launcher, identity="test-user", thread_key="t-usage", compaction=CompactionRules(0, threshold=500_000))
+        config = {"configurable": {"thread_id": "t-usage", TURN_KEY: turn_}}
+        try:
+            events = [e async for e in graph.astream({"messages": [HumanMessage("RUN_TOOL please")]}, config, stream_mode="custom")]
+        finally:
+            await turn_.close()
+        replies = [m for m in (await graph.aget_state(config)).values["messages"] if isinstance(m, AIMessage)]
+    usage = [e for e in events if isinstance(e, dict) and e.get("action") == "token_usage"]
+    assert len(replies) == 2 and [context_threshold(m) for m in replies] == [500_000, 500_000]
+    assert [(e["threshold"], e["total_tokens"]) for e in usage] == [
+        (500_000, m.usage_metadata["input_tokens"] + m.usage_metadata["output_tokens"]) for m in replies
+    ]
+
+
 async def test_a_session_due_a_new_pin_compacts_under_its_old_one_and_runs_the_turn_on_the_new_one():
     """The summary request is the session's own prefix with its thinking; the
     turn's requests then carry this build's prompt and tools and no thinking
