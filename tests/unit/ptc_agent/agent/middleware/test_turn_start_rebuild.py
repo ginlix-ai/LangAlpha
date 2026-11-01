@@ -6,12 +6,15 @@ idle deploy keeps no turns (T1), a turn start under the threshold rebuilds a
 thread a deploy made due once its context reaches the floor and its prompt
 cache has expired (T2), a manual compaction between turns keeps no turns
 (T5), and a turn that ended on tool results is a turn start to its next run's
-first call, never to a later one.
+first call, never to a later one. A cold Claude thread of at least
+``cold_tokens`` is summarized at a turn start under its threshold too,
+keeping its tail when nothing is due (T9) and none when its prompt is due.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -30,7 +33,15 @@ from ptc_agent.agent.middleware.compaction import middleware as mw_module
 from ptc_agent.agent.middleware.compaction.between_turns import Compact, ask_between_turns
 from ptc_agent.agent.middleware.compaction.compact import Summarizer
 from ptc_agent.agent.middleware.compaction.middleware import CompactionMiddleware
-from ptc_agent.agent.middleware.compaction.rebuild import StalePinRebuilds, TurnStartRebuilds, cache_ttl
+from ptc_agent.agent.middleware.compaction.rebuild import (
+    LAST_ANSWER_KEY,
+    RebuildPlan,
+    StalePinRebuilds,
+    TurnStartRebuilds,
+    answer_reading,
+    cache_ttl,
+    next_summary,
+)
 from ptc_agent.agent.middleware.compaction.summary_request import summary_prompt
 from ptc_agent.agent.middleware.compaction.utils import settled_end, turn_start_cut
 from ptc_agent.agent.middleware.reasoning_compat import ReasoningCompatibilityMiddleware
@@ -48,6 +59,7 @@ from tests.unit.ptc_agent.agent.prefix_stability import (
 
 THRESHOLD = 10_000
 FLOOR = 5_000
+COLD = 7_000
 CFG = {"configurable": {"thread_id": "t-turn-start", "user_id": "u-1"}}
 NO_TAIL = summary_prompt("native", False, notes=False)
 KEEPS_TAIL = summary_prompt("native", True, notes=False)
@@ -151,8 +163,19 @@ def _due_request(*, source: str = "an earlier deploy", last_answer_at: float = 1
 TURN = [HumanMessage("Get a."), _answer(ephemeral_5m_input_tokens=900), HumanMessage("Get b.")]
 
 
-def _plan(request, tokens: int = 9_000, now: float = 1_000_000.0, view=TURN, floor: int = FLOOR, settled_at=None):
-    return TurnStartRebuilds(floor, settled_at=settled_at).plan(request, view, tokens, THRESHOLD, now, first_call=False)
+def _plan(
+    request,
+    tokens: int = 9_000,
+    now: float = 1_000_000.0,
+    view=TURN,
+    floor: int = FLOOR,
+    settled_at=None,
+    cold: int = 0,
+    keep: bool = False,
+):
+    return TurnStartRebuilds(floor, settled_at=settled_at, cold_tokens=cold, keep_full_context=keep).plan(
+        request, view, tokens, THRESHOLD, now, first_call=False
+    )
 
 
 def test_the_cache_clock_starts_at_the_later_of_the_last_answer_and_the_last_run():
@@ -243,13 +266,13 @@ def _deploy(monkeypatch) -> None:
     monkeypatch.setattr(release, "source_digest", lambda: "the next deploy")
 
 
-def _agent(saver: InMemorySaver, system: str, *, floor: int = 0, rows: bool = False):
+def _agent(saver: InMemorySaver, system: str, *, floor: int = 0, rows: bool = False, cold: int = 0, keep: bool = False):
     compaction = CompactionMiddleware(
         Summarizer(GenericFakeChatModel(messages=iter([])), limit=100_000),
         token_threshold=THRESHOLD,
         keep_tokens=THRESHOLD // 3,
         claude_keep_tokens=THRESHOLD // 3,
-    ).with_turn_start_rebuilds(TurnStartRebuilds(floor))
+    ).with_turn_start_rebuilds(TurnStartRebuilds(floor, cold_tokens=cold, keep_full_context=keep))
     return create_agent(
         model=anthropic_model(),
         tools=[get_data],
@@ -505,3 +528,238 @@ def test_a_pin_the_build_refreshed_after_a_bump_waits_on_an_input(monkeypatch):
     _release(monkeypatch, 1, 1)
 
     assert _plan(_due_request(source=release.source_digest(), prompt_version=1)).waits == "inputs_only"
+
+
+# -- a cold thread over cold_tokens (T9) ------------------------------------
+
+
+def _settled_request(**pin):
+    """A Claude thread whose kept prompt is the build's: nothing is due."""
+    return _due_request(content="Prompt B.", **pin)
+
+
+def test_a_cold_thread_that_is_not_due_is_summarized_with_its_tail_from_cold_tokens():
+    cold = _plan(_settled_request(), cold=COLD)
+
+    assert (cold.due, cold.cut, cold.forced, cold.scope, cold.threshold) == (False, 0, False, "system_and_tools", COLD)
+    assert _plan(_settled_request(), cold=COLD, now=1_010.0) == RebuildPlan()
+    under = _plan(_settled_request(), cold=COLD, tokens=COLD - 1)
+    assert (under.forced, under.threshold) == (False, COLD)
+    assert _plan(_settled_request(), cold=0).threshold is None
+    assert _plan(_settled_request(), cold=THRESHOLD).threshold is None
+    other = SimpleNamespace(**{**vars(_settled_request()), "model": SimpleNamespace(model_name="gemini-3.8-flash")})
+    assert _plan(other, cold=COLD).threshold is None
+    mid_run = [*TURN[:2], _calls(3, "c1"), ToolMessage("a", tool_call_id="c1")]
+    assert _plan(_settled_request(), cold=COLD, view=mid_run) == RebuildPlan()
+
+
+def test_a_cold_threshold_summary_that_keeps_the_tail_marks_only_the_system_and_tools():
+    """The threshold fires anyway; the history it summarizes is never sent again."""
+    over = _plan(_settled_request(), cold=COLD, tokens=THRESHOLD)
+
+    assert (over.forced, over.scope) == (False, "system_and_tools")
+    assert _plan(_settled_request(), cold=0, tokens=THRESHOLD).scope == "system_and_tools"
+    assert _plan(_settled_request(), cold=COLD, tokens=THRESHOLD, now=1_010.0).scope is None
+
+
+def test_only_a_thread_claude_answered_last_has_a_cache_known_to_have_expired():
+    view = [*TURN[:2], HumanMessage("Again."), _answer("deepseek-chat"), TURN[2]]
+
+    assert _plan(_settled_request(), cold=COLD, view=view) == RebuildPlan()
+
+
+def test_a_due_thread_over_cold_tokens_keeps_no_tail():
+    """A deploy is T2's. A prompt due on an input alone, which T2 leaves
+    waiting, is summarized at the cold threshold like any due thread at its
+    threshold, keeping no turns."""
+    deploy = _plan(_due_request(), cold=COLD)
+    inputs = _plan(_due_request(source=release.source_digest()), cold=COLD)
+
+    assert (deploy.cut, deploy.forced, deploy.reason, deploy.scope) == (2, True, "deploy_cold", "last_tool")
+    assert (inputs.cut, inputs.forced, inputs.waits, inputs.scope, inputs.threshold) == (2, False, "inputs_only", "last_tool", COLD)
+    warm = _plan(_due_request(source=release.source_digest()), cold=COLD, now=1_010.0)
+    assert (warm.waits, warm.threshold) == ("inputs_only", None)
+    mid_run = [*TURN[:2], _calls(3, "c1"), ToolMessage("a", tool_call_id="c1")]
+    crossing = _plan(_due_request(source=release.source_digest()), cold=COLD, view=mid_run)
+    assert (crossing.cut, crossing.carry, crossing.reason, crossing.threshold) == (4, True, "mid_turn", None)
+
+
+def test_a_due_thread_a_fallback_answered_last_is_not_summarized_over_cold_tokens():
+    """Only a Claude answer reports the ttl its cache was written with."""
+    view = [*TURN[:2], HumanMessage("Again."), _answer("deepseek-chat"), TURN[2]]
+
+    waiting = _plan(_due_request(source=release.source_digest()), cold=COLD, view=view)
+
+    assert (waiting.forced, waiting.threshold, waiting.waits) == (False, None, "fallback")
+
+
+def test_a_subagent_never_summarizes_a_cold_thread_under_its_threshold():
+    assert StalePinRebuilds().plan(_settled_request(), TURN, 9_000, THRESHOLD, 1e6, first_call=False) == RebuildPlan()
+
+
+def test_a_skip_leaves_a_cold_thread_whole_for_its_turn_alone():
+    assert _plan(_settled_request(), cold=COLD, keep=True).threshold is None
+    assert _plan(_settled_request(), cold=COLD).threshold == COLD
+
+
+def test_a_skip_never_skips_the_threshold_or_a_deploy():
+    """It skips what a cold cache alone would summarize: a summary the
+    context's size or the system's prompt forces still runs."""
+    over = _plan(_settled_request(), cold=COLD, tokens=THRESHOLD, keep=True)
+    deploy = _plan(_due_request(), cold=COLD, keep=True)
+    inputs = _plan(_due_request(source=release.source_digest()), cold=COLD, keep=True)
+
+    assert (over.scope, over.threshold) == ("system_and_tools", None)
+    assert (deploy.forced, deploy.reason) == (True, "deploy_cold")
+    assert (inputs.forced, inputs.waits, inputs.threshold) == (False, "inputs_only", None)
+
+
+# -- what the composer says the next turn start summarizes ---------------------
+
+
+def _reading(
+    model_name: str = "claude-opus-5-5",
+    threshold: int = THRESHOLD,
+    previous=None,
+    model=CLAUDE,
+    cold: int = COLD,
+    floor: int = FLOOR,
+    **written,
+):
+    answer = _answer(model_name, **(written or {"ephemeral_5m_input_tokens": 900}))
+    return answer_reading(answer, threshold, model, previous, TurnStartRebuilds(floor, cold_tokens=cold))
+
+
+def _between_turns(tokens: int, reading: dict | None = None, **pin) -> dict:
+    return {
+        "_cached_input_tokens": tokens - 100,
+        "_cached_output_tokens": 100,
+        "_last_model_response_at": 1_000.0,
+        LAST_ANSWER_KEY: _reading() if reading is None else reading,
+        STATE_SYSTEM_PIN: {"model": "claude-opus-5-5", "content": "Prompt A.", "source_digest": release.source_digest(), **pin},
+    }
+
+
+def _next(state: dict, *, settled_at=None):
+    return next_summary(state, settled_at=settled_at)
+
+
+def test_the_composer_is_told_of_a_cold_summary_with_the_time_the_cache_expires():
+    assert _next(_between_turns(COLD)) == {"reason": "cold", "at": 1_300.0}
+    assert _next(_between_turns(COLD), settled_at=datetime.fromtimestamp(1_200, UTC)) == {"reason": "cold", "at": 1_500.0}
+
+
+def test_the_cache_expires_by_the_ttl_the_turn_start_reads():
+    """The newest Claude answer that wrote cache decides, as ``cache_ttl``
+    reads it from the view; with none recorded, the route."""
+    hour = _reading(ephemeral_1h_input_tokens=900)
+    kept = _reading("claude-opus-5-5", previous=hour, cache_read_input_tokens=900)
+
+    assert _next(_between_turns(COLD, hour))["at"] == 4_600.0
+    assert _next(_between_turns(COLD, kept))["at"] == 4_600.0
+    oauth = ChatAnthropicOAuth(model_name="claude-opus-5-5", api_key="sk-ant-oat-placeholder")
+    assert _next(_between_turns(COLD, _reading(model=oauth, cache_read_input_tokens=900)))["at"] == 4_600.0
+
+
+def test_at_the_threshold_its_last_answer_was_measured_against_the_summary_is_told_without_a_time():
+    """The reading is the user's own threshold, so a profile counts."""
+    assert _next(_between_turns(THRESHOLD, _reading(cold=0))) == {"reason": "threshold"}
+    assert _next(_between_turns(THRESHOLD // 2, _reading(threshold=THRESHOLD // 2))) == {"reason": "threshold"}
+
+
+def test_the_composer_is_told_nothing_the_turn_start_would_not_summarize():
+    assert _next(_between_turns(COLD - 1)) is None
+    assert _next(_between_turns(COLD, _reading(cold=0))) is None
+    assert _next(_between_turns(COLD, _reading("deepseek-chat"))) is None
+    assert _next(_between_turns(COLD, _reading(model=SimpleNamespace(model_name="gemini-3.8-flash")))) is None
+    assert _next(_between_turns(COLD, {})) is None
+    assert _next({}) is None
+
+
+def test_a_thread_that_may_be_due_is_told_of_the_rebuild_a_send_cannot_skip(monkeypatch):
+    """A summary runs either way; only one the deploy forces takes no skip."""
+    deployed = _between_turns(COLD, source_digest="an earlier deploy")
+
+    assert _next(deployed) == {"reason": "rebuild", "at": 1_300.0}
+    assert _next({**deployed, LAST_ANSWER_KEY: _reading(floor=0)}) == {"reason": "cold", "at": 1_300.0}
+    assert _next(_between_turns(COLD, stale=True)) == {"reason": "cold", "at": 1_300.0}
+    assert _next(_between_turns(THRESHOLD, stale=True)) == {"reason": "threshold"}
+    _release(monkeypatch, 2, 2)
+    assert _next(_between_turns(COLD, stale=True, prompt_version=1)) == {"reason": "rebuild"}
+
+
+def test_a_rebuild_is_told_whatever_the_cold_setting_and_an_urgent_one_at_once(monkeypatch):
+    """A deploy's is forced from the floor, cold summaries on or off, and an
+    urgent one at the next send, warm or cold, whoever answered last."""
+    deployed = {**_between_turns(FLOOR, source_digest="an earlier deploy"), LAST_ANSWER_KEY: _reading(cold=0)}
+
+    assert _next(deployed) == {"reason": "rebuild", "at": 1_300.0}
+    assert _next(_between_turns(FLOOR, _reading(cold=0), stale=True)) is None
+    _release(monkeypatch, 2, 2)
+    urgent = _between_turns(FLOOR // 2, _reading("deepseek-chat", cold=0), stale=True, prompt_version=1)
+    assert _next(urgent) == {"reason": "rebuild"}
+    other = SimpleNamespace(model_name="gemini-3.8-flash")
+    assert _next({**urgent, LAST_ANSWER_KEY: _reading(model=other)}) is None
+
+
+def _marked(payload: dict) -> dict:
+    """Where the request marks the cache, by what it marks."""
+    return {
+        "top": "cache_control" in payload,
+        "system": any("cache_control" in block for block in payload["system"]),
+        "tools": [("cache_control" in tool) for tool in payload["tools"]][-1:] == [True],
+        "messages": "cache_control" in json.dumps(payload["messages"]),
+    }
+
+
+@pytest.mark.parametrize(("idle", "summarized"), [(600.0, True), (60.0, False)], ids=["cold", "warm"])
+@pytest.mark.asyncio
+async def test_a_cold_thread_over_cold_tokens_keeps_its_tail_under_its_prompt(monkeypatch, clock, caplog, idle, summarized):
+    caplog.set_level("INFO")
+    after = [_compaction, _measured(reply(4, text="Done."), 4_000)] if summarized else [_measured(reply(3, text="Done."), 8_100)]
+    wire = Wire(_script(8_000, *after)).install(monkeypatch)
+    saver = InMemorySaver()
+    await _first_turn(saver)
+    clock.now += idle
+    await _agent(saver, "Prompt A.", cold=COLD).ainvoke({"messages": [HumanMessage("Get b.")]}, CFG)
+
+    assert is_compaction_request(wire.payloads[2]) is summarized
+    assert bool(re.search(rf"trigger=cold tokens=\d+ threshold={COLD} ", caplog.text)) is summarized
+    if summarized:
+        summary, answer = wire.payloads[2], wire.payloads[3]
+        assert _instructions(summary) == KEEPS_TAIL
+        assert _marked(summary) == {"top": False, "system": True, "tools": True, "messages": False}
+        assert "Prompt A." in _system(answer)
+        assert any(block.get("type") == "thinking" for m in answer["messages"] for block in m["content"] if isinstance(block, dict))
+    assert api_drops(wire) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_keeps_the_full_context_skips_the_cold_summary_and_says_so(monkeypatch, clock, caplog):
+    caplog.set_level("INFO")
+    wire = Wire(_script(8_000, _measured(reply(3, text="Done."), 8_100))).install(monkeypatch)
+    saver = InMemorySaver()
+    await _first_turn(saver)
+    clock.now += 600.0
+    await _agent(saver, "Prompt A.", cold=COLD, keep=True).ainvoke({"messages": [HumanMessage("Get b.")]}, CFG)
+
+    assert not is_compaction_request(wire.payloads[2])
+    assert "[Compaction] trigger=cold skipped=user tokens=" in caplog.text
+    assert "thread_id=t-turn-start agent=main" in caplog.text
+    assert api_drops(wire) == {}
+
+
+@pytest.mark.parametrize("cold", [COLD, 0], ids=["on", "off"])
+@pytest.mark.asyncio
+async def test_an_answer_leaves_what_the_composer_reads_between_turns(monkeypatch, clock, cold):
+    """Read from the checkpoint's values, as the thread's status reads them,
+    with no messages replayed and the turn's own settings: with
+    ``cold_compaction`` off its cold_tokens is 0, and nothing cold is told."""
+    Wire(_script(8_000)).install(monkeypatch)
+    saver = InMemorySaver()
+    await _agent(saver, "Prompt A.", floor=FLOOR, cold=cold).ainvoke({"messages": [HumanMessage("Get a.")]}, CFG)
+    values = saver.get_tuple(CFG).checkpoint["channel_values"]
+
+    assert (values[LAST_ANSWER_KEY]["threshold"], values[LAST_ANSWER_KEY]["cold_tokens"]) == (THRESHOLD, cold)
+    told = next_summary(values, settled_at=None)
+    assert told == ({"reason": "cold", "at": values["_last_model_response_at"] + 300} if cold else None)
