@@ -23,18 +23,18 @@ import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/
 import './chat-input.css';
 import type { ComposerScope, ModelOptions, ReadyAttachment, SlashCommand, ThreadTuning, Workspace } from './chat-input.types';
 import { isLargePaste, getModelDisplayName } from './chat-input.helpers';
-import { effortLabelFor, hasTuningMenu, resolveEffort } from '@/lib/modelTuning';
+import { effortLabelFor, resolveEffort } from '@/lib/modelTuning';
 import { ChatInputWidgetDeck, MentionAutocompleteList, SlashCommandList } from './chat-input.parts';
 import {
   ComposerAttachments, ComposerPills, DropOverlay, SendStopButton, ToolbarOverflowMenu, VoiceButton, VoiceOverlay,
 } from './chat-input.composerParts';
-import { ChatInputEffortMenu, ChatInputModelMenu, ModelTriggerMeasure } from './chat-input.modelMenu';
+import { ChatInputModelMenu, ModelTriggerMeasure, type EffortMenuProps } from './chat-input.modelMenu';
 import type { ModelRowStatus } from './chat-input.modelPicker';
 import { claudeCodeTokenUrl, isClaudeCodeModel } from '@/lib/claudeCode';
 import { useWorkspaceClaudeCode } from '@/hooks/useWorkspaceClaudeCode';
 import { deriveRecentModels } from './chat-input.models';
 import { modelGroups } from '@/lib/modelGroups';
-import { useToolbarItems } from './chat-input.toolbar';
+import { useEffortToolbarItem, useToolbarItems } from './chat-input.toolbar';
 import {
   useToolbarFold, CONTAINER_BORDER, CONTAINER_PX, GROUP_GAP, ICON_BUTTON_W, TOOLBAR_GAP,
 } from './chat-input.useToolbarFold';
@@ -152,6 +152,7 @@ export interface ChatInputProps {
    * docks its folded tray here). Outside the fold budget on purpose: a host's
    * status comes and goes on its own clock, and the toggles must not hop into
    * the overflow menu with it, so the model label gives up the room instead.
+   * Only once the label is down to its floor does the status cost a slot.
    */
   toolbarStatus?: React.ReactNode;
 }
@@ -662,12 +663,39 @@ function ChatInput({
     menuContainer: chatContainer,
     draftRef: textareaRef,
   });
+  // The effort pill sits beside the model pill and folds last (`slot: 'right'`).
+  const effortLabel = effortLabelFor(t, resolvedEffort);
+  const taskCost = pillModel ? modelMetadata[pillModel]?.task_cost : undefined;
+  const effortProps = useMemo<EffortMenuProps>(() => ({
+    effortLabel,
+    reasoningEffort: resolvedEffort,
+    defaultEffort: settingsEffort,
+    reasoningEfforts,
+    onReasoningEffortChange: handleReasoningEffortChange,
+    fastMode: resolvedFastMode,
+    onFastModeChange: handleFastModeChange,
+    isCodexModel,
+    dropdownDirection,
+    container: chatContainer,
+    taskCost,
+    disabled: modelsLoading,
+  }), [
+    effortLabel, resolvedEffort, settingsEffort, reasoningEfforts, handleReasoningEffortChange, resolvedFastMode,
+    handleFastModeChange, isCodexModel, dropdownDirection, chatContainer, taskCost, modelsLoading,
+  ]);
+  const effortItem = useEffortToolbarItem(effortProps, isMobile);
+  const foldItems = useMemo(() => [...toolbarItems, effortItem], [toolbarItems, effortItem]);
 
   const ringVisible = !!(tokenUsage && tokenUsage.threshold > 0 && tokenUsage.total > 0);
   const micReserved = speechSupported && !!otherPref?.voice_input_enabled;
-  const { measureRowRef, fold } = useToolbarFold({
+  // Right group: the model pill (measured), the mic, and send/stop. A turn
+  // hides the mic but keeps its room, so the fold set holds through it.
+  const rightGroup = (model: number) => GROUP_GAP + model
+    + (micReserved ? TOOLBAR_GAP + ICON_BUTTON_W : 0)
+    + TOOLBAR_GAP + ICON_BUTTON_W;
+  const { measureRowRef, statusRef, fold } = useToolbarFold({
     containerRef: chatContainerRef,
-    items: toolbarItems,
+    items: foldItems,
     // The model pill is measured too, but it isn't foldable. Its label joins
     // the key because an authored display_name comes with the models request,
     // which can land after the pill was first measured under the key's label.
@@ -677,14 +705,11 @@ function ChatInput({
     fixedLeft: CONTAINER_BORDER + CONTAINER_PX + ICON_BUTTON_W
       + (ringVisible ? TOOLBAR_GAP + ICON_BUTTON_W : 0)
       + (onCaptureChart ? TOOLBAR_GAP + ICON_BUTTON_W : 0),
-    // Right group: the model pill (measured), the mic, and send/stop. A turn
-    // hides the mic but keeps its room, so the fold set holds through it.
-    rightReserve: (widths) => GROUP_GAP + (widths.model ?? 0)
-      + (micReserved ? TOOLBAR_GAP + ICON_BUTTON_W : 0)
-      + TOOLBAR_GAP + ICON_BUTTON_W,
+    rightReserve: (widths) => rightGroup(widths.model ?? 0),
+    rightFloor: (widths) => rightGroup(widths.modelFloor ?? 0),
   });
   const inlineItems = toolbarItems.filter((i) => fold.inline.has(i.id));
-  const foldedItems = toolbarItems.filter((i) => fold.folded.includes(i.id));
+  const foldedItems = foldItems.filter((i) => fold.folded.includes(i.id));
 
   const favorites = useFavoriteModels();
   const { entryFor } = useProviderCatalog();
@@ -722,7 +747,6 @@ function ChatInput({
     }
     return { tag: lapsedSignIn(m) ? t('modelAccess.status.needsReauth') : undefined };
   };
-  const showEffort = hasTuningMenu(reasoningEfforts, isCodexModel);
 
   return (
     <div
@@ -877,7 +901,11 @@ function ChatInput({
                 />
               )}
 
-              {toolbarStatus}
+              {/* Measured where it paints, for the fold's last resort. The
+                  gap before it moves inside (its own cancelled, its child's
+                  margin in its place), so an absent or hidden status takes
+                  no room and the measured width is the whole cost. */}
+              <span ref={statusRef} className="-ml-1 flex flex-none items-center *:ml-1">{toolbarStatus}</span>
 
               {/* Hidden measure row — the SAME components rendered geometry-only
                   (no handlers, menus, or aria state), so the fold budget can
@@ -887,11 +915,14 @@ function ChatInput({
                 aria-hidden
                 className="invisible pointer-events-none absolute top-0 left-[-9999px] flex items-center gap-1 whitespace-nowrap"
               >
-                {toolbarItems.filter((i) => i.visible).map((item) => (
+                {foldItems.filter((i) => i.visible).map((item) => (
                   <span key={item.id} data-measure={item.id}>{item.inline({ measureOnly: true })}</span>
                 ))}
                 <span data-measure="model">
-                  <ModelTriggerMeasure selectedModel={pillModel} metadata={modelMetadata} effortLabel={effortLabelFor(t, resolvedEffort)} fast={resolvedFastMode === true && isCodexModel} showEffort={showEffort} />
+                  <ModelTriggerMeasure pill="model" selectedModel={pillModel} metadata={modelMetadata} />
+                </span>
+                <span data-measure="modelFloor">
+                  <ModelTriggerMeasure pill="model" selectedModel={pillModel} metadata={modelMetadata} floor />
                 </span>
               </div>
             </div>
@@ -912,21 +943,9 @@ function ChatInput({
                 container={chatContainer}
                 draftRef={textareaRef}
                 disabled={modelsLoading}
+                nameHidden={fold.nameHidden}
               />
-              <ChatInputEffortMenu
-                effortLabel={effortLabelFor(t, resolvedEffort)}
-                reasoningEffort={resolvedEffort}
-                defaultEffort={settingsEffort}
-                reasoningEfforts={reasoningEfforts}
-                onReasoningEffortChange={handleReasoningEffortChange}
-                fastMode={resolvedFastMode}
-                onFastModeChange={handleFastModeChange}
-                isCodexModel={isCodexModel}
-                dropdownDirection={dropdownDirection}
-                container={chatContainer}
-                taskCost={pillModel ? modelMetadata[pillModel]?.task_cost : undefined}
-                disabled={modelsLoading}
-              />
+              {fold.inline.has(effortItem.id) && effortItem.inline({})}
               {/* Voice input, when enabled in settings. */}
               {micReserved && (
                 <VoiceButton
