@@ -263,6 +263,11 @@ compaction:
   # the prompt cache expired, that summary runs anyway from this many tokens
   # of context. 0: only when the threshold or an overflow fires one.
   rebuild_floor_tokens: 150000
+  # At a turn start under token_threshold, with the prompt cache expired, a
+  # Claude thread of this many tokens is summarized too, keeping the tail
+  # unless its prompt is due, rather than written to the cache whole again.
+  # Reached only where token_threshold is higher. 0: off.
+  cold_compact_tokens: 300000
 
 # =============================================================================
 # TOOL CONFIGURATION

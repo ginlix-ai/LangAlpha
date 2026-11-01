@@ -17,7 +17,8 @@ on the one before.
   and mid-turn up to the step under way, which that call is sent as a row
   (see ``carry``), after a step on the notes when they are on,
   and on the main agent at a turn start under the threshold too, after a
-  deploy, once the prompt cache has expired (see ``rebuild``), and
+  deploy, once the prompt cache has expired, or once an expired cache holds
+  a large context, keeping the tail where nothing is due (see ``rebuild``), and
   the attachments in what it keeps are taken out until it fits; on Claude,
   whose kept turns are sent as they were, the summary takes them instead
   (see ``fitting.Fit``); and between turns when the user asks (see
@@ -393,13 +394,16 @@ class CompactionMiddleware(AgentMiddleware):
             first_call=bool(request.state.get("_run_first_call")),
         )
         refusal: Exception | None = None
-        over = tokens >= self._token_threshold
+        threshold = plan.threshold or self._token_threshold
+        over = tokens >= threshold
         if over and not plan.forced:
             thread_id, agent = run_ids()
+            cold = tokens < self._token_threshold
             logger.info(
-                "[Compaction] trigger=threshold tokens=%d threshold=%d thread_id=%s agent=%s",
+                "[Compaction] trigger=%s tokens=%d threshold=%d thread_id=%s agent=%s",
+                "cold" if cold else "threshold",
                 tokens,
-                self._token_threshold,
+                threshold if cold else self._token_threshold,
                 thread_id,
                 agent,
             )
