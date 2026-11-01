@@ -19,7 +19,7 @@ from ptc_agent.config.core import (
 )
 
 
-def _build(**kwargs) -> dict:
+def _build(*, features: dict[str, bool] | None = None, **kwargs) -> dict:
     """The arguments ``create_agent`` hands langchain's builder."""
     config = AgentConfig(
         llm=LLMConfig(name="test-model"),
@@ -28,6 +28,7 @@ def _build(**kwargs) -> dict:
         sandbox=SandboxConfig(daytona=DaytonaConfig(api_key="test-key")),
         mcp=MCPConfig(),
         filesystem=FilesystemConfig(),
+        features=features,
     )
     llm = GenericFakeChatModel(messages=iter([]))
     captured: list[dict] = []
@@ -147,7 +148,7 @@ def test_the_notes_prompt_sits_inside_compaction_on_the_main_stack_only(machine)
 
 
 def test_without_the_scratchpad_its_rows_stay_out_of_the_calls(machine):
-    names = _names(_build(**machine))
+    names = _names(_build(features={"scratchpad": False}, **machine))
 
     assert "NotesDueMiddleware" not in names
     at = names.index("NotesOffMiddleware")

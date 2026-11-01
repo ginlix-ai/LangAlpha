@@ -38,6 +38,7 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
     DurableUpdate,
     build_update_message,
 )
+from ptc_agent.agent.middleware.runtime_context.frozen_prompt import STATE_SYSTEM_PIN
 from ptc_agent.agent.middleware.runtime_context.turn import (
     NOTES_CHECK_IN_ROW_KIND,
     NOTES_DUE_ROW_KIND,
@@ -46,6 +47,7 @@ from ptc_agent.agent.middleware.runtime_context.turn import (
 from ptc_agent.agent.prompts import init_loader
 from ptc_agent.agent.transcript import TranscriptTarget, Window
 from ptc_agent.core.paths import WorkspaceLayout
+from tests.unit.ptc_agent.agent.prefix_stability import reply
 
 THREAD = "a1b2c3d4-0000-4000-8000-000000000000"
 ROOT = WorkspaceLayout("/home/workspace", "acme").workspace
@@ -423,6 +425,7 @@ async def test_a_rebuilt_baseline_has_no_reminder_to_fold_in():
 class _Request:
     messages: list
     state: dict = field(default_factory=dict)
+    model: object = None
 
     def override(self, **changes):
         return replace(self, **changes)
@@ -683,6 +686,86 @@ async def test_without_the_scratchpad_no_notes_row_reaches_the_model():
     await NotesOffMiddleware().awrap_model_call(_Request(messages), handler)
 
     assert seen == [HumanMessage("go"), turn, AIMessage("ok")]
+
+
+# -- a thread pinned to a prompt from before the scratchpad -----------------
+
+CLAUDE = "claude-haiku-5-5"
+BEFORE = "You are a test agent."
+AFTER = "You are a test agent.\n\n<thread_scratchpad>\nKeep notes.\n</thread_scratchpad>"
+
+
+def _pin(prompt: str, model: str = CLAUDE) -> dict:
+    return {STATE_SYSTEM_PIN: {"model": model, "content": [{"type": "text", "text": prompt}]}}
+
+
+def _thought() -> AIMessage:
+    """Claude's answer with its thinking, which binds the pin it went out with."""
+    return reply(1, text="On it.", model_name=CLAUDE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pin", "answer", "asked"),
+    [
+        (_pin(BEFORE), _thought(), False),
+        (_pin(AFTER), _thought(), True),
+        (_pin(BEFORE), AIMessage("On it.", id="msg_01"), True),
+        (_pin(BEFORE, "claude-opus-5-5"), _thought(), True),
+        ({}, _thought(), True),
+    ],
+    ids=["pinned-before", "pinned-after", "no-bound-thinking", "pinned-for-another-model", "no-pin"],
+)
+async def test_rows_are_asked_only_under_a_prompt_that_explains_the_notes(pin, answer, asked):
+    """Until its rebuild, a Claude thread is sent the prompt its thinking was
+    produced under, which may predate the scratchpad section. Where the
+    build's prompt goes out instead, it has the section."""
+    state = {
+        "messages": [HumanMessage("go"), answer],
+        "_summarization_event": None,
+        "_notes_below_mark": None,
+        "_cached_input_tokens": 255_000,
+        **pin,
+    }
+
+    written = await _middleware(model=CLAUDE).abefore_model(state)
+
+    assert (written is not None) is asked
+    if asked:
+        assert runtime_update_from_message(written["messages"][0]).kind == NOTES_DUE_ROW_KIND
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_call_below_the_mark_still_records_it():
+    """A model switch takes the new prompt without a summary, so the stretch
+    a pinned thread is in has to know it started below the mark."""
+    state = {
+        "messages": [HumanMessage("go"), _thought()],
+        "_summarization_event": None,
+        "_cached_input_tokens": 90_000,
+        **_pin(BEFORE),
+    }
+
+    assert await _middleware(model=CLAUDE).abefore_model(state) == {"_notes_below_mark": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("pin", "kept"), [(_pin(BEFORE), False), (_pin(AFTER), True)])
+async def test_a_prompt_without_the_section_is_sent_no_notes_row(pin, kept):
+    """A row asked under the new prompt stays out while a call goes out on the
+    old one, as with the scratchpad off."""
+    (reminder,) = (await _ask(0.85))["messages"]
+    messages = [HumanMessage("go"), reminder, _thought()]
+    seen: list = []
+
+    async def handler(request):
+        seen.extend(request.messages)
+
+    request = _Request(messages, pin, SimpleNamespace(model_name=CLAUDE))
+    await _middleware().awrap_model_call(request, handler)
+
+    assert (reminder in seen) is kept
+    assert [m for m in seen if m is not reminder] == [HumanMessage("go"), messages[2]]
 
 
 @pytest.mark.asyncio
