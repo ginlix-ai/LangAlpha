@@ -4,7 +4,7 @@ import { usePreferences } from './usePreferences';
 import { useAllModels } from './useAllModels';
 import { modelPrefs, modelProfile } from '@/lib/modelPreferences';
 import { resolveTuning } from '@/lib/modelTuning';
-import type { ModelProfile } from '@/lib/modelTuning';
+import type { AccountTuning, ModelProfile } from '@/lib/modelTuning';
 
 /**
  * Writers for the two layers of model configuration.
@@ -43,7 +43,7 @@ export function useModelProfileWriter() {
 
   /** The account-wide value a model inherits when it has no override. */
   const writeAccountDefault = useCallback(
-    (patch: ModelProfile) => {
+    (patch: AccountTuning) => {
       mutate({ model_preference: patch });
     },
     [mutate],

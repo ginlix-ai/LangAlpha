@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Select } from '@/components/ui/select';
+import { ToggleSwitch } from '@/components/ui/switch';
 import { CompactionProfilePicker } from './CompactionProfilePicker';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useModelProfileWriter } from '@/hooks/useModelProfile';
@@ -54,6 +55,8 @@ export function AccountTuningDefaults({
   }, [metadata, validModelNames]);
 
   const guidance = account.prompt_guidance ?? '';
+  const coldCompaction = account.cold_compaction !== false;
+  const coldId = useId();
 
   return (
     <div className="flex flex-col gap-4">
@@ -83,6 +86,24 @@ export function AccountTuningDefaults({
         onChange={(v) => writeAccountDefault({ compaction_profile: v || null })}
         profiles={compactionProfiles}
       />
+
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <label htmlFor={coldId} className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
+            {t('settings.modelTuning.coldCompaction')}
+          </label>
+          <p id={`${coldId}-desc`} className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            {t('settings.modelTuning.coldCompactionDesc')}
+          </p>
+        </div>
+        <ToggleSwitch
+          id={coldId}
+          checked={coldCompaction}
+          onChange={() => writeAccountDefault({ cold_compaction: coldCompaction ? false : null })}
+          ariaDescribedBy={`${coldId}-desc`}
+          className="mt-0.5"
+        />
+      </div>
 
       <div className="flex flex-col gap-1.5">
         <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>

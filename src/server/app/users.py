@@ -10,7 +10,7 @@ from fastapi import File, UploadFile
 from pydantic import BaseModel
 from src.llms.preferences import (
     MOVED_MODEL_KEYS,
-    TUNING_FIELDS,
+    PROFILE_FIELDS,
     TuningError,
     validate_tuning,
 )
@@ -406,12 +406,12 @@ def _validate_model_tuning(model_pref: dict, effective: dict) -> None:
                 )
             # Anything outside the tuning set is a typo that would sit in the
             # row forever doing nothing, so it is rejected at the boundary.
-            unknown = set(profile) - set(TUNING_FIELDS)
+            unknown = set(profile) - set(PROFILE_FIELDS)
             if unknown:
                 raise HTTPException(
                     status_code=400,
                     detail=f"profiles[{model}]: unknown settings {sorted(unknown)}; "
-                           f"allowed: {sorted(TUNING_FIELDS)}",
+                           f"allowed: {sorted(PROFILE_FIELDS)}",
                 )
             # One entry, resolved the way the resolver resolves it: a custom
             # model shadows a built-in of the same name, so reading the
