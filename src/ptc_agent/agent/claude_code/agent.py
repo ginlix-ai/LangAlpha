@@ -29,6 +29,7 @@ from ptc_agent.agent.claude_code.runtime import (
     RuntimeSpec,
     build_claude_code_graph,
 )
+from ptc_agent.agent.middleware.steering import SteeringMiddleware
 from src.llms.claude_code import ClaudeCodeTarget
 
 
@@ -62,12 +63,16 @@ class ClaudeCodeGraph:
 def claude_code_graph(
     agent: Any, *, system_prompt: str, target: ClaudeCodeTarget, user_id: str | None,
     thread_id: str | None, checkpointer: Any, launcher: Launcher, entry: Sequence[Any] = (),
-    baseline: Baseline | None = None,
+    baseline: Baseline | None = None, steering: SteeringMiddleware | None = None,
+    alert_senders: frozenset[str] = frozenset(),
 ) -> ClaudeCodeGraph:
     """The turn graph for ``agent``, the compiled agent ``create_agent`` built.
 
     ``entry`` are the middleware whose turn-entry hooks run first, in order,
-    and ``baseline`` renders the thread's frozen baseline. The user is who
+    ``baseline`` renders the thread's frozen baseline, and ``steering`` is the
+    agent's own, which the turn takes in what is sent into the thread with
+    between tool calls and as each query ends, coming back for a notice of
+    ``alert_senders`` as a langalpha turn does. The user is who
     Claude Code is told the device belongs to and the thread names its
     working directory, so a turn without either is refused. ``launcher`` is
     where the turn's CLI runs.
@@ -83,7 +88,8 @@ def claude_code_graph(
         billing={k: v for k, v in (target.metadata or {}).items() if isinstance(v, str)},
         effort=target.effort,
     )
-    turn = ClaudeTurn(spec, launcher, identity=user_id, thread_key=thread_id, baseline=baseline)
+    turn = ClaudeTurn(spec, launcher, identity=user_id, thread_key=thread_id, baseline=baseline, steering=steering,
+                      alert_senders=alert_senders)
     hooks = [(name, nodes[name].runnable) for m in entry if (name := f"{m.name}.before_agent") in nodes]
     graph = build_claude_code_graph(tool_node, entry=hooks, checkpointer=checkpointer).with_config(
         {"recursion_limit": agent.config["recursion_limit"], "configurable": {TURN_KEY: turn}}

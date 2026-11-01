@@ -219,15 +219,19 @@ class SteeringMiddleware(AgentMiddleware):
             return None
         run_id = config_own_run_id(config)
 
-        for delivered in _opened_with(
+        for delivered in opened_with(
             state, configurable.get("steer_input_message_id"), run_id
         ):
-            _announce(runtime, thread_id, delivered)
+            announce(runtime.stream_writer, thread_id, delivered)
         taken = await self._take(thread_id, run_id)
         resumes = await self._take_resumes(thread_id, run_id)
         if not taken and not resumes:
             return None
-        update = self._inject(runtime, thread_id, run_id, taken)
+        update: dict[str, Any] = {"messages": []}
+        if taken:
+            message, delivered = self._message(thread_id, run_id, taken)
+            announce(runtime.stream_writer, thread_id, delivered)
+            update["messages"].append(message)
         if resumes:
             update["messages"].append(_resume_call(resumes, run_id))
             update["jump_to"] = "tools"
@@ -237,15 +241,18 @@ class SteeringMiddleware(AgentMiddleware):
             )
         return update
 
-    def _inject(
-        self,
-        runtime: Runtime,
-        thread_id: str,
-        run_id: str | None,
-        taken: list[SteeredReport],
-    ) -> dict[str, Any]:
-        if not taken:
-            return {"messages": []}
+    async def take_message(
+        self, thread_id: str, run_id: str | None
+    ) -> HumanMessage | None:
+        """What waits for this run, held for it, as the one message it is
+        read in; None when nothing waits. For a runtime that reads it in its
+        own place rather than before a model call; resumes are not taken."""
+        taken = await self._take(thread_id, run_id)
+        return self._message(thread_id, run_id, taken)[0] if taken else None
+
+    def _message(
+        self, thread_id: str, run_id: str | None, taken: list[SteeredReport]
+    ) -> tuple[HumanMessage, dict[str, Any]]:
         message, delivered = _steering_message(
             taken, run_id, time.time(), self.report_inbox.render_group
         )
@@ -254,15 +261,14 @@ class SteeringMiddleware(AgentMiddleware):
             f"steer(s) and {sum(t.kind != 'steer' for t in taken)} report(s) "
             f"for thread_id={thread_id}"
         )
-        _announce(runtime, thread_id, delivered)
-        return {"messages": [message]}
+        return message, delivered
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        await self._confirm(request.state)
+        await self.confirm_read((request.state or {}).get("messages") or [])
         return await handler(request)
 
     async def awrap_tool_call(
@@ -352,7 +358,7 @@ class SteeringMiddleware(AgentMiddleware):
             logger.warning(f"[Steering] Taking task resumes failed: {e}")
             return []
 
-    async def _confirm(self, state: Any) -> None:
+    async def confirm_read(self, messages: Sequence[Any]) -> None:
         """Close the rows injected since the last model response.
 
         The step that injected them is checkpointed before this one starts,
@@ -361,7 +367,7 @@ class SteeringMiddleware(AgentMiddleware):
         if self.report_inbox is None:
             return
         # A resume call in the window holds no rows of its own.
-        for message in since_model_response((state or {}).get("messages") or []):
+        for message in since_model_response(messages):
             kwargs = getattr(message, "additional_kwargs", None) or {}
             held: _HeldJobs | None = kwargs.get(_HELD_JOBS) or kwargs.get(_LEGACY_HELD)
             if held and held.get("run_id") and held.get("job_ids"):
@@ -447,7 +453,7 @@ def _held_resume(request: ToolCallRequest) -> dict[str, Any] | None:
     return None
 
 
-def _opened_with(
+def opened_with(
     state: Any, input_id: str | None, run_id: str | None
 ) -> list[dict[str, Any]]:
     """The ``steering_delivered`` payloads of the steers this run's turn
@@ -472,11 +478,12 @@ def _opened_with(
     return opened
 
 
-def _announce(runtime: Runtime, thread_id: str, delivered: dict[str, Any]) -> None:
+def announce(
+    writer: Callable[[Any], None], thread_id: str, delivered: dict[str, Any]
+) -> None:
+    """Tell the stream a steering message was delivered."""
     try:
-        runtime.stream_writer(
-            {"type": "steering_delivered", "thread_id": thread_id, **delivered}
-        )
+        writer({"type": "steering_delivered", "thread_id": thread_id, **delivered})
     except Exception:
         logger.debug("[Steering] stream_writer unavailable, skipping SSE event")
 

@@ -11,11 +11,14 @@ from langchain_core.tools import tool
 
 from pathlib import Path
 
+from ptc_agent.agent.claude_code.mid_turn import AfterTool, mid_turn_messages
 from ptc_agent.agent.claude_code.launcher import LocalLauncher, Prepared
 from ptc_agent.agent.claude_code.runtime import (
-    _END, ClaudeCodeState, ClaudeTurn, ClaudeTurnFailed, RuntimeSpec, _Message, _Run, options_for, turn_failure, turn_prompt,
+    _END, ClaudeCodeState, ClaudeTurn, ClaudeTurnFailed, RuntimeSpec, _Message, _Run, options_for, turn_failure,
+    turn_prompt,
 )
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionDrift
+from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults, tool_specs
 from ptc_agent.agent.main_state import MainAgentState
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
@@ -165,7 +168,8 @@ def bash(command: str) -> str:
 
 def test_options_give_claude_code_none_of_its_own_prompt_settings_or_tools():
     spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={}, effort="high")
-    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"))
+    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"),
+                          after_tool=AfterTool(ToolResults(), send=_unsent))
     assert options.tools == [] and options.setting_sources == [] and options.strict_mcp_config is True
     assert options.system_prompt == {"type": "file", "path": "/c/system-prompt.md"} and options.allowed_tools == ["mcp__langalpha__Bash"]
     assert options.verbatim_prompts is True and options.cwd == "/w"
@@ -173,6 +177,16 @@ def test_options_give_claude_code_none_of_its_own_prompt_settings_or_tools():
     assert options.env["ENABLE_TOOL_SEARCH"] == "false"
     assert json.loads(options.settings) == {"includeGitInstructions": False}
     assert options.permission_mode == "dontAsk" and options.resume is None
+    assert options.max_buffer_size == 2 * MAX_CONTENT_BYTES
+
+
+async def _unsent(text: str) -> None:
+    raise AssertionError(f"sent the CLI {text!r}")
+
+
+def _run(client, spec, launcher=None, results=None, store=None) -> _Run:
+    results = results or ToolResults()
+    return _Run(launcher, None, store or CheckpointSessionStore(), client, results, spec, AfterTool(results, send=_unsent))
 
 
 class _NoTransport(LocalLauncher):
@@ -205,7 +219,7 @@ class _MirrorFails:
 @pytest.mark.asyncio
 async def test_a_drift_the_cli_side_reports_fails_the_step_at_once_with_its_reason():
     spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
-    run = _Run(None, None, CheckpointSessionStore(), _MirrorFails(), ToolResults(), spec)
+    run = _run(_MirrorFails(), spec)
     with pytest.raises(SessionDrift, match="disk full"):
         await asyncio.wait_for(run.settle(["never-arrives"]), 2)
 
@@ -223,11 +237,10 @@ class _ExitsAfter:
 @pytest.mark.asyncio
 async def test_a_cli_that_exits_before_its_init_never_started_and_after_it_fails_the_turn_as_it_exits():
     spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
-    before = _Run(None, None, CheckpointSessionStore(), _ExitsAfter(), ToolResults(), spec)
+    before = _run(_ExitsAfter(), spec)
     with pytest.raises(ClaudeTurnFailed, match="^Claude Code could not start: no room left on the machine$"):
         await asyncio.wait_for(before.finish(), 2)
-    after = _Run(None, None, CheckpointSessionStore(), _ExitsAfter(SystemMessage(subtype="init", data={"model": "m"})),
-                 ToolResults(), spec)
+    after = _run(_ExitsAfter(SystemMessage(subtype="init", data={"model": "m"})), spec)
     with pytest.raises(ProcessError):
         await asyncio.wait_for(after.finish(), 2)
 
@@ -301,3 +314,114 @@ def test_a_session_keeps_its_pin_adopts_one_once_and_drops_it_when_compacted():
     boundary = [{"session_id": "s", "entries": [{"uuid": "b", "subtype": "compact_boundary"}]}]
     assert "pinned" not in session_records_reducer(state, [adopting.commit(boundary)["claude_session"]])
     assert "pinned" not in session_records_reducer(state, [[{"session_id": "s2", "entries": [{"uuid": "c"}]}]])
+
+
+
+class _WaitsOnACall:
+    """A CLI waiting on one of our calls, which ends its query once interrupted."""
+
+    def __init__(self, order):
+        self.order, self.cut = order, asyncio.Event()
+
+    async def receive_messages(self):
+        await self.cut.wait()
+        return
+        yield
+
+    async def interrupt(self):
+        self.order.append("interrupt")
+        self.cut.set()
+
+    async def disconnect(self):
+        self.order.append("disconnect")
+
+
+class _Failed(ToolResults):
+    def __init__(self, order):
+        super().__init__()
+        self.order = order
+
+    def fail_all(self, reason):
+        self.order.append("fail the calls")
+        super().fail_all(reason)
+
+
+class _Releases:
+    async def release(self, prepared):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_a_close_mid_query_interrupts_the_cli_and_waits_for_it_before_failing_the_calls_it_waits_on():
+    order: list[str] = []
+    spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
+    run = _run(_WaitsOnACall(order), spec, launcher=_Releases(), results=_Failed(order))
+    await asyncio.wait_for(run.close(), 10)
+    assert order == ["interrupt", "fail the calls", "disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_a_closing_run_takes_nothing_more_in_as_its_calls_return():
+    taken = []
+
+    async def take():
+        taken.append(True)
+
+    hook = AfterTool(ToolResults(), send=_unsent)
+    hook.open(["t1"], take)
+    hook.close()
+    assert await hook({"hook_event_name": "PostToolUseFailure"}, "t1", None) == {}
+    assert taken == []
+
+
+class _Ends:
+    async def receive_messages(self):
+        return
+        yield
+
+    async def query(self, prompt):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_a_query_sent_after_another_starts_with_nothing_the_last_ones_end_said():
+    spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
+    run = _run(_Ends(), spec)
+    await run._pump
+    run.rate_limits, run.assistant_errors = [object()], [("rate_limit", "x")]
+    await run.again("next")
+    assert (run.rate_limits, run.assistant_errors, run.result, run.queries) == ([], [], None, 2)
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_call_the_cli_recorded_no_result_for_is_answered_as_a_langalpha_turn_answers_it(monkeypatch):
+    monkeypatch.setattr("ptc_agent.agent.claude_code.runtime.SETTLE_TIMEOUT_S", 0.1)
+    spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
+    store = CheckpointSessionStore()
+    await store.append({"session_id": "s"}, [{"type": "user", "uuid": "r1", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "interrupted", "is_error": True}]}}])
+    run = _run(_WaitsOnACall([]), spec, launcher=_Releases(), store=store)
+    try:
+        answers, uuids = await run.cut_off([{"id": "t1", "name": "Bash", "args": {}}, {"id": "t2", "name": "Read", "args": {}}])
+    finally:
+        await run.close()
+    assert uuids == ["r1"]
+    assert [(a.content, a.status) for a in answers] == [
+        ("interrupted", "error"),
+        ("Tool call Read with id t2 did not complete - no result was recorded. It may have been cancelled or interrupted.", "error"),
+    ]
+
+
+
+def test_steers_go_to_the_cli_as_the_user_wrote_them_and_another_senders_under_its_name():
+    delivered = {"messages": [
+        {"content": "", "wakeup": {"id": "w1"}},
+        {"content": "first", "user_id": "u"},
+        {"content": "second", "user_id": "u"},
+        {"content": "check the filing", "sender": "chief_of_staff"},
+    ]}
+    assert mid_turn_messages(HumanMessage("...", additional_kwargs={"steering_delivered": delivered})) == [
+        "first",
+        "second",
+        "The Chief of Staff sent a new message on the user's behalf while you were working:\ncheck the filing",
+    ]

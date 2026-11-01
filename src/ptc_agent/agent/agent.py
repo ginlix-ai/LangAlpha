@@ -664,15 +664,18 @@ class PTCAgent:
         # middleware, and its tool hook must wrap the Task interceptor so a
         # resume it calls settles on that call's result. Without subagents
         # there is no TaskOutput to read a task report's result with, nor a
-        # task to resume, so only steers are taken in.
-        main_only_middleware.append(
-            SteeringMiddleware(
-                report_inbox=_bg_registry.report_inbox,
-                kinds=(
-                    ("steer",) if disable_subagents else ("report", "steer", "resume")
-                ),
-            )
+        # task to resume, so only steers are taken in. A Claude Code turn runs
+        # no subagents but takes the other reports in (a command's end, a
+        # wakeup, an alert), which its tool hook hands Claude mid-turn.
+        steering = SteeringMiddleware(
+            report_inbox=_bg_registry.report_inbox,
+            kinds=(
+                ("report", "steer")
+                if claude_code
+                else ("steer",) if disable_subagents else ("report", "steer", "resume")
+            ),
         )
+        main_only_middleware.append(steering)
 
         # The user's cancels of wakeups the agent set, after the steers that
         # reached this call. Whether or not wakeups are on, so the row saying
@@ -1191,6 +1194,14 @@ class PTCAgent:
             state_schema=MainAgentState,
         ).with_config({"recursion_limit": UNBOUNDED_RECURSION_LIMIT})
 
+        alert_senders = frozenset(
+            sender
+            for sender, on in (
+                (MARKET_ALERT_SENDER, self.config.feature_enabled("market_watch")),
+                (WAKEUP_SENDER, wakeups_on),
+            )
+            if on
+        )
         if claude_code:
             from ptc_agent.agent.claude_code.agent import claude_code_graph
 
@@ -1203,18 +1214,13 @@ class PTCAgent:
                 launcher=claude_code_launcher(sandbox),
                 entry=(skill_loader_middleware, context.turn, context.baseline),
                 baseline=context.baseline.frozen_block,
+                steering=steering,
+                alert_senders=alert_senders,
             )
 
         return BackgroundSubagentOrchestrator(
             agent=agent,
             middleware=background_middleware,
             auto_wait=self.config.background_auto_wait,
-            alert_senders=frozenset(
-                sender
-                for sender, on in (
-                    (MARKET_ALERT_SENDER, self.config.feature_enabled("market_watch")),
-                    (WAKEUP_SENDER, wakeups_on),
-                )
-                if on
-            ),
+            alert_senders=alert_senders,
         )
