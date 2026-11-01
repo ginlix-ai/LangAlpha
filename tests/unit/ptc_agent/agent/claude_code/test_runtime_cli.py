@@ -262,6 +262,28 @@ async def test_a_session_keeps_its_prompt_and_tools_past_a_compaction_the_cli_ma
     assert values["claude_session"]["pinned"]["system_prompt"] == started.system_prompt
 
 
+@pytest.mark.parametrize(("threshold", "compacts"), [(67_000, True), (0, False)])
+async def test_the_cli_compacts_before_a_request_only_at_the_threshold_it_was_given(threshold, compacts):
+    """On its default window the CLI never compacts before a request, so a
+    turn's context would grow until a request was refused as too long. The
+    turn before gives the summary something to summarize."""
+    @tool("Bash")
+    async def large(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 30_000
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        given = dataclasses.replace(SPEC, tools=[large])
+        rules = CompactionRules(0, threshold=threshold)
+        graph = build_claude_code_graph(ToolNode([large]), checkpointer=InMemorySaver())
+        await run_turn(given, launcher, graph, f"t-window-{threshold}", [HumanMessage("FACT: the code word is heron")], compaction=rules)
+        values = await run_turn(given, launcher, graph, f"t-window-{threshold}", [HumanMessage("RUN_TOOL please")], compaction=rules)
+    boundaries = [e for e in values["claude_session"]["entries"] if e.get("subtype") == "compact_boundary"]
+    assert bool(boundaries) is compacts
+    assert isinstance(values["messages"][-1], AIMessage)
+
+
 async def test_a_session_due_a_new_pin_compacts_under_its_old_one_and_runs_the_turn_on_the_new_one():
     """The summary request is the session's own prefix with its thinking; the
     turn's requests then carry this build's prompt and tools and no thinking

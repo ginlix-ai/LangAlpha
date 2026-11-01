@@ -12,7 +12,7 @@ from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
 
 from ptc_agent.agent.claude_code.agent import ClaudeCodeGraph, claude_code_graph
-from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules
+from ptc_agent.agent.claude_code.compaction import NO_RULES
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY
 from ptc_agent.agent.claude_code.tools_bridge import tool_specs
@@ -216,10 +216,15 @@ def test_a_claude_code_turn_takes_reports_and_steers_in_but_no_task_resume():
     assert graph.turn.steering._steering.kinds == ("report", "steer")
 
 
-def test_a_claude_code_turn_moves_its_session_to_a_new_prompt_by_the_main_agents_floor():
+def test_a_claude_code_turn_compacts_and_moves_its_session_by_the_main_agents_threshold_and_floor():
+    """And its summaries point at the transcript through the agent's own file tools."""
+    from ptc_agent.agent.backends.sandbox import SandboxBackend
     from ptc_agent.config.agent import CompactionConfig
 
-    assert _built().turn.compaction == CompactionRules(CompactionConfig().rebuild_floor_tokens)
+    rules = _built().turn.compaction
+    settings = CompactionConfig()
+    assert (rules.floor_tokens, rules.threshold) == (settings.rebuild_floor_tokens, settings.token_threshold)
+    assert isinstance(rules.backend, SandboxBackend)
 
 
 #: The CLI cuts an MCP tool's description past this many characters and adds

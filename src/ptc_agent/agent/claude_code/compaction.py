@@ -1,14 +1,17 @@
 """How a Claude Code session compacts: when the CLI does it, and the launch
 that has it compact between requests of ours.
 
-A session runs on the pin it started on, and the CLI replays its record of
-that pin until it compacts, whatever a later launch passes. So the build's
-prompt and tools reach a session only through a compaction (``compact``): at
-a turn start the CLI compacts under the old pin, and the next launch runs on
-the new one.
+The CLI compacts a session on its own once the context reaches the thread's
+threshold, given the window ``cli.options_for`` sets from it. A session runs
+on the pin it started on, and the CLI replays its record of that pin until it
+compacts, whatever a later launch passes. So the build's prompt and tools
+reach a session only through a compaction (``compact``): at a turn start the
+CLI compacts under the old pin, and the next launch runs on the new one.
 
 Whether a turn start does that follows the main agent's turn-start rebuild
-(``middleware/compaction/rebuild.py``): a pin below the build's
+(``middleware/compaction/rebuild.py``): a session at or over the thread's
+threshold moves on any change, since the CLI would compact it before the
+turn's first request anyway; under it, a pin below the build's
 ``rebuild_before`` moves whatever its size or cache, a deploy's change moves
 once the session holds at least ``floor_tokens`` and its prompt cache has
 expired, so the turn's first request would write the whole context again
@@ -48,11 +51,14 @@ from ptc_agent.agent.claude_code.session import (
 )
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
 from ptc_agent.agent.prompts import release
+from ptc_agent.agent.transcript import Window
+from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_note, transcript_target
 from src.config.settings import get_compaction_timeout
 from src.llms.cache_markers import ttl_seconds
 from src.llms.claude_code import ClaudeTurnFailed
 
 if TYPE_CHECKING:
+    from ptc_agent.agent.backends.sandbox import SandboxBackend
     from ptc_agent.agent.middleware.runtime_context import TurnContext
     from ptc_agent.config.agent import CompactionConfig
 
@@ -118,29 +124,57 @@ class CompactionRules:
     Attributes:
         floor_tokens: The least context a deploy's change moves the session
             at; 0 never moves one.
+        threshold: The context the thread compacts at, which the CLI is
+            launched to compact at too; 0 leaves the CLI's own default.
         settled_at: When the thread's previous run settled, by the run
             ledger, a naive one read as UTC; None when it has none. A run
             that was cancelled or failed still used the cache, and left no
             record saying when.
+        backend: The sandbox whose file tools a summary sends the agent to
+            the thread's transcript with, in ``workspace_id``'s folder.
         enabled: False when the main agent's compaction is off, which then
             makes no turn-start rebuild either, so no session moves.
     """
 
     floor_tokens: int
+    threshold: int = 0
     settled_at: datetime | None = None
+    backend: SandboxBackend | None = None
+    workspace_id: str | None = None
     enabled: bool = True
 
     @classmethod
-    def of(cls, settings: CompactionConfig, turn: TurnContext | None) -> CompactionRules:
-        """The main agent's rules for a turn: its compaction config, and when
-        the thread's previous run settled."""
-        return cls(settings.rebuild_floor_tokens, settled_at=turn.previous_run_settled_at if turn else None,
-                   enabled=settings.enabled)
+    def of(cls, settings: CompactionConfig, turn: TurnContext | None, *, backend: SandboxBackend | None = None,
+           workspace_id: str | None = None) -> CompactionRules:
+        """The main agent's rules for a turn: its compaction config, when the
+        thread's previous run settled, and where its transcripts are read."""
+        return cls(
+            settings.rebuild_floor_tokens,
+            threshold=settings.token_threshold if settings.enabled else 0,
+            settled_at=turn.previous_run_settled_at if turn else None,
+            backend=backend,
+            workspace_id=workspace_id,
+            enabled=settings.enabled,
+        )
+
+    async def transcript_note(self, thread_id: str, state: Mapping[str, Any]) -> str:
+        """What the compaction summaries in the thread's session records end
+        on: the pointer an API thread's summary ends on, once the transcript
+        of the thread's messages is saved where the file tools reach it, as
+        the compaction middleware saves it before it points; else nothing."""
+        entries = (state.get("claude_session") or {}).get("entries") or []
+        if not any(e.get("isCompactSummary") for e in entries):
+            return ""
+        exported = await aexport_transcript(
+            self.backend, transcript_target(self.backend, thread_id), state["messages"],
+            workspace_id=self.workspace_id, window=Window.of(state),
+        )
+        return transcript_note(exported) if exported else ""
 
     def repin_plan(self, records: SessionRecords, current: SessionPin, now: float) -> tuple[bool, str] | None:
         """Whether the session moves to ``current`` at this turn start and why,
-        by the turn-start rebuild's reasons; None when it already runs on
-        ``current``.
+        by the turn-start rebuild's reasons and ``threshold`` for one the CLI
+        would compact anyway; None when it already runs on ``current``.
 
         The cache counts as cold once its ttl has passed since the later of
         the session's newest record and the previous run's settling, both
@@ -154,6 +188,8 @@ class CompactionRules:
             return False, "off"
         entries = records.get("entries") or []
         tokens = context_tokens(entries)
+        if self.threshold and tokens >= self.threshold:
+            return True, "threshold"
         pinned = kept.get("prompt_version") or 0
         if release.prompt_version() < pinned:
             return False, "rollback"

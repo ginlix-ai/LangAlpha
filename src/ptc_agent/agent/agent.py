@@ -1218,7 +1218,8 @@ class PTCAgent:
                 baseline=context.baseline.frozen_block,
                 steering=steering,
                 alert_senders=alert_senders,
-                compaction=CompactionRules.of(self.config.compaction, turn_context),
+                compaction=CompactionRules.of(self.config.compaction, turn_context, backend=backend,
+                                              workspace_id=workspace_id_for_memory),
             )
 
         return BackgroundSubagentOrchestrator(

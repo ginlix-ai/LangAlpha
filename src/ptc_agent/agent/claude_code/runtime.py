@@ -221,14 +221,15 @@ class _Run:
 
     @classmethod
     async def start(cls, spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, thread_key: str,
-                    identity: str, records: SessionRecords | None, prompt: Prompt | None) -> _Run:
+                    identity: str, records: SessionRecords | None, prompt: Prompt | None, *, compact_at: int = 0,
+                    auto_compact: bool = True, transcript_note: str = "") -> _Run:
         """Start the CLI on the turn (``cli.launch``); with no prompt it carries
         on from the tool results that end its session."""
         store, results = CheckpointSessionStore(), ToolResults()
         query = prompt if prompt is None or isinstance(prompt, str) else _user_message(prompt)
         prepared, client, after_tool = await launch(
             spec, pin, launcher, thread_key=thread_key, identity=identity, records=records, store=store,
-            results=results, query=query,
+            results=results, query=query, compact_at=compact_at, auto_compact=auto_compact, transcript_note=transcript_note,
         )
         return cls(launcher, prepared, store, client, results, spec, after_tool)
 
@@ -498,7 +499,9 @@ class ClaudeTurn:
         if self._run is None:
             pin, prompt = self.opening(state)
             self._run = await _Run.start(
-                self.spec, pin, self.launcher, self.thread_key, self.identity, state.get("claude_session"), prompt
+                self.spec, pin, self.launcher, self.thread_key, self.identity, state.get("claude_session"), prompt,
+                compact_at=self.compaction.threshold, auto_compact=self.compaction.enabled,
+                transcript_note=await self.compaction.transcript_note(self.thread_key, state),
             )
         return self._run
 

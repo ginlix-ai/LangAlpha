@@ -50,6 +50,16 @@ def test_a_change_of_per_turn_inputs_or_no_change_never_moves_it():
     assert CompactionRules(150_000).repin_plan({"session_id": "s", "entries": []}, CURRENT, NOW) is None
 
 
+def test_a_session_at_its_threshold_moves_on_any_change_since_the_cli_compacts_it_anyway(monkeypatch):
+    inputs_only = records(minutes_ago=1, tokens=300_000, source_digest="build-2")
+    assert CompactionRules(150_000, threshold=300_000).repin_plan(inputs_only, CURRENT, NOW) == (True, "threshold")
+    assert CompactionRules(150_000, threshold=300_001).repin_plan(inputs_only, CURRENT, NOW) == (False, "inputs_only")
+    same = records(minutes_ago=1, tokens=300_000, system_prompt="new", source_digest=None, prompt_version=None)
+    assert CompactionRules(150_000, threshold=300_000).repin_plan(same, CURRENT, NOW) is None
+    monkeypatch.setattr(compaction.release, "prompt_version", lambda: 2)
+    assert CompactionRules(150_000, threshold=300_000).repin_plan(records(minutes_ago=1, tokens=300_000), CURRENT, NOW) == (True, "threshold")
+
+
 def test_a_pin_from_before_pins_kept_their_build_counts_as_a_deploys():
     legacy = records(minutes_ago=61, source_digest=None, prompt_version=None)
     assert CompactionRules(150_000).repin_plan(legacy, CURRENT, NOW) == (True, "deploy_cold")

@@ -11,8 +11,20 @@ from langchain_core.tools import tool
 
 from pathlib import Path
 
-from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, is_haiku, options_for, turn_failure
+from ptc_agent.agent.claude_code.cli import (
+    COMPACT_INSTRUCTIONS,
+    RuntimeSpec,
+    compaction_failure,
+    is_haiku,
+    options_for,
+    turn_failure,
+)
 from ptc_agent.agent.claude_code import compaction as compaction_module
+from ptc_agent.agent.claude_code.compaction import CompactionRules
+from ptc_agent.agent.transcript import pointer
+from ptc_agent.agent.transcript.pointer import transcript_note
+from ptc_agent.agent.transcript.store import TranscriptTarget
+from ptc_agent.core.sandbox.livefs_mount import TranscriptReach
 from ptc_agent.agent.claude_code.launcher import LocalLauncher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, mid_turn_messages
 from ptc_agent.agent.claude_code.runtime import (
@@ -181,6 +193,7 @@ def test_options_give_claude_code_none_of_its_own_prompt_settings_or_tools():
     assert json.loads(options.settings) == {"includeGitInstructions": False}
     assert options.permission_mode == "dontAsk" and options.resume is None
     assert options.max_buffer_size == 2 * MAX_CONTENT_BYTES
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in options.env
 
 
 async def _unsent(text: str) -> None:
@@ -192,6 +205,40 @@ def _run(client, spec, launcher=None, results=None, store=None) -> _Run:
     return _Run(launcher, None, store or CheckpointSessionStore(), client, results, spec, AfterTool(results, send=_unsent))
 
 
+@pytest.mark.parametrize(("threshold", "window"), [(500_000, "533000"), (20_000, "100000"), (990_000, "1000000")])
+def test_the_cli_is_launched_to_compact_at_the_threads_threshold(threshold, window):
+    spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={})
+    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent), compact_at=threshold)
+    assert options.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == window
+
+
+@pytest.mark.asyncio
+async def test_a_thread_with_compaction_off_launches_a_cli_that_makes_none_on_its_own(monkeypatch):
+    """Not one that compacts near the model's limit, its default: the turn
+    fails there as an API thread's does."""
+    from ptc_agent.agent.claude_code import runtime
+
+    spec = RuntimeSpec(system_prompt="sys", model="claude-sonnet-5-5", tools=[bash], billing={})
+    common = dict(pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(),
+                  session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent))
+    assert "DISABLE_AUTO_COMPACT" not in options_for(spec, **common, compact_at=120_000).env
+    assert options_for(spec, **common, auto_compact=False).env["DISABLE_AUTO_COMPACT"] == "1"
+
+    launched = []
+
+    async def launch(*args, **kwargs):
+        launched.append(kwargs["auto_compact"])
+        raise RuntimeError("launched")
+
+    monkeypatch.setattr(runtime, "launch", launch)
+    for enabled in (True, False):
+        turn = ClaudeTurn(spec, LocalLauncher(), identity="u", thread_key="t",
+                          compaction=CompactionRules(0, threshold=120_000 if enabled else 0, enabled=enabled))
+        with pytest.raises(RuntimeError, match="launched"):
+            await turn.run({"messages": [HumanMessage("hi")]})
+    assert launched == [True, False]
+
+
 @pytest.mark.parametrize(("model", "haiku"), [
     ("claude-haiku-5-5", True), ("claude-haiku-4-5-20251001", True),
     ("claude-sonnet-5-5", False), ("claude-opus-5-5", False), ("claude-fable-5-1", False),
@@ -200,9 +247,148 @@ def test_only_a_claude_haiku_is_haiku(model, haiku):
     assert is_haiku(model) is haiku
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compaction", [False, True])
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"])
+async def test_only_a_haiku_launch_asks_the_clis_summary_for_the_whole_conversation(model, compaction):
+    """Every other model's summary request is the CLI's own."""
+    spec = RuntimeSpec(system_prompt="sys", model=model, tools=[bash], billing={})
+    options = options_for(spec, pin={"system_prompt": "sys", "tools": tool_specs([bash])}, server=object(), store=CheckpointSessionStore(), session_id=None, prepared=Prepared("/c", "/w"), after_tool=AfterTool(ToolResults(), send=_unsent), compaction=compaction)
+    if not is_haiku(model):
+        assert "PreCompact" not in options.hooks
+        return
+    (matcher,) = options.hooks["PreCompact"]
+    (hook,) = matcher.hooks
+    assert await hook({"hook_event_name": "PreCompact", "trigger": "auto"}, None, {}) == {"systemMessage": COMPACT_INSTRUCTIONS}
+
+
+def test_the_summary_instruction_asks_for_the_whole_conversation_and_no_answer():
+    assert COMPACT_INSTRUCTIONS == (
+        "Summarize the whole conversation from its first message, as instructed above. "
+        "Do not answer the last user message here."
+    )
+
+
 class _NoTransport(LocalLauncher):
     def transport(self, options):
         raise OSError("no transport")
+
+
+#: Where the CLI points its summary: the launch's own config dir, gone by the next launch.
+_DEAD = "/tmp/claude-cfg-k2/projects/-tmp-langalpha-claude-t-note/s.jsonl"
+_CLI_SUMMARY = (
+    "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\nthe work\n\n"
+    "If you need specific details from before compaction (like exact code snippets, error messages, or content you "
+    f"generated), read the full transcript at: {_DEAD}\n\nNote: the earliest part of the conversation was too large to "
+    "include and is NOT covered by this summary (the full transcript mentioned above still has it). Say so.\n"
+    "Continue the conversation from where it left off."
+)
+
+
+def _summarized(content) -> dict:
+    return {"session_id": "s", "entries": [
+        {"uuid": "b", "type": "system", "subtype": "compact_boundary"},
+        {"uuid": "sum", "type": "user", "isCompactSummary": True, "message": {"role": "user", "content": content}},
+        {"uuid": "r", "type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "kept"}]}},
+    ]}
+
+
+def _backend(*, routes_serve: bool | None = None, mount_settles: bool | None = None, saves: bool = True,
+             saved: list | None = None):
+    async def save_transcript(transcript, messages, *, window):
+        if saved is not None:
+            saved.append((transcript, messages))
+        return saves
+
+    if routes_serve is not None:
+        reach = TranscriptReach(SimpleNamespace(serves=lambda workspace_id: routes_serve and workspace_id == "w-1",
+                                                save_transcript=save_transcript), shell=False)
+    else:
+        reach = TranscriptReach(SimpleNamespace(save_transcript=save_transcript), shell=True)
+
+    async def settled_livefs(workspace_id):
+        if mount_settles is None:
+            await asyncio.Event().wait()
+        return reach.home if mount_settles and workspace_id == "w-1" else None
+
+    return SimpleNamespace(transcripts=reach, settled_livefs=settled_livefs)
+
+
+def _summary_text(entries) -> str:
+    content = next(e for e in entries if e.get("isCompactSummary"))["message"]["content"]
+    return content if isinstance(content, str) else "".join(b["text"] for b in content)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("backend", "served"), [
+    (_backend(routes_serve=True), True),
+    (_backend(mount_settles=True), True),
+    (_backend(routes_serve=False), False),
+    (_backend(mount_settles=False), False),
+    (_backend(routes_serve=True, saves=False), False),
+    (_backend(mount_settles=True, saves=False), False),
+])
+@pytest.mark.parametrize("blocks", [False, True])
+async def test_a_launch_points_a_summary_at_the_threads_transcript_where_it_is_read_else_at_none(monkeypatch, backend, served, blocks):
+    prepared = []
+    real = LocalLauncher.prepare
+
+    async def keep(self, thread_key, session_id, entries, **kwargs):
+        prepared.append(entries)
+        return await real(self, thread_key, session_id, entries, **kwargs)
+
+    monkeypatch.setattr(LocalLauncher, "prepare", keep)
+    records = _summarized([{"type": "text", "text": _CLI_SUMMARY}] if blocks else _CLI_SUMMARY)
+    rules = CompactionRules(0, backend=backend, workspace_id="w-1")
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[bash], billing={}), _NoTransport(), identity="u",
+                      thread_key="t-note", compaction=rules)
+    with pytest.raises(OSError, match="no transport"):
+        await turn.run({"messages": [HumanMessage("hi")], "claude_session": records})
+    (entries,) = prepared
+    text = _summary_text(entries)
+    note = transcript_note(TranscriptTarget("t-note"))
+    assert _DEAD not in text and "read the full transcript at" not in text
+    assert (note in text) is served
+    assert ("the full transcript mentioned above" in text) is served
+    assert text.startswith("This session is being continued") and text.endswith("Continue the conversation from where it left off.")
+    assert entries[0] == records["entries"][0] and entries[2] == records["entries"][2]
+    assert _summary_text(records["entries"]) == _CLI_SUMMARY
+
+
+@pytest.mark.asyncio
+async def test_a_launch_points_a_summary_only_at_a_transcript_saved_from_the_threads_messages(monkeypatch):
+    monkeypatch.setattr(LocalLauncher, "prepare", _stop_at_layout)
+    saved = []
+    rules = CompactionRules(0, backend=_backend(routes_serve=True, saved=saved), workspace_id="w-1")
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[bash], billing={}), _NoTransport(), identity="u",
+                      thread_key="t-note", compaction=rules)
+    messages = [HumanMessage("first"), AIMessage("answer", response_metadata={"claude_message_id": "msg_1"}), HumanMessage("hi")]
+    with pytest.raises(OSError, match="stop at the layout"):
+        await turn.run({"messages": messages, "claude_session": _summarized(_CLI_SUMMARY)})
+    assert saved == [(TranscriptTarget("t-note"), messages)]
+
+
+@pytest.mark.asyncio
+async def test_a_launch_waits_a_bounded_time_for_the_mount_and_then_points_at_nothing(monkeypatch):
+    monkeypatch.setattr(pointer, "_EXPORT_TIMEOUT", 0.05)
+    prepared = []
+
+    async def keep(self, thread_key, session_id, entries, **kwargs):
+        prepared.append(entries)
+        raise OSError("stop at the layout")
+
+    monkeypatch.setattr(LocalLauncher, "prepare", keep)
+    rules = CompactionRules(0, backend=_backend(), workspace_id="w-1")
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[bash], billing={}), _NoTransport(), identity="u",
+                      thread_key="t-note", compaction=rules)
+    with pytest.raises(OSError, match="stop at the layout"):
+        await asyncio.wait_for(turn.run({"messages": [HumanMessage("hi")], "claude_session": _summarized(_CLI_SUMMARY)}), 5)
+    (entries,) = prepared
+    assert "read the full transcript at" not in _summary_text(entries) and ".agents/transcripts" not in _summary_text(entries)
+
+
+async def _stop_at_layout(self, thread_key, session_id, entries, **kwargs):
+    raise OSError("stop at the layout")
 
 
 @pytest.mark.asyncio
