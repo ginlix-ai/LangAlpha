@@ -28,7 +28,7 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from itertools import pairwise
 from typing import Annotated, Any, TypeVar
@@ -58,6 +58,7 @@ from ptc_agent.agent.claude_code.compaction import (
     CompactionRules,
     SessionCompaction,
     compact,
+    context_signal,
     prompt_tokens,
     report_usage,
     same_pin,
@@ -83,6 +84,7 @@ from ptc_agent.agent.claude_code.tools_bridge import (
     tool_specs,
 )
 from ptc_agent.agent.main_state import MainAgentState
+from ptc_agent.agent.middleware.compaction.utils import stamp_compaction_summary
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
@@ -169,6 +171,14 @@ class ClaudeCodeState(MainAgentState):
 _END = object()
 
 
+@dataclass(frozen=True)
+class _Compacting:
+    """The CLI compacting the session ahead of its next request: started,
+    failed with ``error``, or done at the ``boundary`` record."""
+
+    boundary: str | None = None
+    error: str | None = None
+
 
 class _Message:
     """One assistant message's raw events, as the CLI streams them."""
@@ -191,6 +201,9 @@ class _Message:
                 return
             item = await self._run.next_event()
             if item is _END:
+                return
+            if isinstance(item, _Compacting):
+                self._run.hold(item)
                 return
             if item.get("type") == "message_start":
                 self.restarted = True
@@ -267,6 +280,12 @@ class _Run:
                     if m.data.get("model") != self.model:
                         logger.warning("[ClaudeCode] the CLI would run %s in place of %s", m.data.get("model"), self.model)
                         raise ClaudeTurnFailed("model_unavailable", self.model)
+                elif isinstance(m, SystemMessage) and m.subtype == "status" and m.data.get("status") == "compacting":
+                    await self._events.put(_Compacting())
+                elif isinstance(m, SystemMessage) and m.subtype == "status" and m.data.get("compact_result") == "failed":
+                    await self._events.put(_Compacting(error=str(m.data.get("compact_error") or "the compaction failed")))
+                elif isinstance(m, SystemMessage) and m.subtype == "compact_boundary":
+                    await self._events.put(_Compacting(boundary=m.data.get("uuid") or ""))
                 elif isinstance(m, StreamEvent):
                     if m.parent_tool_use_id is None:
                         if m.event.get("type") == "message_start":
@@ -323,12 +342,17 @@ class _Run:
         """Keep an event read past the end of one message for the next."""
         self._held = item
 
-    async def next_message(self) -> _Message | None:
-        """The next assistant message, or None once the turn has ended."""
-        first = await self.next_event()
-        if first is _END:
-            return None
-        return _Message(first, self)
+    async def next_message(self, compacting: Callable[[_Compacting], Awaitable[None]]) -> _Message | _Compacting | None:
+        """The next assistant message, or a compaction the CLI made ahead of
+        it once ``compacting`` has taken it in, or None once the turn has
+        ended. A compaction's start and failure go to ``compacting`` alone."""
+        while (first := await self.next_event()) is not _END:
+            if not isinstance(first, _Compacting):
+                return _Message(first, self)
+            await compacting(first)
+            if first.boundary is not None:
+                return first
+        return None
 
     async def complete(self, message: _Message) -> None:
         """Fail the turn unless the message streamed whole: a cut-off message is never committed.
@@ -481,6 +505,11 @@ class ClaudeTurn:
         #: What a session this run starts holds, since the CLI may start one
         #: over instead of resuming.
         self._fresh: dict[str, Any] = {}
+        #: The compaction the run's next reply follows, by its boundary
+        #: record, with the summarize signal's payload replay reads off it.
+        self._notice: tuple[str, dict[str, Any]] | None = None
+        #: The boundary of a compaction the CLI made whose records have not arrived yet.
+        self._unsettled: str | None = None
         self._run: _Run | None = None
         #: The queries the turn sent on a run it ended to move its session to
         #: this build's pin ahead of the next; none while it has not.
@@ -563,13 +592,88 @@ class ClaudeTurn:
         if not moves:
             logger.info("[ClaudeCode] re-pin=waits reason=%s", reason)
             return []
+        context_signal("summarize", "start")
         try:
             held = await self._compact(state)
-        except Exception:  # noqa: BLE001 - a session that did not move runs the turn on its own pin
+        except BaseException as e:
+            context_signal("summarize", "error", error=str(e))
+            if not isinstance(e, Exception):
+                raise
             logger.warning("[ClaudeCode] the session's compaction failed; the turn runs on its pin", exc_info=True)
             return []
         logger.info("[ClaudeCode] re-pin=%s reason=%s", "yes" if held else "no_compaction", reason)
+        if held:
+            self._announce(SessionCompaction(records.get("entries") or [], held))
+        else:
+            context_signal("summarize", "error", error="nothing to summarize")
         return held
+
+    async def compacting(self, state: ClaudeCodeState, stage: _Compacting) -> None:
+        """Signal a compaction the CLI makes ahead of a request of the run's
+        as the compaction middleware signals an API thread's."""
+        if stage.boundary is None:
+            context_signal("summarize", "error" if stage.error else "start", **({"error": stage.error} if stage.error else {}))
+            return
+        self._unsettled = stage.boundary
+        with contextlib.suppress(SessionDrift):
+            await self.current.store.arrived.wait([stage.boundary], SETTLE_TIMEOUT_S)
+        self.settled(state)
+
+    def settled(self, state: ClaudeCodeState) -> None:
+        """Announce the compaction the CLI made once its records have arrived.
+        Records slower than the wait leave it to the reply after it, whose own
+        records the CLI writes behind the compaction's."""
+        if self._unsettled is None:
+            return
+        committed = (state.get("claude_session") or {}).get("entries") or []
+        entries = [*committed, *self.current.store.pending()]
+        if any(e.get("uuid") == self._unsettled for e in entries):
+            self._announce(SessionCompaction.at(entries, self._unsettled))
+            self._unsettled = None
+
+    def compacted(self, state: ClaudeCodeState, run: _Run) -> dict[str, Any]:
+        """A compaction the CLI made ahead of a request, saved in a step of
+        its own once its records have arrived, with its notice stamped on the
+        message it followed: the request after it can fail or be stopped,
+        and a retry then resumes the session compacted rather than make and
+        bill the compaction again. The step takes the compaction's records
+        alone: its boundary, its summary and the attachments the CLI writes
+        around them, the prompt and tools it runs on from then on among them.
+        The records of the reply after it can be here already, and they
+        belong to the step that commits that reply. Records slower than the
+        wait are left to that reply (``settled``)."""
+        if self._unsettled is not None:
+            return {}
+        pending = run.store.pending()
+        boundary = self._notice[0] if self._notice else None
+        start = next((i for i, e in enumerate(pending) if e.get("uuid") == boundary), None)
+        if start is None:
+            return {}
+        through, summarized = boundary, False
+        for e in pending[start + 1:]:
+            if e.get("type") == "attachment" or e.get("isCompactSummary"):
+                through, summarized = e.get("uuid") or through, summarized or bool(e.get("isCompactSummary"))
+            elif e.get("uuid"):
+                break
+        if not summarized:
+            return {}
+        followed = state["messages"][-1].model_copy()
+        self.stamp(followed)
+        return {"messages": [followed], **self.commit(run.store.drain(through=[through]))}
+
+    def _announce(self, compaction: SessionCompaction) -> None:
+        notice = compaction.notice()
+        context_signal("summarize", "complete", **notice)
+        self._notice = (compaction.boundary, notice)
+
+    def stamp(self, message: BaseMessage) -> None:
+        """Stamp a reply with the compaction it follows, or the message a
+        compaction saved in a step of its own followed (the turn's prompt or
+        a tool result), for replay to show it where it fired, as an API
+        thread's is."""
+        if self._notice is not None:
+            stamp_compaction_summary(message, *self._notice)
+            self._notice = None
 
     async def compact_between_turns(self, state: ClaudeCodeState) -> SessionCompaction | None:
         """A manual compaction, which moves the session to this build's pin
@@ -743,16 +847,21 @@ def build_claude_code_graph(
     A turn start due a new pin compacts in a ``model`` step of its own, ahead
     of the launch, so a launch that fails after it leaves the compaction
     saved: the next turn neither makes nor bills it again. The session then
-    holds this build's pin, so the next step finds nothing to move. A query the
-    turn's run sends next is moved the same way, in the step after the run
-    that ended for it (``ClaudeTurn.again``).
+    holds this build's pin, so the next step finds nothing to move. The step
+    stamps the compaction on the prompt it followed, so the history shows it
+    whether or not a reply comes. A compaction the CLI makes ahead of a
+    request of the run's is saved the same way (``ClaudeTurn.compacted``).
+    So is one the turn's next query is due, which the step after the run
+    that ended for it makes (``ClaudeTurn.again``).
     """
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
         turn = _turn(config)
         opening = not turn.started
         if opening and (compacted := await turn._repin(state)):
-            return Command(update={"claude_session": compacted}, goto="model")
+            asked = state["messages"][-1].model_copy()
+            turn.stamp(asked)
+            return Command(update={"claude_session": compacted, "messages": [asked]}, goto="model")
         run = await turn.run(state)
         if opening:
             turn.steering.opened(state, config)
@@ -766,7 +875,9 @@ def build_claude_code_graph(
                     goto="model",
                 )
         await turn.steering.read(state["messages"])
-        message = await run.next_message()
+        message = await run.next_message(lambda stage: turn.compacting(state, stage))
+        if isinstance(message, _Compacting):
+            return Command(update=turn.compacted(state, run), goto="model")
         if message is None:
             await run.finish()
             if sent := await turn.again(state, config, run):
@@ -784,6 +895,8 @@ def build_claude_code_graph(
         report_usage(ai, turn.compaction.threshold)
         uuids = run.assistant_records(message.id)
         await run.settle(uuids)
+        turn.settled(state)
+        turn.stamp(ai)
         return Command(
             update={"messages": [ai], **turn.commit(run.store.drain(through=uuids))},
             goto="tools" if ai.tool_calls else "model",
