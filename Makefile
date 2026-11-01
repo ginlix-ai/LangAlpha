@@ -1,4 +1,4 @@
-.PHONY: help config up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-market-protocol test-all lint data-probe setup-db migrate
+.PHONY: help config up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-market-protocol test-all lint docs-dev docs-build data-probe setup-db migrate
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -75,6 +75,15 @@ test-all: test test-web test-market-protocol ## Run all tests (backend + fronten
 lint: ## Run all linters (Ruff + ESLint)
 	uv run ruff check src/ libs/market-protocol/
 	cd web && pnpm lint
+
+# ---------------------------------------------------------------------------
+# Documentation site (docs/)
+# ---------------------------------------------------------------------------
+docs-dev: ## Serve the docs site with live reload on port 4321
+	cd docs && pnpm install && pnpm dev
+
+docs-build: ## Build the docs site into docs/dist (fails on broken links)
+	cd docs && pnpm install --frozen-lockfile && pnpm build
 
 # ---------------------------------------------------------------------------
 # Market data
