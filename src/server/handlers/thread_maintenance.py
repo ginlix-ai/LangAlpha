@@ -13,6 +13,7 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -363,6 +364,72 @@ async def _summarize(agent: ThreadAgent, config):
     )
 
 
+@asynccontextmanager
+async def _recorded(agent: ThreadAgent, user_id: str | None, verb: str):
+    """Record the model calls made inside in the usage records, as a turn's
+    are. They find the token tracker a turn gets on the runnable config around
+    them, which ``ask_between_turns`` and the summarizer both call the model
+    under, and land on a row of their own: no run is open between turns to
+    hold them. The row is the thread's, under the caller, with ``verb`` on
+    its token usage to tell it from a turn's, and is written once the
+    operation has ended, so its status is the operation's.
+
+    The tracker runs inline: a call's end is reported in a callback shielded
+    from cancellation, which on an executor thread could still be running
+    when a Stop or a timeout reads the tracker."""
+    from langchain_core.callbacks import BaseCallbackManager
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    from src.utils.tracking import TokenTrackingManager
+
+    tracker = TokenTrackingManager.initialize_tracking(thread_id=agent.thread_id)
+    tracker.run_inline = True
+    ambient = var_child_runnable_config.get() or {}
+    callbacks = ambient.get("callbacks")
+    if isinstance(callbacks, BaseCallbackManager):
+        callbacks = callbacks.copy()
+        callbacks.add_handler(tracker)
+    else:
+        callbacks = [*(callbacks or ()), tracker]
+    token = var_child_runnable_config.set({**ambient, "callbacks": callbacks})
+    status = "error"
+    try:
+        yield
+        status = "completed"
+    except asyncio.CancelledError:
+        status = "cancelled"
+        raise
+    finally:
+        var_child_runnable_config.reset(token)
+        records = tracker.get_per_call_records()
+        if records and user_id:
+            # A Stop landing here still owes the calls that answered.
+            await asyncio.shield(_record_usage(agent, user_id, verb, records, status))
+
+
+async def _record_usage(
+    agent: ThreadAgent, user_id: str, verb: str, records: list, status: str
+) -> None:
+    from src.server.services.persistence.usage import UsagePersistenceService
+
+    usage = UsagePersistenceService(
+        thread_id=agent.thread_id, workspace_id=agent.workspace_id, user_id=user_id
+    )
+    await usage.track_llm_usage(records)
+    if usage._token_usage is not None:
+        usage._token_usage["between_turns"] = verb
+    # The calls' own billing types, for when pricing fails and the row
+    # falls back to the hint, as a turn's falls back to its key's.
+    is_byok = not any(r.get("billing_type", "platform") == "platform" for r in records)
+    if not await usage.persist_usage(response_id=str(uuid4()), status=status, is_byok=is_byok):
+        logger.error(
+            "[usage] %s row not written for thread_id=%s; %d record(s) are unrecoverable",
+            verb,
+            agent.thread_id,
+            len(records),
+        )
+
+
 def _refuse_claude_code(on_claude_code: bool) -> None:
     """Refuse a summary or an offload on a Claude Code thread. Claude Code manages its own
     session, and the thread's messages are only the record replay and
@@ -444,6 +511,7 @@ async def trigger_compaction(
                 thread_id, "compact", config=agent_cfg,
                 checkpointer=mutation.saver, user_id=user_id, held=held, role=role,
             )
+            await held.enter_async_context(_recorded(agent, user_id, "compact"))
             try:
                 try:
                     compaction = await agent.ask(Compact())
@@ -728,6 +796,8 @@ async def _hand_off(
                     thread_id, "handoff", config=config,
                     checkpointer=mutation.saver, user_id=user_id, held=held, role=role,
                 )
+                # Ends with ``held``, after the write and outside the timeout.
+                await held.enter_async_context(_recorded(agent, user_id, "handoff"))
                 try:
                     written = await agent.ask(HandOff())
                 except NoCompaction:
