@@ -17,7 +17,7 @@ def _payload(token: str, iat_ms: int, expires_at: str) -> dict[str, str | int]:
 
 
 class TestTokenUpload:
-    """PTCSandbox.upload_token_file() -- the server writes, the sandbox reads."""
+    """PTCSandbox.publish_token_file() -- the server writes, the sandbox reads."""
 
     async def _read(self, shared_sandbox) -> dict:
         content = await shared_sandbox.runtime.download_file(
@@ -27,7 +27,7 @@ class TestTokenUpload:
 
     async def test_upload_token(self, shared_sandbox):
         payload = _payload("gxsa_test_access", 1, "2026-01-01T01:00:00Z")
-        assert await shared_sandbox.upload_token_file(payload) is True
+        assert await shared_sandbox.publish_token_file(shared_sandbox._token_file_path, payload) is True
 
         assert await self._read(shared_sandbox) == payload
         mode = await shared_sandbox.runtime.exec(
@@ -40,12 +40,12 @@ class TestTokenUpload:
         possibly revoked, token back, nor report it written. Issue order wins
         over expiry, which a shorter lifetime puts out of order."""
         v1 = _payload("v1", 2, "2026-01-01T03:00:00Z")
-        assert await shared_sandbox.upload_token_file(v1) is True
+        assert await shared_sandbox.publish_token_file(shared_sandbox._token_file_path, v1) is True
         v2 = _payload("v2", 3, "2026-01-01T02:00:00Z")
-        assert await shared_sandbox.upload_token_file(v2) is True
+        assert await shared_sandbox.publish_token_file(shared_sandbox._token_file_path, v2) is True
         assert (await self._read(shared_sandbox))["access_token"] == "v2"
 
-        assert await shared_sandbox.upload_token_file(v1) is False
+        assert await shared_sandbox.publish_token_file(shared_sandbox._token_file_path, v1) is False
         assert (await self._read(shared_sandbox))["access_token"] == "v2"
 
 

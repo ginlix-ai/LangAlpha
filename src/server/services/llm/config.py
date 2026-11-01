@@ -102,11 +102,30 @@ def saved_default_model(model_pref: dict, slot: str) -> str | None:
     return None if is_claude_code_model(primary) else primary or None
 
 
-def system_default_models() -> dict[str, str]:
-    """The deployment's default models, as the models API publishes them."""
+def deployment_llm():
+    """The deployment's own ``LLMConfig``, or None when it names no model."""
     from src.server.app import setup
 
-    llm = setup.agent_config.llm if setup.agent_config and setup.agent_config.llm else None
+    return setup.agent_config.llm if setup.agent_config and setup.agent_config.llm else None
+
+
+def plan_exempt_models(llm, slot: str) -> frozenset[str]:
+    """The deployment's own models a turn in ``slot`` runs whatever the plan.
+
+    They are the operator's call, as a subagent's own pin is, and pass where
+    they would run unasked: the main model anywhere, the Background model only
+    in the Background slot and the roles that inherit it, not as a primary
+    turn's own model.
+    """
+    if not llm:
+        return frozenset()
+    main = frozenset({llm.name})
+    return main | {slot_model(llm, "background")} if slot == "background" else main
+
+
+def system_default_models() -> dict[str, str]:
+    """The deployment's default models, as the models API publishes them."""
+    llm = deployment_llm()
     return {
         "default_model": llm.name if llm else "",
         "background_model": (llm.background or "") if llm else "",
@@ -301,17 +320,14 @@ async def gate_models_by_plan(
     not ask. Every saved model reads as unset instead
     (``drop_off_plan_models``), the Default included, so a turn that names
     none runs the deployment's, as the composer starts on it. The
-    deployment's defaults are the operator's call, as a subagent's own pin
-    is, and pass where they would run unasked: its main model anywhere, its
-    Background only in the Background slot and the roles that inherit it,
-    not as a primary turn's own model.
+    deployment's own defaults pass where they would run unasked
+    (``plan_exempt_models``).
     """
     llm = base_config.llm
-    main = frozenset({llm.name}) if llm else frozenset()
-    background = main | {slot_model(llm, "background")} if llm else frozenset()
-    exempt = {key: background for key in _MODEL_PREF_KEYS}
+    main = plan_exempt_models(llm, "primary")
+    exempt = {key: plan_exempt_models(llm, "background") for key in _MODEL_PREF_KEYS}
     exempt["preferred_model"] = exempt["fallback_models"] = main
-    named_exempt = background if slot == "background" else main
+    named_exempt = plan_exempt_models(llm, slot)
     byok_cache: dict[str, dict | None] = {}
 
     async def on_plan(name: str) -> bool:

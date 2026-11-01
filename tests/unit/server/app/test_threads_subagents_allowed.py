@@ -14,7 +14,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.server.utils.api import get_current_user_id
-from tests.conftest import create_test_app
+from tests.conftest import create_test_app, pin_chat_limit
 from tests.unit.server.app.test_threads_thread_model import USER as SENDER, _send_stubs
 
 THREADS_MOD = "src.server.app.threads.crud"
@@ -218,11 +218,11 @@ async def test_create_hands_the_switch_to_the_insert_and_reports_the_row(extra, 
 
 async def _post(path, extra):
     from src.server.app.threads import router
-    from src.server.dependencies.usage_limits import ChatAuthResult, enforce_chat_limit
+    from src.server.dependencies.usage_limits import ChatAuthResult
 
     app = create_test_app(router)
-    app.dependency_overrides[enforce_chat_limit] = lambda: ChatAuthResult(
-        user_id=SENDER, access_tier=0
+    pin_chat_limit(
+        app, ChatAuthResult(user_id=SENDER, access_tier=0)
     )
     body = {
         "messages": [{"role": "user", "content": "test query"}],

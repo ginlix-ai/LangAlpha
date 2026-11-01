@@ -7,6 +7,7 @@ and sample data factories.
 
 pytest_plugins = ["tests.integration.sandbox.metrics.conftest"]
 
+import inspect
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -15,7 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from httpx import ASGITransport, AsyncClient
 
 # Runs before any ``src`` import: ``src.config`` calls ``load_dotenv()``, which
@@ -101,29 +103,57 @@ def create_test_app(*routers) -> FastAPI:
 
     - No real DB/Redis/Daytona init (avoids setup.py lifespan)
     - Auth bypassed: get_current_user_id returns "test-user-123"
-    - Rate limits bypassed: ComputerLimitCheck/ChatRateLimited passthrough
+    - Rate limits bypassed: ComputerLimitCheck passthrough, and every turn
+      admitted (``pin_chat_limit``)
     """
     from src.server.dependencies.usage_limits import (
         ChatAuthResult,
-        enforce_chat_limit,
         enforce_computer_limit,
     )
+    from src.server.dependencies.principal import Principal, get_principal
     from src.server.utils.api import get_current_user_id
 
     app = FastAPI()
     for router in routers:
         app.include_router(router)
 
-    # Override auth
+    # Override auth. The scoped routes read the caller through get_principal,
+    # which follows whatever user a test pins on get_current_user_id, as a
+    # session, and runs for real once a test drops that override.
     app.dependency_overrides[get_current_user_id] = lambda: "test-user-123"
+
+    async def principal_as_session(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = Depends(
+            HTTPBearer(auto_error=False)
+        ),
+    ) -> Principal:
+        pinned = request.app.dependency_overrides.get(get_current_user_id)
+        if pinned is None:
+            return await get_principal(request, credentials)
+        user = pinned()
+        return Principal(
+            user_id=await user if inspect.isawaitable(user) else user, auth="session"
+        )
+
+    app.dependency_overrides[get_principal] = principal_as_session
 
     # Override rate limits
     app.dependency_overrides[enforce_computer_limit] = lambda: "test-user-123"
-    app.dependency_overrides[enforce_chat_limit] = lambda: ChatAuthResult(
-        user_id="test-user-123"
-    )
+    pin_chat_limit(app, ChatAuthResult(user_id="test-user-123"))
 
     return app
+
+
+def pin_chat_limit(app: FastAPI, result) -> None:
+    """Every turn ``app`` admits holds ``result`` (a ``ChatAuthResult``), in
+    place of ``chat_limit_for``."""
+    from src.server.dependencies.usage_limits import chat_limiter
+
+    async def limit(user_id: str):
+        return result
+
+    app.dependency_overrides[chat_limiter] = lambda: limit
 
 
 @pytest_asyncio.fixture

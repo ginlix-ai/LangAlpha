@@ -126,6 +126,9 @@ IS_MUSL_SH = (
 )
 # The installed runtime takes about this much of the home's filesystem.
 _DISK_NEEDED_BYTES = 3 * 1024**3
+# The oldest Node the computer's `langalpha` CLI runs on (cli/package.json's
+# engines). The runtime does not install Node, so the machine's own is used.
+_CLI_NODE_MAJOR = 20
 # What the Computers dialog shows of a machine: its system and its hardware.
 # Read by the probe, and again as the machine starts, since a system updates.
 MACHINE_FACTS_SCRIPT = r"""
@@ -151,6 +154,7 @@ if [ "$(id -u)" = 0 ]; then echo sudo=1
 elif e=$(LC_ALL=C sudo -n true </dev/null 2>&1 >/dev/null); then echo sudo=1
 else case "$e" in *tty*) echo sudo=tty ;; *) echo sudo=0 ;; esac; fi
 if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then echo fetch=1; fi
+echo "node=$(node -v 2>/dev/null)"
 tools="TOOLS"; [ "$(uname -s)" = Darwin ] && tools="DARWIN_TOOLS"
 m=""; for t in $tools; do command -v "$t" >/dev/null 2>&1 || m="$m $t"; done; echo "missing=${m# }"
 if [ "$(uname -s)" = Linux ] && is_musl; then echo libc=musl; fi
@@ -626,6 +630,21 @@ def read_machine(stdout: str) -> tuple[str, dict[str, Any]]:
     return _mac_model(facts.get("model", "")), machine_facts(facts)
 
 
+def _node_problem(version: str) -> str | None:
+    """Why the agent's `langalpha` CLI will not run here, if it will not.
+    Not blocking: everything else on the computer works without it."""
+    major = version.removeprefix("v").partition(".")[0]
+    if major.isdigit() and int(major) >= _CLI_NODE_MAJOR:
+        return None
+    found = (
+        f"Node {version} is too old" if major.isdigit() else "Node is not installed"
+    )
+    return (
+        f"{found} for the agent's langalpha command line; everything else "
+        f"works. Installing Node {_CLI_NODE_MAJOR} or later turns it on."
+    )
+
+
 def _probe_result(
     line: str,
     fingerprint: str,
@@ -687,6 +706,9 @@ def _probe_result(
             f"Only {disk_free / 1024**3:.1f} GB is free in {home}; the Python "
             "runtime needs about 3 GB."
         )
+    # Only where the machine can host a computer at all, or it is noise.
+    if not blocking and (node := _node_problem(facts.get("node", ""))):
+        problems.append(node)
     if facts.get("sudo") == "tty":
         problems.append(
             "sudo for this account requires a terminal (requiretty in sudoers), "

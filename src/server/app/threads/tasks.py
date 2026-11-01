@@ -6,13 +6,11 @@ from typing import Annotated, Optional
 from fastapi import Header, Path, Query
 from fastapi.responses import StreamingResponse
 
+from src.server.dependencies.principal import ReadUserId, RunUserId
 # require_thread_owner is called through the module (auth_api.…) so a single
 # definition-site patch governs every route — a consumer-site patch that stops
 # intercepting after a move would silently bypass auth in tests.
 from src.server.utils import api as auth_api
-from src.server.utils.api import (
-    CurrentUserId,
-)
 from src.server.models.chat import SubagentMessageRequest
 
 
@@ -24,7 +22,7 @@ from ._deps import SSE_HEADERS, router
 async def get_subagent_task_status(
     thread_id: str,
     task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
 ):
     """Durable terminal state of a single subagent task from the run ledger.
 
@@ -66,7 +64,7 @@ async def get_subagent_task_status(
 async def get_subagent_task_history(
     thread_id: str,
     task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
 ):
     """On-demand checkpoint transcript for one subagent task.
 
@@ -90,7 +88,7 @@ async def get_subagent_task_history(
 async def stream_subagent_task(
     thread_id: str,
     task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
     last_event_id: Optional[int] = Query(
         None, description="Last received event ID for reconnect"
     ),
@@ -124,7 +122,7 @@ async def stream_subagent_task(
 async def cancel_subagent_task(
     thread_id: str,
     task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
-    x_user_id: CurrentUserId,
+    x_user_id: RunUserId,
 ):
     """Stop one background task (e.g. a workflow run) without touching the turn."""
     await auth_api.require_thread_owner(thread_id, x_user_id)
@@ -138,7 +136,7 @@ async def send_subagent_message(
     thread_id: str,
     task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
     request: SubagentMessageRequest,
-    x_user_id: CurrentUserId,
+    x_user_id: RunUserId,
 ):
     """Send a message/instruction to a running background subagent."""
     await auth_api.require_thread_owner(thread_id, x_user_id)

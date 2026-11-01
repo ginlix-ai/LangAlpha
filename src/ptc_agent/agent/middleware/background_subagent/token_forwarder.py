@@ -276,7 +276,7 @@ class _SubagentTokenForwarder:
         Without this, both success and failure terminate the per-task stream
         with only the ``subagent_stream_end`` sentinel — leaving downstream
         trackers (the channel gateway's Slack/Discord/Feishu task tracker, the
-        web frontend, ptc-cli) unable to surface failure to the user.
+        web frontend) unable to surface failure to the user.
 
         Best-effort: failures here are absorbed so they cannot mask the
         original exception, which is always re-raised by the caller.

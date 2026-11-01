@@ -30,7 +30,7 @@ from src.server.models.conversation import (
     ThreadCreateResponse,
 )
 from src.server.services.thread_title import schedule_title_generation
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import RunPrincipal, assert_reaches
 
 from ._deps import SSE_HEADERS, logger, router
 
@@ -89,7 +89,7 @@ def _legacy_sse_response(
 
 @router.post("", status_code=201, response_model=ThreadCreateResponse)
 async def create_thread_endpoint(
-    request: ThreadCreateRequest, http_request: Request, x_user_id: CurrentUserId
+    request: ThreadCreateRequest, http_request: Request, principal: RunPrincipal
 ):
     """Create a thread and return it as a plain 201.
 
@@ -97,6 +97,7 @@ async def create_thread_endpoint(
     still gets the title persisted, and the durable truth is always readable
     via GET /threads/{id}.
     """
+    x_user_id = principal.user_id
     workspace = await requested_workspace(x_user_id, request.workspace_id)
 
     # Same credit gate the follow-up /messages call enforces — a quota-blocked
@@ -118,6 +119,7 @@ async def create_thread_endpoint(
     # Decided where the message path decides it, so the thread is born in the
     # workspace its runs will actually use.
     route = turn_route(x_user_id, workspace)
+    await assert_reaches(principal, workspace_id=route.workspace_id)
     await route.bind(x_user_id, workspace)
     workspace_id = route.workspace_id
 

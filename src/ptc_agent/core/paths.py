@@ -168,6 +168,10 @@ class SandboxLayout:
     MCP_TOKENS_FILE: ClassVar[str] = "_internal/.mcp_tokens.json"
     EGRESS_RELAY_FILE: ClassVar[str] = "_internal/.egress_relay.json"
     VAULT_SECRETS_FILE: ClassVar[str] = "_internal/.vault_secrets.json"
+    # The token the `la` CLI calls the API with, as the computer's user.
+    CLI_TOKEN_FILE: ClassVar[str] = "_internal/.cli_token.json"
+    # The `la` shim, shipped with the internal packages; on every job's PATH.
+    CLI_BIN_DIR: ClassVar[str] = "_internal/src/la/bin"
     # An MCP check's files, which hold a copy of the server's vault secrets.
     MCP_CHECK_PREFIX: ClassVar[str] = "_internal/.mcp_check_"
     # Folders of the owner's set aside out of a workspace folder's way, and
@@ -322,10 +326,18 @@ class SandboxLayout:
         return self.join(self.VAULT_SECRETS_FILE)
 
     @property
+    def cli_token(self) -> str:
+        return self.join(self.CLI_TOKEN_FILE)
+
+    @property
+    def cli_bin(self) -> str:
+        return self.join(self.CLI_BIN_DIR)
+
+    @property
     def credential_files(self) -> tuple[str, ...]:
         """The files the server writes credentials to for the computer's
         processes; an MCP check's copies match ``MCP_CHECK_PREFIX``."""
-        return (self.mcp_tokens, self.egress_relay, self.vault_secrets)
+        return (self.mcp_tokens, self.egress_relay, self.vault_secrets, self.cli_token)
 
     @property
     def setup_dirs(self) -> tuple[str, ...]:

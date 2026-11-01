@@ -70,9 +70,6 @@ class MountHandle(Protocol):
         the computer's root). A command run without it would write beside
         the files the store holds."""
 
-    async def prepare(self, call_id: str, context: CallContext | None = None) -> None:
-        """File who ``call_id`` runs for."""
-
     async def report(
         self, call_id: str, output: str, context: CallContext | None = None
     ) -> str:
@@ -124,23 +121,36 @@ class TranscriptReach:
     shell: bool
 
 
+#: Files who a command runs for under its call id. The host sets one on every
+#: sandbox (``PTCSandbox.call_filer``): a save through the mount reads it, and
+#: so does a call the ``la`` CLI makes, on a machine whatever mounts it.
+CallFiler = Callable[[str, CallContext], Awaitable[None]]
+
+
 async def through_mount(
     mount: MountHandle | None,
+    filer: CallFiler | None,
     context: CallContext | None,
     run: Callable[[str | None], Awaitable[tuple[str, dict[str, Any]]]],
 ) -> tuple[str, dict[str, Any]]:
-    """Run one command under a fresh call id while the mount serves, and add
-    to its output what its saves through the mount reported.
+    """Run one command under a fresh call id, filed with who it runs for, and
+    while the mount serves add to its output what its saves through the
+    mount reported.
 
     The id is collected once ``run`` returns, so the later saves of a command
     it handed off reach the next command's result. A cancelled run reports
-    nothing.
+    nothing. With neither a mount nor anything to file, the command runs
+    under no id.
     """
-    if mount is None:
+    filing = filer is not None and context is not None
+    if mount is None and not filing:
         return await run(None)
     call_id = secrets.token_hex(8)
-    await mount.prepare(call_id, context)
+    if filing:
+        await filer(call_id, context)
     text, artifact = await run(call_id)
+    if mount is None:
+        return text, artifact
     report = await mount.report(call_id, text, context)
     return (f"{text}\n\n{report}" if report else text), artifact
 

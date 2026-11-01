@@ -16,6 +16,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tests.conftest import create_test_app
+from tests.unit.server.dependencies.reach_world import THREAD, USER, WORKSPACE
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -122,6 +123,61 @@ async def test_create_automation(client):
     assert body["trigger_type"] == "cron"
 
 
+_CRON = {
+    "name": "Daily Briefing",
+    "trigger_type": "cron",
+    "cron_expression": "0 8 * * *",
+    "instruction": "Give me a market summary",
+}
+
+
+@pytest_asyncio.fixture
+async def computer_client(monkeypatch):
+    """A client whose calls come from a computer's token, run in ``THREAD``."""
+    from src.server.app.automations import router
+    from tests.unit.server.dependencies.reach_world import ReachWorld, act_as_computer
+
+    app = create_test_app(router)
+    act_as_computer(app, call_thread=THREAD)
+    ReachWorld(monkeypatch)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+
+
+@pytest.mark.asyncio
+async def test_a_computer_token_cannot_point_an_automation_at_its_own_thread(computer_client):
+    """Its runs would start turns in the conversation the call runs in."""
+    with patch(f"{HANDLER}.create_automation", new_callable=AsyncMock) as create:
+        resp = await computer_client.post(
+            "/api/v1/automations",
+            json={
+                **_CRON,
+                "workspace_id": WORKSPACE,
+                "thread_strategy": "continue",
+                "conversation_thread_id": THREAD,
+            },
+        )
+
+    assert resp.status_code == 403
+    assert "conversation it runs in" in resp.json()["detail"]["message"]
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_computer_token_cannot_place_an_automation_in_home(computer_client):
+    from src.server.database.home_workspace import get_home_workspace_id
+
+    with patch(f"{HANDLER}.create_automation", new_callable=AsyncMock) as create:
+        resp = await computer_client.post(
+            "/api/v1/automations",
+            json={**_CRON, "workspace_id": get_home_workspace_id(USER)},
+        )
+
+    assert resp.status_code == 403
+    assert "never reaches Home" in resp.json()["detail"]["message"]
+    create.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_create_automation_duplicate_409(client):
     with patch(
@@ -204,7 +260,7 @@ async def test_list_automations_with_filters(client):
 
     assert resp.status_code == 200
     mock_list.assert_awaited_once_with(
-        "test-user-123", status="active", limit=10, offset=5
+        "test-user-123", status="active", limit=10, offset=5, computer_id=None
     )
 
 

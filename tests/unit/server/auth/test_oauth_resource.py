@@ -173,6 +173,15 @@ class TestRouting:
         assert not oauth_resource.from_resource_issuer(session_token())
         assert not oauth_resource.from_resource_issuer("not-a-jwt")
 
+    def test_a_session_the_same_issuer_signs_keeps_the_session_path(self, configured):
+        """An issuer that also signs the app's sessions (Supabase's OAuth
+        server) names the app's audience in them, not this API's."""
+        assert not oauth_resource.from_resource_issuer(app_token(aud="authenticated"))
+        assert oauth_resource.from_resource_issuer(app_token(aud=["authenticated", AUDIENCE]))
+        # Unverified, so any shape: never an error, which would answer 500.
+        assert not oauth_resource.from_resource_issuer(app_token(aud=[{}, []]))
+        assert oauth_resource.from_resource_issuer(app_token(aud=[{}, AUDIENCE]))
+
     def test_nothing_takes_it_while_the_verifier_is_off(self, configured):
         with patch.object(oauth_resource, "OAUTH_RESOURCE_AUDIENCES", ()):
             assert not oauth_resource.from_resource_issuer(app_token())

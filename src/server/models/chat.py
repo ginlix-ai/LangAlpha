@@ -297,8 +297,9 @@ class ThreadOrigin(BaseModel):
     id: Optional[str] = Field(default=None, max_length=100)
     # automation: the automation's name at send time, capped as automations cap it
     name: Optional[str] = Field(default=None, max_length=255)
-    # agent: which agent dispatched the thread
-    agent: Optional[Literal["chief_of_staff"]] = None
+    # agent: which agent dispatched the thread; "cli" is a computer's agent
+    # through the ``la`` CLI, the server's stamp (``principal.stamp_origin``)
+    agent: Optional[Literal["chief_of_staff", "cli"]] = None
 
 
 class AnalystReport(BaseModel):

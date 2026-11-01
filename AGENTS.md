@@ -39,7 +39,7 @@ cd web && pnpm test                   # Vitest;  pnpm test:e2e = Playwright;  pn
 | `src/llms/` | LLM wrappers, token counting, pricing, model manifest (`manifest/models.json`) |
 | `src/data_client/` | Financial data protocol abstraction |
 | `src/utils/` | Redis cache, shared utilities |
-| `libs/ptc-cli/` | Standalone interactive CLI for the PTC agent (pkg `langalpha-cli`, cmd `ptc-agent`). The `cli` extra, not a server dependency: `uv sync --extra cli`. The server imports nothing from it, and the backend images never install it. |
+| `cli/` | `langalpha` (`la` for short), the TypeScript CLI (`cli/README.md`): one esbuild bundle every computer gets on its agent's `PATH` under both names, with a token of its own that reaches only that computer and never Home, whose turns run the Chief of Staff (`src/server/dependencies/principal.py`), and every call it makes there is recorded with the thread whose command made it (`computer_cli_calls`); people sign in with `la login`. |
 
 ### Frontend (`web/src/`)
 

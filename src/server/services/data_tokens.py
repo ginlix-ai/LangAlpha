@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from src.config.env import AUTH_SERVICE_URL, GINLIX_DATA_URL, PUBLIC_API_BASE_URL
+from src.server.auth import computer_token_core
 from src.server.database import computer_data_tokens as db
 
 logger = logging.getLogger(__name__)
@@ -80,9 +81,7 @@ def configured() -> bool:
 def due(row: db.DataTokenRow, sandbox_id: str | None) -> bool:
     """Whether ``sandbox_id`` is owed a token: it holds none, or one with
     less than ``REFRESH_BELOW`` left."""
-    if row.expires_at is None or row.held_by is None or row.held_by != sandbox_id:
-        return True
-    return row.expires_at - datetime.now(UTC) < REFRESH_BELOW
+    return computer_token_core.due(row, sandbox_id, REFRESH_BELOW)
 
 
 def holds(row: db.DataTokenRow, sandbox_id: str | None) -> bool:

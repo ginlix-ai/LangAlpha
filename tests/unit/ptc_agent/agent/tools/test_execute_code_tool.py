@@ -49,7 +49,7 @@ def _backend(*outcomes: Any) -> Any:
     backend.config_folder = AsyncMock(return_value=None)
     backend.provider = "docker"
     backend.channel = "docker"
-    backend.sandbox = None
+    backend.sandbox = SimpleNamespace(call_filer=None)
     return backend
 
 

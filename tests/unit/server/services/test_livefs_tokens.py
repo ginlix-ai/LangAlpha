@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.server.auth import computer_token_core as core
 from src.server.services.livefs import cache, tokens
 from src.server.services.livefs.tokens import (
     LivefsAuthError,
@@ -252,20 +253,21 @@ async def test_a_mirror_the_revoke_could_not_drop_is_dropped_once_redis_answers(
     answers = iter([False, False, False, False, True])
     drops: list[str] = []
 
-    async def drop(computer_id):
+    async def drop(kind, computer_id):
+        assert kind is tokens.KIND
         drops.append(computer_id)
         return next(answers)
 
-    monkeypatch.setattr(tokens, "_drop_mirror", drop)
-    monkeypatch.setattr(tokens, "_DROP_RETRY_S", 0)
-    monkeypatch.setattr(tokens, "_REVOKE_ATTEMPTS", 3)
+    monkeypatch.setattr(core, "drop_mirror", drop)
+    monkeypatch.setattr(core, "_DROP_RETRY_S", 0)
+    monkeypatch.setattr(core, "_REVOKE_ATTEMPTS", 3)
 
     await revoke(COMPUTER)
-    (pending,) = tokens._dropping
+    (pending,) = core._dropping
     await pending
 
     assert drops == [COMPUTER] * 5
-    assert not tokens._dropping
+    assert not core._dropping
 
 
 @pytest.mark.asyncio
@@ -274,14 +276,14 @@ async def test_a_revoke_whose_row_delete_fails_still_drops_the_mirror(table, mon
     keep serving the ended tokens until it lapses."""
     drops: list[str] = []
 
-    async def drop(computer_id):
+    async def drop(kind, computer_id):
         drops.append(computer_id)
         return True
 
     async def delete_token(computer_id):
         raise OSError("db down")
 
-    monkeypatch.setattr(tokens, "_drop_mirror", drop)
+    monkeypatch.setattr(core, "drop_mirror", drop)
     monkeypatch.setattr(table, "delete_token", delete_token)
 
     with pytest.raises(OSError):

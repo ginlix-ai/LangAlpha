@@ -14,6 +14,7 @@ from src.server.services.insight_service import (
     InsightAlreadyGeneratingError,
     InsightService,
 )
+from src.server.dependencies.principal import DataReadUserId
 from src.server.utils.api import (
     CurrentUserId,
     handle_api_exceptions,
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["Insights"])
 
 @router.get("/insights/today", response_model=MarketInsightListResponse)
 @handle_api_exceptions("get today's insights", logger)
-async def get_todays_insights(user_id: CurrentUserId):
+async def get_todays_insights(user_id: DataReadUserId):
     rows = await market_insight_db.get_todays_market_insights(user_id=user_id)
     return {"insights": rows, "count": len(rows)}
 
@@ -37,7 +38,7 @@ async def get_todays_insights(user_id: CurrentUserId):
     response_model=MarketInsightDetailResponse,
 )
 @handle_api_exceptions("get insight detail", logger)
-async def get_insight_detail(market_insight_id: str, user_id: CurrentUserId):
+async def get_insight_detail(market_insight_id: str, user_id: DataReadUserId):
     row = await market_insight_db.get_market_insight(market_insight_id)
     if not row:
         raise_not_found("Market Insight")

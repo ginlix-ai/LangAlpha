@@ -17,6 +17,7 @@ from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from src.server.database.home_workspace import get_home_workspace_id
 from src.server.database.pool import get_db_connection
 from src.server.utils.db import UpdateQueryBuilder
 
@@ -261,8 +262,13 @@ async def list_automations(
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    computer_id: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], int]:
     """List automations for a user with optional status filter.
+
+    ``computer_id`` keeps the page to what that computer's token reaches:
+    the automations that run in a workspace on it, never one in Home, which
+    is out of a computer's reach wherever it sits.
 
     Returns:
         Tuple of (list of automation dicts, total count).
@@ -273,6 +279,14 @@ async def list_automations(
     if status:
         where_parts.append("status = %s")
         params.append(status)
+    if computer_id is not None:
+        # One with no workspace runs in Home, and the inequality drops it too.
+        where_parts.append(
+            "automations.workspace_id <> %s::uuid AND EXISTS (SELECT 1 FROM workspaces w"
+            " WHERE w.workspace_id = automations.workspace_id"
+            " AND w.computer_id = %s::uuid)"
+        )
+        params += [get_home_workspace_id(user_id), computer_id]
 
     where_clause = " AND ".join(where_parts)
 

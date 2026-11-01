@@ -509,7 +509,7 @@ class TestRewriteAfterRevocation:
 
         with (
             patch.object(db, "load_in_service", AsyncMock(return_value=row)),
-            patch.object(sweeper, "_keeps_running", keeps),
+            patch("src.server.services.data_token_sweep.keeps_running", keeps),
             patch.object(sweeper, "_write_locked", locked),
             _session_lock([True]),
         ):
@@ -526,7 +526,7 @@ class TestRewriteAfterRevocation:
 
         with (
             patch.object(db, "load_in_service", AsyncMock(return_value=row)),
-            patch.object(sweeper, "_keeps_running", AsyncMock(return_value=False)),
+            patch("src.server.services.data_token_sweep.keeps_running", AsyncMock(return_value=False)),
             patch.object(sweeper, "_write_locked", locked),
         ):
             assert await sweeper.rewrite(COMPUTER_ID) is False
@@ -544,7 +544,7 @@ class TestRewriteAfterRevocation:
         with (
             patch.object(data_token_sweep, "_LOCK_POLL_S", 0.0),
             patch.object(db, "load_in_service", AsyncMock(return_value=row)),
-            patch.object(sweeper, "_keeps_running", AsyncMock(return_value=True)),
+            patch("src.server.services.data_token_sweep.keeps_running", AsyncMock(return_value=True)),
             patch.object(sweeper, "_write_locked", locked),
             _session_lock([False, False, True]),
         ):
@@ -779,10 +779,8 @@ class TestSweepSparesIdleComputers:
     async def test_recent_use_is_judged_by_the_providers_idle_limit(
         self, idle_s, kept
     ):
-        sweeper = DataTokenSweeper()
-
         with self._manager(), self._executor(False):
-            assert await sweeper._keeps_running(self._idle_row(idle_s)) is kept
+            assert await data_token_sweep.keeps_running(self._idle_row(idle_s)) is kept
 
     @pytest.mark.asyncio
     async def test_an_idle_computer_with_nothing_running_is_not_written(self):
@@ -830,7 +828,7 @@ class TestTheAcquireKeepsTheToken:
         manager = SimpleNamespace(
             _acquire_session=AsyncMock(return_value=session),
             resolve_binding=AsyncMock(return_value=binding),
-            _keep_data_token=AsyncMock(),
+            _keep_computer_tokens=AsyncMock(),
             _settle_folders=AsyncMock(),
             _ensure_project_attached=AsyncMock(),
         )
@@ -841,4 +839,4 @@ class TestTheAcquireKeepsTheToken:
             )
 
         assert got is session
-        manager._keep_data_token.assert_awaited_once_with(COMPUTER_ID, USER_ID, session.sandbox)
+        manager._keep_computer_tokens.assert_awaited_once_with(COMPUTER_ID, USER_ID, session.sandbox)

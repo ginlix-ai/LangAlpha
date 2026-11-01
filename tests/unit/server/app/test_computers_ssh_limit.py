@@ -168,3 +168,24 @@ async def test_a_probe_names_only_the_callers_own_ssh_computer(client, sample_co
 
     assert answer.status_code == 404
     dialed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        ("/api/v1/computers/ssh/probe", _HOST),
+        ("/api/v1/computers/ssh/pairings", None),
+        ("/api/v1/computers/ssh/pairings/pair-token/connect", {"host": "203.0.113.10", "port": 22}),
+    ],
+)
+async def test_a_computer_token_cannot_probe_pair_or_connect_a_machine(path, body):
+    from tests.unit.server.dependencies.reach_world import act_as_computer
+
+    app = create_test_app(computers_ssh.router)
+    act_as_computer(app)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.post(path, json=body)
+
+    assert resp.status_code == 403
+    assert "add or pair a computer" in resp.json()["detail"]["message"]

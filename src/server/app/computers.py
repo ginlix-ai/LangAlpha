@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
@@ -120,6 +120,14 @@ from src.server.services.workspace_move import (
 from src.server.services.workspace_status_pubsub import (
     publish_computer_status_change,
     subscribe_to_computer_status,
+)
+from src.server.dependencies.principal import (
+    ComputerAddUserId,
+    ComputerEndUserId,
+    ComputerWriteUserId,
+    Principal,
+    ReadPrincipal,
+    ReadUserId,
 )
 from src.server.utils.api import CurrentUserId
 from src.server.utils.error_sanitization import sandbox_failure_http
@@ -429,7 +437,7 @@ async def _schedule_claimed_start(computer_id: str) -> str:
 @router.post("", response_model=ComputerResponse, status_code=201)
 async def create_computer(
     request: ComputerCreate,
-    x_user_id: CurrentUserId,
+    x_user_id: ComputerAddUserId,
 ):
     """Create a computer and prepare its sandbox in the background.
 
@@ -536,9 +544,18 @@ def _ssh_create_refusals():
         raise HTTPException(status_code=503, detail=str(e)) from None
 
 
+async def _listed_computers(principal: Principal) -> List[Dict[str, Any]]:
+    """The computers a list shows the caller: a computer's token, only its own."""
+    if principal.computer_id is None:
+        return await get_computers_for_user(principal.user_id)
+    row = await get_computer(principal.computer_id)
+    return [row] if row is not None and row.get("user_id") == principal.user_id else []
+
+
 @router.get("", response_model=ComputerListResponse)
-async def list_computers(x_user_id: CurrentUserId):
-    rows = await get_computers_for_user(x_user_id)
+async def list_computers(principal: ReadPrincipal):
+    x_user_id = principal.user_id
+    rows = await _listed_computers(principal)
     # One query for the whole list: stopping a machine takes every project on it
     # down, so the count is what the card needs to say so before asking.
     counts = await count_live_workspaces_by_computer(
@@ -560,7 +577,7 @@ async def list_computers(x_user_id: CurrentUserId):
 
 # Registered ahead of /{computer_id}, which would otherwise read "providers" as an id.
 @router.get("/providers", response_model=ComputerProvidersResponse)
-async def list_computer_providers(x_user_id: CurrentUserId):
+async def list_computer_providers(x_user_id: ReadUserId):
     """The providers a new computer may be created on, and which the caller may pick."""
     try:
         sandbox = _sandbox_config()
@@ -624,7 +641,7 @@ async def _counted_response(computer: Dict[str, Any]) -> ComputerResponse:
 
 
 @router.get("/{computer_id}", response_model=ComputerResponse)
-async def get_computer_details(computer_id: str, x_user_id: CurrentUserId):
+async def get_computer_details(computer_id: str, x_user_id: ReadUserId):
     return await _counted_response(await _owned_computer(computer_id, x_user_id))
 
 
@@ -632,7 +649,7 @@ async def get_computer_details(computer_id: str, x_user_id: CurrentUserId):
 async def rename_computer(
     computer_id: str,
     request: ComputerRenameRequest,
-    x_user_id: CurrentUserId,
+    x_user_id: ComputerWriteUserId,
 ):
     """A name another of the user's live computers has is a 409 ``name_taken``;
     the computer's own name in another case is a rename like any other."""
@@ -651,7 +668,7 @@ async def rename_computer(
 @router.delete("/{computer_id}", response_model=ComputerRemoveResponse)
 async def remove_computer(
     computer_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: ComputerEndUserId,
     remove_key: bool = Query(
         True,
         description=(
@@ -722,7 +739,7 @@ async def remove_computer(
 
 
 @router.get("/{computer_id}/storage", response_model=ComputerStorageResponse)
-async def get_computer_storage(computer_id: str, x_user_id: CurrentUserId):
+async def get_computer_storage(computer_id: str, x_user_id: ReadUserId):
     """Measure now when the machine runs; otherwise answer the last reading.
 
     A stopped machine is never started for this: the stored reading is what
@@ -756,7 +773,7 @@ async def get_computer_storage(computer_id: str, x_user_id: CurrentUserId):
 
 
 @router.get("/{computer_id}/session", response_model=ComputerSessionResponse)
-async def get_computer_session(computer_id: str, x_user_id: CurrentUserId):
+async def get_computer_session(computer_id: str, x_user_id: ReadUserId):
     """Resolve sessions only when Postgres says running so this read cannot provision."""
     computer = await _owned_computer(computer_id, x_user_id)
     response = ComputerSessionResponse(
@@ -785,7 +802,7 @@ async def get_computer_session(computer_id: str, x_user_id: CurrentUserId):
 
 
 @router.get("/{computer_id}/events")
-async def computer_status_events(computer_id: str, x_user_id: CurrentUserId):
+async def computer_status_events(computer_id: str, x_user_id: ReadUserId):
     computer = await _owned_computer(computer_id, x_user_id)
 
     def _frame(
@@ -823,7 +840,7 @@ async def computer_status_events(computer_id: str, x_user_id: CurrentUserId):
 @router.post("/{computer_id}/start", response_model=ComputerActionResponse)
 async def start_computer(
     computer_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: ComputerWriteUserId,
     lazy: bool = Query(
         False,
         description=(
@@ -886,7 +903,7 @@ async def start_computer(
 
 
 @router.post("/{computer_id}/stop", response_model=ComputerActionResponse)
-async def stop_computer(computer_id: str, x_user_id: CurrentUserId):
+async def stop_computer(computer_id: str, x_user_id: ComputerEndUserId):
     async with _computer_action_errors("stop", computer_id):
         await _owned_computer(computer_id, x_user_id)
         updated = await _computer_manager().stop_computer(computer_id)
@@ -899,7 +916,7 @@ async def stop_computer(computer_id: str, x_user_id: CurrentUserId):
 
 
 @router.post("/{computer_id}/archive", response_model=ComputerActionResponse)
-async def archive_computer(computer_id: str, x_user_id: CurrentUserId):
+async def archive_computer(computer_id: str, x_user_id: ComputerEndUserId):
     async with _computer_action_errors("archive", computer_id):
         await _owned_computer(computer_id, x_user_id)
         updated = await _computer_manager().archive_computer(computer_id)

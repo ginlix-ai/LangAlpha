@@ -82,6 +82,13 @@ describe('MessageProvenanceLabel', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 
+  it('names a thread another thread\'s agent started through la, and opens that thread', () => {
+    const onOpenDispatcher = vi.fn();
+    renderLabel({ kind: 'agent', agent: 'cli', threadId: 'th-caller' }, { actions: { onOpenDispatcher } });
+    fireEvent.click(screen.getByRole('button', { name: 'From another thread' }));
+    expect(onOpenDispatcher).toHaveBeenCalledWith('th-caller');
+  });
+
   it('reads an unrecorded dispatcher as the Chief of Staff', () => {
     renderLabel({ kind: 'agent', agent: null, threadId: 'th-old' });
     expect(screen.getByText('From Chief of Staff')).toBeInTheDocument();

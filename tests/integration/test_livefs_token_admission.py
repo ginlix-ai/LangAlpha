@@ -12,6 +12,7 @@ Requires a real Redis and Postgres (``REDIS_URL`` and ``TEST_DB_*``).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import secrets
 import uuid
@@ -20,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from src.server.auth import computer_token_core as core
 from src.server.services.livefs import cache as livefs_cache
 from src.server.services.livefs import tokens
 from src.server.services.livefs.tokens import (
@@ -70,7 +72,7 @@ async def computer(seed_user, patched_get_db_connection, redis):
     )
     cid = str(row["computer_id"])
     yield LivefsIdentity(cid, seed_user["user_id"], row["root_dir"])
-    await redis.delete(*tokens._keys(cid))
+    await redis.delete(*tokens.KIND.keys(cid))
 
 
 @pytest.fixture
@@ -111,7 +113,7 @@ async def test_a_revoked_token_is_refused_though_the_mirror_held_it(
 
     await revoke(computer.computer_id)
 
-    auth_key, _, _ = tokens._keys(computer.computer_id)
+    auth_key, _, _ = tokens.KIND.keys(computer.computer_id)
     assert await redis.exists(auth_key) == 0
     assert await _refused(_bearer(minted.token))
 
@@ -132,7 +134,7 @@ async def test_a_token_serves_only_while_its_computer_is_in_service(
             (status, computer.computer_id),
         )
     # What a stop's revoke drops even when its row delete fails.
-    await redis.delete(*tokens._keys(computer.computer_id))
+    await redis.delete(*tokens.KIND.keys(computer.computer_id))
 
     assert (not await _refused(_bearer(minted.token))) is serves
 
@@ -167,12 +169,12 @@ async def test_an_expired_entry_still_in_the_mirror_is_refused(
     short, long = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     short_until = datetime.now(UTC) + timedelta(seconds=2)
     await db.save_token(
-        computer.computer_id, computer.user_id, tokens._digest(short), short_until
+        computer.computer_id, computer.user_id, core.digest(short), short_until
     )
     await db.save_token(
         computer.computer_id,
         computer.user_id,
-        tokens._digest(long),
+        core.digest(long),
         datetime.now(UTC) + timedelta(hours=1),
     )
     presented = _bearer(f"{tokens.PREFIX}.{computer.computer_id}.{short}")
@@ -184,12 +186,13 @@ async def test_an_expired_entry_still_in_the_mirror_is_refused(
     await asyncio.sleep(
         (short_until - datetime.now(UTC)).total_seconds() + 1.0
     )
-    auth_key, _, _ = tokens._keys(computer.computer_id)
-    assert await redis.hexists(auth_key, tokens._field(tokens._digest(short)))
+    auth_key, _, _ = tokens.KIND.keys(computer.computer_id)
+    assert await redis.hexists(auth_key, core.field(core.digest(short)))
 
     assert await _refused(presented)
-    # Refused by the row, which the mirror sent the request to.
-    assert len(row_reads) == 2
+    # Refused by the mirror itself: it holds every live token, so an entry
+    # past its expiry needs no read of the row, whose expiry is the same.
+    assert len(row_reads) == 1
 
 
 @pytest.mark.parametrize("change", ["revoke", "rotation"])
@@ -215,7 +218,7 @@ async def test_a_row_read_racing_a_change_is_not_written_back(
     assert await authenticate(_bearer(minted.token)) == computer
 
     monkeypatch.setattr(tokens.db, "load_token", real)
-    auth_key, gen_key, _ = tokens._keys(computer.computer_id)
+    auth_key, gen_key, _ = tokens.KIND.keys(computer.computer_id)
     assert await redis.exists(auth_key) == 0
     assert int(await redis.get(gen_key)) > 0
     assert await _refused(_bearer(minted.token))
@@ -225,9 +228,9 @@ async def test_the_request_past_the_burst_is_throttled(
     computer, redis, monkeypatch
 ):
     # Refill slowed so the loop's own duration cannot move the boundary.
-    monkeypatch.setattr(tokens, "RATE_PER_S", 0.01)
+    monkeypatch.setattr(tokens, "KIND", dataclasses.replace(tokens.KIND, rate_per_s=0.01))
     minted = await mint_token(computer.computer_id, computer.user_id)
-    _, _, rate_key = tokens._keys(computer.computer_id)
+    _, _, rate_key = tokens.KIND.keys(computer.computer_id)
 
     # An unknown token spends nothing of the computer's rate.
     forged = f"{tokens.PREFIX}.{computer.computer_id}.{secrets.token_urlsafe(32)}"
@@ -235,7 +238,7 @@ async def test_the_request_past_the_burst_is_throttled(
         assert await _refused(_bearer(forged))
     assert await redis.exists(rate_key) == 0
 
-    for _ in range(tokens.BURST):
+    for _ in range(tokens.KIND.burst):
         assert await authenticate(_bearer(minted.token)) == computer
 
     with pytest.raises(LivefsThrottled) as throttled:

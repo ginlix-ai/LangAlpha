@@ -31,7 +31,12 @@ from ptc_agent.core.sandbox.jobs import (
     Running,
     StoppedJob,
 )
-from ptc_agent.core.sandbox.livefs_mount import HistoryFiles, MountHandle, TranscriptReach
+from ptc_agent.core.sandbox.livefs_mount import (
+    CallFiler,
+    HistoryFiles,
+    MountHandle,
+    TranscriptReach,
+)
 from ptc_agent.core.sandbox.retry import RetryPolicy, async_retry_with_backoff
 from ptc_agent.core.sandbox.runtime import (
     HostUnavailablePolicy,
@@ -52,10 +57,10 @@ from ..project_context import ProjectContext, current_project
 from ..tool_generator import ToolFunctionGenerator
 
 from ptc_agent.core.sandbox._shared import (
-    REPLACE_UNLESS_NEWER_SCRIPT,
     SyncResult,
-    _internal_package_files,
+    _internal_package_uploads,
     publish_private_file,
+    publish_token_file,
 )
 from ptc_agent.core.sandbox import assets as _assets
 from ptc_agent.core.sandbox import execution as _execution
@@ -96,6 +101,9 @@ class PTCSandbox:
         # Set by the host while the file mount serves this sandbox; None
         # means the store-backed paths are not on its filesystem.
         self.livefs: MountHandle | None = None
+        # Set by the host: files who each command's call runs for, which a
+        # save through the mount and a call the ``la`` CLI makes both read.
+        self.call_filer: CallFiler | None = None
         # Set by the host on a machine the mount never serves, whose past
         # threads the file tools then read in process.
         self.history: HistoryFiles | None = None
@@ -596,24 +604,13 @@ class PTCSandbox:
 
         logger.info("Tools and MCP servers ready", sandbox_id=self.sandbox_id)
 
-    async def upload_token_file(self, payload: dict[str, Any]) -> bool:
-        """Write the market-data token the in-sandbox client reads.
-
-        A file, not an env var, so a fresh token reaches running MCP servers,
-        which re-read it when it changes. The server writes every token; the
-        sandbox only reads. True only once the write is confirmed.
-        """
+    async def publish_token_file(self, path: str, payload: dict[str, Any]) -> bool:
+        """Write a token the server mints into the file at ``path`` (the
+        market-data one, the ``la`` CLI's), which the sandbox only reads.
+        True only once the write is confirmed."""
         if not self.runtime:
             return False
-        return await publish_private_file(
-            self.runtime,
-            self._token_file_path,
-            payload,
-            what="sandbox token file",
-            script=REPLACE_UNLESS_NEWER_SCRIPT,
-            args=(str(payload["iat_ms"]),),
-            call=self._safe_call,
-        )
+        return await publish_token_file(self.runtime, path, payload, call=self._safe_call)
 
     async def upload_egress_relay_credentials(self, payload: dict | None) -> bool:
         """Write (or remove) the egress-relay credential file in the sandbox.
@@ -851,7 +848,7 @@ class PTCSandbox:
         repo_root = config_dir or Path.cwd()
         local_src_dir = (repo_root / "src").resolve()
 
-        files = _internal_package_files(local_src_dir, livefs=self.mounts_livefs)
+        files = _internal_package_uploads(local_src_dir, livefs=self.mounts_livefs)
         if not files:
             logger.warning(
                 "Skipping internal package upload - local src/__init__.py not found",
@@ -863,7 +860,7 @@ class PTCSandbox:
         sandbox = self.runtime
 
         # Collect unique parent dirs → single mkdir command
-        parent_dirs = {str(Path(str(internal_root / rel)).parent) for _, rel in files}
+        parent_dirs = {str(Path(str(internal_root / rel)).parent) for _, rel, _ in files}
         mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(d) for d in sorted(parent_dirs))
         await self._runtime_call(
             sandbox.exec,
@@ -873,7 +870,7 @@ class PTCSandbox:
 
         batch: list[tuple[bytes | str, str]] = [
             (str(local_path), str(internal_root / rel_path))
-            for local_path, rel_path in files
+            for local_path, rel_path, _ in files
         ]
         # The vault helper ships even with no secrets, so `from vault import
         # get` always imports. Its source is stamped with this set, so it goes
@@ -886,6 +883,17 @@ class PTCSandbox:
             batch,
             retry_policy=RetryPolicy.SAFE,
         )
+        # Uploads land 0644.
+        modes: dict[int, list[str]] = {}
+        for _, rel_path, mode in files:
+            if mode is not None:
+                modes.setdefault(mode, []).append(shlex.quote(str(internal_root / rel_path)))
+        for mode, paths in modes.items():
+            await self._runtime_call(
+                sandbox.exec,
+                f"chmod {mode:o} {' '.join(paths)}",
+                retry_policy=RetryPolicy.SAFE,
+            )
         logger.debug(
             "Uploaded internal packages to sandbox",
             uploaded_files=len(batch),

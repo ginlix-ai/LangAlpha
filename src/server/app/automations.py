@@ -27,13 +27,14 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from src.server.database import automation as auto_db
 from src.server.database import automation_executions as exec_db
 from src.server.database.home_workspace import is_home_row
+from src.server.database.principal_reach import workspace_or_home
 from src.server.database.workspace import get_workspace
 from src.server.services.automations import lifecycle as handler
 from src.server.services.automations import delivery
@@ -46,6 +47,16 @@ from src.server.models.automation import (
     AutomationUpdate,
     DeliveryDefaultUpdate,
     ExecutionStatus,
+)
+from src.server.dependencies.principal import (
+    ReadPrincipal,
+    ReadUserId,
+    RunUserId,
+    WorkspaceSendPrincipal,
+    WorkspaceSendUserId,
+    WorkspaceWritePrincipal,
+    WorkspaceWriteUserId,
+    assert_automation_target,
 )
 from src.server.utils.api import (
     CurrentUserId,
@@ -68,9 +79,17 @@ router = APIRouter(prefix="/api/v1", tags=["Automations"])
 @handle_api_exceptions("create automation", logger, conflict_on_value_error=True)
 async def create_automation(
     request: AutomationCreate,
-    user_id: CurrentUserId,
+    principal: WorkspaceWritePrincipal,
+    http_request: Request,
 ):
     """Create a new scheduled automation."""
+    user_id = principal.user_id
+    await assert_automation_target(
+        principal,
+        http_request,
+        workspace_id=workspace_or_home(user_id, request.workspace_id),
+        thread_id=request.conversation_thread_id,
+    )
     try:
         automation = await handler.create_automation(user_id=user_id, data=request)
     except handler.DeliveryRefused as e:
@@ -81,14 +100,18 @@ async def create_automation(
 @router.get("/automations", response_model=AutomationsListResponse)
 @handle_api_exceptions("list automations", logger)
 async def list_automations(
-    user_id: CurrentUserId,
+    principal: ReadPrincipal,
     status: str | None = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
     """List automations for the current user, each with its newest execution."""
     automations, total = await auto_db.list_automations(
-        user_id, status=status, limit=limit, offset=offset,
+        principal.user_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+        computer_id=principal.computer_id,
     )
     return AutomationsListResponse(
         automations=[AutomationResponse.model_validate(a) for a in automations],
@@ -155,7 +178,7 @@ async def _delivery_workspace(user_id: str, workspace_id: Optional[UUID]) -> Opt
 @router.get("/automations/delivery-options")
 @handle_api_exceptions("list delivery options", logger)
 async def get_delivery_options(
-    user_id: CurrentUserId,
+    user_id: ReadUserId,
     workspace_id: Optional[UUID] = Query(None),
 ) -> dict[str, Any]:
     """The chats each linked app offers an automation's runs, and the one an
@@ -201,7 +224,7 @@ async def set_delivery_default(
 @handle_api_exceptions("get automation", logger)
 async def get_automation(
     automation_id: UUID,
-    user_id: CurrentUserId,
+    user_id: ReadUserId,
 ):
     """Get a specific automation."""
     automation = await auto_db.get_automation(str(automation_id), user_id)
@@ -215,9 +238,17 @@ async def get_automation(
 async def update_automation(
     automation_id: UUID,
     request: AutomationUpdate,
-    user_id: CurrentUserId,
+    principal: WorkspaceSendPrincipal,
+    http_request: Request,
 ):
     """Partial update of an automation."""
+    user_id = principal.user_id
+    await assert_automation_target(
+        principal,
+        http_request,
+        workspace_id=request.workspace_id,
+        thread_id=request.conversation_thread_id,
+    )
     try:
         automation = await handler.update_automation(
             automation_id=str(automation_id),
@@ -242,7 +273,7 @@ async def update_automation(
 @handle_api_exceptions("delete automation", logger)
 async def delete_automation(
     automation_id: UUID,
-    user_id: CurrentUserId,
+    user_id: WorkspaceWriteUserId,
 ):
     """Delete an automation (cascade deletes executions)."""
     deleted = await auto_db.delete_automation(str(automation_id), user_id)
@@ -260,7 +291,7 @@ async def delete_automation(
 @handle_api_exceptions("trigger automation", logger, conflict_on_value_error=True)
 async def trigger_automation(
     automation_id: UUID,
-    user_id: CurrentUserId,
+    user_id: RunUserId,
 ):
     """Manually trigger an automation immediately (doesn't affect next_run_at)."""
     result = await handler.trigger_automation(str(automation_id), user_id)
@@ -271,7 +302,7 @@ async def trigger_automation(
 @handle_api_exceptions("pause automation", logger, conflict_on_value_error=True)
 async def pause_automation(
     automation_id: UUID,
-    user_id: CurrentUserId,
+    user_id: WorkspaceWriteUserId,
 ):
     """Pause an active automation."""
     automation = await handler.pause_automation(str(automation_id), user_id)
@@ -284,7 +315,8 @@ async def pause_automation(
 @handle_api_exceptions("resume automation", logger, conflict_on_value_error=True)
 async def resume_automation(
     automation_id: UUID,
-    user_id: CurrentUserId,
+    # Re-arms runs into the automation's thread, so not the call's own.
+    user_id: WorkspaceSendUserId,
 ):
     """Resume a paused or disabled automation."""
     automation = await handler.resume_automation(str(automation_id), user_id)
@@ -298,7 +330,7 @@ async def resume_automation(
 async def skip_execution(
     automation_id: UUID,
     execution_id: UUID,
-    user_id: CurrentUserId,
+    user_id: WorkspaceWriteUserId,
 ):
     """Skip a run that is waiting for its thread's current turn to end."""
     result = await handler.skip_execution(
@@ -317,7 +349,7 @@ async def skip_execution(
 async def dismiss_execution(
     automation_id: UUID,
     execution_id: UUID,
-    user_id: CurrentUserId,
+    user_id: WorkspaceWriteUserId,
 ):
     """Take a failed run out of Needs attention until another run fails."""
     automation = await handler.dismiss_execution(
@@ -340,7 +372,7 @@ async def dismiss_execution(
 @handle_api_exceptions("list executions", logger)
 async def list_executions(
     automation_id: UUID,
-    user_id: CurrentUserId,
+    user_id: ReadUserId,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):

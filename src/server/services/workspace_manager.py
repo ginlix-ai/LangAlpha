@@ -250,7 +250,7 @@ class WorkspaceManager(ComputerManager):
             # and an idle computer's token is left to run out, so this is
             # what has one in place before the turn's code runs. A read of
             # the row when the token has time left.
-            await self._keep_data_token(binding.computer_id, user_id, session.sandbox)
+            await self._keep_computer_tokens(binding.computer_id, user_id, session.sandbox)
             await self._settle_folders(
                 binding.computer_id, runtime, root=binding.root_dir, own_run_id=run_id
             )
@@ -293,7 +293,7 @@ class WorkspaceManager(ComputerManager):
             raise RuntimeError(f"Computer {computer_id} has no sandbox to run on")
         runtime = sandbox.runtime
         binding = self._binding_from_computer("", computer)
-        await self._keep_data_token(computer_id, user_id, sandbox)
+        await self._keep_computer_tokens(computer_id, user_id, sandbox)
         await self._settle_folders(computer_id, runtime, root=binding.root_dir)
         await self.restore_owed_folders(session, binding)
         if (computer.get("layout_version") or 0) >= FOLDER_LAYOUT_VERSION:

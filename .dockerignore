@@ -12,6 +12,9 @@ node_modules/
 .ruff_cache/
 web/node_modules/
 web/.pnpm-store/
+# The image builds the CLI itself.
+cli/node_modules/
+cli/dist/
 *.log
 .pytest_cache/
 *.egg-info/
@@ -21,7 +24,6 @@ build/
 docs/
 # Backend tests
 tests/
-libs/ptc-cli/tests/
 mcp_servers/tests/
 
 # Frontend tests

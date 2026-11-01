@@ -53,6 +53,7 @@ from src.config.settings import (
 from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtime
 from src.observability.private_query import drop_span_query
 from src.server.services.runs.executor import LocalRunExecutor
+from src.server.services.cli_calls import CliCallRecorder
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
 from src.server.services.preview_base import (
@@ -132,6 +133,9 @@ _REDIS_BACKGROUND_SINGLETONS: tuple[tuple[str, str], ...] = (
     # Keeps running sandboxes' market-data tokens fresh between turns; a
     # claim on each computer's row in Postgres dedups it across workers.
     ("DataTokenSweeper", "src.server.services.data_token_sweep"),
+    # The same for the token the `la` CLI calls the API with, on every
+    # deployment.
+    ("CliTokenSweeper", "src.server.services.cli_token_sweep"),
     # Takes tunnels no computer uses off their machines; a claim on each
     # tunnel's row in Postgres dedups it across workers.
     ("TunnelSweeper", "src.server.services.ssh_tunnel_sweep"),
@@ -1056,7 +1060,7 @@ async def lifespan(app: FastAPI):
 
     # 9. Close usage-limits HTTP client
     try:
-        from src.server.dependencies.usage_limits import close_http_client
+        from src.server.utils.http_client import close_http_client
 
         await close_http_client()
         logger.info("Usage limits HTTP client closed")
@@ -1227,6 +1231,10 @@ app.add_middleware(_SelectiveGZip, minimum_size=1000)
 # tests/unit/server/utils/test_malformed_route_ids.py. Every site is tagged
 # `malformed-id-diag` — `grep -rn malformed-id-diag src tests` lists them all.
 app.add_middleware(MalformedIdDiagnosticMiddleware)
+
+# Records every request a computer's `la` makes, with the thread whose command
+# made it (src/server/services/cli_calls.py).
+app.add_middleware(CliCallRecorder)
 
 # Register request ID middleware (will be executed after CORS)
 # Note: In FastAPI, middleware is executed in reverse order (last added = first executed)

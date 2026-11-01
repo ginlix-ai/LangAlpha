@@ -31,7 +31,6 @@ class ConfigContext(str, Enum):
     """Context for configuration loading behavior."""
 
     SDK = "sdk"  # CWD → git root → ~/.ptc-agent/
-    CLI = "cli"  # ~/.ptc-agent/ → CWD (home first)
 
 
 # =============================================================================
@@ -132,15 +131,10 @@ def get_config_search_paths(
 ) -> list[Path]:
     """Get ordered list of config search paths.
 
-    Search order:
-    - SDK: CWD → project root → ~/.ptc-agent/
-    - CLI: ~/.ptc-agent/ → CWD
+    Search order: CWD → project root → ~/.ptc-agent/
     """
     cwd = start_path or Path.cwd()
     home = get_default_config_dir()
-
-    if context == ConfigContext.CLI:
-        return [home, cwd]
 
     paths = [cwd]
     project_root = find_project_root(cwd)

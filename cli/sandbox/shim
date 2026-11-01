@@ -1,0 +1,8 @@
+#!/bin/sh
+# The CLI inside a computer, shipped as both `langalpha` and `la` on every
+# agent command's PATH. The bundle sits beside this directory;
+# LANGALPHA_TOKEN_FILE says where its token is. The name it was run by goes
+# along, so its hints name a command that works here.
+name=${0##*/}
+command -v node >/dev/null 2>&1 || { echo "$name: needs Node.js 20 or newer on this computer" >&2; exit 127; }
+LANGALPHA_CLI_NAME=$name exec node "$(dirname "$0")/../la.mjs" "$@"

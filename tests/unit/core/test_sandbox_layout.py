@@ -90,6 +90,8 @@ EXPECTED_ABSOLUTE = {
     "mcp_tokens": "/home/workspace/_internal/.mcp_tokens.json",
     "egress_relay": "/home/workspace/_internal/.egress_relay.json",
     "vault_secrets": "/home/workspace/_internal/.vault_secrets.json",
+    "cli_token": "/home/workspace/_internal/.cli_token.json",
+    "cli_bin": "/home/workspace/_internal/src/la/bin",
 }
 
 # Every relative name SandboxLayout spells, not only the emitted subset.
@@ -126,6 +128,8 @@ EXPECTED_RELATIVE = {
     "MCP_TOKENS_FILE": "_internal/.mcp_tokens.json",
     "EGRESS_RELAY_FILE": "_internal/.egress_relay.json",
     "VAULT_SECRETS_FILE": "_internal/.vault_secrets.json",
+    "CLI_TOKEN_FILE": "_internal/.cli_token.json",
+    "CLI_BIN_DIR": "_internal/src/la/bin",
     "MCP_CHECK_PREFIX": "_internal/.mcp_check_",
     "LEFTOVERS_DIR": "_internal/leftovers",
     "CLAUDE_CODE_DIR": "_internal/claude-code",
