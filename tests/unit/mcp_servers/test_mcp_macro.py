@@ -152,6 +152,20 @@ class TestGetEconomicCalendar:
 
         assert result["from_date"] is None
         assert result["to_date"] is None
+        assert "truncated" not in result
+
+    @pytest.mark.asyncio
+    async def test_truncated_when_provider_cap_reached(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_economic_calendar
+
+        client = _make_fmp_client()
+        client.get_economic_calendar = AsyncMock(return_value=[{}] * 4000)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_economic_calendar(from_date="2025-01-01", to_date="2025-12-31")
+
+        assert result["count"] == 4000
+        assert result["truncated"] is True
+        assert "Narrow the date range" in result["note"]
 
 
 @pytest.mark.asyncio
@@ -262,6 +276,19 @@ class TestGetEarningsCalendar:
         client.get_earnings_calendar_by_date.assert_awaited_once_with(
             from_date="2025-01-27", to_date="2025-01-31",
         )
+
+    @pytest.mark.asyncio
+    async def test_truncated_when_provider_cap_reached(self):
+        from plugins.langalpha_market_data.macro_mcp_server import get_earnings_calendar
+
+        client = _make_fmp_client()
+        client.get_earnings_calendar_by_date = AsyncMock(return_value=[{}] * 4000)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_calendar("2025-01-01", "2025-01-31")
+
+        assert result["count"] == 4000
+        assert result["truncated"] is True
+        assert "Narrow the date range" in result["note"]
 
     @pytest.mark.asyncio
     async def test_fmp_init_error(self):

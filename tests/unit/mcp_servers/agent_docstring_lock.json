@@ -202,7 +202,8 @@
       "    freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,",
       "    currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are",
       "    FMP-native camelCase; date is \"YYYY-MM-DD\"; records are newest-first as",
-      "    returned by FMP. On error: {error: <code>, detail, symbol}."
+      "    returned by FMP. When period=\"quarter\" returns 0 records, an optional",
+      "    note suggests period=\"annual\". On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -229,8 +230,9 @@
       "    One statement_type → a list of period records; \"all\" → {income_statement,",
       "    balance_sheet, cash_flow} lists with count the total. Common camelCase",
       "    fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.",
-      "    date is \"YYYY-MM-DD\"; records are newest-first as returned by FMP. On",
-      "    error: {error: <code>, detail, symbol}."
+      "    date is \"YYYY-MM-DD\"; records are newest-first as returned by FMP. When",
+      "    period=\"quarter\" returns 0 records, an optional note suggests",
+      "    period=\"annual\". On error: {error: <code>, detail, symbol}."
     ],
     "params": [
       "limit",
@@ -259,7 +261,8 @@
       "    epsgrowth; income_statement_growth fields: date, growthRevenue,",
       "    growthNetIncome, growthEPS. Growth values are decimal fractions",
       "    (0.1 = 10%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";",
-      "    records are newest-first as returned by FMP. On error:",
+      "    records are newest-first as returned by FMP. When period=\"quarter\"",
+      "    returns 0 records, an optional note suggests period=\"annual\". On error:",
       "    {error: <code>, detail, symbol}."
     ],
     "params": [
@@ -417,7 +420,8 @@
       "    date, epsActual, epsEstimated, revenueActual, revenueEstimated,",
       "    lastUpdated. actual fields are null before a company reports. Field names",
       "    are FMP-native camelCase; date is \"YYYY-MM-DD\"; order is as returned by",
-      "    FMP. On error: {error: <code>, detail}."
+      "    FMP. If FMP's 4000-record cap is reached, truncated is true and a note",
+      "    asks for a narrower date range. On error: {error: <code>, detail}."
     ],
     "params": [
       "from_date",
@@ -444,7 +448,9 @@
       "    currency, previous, estimate, actual, change, changePercentage, impact,",
       "    unit. actual/estimate/previous are null for events not yet released.",
       "    Field names are FMP-native camelCase; date is \"YYYY-MM-DD HH:MM:SS\";",
-      "    order is as returned by FMP. On error: {error: <code>, detail}."
+      "    order is as returned by FMP. If FMP's 4000-record cap is reached,",
+      "    truncated is true and a note asks for a narrower date range. On error:",
+      "    {error: <code>, detail}."
     ],
     "params": [
       "from_date",

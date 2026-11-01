@@ -118,6 +118,21 @@ class TestGetFinancialStatements:
         assert client.get_technical_indicator.await_args.args[0] == "AAPL"
 
     @pytest.mark.asyncio
+    async def test_all_quarterly_empty_note(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
+
+        client = _make_fmp_client()
+        client.get_income_statement = AsyncMock(return_value=[])
+        client.get_balance_sheet = AsyncMock(return_value=[])
+        client.get_cash_flow = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_financial_statements("AAPL", period="quarter")
+
+        assert result["statement_type"] == "all"
+        assert result["count"] == 0
+        assert "quarterly" in result["note"].lower()
+
+    @pytest.mark.asyncio
     async def test_fmp_init_error(self):
         from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_statements
 
@@ -174,6 +189,19 @@ class TestGetFinancialRatios:
         assert result["period"] == "quarter"
         client.get_key_metrics.assert_awaited_once_with("AAPL", period="quarter", limit=4)
 
+    @pytest.mark.asyncio
+    async def test_quarterly_empty_note(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_financial_ratios
+
+        client = _make_fmp_client()
+        client.get_key_metrics = AsyncMock(return_value=[])
+        client.get_financial_ratios = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_financial_ratios("AAPL", period="quarter")
+
+        assert result["count"] == 0
+        assert "Try period='annual'" in result["note"]
+
 
 # ---------------------------------------------------------------------------
 # get_growth_metrics
@@ -193,6 +221,33 @@ class TestGetGrowthMetrics:
         assert "financial_growth" in result["data"]
         assert "income_statement_growth" in result["data"]
         assert isinstance(result["count"], int)
+        assert "note" not in result
+
+    @pytest.mark.asyncio
+    async def test_quarterly_empty_note(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_growth_metrics
+
+        client = _make_fmp_client()
+        client.get_financial_growth = AsyncMock(return_value=[])
+        client.get_income_statement_growth = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_growth_metrics("AAPL", period="quarter")
+
+        assert result["count"] == 0
+        assert "Try period='annual'" in result["note"]
+
+    @pytest.mark.asyncio
+    async def test_annual_empty_has_no_note(self):
+        from plugins.langalpha_market_data.fundamentals_mcp_server import get_growth_metrics
+
+        client = _make_fmp_client()
+        client.get_financial_growth = AsyncMock(return_value=[])
+        client.get_income_statement_growth = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_growth_metrics("AAPL", period="annual")
+
+        assert result["count"] == 0
+        assert "note" not in result
 
 
 # ---------------------------------------------------------------------------
