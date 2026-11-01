@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../web/public/logo_words.png" alt="LangAlpha" height="110" />
+  <img src="web/public/logo_words.png" alt="LangAlpha" height="110" />
 </p>
 
 <h3 align="center">Agent トレーディングのための harness。</h3>
@@ -17,7 +17,7 @@
   <a href="#フルスタックアーキテクチャ"><strong>フルスタックアーキテクチャ</strong></a> ·
   <a href="#セキュリティ"><strong>セキュリティ</strong></a>
   <br />
-  <a href="../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/hero-cbrs-research-dashboard.webp" alt="demo-cbrs workspace：左では agent が CBRS の株価を確認し、開示資料を取得し、2 人のアナリストを動かしている。右はそのリサーチから作った CBRS のダッシュボードで、IPO 以降の株価をイベントマーカー付きで表示し、選択したイベントのメモと出典を開いている" width="900" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/hero-cbrs-research-dashboard.webp" alt="demo-cbrs workspace：左では agent が CBRS の株価を確認し、開示資料を取得し、2 人のアナリストを動かしている。右はそのリサーチから作った CBRS のダッシュボードで、IPO 以降の株価をイベントマーカー付きで表示し、選択したイベントのメモと出典を開いている" width="900" />
 </p>
 
 ## LangAlpha を選ぶ理由
@@ -42,7 +42,7 @@ AI 金融ツールの多くは、質問に答えるためのものです。私�
 - **自律には、あなたが決める境界が必要です。** agent はあなたが与えた権限の範囲内で動き、すべての注文は統制された 1 本の経路を通ります。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/loop.webp" alt="トレードはループである：思いつきがリサーチと workspace に保存された仮説につながり、サイジングとリスク、注文、監視へと進み、監視が新しい証拠を仮説に返して確信度を動かす" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/loop.webp" alt="トレードはループである：思いつきがリサーチと workspace に保存された仮説につながり、サイジングとリスク、注文、監視へと進み、監視が新しい証拠を仮説に返して確信度を動かす" width="880" />
 </p>
 
 ## 機能ハイライト
@@ -54,7 +54,7 @@ AI 金融ツールの多くは、質問に答えるためのものです。私�
 質問すると、LangAlpha はそれを並列のアナリストに振り分けます。アナリストは開示資料を読み、株価、オプション、マクロデータを取得し、コードで数字を計算します。実行中でもいつでも追加のメッセージを送って、方向を変えられます。CBRS では、Cerebras が何を売り、どれだけの速さで成長し、誰が支払っているのかをまとめた [HTML の入門資料](https://app.langalpha.ai/a/lep06ly8Qjfa)が最終的な成果になりました。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-research-subagents-primer.webp" alt="CBRS についての質問を 4 つの subagent に振り分けた様子。subagent はサイドバーで lead agent の下に並び、隣には Cerebras に誰が支払っているかを扱う入門資料のセクションがある" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-research-subagents-primer.webp" alt="CBRS についての質問を 4 つの subagent に振り分けた様子。subagent はサイドバーで lead agent の下に並び、隣には Cerebras に誰が支払っているかを扱う入門資料のセクションがある" width="800" />
   <br />
   <sub><b>Subagents</b>：lead agent の下で 4 人のアナリストが質問に取り組み、各カードにはツールと token の使用数が表示されます。<code>/html-report</code> を 1 回実行すると、その調査結果が右の入門資料になります</sub>
 </p>
@@ -69,8 +69,8 @@ AI 金融ツールの多くは、質問に答えるためのものです。私�
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-workspace-data-files.webp" alt="リサーチ途中の demo-cbrs workspace：agent が xlsx と dcf-model の skill を読み込み、市場データの入力値を得るコードを実行している。隣では、タスクごとに 1 フォルダのファイルツリーから、overview タスクの data フォルダにある revenue_history.json を開いている" /><br /><sub><b>Workspace Files</b>：大量のデータは agent の context ではなくファイルに保存されます。株価、開示資料、モデルの入力値が、ファイルツリー内の各タスクの data/ フォルダに入ります</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dashboard-openai-exposure.webp" alt="ダッシュボードの thread：作成の依頼と、別の thread のイベントファイルを取り込む追加の依頼。隣には OpenAI への依存度を示すライブの CBRS ダッシュボードがあり、エクスポージャー台帳と受注残のストレステストが表示されている" /><br /><sub><b>動くアプリ</b>：agent はインタラクティブなダッシュボードを作ります。棒、マーカー、行をクリックすると出典が表示され、OpenAI の受注残ストレステストはドラッグで操作でき、別の thread のファイルを @ で指定して取り込むこともできます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-workspace-data-files.webp" alt="リサーチ途中の demo-cbrs workspace：agent が xlsx と dcf-model の skill を読み込み、市場データの入力値を得るコードを実行している。隣では、タスクごとに 1 フォルダのファイルツリーから、overview タスクの data フォルダにある revenue_history.json を開いている" /><br /><sub><b>Workspace Files</b>：大量のデータは agent の context ではなくファイルに保存されます。株価、開示資料、モデルの入力値が、ファイルツリー内の各タスクの data/ フォルダに入ります</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-dashboard-openai-exposure.webp" alt="ダッシュボードの thread：作成の依頼と、別の thread のイベントファイルを取り込む追加の依頼。隣には OpenAI への依存度を示すライブの CBRS ダッシュボードがあり、エクスポージャー台帳と受注残のストレステストが表示されている" /><br /><sub><b>動くアプリ</b>：agent はインタラクティブなダッシュボードを作ります。棒、マーカー、行をクリックすると出典が表示され、OpenAI の受注残ストレステストはドラッグで操作でき、別の thread のファイルを @ で指定して取り込むこともできます</sub></td>
   </tr>
 </table>
 
@@ -84,8 +84,8 @@ agent は workspace に 4 つの automation を設定します。毎週の前提
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-schedules-price-watches.webp" alt="毎週の CBRS チェック、決算後のモデル更新、2 つの価格トリガーが並ぶ Automations ページ" /><br /><sub><b>Automations</b>：すべてのスケジュールと価格監視を 1 ページで管理できます。各監視が発火までどれだけ離れているか、結果がどこに届くかも表示されます</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/automations-cbrs-new-price-move.webp" alt="CBRS が前日終値から 15% 上昇したときに agent を起動する新しい automation。指示内容と Slack DM への配信先が設定されている" /><br /><sub><b>値動きで起動</b>：前日終値または当日始値からの % 変動で agent を起動します。当日の変動があなたの閾値と並べて表示されます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/automations-cbrs-schedules-price-watches.webp" alt="毎週の CBRS チェック、決算後のモデル更新、2 つの価格トリガーが並ぶ Automations ページ" /><br /><sub><b>Automations</b>：すべてのスケジュールと価格監視を 1 ページで管理できます。各監視が発火までどれだけ離れているか、結果がどこに届くかも表示されます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/automations-cbrs-new-price-move.webp" alt="CBRS が前日終値から 15% 上昇したときに agent を起動する新しい automation。指示内容と Slack DM への配信先が設定されている" /><br /><sub><b>値動きで起動</b>：前日終値または当日始値からの % 変動で agent を起動します。当日の変動があなたの閾値と並べて表示されます</sub></td>
   </tr>
 </table>
 
@@ -99,15 +99,15 @@ agent は workspace に 4 つの automation を設定します。毎週の前提
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-report.webp" alt="チャットの横に開いた 10 ページの CBRS 初回カバレッジレポート。売上と顧客集中度のチャートがある" /><br /><sub><b>ファイルパネル</b>：HTML レポートは、レンダリング表示でもソースでも読めます。根拠となった開示資料やプレスリリースは本文中に引用されます</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-dcf-comps-workbook.webp" alt="スプレッドシートパネルに表示した CBRS のリバース DCF ワークブック。選択したセルをチャットに追加できる状態になっている" /><br /><sub><b>スプレッドシート</b>：DCF、WACC、Comps、Checks の各シートに生きた数式が入った本物のワークブックです。隣には、類似企業比較のデータを集めたリサーチの実行が並びます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-initiation-report.webp" alt="チャットの横に開いた 10 ページの CBRS 初回カバレッジレポート。売上と顧客集中度のチャートがある" /><br /><sub><b>ファイルパネル</b>：HTML レポートは、レンダリング表示でもソースでも読めます。根拠となった開示資料やプレスリリースは本文中に引用されます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-dcf-comps-workbook.webp" alt="スプレッドシートパネルに表示した CBRS のリバース DCF ワークブック。選択したセルをチャットに追加できる状態になっている" /><br /><sub><b>スプレッドシート</b>：DCF、WACC、Comps、Checks の各シートに生きた数式が入った本物のワークブックです。隣には、類似企業比較のデータを集めたリサーチの実行が並びます</sub></td>
   </tr>
 </table>
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-initiation-peers.webp" alt="初回カバレッジの依頼と、PDF ビューアで開いた CBRS レポート。強気シナリオをピアのバリュエーションと利益率で検証するページを表示している" /><br /><sub><b>PDF ビューア</b>：完成した PDF をチャットの横でめくったり拡大したりできます。ここでは、強気シナリオをピアのマルチプルと利益率で検証するページを表示しています</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/slack-cbrs-deliverables-dm.webp" alt="agent が初回カバレッジレポート、ワークブック、ダッシュボード、リサーチノートを Slack DM に送り、Slack 上でレポートを開いている" /><br /><sub><b>Slack</b>：すべてを 2 通のメッセージで届けます。先に成果物、次にリサーチノートで、各ファイルはそれぞれ個別のスレッド返信になります</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-initiation-peers.webp" alt="初回カバレッジの依頼と、PDF ビューアで開いた CBRS レポート。強気シナリオをピアのバリュエーションと利益率で検証するページを表示している" /><br /><sub><b>PDF ビューア</b>：完成した PDF をチャットの横でめくったり拡大したりできます。ここでは、強気シナリオをピアのマルチプルと利益率で検証するページを表示しています</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/slack-cbrs-deliverables-dm.webp" alt="agent が初回カバレッジレポート、ワークブック、ダッシュボード、リサーチノートを Slack DM に送り、Slack 上でレポートを開いている" /><br /><sub><b>Slack</b>：すべてを 2 通のメッセージで届けます。先に成果物、次にリサーチノートで、各ファイルはそれぞれ個別のスレッド返信になります</sub></td>
   </tr>
 </table>
 
@@ -120,7 +120,7 @@ agent は workspace に 4 つの automation を設定します。毎週の前提
 agent は大きく動いた日ごとに何が株価を動かしたのかを突き止め、ライブチャートに描き込みます。イベントバッジ 18 個、ロックアップのマーカー 4 個、そして IPO 価格 $185 とコンセンサス目標株価のラインです。バッジにカーソルを合わせると、そのメモを読めます。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chart-cbrs-post-ipo-event-annotations.webp" alt="IPO 以降の CBRS のライブ日足チャート。agent が描いたイベントバッジ、ロックアップのマーカー、参照ラインがある" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chart-cbrs-post-ipo-event-annotations.webp" alt="IPO 以降の CBRS のライブ日足チャート。agent が描いたイベントバッジ、ロックアップのマーカー、参照ラインがある" width="800" />
   <br />
   <sub><b>ライブチャート</b>：各メモは株価が反応した日に置かれ、チャットではすべての値動きが、根拠となる出典とともに表にまとめられます</sub>
 </p>
@@ -130,7 +130,7 @@ agent は大きく動いた日ごとに何が株価を動かしたのかを突�
 Sources パネルには、1 つの turn で agent が触れた開示資料、Web ページ、データ呼び出し、ファイルがすべて並びます。agent 自身の Python や Bash から行ったデータ呼び出しも含まれるので、結果を鵜呑みにせず、作業そのものを確かめられます。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/chat-cbrs-sources-panel.webp" alt="1 つの turn の裏にある subagent の読み込み、SEC 開示資料、市場データ、データツールの呼び出しを一覧表示する Sources パネル" width="800" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/chat-cbrs-sources-panel.webp" alt="1 つの turn の裏にある subagent の読み込み、SEC 開示資料、市場データ、データツールの呼び出しを一覧表示する Sources パネル" width="800" />
   <br />
   <sub><b>Sources</b>：この turn の 14 件と thread 全体の 560 件の出典を切り替えて表示します。出典は Web 検索とクロール、SEC 開示資料、市場データ、データツールに分類され、それぞれ実行時の prompt や引数も確認できます</sub>
 </p>
@@ -148,10 +148,10 @@ Sources パネルには、1 つの turn で agent が触れた開示資料、Web
 | --- | :---: | :---: | :---: | :---: |
 | 口座、ポジション、取引履歴 | ✅ | ✅ | ✅ | ✅ |
 | 市場データとウォッチリスト | ✅ | ✅ | ✅ | ✅ |
-| 注文プレビュー | ✅ | | | |
+| 注文プレビュー | ✅ | ✅ | | |
 | ペーパートレード | | | ✅ | |
-| 証券会社のアプリで確定するステージング注文 | | ✅ | | |
-| 実注文 | ✅ | | ✅ | |
+| 証券会社のアプリで確定するステージング注文 | | ✅ | | ✅ |
+| 実注文 | ✅ | ✅ | ✅ | |
 
 Robinhood はローカルアプリに戻るサインインしか受け付けないため、デスクトップアプリから接続します。moomoo は米国、中華圏、日本、東南アジアの市場をカバーします。
 
@@ -159,8 +159,8 @@ Robinhood はローカルアプリに戻るサインインしか受け付けな�
 
 <table align="center">
   <tr>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-brokerages-capabilities.webp" alt="Plugins ページの Brokerages タブ。各証券口座の接続でできることを表示している" /><br /><sub><b>Brokerages</b>：証券口座を接続します。各カードには、連携する前にその口座で agent ができることが表示されます</sub></td>
-    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-robinhood-connect-capabilities.webp" alt="Robinhood の接続画面。市場データから実注文まで、agent に許可する操作ごとにスイッチがあり、実注文はオフのままになっている" /><br /><sub><b>Capabilities</b>：信頼できるものだけをオンにします。保有ポジションをもとにサイズを決めた注文は承認カードで待機し、あなたが承認するまで証券会社には何も届きません</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/plugins-brokerages-capabilities.webp" alt="Plugins ページの Brokerages タブ。各証券口座の接続でできることを表示している" /><br /><sub><b>Brokerages</b>：証券口座を接続します。各カードには、連携する前にその口座で agent ができることが表示されます</sub></td>
+    <td width="50%" align="center" valign="top"><img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/plugins-robinhood-connect-capabilities.webp" alt="Robinhood の接続画面。市場データから実注文まで、agent に許可する操作ごとにスイッチがあり、実注文はオフのままになっている" /><br /><sub><b>Capabilities</b>：信頼できるものだけをオンにします。保有ポジションをもとにサイズを決めた注文は承認カードで待機し、あなたが承認するまで証券会社には何も届きません</sub></td>
   </tr>
 </table>
 
@@ -209,7 +209,7 @@ make up       # Postgres, Redis, backend and web app
 | `X_BEARER_TOKEN` | X の投稿検索とスレッドの参照。Plugins ページで vault secret として追加する |
 | `LANGSMITH_API_KEY`、`OTEL_EXPORTER_OTLP_ENDPOINT` | トレースとメトリクス |
 
-データ用の key がなくても、Yahoo Finance の株価、ファンダメンタルズ、アナリストデータ、スクリーニング、SEC EDGAR の開示資料、ローカルの Docker sandbox が使えます。すべてのコマンドは `make help` で確認できます。backend と Web アプリをホスト上で直接動かす方法は [CONTRIBUTING.md](../CONTRIBUTING.md#quick-start) を参照してください。
+データ用の key がなくても、Yahoo Finance の株価、ファンダメンタルズ、アナリストデータ、スクリーニング、SEC EDGAR の開示資料、ローカルの Docker sandbox が使えます。すべてのコマンドは `make help` で確認できます。backend と Web アプリをホスト上で直接動かす方法は [CONTRIBUTING.md](CONTRIBUTING.md#quick-start) を参照してください。
 
 </details>
 
@@ -244,7 +244,7 @@ LangAlpha は 2026 年 1 月の最初のリリース以来、programmatic tool c
 - **金融データは文章ではなく表です。** 12 銘柄の 10 年分の日足は約 30,000 行になります。モデルはそれをテキストとして扱えず、そのまま貼り付ければ context window が埋まってしまいます。コードなら agent はデータを集計、変換し、チャートにし、バリュエーションモデルやバックテストに渡せます。context に戻るのは結果だけです。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/ptc.webp" alt="Programmatic tool calling：モデルは sandbox 内で MCP server を Python モジュールとして import するコードを書き、生の行データは sandbox にとどまり、結果だけがモデルに戻る" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/ptc.webp" alt="Programmatic tool calling：モデルは sandbox 内で MCP server を Python モジュールとして import するコードを書き、生の行データは sandbox にとどまり、結果だけがモデルに戻る" width="880" />
 </p>
 
 コードはデフォルトであって、唯一の経路ではありません。どの MCP ツールも、Plugins ページでツールごとに設定すれば、通常の JSON tool call として実行できます。口座操作のように、呼び出し 1 つひとつを個別に見せるべき機微な操作にはこちらが向いています。注文ツールは常にこの方式で、[統制された経路](#統制された注文)上で実行されます。
@@ -289,7 +289,7 @@ main agent は、それぞれ独自の context window を持つ **subagent** に
 **workflow** はスケールをさらに広げます。大規模な調査では、agent は workflow を実行します。workflow は短い JavaScript プログラムで、サーバー上の sandbox 化された QuickJS runtime の中で、`agent()`、`parallel()`、`pipeline()` を使って subagent に作業を振り分けます。保存済みの workflow を名前で実行することも、その場で新しく書くこともできます。ループを回すのは会話ではなくプログラムなので、100 社のスクリーニングでも 100 turn はかかりません。ただし、100 個の subagent 分の token は消費します。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/teams.webp" alt="context に仮説、計画、調査結果だけを保持する main agent が、subagent と、100 回の agent() 呼び出しに振り分ける workflow に作業を任せる。それぞれ tool call ではなく調査結果を返し、subagent は workspace のファイルを共有する" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/teams.webp" alt="context に仮説、計画、調査結果だけを保持する main agent が、subagent と、100 回の agent() 呼び出しに振り分ける workflow に作業を任せる。それぞれ tool call ではなく調査結果を返し、subagent は workspace のファイルを共有する" width="880" />
 </p>
 
 ### Context の組み立て方
@@ -297,7 +297,7 @@ main agent は、それぞれ独自の context window を持つ **subagent** に
 モデルへの呼び出しはすべて、最も安定したものから最も変わりやすいものの順に並んだレイヤーで組み立てられます。そのため長いセッションでも、provider の prompt cache に継続してヒットします。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/context.webp" alt="1 回のモデル呼び出しを、最も安定したものから最も変わりやすいものへ並べた 5 つのレイヤー：ツール、system prompt、固定された thread baseline、履歴、市場情報のスタンプを含む末尾。最初の 4 つのレイヤーの後にそれぞれキャッシュポイントがある" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/context.webp" alt="1 回のモデル呼び出しを、最も安定したものから最も変わりやすいものへ並べた 5 つのレイヤー：ツール、system prompt、固定された thread baseline、履歴、市場情報のスタンプを含む末尾。最初の 4 つのレイヤーの後にそれぞれキャッシュポイントがある" width="880" />
 </p>
 
 - **System prompt。** 1 つのテンプレートを、使用中のモデルの guidance レベルに合わせてレンダリングします。
@@ -332,26 +332,26 @@ key と OAuth token は pgcrypto で保存時に暗号化されます。
 
 ### Skills と Plugins
 
-skill は [Agent Skills](https://agentskills.io/specification) 仕様に、plugin は [Agent Plugins 1.0.0](https://agent-plugins.org) 形式に従います。組み込みの MCP server と skill は [`plugins/`](../plugins/) 内の plugin バンドルとして提供されます。これは、Plugins ページでアップロードしたり git URL からインストールしたりするものと同じ形式です。これらの標準に加えて、LangAlpha は次の機能を追加しています。
+skill は [Agent Skills](https://agentskills.io/specification) 仕様に、plugin は [Agent Plugins 1.0.0](https://agent-plugins.org) 形式に従います。組み込みの MCP server と skill は [`plugins/`](plugins/) 内の plugin バンドルとして提供されます。これは、Plugins ページでアップロードしたり git URL からインストールしたりするものと同じ形式です。これらの標準に加えて、LangAlpha は次の機能を追加しています。
 
 - **skill は必要なときに読み込まれます。** prompt に載るのは skill ごとに 1 行のマニフェストだけで、skill 全体は slash command か、agent が `SKILL.md` を読んだときに読み込まれます。automation ツールのように skill が持ち込むツールは、その skill が読み込まれるまで隠れたままです。
 - **自分の skill を、自分のコマンドで。** skill を zip でアップロードして好きな slash command を割り当てたり、agent に GitHub から workspace へインストールさせたりできます。
-- **plugin の拡張は 1 つのブロックに。** `mcp.json` は形式自体のフィールドしか受け付けません。LangAlpha が追加するものはすべて、形式で唯一の拡張ポイントである `plugin.json` の `extensions["ai.langalpha"]` の下に置かれます。prompt に届く server ごとの `description` と `instruction`、agent が各ツールを最初にどこまで見るかを決める `tool_exposure_mode`（`summary` または `detailed`）、そして server が必要とする各 credential とそのバインド先を示す `secrets` です。このブロックを取り除いても、パッケージはどの Agent Plugins ホストにもインストールできます。詳細は [`plugins/README.md`](../plugins/README.md) を参照してください。
+- **plugin の拡張は 1 つのブロックに。** `mcp.json` は形式自体のフィールドしか受け付けません。LangAlpha が追加するものはすべて、形式で唯一の拡張ポイントである `plugin.json` の `extensions["ai.langalpha"]` の下に置かれます。prompt に届く server ごとの `description` と `instruction`、agent が各ツールを最初にどこまで見るかを決める `tool_exposure_mode`（`summary` または `detailed`）、そして server が必要とする各 credential とそのバインド先を示す `secrets` です。このブロックを取り除いても、パッケージはどの Agent Plugins ホストにもインストールできます。詳細は [`plugins/README.md`](plugins/README.md) を参照してください。
 - **サードパーティの server は隔離して動きます。** LangAlpha が所有していないコードの server は、アプリ自身の環境からではなく、`uvx` か `npx` でバージョンを固定して起動します。そのため、どちらか一方で SDK をアップグレードしても、もう一方が壊れることはありません。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/plugins-builtin-packages.webp" alt="Plugins ページの Packages タブ。6 つの組み込み plugin バンドルが並んでいる" width="720" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/plugins-builtin-packages.webp" alt="Plugins ページの Packages タブ。6 つの組み込み plugin バンドルが並んでいる" width="720" />
   <br />
   <sub><b>Packages</b>：MCP server と skill をまとめた 6 つの組み込みバンドルは、それぞれ一括でオン・オフでき、自分のバンドルも 50 個まで追加できます</sub>
 </p>
 
-組み込みの skill は 38 個です。
+組み込みの skill は 35 個です。
 
 | バンドル | Skills |
 | --- | --- |
-| Research | DCF モデル、類似企業比較、財務 3 表モデル、モデルの更新とチェック、初回カバレッジ、決算プレビューと決算分析、投資仮説トラッカー、トレードピッチ、企業プロファイル、競合分析、セクター概況、影響分析、カタリストカレンダー、アイデア創出、モーニングノート、マーケットウォッチ、プレゼン資料チェック |
+| Research | DCF モデル、類似企業比較、財務 3 表モデル、モデルの更新とチェック、初回カバレッジ、決算プレビューと決算分析、投資仮説トラッカー、トレードピッチ、企業プロファイル、競合分析、セクター概況、影響分析、カタリストカレンダー、アイデア創出、モーニングノート、マーケットウォッチ、プレゼン資料チェック、ポートフォリオ診断、リサーチ規約 |
 | Deliverables | Excel、Word、PowerPoint、PDF、HTML レポート、インタラクティブダッシュボード、インラインウィジェット、チャート注釈、UI デザイン |
-| Service | automation、オンボーディング、ユーザープロフィールとポートフォリオ、secretary、workflow、プロダクトヘルプ、自己改善 |
+| Service | オンボーディング、workflow、プロダクトヘルプ |
 | Alternative data | X リサーチ、Web スクレイピング |
 
 謝辞：一部のリサーチ skill は [anthropics/financial-services-plugins](https://github.com/anthropics/financial-services-plugins) を元にしています。
@@ -359,7 +359,7 @@ skill は [Agent Skills](https://agentskills.io/specification) 仕様に、plugi
 ## フルスタックアーキテクチャ
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/architecture.webp" alt="アーキテクチャ：Web、デスクトップ、チャットチャネルはマルチワーカーの FastAPI backend につながり、その run ライフサイクルが agent を駆動する。agent は sandbox 化された computer の中で動き、そのファイルは Postgres とオブジェクトストレージに永続化される。証券口座とリモート MCP への呼び出しは、credential を付与する egress relay を通って外に出る" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/architecture.webp" alt="アーキテクチャ：Web、デスクトップ、チャットチャネルはマルチワーカーの FastAPI backend につながり、その run ライフサイクルが agent を駆動する。agent は sandbox 化された computer の中で動き、そのファイルは Postgres とオブジェクトストレージに永続化される。証券口座とリモート MCP への呼び出しは、credential を付与する egress relay を通って外に出る" width="880" />
 </p>
 
 turn は、それを開始した HTTP 接続から独立したバックグラウンドの run として実行されます。イベントは run ごとの Redis stream を経由して SSE で配信されるため、タブを閉じてもネットワークが切れても何も失われません。クライアントは再接続して追いつき、完了した turn は LangGraph の checkpoint から再生されます。Postgres が信頼できる唯一の情報源で、Redis は転送路にすぎないため、backend は複数のワーカーで動き、どのワーカーでもストリームの配信、キューの処理、孤立した run の復旧を担当できます。設定すれば、agent の run は LangSmith にトレースされ、backend は OpenTelemetry でトレースとメトリクスをエクスポートします。
@@ -373,7 +373,7 @@ turn は、それを開始した HTTP 接続から独立したバックグラウ
 注文は実際のお金を動かすため、専用の経路を通ります。注文ツールは direct な JSON 呼び出しに固定されています。1 回の呼び出しが 1 件の注文になり、システムはそれを把握し、表示し、止めることができます。sandbox のスクリプトなら 1 回の実行で何件でも注文を出せてしまうため、注文ツールが sandbox に公開されることはありません。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/docs/images/diagrams/orders.webp" alt="統制された注文：モデルの注文呼び出しは記録され、承認のためにあなたに表示される。承認によって実行トークンが発行され、egress relay がそれを検証し、1 回限りの送信権を確保して、保存済みの credential で注文を送る" width="880" />
+  <img src="https://raw.githubusercontent.com/ginlix-ai/LangAlpha/main/assets/readme/diagrams/orders.webp" alt="統制された注文：モデルの注文呼び出しは記録され、承認のためにあなたに表示される。承認によって実行トークンが発行され、egress relay がそれを検証し、1 回限りの送信権を確保して、保存済みの credential で注文を送る" width="880" />
 </p>
 
 - **接続ごとの同意。** 証券口座を接続するときに、どの capability グループを許可するかを選びます。relay は、モデルが何を求めても、その範囲外の呼び出しをすべて拒否します。
@@ -398,7 +398,7 @@ turn は、それを開始した HTTP 接続から独立したバックグラウ
 
 ## コントリビュート
 
-Issue と pull request を歓迎します。[CONTRIBUTING.md](../CONTRIBUTING.md) を参照してください。このリポジトリには、backend と agent のコア（[`src/`](../src/)）、Web アプリ（[`web/`](../web/)）、デスクトップシェル（[`desktop/`](../desktop/)）、組み込み plugin（[`plugins/`](../plugins/)）が含まれています。パートナーシップについては [contact@ginlix.ai](mailto:contact@ginlix.ai) までメールでご連絡ください。
+Issue と pull request を歓迎します。[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。このリポジトリには、backend と agent のコア（[`src/`](src/)）、Web アプリ（[`web/`](web/)）、デスクトップシェル（[`desktop/`](desktop/)）、組み込み plugin（[`plugins/`](plugins/)）が含まれています。パートナーシップについては [contact@ginlix.ai](mailto:contact@ginlix.ai) までメールでご連絡ください。
 
 <a href="https://star-history.com/#ginlix-ai/langalpha&Date">
   <picture>
@@ -413,4 +413,4 @@ LangAlpha はソフトウェアであり、金融アドバイザーではあり�
 
 ## ライセンス
 
-[Apache 2.0](../LICENSE)
+[Apache 2.0](LICENSE)
