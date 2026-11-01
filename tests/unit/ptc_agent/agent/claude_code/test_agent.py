@@ -207,6 +207,13 @@ def test_a_claude_code_turn_is_offered_no_tool_that_places_an_order():
     assert "mcp__broker__get_quote" in names and "mcp__broker__place_order" not in names
 
 
+def test_a_claude_code_turn_takes_reports_and_steers_in_but_no_task_resume():
+    """It runs no subagents, so no task waits to resume, but a command's end,
+    a wakeup or an alert still reaches it while it runs."""
+    graph = _built()
+    assert graph.turn.steering._steering.kinds == ("report", "steer")
+
+
 def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox():
     sandbox, launcher = MagicMock(), LocalLauncher()
     seen = []

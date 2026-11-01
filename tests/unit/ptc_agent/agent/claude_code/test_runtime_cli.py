@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import shlex
+from unittest import mock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -22,7 +23,15 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
-from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, ClaudeTurnFailed, build_claude_code_graph, token_works
+from ptc_agent.agent.claude_code.runtime import (
+    TURN_KEY,
+    TURN_QUERIES,
+    ClaudeTurn,
+    ClaudeTurnFailed,
+    build_claude_code_graph,
+    token_works,
+)
+from ptc_agent.agent.middleware.steering import ALL_KINDS, SteeredReport, SteeringMiddleware, steers_ahead_message
 from ptc_agent.agent.middleware.runtime_context.durable import DurableUpdate, build_update_message, render_update_row
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
@@ -38,6 +47,8 @@ PNG = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
 )).decode()
 PDF = base64.b64encode(b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF").decode()
+#: Past the SDK's default line limit (1 MiB) once the CLI writes it base64.
+BIG_PDF = base64.b64encode(b"%PDF-1.4\n%" + b"x" * 1_200_000 + b"\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF").decode()
 
 
 async def turn(api: FakeMessagesAPI, graph, thread: str, messages: list, callbacks: list | None = None,
@@ -546,3 +557,171 @@ async def test_a_cancelled_turn_ends_its_running_calls_before_the_turn_closes():
         finally:
             await claude.close()
     assert order == ["call ended", "turn closing"]
+
+
+
+class _Inbox:
+    """The thread's steers as the server's report inbox hands them to a run."""
+
+    def __init__(self, *, endless: bool = False) -> None:
+        self.waiting: list[SteeredReport] = []
+        self.confirmed: list[str] = []
+        self.sent = 0
+        self.endless = endless
+
+    def send(self, text: str) -> None:
+        self.waiting.append(SteeredReport(job_id=f"job-{self.sent}", content=text, kind="steer", timestamp=0.0))
+        self.sent += 1
+
+    async def take(self, thread_id, run_id, *, kinds=ALL_KINDS):
+        if self.endless:
+            self.send(f"steer {self.sent}")
+        taken, self.waiting = self.waiting, []
+        return taken
+
+    async def checker(self, thread_id, own_run_id=None, *, alert_senders=frozenset()):
+        """``build_message_checker``: who sent the steers waiting."""
+
+        async def senders():
+            return ["user"] if self.waiting or self.endless else []
+
+        return senders
+
+    def render_group(self, kind, contents):
+        raise AssertionError("steers only")
+
+    async def confirm(self, run_id, job_ids):
+        self.confirmed.extend(job_ids)
+
+
+async def _steered_turn(api, inbox: _Inbox, tool_node: ToolNode, thread: str, messages: list, graph=None):
+    graph = graph or build_claude_code_graph(tool_node, checkpointer=InMemorySaver())
+    launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+    steering = SteeringMiddleware(report_inbox=inbox, kinds=("steer",))
+    claude = ClaudeTurn(SPEC, launcher, identity="test-user", thread_key=thread, steering=steering)
+    config = {"configurable": {"thread_id": thread, TURN_KEY: claude}, "metadata": {"run_id": "run-1"}}
+    events = []
+    try:
+        with mock.patch("ptc_agent.agent.claude_code.mid_turn.build_message_checker", inbox.checker):
+            async for event in graph.astream({"messages": messages}, config, stream_mode="custom"):
+                events.append(event)
+    finally:
+        await claude.close()
+    return (await graph.aget_state({"configurable": {"thread_id": thread}})).values, events
+
+
+STEERED = "The user sent a new message while you were working:\nUse the other file.\n\nAddress the message above as you continue this turn."
+
+
+async def test_a_steer_sent_while_a_call_runs_reaches_claude_right_after_its_result_and_is_committed_with_it():
+    inbox = _Inbox()
+
+    @tool("Bash")
+    async def bash(command: str) -> str:
+        """Run a shell command."""
+        inbox.send("Use the other file.")
+        return f"ran: {command}"
+
+    async with FakeMessagesAPI() as api:
+        values, events = await _steered_turn(api, inbox, ToolNode([bash]), "t-steer", [HumanMessage("RUN_TOOL please")])
+        after = api.model_requests[-1]["messages"]
+    _, call, result, steering, reply = values["messages"]
+    assert isinstance(result, ToolMessage) and isinstance(reply, AIMessage)
+    assert steering.content == STEERED
+    assert steering.additional_kwargs["held_jobs"] == {"run_id": "run-1", "job_ids": ["job-0"]}
+    assert [e["type"] for e in events] == ["steering_delivered"]
+    assert inbox.confirmed == ["job-0"]
+    told = [m["content"] if isinstance(m["content"], str) else m["content"][0]["text"] for m in after if m["role"] == "system"]
+    assert any(t.startswith("The user sent a new message while you were working:\nUse the other file.\n") for t in told)
+    assert not any("hook additional context" in t for t in told)
+    assert len(api.model_requests) == 2
+
+
+async def test_steers_waiting_as_a_query_ends_are_the_turns_next_query_up_to_its_limit():
+    async with FakeMessagesAPI() as api:
+        inbox = _Inbox()
+        inbox.send("Use the other file.")
+        values, events = await _steered_turn(api, inbox, ToolNode([]), "t-again", [HumanMessage("hello")])
+        again = api.model_requests[-1]["messages"][-1]
+    _, first, trigger, steering, reply = values["messages"]
+    assert isinstance(first, AIMessage) and isinstance(reply, AIMessage)
+    assert trigger.content == "User sent additional instructions." and trigger.additional_kwargs["lc_source"] == "orchestrator"
+    assert steering.content == STEERED and inbox.confirmed == ["job-0"]
+    assert [b["text"] for b in again["content"] if b["type"] == "text"][-2:] == [trigger.content, STEERED]
+    assert [e["type"] for e in events] == ["steering_delivered"]
+
+    async with FakeMessagesAPI() as api:
+        await _steered_turn(api, _Inbox(endless=True), ToolNode([]), "t-endless", [HumanMessage("hello")])
+        assert len(api.model_requests) == TURN_QUERIES
+
+
+async def test_the_steers_a_turn_opened_with_are_shown_and_closed_once_claude_has_them():
+    inbox = _Inbox()
+    inbox.send("Use the other file.")
+    ahead = steers_ahead_message(await inbox.take("t", "run-1"), "run-1")
+    graph = build_claude_code_graph(ToolNode([]), checkpointer=InMemorySaver())
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        claude = ClaudeTurn(SPEC, launcher, identity="test-user", thread_key="t-ahead",
+                            steering=SteeringMiddleware(report_inbox=inbox, kinds=("steer",)))
+        user = HumanMessage("hello", id="input-1")
+        config = {"configurable": {"thread_id": "t-ahead", TURN_KEY: claude, "steer_input_message_id": "input-1"},
+                  "metadata": {"run_id": "run-1"}}
+        try:
+            events = [e async for e in graph.astream({"messages": [ahead, user]}, config, stream_mode="custom")]
+        finally:
+            await claude.close()
+    assert [e["type"] for e in events] == ["steering_delivered"]
+    assert inbox.confirmed == ["job-0"]
+
+
+async def test_a_call_a_stop_cut_off_is_answered_as_claude_was_told_when_the_thread_goes_on():
+    started = asyncio.Event()
+
+    @tool("Bash")
+    async def bash(command: str) -> str:
+        """Run a shell command."""
+        started.set()
+        await asyncio.sleep(60)
+        return "never"
+
+    graph = build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver())
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        claude = ClaudeTurn(SPEC, launcher, identity="test-user", thread_key="t-cut")
+        config = {"configurable": {"thread_id": "t-cut", TURN_KEY: claude}}
+        running = asyncio.ensure_future(graph.ainvoke({"messages": [HumanMessage("RUN_TOOL please")]}, config))
+        try:
+            await asyncio.wait_for(started.wait(), 60)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+        finally:
+            await claude.close()
+        values = await run_turn(SPEC, LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}), graph,
+                                "t-cut", [HumanMessage("hello again")])
+        sent = _tool_results_sent(api)
+    first, call, cut, again, reply = values["messages"]
+    assert isinstance(cut, ToolMessage) and cut.tool_call_id == call.tool_calls[0]["id"] and cut.status == "error"
+    assert cut.content.startswith("[Tool call interrupted")
+    assert sent[cut.tool_call_id] == (cut.content, True)
+    assert again.content == "hello again" and reply.text == "ECHO hello again"
+
+
+@pytest.mark.parametrize("pdf", [PDF, BIG_PDF], ids=["small", "past-the-default-line-limit"])
+async def test_a_pdf_a_call_returns_reaches_claude_as_a_document_and_is_kept_as_returned(pdf):
+    returned = [{"type": "text", "text": "a pdf"},
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": pdf}}]
+
+    @tool("Bash")
+    async def bash(command: str):
+        """Run a shell command."""
+        return returned
+
+    async with FakeMessagesAPI() as api:
+        values = await turn(api, build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver()), "t-pdf",
+                            [HumanMessage("RUN_TOOL please")])
+        sent = _tool_results_sent(api)
+    result = values["messages"][2]
+    assert result.content == returned
+    assert sent[result.tool_call_id][0] == returned
