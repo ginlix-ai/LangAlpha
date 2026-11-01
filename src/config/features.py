@@ -140,7 +140,7 @@ FEATURES: dict[str, FeatureSpec] = {
             "thread are summarized."
         ),
         enabled=True,
-        gate=FeatureGate.OPT_IN,
+        gate=FeatureGate.OPT_OUT,
         tradeoffs=(
             "The agent spends a few extra tool calls per task keeping its "
             "notes. The scratchpad and its notes are deleted when you archive "

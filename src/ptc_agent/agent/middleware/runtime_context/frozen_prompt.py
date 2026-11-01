@@ -115,27 +115,43 @@ def rebuild_pending(state: Any) -> bool:
     return bool(as_dict(state_get(state, STATE_SYSTEM_PIN)).get("stale"))
 
 
-def static_digest(content: Any) -> str | None:
-    """sha256 of the static prompt in a system message's ``content``: its
-    first text block, or all of it when it is a string. FrozenPrompt sets
-    that block and every writer inside it appends after it, so compaction and
-    the pin, which see the message at different depths, read the same one."""
+def _static_text(content: Any) -> str | None:
+    """The static prompt in a system message's ``content``: its first text
+    block, or all of it when it is a string. FrozenPrompt sets that block and
+    every writer inside it appends after it, so middleware at any depth reads
+    the same one."""
     first = content[0] if isinstance(content, list) and content else content
     text = first.get("text") if isinstance(first, dict) else first
-    return hashlib.sha256(text.encode()).hexdigest() if isinstance(text, str) else None
+    return text if isinstance(text, str) else None
 
 
-def _kept(request: ModelRequest) -> dict[str, Any] | None:
-    """The pin kept for the model this call goes to, or None. Only Claude's
-    thinking is bound to the system message, and a call to another model
-    takes the build's message at once."""
+def static_digest(content: Any) -> str | None:
+    """sha256 of the static prompt in a system message's ``content``."""
+    text = _static_text(content)
+    return hashlib.sha256(text.encode()).hexdigest() if text is not None else None
+
+
+def _kept(state: Any, model: Any) -> dict[str, Any] | None:
+    """The pin kept for ``model``, or None. Only Claude's thinking is bound
+    to the system message, and a call to another model takes the build's
+    message at once."""
     from ptc_agent.agent.middleware.compaction.measure import is_claude
     from ptc_agent.agent.middleware.compaction.summarize import model_label
 
-    pin = as_dict(state_get(getattr(request, "state", None), STATE_SYSTEM_PIN))
-    if pin.get("content") is None or not is_claude(request.model):
+    pin = as_dict(state_get(state, STATE_SYSTEM_PIN))
+    if pin.get("content") is None or not is_claude(model):
         return None
-    return pin if pin.get("model") == (model_label(request.model) or "") else None
+    return pin if pin.get("model") == (model_label(model) or "") else None
+
+
+def pinned_static(state: Any, model: Any, view: Sequence[AnyMessage]) -> str | None:
+    """The static prompt a call to ``model`` sending ``view`` goes out with
+    in place of the build's: the kept message's, while thinking bound to it is
+    in view (see ``_pin``). None where the build's goes out."""
+    pin = _kept(state, model)
+    if pin is None or not holds_bound_thinking(view):
+        return None
+    return _static_text(pin["content"])
 
 
 def due(request: ModelRequest, view: Sequence[AnyMessage]) -> bool:
@@ -146,7 +162,7 @@ def due(request: ModelRequest, view: Sequence[AnyMessage]) -> bool:
     that landed while the thread was idle counts from its next first call. A
     thread with no bound thinking takes the build's message on its own call
     (see ``_pin``)."""
-    pin = _kept(request)
+    pin = _kept(getattr(request, "state", None), request.model)
     if pin is None:
         return False
     if pin.get("stale"):
@@ -280,7 +296,7 @@ def _pin(
     built = request.system_message
     if built is None or not is_claude(request.model):
         return None, None, None
-    stored = _kept(request)
+    stored = _kept(getattr(request, "state", None), request.model)
     if stored is not None:
         content = stored["content"]
         if _unmarked(content) == _unmarked(built.content):

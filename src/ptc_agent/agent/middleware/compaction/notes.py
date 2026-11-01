@@ -47,6 +47,7 @@ from ptc_agent.agent.middleware.runtime_context.durable import (
     messages_in_view,
     runtime_update_from_message,
 )
+from ptc_agent.agent.middleware.runtime_context.frozen_prompt import pinned_static
 from ptc_agent.agent.middleware.runtime_context.turn import (
     NOTES_CHECK_IN_ROW_KIND,
     NOTES_DUE_ROW_KIND,
@@ -81,6 +82,8 @@ NOTES_CHECK_IN_CALLS = 30
 # The tools that name the notes folder without writing to it.
 _READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep"})
 _NOTES_ROW_KINDS = frozenset({NOTES_DUE_ROW_KIND, NOTES_CHECK_IN_ROW_KIND})
+# The static prompt's scratchpad section, which says what the notes are for.
+_PROMPT_SECTION = "<thread_scratchpad>"
 
 # The files a summary names; older ones are counted, not named.
 _MAX_NAMED = 20
@@ -256,6 +259,10 @@ class NotesDueMiddleware(AgentMiddleware):
     mark under the current summary, from a call measured below it: a summary
     and the tail it keeps can start past the mark, and an ask on the first
     call after it would draw only on what that summary paraphrased.
+
+    A Claude thread pinned to a prompt from before the scratchpad was on is
+    sent no section that explains the notes, so until a rebuild takes the
+    new prompt it is treated as ``NotesOffMiddleware`` treats a thread.
     """
 
     state_schema = NotesDueState
@@ -271,6 +278,7 @@ class NotesDueMiddleware(AgentMiddleware):
         self._token_threshold = compaction._token_threshold
         self._estimate = compaction._estimate(model)
         self._view = compaction.view
+        self._model = model
         self._notes_folder = _notes_pattern(scratchpad.notes_subdir)
 
     def wrap_model_call(
@@ -278,14 +286,14 @@ class NotesDueMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        return handler(_without_answered(request))
+        return handler(_notes_rows_sent(request))
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        return await handler(_without_answered(request))
+        return await handler(_notes_rows_sent(request))
 
     async def awrap_tool_call(
         self,
@@ -309,7 +317,8 @@ class NotesDueMiddleware(AgentMiddleware):
         return result
 
     async def abefore_model(self, state: Any, runtime: Any = None) -> dict[str, Any] | None:
-        fill = await self._fill(state)
+        view = await self._view(state.get("messages") or [], state)
+        fill = await self._fill(state, view)
         # At 1.0 the summary runs on this very call, too late to write anything.
         if fill >= 1.0:
             return None
@@ -318,6 +327,10 @@ class NotesDueMiddleware(AgentMiddleware):
         if fill < notes_due_at(self._token_threshold):
             if state.get("_notes_below_mark", _UNNAMED) != since:
                 update["_notes_below_mark"] = since
+        # The mark is kept either way: a model switch takes the new prompt
+        # without a summary, and the stretch it is in still started below.
+        if not _explains_notes(pinned_static(state, self._model, view)):
+            return update or None
         row = self._notes_due(state, fill, since) or self._check_in(state)
         if row is not None:
             thread_id, agent = run_ids()
@@ -331,16 +344,15 @@ class NotesDueMiddleware(AgentMiddleware):
         # Sync fallback: the async agent won't call this but the protocol requires it.
         return None
 
-    async def _fill(self, state: Any) -> float:
+    async def _fill(self, state: Any, view: list[Any]) -> float:
         """The context's share of the threshold as the summary trigger reads
-        it (``context_tokens``), over the view compaction sends, without the
-        attachments it removed or the results it hid.
+        it (``context_tokens``), over ``view``, the view compaction sends,
+        without the attachments it removed or the results it hid.
 
         The count runs short of the trigger's by the system prompt, which
         state does not hold, so where no usage is reported the reminder comes
         late by that much rather than never.
         """
-        view = await self._view(state.get("messages") or [], state)
         await read_ahead(view)
         reading = await context_tokens(state, view, self._estimate)
         return reading.tokens / self._token_threshold
@@ -597,6 +609,21 @@ def _without_answered(request: ModelRequest) -> ModelRequest:
             and (i >= answered or m.id in gone)
         },
     )
+
+
+def _explains_notes(pinned: str | None) -> bool:
+    """Whether the static prompt a call goes out with has the scratchpad
+    section: the build's always does where the notes rows run, so only a
+    pinned one (``pinned_static``) can lack it."""
+    return pinned is None or _PROMPT_SECTION in pinned
+
+
+def _notes_rows_sent(request: ModelRequest) -> ModelRequest:
+    """``request`` with the notes rows its static prompt can explain."""
+    pinned = pinned_static(
+        getattr(request, "state", None), getattr(request, "model", None), request.messages or []
+    )
+    return _without_answered(request) if _explains_notes(pinned) else _without_notes_rows(request)
 
 
 def _without_notes_rows(request: ModelRequest) -> ModelRequest:

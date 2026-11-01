@@ -1,4 +1,4 @@
-"""The scratchpad is opt-in: a user who never turned it on sees none of it."""
+"""The scratchpad prompt: a user who turned the feature off sees none of it."""
 
 import pytest
 
