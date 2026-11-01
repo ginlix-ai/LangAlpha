@@ -3,14 +3,17 @@
 import hashlib
 import importlib.util
 import json
+import posixpath
 import secrets
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 import structlog
+
+from ptc_agent.core.paths import SandboxLayout
 
 from .livefs_runtime import protocol as livefs_protocol
 
@@ -78,6 +81,13 @@ _LIVEFS_SOURCE_DIR = Path(__file__).with_name("livefs_runtime")
 #: submitted source.
 TURN_CWD_SANDBOX_NAME = "sitecustomize.py"
 _TURN_CWD_SOURCE = Path(__file__).with_name("turn_cwd_sitecustomize.py")
+#: Where the `la` CLI's shim ships, relative to ``_internal/src/``; its
+#: bundle (built by `cli/`, absent until it is) sits beside the directory.
+_CLI_BIN = PurePosixPath(SandboxLayout.CLI_BIN_DIR).relative_to(
+    SandboxLayout.INTERNAL_SRC_DIR
+)
+#: The names the CLI answers to on a computer's PATH.
+CLI_NAMES = ("langalpha", "la")
 #: Names the directory that ``sitecustomize.py`` chdirs into.
 TURN_CWD_ENV = "PTC_TURN_CWD"
 #: Names the file ``sitecustomize.py`` writes a code run's own unhandled
@@ -197,6 +207,28 @@ async def publish_private_file(
                 pass
 
 
+async def publish_token_file(
+    runtime: Any,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    call: Callable[..., Awaitable[Any]] = _direct_call,
+) -> bool:
+    """Write a token file the server mints, its ``payload`` dated by
+    ``iat_ms``: a file, not an env var, so a fresh token reaches running
+    processes, which re-read it when it changes, and an older write never
+    replaces a newer one. True only once the write is confirmed."""
+    return await publish_private_file(
+        runtime,
+        path,
+        payload,
+        what=f"token file {posixpath.basename(path)}",
+        script=REPLACE_UNLESS_NEWER_SCRIPT,
+        args=(str(payload["iat_ms"]),),
+        call=call,
+    )
+
+
 def _sha256_file(path: Path) -> str:
     """Return the hex SHA-256 digest of a file's contents."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -208,10 +240,12 @@ def _hash_dict(d: dict[str, str]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _internal_package_files(
+def _internal_package_uploads(
     src_dir: Path, *, livefs: bool = True
-) -> list[tuple[Path, Path]]:
-    """``(local_path, path relative to src/)`` for every internal-package file.
+) -> list[tuple[Path, Path, int | None]]:
+    """``(local_path, path relative to src/, mode)`` for every internal-package
+    file; ``mode`` is what the file is set to once uploaded, None for the
+    upload's own (0644).
 
     Walks ``_SANDBOX_INTERNAL_PACKAGES`` with ``rglob("*")`` — every regular
     file except ``__pycache__`` ships, so data seeds can never silently drop
@@ -221,18 +255,27 @@ def _internal_package_files(
     src_init = src_dir / "__init__.py"
     if not src_init.exists():
         return []
-    files: list[tuple[Path, Path]] = [(src_init, Path("__init__.py"))]
+    files: list[tuple[Path, Path, int | None]] = [(src_init, Path("__init__.py"), None)]
     # The file-transfer runtime rides the same all-or-nothing module so it is
     # hashed into the manifest and re-shipped whenever it changes.
-    files.append((_TRANSFER_RUNTIME_SOURCE, Path(TRANSFER_RUNTIME_SANDBOX_NAME)))
-    files.append((_TURN_CWD_SOURCE, Path(TURN_CWD_SANDBOX_NAME)))
+    files.append((_TRANSFER_RUNTIME_SOURCE, Path(TRANSFER_RUNTIME_SANDBOX_NAME), None))
+    files.append((_TURN_CWD_SOURCE, Path(TURN_CWD_SANDBOX_NAME), None))
     for supervisor_file in sorted(_SUPERVISOR_SOURCE_DIR.glob("*.py")):
         files.append((
             supervisor_file,
             Path(SUPERVISOR_SANDBOX_PACKAGE) / supervisor_file.name,
+            None,
         ))
     for livefs_file in sorted(_LIVEFS_SOURCE_DIR.glob("*.py")) if livefs else ():
-        files.append((livefs_file, Path(LIVEFS_SANDBOX_PACKAGE) / livefs_file.name))
+        files.append((livefs_file, Path(LIVEFS_SANDBOX_PACKAGE) / livefs_file.name, None))
+    cli_bundle = src_dir.parent / "cli" / "dist" / "la.mjs"
+    if cli_bundle.is_file():
+        files.append((cli_bundle, Path(_CLI_BIN.parent, "la.mjs"), None))
+        # Run by name from PATH, so executable. `langalpha` is the CLI's name,
+        # `la` its short one; one shim answers to both.
+        shim = src_dir.parent / "cli" / "sandbox" / "shim"
+        for name in CLI_NAMES:
+            files.append((shim, Path(_CLI_BIN, name), 0o755))
     for pkg, module in _SANDBOX_INTERNAL_PACKAGES.items():
         pkg_dir = _internal_package_dir(module)
         if pkg_dir is None or not pkg_dir.exists():
@@ -245,8 +288,16 @@ def _internal_package_files(
         for file_path in sorted(pkg_dir.rglob("*")):
             if not file_path.is_file() or "__pycache__" in file_path.parts:
                 continue
-            files.append((file_path, Path(pkg) / file_path.relative_to(pkg_dir)))
+            files.append((file_path, Path(pkg) / file_path.relative_to(pkg_dir), None))
     return files
+
+
+def _internal_package_files(
+    src_dir: Path, *, livefs: bool = True
+) -> list[tuple[Path, Path]]:
+    """``(local_path, path relative to src/)`` for every file
+    ``_internal_package_uploads`` ships."""
+    return [(local, rel) for local, rel, _ in _internal_package_uploads(src_dir, livefs=livefs)]
 
 
 def _resolve_local_path(local_path: str, config_dir: Path | None) -> str | None:

@@ -267,6 +267,9 @@ def _job_env(
         "PTC_WORKSPACE_CONFIG": sandbox.workspace().mcp_client_config,
         # A script's prints reach the log as they happen.
         "PYTHONUNBUFFERED": "1",
+        # Where the `la` CLI finds the token and address it calls the API
+        # with; absent until the server writes one.
+        "LANGALPHA_TOKEN_FILE": sandbox.layout.cli_token,
     }
     if allowed_servers is not None:
         env[_ALLOWED_SERVERS_ENV] = _allowed_servers_value(allowed_servers)
@@ -437,6 +440,7 @@ async def start_bash_job(
         command=_eval_after_header(script_abs),
         env=_job_env(sandbox, ref.trace_path, call_id, allowed_servers),
         pythonpath=":".join(sandbox.workspace().pythonpath(sandbox.layout)),
+        path=sandbox.layout.cli_bin,
         files=((script_abs, ("\n".join(header) + "\n" + full_command + "\n").encode()),),
         dirs=(code_dir, log_dir),
     )
@@ -604,6 +608,7 @@ async def _run_code(
         command=f"cd {shlex.quote(workspace)} && python3 {warnings} {shlex.quote(code_abs)}",
         env=env,
         pythonpath=":".join(sandbox.workspace().pythonpath(sandbox.layout)),
+        path=sandbox.layout.cli_bin,
         files=((code_abs, code.encode("utf-8")),),
         dirs=(code_dir, log_dir),
     )

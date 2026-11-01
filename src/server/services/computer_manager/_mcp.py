@@ -5,6 +5,7 @@ One file of the ComputerManager split; see the package __init__."""
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable
 from dataclasses import replace
 from types import MappingProxyType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -43,6 +44,14 @@ from src.server.services.user_skills.reconcile import reconcile_workspace_skills
 logger = logging.getLogger(__name__)
 
 _VAULT_SETTLE_ATTEMPTS = 5
+
+
+async def _each(*steps: Awaitable[None]) -> None:
+    """Run independent steps at once, each to its end whatever another does;
+    then raise the first one's error, if any did."""
+    for outcome in await asyncio.gather(*steps, return_exceptions=True):
+        if isinstance(outcome, BaseException):
+            raise outcome
 
 
 class McpSecretsMixin:
@@ -220,7 +229,7 @@ class McpSecretsMixin:
         # Looked up only once a token is owed, inside keep()'s guard: every
         # acquire calls this, and nothing on the token's path may fail one.
         async def write(payload: dict[str, Any]) -> bool:
-            return await sandbox.upload_token_file(payload)
+            return await sandbox.publish_token_file(sandbox.layout.mcp_tokens, payload)
 
         await data_tokens.keep(
             computer_id, user_id, getattr(sandbox, "sandbox_id", None), write
@@ -233,6 +242,41 @@ class McpSecretsMixin:
         from src.server.services import data_tokens
 
         await data_tokens.revoke(computer_id)
+
+    async def _keep_cli_token(
+        self, computer_id: str, user_id: str | None, sandbox: Any
+    ) -> None:
+        """Write the token the ``la`` CLI calls the API with, when the
+        sandbox holds none with long enough left."""
+        from src.server.services import cli_tokens
+
+        if sandbox is None:
+            return
+
+        async def write(payload: dict[str, Any]) -> bool:
+            return await sandbox.publish_token_file(sandbox.layout.cli_token, payload)
+
+        await cli_tokens.keep(
+            computer_id,
+            user_id,
+            getattr(sandbox, "sandbox_id", None),
+            self._livefs_provider(sandbox),
+            write,
+        )
+
+    async def _keep_computer_tokens(
+        self, computer_id: str, user_id: str | None, sandbox: Any
+    ) -> None:
+        """Every token the server writes into a computer's sandbox."""
+        await _each(
+            self._keep_data_token(computer_id, user_id, sandbox),
+            self._keep_cli_token(computer_id, user_id, sandbox),
+        )
+
+    async def _revoke_computer_tokens(self, computer_id: Any) -> None:
+        from src.server.services import cli_tokens
+
+        await _each(self._revoke_data_token(computer_id), cli_tokens.revoke(computer_id))
 
     # Cache resolution on the session so create_agent performs no per-turn DB
     # resolution. Check mcp_config_version on the post-cooldown read; discovery

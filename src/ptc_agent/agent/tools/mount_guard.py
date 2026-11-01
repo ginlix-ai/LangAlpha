@@ -54,4 +54,6 @@ async def run_guarded(
         logger.info(blocked_event, tree=tree, **blocked_fields)
         error = memory_error if tree == "memory" else files_error.format(dir=tree)
         return error, {"mcp_trace": []}
-    return await livefs_mount.through_mount(mount, call_context, run)
+    return await livefs_mount.through_mount(
+        mount, backend.sandbox.call_filer, call_context, run
+    )

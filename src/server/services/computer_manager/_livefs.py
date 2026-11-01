@@ -23,6 +23,19 @@ _T = TypeVar("_T")
 
 
 class LivefsMixin:
+    @staticmethod
+    def _file_calls(computer_id: Any, sandbox: Any) -> None:
+        """Hand ``sandbox`` the filing of who each command runs for, beside
+        the mount or the history it is handed: a save through the mount
+        reads it, and so does a call the ``la`` CLI makes, which names its
+        thread to the server only through it, whatever mounts the machine."""
+        from src.server.services.livefs import outcomes
+
+        computer_id = str(computer_id)
+        sandbox.call_filer = lambda call_id, context: outcomes.open_call(
+            computer_id, call_id, context
+        )
+
     def _livefs_provider(self, sandbox: Any) -> str:
         provider = getattr(getattr(sandbox, "config", None), "sandbox", None)
         return getattr(provider, "provider", None) or self.config.sandbox.provider
@@ -119,6 +132,7 @@ class LivefsMixin:
         changes and the tracker goes on with what this worker saw."""
         from src.server.services.livefs import mount as livefs
 
+        self._file_calls(computer_id, sandbox)
         if not sandbox.mounts_livefs:
             sandbox.livefs = None
             await self._load_history(computer_id, sandbox)
@@ -201,7 +215,10 @@ class LivefsMixin:
         stood in the way of is asked once more after it: the turn's prompt
         says whether the files are mounted for the rest of the conversation.
         """
-        if sandbox is None or not user_id:
+        if sandbox is None:
+            return await sync
+        self._file_calls(computer_id, sandbox)
+        if not user_id:
             return await sync
         tracker = self._machine(str(computer_id)).livefs
         if not tracker.serving(sandbox):
