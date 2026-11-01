@@ -22,7 +22,7 @@ from src.server.models.news import (
     NewsPublisher,
 )
 from src.server.services.cache.news_cache_service import NewsCacheService, news_cache_key
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import DataReadUserId
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ def _compact(article: dict) -> NewsArticleCompact | None:
 @router.get("", response_model=NewsCompactResponse)
 async def get_news(
     request: Request,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     tickers: str | None = Query(None, description="Comma-separated ticker symbols"),
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None, description="Pagination cursor"),
@@ -291,7 +291,7 @@ async def get_news(
 
 
 @router.get("/{article_id}", response_model=NewsArticle)
-async def get_news_article(article_id: str, request: Request, user_id: CurrentUserId):
+async def get_news_article(article_id: str, request: Request, user_id: DataReadUserId):
     not_found = HTTPException(status_code=404, detail="Article not found")
 
     # An id a gated source claims is that feed's content, and ids travel in

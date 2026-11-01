@@ -13,8 +13,8 @@ from src.server.models.command import (
     CommandStopResponse,
 )
 from src.server.services.commands import control
+from src.server.dependencies.principal import ReadUserId, RunUserId
 from src.server.utils import api as auth_api
-from src.server.utils.api import CurrentUserId
 
 from ._deps import router
 
@@ -22,7 +22,7 @@ from ._deps import router
 @router.get("/{thread_id}/commands", response_model=CommandsResponse)
 async def list_commands(
     thread_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
     status: Optional[List[CommandStatus]] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ):
@@ -40,7 +40,7 @@ async def list_commands(
     "/{thread_id}/commands/{command_id}/stop", response_model=CommandStopResponse
 )
 async def stop_thread_command(
-    thread_id: str, command_id: str, x_user_id: CurrentUserId
+    thread_id: str, command_id: str, x_user_id: RunUserId
 ):
     """Stop a running command. The agent is told at the thread's next turn.
 

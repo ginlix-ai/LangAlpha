@@ -24,6 +24,7 @@ from src.server.database.chart_annotation import (
     make_chart_id,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.dependencies.principal import DataReadUserId
 from src.server.utils.api import CurrentUserId, require_workspace_owner
 from src.tools.chart_annotation.schemas import Timeframe
 
@@ -69,7 +70,7 @@ async def _ensure_owner(workspace_id: str, user_id: str) -> None:
 )
 async def list_chart_annotations(
     workspace_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: DataReadUserId,
     symbol: str = Query(..., max_length=32, description="Ticker symbol (case-insensitive)"),
     timeframe: Timeframe | None = Query(
         None,

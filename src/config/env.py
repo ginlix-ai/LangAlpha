@@ -26,6 +26,9 @@ OAUTH_RESOURCE_AUDIENCES: tuple[str, ...] = tuple(
     for aud in os.getenv("OAUTH_RESOURCE_AUDIENCE", "").split(",")
     if aud.strip()
 )
+# The issuer's public client the `la` CLI signs in with (PKCE, loopback
+# redirect). Unset, `la login` takes a personal access token instead.
+OAUTH_CLI_CLIENT_ID: str = os.getenv("OAUTH_CLI_CLIENT_ID", "").strip()
 
 # TLS mode for the app-data and checkpointer pools. "prefer" negotiates TLS when the
 # server offers it and falls back to plaintext when it doesn't — the only value that

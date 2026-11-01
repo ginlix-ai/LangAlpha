@@ -1,12 +1,13 @@
 """Thread messaging: send/stream SSE, reconnect/replay, control, retry, mux."""
 
 import json
-from typing import Literal, Optional
+from dataclasses import dataclass
+from typing import Annotated, Literal, Optional
 from uuid import uuid4
 
 import asyncio
 
-from fastapi import Header, HTTPException, Query, Request
+from fastapi import Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 # require_thread_owner is called through the module (auth_api.…) so a single
@@ -32,8 +33,20 @@ from src.server.contracts.status import to_public
 from src.server.contracts.turn_kinds import ANNOUNCED_KEYS
 from src.server.database.pool import DATABASE_UNAVAILABLE
 from src.server.services.report_back.handoff.keys import ORIGIN_THREAD_META
+from src.server.dependencies.principal import (
+    Principal,
+    ReadUserId,
+    RunPrincipal,
+    RunUserId,
+    assert_reaches,
+    check_turn_body,
+    refuse_rewrite,
+    stamp_origin,
+)
 from src.server.dependencies.usage_limits import (
-    ChatRateLimited,
+    ChatAuthResult,
+    ChatLimit,
+    ChatLimiter,
     quota_service_unavailable,
 )
 
@@ -181,9 +194,71 @@ async def _consume_background_gen(
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class AdmittedTurn:
+    """A turn's body as its caller may send it, with the admission it holds.
+
+    Built in one order: the caller's scope and path reach, the body cleared of
+    the server-only fields, what the body itself asks, the origin the server
+    states, and last the admission, so a refused body never holds a burst
+    slot.
+    """
+
+    thread_id: str
+    body: ChatRequest
+    auth: ChatAuthResult
+
+
+async def _admit(
+    principal: Principal,
+    raw_request: Request,
+    body: ChatRequest,
+    thread_id: str | None,
+    limit: ChatLimit,
+    *,
+    from_path: bool = False,
+) -> AdmittedTurn:
+    body = _client_body(body, raw_request)
+    await check_turn_body(principal, raw_request, body, thread_id, from_path=from_path)
+    body = stamp_origin(principal, raw_request, body)
+    return AdmittedTurn(
+        thread_id=thread_id or str(uuid4()),
+        body=body,
+        auth=await limit(principal.user_id),
+    )
+
+
+async def _admit_new_thread(
+    request: ChatRequest, raw_request: Request, principal: RunPrincipal, limit: ChatLimiter
+) -> AdmittedTurn:
+    """A new thread's first turn; an external id + platform already known
+    resolves to that thread."""
+    thread_id = None
+    if request.external_thread_id and request.platform:
+        thread_id = await lookup_thread_by_external_id(
+            request.platform, request.external_thread_id, principal.user_id
+        )
+        if thread_id:
+            logger.info(
+                f"[CHAT] Resolved external_thread_id={request.external_thread_id} "
+                f"platform={request.platform} -> thread_id={thread_id}"
+            )
+    return await _admit(principal, raw_request, request, thread_id, limit)
+
+
+async def _admit_thread_turn(
+    thread_id: str,
+    request: ChatRequest,
+    raw_request: Request,
+    principal: RunPrincipal,
+    limit: ChatLimiter,
+) -> AdmittedTurn:
+    return await _admit(principal, raw_request, request, thread_id, limit, from_path=True)
+
+
 @router.post("/messages")
 async def send_new_thread_message(
-    request: ChatRequest, auth: ChatRateLimited, raw_request: Request
+    turn: Annotated[AdmittedTurn, Depends(_admit_new_thread)], raw_request: Request
 ):
     """
     Create a new thread and send the first message. Returns an SSE stream.
@@ -191,34 +266,17 @@ async def send_new_thread_message(
     The server creates a new thread_id and returns it in SSE events.
     If external_thread_id + platform are provided, resolves to an existing thread first.
     """
-    thread_id = None
-    if request.external_thread_id and request.platform:
-        thread_id = await lookup_thread_by_external_id(
-            request.platform, request.external_thread_id, auth.user_id
-        )
-        if thread_id:
-            logger.info(
-                f"[CHAT] Resolved external_thread_id={request.external_thread_id} "
-                f"platform={request.platform} -> thread_id={thread_id}"
-            )
-    if not thread_id:
-        thread_id = str(uuid4())
-    return await _handle_send_message(
-        _client_body(request, raw_request), auth, thread_id, raw_request
-    )
+    return await _handle_send_message(turn.body, turn.auth, turn.thread_id, raw_request)
 
 
 @router.post("/{thread_id}/messages")
 async def send_thread_message(
-    thread_id: str, request: ChatRequest, auth: ChatRateLimited,
-    raw_request: Request,
+    turn: Annotated[AdmittedTurn, Depends(_admit_thread_turn)], raw_request: Request
 ):
     """
     Send a message to an existing thread. Returns an SSE stream.
     """
-    return await _handle_send_message(
-        _client_body(request, raw_request), auth, thread_id, raw_request
-    )
+    return await _handle_send_message(turn.body, turn.auth, turn.thread_id, raw_request)
 
 
 def _is_service_request(raw_request: Request | None) -> bool:
@@ -344,15 +402,16 @@ async def _settle_against_branch(
 
 
 async def _handle_send_message(
-    request: ChatRequest, auth: ChatRateLimited, thread_id: str,
+    request: ChatRequest, auth: ChatAuthResult, thread_id: str,
     raw_request: Request | None = None,
     *,
     retry_of_run_id: str | None = None,
 ):
     """Shared logic for both POST /threads/messages and POST /threads/{id}/messages.
 
-    Those routes pass a body already cleared of the server-only fields
-    (:func:`_client_body`); /retry builds its request from the stored rows.
+    Those routes pass an :class:`AdmittedTurn`'s body, already cleared of the
+    server-only fields and held to what the caller may ask; /retry builds its
+    request from the stored rows.
 
     ``retry_of_run_id`` is retry provenance and route-internal: only the
     /retry route passes it. Whatever the public body carried is overwritten
@@ -408,7 +467,7 @@ async def _handle_send_message(
             )
 
         # 403 guard: require BYOK, OAuth, or platform access (tier >= 0).
-        # All flags are pre-checked by enforce_chat_limit — no DB calls here.
+        # All flags are pre-checked by chat_limit_for — no DB calls here.
         # A tier nobody could read is an outage, not a missing provider: telling
         # a paying user to set one up sends them to the setup wizard for it.
         from src.config.settings import HOST_MODE
@@ -864,7 +923,7 @@ async def _prime_dispatch(
 @router.get("/{thread_id}/messages/stream")
 async def reconnect_to_stream(
     thread_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
     last_event_id: Optional[int] = Query(None, description="Last received event ID"),
     last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
     run_id: Optional[str] = Query(None, description="Specific run to reconnect to"),
@@ -908,7 +967,7 @@ async def reconnect_to_stream(
 
 
 @router.get("/{thread_id}/watch")
-async def watch_thread(thread_id: str, x_user_id: CurrentUserId):
+async def watch_thread(thread_id: str, x_user_id: ReadUserId):
     """Watch for new workflow activity on a thread via SSE + Redis pub/sub.
 
     Opens a lightweight SSE connection that emits a ``workflow_started`` event
@@ -941,7 +1000,7 @@ async def watch_thread(thread_id: str, x_user_id: CurrentUserId):
 @router.get("/{thread_id}/messages/replay")
 async def replay_thread_messages(
     thread_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
     source: Literal["auto", "checkpoint"] = Query(
         "auto",
         description=(
@@ -1090,7 +1149,7 @@ async def replay_thread_messages(
 @router.get("/{thread_id}/status")
 async def get_thread_status(
     thread_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
     fields: Optional[str] = Query(
         None,
         description="'report_back' returns only the report-back slice (cheap path)",
@@ -1285,7 +1344,7 @@ async def get_dispatches_liveness(
 @router.post("/{thread_id}/cancel", status_code=200)
 async def cancel_thread(
     thread_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: RunUserId,
     run_id: Optional[str] = Query(None),
 ):
     """Cancel a running workflow for this thread.
@@ -1327,7 +1386,7 @@ async def offload_thread(thread_id: str, x_user_id: CurrentUserId):
 
 
 @router.get("/{thread_id}/turns")
-async def get_thread_turns(thread_id: str, x_user_id: CurrentUserId):
+async def get_thread_turns(thread_id: str, x_user_id: ReadUserId):
     """
     Get turn-boundary checkpoint IDs for edit/regenerate/retry operations.
 
@@ -1349,7 +1408,8 @@ async def get_thread_turns(thread_id: str, x_user_id: CurrentUserId):
 @router.post("/{thread_id}/retry")
 async def retry_thread(
     thread_id: str,
-    auth: ChatRateLimited,
+    principal: RunPrincipal,
+    limit: ChatLimiter,
     body: Optional[RetryRequest] = None,
 ):
     """
@@ -1362,6 +1422,10 @@ async def retry_thread(
     the failed attempt never reached the graph: then it runs that attempt's
     message again, or replays the checkpoint a regenerate named
     (``pending_input``). Returns an SSE stream.
+
+    The path holds a computer's token to its thread as a send's does, and the
+    workspace the body names is held here, before the admission. Its origin
+    is not stamped: the retry runs the stored turn again, whoever sent that.
     """
     from src.server.database.runs import lifecycle as tl_db
     from src.server.handlers.chat.admission_gate import admission_conflict_detail
@@ -1373,6 +1437,9 @@ async def retry_thread(
         retried_wake_fields,
     )
 
+    await assert_reaches(principal, workspace_id=body.workspace_id if body else None)
+    refuse_rewrite(principal, body.checkpoint_id if body else None)
+    auth = await limit(principal.user_id)
     scope = RunScope(user_id=auth.user_id, burst_slot_id=auth.burst_slot_id)
 
     try:
@@ -1462,7 +1529,7 @@ async def retry_thread(
                 **await retried_wake_fields(thread_id, latest["turn_index"]),
             )
     except BaseException:
-        # ChatRateLimited acquired a burst slot at the dependency; every
+        # The admission above acquired a burst slot; every
         # early exit above bypasses _handle_send_message, whose own guard
         # normally releases it — without this, repeated stale retries
         # exhaust the user's burst allowance until TTL expiry.
@@ -1481,7 +1548,7 @@ async def retry_thread(
 @router.get("/{thread_id}/stream")
 async def thread_stream_mux_endpoint(
     thread_id: str,
-    x_user_id: CurrentUserId,
+    x_user_id: ReadUserId,
     cursors: Optional[str] = Query(
         None,
         description="Per-channel resume cursors: run:<run_id>#<entry_id>,…",

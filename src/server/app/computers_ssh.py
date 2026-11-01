@@ -49,7 +49,7 @@ from src.server.services.ssh_computers import (
     probe_response,
     suggested_root_dir,
 )
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import ComputerAddUserId, ReadUserId
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,7 @@ async def _script_form(request: Request, model: type[_ScriptFormT]) -> _ScriptFo
 
 
 @router.get("/key", response_model=ComputerSSHKeyResponse)
-async def get_ssh_key(x_user_id: CurrentUserId):
+async def get_ssh_key(x_user_id: ReadUserId):
     """The caller's SSH client key, minted on first call, and how to install it."""
     settings = await _ssh_settings(x_user_id)
     with _ssh_errors():
@@ -185,7 +185,7 @@ async def get_ssh_key(x_user_id: CurrentUserId):
 
 
 @router.post("/probe", response_model=ComputerSSHProbeResponse)
-async def probe_ssh(request: ComputerSSHProbeRequest, x_user_id: CurrentUserId):
+async def probe_ssh(request: ComputerSSHProbeRequest, x_user_id: ComputerAddUserId):
     """Log in to a machine with the caller's key and report what is there.
 
     Its host key comes back for the user to confirm; the create pins it. A
@@ -225,7 +225,7 @@ async def probe_ssh(request: ComputerSSHProbeRequest, x_user_id: CurrentUserId):
 @router.post("/pairings", response_model=ComputerSSHPairingResponse, status_code=201)
 async def create_ssh_pairing(
     request: Request,
-    x_user_id: CurrentUserId,
+    x_user_id: ComputerAddUserId,
     body: Optional[ComputerSSHPairingCreate] = None,
 ):
     """A command that adds a machine by being run on it, as the dialog shows it.
@@ -269,7 +269,7 @@ async def _repairable_ssh_computer(computer_id: str, user_id: str) -> None:
 
 
 @router.get("/pairings/{token}", response_model=ComputerSSHPairingStatus)
-async def get_ssh_pairing(token: str, x_user_id: CurrentUserId):
+async def get_ssh_pairing(token: str, x_user_id: ReadUserId):
     """Where the caller's pairing stands; 404 once it has expired."""
     with _ssh_errors():
         return await ssh_pairing.pairing_status(x_user_id, token)
@@ -277,7 +277,7 @@ async def get_ssh_pairing(token: str, x_user_id: CurrentUserId):
 
 @router.post("/pairings/{token}/connect", response_model=ComputerSSHPairingStatus)
 async def connect_ssh_pairing(
-    token: str, request: ComputerSSHAddress, x_user_id: CurrentUserId
+    token: str, request: ComputerSSHAddress, x_user_id: ComputerAddUserId
 ):
     """Try an address the caller knows for a machine that checked in.
 

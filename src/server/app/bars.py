@@ -36,7 +36,7 @@ from src.data_client.freshness import measure_bars, measure_daily
 from src.data_client.instrument_clock import clock_for
 from src.server.services.cache.daily_cache_service import DailyCacheService
 from src.server.services.cache.intraday_cache_service import IntradayCacheService
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import DataReadUserId
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ async def _fetch(
 )
 async def get_bars(
     instrument: str,
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     schema: str = Query(..., description="OHLCV schema id (ohlcv-1m … ohlcv-1d)"),
     asset_class: Optional[str] = Query(
         None,

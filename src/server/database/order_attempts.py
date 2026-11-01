@@ -724,6 +724,25 @@ async def latest_attempt_for_confirm_token(
     return None if row is None else str(row[0])
 
 
+async def thread_awaits_order(thread_id: str) -> bool:
+    """Whether the thread holds an order still waiting on the user's verdict,
+    which is what an answer to its pending interrupt would decide."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM order_attempts
+                     WHERE thread_id = %s AND status = 'proposed'
+                       AND approval_required
+                )
+                """,
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+    return bool(row and row[0])
+
+
 async def find_open_thread_order(
     thread_id: str, vendor_order_id: str
 ) -> dict[str, Any] | None:

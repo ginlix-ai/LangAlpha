@@ -16,7 +16,7 @@ from src.server.models.calendar import (
     EconomicEvent,
 )
 from src.server.services.cache.earnings_cache_service import EarningsCacheService
-from src.server.utils.api import CurrentUserId
+from src.server.dependencies.principal import DataReadUserId
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def _default_dates(
 
 @router.get("/economic", response_model=EconomicCalendarResponse)
 async def get_economic_calendar(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     from_date: Optional[str] = Query(
         None, alias="from", description="Start date (YYYY-MM-DD). Defaults to today."
     ),
@@ -75,7 +75,7 @@ async def get_economic_calendar(
 
 @router.get("/earnings", response_model=EarningsCalendarResponse)
 async def get_earnings_calendar(
-    user_id: CurrentUserId,
+    user_id: DataReadUserId,
     from_date: Optional[str] = Query(
         None, alias="from", description="Start date (YYYY-MM-DD). Defaults to today."
     ),
