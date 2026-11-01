@@ -9,6 +9,15 @@ is at least ``floor_tokens``, and the provider's prompt cache has expired, so
 the turn's first call would write the whole context again in any case. A
 thread pinned below the build's ``rebuild_before`` is forced whatever its
 size or cache, and a build older than the pin, a rollback, forces nothing.
+
+In the middle of a turn, the main agent's summary on a due thread keeps no
+turn either: it ends right after the step under way, whose calls and results
+the call after it is sent as a row (see ``carry``). With notes on, the
+compaction that would run it first asks for one more step, on the notes, and
+arms the thread, so the next call summarizes whatever its size: mid-turn, or
+at the turn start when that step was the turn's answer. Any call after it
+spends the arm (``CompactionMiddleware._answered``), and so does a summary in
+between.
 """
 
 from __future__ import annotations
@@ -23,7 +32,9 @@ from langchain_core.messages import AIMessage, AnyMessage
 
 from src.llms.cache_markers import CacheScope, route_ttl_seconds, written_ttl_seconds
 
-from ptc_agent.agent.middleware.compaction.utils import settled_end, turn_start_cut
+from ptc_agent.agent.middleware.compaction.notes import summary_id
+from ptc_agent.agent.middleware.compaction.types import RebuildArm
+from ptc_agent.agent.middleware.compaction.utils import settled_end, step_cut, turn_start_cut
 from ptc_agent.agent.middleware.runtime_context.frozen_prompt import (
     STATE_SYSTEM_PIN,
     due,
@@ -51,6 +62,20 @@ def cache_ttl(view: Sequence[AnyMessage], model: Any) -> int:
     return route_ttl_seconds(model)
 
 
+def arm(state: Any) -> RebuildArm:
+    """The arm a call that asks for the notes ahead of a summary that keeps no
+    turn stores, so the next call writes that summary (``_armed``)."""
+    return RebuildArm(summary=summary_id(state))
+
+
+def _armed(state: Any) -> bool:
+    """Whether the call before this one asked for the notes ahead of a summary
+    that keeps no turn, under the summary that still stands; another summary
+    since, a manual compaction, already rebuilt the thread or kept its tail."""
+    stored = state.get("_rebuild_armed")
+    return isinstance(stored, dict) and stored.get("summary") == summary_id(state)
+
+
 @dataclass(frozen=True)
 class RebuildPlan:
     """What a due prompt asks of one model call.
@@ -65,6 +90,8 @@ class RebuildPlan:
             once its call lands.
         scope: The cache markers of the summary's own native call:
             ``last_tool`` once the main agent's prompt cache has expired.
+        carry: ``cut`` ends mid-turn, after the results of the step under
+            way, which the call after the summary is sent as a row.
     """
 
     due: bool = False
@@ -73,6 +100,7 @@ class RebuildPlan:
     forced: bool = False
     waits: str | None = None
     scope: CacheScope | None = None
+    carry: bool = False
 
 
 class StalePinRebuilds:
@@ -119,8 +147,9 @@ class StalePinRebuilds:
 @dataclass(frozen=True)
 class TurnStartRebuilds(StalePinRebuilds):
     """The main agent's rebuilds: due on the pin's digest, at a run's first
-    call after a turn that ended on tool results too, and forced under the
-    threshold as above.
+    call after a turn that ended on tool results too, in the middle of a turn
+    after the step under way, and forced under the threshold as above, or
+    once armed.
 
     Attributes:
         floor_tokens: The least context a deploy's rebuild is forced at
@@ -149,10 +178,16 @@ class TurnStartRebuilds(StalePinRebuilds):
     ) -> RebuildPlan:
         if not self.due(request, view):
             return RebuildPlan()
+        armed = _armed(request.state)
+        scope = self._scope(request, view, now)
         cut = turn_start_cut(view, after_tools=first_call)
         if not cut:
-            return RebuildPlan(due=True)
-        scope = self._scope(request, view, now)
+            step = step_cut(view)
+            if not step:
+                return RebuildPlan(due=True)
+            return RebuildPlan(due=True, cut=step, reason="mid_turn", forced=armed, scope=scope, carry=True)
+        if armed:
+            return RebuildPlan(due=True, cut=cut, reason="armed", forced=True, scope=scope)
         if tokens >= threshold:
             return RebuildPlan(due=True, cut=cut, reason="digest", scope=scope)
         forced, reason = self._under_threshold(request, view, tokens, cold=scope is not None)

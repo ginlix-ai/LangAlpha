@@ -56,7 +56,7 @@ indicate omitted lines in the middle of the content):
 """
 
 
-def _create_content_preview(
+def content_preview(
     content_str: str, *, head_lines: int = 5, tail_lines: int = 5
 ) -> str:
     """Create a preview of content showing head and tail with truncation marker.
@@ -101,7 +101,7 @@ def _cap_evicted(content_str: str) -> tuple[str, int | None]:
     return raw[:MAX_EVICTED_BYTES].decode(errors="ignore"), len(raw)
 
 
-def _detect_extension(content_str: str) -> str:
+def detect_extension(content_str: str) -> str:
     """Detect file extension based on content.
 
     Returns '.json' if content looks like JSON (starts with '{' or '['),
@@ -190,7 +190,7 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"{self._eviction_dir}/{sanitized_id}{_detect_extension(content_str)}"
+        file_path = f"{self._eviction_dir}/{sanitized_id}{detect_extension(content_str)}"
         # Middleware rewrites by-id paths (same tool_call_id retries overwrite prior eviction);
         # opt out of protocol's create-only default.
         kept, full_size = _cap_evicted(content_str)
@@ -199,7 +199,7 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
             return message
 
         # Create preview showing head and tail of the result
-        content_sample = _create_content_preview(content_str)
+        content_sample = content_preview(content_str)
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,

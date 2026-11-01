@@ -841,8 +841,28 @@ def turn_start_cut(messages: Sequence[AnyMessage], *, after_tools: bool = False)
         return end
     if not after_tools:
         return 0
+    return 0 if _steered(messages, end) else end
+
+
+def step_cut(messages: Sequence[AnyMessage]) -> int:
+    """Where a summary that keeps no turn ends mid-turn: right after the
+    results of the newest step, the human messages after them aside, which
+    stay after the summary; 0 unless that step called tools and has every
+    result. Its calls and results go with the summary (see ``carry``). A
+    step steering made is not the agent's, and the user's message before it
+    must stay word for word, so it has no cut either.
+    """
+    end = _complete_step_end(messages)
+    if not end or not isinstance(messages[end - 1], ToolMessage):
+        return 0
+    return 0 if _steered(messages, end) else end
+
+
+def _steered(messages: Sequence[AnyMessage], end: int) -> bool:
+    """Whether the step ending at ``end`` is one steering opened (its
+    ``Task(action="resume")``), not one the agent's model made."""
     step = next(m for m in reversed(messages[:end]) if isinstance(m, AIMessage))
-    return 0 if (step.additional_kwargs or {}).get("lc_source") == "steering" else end
+    return (step.additional_kwargs or {}).get("lc_source") == "steering"
 
 
 def settled_end(messages: Sequence[AnyMessage]) -> int:

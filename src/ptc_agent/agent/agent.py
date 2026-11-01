@@ -874,6 +874,7 @@ class PTCAgent:
             workspace_id=workspace_id_for_memory,
             receives=multimodal_strip.receives,
             page_tokens=multimodal_strip.pdf_page_tokens,
+            large_results_dir=eviction_dir,
         )
         # The main agent is asked to update its scratchpad notes before each
         # summary, and its summaries name them; a subagent's do not. Without

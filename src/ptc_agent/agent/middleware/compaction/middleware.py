@@ -14,6 +14,8 @@ on the one before.
   as too long, the start of the view is summarized (see ``compact``), all of
   it at a turn start while the thread's system prompt is due for a rebuild,
   so the call after it can take the new one (see ``frozen_prompt.due``),
+  and mid-turn up to the step under way, which that call is sent as a row
+  (see ``carry``), after a step on the notes when they are on,
   and on the main agent at a turn start under the threshold too, after a
   deploy, once the prompt cache has expired (see ``rebuild``), and
   the attachments in what it keeps are taken out until it fits; on Claude,
@@ -92,7 +94,13 @@ from ptc_agent.agent.middleware.compaction.summarize import (
     is_other_model,
     summary_text,
 )
-from ptc_agent.agent.middleware.compaction.rebuild import StalePinRebuilds, TurnStartRebuilds
+from ptc_agent.agent.middleware.compaction.carry import last_step_row
+from ptc_agent.agent.middleware.compaction.notes import (
+    explains_notes,
+    last_step_wrote_notes,
+    rebuild_notes_ask,
+)
+from ptc_agent.agent.middleware.compaction.rebuild import StalePinRebuilds, TurnStartRebuilds, arm
 from ptc_agent.agent.middleware.compaction.summary_request import (
     finished_summary,
     keeps_turns,
@@ -131,6 +139,7 @@ from ptc_agent.agent.transcript.pointer import (
     shell_reads_transcripts,
     transcript_target,
 )
+from ptc_agent.core.paths import WorkspaceLayout
 
 if TYPE_CHECKING:
     from ptc_agent.agent.backends.sandbox import SandboxBackend
@@ -252,6 +261,7 @@ class CompactionMiddleware(AgentMiddleware):
         self_summary: bool = True,
         receives: Callable[[Any], Callable[[Any], bool]] | None = None,
         page_tokens: Callable[[Any], int | None] | None = None,
+        large_results_dir: str = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
     ) -> None:
         """
         Args:
@@ -280,6 +290,9 @@ class CompactionMiddleware(AgentMiddleware):
             page_tokens: What a call to a model is charged for a PDF page
                 (``MultimodalStripMiddleware.pdf_page_tokens``), or None
                 where that is not known, which counts ``PDF_PAGE_TOKENS``.
+            large_results_dir: The thread's large-results folder, where
+                eviction saves results, and where what is too large to carry
+                past a summary is saved too (see ``carry``).
         """
         super().__init__()
         self._summarizer = summarizer
@@ -295,6 +308,7 @@ class CompactionMiddleware(AgentMiddleware):
         self._self_summary_on = self_summary
         self._receives = receives
         self._page_tokens = page_tokens
+        self._large_results_dir = large_results_dir
         # The notes folder this agent's summaries name; see with_scratchpad_notes.
         self._notes_dir: str | None = None
         # The main agent's window; see with_window.
@@ -312,6 +326,7 @@ class CompactionMiddleware(AgentMiddleware):
         workspace_id: str | None = None,
         receives: Callable[[Any], Callable[[Any], bool]] | None = None,
         page_tokens: Callable[[Any], int | None] | None = None,
+        large_results_dir: str = WorkspaceLayout.LARGE_TOOL_RESULTS_DIR,
     ) -> CompactionMiddleware | None:
         """The middleware ``config.compaction`` describes, or None when it is off.
 
@@ -334,6 +349,7 @@ class CompactionMiddleware(AgentMiddleware):
             self_summary=settings.self_summary,
             receives=receives,
             page_tokens=page_tokens,
+            large_results_dir=large_results_dir,
         )
 
     # =========================================================================
@@ -377,12 +393,27 @@ class CompactionMiddleware(AgentMiddleware):
             first_call=bool(request.state.get("_run_first_call")),
         )
         refusal: Exception | None = None
-        if not plan.forced and tokens < self._token_threshold:
+        over = tokens >= self._token_threshold
+        if over and not plan.forced:
+            thread_id, agent = run_ids()
+            logger.info(
+                "[Compaction] trigger=threshold tokens=%d threshold=%d thread_id=%s agent=%s",
+                tokens,
+                self._token_threshold,
+                thread_id,
+                agent,
+            )
+        # With notes on, a summary that keeps no turn mid-turn waits one step,
+        # sent on the prompt and cache the thread holds, which it fits under
+        # since the threshold sits under the window: the agent brings its
+        # notes up to date, asked unless a notes row it has not acted on is in
+        # view, and the next call, armed, writes the summary whatever its
+        # size, after this step's results.
+        notes_step = over and plan.carry and not plan.forced and self._notes_first(request, view)
+        if not plan.forced and (not over or notes_step):
+            ask = rebuild_notes_ask(view, self._notes_dir, request.state) if notes_step else None
             try:
-                response = await handler(request.override(messages=view))
-                if plan.waits is not None:
-                    _log_rebuild("deferred", plan.waits)
-                return self._answered(request, response, reading=reading)
+                response = await handler(request.override(messages=[*view, ask] if ask is not None else view))
             except Exception as exc:
                 # Matched across providers, most of which LangChain does not
                 # classify as an overflow.
@@ -393,15 +424,15 @@ class CompactionMiddleware(AgentMiddleware):
                     "[Compaction] trigger=overflow thread_id=%s agent=%s: %s", thread_id, agent, exc
                 )
                 refusal = exc
-        elif not plan.forced:
-            thread_id, agent = run_ids()
-            logger.info(
-                "[Compaction] trigger=threshold tokens=%d threshold=%d thread_id=%s agent=%s",
-                tokens,
-                self._token_threshold,
-                thread_id,
-                agent,
-            )
+            else:
+                if not notes_step:
+                    if plan.waits is not None:
+                        _log_rebuild("deferred", plan.waits)
+                    return self._answered(request, response, reading=reading)
+                if ask is not None:
+                    response = dataclasses.replace(response, result=[ask, *response.result])
+                _log_rebuild("deferred", "notes_step")
+                return self._answered(request, response, {"_rebuild_armed": arm(request.state)}, reading=reading)
 
         cutoff = plan.cut or self._cutoff(view, request.model)
         fit = Fit(
@@ -422,18 +453,22 @@ class CompactionMiddleware(AgentMiddleware):
             )
 
         compaction = await self._summarize(
-            request, handler, view, cutoff, rebuild=bool(plan.cut), scope=plan.scope
+            request, handler, view, cutoff, rebuild=bool(plan.cut), scope=plan.scope, carried=plan.carry
         )
-        note = compaction.note_row()
+        carried = (
+            await last_step_row(view[:cutoff], backend=self._backend, folder=self._large_results_dir)
+            if plan.carry
+            else None
+        )
+        rows = [row for row in (compaction.note_row(), carried) if row is not None]
         # A refusal of the view says nothing of what the summary made room
         # for, so its messages are fitted by estimate like any others. The
-        # note goes into history ahead of the answer produced behind it.
-        fitted = await fit.send(
-            request, handler, [*compaction.messages, note] if note is not None else compaction.messages
-        )
-        if note is not None:
+        # note and the carried step go into history ahead of the answer
+        # produced behind them.
+        fitted = await fit.send(request, handler, [*compaction.messages, *rows])
+        if rows:
             fitted = fitted._replace(
-                response=dataclasses.replace(fitted.response, result=[note, *fitted.response.result])
+                response=dataclasses.replace(fitted.response, result=[*rows, *fitted.response.result])
             )
         self._stamp_summary(fitted.response, compaction)
         if plan.due:
@@ -441,6 +476,18 @@ class CompactionMiddleware(AgentMiddleware):
         update = compaction.update(request.state)
         return self._answered(
             request, fitted.response, {**update, **fitted.update(update)}, spared=fitted.spared
+        )
+
+    def _notes_first(self, request: ModelRequest, view: list[AnyMessage]) -> bool:
+        """Whether a summary that keeps no turn mid-turn waits a step for the
+        notes: they are on, the prompt the thread is pinned to explains them
+        (a thread pinned before the scratchpad was on is treated as notes
+        off, and the summary's new prompt starts them), and the step under
+        way did not write them."""
+        return (
+            self._notes_dir is not None
+            and explains_notes(request.state, request.model, view)
+            and not last_step_wrote_notes(view, run_ids()[0])
         )
 
     async def _summarize(
@@ -452,6 +499,7 @@ class CompactionMiddleware(AgentMiddleware):
         *,
         rebuild: bool = False,
         scope: CacheScope | None = None,
+        carried: bool = False,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, first by the agent's own
         model: its provider compacting the conversation where it can, else the
@@ -463,7 +511,8 @@ class CompactionMiddleware(AgentMiddleware):
         after the summary is read from what it keeps (``keeps_turns``).
 
         ``scope`` places the cache markers of the provider's own summary
-        call (``RebuildPlan.scope``)."""
+        call (``RebuildPlan.scope``), and ``carried`` says the step it ends on
+        is carried after it (``RebuildPlan.carry``)."""
         own: Own | None = None
         kind = native_kind(request.model)
         # Claude reads its block only where the kept turns can follow it.
@@ -471,13 +520,18 @@ class CompactionMiddleware(AgentMiddleware):
         if kind is not None and self._native and cut > 0:
             cutoff = cut
             own = functools.partial(
-                self._provider_summary, request, handler, notes=self._notes_dir is not None, scope=scope
+                self._provider_summary,
+                request,
+                handler,
+                notes=self._notes_dir is not None,
+                scope=scope,
+                carried=carried,
             )
         elif kind is None and self._writes_own(request):
             own = functools.partial(
-                self._self_summary, request, handler, notes=self._notes_dir is not None
+                self._self_summary, request, handler, notes=self._notes_dir is not None, carried=carried
             )
-        return await self._compact(request, view, cutoff, self._transcript_target(), own)
+        return await self._compact(request, view, cutoff, self._transcript_target(), own, carried=carried)
 
     def _writes_own(self, request: ModelRequest) -> bool:
         """Whether the agent's model writes the summary from its own request.
@@ -582,6 +636,8 @@ class CompactionMiddleware(AgentMiddleware):
         cutoff: int,
         transcript: TranscriptTarget | None,
         own: Own | None = None,
+        *,
+        carried: bool = False,
     ) -> Compaction:
         """Summarize ``view`` before ``cutoff``, by ``own`` when given,
         this agent's model being the fallback (see ``Summarizer.compact``).
@@ -608,6 +664,7 @@ class CompactionMiddleware(AgentMiddleware):
                     "summary_progress", "progress", summary_tokens=tokens
                 ),
                 own=own,
+                carried=carried,
             )
         except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
@@ -624,6 +681,7 @@ class CompactionMiddleware(AgentMiddleware):
         *,
         notes: bool,
         scope: CacheScope | None = None,
+        carried: bool = False,
     ) -> NativeAnswer:
         """The agent's provider compacting ``to_summarize`` itself, with the
         summary prompt in place of its own where it takes one (Claude), the
@@ -641,7 +699,7 @@ class CompactionMiddleware(AgentMiddleware):
         settings = compaction_settings(
             request.model,
             request.model_settings,
-            summary_prompt("native", kept, notes),
+            summary_prompt("native", kept, notes, carried=carried),
         )
         with as_sent(), _unstreamed(), cache_scope(scope):
             response = await handler(
@@ -663,6 +721,7 @@ class CompactionMiddleware(AgentMiddleware):
         kept: bool,
         *,
         notes: bool,
+        carried: bool = False,
     ) -> str:
         """The agent's model writing the summary of ``to_summarize`` as text,
         asked in the last user message of its own request.
@@ -679,7 +738,7 @@ class CompactionMiddleware(AgentMiddleware):
                 request.override(
                     messages=[
                         *to_summarize,
-                        HumanMessage(summary_prompt("self", kept, notes)),
+                        HumanMessage(summary_prompt("self", kept, notes, carried=carried)),
                     ]
                 )
             )
@@ -721,13 +780,16 @@ class CompactionMiddleware(AgentMiddleware):
         ``reading`` is the trigger's reading of the view this call was sent
         as it was, which its growth is stamped from; a call that was sent a
         summary or a fitted view has none. The run's first call is past once
-        it answers (see ``abefore_agent``)."""
+        it answers (see ``abefore_agent``), and an arm lasts one call (see
+        ``rebuild``) unless ``update`` sets it again."""
         input_tokens, output_tokens = self._extract_token_usage(response, reading)
         opened = {"_run_first_call": False} if request.state.get("_run_first_call") else {}
+        disarmed = {"_rebuild_armed": None} if request.state.get("_rebuild_armed") else {}
         return ExtendedModelResponse(
             model_response=response,
             command=Command(
                 update={
+                    **disarmed,
                     **(update or {}),
                     **opened,
                     "_cached_input_tokens": max(input_tokens - spared, 0),

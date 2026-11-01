@@ -246,7 +246,7 @@ def get_thread_id(thread_id: str | None = None) -> str:
 # =============================================================================
 
 # Mime type → file extension mapping
-_MIME_TO_EXT: dict[str, str] = {
+MIME_TO_EXT: dict[str, str] = {
     "image/png": "png",
     "image/jpeg": "jpg",
     "image/gif": "gif",
@@ -255,7 +255,7 @@ _MIME_TO_EXT: dict[str, str] = {
 }
 
 
-def _extract_base64_info(block: dict) -> tuple[str, str, str] | None:
+def extract_base64_info(block: dict) -> tuple[str, str, str] | None:
     """Extract (base64_data, mime_type, label) from a content block.
 
     Handles every provider format an attachment arrives in: an ``image_url``
@@ -348,13 +348,13 @@ async def aoffload_base64_content(
                 new_blocks.append(block)
                 continue
 
-            info = _extract_base64_info(block)
+            info = extract_base64_info(block)
             if info is None:
                 new_blocks.append(block)
                 continue
 
             b64_data, mime_type, label = info
-            ext = _MIME_TO_EXT.get(mime_type, "bin")
+            ext = MIME_TO_EXT.get(mime_type, "bin")
             filename = f"{label}_{msg_id}_{idx}.{ext}"
             path = f"{thread_dir}/{filename}"
 
