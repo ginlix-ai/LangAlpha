@@ -175,6 +175,8 @@ def test_options_give_claude_code_none_of_its_own_prompt_settings_or_tools():
     assert options.verbatim_prompts is True and options.cwd == "/w"
     assert options.env["CLAUDE_AGENT_SDK_MCP_NO_PREFIX"] == "1" and options.env["CLAUDE_CONFIG_DIR"] == "/c"
     assert options.env["ENABLE_TOOL_SEARCH"] == "false"
+    assert options.env["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "1h"
+    assert options.env["CLAUDE_CODE_DISABLE_ADVISOR_TOOL"] == options.env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
     assert json.loads(options.settings) == {"includeGitInstructions": False}
     assert options.permission_mode == "dontAsk" and options.resume is None
     assert options.max_buffer_size == 2 * MAX_CONTENT_BYTES
