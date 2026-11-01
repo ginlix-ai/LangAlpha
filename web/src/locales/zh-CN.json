@@ -2589,6 +2589,13 @@
       "custom": "自定义：",
       "submitCount": "提交（{{n}}）",
       "customPlaceholder": "或输入自定义回答..."
+    },
+    "nextSummary": {
+      "line": "发送下一条消息前，会先总结之前的对话。",
+      "skip": "跳过",
+      "skipHint": "改为发送完整对话，费用更高。",
+      "skipped": "下一条消息会带上完整对话，费用更高。",
+      "undo": "撤销"
     }
   },
   "context": {

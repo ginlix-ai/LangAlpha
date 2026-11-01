@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils';
 import { invalidateSubagents } from '@/hooks/useSubagents';
 import { markHandoffReady } from '@/pages/Onboarding/welcome/handoff';
 import { cardDownloadKey, trackPending } from '../utils/downloadNotice';
-import { summarizeThread, offloadThread, cancelSubagentTask, triggerFileDownload, resolveWorkspaceFile } from '../utils/api';
+import { summarizeThread, offloadThread, cancelSubagentTask, triggerFileDownload, resolveWorkspaceFile, type NextSummary } from '../utils/api';
 import { downloadTarget } from '../utils/fileRefResolver';
 import { toast } from '@/components/ui/use-toast';
 import { mergeWarmingDisplay } from '../utils/warmWorkspace';
@@ -95,6 +95,7 @@ import type {
 import { TranscriptStatus } from './chatView/TranscriptStatus';
 import { FallbackSuggestionPill } from './chatView/FallbackSuggestionPill';
 import { ThreadOffers } from './chatView/ThreadNotices';
+import { useNextSummary } from '../hooks/useNextSummaryHint';
 import { ChatDiskWarning } from './chatView/ChatDiskWarning';
 import { ChatRestoreOffer } from './chatView/ChatRestoreOffer';
 import { useToolCallAnnouncer } from './chatView/useToolCallAnnouncer';
@@ -347,11 +348,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     handleApproveToolCall,
     handleRejectToolCall,
     tokenUsage,
+    forThread,
     threadId: currentThreadId,
     threadModels,
     marketWatch,
     isShared: threadIsShared,
-    insertNotification,
     handleThumbUp,
     handleThumbDown,
     feedbackByTurn,
@@ -472,8 +473,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     entryRestored,
     pinTargetRef,
   } = scroll;
+  // What the next send summarizes first, which every turn the reader starts carries.
+  const { summary: summaryHint, starters: summarized } = useNextSummary(chat);
   const { handleSendMessage, handleEditMessage, handleRegenerate, handleRetry } = useTranscriptFollow(
-    chat,
+    { ...chat, ...summarized },
     scroll.follow,
     () => getScrollContainer(scrollAreaRef),
     readTurnEndScroll(preferences),
@@ -739,6 +742,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const handleAction = useCallback((cmd: ActionCommand) => {
     const tid = currentThreadId || threadId;
     if (!tid || tid === '__default__') return;
+    const thread = forThread(tid);
 
     // Surface backend errors from /compact + /offload. Backend may return
     // detail as a structured object ({code, verb, message}) — the 409
@@ -752,21 +756,21 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
         const obj = detail as { code?: string; message?: string };
         if (obj.code === 'workflow_active') {
-          insertNotification(t('chat.compactBusy'), 'warning');
+          thread.insertNotification(t('chat.compactBusy'), 'warning');
           return;
         }
         if (typeof obj.message === 'string' && obj.message.length > 0) {
-          insertNotification(obj.message, 'warning');
+          thread.insertNotification(obj.message, 'warning');
           return;
         }
-        insertNotification(t(fallbackKey), 'warning');
+        thread.insertNotification(t(fallbackKey), 'warning');
         return;
       }
       if (typeof detail === 'string' && detail.length > 0) {
-        insertNotification(detail, 'warning');
+        thread.insertNotification(detail, 'warning');
         return;
       }
-      insertNotification(t(fallbackKey), 'warning');
+      thread.insertNotification(t(fallbackKey), 'warning');
     };
 
     // A user Stop while this compaction runs cancels the backend call, which
@@ -780,7 +784,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       const code = compactionErrorCode(err);
       if (isUserStoppedCompaction({ userStopped: userStoppedCompactionRef.current, errorCode: code })) {
         userStoppedCompactionRef.current = false;
-        insertNotification(t('chat.compactionStopped'), 'info');
+        thread.insertNotification(t('chat.compactionStopped'), 'info');
         return;
       }
       surfaceActionError(err, 'chat.compactionError');
@@ -805,7 +809,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       (cmd.name === 'compact' || cmd.name === 'offload') &&
       isManualCompactionInFlight({ isCompacting, isLoading })
     ) {
-      insertNotification(t('chat.compactBusy'), 'warning');
+      thread.insertNotification(t('chat.compactBusy'), 'warning');
       return;
     }
 
@@ -817,8 +821,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       summarizeThread(tid)
         .then((data: Record<string, unknown>) => {
           clearIfCurrent(myGeneration);
+          thread.setNextSummary(null);
           const detail = (data.summary_text as string | undefined) || undefined;
-          insertNotification(
+          thread.insertNotification(
             t('chat.compactedNotification', { from: data.original_message_count }),
             'info',
             detail,
@@ -836,7 +841,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       offloadThread(tid)
         .then((data: Record<string, unknown>) => {
           clearIfCurrent(myGeneration);
-          insertNotification(
+          thread.setNextSummary((data.next_summary as NextSummary | null | undefined) ?? null);
+          thread.insertNotification(
             t('chat.offloadedNotification', {
               args: (data.offloaded_args as number) || 0,
               reads: (data.offloaded_reads as number) || 0,
@@ -849,7 +855,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           clearIfCurrent(myGeneration);
         });
     }
-  }, [currentThreadId, threadId, insertNotification, setIsCompacting, isCompacting, isLoading, t]);
+  }, [currentThreadId, threadId, setIsCompacting, forThread, isCompacting, isLoading, t]);
 
   // Show sidebar at the start of each backend response (streaming)
   // Auto-refresh workspace files when agent finishes (isLoading transitions true→false)
@@ -1775,7 +1781,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onSwitchModel={handleSwitchModel}
                       onDismiss={clearFallbackSuggestion}
                     />
-                    <ThreadOffers model={threadModel} subagents={threadSubagents} />
+                    <ThreadOffers model={threadModel} subagents={threadSubagents} summary={summaryHint} />
                     <SelectionChips chips={chartSelectionChips} />
                     {/* One row: the drawer is a tab tucked under the composer's top
                         edge, so no status row may come between them, and the

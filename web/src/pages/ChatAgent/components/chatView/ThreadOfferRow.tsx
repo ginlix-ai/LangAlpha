@@ -1,7 +1,8 @@
 import type React from 'react';
 import { useEffect, useEffectEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Info, X } from 'lucide-react';
+import { X } from 'lucide-react';
+import { ComposerRow } from './ComposerRow';
 
 /** How long an expiring offer stays up while the pointer and focus are elsewhere. */
 export const OFFER_EXPIRES_MS = 8000;
@@ -21,8 +22,7 @@ interface ThreadOfferRowProps {
 }
 
 /* An offer that follows a change made to the thread, in the rows above its
-   composer. Neutral on purpose: nothing is wrong, so it does not borrow the
-   warning treatment the fallback pill uses. */
+   composer. */
 export function ThreadOfferRow({
   text,
   action,
@@ -47,22 +47,13 @@ export function ThreadOfferRow({
   }, [expires, paused]);
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 rounded-md text-sm"
-      role="status" aria-live="polite"
+    <ComposerRow
+      text={text}
       onMouseEnter={() => setPointerOn(true)}
       onMouseLeave={() => setPointerOn(false)}
       onFocus={() => setFocusOn(true)}
       onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusOn(false); }}
-      style={{
-        backgroundColor: 'var(--color-bg-elevated)',
-        color: 'var(--color-text-secondary)',
-        border: '1px solid var(--color-border-default)',
-      }}>
-      <Info aria-hidden="true" className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-      {/* The floor is what lets the row wrap: with none, a narrow composer (the
-          market panel) squeezes the sentence to a word per line beside the
-          button instead of moving the button below it. */}
-      <span className="flex-1 min-w-48">{text}</span>
+    >
       <button
         type="button"
         onClick={onAction}
@@ -82,6 +73,6 @@ export function ThreadOfferRow({
       >
         <X className="h-3.5 w-3.5" />
       </button>
-    </div>
+    </ComposerRow>
   );
 }
