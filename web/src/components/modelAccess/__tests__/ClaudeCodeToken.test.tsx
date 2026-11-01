@@ -64,7 +64,6 @@ describe('ClaudeCodeTokenSheet', () => {
     let resolve!: (v: unknown) => void;
     save.mockReturnValue(new Promise((r) => { resolve = r; }));
     const { field, submit, onSaved, queryClient } = setup();
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     // A copy of a wrapped token carries the line break; the save does not.
     fireEvent.change(field, { target: { value: `${TOKEN.slice(0, 10)}\n${TOKEN.slice(10)}` } });
     submit();
@@ -76,7 +75,7 @@ describe('ClaudeCodeTokenSheet', () => {
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryData(queryKeys.features.claudeCodeStatus())).toEqual(status);
     // The answer is the status, so nothing reads it again.
-    expect(invalidate).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(queryKeys.features.claudeCodeStatus())?.isInvalidated).toBe(false);
     expect(JSON.stringify(queryClient.getQueryCache().getAll().map((q) => q.state.data))).not.toContain(TOKEN);
   });
 
@@ -86,6 +85,9 @@ describe('ClaudeCodeTokenSheet', () => {
     ['check_unavailable', /Couldn't reach Claude to check the token, so nothing was saved/],
     ['check_in_progress', /A token is already being checked/],
     ['unavailable', /Claude Code isn't on for your account/],
+    ['redis_unavailable', "Saving a token isn't available right now. Try again in a moment."],
+    ['computer_unsupported', "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet."],
+    ['policy_blocked', "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here."],
   ])('words a %s refusal itself and stays open', async (code, text) => {
     save.mockRejectedValue(refusal(code));
     const { field, submit, onSaved } = setup();
@@ -128,7 +130,23 @@ describe('RemoveClaudeCodeTokenDialog', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     fireEvent.click(screen.getByRole('button', { name: 'Remove token' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.features.claudeCodeStatus() });
+    expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: queryKeys.features.claudeCode() }));
+  });
+
+  it("stays open with the refusal's own sentence, which the server words for a computer it can't reach", async () => {
+    remove.mockRejectedValue(refusal('computer_unreachable', 'Studio Mac is asleep. Wake it, then try again.', true));
+    const onClose = vi.fn();
+    renderWithProviders(<RemoveClaudeCodeTokenDialog onClose={onClose} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove token' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Studio Mac is asleep. Wake it, then try again.');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it.each(['redis_unavailable', 'remove_failed', 'computer_not_found'])('words a %s refusal itself, never as a save', async (code) => {
+    remove.mockRejectedValue(refusal(code, 'server words', true));
+    renderWithProviders(<RemoveClaudeCodeTokenDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove token' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't remove the token. Try again.");
   });
 
   it('stays open with the reason when the removal fails', async () => {
@@ -198,7 +216,6 @@ describe('ClaudeCodeTokenSheet: Sign in with Claude', () => {
     let resolve!: (v: unknown) => void;
     sendCode.mockReturnValue(new Promise((r) => { resolve = r; }));
     const { codeField, connect, onSaved, queryClient } = await toCodeStep();
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
     fireEvent.change(codeField, { target: { value: CODE } });
     connect();
     expect(sendCode).toHaveBeenCalledWith(CODE);
@@ -208,7 +225,7 @@ describe('ClaudeCodeTokenSheet: Sign in with Claude', () => {
     await act(async () => { resolve(status); });
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryData(queryKeys.features.claudeCodeStatus())).toEqual(status);
-    expect(invalidate).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(queryKeys.features.claudeCodeStatus())?.isInvalidated).toBe(false);
     expect(codeField.value).toBe('');
   });
 
@@ -224,6 +241,9 @@ describe('ClaudeCodeTokenSheet: Sign in with Claude', () => {
     ['token_rejected', false, /may not include Claude Code/],
     ['unexpected_grant', false, /didn't expect/],
     ['unavailable', false, /isn't on for your account/],
+    ['needs_perl', true, 'Claude Code needs perl on this computer. Install perl, then try again.'],
+    ['computer_unsupported', false, "This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet."],
+    ['policy_blocked', false, "Your organization's Claude Code policy is installed on this computer, so LangAlpha can't run Claude Code here."],
   ])('a %s refusal (retryable %s) is worded here', async (code, retryable, text) => {
     sendCode.mockRejectedValue(refusal(code, 'server words', retryable));
     const { codeField, connect, onSaved } = await toCodeStep();

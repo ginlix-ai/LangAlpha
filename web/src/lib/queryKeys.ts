@@ -28,7 +28,10 @@ export const queryKeys = {
     list: () => [...queryKeys.features.all, 'list'],
     /** What a read keyed under one flag is keyed by: toggling the flag rereads it. */
     of: (key: string) => [...queryKeys.features.all, key],
-    claudeCodeStatus: () => [...queryKeys.features.of('claude_code_runtime'), 'status'],
+    /** Every Claude Code read: a token change can move any of them. */
+    claudeCode: () => queryKeys.features.of('claude_code_runtime'),
+    claudeCodeStatus: () => [...queryKeys.features.claudeCode(), 'status'],
+    claudeCodeComputers: () => [...queryKeys.features.claudeCode(), 'computers'],
   },
   platform: {
     all:    ['platform'],

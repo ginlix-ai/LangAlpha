@@ -334,6 +334,9 @@ class TestExecuteCodeTool:
             async def settled_livefs(self, workspace_id=None):
                 return None
 
+            async def config_folder(self):
+                return None
+
             async def start_code_job(self, code, *, wait_s, **_):
                 seen.append(dict(_holders(redis)))
                 return result

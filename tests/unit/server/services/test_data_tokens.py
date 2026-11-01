@@ -725,10 +725,10 @@ class TestKeepIsPatientOnlyWithoutALiveToken:
     @pytest.mark.parametrize(
         ("row", "patient"),
         [
-            (db.DataTokenRow(), True),
-            (db.DataTokenRow(datetime.now(UTC) + timedelta(minutes=50), "other", 3), True),
-            (db.DataTokenRow(datetime.now(UTC) - timedelta(minutes=1), SANDBOX_ID, 3), True),
-            (db.DataTokenRow(datetime.now(UTC) + timedelta(minutes=10), SANDBOX_ID, 3), False),
+            (lambda: db.DataTokenRow(), True),
+            (lambda: db.DataTokenRow(datetime.now(UTC) + timedelta(minutes=50), "other", 3), True),
+            (lambda: db.DataTokenRow(datetime.now(UTC) - timedelta(minutes=1), SANDBOX_ID, 3), True),
+            (lambda: db.DataTokenRow(datetime.now(UTC) + timedelta(minutes=10), SANDBOX_ID, 3), False),
         ],
         ids=["none", "another-sandbox", "run-out", "refresh"],
     )
@@ -737,7 +737,7 @@ class TestKeepIsPatientOnlyWithoutALiveToken:
 
         with (
             patch.object(data_tokens, "configured", return_value=True),
-            patch.object(db, "load", AsyncMock(return_value=row)),
+            patch.object(db, "load", AsyncMock(return_value=row())),
             patch.object(data_tokens, "push", push),
         ):
             await data_tokens.keep(COMPUTER_ID, USER_ID, SANDBOX_ID, AsyncMock())

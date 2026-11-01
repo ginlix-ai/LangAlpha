@@ -10,9 +10,9 @@ import { MemoryRouter, useLocation } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ChatInput, { type ChatInputProps } from '../chat-input';
 import type { ModelRowStatus } from '../chat-input.modelPicker';
-import type { ClaudeCodeState } from '@/api/model';
+import type { ClaudeCodeComputer, ClaudeCodeState } from '@/api/model';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
-import { CLAUDE_CODE_TOKEN_URL } from '@/lib/claudeCode';
+import { claudeCodeTokenUrl } from '@/lib/claudeCode';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getSkills: vi.fn().mockResolvedValue([]),
@@ -20,7 +20,7 @@ vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getHomeWorkspace: vi.fn().mockResolvedValue({ workspace_id: 'home-1', name: 'Home', status: 'running', is_home: true }),
 }));
 
-const mocks = vi.hoisted(() => ({ state: 'signed_in' as ClaudeCodeState }));
+const mocks = vi.hoisted(() => ({ state: 'signed_in' as ClaudeCodeState, computers: [] as ClaudeCodeComputer[] }));
 
 vi.mock('@/hooks/usePreferences', () => ({
   usePreferences: () => ({ preferences: { model_preference: { preferred_model: 'claude-x' } }, isLoading: false, isLoaded: true }),
@@ -30,7 +30,6 @@ vi.mock('@/hooks/useAllModels', () => ({
   useAllModels: () => ({
     models: { anthropic: { models: ['claude-x'] }, 'claude-code': { models: ['claude-x-code'] } },
     slotModels: { anthropic: { models: ['claude-x'] } },
-    claudeCodeState: mocks.state,
     payers: {},
     validModelNames: new Set(['claude-x', 'claude-x-code']),
     metadata: {
@@ -44,6 +43,14 @@ vi.mock('@/hooks/useAllModels', () => ({
     rawApiResponse: {},
   }),
 }));
+
+// A self-hosted server, running the workspace's turns on the saved token: a
+// hosted computer, none of the user's own.
+vi.mock('@/hooks/useClaudeCode', () => ({
+  useClaudeCodeStatus: () => ({ enabled: mocks.state !== 'off', runsHere: mocks.state !== 'off', state: mocks.state }),
+  useClaudeCodeComputers: () => ({ computers: mocks.computers, isLoading: false }),
+}));
+vi.mock('@/hooks/useWorkspace', () => ({ useWorkspace: () => ({ data: { computer_id: 'cmp-hosted' }, isPending: false }) }));
 
 vi.mock('@/hooks/useUpdatePreferences', () => ({
   useUpdatePreferences: () => ({ mutateAsync: vi.fn(), mutate: vi.fn() }),
@@ -127,7 +134,40 @@ describe('ChatInput: Claude Code rows by state', () => {
     renderInput();
     expect(codeRow()).toBe(`claude-x-code:held:${words}:fix`);
     fireEvent.click(screen.getByRole('button', { name: 'fix' }));
-    expect(screen.getByText(/^at:/)).toHaveTextContent(`at:${CLAUDE_CODE_TOKEN_URL}`);
+    expect(screen.getByText(/^at:/)).toHaveTextContent(`at:${claudeCodeTokenUrl('ws-1')}`);
+  });
+
+  it("says the organization's policy keeps them off the workspace's own computer, with nothing to fix", () => {
+    mocks.state = 'signed_in';
+    mocks.computers = [{
+      computer_id: 'cmp-hosted', name: 'Lab box', kind: 'ssh', state: 'policy_blocked', source: 'machine',
+      email: null, expires_at: null,
+    }];
+    renderInput();
+    expect(codeRow()).toBe("claude-x-code:held:Your organization's Claude Code policy keeps it from running on this computer");
+    mocks.computers = [];
+  });
+
+  it("says the workspace's own computer needs perl, with nothing to fix in Settings", () => {
+    mocks.state = 'signed_in';
+    mocks.computers = [{
+      computer_id: 'cmp-hosted', name: 'Lab box', kind: 'ssh', state: 'needs_perl', source: 'machine',
+      email: null, expires_at: null,
+    }];
+    renderInput();
+    expect(codeRow()).toBe('claude-x-code:held:Claude Code needs perl on this computer. Install perl, then try again.');
+    mocks.computers = [];
+  });
+
+  it("says the workspace's own computer runs musl, with nothing to fix in Settings", () => {
+    mocks.state = 'signed_in';
+    mocks.computers = [{
+      computer_id: 'cmp-hosted', name: 'Lab box', kind: 'ssh', state: 'computer_unsupported', source: null,
+      email: null, expires_at: null,
+    }];
+    renderInput();
+    expect(codeRow()).toBe(`claude-x-code:held:${"This computer runs musl (for example Alpine Linux), which LangAlpha's runtime doesn't support yet."}`);
+    mocks.computers = [];
   });
 
   it('leaves every other model alone', () => {

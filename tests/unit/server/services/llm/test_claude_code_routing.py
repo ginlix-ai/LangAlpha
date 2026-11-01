@@ -10,7 +10,9 @@ from fastapi import HTTPException
 from ptc_agent.config.agent import AgentConfig, CredentialSource, LLMConfig
 from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SandboxConfig, SecurityConfig
 from src.llms.claude_code import ClaudeCodeTarget
-from src.server.services.llm.claude_code import CLAUDE_CODE_OFF, SavedToken, token_check_key
+from src.server.services.claude_code.saved import SavedToken, token_check_key
+from src.server.services.llm.claude_code import CLAUDE_CODE_OFF
+from tests.unit.server.services.claude_code.fakes import Cache, serving
 from src.server.services.llm.config import resolve_llm_config, saved_default_model
 
 HANDLER = "src.server.services.llm.config"
@@ -28,10 +30,11 @@ def _base() -> AgentConfig:
     )
 
 
-class _Status:
-    """The status check's kept answer for the one token: True, False, or None when not checked yet."""
+class _Status(Cache):
+    """The status check's kept answer for the one token: works, refused, or None when not checked yet."""
 
     def __init__(self, answer):
+        super().__init__()
         self.answer = answer
 
     async def get(self, key):
@@ -40,16 +43,17 @@ class _Status:
 
 async def _resolve(
     pref: dict, *, runs: bool = True, opted_in: bool = True, role: str = "analyst", request_model=None,
-    token: str | None = "sk-ant-oat01-tok", checked: bool | None = True, slot: str = "primary",
+    token: str | None = "sk-ant-oat01-tok", checked: str | None = "works", slot: str = "primary",
 ):
     cleanup = AsyncMock(return_value=[])
     with (
-        patch("src.server.services.llm.claude_code.stored_token", new_callable=AsyncMock, return_value=token),
-        patch("src.server.services.llm.claude_code.get_cache_client", return_value=_Status(checked)),
+        serving(_Status(checked)),
+        patch("src.server.services.claude_code.saved.stored_token", new_callable=AsyncMock, return_value=token),
         patch("src.server.services.llm.user_models.get_model_preference", new_callable=AsyncMock, return_value=pref),
         patch("src.server.services.llm.clients.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
         patch(f"{HANDLER}.effective_flags_for_user", new_callable=AsyncMock, return_value={"claude_code_runtime": opted_in}),
-        patch("src.server.services.llm.claude_code.runtime_available", return_value=runs),
+        patch("src.server.services.llm.claude_code.rows_available", return_value=runs),
+        patch("src.server.services.llm.claude_code.backend_available", return_value=runs),
         patch(f"{HANDLER}.cleanup_stale_model_preferences", new=cleanup),
     ):
         try:
@@ -72,7 +76,7 @@ async def test_a_turn_that_cannot_run_claude_code_is_refused_and_nothing_saved_i
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("token", "checked"), [(None, None), ("sk-ant-oat01-tok", False)])
+@pytest.mark.parametrize(("token", "checked"), [(None, None), ("sk-ant-oat01-tok", "refused"), ("sk-ant-oat01-tok", False)])
 async def test_a_turn_on_a_token_known_not_to_work_is_refused_as_signed_out(token, checked):
     with pytest.raises(HTTPException) as refused:
         await _resolve({"preferred_model": CODE}, token=token, checked=checked)
@@ -81,17 +85,12 @@ async def test_a_turn_on_a_token_known_not_to_work_is_refused_as_signed_out(toke
 
 @pytest.mark.asyncio
 async def test_a_token_a_turn_found_refused_is_refused_from_the_next_turn_on():
-    kept = {}
-
-    class _Kept:
-        async def set(self, key, value, ttl=None):
-            kept[key] = value
-
-    with patch("src.server.services.llm.claude_code.get_cache_client", return_value=_Kept()):
+    cache = Cache()
+    with serving(cache):
         await SavedToken("user-1").refused("sk-ant-oat01-tok")
-    assert kept == {token_check_key("sk-ant-oat01-tok"): False}
+    assert cache.values == {token_check_key("sk-ant-oat01-tok"): False}
     with pytest.raises(HTTPException) as refused:
-        await _resolve({"preferred_model": CODE}, checked=kept[token_check_key("sk-ant-oat01-tok")])
+        await _resolve({"preferred_model": CODE}, checked=cache.values[token_check_key("sk-ant-oat01-tok")])
     assert refused.value.detail["reason"] == "signed_out"
 
 

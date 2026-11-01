@@ -4,7 +4,7 @@ a token only once Anthropic serves it, and removing it."""
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,13 +14,17 @@ import pytest_asyncio
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 
+from ptc_agent.core import claude_code_managed
 from src.server.app import claude_code as route
-from src.server.app.oauth import OAuthRefusal, PendingSignIn
 from src.server.services import claude_oauth
-from src.server.services.llm.claude_code import token_check_key
+from src.server.services.claude_code import checks, flow
+from src.server.services.claude_code.saved import token_check_key
+from src.server.services.oauth_signin import OAuthRefusal, PendingSignIn
 from tests.conftest import create_test_app
+from tests.unit.server.services.claude_code.fakes import Cache as _Cache, serving
 
-ROUTE = "src.server.app.claude_code"
+FLOW = "src.server.services.claude_code.flow"
+SAVED = "src.server.services.claude_code.saved"
 
 
 @pytest_asyncio.fixture
@@ -33,84 +37,54 @@ async def client():
         yield c
 
 
-class _Cache:
-    """The cache's get, set and lock, with Redis up unless ``redis`` is False."""
-
-    def __init__(self, redis=True):
-        self.redis = redis
-        self.values, self.ttls, self.locks = {}, {}, {}
-
-    async def get(self, key):
-        return self.values.get(key)
-
-    async def set(self, key, value, ttl=None):
-        if self.redis:
-            self.values[key], self.ttls[key] = value, ttl
-        return self.redis
-
-    async def acquire_lock(self, key, token, ttl_ms):
-        if not self.redis:
-            return None
-        return self.locks.setdefault(key, token) == token
-
-    async def release_lock(self, key, token):
-        if self.locks.get(key) == token:
-            del self.locks[key]
-
-    async def delete(self, key):
-        self.values.pop(key, None)
-
-    async def claim(self, key, value):
-        if self.values.get(key) != value:
-            return False
-        del self.values[key]
-        return True
-
-    @property
-    def client(self):
-        """The raw client the sign-in's flow is kept through."""
-        cache = self
-
-        class _Client:
-            async def get(self, key):
-                return cache.values.get(key, cache.locks.get(key))
-
-            async def set(self, key, value, ex=None):
-                cache.values[key], cache.ttls[key] = value, ex
-
-        return _Client()
+@contextmanager
+def _switches(*, runs=True, rows=True, opted_in=True):
+    """The server's switches and the user's opt-in, as the flow and the store read them."""
+    with (
+        patch(f"{FLOW}.backend_available", return_value=runs and rows),
+        patch(f"{SAVED}.backend_available", return_value=runs and rows),
+        patch(f"{FLOW}.rows_available", return_value=rows),
+        patch(f"{FLOW}.user_feature_enabled", new_callable=AsyncMock, return_value=opted_in),
+    ):
+        yield
 
 
-async def _status(client, *, token="tok", answer=True, runs=True, opted_in=True, cache=None, settle=True):
+async def _status(client, *, token="tok", answer=True, runs=True, rows=True, opted_in=True, cache=None, settle=True):
     """One read, and the check it starts run to its end unless ``settle`` is False."""
     check = AsyncMock(side_effect=answer) if isinstance(answer, Exception) else AsyncMock(return_value=answer)
     with (
-        patch(f"{ROUTE}.runtime_available", return_value=runs),
-        patch(f"{ROUTE}.user_feature_enabled", new_callable=AsyncMock, return_value=opted_in),
-        patch(f"{ROUTE}.get_cache_client", return_value=cache if cache is not None else _Cache()),
-        patch(f"{ROUTE}.stored_row", new_callable=AsyncMock, return_value={"access_token": token} if token else None),
-        patch(f"{ROUTE}.token_check_model", return_value="claude-haiku-5-5"),
+        serving(cache if cache is not None else _Cache()),
+        _switches(runs=runs, rows=rows, opted_in=opted_in),
+        patch(f"{SAVED}.stored_row", new_callable=AsyncMock, return_value={"access_token": token} if token else None),
+        patch(f"{SAVED}.get_oauth_connection", new_callable=AsyncMock, return_value={"email": None} if token else None),
         patch("ptc_agent.agent.claude_code.runtime.token_works", check),
     ):
         response = await client.get("/api/v1/claude-code/status")
         if settle:
-            await asyncio.gather(*route._checks)
+            await asyncio.gather(*checks._checks)
     assert response.status_code == 200
     return response.json(), check
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("runs", "opted_in"), [(False, True), (True, False)])
-async def test_not_enabled_checks_nothing(client, runs, opted_in):
-    body, check = await _status(client, runs=runs, opted_in=opted_in)
-    assert body == {"state": "off", "email": None, "expires_at": None}
+@pytest.mark.parametrize(("rows", "opted_in"), [(False, True), (True, False)])
+async def test_not_enabled_checks_nothing(client, rows, opted_in):
+    body, check = await _status(client, rows=rows, opted_in=opted_in)
+    assert body == {"state": "off", "email": None, "expires_at": None, "saved": True, "enabled": False}
+    check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_where_only_own_computers_run_it_it_is_on_and_the_saved_token_off(client):
+    body, check = await _status(client, runs=False)
+    assert body == {"state": "off", "email": None, "expires_at": None, "saved": True, "enabled": True}
     check.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_without_a_token_it_needs_one_and_nothing_runs(client):
     body, check = await _status(client, token=None)
-    assert body == {"state": "no_token", "email": None, "expires_at": None}
+    assert body == {"state": "no_token", "email": None, "expires_at": None, "saved": False, "enabled": True}
     check.assert_not_awaited()
 
 
@@ -119,12 +93,13 @@ async def test_without_a_token_it_needs_one_and_nothing_runs(client):
 async def test_a_read_never_waits_on_the_check_and_a_later_read_has_its_answer(client, answer, state):
     cache = _Cache()
     first, check = await _status(client, answer=answer, cache=cache)
-    assert first == {"state": "checking", "email": None, "expires_at": None}
+    assert first == {"state": "checking", "email": None, "expires_at": None, "saved": True, "enabled": True}
     check.assert_awaited_once()
     later, again = await _status(client, answer=answer, cache=cache)
-    assert later == {"state": state, "email": None, "expires_at": None}
+    assert later == {"state": state, "email": None, "expires_at": None, "saved": True, "enabled": True}
     again.assert_not_awaited()
-    assert set(cache.ttls.values()) == {route.TOKEN_CHECK_TTL_S} and not cache.locks
+    assert set(cache.ttls.values()) == {checks.TOKEN_CHECK_TTL_S} and not cache.locks
+    assert set(cache.values.values()) == {answer}, "kept as a worker from before the words reads it"
 
 
 @pytest.mark.asyncio
@@ -132,9 +107,9 @@ async def test_a_check_that_could_not_tell_reads_as_unverified_and_is_kept_brief
     cache = _Cache()
     await _status(client, answer=TimeoutError(), cache=cache)
     later, again = await _status(client, answer=TimeoutError(), cache=cache)
-    assert later == {"state": "unverified", "email": None, "expires_at": None}
+    assert later == {"state": "unverified", "email": None, "expires_at": None, "saved": True, "enabled": True}
     again.assert_not_awaited()
-    assert set(cache.ttls.values()) == {route.UNKNOWN_TTL_S}
+    assert set(cache.ttls.values()) == {checks.SHORT_TTL_S} and set(cache.values.values()) == {"unknown"}
 
 
 @pytest.mark.asyncio
@@ -142,14 +117,32 @@ async def test_reads_during_a_check_start_no_other(client):
     cache = _Cache()
     _, first = await _status(client, cache=cache, settle=False)
     _, second = await _status(client, cache=cache, settle=False)
-    await asyncio.gather(*route._checks)
+    await asyncio.gather(*checks._checks)
     assert first.await_count + second.await_count == 1
+
+
+def _policy_installed(tmp_path, monkeypatch) -> None:
+    """An organization's managed settings on the backend's own machine, as the CLI there would read them."""
+    folder = tmp_path / "claude-code"
+    folder.mkdir()
+    (folder / "managed-settings.json").write_text("{}")
+    monkeypatch.setattr(claude_code_managed, "CLAUDE_CODE_MANAGED_DIR_LINUX", str(folder))
+    monkeypatch.setattr(claude_code_managed, "CLAUDE_CODE_MANAGED_DIR_MAC", str(folder))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["tok", None])
+async def test_where_a_policy_is_installed_on_the_backend_it_reads_so_and_checks_nothing(client, tmp_path, monkeypatch, token):
+    _policy_installed(tmp_path, monkeypatch)
+    body, check = await _status(client, token=token)
+    assert body == {"state": "policy_blocked", "email": None, "expires_at": None, "saved": token is not None, "enabled": True}
+    check.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_without_redis_a_read_spends_nothing_on_the_plan(client):
     body, check = await _status(client, answer=True, cache=_Cache(redis=False))
-    assert body == {"state": "unverified", "email": None, "expires_at": None}
+    assert body == {"state": "unverified", "email": None, "expires_at": None, "saved": True, "enabled": True}
     check.assert_not_awaited()
 
 
@@ -158,7 +151,7 @@ async def test_a_new_token_is_checked_at_once_and_no_key_holds_a_token(client):
     cache = _Cache()
     await _status(client, token="tok-1", cache=cache)
     body, check = await _status(client, token="tok-2", answer=False, cache=cache)
-    assert body == {"state": "checking", "email": None, "expires_at": None}
+    assert body == {"state": "checking", "email": None, "expires_at": None, "saved": True, "enabled": True}
     check.assert_awaited_once()
     assert not any(token in key for key in cache.values for token in ("tok-1", "tok-2"))
 
@@ -198,17 +191,14 @@ async def _token_call(
     check = AsyncMock(side_effect=answer) if isinstance(answer, Exception) else AsyncMock(return_value=answer)
     store, cache = store or _Store(), cache if cache is not None else _Cache()
     with (
-        patch("src.server.app.oauth._require_cache", return_value=cache),
+        serving(cache),
         patch.object(claude_oauth, "mint_setup_token", mint or AsyncMock()),
-        patch(f"{ROUTE}.runtime_available", return_value=True),
-        patch(f"{ROUTE}.user_feature_enabled", new_callable=AsyncMock, return_value=opted_in),
-        patch(f"{ROUTE}.get_cache_client", return_value=cache),
-        patch(f"{ROUTE}.stored_token", new=store.read),
-        patch(f"{ROUTE}.stored_row", new=store.row),
-        patch(f"{ROUTE}.connection_change", new=store.change),
-        patch(f"{ROUTE}.upsert_oauth_tokens", new=store.upsert),
-        patch(f"{ROUTE}.delete_oauth_tokens", new=store.delete),
-        patch(f"{ROUTE}.token_check_model", return_value="claude-haiku-5-5"),
+        _switches(opted_in=opted_in),
+        patch(f"{SAVED}.stored_token", new=store.read),
+        patch(f"{SAVED}.stored_row", new=store.row),
+        patch(f"{SAVED}.connection_change", new=store.change),
+        patch(f"{SAVED}.upsert_oauth_tokens", new=store.upsert),
+        patch(f"{SAVED}.delete_oauth_tokens", new=store.delete),
         patch("ptc_agent.agent.claude_code.runtime.token_works", check),
     ):
         response = await client.request(method, path, json=body)
@@ -218,13 +208,13 @@ async def _token_call(
 @pytest.mark.asyncio
 async def test_a_token_anthropic_serves_is_saved_over_the_last_and_the_last_one_s_answer_dropped(client):
     cache, store = _Cache(), _Store("tok-old")
-    cache.values[token_check_key("tok-old")] = True
+    cache.values[token_check_key("tok-old")] = "works"
     response, check, _ = await _token_call(client, "PUT", body={"token": "  tok-new\n"}, store=store, cache=cache)
     assert response.status_code == 200
     body = response.json()
     saved_until = datetime.fromisoformat(body.pop("expires_at"))
-    assert body == {"state": "signed_in", "email": None}
-    assert abs(saved_until - datetime.now(timezone.utc) - route.TOKEN_LIFETIME).total_seconds() < 60
+    assert body == {"state": "signed_in", "email": None, "saved": True, "enabled": True}
+    assert abs(saved_until - datetime.now(timezone.utc) - flow.TOKEN_LIFETIME).total_seconds() < 60
     assert check.await_args.args[0].token == "tok-new"
     assert store.token == "tok-new" and store.writes == [("lock", "claude-code"), ("upsert", "claude-code")]
     assert cache.values == {token_check_key("tok-new"): True}
@@ -264,7 +254,7 @@ async def test_the_same_token_saved_again_keeps_when_it_lapses_and_its_account(c
     store.email, store.expires_at = "user@example.com", datetime(2027, 1, 2, tzinfo=timezone.utc)
     response, _, _ = await _token_call(client, "PUT", body={"token": "tok"}, store=store)
     assert response.status_code == 200
-    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-01-02T00:00:00Z"}
+    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-01-02T00:00:00Z", "saved": True, "enabled": True}
     assert store.expires_at == datetime(2027, 1, 2, tzinfo=timezone.utc)
 
 
@@ -306,11 +296,19 @@ async def test_saving_needs_claude_code_on_for_the_user(client):
 @pytest.mark.asyncio
 async def test_removing_deletes_the_token_and_its_answer(client):
     cache, store = _Cache(), _Store("tok")
-    cache.values[token_check_key("tok")] = True
+    cache.values[token_check_key("tok")] = "works"
     response, _, _ = await _token_call(client, "DELETE", store=store, cache=cache, opted_in=False)
     assert response.status_code == 204
     assert store.token is None and store.writes == [("lock", "claude-code"), ("delete", "claude-code")]
     assert cache.values == {}
+
+
+@pytest.mark.asyncio
+async def test_a_removals_hold_covers_one_removal_of_the_saved_token(client):
+    cache = _Cache()
+    response, _, _ = await _token_call(client, "DELETE", store=_Store("tok"), cache=cache)
+    assert response.status_code == 204
+    assert cache.lock_ttls["claude_code:token_save:test-user-123"] == (flow.MACHINE_IO_S + checks.MARGIN_S) * 1000
 
 
 SIGN_IN = "/api/v1/claude-code/sign-in"
@@ -334,11 +332,7 @@ def _refused(status):
 @pytest.mark.asyncio
 async def test_a_sign_in_keeps_its_verifier_and_state_and_shows_neither_together():
     cache = _Cache()
-    with (
-        patch(f"{ROUTE}.runtime_available", return_value=True),
-        patch(f"{ROUTE}.user_feature_enabled", new_callable=AsyncMock, return_value=True),
-        patch("src.server.app.oauth._require_cache", return_value=cache),
-    ):
+    with serving(cache), _switches():
         response = await route.start_sign_in("test-user-123")
     flow = json.loads(cache.values[FLOW_KEY])
     assert flow["state"] in response["authorize_url"] and flow["verifier"] not in response["authorize_url"]
@@ -353,7 +347,7 @@ async def test_a_signed_in_token_is_checked_then_saved_with_its_account_and_the_
         client, "POST", path=f"{SIGN_IN}/code", body={"code": " code#state-1 "}, cache=cache, store=store, mint=mint,
     )
     assert response.status_code == 200
-    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-10-29T00:00:00Z"}
+    assert response.json() == {"state": "signed_in", "email": "user@example.com", "expires_at": "2027-10-29T00:00:00Z", "saved": True, "enabled": True}
     assert mint.await_args.args == ("code", "state-1", "verifier")
     assert check.await_args.args[0].token == "sk-ant-oat01-minted"
     assert (store.token, store.account_id, store.email) == ("sk-ant-oat01-minted", "tok-uuid", "user@example.com")
@@ -394,6 +388,24 @@ async def test_a_sign_in_that_does_not_end_in_a_working_token_saves_nothing(
     assert response.status_code == status
     assert response.json()["error"]["code"] == error and response.json()["error"]["retryable"] is retryable
     assert store.writes == [] and (FLOW_KEY in cache.values) is flow_kept
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["paste", "sign-in"])
+async def test_where_a_policy_is_installed_on_the_backend_no_code_is_spent_and_no_token_checked(
+    client, tmp_path, monkeypatch, path,
+):
+    _policy_installed(tmp_path, monkeypatch)
+    cache, mint = _flow_cache(), AsyncMock(return_value=MINTED)
+    call = {"path": f"{SIGN_IN}/code", "body": {"code": "code#state-1"}} if path == "sign-in" else {"body": {"token": "tok"}}
+    response, check, store = await _token_call(client, "POST" if path == "sign-in" else "PUT", cache=cache, mint=mint, **call)
+    assert response.status_code == 400
+    assert response.json()["error"] == {"code": "policy_blocked", "message": flow.POLICY_BLOCKED, "retryable": False}
+    mint.assert_not_awaited()
+    check.assert_not_awaited()
+    assert store.writes == [] and FLOW_KEY in cache.values
+    removed, _, _ = await _token_call(client, "DELETE", store=_Store("tok"))
+    assert removed.status_code == 204, "a token saved before still goes"
 
 
 @pytest.mark.parametrize("pasted", ["code#st\u00e4te", "code#st\ud800"])
@@ -446,3 +458,67 @@ async def test_removing_waits_for_a_save_in_progress(client):
     response, _, _ = await _token_call(client, "DELETE", store=store, cache=cache)
     assert response.status_code == 409 and response.json()["error"]["code"] == "check_in_progress"
     assert store.token == "tok" and store.writes == []
+
+
+# -- Token hygiene --
+
+SENTINEL = "sk-ant-oat01-SENTINEL-0123456789"
+
+
+def _chain(exc):
+    """An exception and every one a traceback of it prints."""
+    while exc is not None:
+        yield exc
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+
+
+def _saved_paths():
+    """Every way a token reaches the backend to be saved, each ending where it ends."""
+
+    def leak(kind):
+        return kind(f"failed on {SENTINEL}")
+
+    minted = claude_oauth.SetupToken(access_token=SENTINEL, expires_at=MINTED.expires_at, token_uuid="u", email=None)
+    paste = ("PUT", "/api/v1/claude-code/token", {"token": SENTINEL})
+    code = ("POST", f"{SIGN_IN}/code", {"code": "code#state-1"})
+    return {
+        "saved": (paste, True, None),
+        "check_refuses": (paste, False, None),
+        "check_unreachable": (paste, leak(TimeoutError), None),
+        "signed_in": (code, True, AsyncMock(return_value=minted)),
+        "signed_in_check_refuses": (code, False, AsyncMock(return_value=minted)),
+        "mint_fails": (code, True, AsyncMock(side_effect=leak(RuntimeError))),
+        "mint_unexpected": (code, True, AsyncMock(side_effect=claude_oauth.UnexpectedGrant("scope=None"))),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", list(_saved_paths()))
+async def test_a_saved_token_reaches_no_log_response_error_or_cache(caplog, path):
+    import logging
+
+    import structlog
+
+    raised = []
+
+    def refused(_, exc):
+        raised.append(exc)
+        return JSONResponse({"detail": exc.detail, "error": exc.error}, exc.status_code)
+
+    app = create_test_app(route.router)
+    app.add_exception_handler(OAuthRefusal, refused)
+    (method, url, body), answer, mint = _saved_paths()[path]
+    cache = _flow_cache()
+    caplog.set_level(logging.DEBUG)
+    with structlog.testing.capture_logs() as logged:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response, _, _ = await _token_call(client, method, path=url, body=body, cache=cache, answer=answer, mint=mint)
+    assert response.status_code != 500, response.text
+    assert SENTINEL not in response.text and SENTINEL not in caplog.text
+    assert not any(SENTINEL in str(r.args) or SENTINEL in r.getMessage() for r in caplog.records)
+    assert SENTINEL not in repr(logged)
+    for exc in raised:
+        for link in _chain(exc):
+            assert SENTINEL not in str(link) and SENTINEL not in repr(link)
+            assert SENTINEL not in repr(getattr(link, "error", "")) and SENTINEL not in repr(getattr(link, "detail", ""))
+    assert SENTINEL not in json.dumps([cache.values, cache.locks], default=str)

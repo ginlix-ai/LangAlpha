@@ -57,8 +57,12 @@ vi.mock('../usePlatformModels', () => ({
 
 import type { ClaudeCodeStatus } from '@/api/model';
 import { useAllModels } from '../useAllModels';
+import { useClaudeCodeStatus } from '../useClaudeCode';
 import { resolveComposerModel } from '@/components/ui/chat-input.models';
 import { api } from '@/api/client';
+
+/** The models, with the saved token's state the picker reads beside them. */
+const useWithStatus = () => ({ ...useAllModels(), claudeCodeState: useClaudeCodeStatus().state });
 
 const status = (state: ClaudeCodeStatus['state']): ClaudeCodeStatus => ({ state, email: null, expires_at: null });
 
@@ -168,7 +172,7 @@ describe('useAllModels — Claude Code', () => {
     h.features = flagged;
     h.claudeCode.mockImplementationOnce(getClaudeCodeStatus);
     const { result } = renderHookWithProviders(() => {
-      const all = useAllModels();
+      const all = useWithStatus();
       return { all, composer: resolveComposerModel('claude-sonnet-5-5-code', 'model-x', all.catalogModelNames) };
     });
     await waitFor(() => expect(result.current.all.isLoading).toBe(false));
@@ -188,7 +192,7 @@ describe('useAllModels — Claude Code', () => {
   it('lists them on their own payer, as a conversation model only, while the token works', async () => {
     h.features = flagged;
     h.claudeCode.mockResolvedValue(status('signed_in'));
-    const { result } = renderHookWithProviders(() => useAllModels());
+    const { result } = renderHookWithProviders(() => useWithStatus());
     await waitFor(() => expect(has(result.current.models)).toBe(true));
     expect(result.current.payers['claude-sonnet-5-5-code']).toBe('subscription:claude-code');
     expect(has(result.current.slotModels)).toBe(false);
@@ -199,18 +203,29 @@ describe('useAllModels — Claude Code', () => {
   it.each(['no_token', 'checking', 'unverified', 'rejected'] as const)('lists them and says the state while it is %s', async (state) => {
     h.features = flagged;
     h.claudeCode.mockResolvedValue(status(state));
-    const { result } = renderHookWithProviders(() => useAllModels());
+    const { result } = renderHookWithProviders(() => useWithStatus());
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(has(result.current.models)).toBe(true);
     expect(result.current.claudeCodeState).toBe(state);
     expect(has(result.current.slotModels)).toBe(false);
   });
 
+  // A server that runs Claude Code only on the user's own computers says so
+  // with `enabled`, while the saved token's state stays off.
+  it('lists them while enabled, though no saved token runs on this server', async () => {
+    h.features = flagged;
+    h.claudeCode.mockResolvedValue({ ...status('off'), enabled: true });
+    const { result } = renderHookWithProviders(useWithStatus);
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(has(result.current.models)).toBe(true);
+    expect(result.current.claudeCodeState).toBe('off');
+  });
+
   // A status cached while opted in says nothing once the flag is off.
   it('reads as off once the user opts out', async () => {
     h.features = flagged;
     h.claudeCode.mockResolvedValue(status('signed_in'));
-    const { result, rerender } = renderHookWithProviders(() => useAllModels());
+    const { result, rerender } = renderHookWithProviders(() => useWithStatus());
     await waitFor(() => expect(result.current.claudeCodeState).toBe('signed_in'));
     h.features = [];
     rerender();

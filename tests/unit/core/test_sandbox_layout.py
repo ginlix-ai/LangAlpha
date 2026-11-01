@@ -84,6 +84,7 @@ EXPECTED_ABSOLUTE = {
     "internal": "/home/workspace/_internal",
     "internal_src": "/home/workspace/_internal/src",
     "packs": "/home/workspace/_internal/packs",
+    "claude_code": "/home/workspace/_internal/claude-code",
     "wsfiles": "/home/workspace/_internal/.wsfiles",
     "manifest": "/home/workspace/_internal/.sandbox_manifest.json",
     "mcp_tokens": "/home/workspace/_internal/.mcp_tokens.json",
@@ -127,6 +128,7 @@ EXPECTED_RELATIVE = {
     "VAULT_SECRETS_FILE": "_internal/.vault_secrets.json",
     "MCP_CHECK_PREFIX": "_internal/.mcp_check_",
     "LEFTOVERS_DIR": "_internal/leftovers",
+    "CLAUDE_CODE_DIR": "_internal/claude-code",
 }
 
 # The workspace tier, relative to the workspace folder rather than the root.

@@ -6,7 +6,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
-from ptc_agent.agent.claude_code.launcher import LocalLauncher
+from ptc_agent.agent.claude_code.launcher import Launcher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, RuntimeSpec, build_claude_code_graph
 
 
@@ -25,9 +25,9 @@ def new_graph(entry=()):
     return build_claude_code_graph(ToolNode([bash]), entry=entry, checkpointer=InMemorySaver())
 
 
-async def run_turn(spec: RuntimeSpec, launcher: LocalLauncher, graph, thread: str, messages: list,
-                   callbacks: list | None = None, baseline=None, token=None) -> dict:
-    turn = ClaudeTurn(spec, launcher, identity="test-user", thread_key=thread, baseline=baseline, token=token)
+async def run_turn(spec: RuntimeSpec, launcher: Launcher, graph, thread: str, messages: list,
+                   callbacks: list | None = None, baseline=None) -> dict:
+    turn = ClaudeTurn(spec, launcher, identity="test-user", thread_key=thread, baseline=baseline)
     config = {"configurable": {"thread_id": thread, TURN_KEY: turn}, "callbacks": callbacks or []}
     try:
         await graph.ainvoke({"messages": messages}, config)

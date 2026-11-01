@@ -169,7 +169,7 @@ FEATURES: dict[str, FeatureSpec] = {
     ),
     # Off in every deployment until an operator turns it on; then each user
     # opts in. The system switch lists the Claude Code models
-    # (``src.llms.claude_code.runtime_available``) and a user's opt-in lets
+    # (``src.llms.claude_code.rows_available``) and a user's opt-in lets
     # their turns run on one (``resolve_llm_config``).
     "claude_code_runtime": FeatureSpec(
         key="claude_code_runtime",

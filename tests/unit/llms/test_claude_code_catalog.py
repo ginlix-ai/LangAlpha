@@ -1,4 +1,4 @@
-"""Claude Code rows in the catalog: listed only where they run, built as a runtime target."""
+"""Claude Code rows in the catalog: listed where the operator offers them, built as a runtime target."""
 
 from unittest.mock import patch
 
@@ -18,7 +18,7 @@ def _listed(runs: bool) -> tuple[set, dict, dict]:
 
     provider_catalog.cache_clear()
     try:
-        with patch.object(claude_code, "runtime_available", return_value=runs):
+        with patch.object(claude_code, "rows_available", return_value=runs):
             metadata = set(ModelConfig().get_model_metadata())
             grouped = {group: set(names) for group, names in get_configured_llm_models().items()}
             providers = {p["provider"]: p for p in provider_catalog()}
@@ -50,24 +50,25 @@ def test_claude_code_is_still_priced_and_fitted_as_anthropics_models():
 
 
 def test_an_unlisted_row_still_resolves_so_a_saved_pick_is_never_read_as_removed():
-    with patch.object(claude_code, "runtime_available", return_value=False):
+    with patch.object(claude_code, "rows_available", return_value=False):
         assert all(LLM.get_model_config().get_model_config(name) for name in CODE_ROWS)
         assert all(is_claude_code_model(name) for name in CODE_ROWS)
     assert not is_claude_code_model("claude-sonnet-5-5-oauth") and not is_claude_code_model({"not": "a name"})
 
 
 @pytest.mark.parametrize(
-    ("flag", "host_mode", "sdk", "key", "runs"),
+    ("flag", "host_mode", "sdk", "key", "listed", "backend"),
     [
-        (True, "oss", True, "k", True),
-        (False, "oss", True, "k", False),
-        (True, "platform", True, "k", False),
-        (True, "oss", False, "k", False),
-        (True, "oss", True, "", False),
+        (True, "oss", True, "k", True, True),
+        (False, "oss", True, "k", False, False),
+        (True, "platform", True, "k", True, False),
+        (True, "oss", False, "k", False, False),
+        (True, "oss", True, "", False, False),
+        (True, "platform", True, "", False, False),
     ],
 )
-def test_claude_code_runs_only_self_hosted_with_the_switch_on_the_extra_installed_and_the_key_set(
-    flag, host_mode, sdk, key, runs, monkeypatch
+def test_rows_are_listed_with_the_switch_on_the_extra_installed_and_the_key_set_and_run_on_the_backend_only_self_hosted(
+    flag, host_mode, sdk, key, listed, backend, monkeypatch
 ):
     monkeypatch.setenv("BYOK_ENCRYPTION_KEY", key)
     with (
@@ -75,7 +76,8 @@ def test_claude_code_runs_only_self_hosted_with_the_switch_on_the_extra_installe
         patch("src.config.settings.HOST_MODE", host_mode),
         patch("importlib.util.find_spec", return_value=object() if sdk else None),
     ):
-        assert claude_code.runtime_available() is runs
+        assert claude_code.rows_available() is listed
+        assert claude_code.backend_available() is backend
 
 
 def test_a_claude_code_row_builds_a_target_that_refuses_to_be_called():

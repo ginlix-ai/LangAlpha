@@ -49,6 +49,9 @@ class _Mounted:
     async def settled_livefs(self, workspace_id=None):
         return self.livefs
 
+    async def config_folder(self):
+        return None
+
     async def start_bash_job(self, command, *, call_id=None, **_):
         self.ran.append(command)
         return outcome(output="ok")

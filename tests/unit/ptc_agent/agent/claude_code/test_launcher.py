@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import anyio
@@ -40,12 +41,13 @@ async def launch(launcher: LocalLauncher, tmp_path: Path) -> tuple[dict[str, str
         f"json.dump({{'env': dict(os.environ), 'argv': sys.argv[1:], 'token': token}}, open({str(seen)!r}, 'w'))\n"
     )
     cli.chmod(0o755)
-    transport = LocalLauncher(env=launcher.env, cli_path=str(cli), token=launcher.token).transport(
-        ClaudeAgentOptions(env={"CLAUDE_CONFIG_DIR": "/c"}, cwd=str(tmp_path))
-    )
+    launcher = replace(launcher, cli_path=str(cli))
+    prepared = await launcher.scratch()
+    transport = launcher.transport(ClaudeAgentOptions(env={"CLAUDE_CONFIG_DIR": "/c"}, cwd=str(tmp_path)))
     await transport.connect()
     await transport._process.wait()
     await transport.close()
+    await launcher.release(prepared)
     got = json.loads(seen.read_text())
     return got["env"], " ".join(got["argv"]), got["token"]
 

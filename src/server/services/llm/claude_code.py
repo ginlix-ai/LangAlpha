@@ -9,21 +9,24 @@ turn; everything else asks this module.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from ptc_agent.core.claude_code_managed import local_managed
+from ptc_agent.core.sandbox.providers.ssh import MUSL_UNSUPPORTED
 from src.llms.claude_code import (
     FEATURE,
     ClaudeTurnFailed,
     another_model_replied_last,
     is_claude_code_model,
-    runtime_available,
+    backend_available,
+    rows_available,
 )
 from src.llms.error_classification import iter_exception_chain
-from src.server.database.oauth_tokens import CLAUDE_CODE_PROVIDER, get_oauth_tokens
-from src.utils.cache.redis_cache import get_cache_client
+from src.server.services.claude_code.flow import POLICY_BLOCKED
+from src.server.services.claude_code.machine import NEEDS_PERL, computer_state, read_answer
+from src.server.services.claude_code.saved import usable_token
+from src.server.services.ssh_computers import is_own_computer
 
 from .availability import drop_models, model_resolves
 
@@ -37,6 +40,13 @@ CLAUDE_CODE_OFF = {
     "chief_of_staff": "Chief of Staff does not run on Claude Code models yet. Pick another model.",
     "other_model": "Claude Code cannot continue a thread another model has replied on. Start a new thread to use this model.",
     "signed_out": "Add a Claude Code setup token in Settings under Model access to use this model.",
+    "needs_own_computer": (
+        "On this server, Claude Code models run only on your own computers. Move this workspace to one of them, "
+        "or pick another model."
+    ),
+    "policy_blocked": POLICY_BLOCKED,
+    "needs_perl": NEEDS_PERL,
+    "computer_unsupported": MUSL_UNSUPPORTED,
 }
 
 
@@ -57,75 +67,86 @@ def _refusal(model_name: str | None, reason: str) -> dict[str, Any]:
     return {"message": CLAUDE_CODE_OFF[reason], "type": "claude_code_off", "model": model_name, "reason": reason}
 
 
+#: The turn failures admission would have refused the turn for, by the
+#: reason it gives: Anthropic refused the setup token, the launcher found
+#: an organization's policy installed where the CLI would run, or a computer
+#: with no perl or on musl, or the turn's workspace is not on an own computer
+#: where the backend runs none.
+_ADMISSION_REASON = {
+    "auth_failed": "signed_out", "policy_blocked": "policy_blocked", "needs_own_computer": "needs_own_computer",
+    "needs_perl": "needs_perl", "computer_unsupported": "computer_unsupported",
+}
+
+
 def claude_code_refusal(exc: BaseException, model_name: str | None) -> dict[str, Any] | None:
-    """The refusal a turn ends with when Anthropic refused its setup token
-    after admission let it run, worded as admission would have refused it;
-    None for any other failure."""
+    """The refusal a turn ends with when it failed, after admission let it
+    run, for what admission refuses a turn for, worded as admission would
+    have refused it; None for any other failure."""
     for current in iter_exception_chain(exc):
-        if isinstance(current, ClaudeTurnFailed) and current.kind == "auth_failed":
-            return _refusal(model_name, "signed_out")
+        if isinstance(current, ClaudeTurnFailed) and current.kind in _ADMISSION_REASON:
+            return _refusal(model_name, _ADMISSION_REASON[current.kind])
     return None
 
 
-def require_runnable(config, model: str, role: AgentRole) -> None:
-    """Refuse a turn on ``model``, a Claude Code row, that cannot run it."""
-    if not runtime_available():
+async def require_runnable(config, model: str, role: AgentRole, *, user_id: str, workspace_id: str | None) -> None:
+    """Refuse a turn on ``model``, a Claude Code row, that cannot run it
+    where it would run.
+
+    A workspace on the user's own computer runs the CLI on that machine, on
+    any server. Anywhere else the CLI runs on the backend, which only a
+    self-hosted server offers, and only where no organization's policy is
+    installed. Neither waits on Anthropic or dials a machine.
+    """
+    from src.server.database.computer import get_computer_for_workspace
+
+    if not rows_available():
         raise_claude_code_off(model, "server")
     if not config.feature_enabled(FEATURE):
         raise_claude_code_off(model, "account")
     if role == "chief_of_staff":
         raise_claude_code_off(model, "chief_of_staff")
-
-
-#: How long a token's check stands. A turn Anthropic refuses the token on
-#: records that at once (``SavedToken.refused``), so this bounds only a
-#: token revoked while no turn runs on it.
-TOKEN_CHECK_TTL_S = 3600
-
-
-def token_check_key(token: str) -> str:
-    """Where the status check keeps its answer for ``token``: by hash, never the token itself."""
-    return f"claude_code:token_check:{hashlib.sha256(token.encode()).hexdigest()}"
-
-
-async def stored_row(user_id: str) -> dict | None:
-    """The token store's row for the setup token ``user_id`` saved, or None."""
-    row = await get_oauth_tokens(user_id, CLAUDE_CODE_PROVIDER)
-    return row if row and row["access_token"] else None
-
-
-async def stored_token(user_id: str) -> str | None:
-    """The setup token ``user_id`` saved for Claude Code, or None."""
-    row = await stored_row(user_id)
-    return row["access_token"] if row else None
+    computer = await get_computer_for_workspace(workspace_id) if workspace_id else None
+    if is_own_computer(computer):
+        await require_computer_signed_in(model, user_id, str(computer["computer_id"]))
+        return
+    if not backend_available():
+        raise_claude_code_off(model, "needs_own_computer")
+    if await local_managed():
+        raise_claude_code_off(model, "policy_blocked")
+    await require_signed_in(model, user_id)
 
 
 async def require_signed_in(model: str, user_id: str) -> None:
-    """Refuse a turn on ``model`` whose token is known not to work: none
+    """Refuse a turn on the backend whose token is known not to work: none
     saved, or one the status check found refused.
 
     A token not checked yet runs, so admission never waits on Anthropic; one
     refused there ends the turn with this same message.
     """
-    token = await stored_token(user_id)
-    if token is None or await get_cache_client().get(token_check_key(token)) is False:
+    if await usable_token(user_id) is None:
         raise_claude_code_off(model, "signed_out")
 
 
-@dataclass(frozen=True)
-class SavedToken:
-    """The setup token ``user_id`` saved, as a Claude Code turn uses it:
-    read as its run starts, so a token replaced meanwhile is the one it runs
-    on, and recorded as refused when Anthropic refuses it, so Settings and
-    admission say so from then on."""
+async def require_computer_signed_in(model: str, user_id: str, computer_id: str) -> None:
+    """Refuse a turn on an own computer whose fresh answer reads, as Settings
+    shows it (``computer_state``), as one that cannot run there: an
+    organization's policy is installed there, the machine has no
+    perl or runs musl, or it has no usable
+    token (Claude refused the machine's, or it has none and nothing can be
+    relayed). A relayed token not known to be refused runs, as on the backend.
 
-    user_id: str
-
-    async def read(self) -> str | None:
-        return await stored_token(self.user_id)
-
-    async def refused(self, token: str) -> None:
-        await get_cache_client().set(token_check_key(token), False, ttl=TOKEN_CHECK_TTL_S)
+    Never dials the machine: a computer not checked lately runs, and one
+    refused there ends the turn with this same message.
+    """
+    answer = await read_answer(computer_id)
+    if answer is None or not answer.fresh:
+        return
+    relayed = answer.relays and backend_available() and await usable_token(user_id) is not None
+    state = computer_state(answer, "signed_in" if relayed else None)
+    if state in ("policy_blocked", "needs_perl", "computer_unsupported"):
+        raise_claude_code_off(model, state)
+    if state in ("rejected", "no_token"):
+        raise_claude_code_off(model, "signed_out")
 
 
 def role_resolves(model_pref: dict, name: str) -> bool:

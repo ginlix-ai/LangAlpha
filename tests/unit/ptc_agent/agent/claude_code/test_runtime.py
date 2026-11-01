@@ -5,7 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from claude_agent_sdk import ResultMessage, SystemMessage
+from claude_agent_sdk import ProcessError, ResultMessage, SystemMessage
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
@@ -16,7 +16,7 @@ from ptc_agent.agent.claude_code.runtime import (
     _END, ClaudeCodeState, ClaudeTurn, ClaudeTurnFailed, RuntimeSpec, _Message, _Run, options_for, turn_failure, turn_prompt,
 )
 from ptc_agent.agent.claude_code.session import CheckpointSessionStore, SessionDrift
-from ptc_agent.agent.claude_code.tools_bridge import tool_specs
+from ptc_agent.agent.claude_code.tools_bridge import ToolResults, tool_specs
 from ptc_agent.agent.main_state import MainAgentState
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
 
@@ -204,9 +204,32 @@ class _MirrorFails:
 
 @pytest.mark.asyncio
 async def test_a_drift_the_cli_side_reports_fails_the_step_at_once_with_its_reason():
-    run = _Run(None, None, CheckpointSessionStore(), _MirrorFails(), None)
+    spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
+    run = _Run(None, None, CheckpointSessionStore(), _MirrorFails(), ToolResults(), spec)
     with pytest.raises(SessionDrift, match="disk full"):
         await asyncio.wait_for(run.settle(["never-arrives"]), 2)
+
+
+class _ExitsAfter:
+    def __init__(self, *said):
+        self.said = said
+
+    async def receive_messages(self):
+        for m in self.said:
+            yield m
+        raise ProcessError("Command failed with exit code 1", exit_code=1, stderr="no room left on the machine")
+
+
+@pytest.mark.asyncio
+async def test_a_cli_that_exits_before_its_init_never_started_and_after_it_fails_the_turn_as_it_exits():
+    spec = RuntimeSpec(system_prompt="s", model="m", tools=[], billing={})
+    before = _Run(None, None, CheckpointSessionStore(), _ExitsAfter(), ToolResults(), spec)
+    with pytest.raises(ClaudeTurnFailed, match="^Claude Code could not start: no room left on the machine$"):
+        await asyncio.wait_for(before.finish(), 2)
+    after = _Run(None, None, CheckpointSessionStore(), _ExitsAfter(SystemMessage(subtype="init", data={"model": "m"})),
+                 ToolResults(), spec)
+    with pytest.raises(ProcessError):
+        await asyncio.wait_for(after.finish(), 2)
 
 
 class _Events:

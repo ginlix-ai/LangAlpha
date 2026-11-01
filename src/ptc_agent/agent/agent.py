@@ -7,17 +7,17 @@ This module creates a PTC agent that:
 - Supports sub-agent delegation for specialized tasks
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from langchain.agents import create_agent
 
 from ptc_agent.agent.backends import SandboxBackend
-from ptc_agent.core.paths import SandboxLayout, WorkspaceLayout
+from ptc_agent.core.paths import LANGALPHA_CONFIG_SPELLINGS, SandboxLayout, WorkspaceLayout
 from ptc_agent.core.project_context import ProjectContext
 from ptc_agent.agent.limits import UNBOUNDED_RECURSION_LIMIT
 from ptc_agent.agent.main_state import MainAgentState
@@ -164,6 +164,9 @@ from ptc_agent.agent.tools.command_handoff import HandOff
 
 from ptc_agent.agent.turn import build_model_resilience_middleware, turn_model
 
+if TYPE_CHECKING:
+    from ptc_agent.agent.claude_code.launcher import Launcher
+
 try:
     from langgraph.types import Checkpointer
 except ImportError:
@@ -287,6 +290,7 @@ class PTCAgent:
         window_coverage: WindowCoverage | None = None,
         cancel_notices: CancelNotices | None = None,
         computers: ComputerReach | None = None,
+        claude_code_launcher: "Callable[[PTCSandbox], Launcher] | None" = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -333,6 +337,8 @@ class PTCAgent:
             computers: The user's other computers, which the Chief of Staff's
                 own Bash, ExecuteCode and file tools take a ``computer`` to run
                 on. None leaves every tool on this computer.
+            claude_code_launcher: Where a Claude Code turn's CLI runs, given
+                the sandbox; the server picks it, and the token it signs in with.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent.
@@ -561,6 +567,7 @@ class PTCAgent:
                 ComputerArgumentGuardMiddleware(),
                 ProtectedPathMiddleware(
                     denied_directories=self.config.filesystem.denied_directories,
+                    denied_patterns=(LANGALPHA_CONFIG_SPELLINGS,),
                 ),
                 CodeValidationMiddleware(),
                 ToolErrorHandlingMiddleware(),
@@ -1187,9 +1194,13 @@ class PTCAgent:
         if claude_code:
             from ptc_agent.agent.claude_code.agent import claude_code_graph
 
+            if claude_code_launcher is None:
+                raise RuntimeError("a Claude Code turn needs a claude_code_launcher")
+
             return claude_code_graph(
                 agent, system_prompt=system_prompt, target=turn.client,
                 user_id=user_id, thread_id=thread_id, checkpointer=checkpointer,
+                launcher=claude_code_launcher(sandbox),
                 entry=(skill_loader_middleware, context.turn, context.baseline),
                 baseline=context.baseline.frozen_block,
             )

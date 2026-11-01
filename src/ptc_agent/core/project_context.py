@@ -46,6 +46,9 @@ class MachinePaths:
     #: user too: ``~`` names it, and the file tools reach the whole machine,
     #: as a command there does, rather than only the root and ``/tmp``.
     home: str | None = None
+    #: Absolute paths there the file tools refuse though the home opens the
+    #: rest, so each is a folder or file of the platform's own.
+    denied: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

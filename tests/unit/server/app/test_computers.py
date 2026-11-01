@@ -1941,7 +1941,12 @@ async def test_remove_of_a_hosted_computer_has_no_key_to_report(
         resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
 
     assert resp.status_code == 200
-    assert resp.json() == {"key": None, "files": None, "workspaces_deleted": []}
+    assert resp.json() == {
+        "key": None,
+        "files": None,
+        "token": None,
+        "workspaces_deleted": [],
+    }
     # Naming none, the computer must be empty: nothing on it is deleted.
     mock_computer_manager.remove_computer_with_workspaces.assert_awaited_once_with(
         COMPUTER_ID, [], delete_files=False
@@ -2027,6 +2032,27 @@ async def test_remove_asked_to_delete_files_passes_it_on_and_reports_them(
         COMPUTER_ID, ["ws-a"], delete_files=True
     )
     assert leave.await_args.kwargs["delete_files"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_reports_a_claude_code_token_left_on_the_machine(
+    client, computer, mock_computer_manager
+):
+    from src.server.models.computer import ComputerTokenRemoval
+    from src.server.services.ssh_removal import MachineLeft
+
+    token = ComputerTokenRemoval(
+        outcome="unreached", path=f"~/.config/langalpha/claude-code/{COMPUTER_ID}"
+    )
+    leave = AsyncMock(
+        return_value=MachineLeft(key=None, tunnel_released=False, token=token)
+    )
+    get_row, get_manager = _removing(_ssh_row(computer), mock_computer_manager)
+    with get_row, get_manager, patch("src.server.app.computers.leave_machine", leave):
+        resp = await client.delete(f"/api/v1/computers/{COMPUTER_ID}")
+
+    assert resp.status_code == 200
+    assert resp.json()["token"] == token.model_dump()
 
 
 @pytest.mark.asyncio

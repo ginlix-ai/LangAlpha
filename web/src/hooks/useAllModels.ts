@@ -9,7 +9,7 @@ import { useConfiguredProviders } from './useConfiguredProviders';
 import { useMissingModels } from './useProviderModels';
 import { isPlatformMode } from '@/config/hostMode';
 import type { ProviderModelsData, CustomModelEntry } from '@/components/model/types';
-import type { ClaudeCodeState, ModelsResponse } from '@/api/model';
+import type { ModelsResponse } from '@/api/model';
 import type { PlatformModelsResponse } from '@/types/platform';
 import { modelPrefs } from '@/lib/modelPreferences';
 import { ownKeyRule, payerResolver, type Payer } from '@/lib/modelPayer';
@@ -69,9 +69,6 @@ export interface UseAllModelsResult {
    *  slot, or a Chief of Staff turn, may name: all but Claude Code's, which
    *  run an analyst's conversation only. */
   slotModels: Record<string, ProviderModelsData>;
-  /** Where the user's Claude Code stands, which says whether its listed
-   *  models can run a turn now. */
-  claudeCodeState: ClaudeCodeState;
   /** Full metadata (including custom model entries). */
   metadata: Record<string, ModelMetadataEntry>;
   /** Pre-filter models (all models before access/tier gating). */
@@ -125,9 +122,9 @@ export function useAllModels(): UseAllModelsResult {
   const { preferences, isLoading: prefsLoading, isLoaded: prefsLoaded } = usePreferences();
   const { platform: rawPlatform, isLoading: platformLoading } = usePlatformModels();
   const { providers: configuredProviders, byokEnabled, isLoading: configuredLoading } = useConfiguredProviders();
-  // Claude Code runs on the setup token kept for it on the server, not on a
-  // connection of the user's: its models are listed while the server runs it
-  // for them, and offered for a turn only while that token works.
+  // Claude Code runs on a setup token kept for it, on the user's computer or
+  // on the server, not on a connection of the user's: its models are listed
+  // while it is on for them, and offered for a turn where that token works.
   const claudeCode = useClaudeCodeStatus();
 
   const customModels = useMemo<CustomModelEntry[]>(() => {
@@ -157,7 +154,7 @@ export function useAllModels(): UseAllModelsResult {
 
   // What the access filters count as connected: a coding plan's key also
   // under the plan's other slugs, whose models it runs, and Claude Code while
-  // the server runs it for the user, on the setup token kept for it there.
+  // it is on for the user.
   const planHolders = useMemo(
     () => planKeyHolders(configuredProviders, modelsData?.key_candidates ?? {}),
     [configuredProviders, modelsData],
@@ -165,8 +162,8 @@ export function useAllModels(): UseAllModelsResult {
   const accessProviders = useMemo(() => [
     ...configuredProviders,
     ...[...planHolders].map(([provider, holder]) => ({ ...holder, provider })),
-    ...(claudeCode.state !== 'off' ? [CLAUDE_CODE_CONNECTION] : []),
-  ], [configuredProviders, planHolders, claudeCode.state]);
+    ...(claudeCode.enabled ? [CLAUDE_CODE_CONNECTION] : []),
+  ], [configuredProviders, planHolders, claudeCode.enabled]);
 
   // Augment platform with locally-known BYOK/OAuth providers so the
   // tier filter recognises connections that the platform service may not know about.
@@ -328,7 +325,6 @@ export function useAllModels(): UseAllModelsResult {
   return {
     models: visible.models,
     slotModels,
-    claudeCodeState: claudeCode.state,
     metadata: visible.metadata,
     rawModels: visible.rawModels,
     payers,

@@ -32,6 +32,39 @@ def computer_roots(own: str | None) -> tuple[str, ...]:
     return tuple(dict.fromkeys([own, *stock] if own else stock))
 
 
+#: LangAlpha's own folder in a user's own computer's config home
+#: (``$XDG_CONFIG_HOME`` when absolute, else ``~/.config``), outside the
+#: computer root and refused to the agent's own tools. Each computer's Claude
+#: Code setup token is the file named by its computer id in the second folder.
+LANGALPHA_CONFIG_DIR: str = "langalpha"
+CLAUDE_CODE_TOKEN_DIR: str = f"{LANGALPHA_CONFIG_DIR}/claude-code"
+
+
+def langalpha_config_dir(home: str, config_home: str | None = None) -> str:
+    """LangAlpha's folder in the config home of a login whose home is ``home``
+    and whose ``$XDG_CONFIG_HOME`` is ``config_home``; a relative one is
+    ignored, as the XDG spec has it."""
+    base = config_home if config_home and config_home.startswith("/") else home.rstrip("/") + "/.config"
+    return f"{base.rstrip('/')}/{LANGALPHA_CONFIG_DIR}"
+
+
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+#: How a command or a listing spells LangAlpha's config folder: the folder of
+#: the default config home or of one named by the variable, as a whole path
+#: component, and a Claude Code token file under any config home, a custom one
+#: included, by its folder and its name (a computer id, or a staged copy of
+#: one). A workspace folder named like them holds no file so named. Text
+#: matching is all a tool call's arguments and output allow, so this stands
+#: beside the exact path `langalpha_config_dir` gives the file tools; matched
+#: case-insensitively, as a Mac's disk matches names.
+LANGALPHA_CONFIG_SPELLINGS: re.Pattern[str] = re.compile(
+    rf"(?:(?<![\w.-])\.config|\$xdg_config_home|\$\{{xdg_config_home\}})/{re.escape(LANGALPHA_CONFIG_DIR)}(?![\w.-])"
+    rf"|{re.escape(CLAUDE_CODE_TOKEN_DIR)}/(?:\.staged\.)?{_UUID}",
+    re.IGNORECASE,
+)
+
+
 # Reused sandboxes retain root-level tools until migration; name-based filters
 # must recognize it alongside _internal.
 LEGACY_ROOT_TOOLS_DIR: str = "tools"
@@ -140,6 +173,9 @@ class SandboxLayout:
     # Folders of the owner's set aside out of a workspace folder's way, and
     # deleted workspaces' folders waiting to go or kept for the owner.
     LEFTOVERS_DIR: ClassVar[str] = "_internal/leftovers"
+    # What the Claude Code runtime keeps on a user's own computer: the CLI
+    # release it runs and each turn's private config dir.
+    CLAUDE_CODE_DIR: ClassVar[str] = "_internal/claude-code"
 
     #: Relative names the uploaded sandbox client reads back out of the
     #: emitted block. Only these are emitted: the emission rides
@@ -256,6 +292,10 @@ class SandboxLayout:
     @property
     def internal_src(self) -> str:
         return self.join(self.INTERNAL_SRC_DIR)
+
+    @property
+    def claude_code(self) -> str:
+        return self.join(self.CLAUDE_CODE_DIR)
 
     @property
     def packs(self) -> str:

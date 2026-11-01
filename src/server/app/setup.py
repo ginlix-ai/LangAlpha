@@ -1317,6 +1317,7 @@ from src.server.app.users import router as users_router
 from src.server.app.trading_permission import router as trading_permission_router
 from src.server.app.features import router as features_router
 from src.server.app.claude_code import router as claude_code_router
+from src.server.app.claude_code_computers import router as claude_code_computers_router
 from src.server.app.watchlist import router as watchlist_router
 from src.server.app.portfolio import router as portfolio_router
 from src.server.app.news import router as news_router
@@ -1402,6 +1403,7 @@ app.include_router(
 )  # /api/v1/users/me/thread-events - Thread lifecycle SSE feed
 app.include_router(features_router)  # /api/v1/features/* - Feature flags (per-user resolved)
 app.include_router(claude_code_router)  # /api/v1/claude-code/* - Claude Code setup token and readiness
+app.include_router(claude_code_computers_router)  # /api/v1/claude-code/computers/* - Claude Code on own computers
 app.include_router(
     watchlist_router
 )  # /api/v1/users/me/watchlist/* - Watchlist management

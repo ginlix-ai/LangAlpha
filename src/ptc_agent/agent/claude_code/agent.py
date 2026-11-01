@@ -5,10 +5,11 @@ prompt, the tool node with every tool-call middleware around it, and the
 hooks a turn opens with, which write the turn's rows and freeze the baseline.
 Claude Code runs the model loop, so nothing that wraps a model call runs on
 these turns, and the turn's rows and baseline reach Claude in the turn's own
-message instead (``runtime.turn_prompt``). This phase runs the CLI on the
-backend's own machine with the setup token the user saved for LangAlpha
-(``LocalLauncher``), which only a self-hosted deployment offers
-(``src.llms.claude_code.runtime_available``).
+message instead (``runtime.turn_prompt``). Where the CLI runs, and on which
+token, is the launcher's, which the caller picks (the server's
+``turn_launcher``): on the user's own computer it runs there
+(``SSHLauncher``), anywhere else on the backend's own machine
+(``LocalLauncher``).
 
 The pieces are read off the compiled agent's builder by the names
 ``create_agent`` gives them (``tools``, ``<middleware>.before_agent``), since it
@@ -20,7 +21,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from ptc_agent.agent.claude_code.launcher import LocalLauncher
+from ptc_agent.agent.claude_code.launcher import Launcher
 from ptc_agent.agent.claude_code.runtime import (
     TURN_KEY,
     Baseline,
@@ -60,14 +61,16 @@ class ClaudeCodeGraph:
 
 def claude_code_graph(
     agent: Any, *, system_prompt: str, target: ClaudeCodeTarget, user_id: str | None,
-    thread_id: str | None, checkpointer: Any, entry: Sequence[Any] = (), baseline: Baseline | None = None,
+    thread_id: str | None, checkpointer: Any, launcher: Launcher, entry: Sequence[Any] = (),
+    baseline: Baseline | None = None,
 ) -> ClaudeCodeGraph:
     """The turn graph for ``agent``, the compiled agent ``create_agent`` built.
 
     ``entry`` are the middleware whose turn-entry hooks run first, in order,
     and ``baseline`` renders the thread's frozen baseline. The user is who
     Claude Code is told the device belongs to and the thread names its
-    working directory, so a turn without either is refused.
+    working directory, so a turn without either is refused. ``launcher`` is
+    where the turn's CLI runs.
     """
     if not (user_id and thread_id):
         raise RuntimeError("a Claude Code turn runs for a user, on a thread")
@@ -80,11 +83,7 @@ def claude_code_graph(
         billing={k: v for k, v in (target.metadata or {}).items() if isinstance(v, str)},
         effort=target.effort,
     )
-    from src.server.services.llm.claude_code import SavedToken
-
-    turn = ClaudeTurn(
-        spec, LocalLauncher(), identity=user_id, thread_key=thread_id, baseline=baseline, token=SavedToken(user_id),
-    )
+    turn = ClaudeTurn(spec, launcher, identity=user_id, thread_key=thread_id, baseline=baseline)
     hooks = [(name, nodes[name].runnable) for m in entry if (name := f"{m.name}.before_agent") in nodes]
     graph = build_claude_code_graph(tool_node, entry=hooks, checkpointer=checkpointer).with_config(
         {"recursion_limit": agent.config["recursion_limit"], "configurable": {TURN_KEY: turn}}

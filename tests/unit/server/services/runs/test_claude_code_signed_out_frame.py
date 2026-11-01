@@ -1,5 +1,7 @@
 """A Claude Code token refused after admission reads as the admission refusal, not as this service failing."""
 
+import pytest
+
 from src.llms.claude_code import ClaudeTurnFailed
 from src.server.services.llm.claude_code import CLAUDE_CODE_OFF
 from src.server.services.runs.stream_errors import error_event_data, failure_kind_metadata
@@ -39,3 +41,22 @@ def test_a_failure_anthropic_answered_is_the_providers_and_keeps_its_reason():
 def test_a_cli_that_ended_without_a_result_is_this_services_failure():
     exc = _raised(ClaudeTurnFailed("no_result", "the CLI ended without a result"))
     assert error_event_data("t-1", str(exc), exc=exc)["error_kind"] == "internal"
+
+
+def test_a_turn_the_machines_claude_code_stopped_is_shown_in_its_own_words():
+    for kind, detail in [("model_unavailable", "claude-opus-5-5"), ("startup_failed", "an enterprise MCP config is present")]:
+        failed = ClaudeTurnFailed(kind, detail)
+        exc = _raised(failed)
+        frame = error_event_data("t-1", str(failed), exc=exc, credential_source="oauth", model="claude-opus-5-5-code")
+        assert frame["error"] == ClaudeTurnFailed.TEMPLATES[kind].format(detail)
+        assert (frame["error_kind"], frame.get("status_code"), frame["hints"]) == ("upstream", None, ["try_another_model"])
+    assert "policy" not in ClaudeTurnFailed.TEMPLATES["startup_failed"]
+
+
+@pytest.mark.parametrize("kind", ["policy_blocked", "needs_perl", "computer_unsupported"])
+def test_a_computer_claude_code_cannot_run_on_is_framed_with_the_admission_refusal_and_no_kind(kind):
+    exc = _raised(ClaudeTurnFailed(kind, "found as the turn readied the computer"))
+    frame = error_event_data("t-1", str(exc), exc=exc, model="claude-haiku-5-5-code")
+    assert (frame["error"], frame["reason"], frame["type"]) == (CLAUDE_CODE_OFF[kind], kind, "claude_code_off")
+    assert "error_kind" not in frame and failure_kind_metadata(exc) == {}
+

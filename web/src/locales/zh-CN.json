@@ -1569,6 +1569,8 @@
     "keySkipped": "我们无法安全地移除密钥，它仍可用于登录这台机器。",
     "keyUnreached": "我们无法连接这台机器，密钥仍留在上面。",
     "keyRemoveYourself": "如需自行移除，请在 ~/.ssh/authorized_keys 中删除以 {{comment}} 结尾的那一行，其指纹为 {{fingerprint}}。",
+    "tokenUnreached": "我们无法连接这台机器，它的 Claude Code token 仍留在上面。如需自行移除，请在这台机器上删除 {{path}}。",
+    "tokenRemoveFailed": "我们无法从这台机器上移除它的 Claude Code token。如需自行移除，请在这台机器上删除 {{path}}。",
     "removed": "已移除 {{name}}",
     "removeFailed": "无法移除这台计算机，请重试。",
     "removeBlocked": {
@@ -1729,6 +1731,7 @@
       "sudoRoot": "以 root 身份连接。",
       "sudoYes": "可使用 sudo",
       "sudoNo": "无法使用 sudo，部分工具可能无法安装。",
+      "claudeCodePolicy": "这台电脑上装有你所在组织的 Claude Code 策略，因此 Claude Code 模型无法在这里运行。",
       "folder": "文件夹",
       "folderHint": "工作区在你机器上的存放位置。",
       "folderShown": "工作区存放在 {{folder}}。",
@@ -2452,7 +2455,9 @@
       "taskCostUnmeasured": "该档位未实测，花费不超过上一档。",
       "taskCostHeader": "单个任务花费",
       "taskCostNote": "粗略估计调整推理强度后，一个典型任务的花费相对默认档位如何变化。",
-      "claudeCodeRejected": "Claude 拒绝了您的 setup token，请在设置中添加新的 token 后使用此模型"
+      "claudeCodeRejected": "Claude 拒绝了你的 setup token，请在设置中添加新的 token 后使用此模型",
+      "claudeCodeNeedsOwnComputer": "仅可在你自己电脑上的工作区中使用",
+      "claudeCodePolicyBlocked": "你所在组织的 Claude Code 策略不允许它在这台电脑上运行"
     },
     "voice": {
       "start": "开启语音输入",
@@ -6229,8 +6234,11 @@
       "unknownLong": "无法检查您的订阅，请刷新页面重试。",
       "keyRefused": "密钥未被接受",
       "withdrawn": "已不再支持",
+      "unavailable": "不可用",
       "configured": "已配置 API 密钥",
-      "notConnected": "未连接"
+      "notConnected": "未连接",
+      "offline": "离线",
+      "off": "已关闭"
     },
     "before": {
       "need": "您需要",
@@ -6287,8 +6295,8 @@
       "remove": "移除",
       "addTitle": "添加 setup token",
       "replaceTitle": "替换 setup token",
-      "intro": "Claude Code 模式让您的 Claude 对话使用您自己的 Claude 套餐运行。它通过专为 LangAlpha 生成的 setup token 登录。",
-      "separate": "此 token 是专为 LangAlpha 生成的独立凭据，绝不是您的 Claude Code 登录。用量计入您的 Claude 套餐。它经加密存储，仅用于您自己的请求。",
+      "intro": "Claude Code 模式让你的 Claude 对话使用你自己的 Claude 套餐运行。它通过专为 LangAlpha 生成的 setup token 登录。",
+      "separate": "此 token 是专为 LangAlpha 生成的独立凭据，绝不是你的 Claude Code 登录。用量计入你的 Claude 套餐。它经加密存储，仅用于你自己的请求。",
       "stepInstall": "如果尚未安装 Claude Code，请先安装。",
       "installLink": "安装指南",
       "stepRun": "在本机或任意一台电脑的终端中运行：",
@@ -6296,19 +6304,25 @@
       "stepCopy": "复制它输出的 token。较长的 token 可能换到第二行，请完整复制。",
       "stepPaste": "粘贴到下方并保存。",
       "fieldLabel": "Setup token",
-      "fieldPlaceholder": "粘贴您的 setup token",
+      "fieldPlaceholder": "粘贴你的 setup token",
       "save": "保存 token",
       "checking": "正在向 Claude 验证…",
       "fail": {
-        "token_missing": "请先粘贴您的 setup token。",
+        "token_missing": "请先粘贴你的 setup token。",
         "token_rejected": "Claude 拒绝了此 token，它可能不完整、已过期或被撤销。请重新运行 claude setup-token 并粘贴新的 token。",
         "check_unavailable": "无法连接 Claude 验证此 token，未做任何保存。请重试。",
         "check_in_progress": "已有一个 token 正在验证，请稍候再试。",
-        "unavailable": "您的账户未开启 Claude Code。请在设置的实验功能中开启。",
+        "unavailable": "你的账户未开启 Claude Code。请在设置的实验功能中开启。",
+        "redis_unavailable": "暂时无法保存 token，请稍后重试。",
+        "computer_not_found": "这台电脑已不可用。",
+        "needs_perl": "这台电脑上的 Claude Code 需要 perl。请安装 perl 后重试。",
+        "computer_unsupported": "这台电脑运行的是 musl（例如 Alpine Linux），LangAlpha 的运行环境暂不支持。",
+        "cli_unavailable": "无法在这台电脑上设置 Claude Code，请重试。",
+        "write_failed": "无法在这台电脑上保存 token，请重试。",
         "unknown": "无法保存 token，请重试。"
       },
       "removeTitle": "移除 Claude Code 的 setup token？",
-      "removeBody": "LangAlpha 将删除此 token。Claude Code 模型仍会列出，但在您添加新 token 前无法运行。您自己的 Claude Code 登录不受影响。",
+      "removeBody": "LangAlpha 将删除此 token。Claude Code 模型仍会列出，但在你添加新 token 前无法运行。你自己的 Claude Code 登录不受影响。",
       "removeConfirm": "移除 token",
       "removeFailed": "无法移除 token，请重试。",
       "pasteHeading": "已有 setup token？直接粘贴",
@@ -6320,7 +6334,12 @@
         "fieldLabel": "来自 Claude 的代码",
         "fieldPlaceholder": "粘贴代码",
         "fail": {
-          "unavailable": "您的账户未开启 Claude Code。请在设置的实验功能中开启。",
+          "unavailable": "你的账户未开启 Claude Code。请在设置的实验功能中开启。",
+          "computer_not_found": "这台电脑已不可用。",
+          "needs_perl": "这台电脑上的 Claude Code 需要 perl。请安装 perl 后重试。",
+          "computer_unsupported": "这台电脑运行的是 musl（例如 Alpine Linux），LangAlpha 的运行环境暂不支持。",
+          "cli_unavailable": "无法在这台电脑上设置 Claude Code，请重新发送代码。",
+          "write_failed_spent": "无法在这台电脑上保存 token，且此代码已无法再次使用。请重新登录。",
           "redis_unavailable": "登录暂时不可用，请稍后重试。",
           "code_missing": "请先粘贴 Claude 显示的代码。",
           "invalid_callback_input": "这看起来不是 Claude 页面上的代码。请完整复制后重新粘贴。",
@@ -6329,12 +6348,34 @@
           "code_rejected": "Claude 未接受此代码。代码只能使用一次且很快过期，请重新登录。",
           "check_unavailable": "无法连接 Claude 验证 token，请重新提交代码。",
           "check_unavailable_spent": "无法连接 Claude 验证 token，且此代码已无法再次使用。请重新登录。",
-          "token_rejected": "Claude 生成了 token，但拒绝了使用它的请求。您的 Claude 套餐可能不包含 Claude Code。",
+          "token_rejected": "Claude 生成了 token，但拒绝了使用它的请求。你的 Claude 套餐可能不包含 Claude Code。",
           "unexpected_grant": "Claude 的响应不符合预期，请重新登录。",
           "check_in_progress": "已有一个 token 正在验证，请稍候再试。",
           "unknown": "无法完成登录，请重试。"
         }
-      }
+      },
+      "computer": {
+        "intro": "Claude Code 在 {{name}} 上运行你的 Claude 对话，使用你自己的 Claude 套餐。它通过专为 LangAlpha 生成的 setup token 登录，token 保存在这台电脑上。",
+        "separate": "此 token 是专为 LangAlpha 生成的独立凭据，绝不是你的 Claude Code 登录。用量计入你的 Claude 套餐。它只保存在 {{name}} 上，LangAlpha 不保留副本。",
+        "signInIntro": "在新标签页中登录 Claude，LangAlpha 随后会生成 setup token 并放到 {{name}} 上，无需在终端中运行任何命令。",
+        "addTitle": "为 {{name}} 添加 setup token",
+        "replaceTitle": "替换 {{name}} 上的 setup token",
+        "removeTitle": "从 {{name}} 移除 setup token？",
+        "removeBody": "LangAlpha 将从 {{name}} 删除此 token。在你添加新 token 前，Claude Code 无法在这台电脑上运行。你自己的 Claude Code 登录不受影响。",
+        "removeBodySaved": "LangAlpha 将从 {{name}} 删除此 token，之后这台电脑上的 Claude Code 将使用你已保存的 token。你自己的 Claude Code 登录不受影响。",
+        "ownToken": "使用这台电脑自己的 token",
+        "savedToken": "使用你已保存的 token",
+        "noToken": "这台电脑还没有 setup token",
+        "policyBlocked": "这台电脑上装有你所在组织的 Claude Code 策略，因此 LangAlpha 无法在这里运行 Claude Code。",
+        "savedRejected": "Claude 拒绝了你已保存的 token，它可能已过期或被撤销。",
+        "offline": "这台电脑未在运行，无法检查它的 token。",
+        "addOwn": "为它添加 token"
+      },
+      "optOut": {
+        "saved": "Claude Code 已关闭，但你的 setup token 仍处于保存状态。",
+        "computer": "Claude Code 已关闭，但这台电脑上仍有它的 setup token。"
+      },
+      "savedTag": "已保存的 token"
     },
     "claude": {
       "name": "Claude",

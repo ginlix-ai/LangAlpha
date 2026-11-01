@@ -51,6 +51,7 @@ def _backend(*outcomes: Any) -> Any:
     )
     backend.livefs = None
     backend.settled_livefs = AsyncMock(return_value=None)
+    backend.config_folder = AsyncMock(return_value=None)
     backend.provider = "docker"
     backend.channel = "docker"
     return backend

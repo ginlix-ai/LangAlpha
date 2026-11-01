@@ -22,7 +22,7 @@ def manifest() -> dict:
 def metadata() -> dict:
     # Every visible row, Claude Code's included, which only a deployment that
     # runs Claude Code turns lists.
-    with patch("src.llms.claude_code.runtime_available", return_value=True):
+    with patch("src.llms.claude_code.rows_available", return_value=True):
         return ModelConfig().get_model_metadata()
 
 

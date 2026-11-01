@@ -145,6 +145,26 @@ function keyRemovalNote(key: ComputerRemoveResponse['key'] | undefined, t: Trans
   }
 }
 
+/** The Claude Code token left on the machine, for its owner to delete; undefined when none is. */
+function tokenRemovalNote(token: ComputerRemoveResponse['token'], t: Translate): string | undefined {
+  switch (token?.outcome) {
+    case 'unreached':
+      return t(
+        'computer.tokenUnreached',
+        'We could not reach the machine, so its Claude Code token is still there. To remove it yourself, delete {{path}} on it.',
+        { path: token.path },
+      );
+    case 'failed':
+      return t(
+        'computer.tokenRemoveFailed',
+        'We could not remove its Claude Code token from the machine. To remove it yourself, delete {{path}} on it.',
+        { path: token.path },
+      );
+    default:
+      return undefined;
+  }
+}
+
 export function useComputerActions() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -305,12 +325,14 @@ export function useComputerActions() {
       if (workspaceIds.length) invalidateWorkspaceMembership(queryClient);
       invalidateMachine(queryClient);
       if (fingerprint) void releaseRemoteControl(queryClient, { onlyFor: fingerprint });
-      // A key or files left behind are the user's to remove, and the
-      // fingerprint is something to copy, so those stay until closed. Still
-      // the plain variant: the removal itself succeeded.
+      // A key, files or a token left behind are the user's to remove, and the
+      // fingerprint and the token's path are something to copy, so those stay
+      // until closed. Still the plain variant: the removal itself succeeded.
+      const tokenNote = tokenRemovalNote(res.token, t);
       const stays = res.key?.outcome === 'skipped' || res.key?.outcome === 'unreached'
-        || (!!res.files && res.files.outcome !== 'deleted');
-      const description = [filesRemovalNote(res.files, folder, t), keyRemovalNote(res.key, t)].filter(Boolean).join(' ');
+        || (!!res.files && res.files.outcome !== 'deleted') || !!tokenNote;
+      const description = [filesRemovalNote(res.files, folder, t), keyRemovalNote(res.key, t), tokenNote]
+        .filter(Boolean).join(' ');
       toast({
         title: t('computer.removed', '{{name}} removed', { name }),
         description: description || undefined,

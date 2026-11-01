@@ -339,7 +339,7 @@ class ModelConfig:
     def provider_listed(info: dict[str, Any]) -> bool:
         """Whether the catalog lists the provider ``info`` describes: a Claude
         Code one only on a deployment that runs Claude Code turns."""
-        return info.get("sdk") != claude_code.SDK or claude_code.runtime_available()
+        return info.get("sdk") != claude_code.SDK or claude_code.rows_available()
 
     def get_model_metadata(self) -> dict[str, dict[str, Any]]:
         """Return {model_key: {sdk, provider, access_type, ...}} for all listed models."""

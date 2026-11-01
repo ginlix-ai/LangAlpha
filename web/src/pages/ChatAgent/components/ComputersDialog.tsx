@@ -12,9 +12,9 @@
  * card's Details takes the rail's place with the rest of that machine.
  *
  * The dialogs it opens (New computer, Change spec, Make primary, Remove,
- * Reinstall, Reconnect) take its place rather than piling on top: while one
- * is open this panel steps back, and the page stays dimmed exactly as much as
- * with this panel alone.
+ * Reinstall, Reconnect, a Claude Code token's) take its place rather than
+ * piling on top: while one is open this panel steps back, and the page stays
+ * dimmed exactly as much as with this panel alone.
  */
 import { Suspense, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
@@ -44,6 +44,8 @@ import FilesBackupOffDialog from './FilesBackupOffDialog';
 import RemoveComputerDialog from './RemoveComputerDialog';
 import ReinstallDialog from './ReinstallDialog';
 import MakePrimaryDialog from './MakePrimaryDialog';
+import { ClaudeCodeTokenModal, RemoveClaudeCodeTokenDialog } from '@/components/modelAccess/ClaudeCodeToken';
+import { computerTokenTarget, type SheetAction } from '@/components/modelAccess/tokenTarget';
 import { PlanUpgradeHint } from './planUpgradeHint';
 import {
   computerCapReached,
@@ -95,6 +97,9 @@ function ComputersDialog({ panel, opening = 0, ...rest }: ComputersDialogProps) 
  */
 type CreateForm = 'closed' | 'fromRail' | 'awaitingRoom' | 'destination';
 
+/** A machine's Claude Code token dialog: the sheet, for what it does, or the removal. */
+type ClaudeCodeDialog = { computerId: string; action: SheetAction | 'remove' };
+
 /** True while `mutation` is running for the machine `computerId`. */
 function pendingFor(mutation: { isPending: boolean; variables?: { computerId: string } }, computerId: string): boolean {
   return mutation.isPending && mutation.variables?.computerId === computerId;
@@ -132,6 +137,9 @@ function ComputersPanel({
   const [backupOffTargetId, setBackupOffTargetId] = useState<string | null>(null);
   const [reinstallTargetId, setReinstallTargetId] = useState<string | null>(null);
   const [reconnectTargetId, setReconnectTargetId] = useState<string | null>(null);
+  // The machine whose Claude Code token a sheet adds or replaces, or a
+  // confirmation removes.
+  const [claudeCodeDialog, setClaudeCodeDialog] = useState<ClaudeCodeDialog | null>(null);
   // The source the Add dialog opens on when a reconnect sends the user there.
   const [createPick, setCreatePick] = useState<string | null>(null);
 
@@ -146,6 +154,8 @@ function ComputersPanel({
   const backupOffTarget = find(backupOffTargetId);
   const reinstallTarget = find(reinstallTargetId);
   const reconnectTarget = find(reconnectTargetId);
+  const claudeCodeComputer = find(claudeCodeDialog?.computerId ?? null);
+  const claudeCodeTarget = claudeCodeComputer && computerTokenTarget(claudeCodeComputer);
   const { data: providerData, isLoading: providersLoading } = useComputerProviders({ enabled: true });
   const showProvider = rowsShowProvider(providerData?.providers, computers);
   const { data: quota, isLoading: quotaLoading } = useTierQuota({ enabled: true });
@@ -233,6 +243,8 @@ function ComputersPanel({
         makePrimary.reset();
         setPrimaryTargetId(computerId);
       },
+      claudeCodeToken: (action) => setClaudeCodeDialog({ computerId, action }),
+      removeClaudeCodeToken: () => setClaudeCodeDialog({ computerId, action: 'remove' }),
     };
   };
 
@@ -339,7 +351,8 @@ function ComputersPanel({
           !!primaryTarget ||
           !!backupOffTarget ||
           !!reinstallTarget ||
-          !!reconnectTarget
+          !!reconnectTarget ||
+          !!claudeCodeComputer
         }
       >
         {isLoading ? (
@@ -487,6 +500,13 @@ function ComputersPanel({
             onConfirm={confirmFilesBackupOff}
           />
         )}
+      </AnimatePresence>
+      <AnimatePresence propagate>
+        {claudeCodeTarget && claudeCodeDialog && (claudeCodeDialog.action === 'remove' ? (
+          <RemoveClaudeCodeTokenDialog target={claudeCodeTarget} stacked onClose={() => setClaudeCodeDialog(null)} />
+        ) : (
+          <ClaudeCodeTokenModal target={claudeCodeTarget} action={claudeCodeDialog.action} onClose={() => setClaudeCodeDialog(null)} />
+        ))}
       </AnimatePresence>
       <AnimatePresence propagate>
         {primaryTarget && (

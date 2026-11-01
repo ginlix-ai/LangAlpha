@@ -128,6 +128,9 @@ class _Untouchable:
     async def settled_livefs(self, workspace_id=None):
         return None
 
+    async def config_folder(self):
+        return None
+
     def __getattr__(self, name: str):
         raise AssertionError(f"the sandbox was touched: {name}")
 
@@ -189,6 +192,9 @@ class _Mounted:
     async def settled_livefs(self, workspace_id=None):
         self.asked_for.append(workspace_id)
         return self.livefs
+
+    async def config_folder(self):
+        return None
 
     async def start_bash_job(self, command, *, call_id=None, wait_s=None, **_):
         self.mount.events.append(("run", call_id))

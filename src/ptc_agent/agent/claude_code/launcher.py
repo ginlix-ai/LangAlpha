@@ -25,22 +25,26 @@ login is neither read nor written.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import shutil
 import socket
 import stat
 import tempfile
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import anyio
 from anyio.streams.text import TextReceiveStream, TextSendStream
-from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError, CLINotFoundError
+from claude_agent_sdk import ClaudeAgentOptions, CLIConnectionError, CLINotFoundError, ProcessError
 from claude_agent_sdk._internal._task_compat import spawn_detached
 from claude_agent_sdk._internal.sessions import project_key_for_directory
 from claude_agent_sdk._internal.transport import Transport
@@ -53,7 +57,10 @@ from claude_agent_sdk._internal.transport.subprocess_cli import (
     logger,
 )
 
+from ptc_agent.core.claude_code_managed import local_managed
+from src.llms.claude_code import ClaudeTurnFailed
 from src.server.database.encryption import get_encryption_key
+from src.server.utils.error_sanitization import sanitize_error_text, single_line
 
 #: Inherited from the worker because a process needs them to start or to
 #: reach the API from where the worker sits (its proxy and CA); nothing that
@@ -66,10 +73,32 @@ _THREAD_KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 #: The CLI reads an OAuth token from the descriptor this names, directly when
 #: it is a socket (macOS has no /proc/self/fd), and then drops the variable.
 TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
+#: The lines of the CLI's stderr kept, how long an exit waits for the last
+#: of them, and how much of them its log line holds.
+STDERR_KEPT = 50
+EXIT_STDERR_WAIT_S = 5
+STDERR_LOG_CHARS = 2000
+_log = logging.getLogger(__name__)
 
 #: The sha256 of ``SubprocessCLITransport.connect``'s source that
-#: ``ScopedEnvTransport.connect`` was copied from; a test fails when it moves.
+#: ``ScopedEnvTransport.connect`` and ``cli_env`` were copied from; a test fails
+#: when it moves.
 SDK_CONNECT_SHA256 = "77a86450f9f8c68d2b3346211c5933e617bf1c7eec0207a87a870ba35b3ad0c3"
+
+
+def cli_env(options: ClaudeAgentOptions, base: Mapping[str, str]) -> dict[str, str]:
+    """The environment the SDK's ``connect`` (``SDK_CONNECT_SHA256``) gives the
+    CLI, built on ``base`` instead of ``os.environ``: what every launcher
+    starts it with, wherever it runs. Its tracing headers stay the local
+    transport's, since only a CLI on this worker joins the trace."""
+    env = {**base, "CLAUDE_CODE_ENTRYPOINT": "sdk-py", **options.env, "CLAUDE_AGENT_SDK_VERSION": __version__}
+    if not any(key.upper() == _SDK_READS_SESSION_STATE_ENV for key in env):
+        env[_SDK_READS_SESSION_STATE_ENV] = "1"
+    if options.enable_file_checkpointing:
+        env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
+    if options.cwd:
+        env["PWD"] = str(options.cwd)
+    return env
 
 
 def device_id(identity: str) -> str:
@@ -145,29 +174,113 @@ def session_file_path(config_dir: str, cwd: str, session_id: str) -> Path:
     return Path(config_dir) / "projects" / project_key_for_directory(cwd) / f"{session_id}.jsonl"
 
 
+def session_jsonl(entries: list[dict[str, Any]]) -> str:
+    """A session file's contents: one record per line, as the CLI writes them."""
+    return "".join(json.dumps(e, separators=(",", ":")) + "\n" for e in entries)
+
+
 def write_session_file(config_dir: str, cwd: str, session_id: str, entries: list[dict[str, Any]]) -> None:
     """Lay the session's records out on this machine, replacing what is there."""
     path = session_file_path(config_dir, cwd, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in entries), encoding="utf-8")
+    path.write_text(session_jsonl(entries), encoding="utf-8")
+
+
+def stderr_text(lines: Sequence[str]) -> str:
+    """The CLI's kept stderr as an error carries it: scrubbed, since the SDK
+    logs a reader's ``ProcessError`` whole."""
+    return sanitize_error_text("\n".join(lines))
+
+
+async def exit_error(code: int | None, stderr: Sequence[str], reader: Awaitable[Any] | None) -> ProcessError:
+    """The error of a CLI that exited with ``code``, carrying its kept
+    ``stderr`` once ``reader`` has read the last of it (or
+    ``EXIT_STDERR_WAIT_S`` passed). A failed exit logs it as well: piped
+    to us, the CLI's stderr reaches no other log."""
+    if reader is not None:
+        with anyio.move_on_after(EXIT_STDERR_WAIT_S), contextlib.suppress(Exception):
+            await reader
+    text = stderr_text(stderr)
+    if code:
+        _log.warning("[ClaudeCode] the CLI exited with code %s: %s", code, single_line(text[-STDERR_LOG_CHARS:]))
+    return ProcessError(f"Command failed with exit code {code}", exit_code=code, stderr=text)
+
+
+class Launcher(Protocol):
+    """Where a turn's CLI runs: ``LocalLauncher`` on this worker, ``SSHLauncher`` on the user's own computer.
+
+    ``prepare`` lays out a turn and ``scratch`` a bare config dir for a one-off
+    query (the token check); ``release`` removes either. The launcher picks
+    the token its run signs in with, so only it knows which one Anthropic
+    refused: ``refused`` records that, wherever that token came from. One
+    launcher serves one run at a time.
+    """
+
+    async def prepare(
+        self, thread_key: str, session_id: str | None, entries: list[dict[str, Any]], *, identity: str,
+        system_prompt: str,
+    ) -> Prepared: ...
+
+    async def scratch(self) -> Prepared: ...
+
+    async def release(self, prepared: Prepared) -> None: ...
+
+    def transport(self, options: ClaudeAgentOptions) -> Transport: ...
+
+    async def refused(self) -> None: ...
+
+
+class TokenStore(Protocol):
+    """Where a user's setup token is kept for their turns: read as each run
+    starts, so a token replaced meanwhile is the one it runs on, and told
+    when Anthropic refuses it."""
+
+    async def read(self) -> str | None: ...
+
+    async def refused(self, token: str) -> None: ...
 
 
 class ScopedEnvTransport(SubprocessCLITransport):
     """The SDK's subprocess transport with the child's environment built from scratch.
 
     The transport is the SDK's internal API, which is why the ``claude-code``
-    extra pins the SDK exactly.
+    extra pins the SDK exactly. The CLI's stderr is kept, its last lines
+    only, so a CLI that exits says why, as ``SSHTransport`` has it say.
     """
 
     def __init__(self, *, options: ClaudeAgentOptions, base_env: dict[str, str], token: str | None) -> None:
-        super().__init__(prompt=_no_prompt(), options=options)
+        self._stderr: deque[str] = deque(maxlen=STDERR_KEPT)
+        super().__init__(prompt=_no_prompt(), options=replace(options, stderr=self._stderr.append))
         self._base_env = base_env
         self._token = token
+
+    async def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        """The SDK's messages, with the CLI's own stderr on the ``ProcessError``
+        of a CLI that exits, where the SDK puts a placeholder."""
+        try:
+            async with contextlib.aclosing(super().read_messages()) as messages:
+                async for message in messages:
+                    yield message
+        except ProcessError as e:
+            raise await self._exited(e.exit_code) from None
+
+    async def write(self, data: str) -> None:
+        """The SDK's write, failing on a CLI that has exited as its read does:
+        it can exit before the first write, which then says why."""
+        try:
+            await super().write(data)
+        except CLIConnectionError:
+            if self._process is None or self._process.returncode is None:
+                raise
+            raise await self._exited(self._process.returncode) from None
+
+    async def _exited(self, code: int | None) -> ProcessError:
+        return await exit_error(code, self._stderr, self._stderr_task.wait() if self._stderr_task is not None else None)
 
     async def connect(self) -> None:
         """The SDK's ``connect`` (``SDK_CONNECT_SHA256``), changed in four places only.
 
-        The environment starts from ``base_env``, not ``os.environ``. The version
+        The environment is ``cli_env`` on ``base_env``, not ``os.environ``. The version
         probe is skipped: it would run the CLI with the worker's whole
         environment, and the CLI is the one the pinned SDK bundles. The child
         starts in its own session, so a terminal's Ctrl-C or a job-control
@@ -185,12 +298,7 @@ class ScopedEnvTransport(SubprocessCLITransport):
 
         cmd = self._build_command()
         try:
-            process_env = {
-                **self._base_env,
-                "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
-                **self._options.env,
-                "CLAUDE_AGENT_SDK_VERSION": __version__,
-            }
+            process_env = cli_env(self._options, self._base_env)
 
             try:
                 from opentelemetry import propagate
@@ -207,15 +315,6 @@ class ScopedEnvTransport(SubprocessCLITransport):
                             process_env[key] = v
             except Exception:  # noqa: BLE001 - best-effort tracing must never break connect()
                 logger.debug("OTEL trace context injection failed", exc_info=True)
-
-            if not any(key.upper() == _SDK_READS_SESSION_STATE_ENV for key in process_env):
-                process_env[_SDK_READS_SESSION_STATE_ENV] = "1"
-
-            if self._options.enable_file_checkpointing:
-                process_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
-
-            if self._cwd:
-                process_env["PWD"] = self._cwd
 
             stderr_dest = PIPE if self._options.stderr is not None else None
 
@@ -265,7 +364,7 @@ class ScopedEnvTransport(SubprocessCLITransport):
             raise error from e
 
 
-@dataclass(frozen=True)
+@dataclass
 class LocalLauncher:
     """Runs claude on this worker, in a private config dir per turn.
 
@@ -278,13 +377,25 @@ class LocalLauncher:
     the allowlist leaves out, so its lookup never lands on the machine's login
     and a turn given no token fails as logged out.
 
-    ``token`` is the setup token the CLI signs in with. ``env`` is for a test
-    endpoint and its dummy credential.
+    The CLI signs in with ``token``, a fixed one (the check of a token
+    before it is saved), else the one ``saved`` holds as the run starts,
+    which ``refused`` records as refused. ``env`` is for a test endpoint and
+    its dummy credential. A worker an organization's managed Claude Code
+    settings are installed on runs none (``local_managed``).
     """
 
     env: dict[str, str] = field(default_factory=dict, repr=False)
     cli_path: str | None = None
     token: str | None = field(default=None, repr=False)
+    saved: TokenStore | None = None
+    _used: str | None = field(default=None, init=False, repr=False)
+
+    async def _ready(self) -> None:
+        """Take the run's token, then refuse the run, before the CLI starts,
+        where an organization's policy is installed, in admission's order."""
+        self._used = self.token or (await self.saved.read() if self.saved is not None else None)
+        if sources := await local_managed():
+            raise ClaudeTurnFailed("policy_blocked", f"the worker holds managed Claude Code settings {list(sources)}")
 
     async def prepare(
         self, thread_key: str, session_id: str | None, entries: list[dict[str, Any]], *, identity: str,
@@ -296,6 +407,7 @@ class LocalLauncher:
         transcript, so writing it on the loop would stall every stream on the
         worker for as long as the thread is long.
         """
+        await self._ready()
         device = device_id(identity)
 
         def lay_out() -> Prepared:
@@ -314,6 +426,15 @@ class LocalLauncher:
 
         return await anyio.to_thread.run_sync(lay_out)
 
+    async def scratch(self) -> Prepared:
+        await self._ready()
+        config_dir = await anyio.to_thread.run_sync(lambda: tempfile.mkdtemp(prefix="claude-cfg-"))
+        return Prepared(config_dir=config_dir, cwd=config_dir)
+
+    async def refused(self) -> None:
+        if self.saved is not None and self._used:
+            await self.saved.refused(self._used)
+
     async def release(self, prepared: Prepared) -> None:
         """Remove the turn's config dir. The thread's cwd stays: it holds nothing, and another run of the thread may be in it."""
         await anyio.to_thread.run_sync(lambda: shutil.rmtree(prepared.config_dir, ignore_errors=True))
@@ -323,7 +444,7 @@ class LocalLauncher:
 
     def transport(self, options: ClaudeAgentOptions) -> Transport:
         options = replace(options, cli_path=self.cli_path or options.cli_path)
-        return ScopedEnvTransport(options=options, base_env=self._base_env(), token=self.token)
+        return ScopedEnvTransport(options=options, base_env=self._base_env(), token=self._used)
 
 
 async def _no_prompt():

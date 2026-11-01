@@ -18,7 +18,7 @@ import logging
 import posixpath
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Mapping, Optional
 
 from ptc_agent.config.core import SSHConfig
 from ptc_agent.core.sandbox.providers import ssh as ssh_provider
@@ -727,6 +727,13 @@ async def _refuse_taking_over_own(user_id: str, take_over: Optional[str]) -> Non
     mine = _ssh_computer_by_machine_id(await get_computers_for_user(user_id), take_over)
     if mine is not None:
         raise _folder_taken(mine)
+
+
+def is_own_computer(computer: Optional[Mapping[str, Any]]) -> bool:
+    """Whether *computer* is a machine of the user's own (the SSH provider's,
+    a Mac reached through Remote control included), which runs Claude Code
+    itself."""
+    return bool(computer) and computer.get("kind") == SSH_KIND
 
 
 def tunnel_of(computer: Dict[str, Any]) -> str:
