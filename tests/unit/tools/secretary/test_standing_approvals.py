@@ -17,7 +17,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.tools import InjectedState
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -185,6 +185,18 @@ async def test_each_setting_covers_only_its_own_action(other_preference):
     ])
 
     assert update == {"preapproved_calls": ["create"]}
+
+
+@pytest.mark.asyncio
+async def test_a_card_is_recorded_once_the_rest_of_its_batch_has_results(other_preference):
+    """A Claude Code turn runs this after the calls beside the card are answered."""
+    other_preference[AUTO_APPROVE_WORKSPACE_CREATION] = True
+    ai = AIMessage(content="", tool_calls=[
+        _call("manage_workspaces", "create", action="create", name="Research"), _call("Bash", "b", command="ls"),
+    ])
+    state = {"messages": [ai, ToolMessage("ok", tool_call_id="b")]}
+
+    assert await StandingApprovalMiddleware(USER_ID).aafter_model(state, None) == {"preapproved_calls": ["create"]}
 
 
 @pytest.mark.asyncio

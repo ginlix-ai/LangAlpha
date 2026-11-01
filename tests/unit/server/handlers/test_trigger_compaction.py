@@ -1371,15 +1371,21 @@ def _claude_code_config(base_config):
     return config
 
 
-async def _compact_claude_code_thread(base_config, held_model, *, compaction=None, resolve=None, claude_replied=True):
+async def _compact_claude_code_thread(base_config, held_model, *, compaction=None, resolve=None, claude_replied=True,
+                                     waiting=False):
     """Compact a thread holding ``held_model`` that resolves to a Claude
-    Code row; the stub agent, the ask, the resolve and the outcome."""
+    Code row; the stub agent, the ask, the resolve and the outcome. A
+    ``waiting`` thread holds a question Claude Code deferred, unanswered."""
     from src.server.handlers.thread_maintenance import trigger_compaction
 
     from langchain_core.messages import AIMessage, HumanMessage
 
     stub = _stub_thread_agent()
-    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"} if claude_replied else {})]
+    calls = [{"name": "AskUserQuestion", "args": {}, "id": "t1", "type": "tool_call"}] if waiting else []
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", tool_calls=calls,
+                                                      response_metadata={"claude_message_id": "msg_1"} if claude_replied else {})]
+    deferral = {"uuid": "d1", "type": "attachment", "attachment": {"type": "hook_deferred_tool", "toolUseID": "t1"}}
+    stub.state.values["claude_session"] = {"session_id": "sess", "entries": [deferral]}
     stub.graph.turn.compact_between_turns = (
         AsyncMock(side_effect=compaction) if isinstance(compaction, BaseException) or callable(compaction)
         else AsyncMock(return_value=compaction)
@@ -1801,3 +1807,35 @@ async def test_a_compact_that_calls_no_model_records_nothing(base_config, usage_
 
     assert caught.value.status_code == 400
     assert usage_rows == []
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_thread_waiting_on_the_user_is_refused_before_the_cli_compacts(base_config):
+    """The compaction's CLI would load the session with the call pending and
+    nothing to run it, and run until the compaction budget."""
+    stub, ask, _, outcome = await _compact_claude_code_thread(
+        base_config, "claude-sonnet-5-5-code", compaction=_claude_code_compaction(), waiting=True
+    )
+    assert outcome.status_code == 409
+    assert {k: outcome.detail[k] for k in ("code", "verb")} == {"code": "awaiting_input", "verb": "compact"}
+    stub.graph.turn.compact_between_turns.assert_not_awaited()
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_api_thread_waiting_on_the_user_is_compacted_as_before(base_config):
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    stub = _stub_thread_agent()
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("", tool_calls=[{"name": "ask_user", "args": {}, "id": "t1", "type": "tool_call"}])]
+    ask = _asked()
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(ASK, new=ask),
+    ):
+        result = await trigger_compaction("thread-1")
+    ask.assert_awaited_once()
+    assert result["summary_text"] == "ok"
