@@ -43,7 +43,6 @@ class TestConstants:
 
     def test_config_context_values(self):
         assert ConfigContext.SDK.value == "sdk"
-        assert ConfigContext.CLI.value == "cli"
 
 
 # ---------------------------------------------------------------------------
@@ -92,9 +91,9 @@ class TestGetConfigSearchPaths:
         paths = get_config_search_paths(None, context=ConfigContext.SDK)
         assert any(str(p) == str(Path.cwd()) for p in paths)
 
-    def test_cli_context_includes_home(self):
-        """CLI context should include ~/.ptc-agent/ in search paths."""
-        paths = get_config_search_paths(None, context=ConfigContext.CLI)
+    def test_sdk_context_includes_home(self):
+        """SDK context should include ~/.ptc-agent/ in search paths."""
+        paths = get_config_search_paths(None, context=ConfigContext.SDK)
         home_dir = get_default_config_dir()
         assert any(str(p) == str(home_dir) for p in paths)
 

@@ -3190,3 +3190,21 @@ async def test_make_primary_is_refused_on_another_users_computer(
     assert resp.status_code == 403
     make_primary_patches.flip.assert_not_awaited()
     make_primary_patches.claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_computer_token_cannot_create_a_computer():
+    """A computer it made would hold a token of its own, which outlives
+    revoking this one."""
+    from src.server.app.computers import router
+    from tests.unit.server.dependencies.reach_world import act_as_computer
+
+    app = create_test_app(router)
+    act_as_computer(app)
+    with patch("src.server.app.computers._sandbox_config") as config:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/api/v1/computers", json={"name": "Spare"})
+
+    assert resp.status_code == 403
+    assert "add or pair a computer" in resp.json()["detail"]["message"]
+    config.assert_not_called()

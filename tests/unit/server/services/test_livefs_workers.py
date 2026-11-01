@@ -42,7 +42,7 @@ from ptc_agent.core.sandbox.runtime import ExecResult, RuntimeState
 from src.server.database.livefs_tokens import Served, TokenRow
 from src.server.services.computer_manager import ComputerBinding, ComputerManager
 from src.server.services.livefs import mount
-from src.server.services.livefs.tokens import MintedToken
+from src.server.services.livefs.tokens import KIND, MintedToken
 from src.server.services.livefs.tree import POINTS
 from src.server.services.platform_secret_sweep import PlatformSecretSweeper
 
@@ -102,7 +102,7 @@ class _Rows:
             if t["held_by"] is None:
                 t["served_by"] = None
             t["held_by"], t["expires_at"] = None, expires_at
-        return MintedToken(f"lfs1.{computer_id}.s{self._minted}", expires_at)
+        return MintedToken(f"lfs1.{computer_id}.s{self._minted}", expires_at, expires_at - KIND.ttl)
 
     def _serving(self, sandbox_id: str, served: Served | None) -> None:
         t = self.token

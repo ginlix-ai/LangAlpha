@@ -38,10 +38,8 @@ class _Mounted:
 
     def __init__(self) -> None:
         self.ran: list[str] = []
-        self.livefs = SimpleNamespace(prepare=self._prepare, report=self._report)
-
-    async def _prepare(self, call_id=None, context=None) -> None:
-        return None
+        self.livefs = SimpleNamespace(report=self._report)
+        self.sandbox = SimpleNamespace(call_filer=None)
 
     async def _report(self, call_id, output, context=None) -> str:
         return ""

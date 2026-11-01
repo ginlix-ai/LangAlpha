@@ -405,6 +405,7 @@ async def test_retry_route_reruns_a_pending_input_and_replays_otherwise(
     pending, replays_from
 ):
     from src.server.app.threads import messaging
+    from src.server.dependencies.principal import Principal
 
     # START recorded the build options a retry body cannot carry.
     metadata = {"subagents_enabled": ["research"]}
@@ -427,7 +428,10 @@ async def test_retry_route_reruns_a_pending_input_and_replays_otherwise(
          ) as checkpoint, \
          patch(GET_QUERY, new=AsyncMock(return_value={"content": "what moved NVDA?"})):
         await messaging.retry_thread(
-            "t-1", auth, RetryRequest(workspace_id="ws-1", run_id="run-1")
+            "t-1",
+            Principal("u-1", "session"),
+            AsyncMock(return_value=auth),
+            RetryRequest(workspace_id="ws-1", run_id="run-1"),
         )
 
     request = send.await_args.args[0]

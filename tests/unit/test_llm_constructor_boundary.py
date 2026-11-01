@@ -94,9 +94,10 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     # split out of config.py once building a client stopped sharing a module
     # with choosing a model. Same five calls, same justification, plus a
     # custom model a subscription serves, built on its sign-in, and a Claude
-    # Code row's runtime target, which holds no credential.
+    # Code row's runtime target, which holds no credential. A custom model and
+    # a custom-provider slug on the user's key share one build (``byok_key``).
     ("src/server/services/llm/clients.py", "create_llm"): 4,
-    ("src/server/services/llm/clients.py", "create_llm_from_custom"): 3,
+    ("src/server/services/llm/clients.py", "create_llm_from_custom"): 2,
     # user_id=None system path AND resolved-None platform fallback (two calls).
     ("src/server/services/llm/service.py", "create_llm"): 2,
 }
