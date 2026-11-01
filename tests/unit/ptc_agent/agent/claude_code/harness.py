@@ -7,7 +7,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
 from ptc_agent.agent.claude_code.launcher import Launcher
-from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, RuntimeSpec, build_claude_code_graph
+from ptc_agent.agent.claude_code.cli import RuntimeSpec
+from ptc_agent.agent.claude_code.runtime import TURN_KEY, ClaudeTurn, build_claude_code_graph
 
 
 @tool("Bash")
