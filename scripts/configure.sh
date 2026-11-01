@@ -312,7 +312,7 @@ printf "  ${BOLD}1${NC}) Yahoo Finance — free, no API key needed\n"
 printf "  ${BOLD}2${NC}) FMP (Financial Modeling Prep) — high-quality data (free tier available)\n"
 printf "  ${BOLD}3${NC}) Both — FMP + Yahoo Finance MCP servers\n"
 printf "\n"
-info "See README > Data Provider Fallback Chain for details."
+info "See README > Get started > Optional keys for details."
 printf "\n"
 data=$(prompt_choice "Choice" "1")
 

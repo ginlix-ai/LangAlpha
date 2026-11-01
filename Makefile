@@ -1,7 +1,7 @@
-.PHONY: help configup down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-market-protocol test-all lint data-probe setup-db migrate
+.PHONY: help config up down clean dev dev-web install test test-sandbox e2b-templates daytona-snapshots test-web test-market-protocol test-all lint data-probe setup-db migrate
 
 help: ## Show available targets
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
 config: ## Interactive setup wizard (LLM, data, sandbox, web search/fetch)
 	@bash scripts/configure.sh
