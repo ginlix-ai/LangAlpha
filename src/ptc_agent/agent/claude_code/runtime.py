@@ -29,6 +29,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from itertools import pairwise
 from typing import Annotated, Any, TypeVar
 
@@ -36,6 +37,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    HookMatcher,
     Message,
     ProcessError,
     RateLimitEvent,
@@ -45,18 +47,19 @@ from claude_agent_sdk import (
     ToolResultBlock,
     UserMessage,
 )
-from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolCall, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
+from ptc_agent.agent.claude_code.mid_turn import AfterTool, TurnSteering
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
 from ptc_agent.agent.claude_code.session import (
-    Arrivals,
     CheckpointSessionStore,
     SessionDrift,
     SessionPin,
@@ -75,8 +78,12 @@ from ptc_agent.agent.claude_code.tools_bridge import (
     tool_specs,
 )
 from ptc_agent.agent.main_state import MainAgentState
+from ptc_agent.agent.middleware.file_operations.multimodal import MAX_CONTENT_BYTES
 from ptc_agent.agent.middleware.runtime_context.carrier import Carrier, compose_request
 from ptc_agent.agent.middleware.runtime_context.envelope import frame_reminder
+from ptc_agent.agent.middleware.steering import SteeringMiddleware
+from ptc_agent.agent.state import ensure_message_ids
+from ptc_agent.agent.transcript.classify import ORCHESTRATOR_SOURCE, reentry_trigger
 from src.llms.claude_code import MESSAGE_ID_KEY as CLAUDE_MESSAGE_ID
 from src.llms.claude_code import ClaudeTurnFailed, another_model_replied_last
 from src.server.utils.error_sanitization import sanitize_error_text
@@ -86,6 +93,12 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 #: How long a step waits for the CLI's records behind the messages it commits.
 SETTLE_TIMEOUT_S = 10.0
+#: How long a run's close waits for the CLI to end the query it interrupted.
+DRAIN_TIMEOUT_S = 5.0
+#: The most queries one turn sends the CLI: its own, then one for each time
+#: steers waited as the last ended, as a langalpha turn re-enters its agent
+#: (``BackgroundSubagentOrchestrator.max_iterations``).
+TURN_QUERIES = 3
 TOKEN_CHECK_TIMEOUT_S = 60
 #: How much of the CLI's stderr a failed start passes on.
 STARTUP_REASON_LINES = 5
@@ -152,10 +165,9 @@ async def _open(client: ClaudeSDKClient) -> AsyncIterator[None]:
         raise startup_failure(e) from None
 
 
-async def _received(client: ClaudeSDKClient) -> AsyncIterator[Message]:
+async def _received(client: ClaudeSDKClient, *, init_seen: bool = False) -> AsyncIterator[Message]:
     """What the CLI says. One that exits before its init never took the
     turn, so it fails in its own words as at the start."""
-    init_seen = False
     try:
         async for m in client.receive_messages():
             init_seen = init_seen or (isinstance(m, SystemMessage) and m.subtype == "init")
@@ -255,13 +267,18 @@ def options_for(
     store: CheckpointSessionStore,
     session_id: str | None,
     prepared: Prepared,
+    after_tool: AfterTool,
 ) -> ClaudeAgentOptions:
     """The SDK options: Claude Code with none of its own prompt, settings or tools.
 
     The system prompt goes as a file in the turn's config dir, never on the
     command line, where Linux caps one argument at 128 KiB and any local
-    account can read it.
+    account can read it. ``after_tool`` is the hook the CLI calls once each
+    of our calls returns, whether it succeeded or failed. A line the CLI
+    writes can carry a whole result, a PDF's document block included, so
+    the SDK reads lines up to twice the largest one a tool returns.
     """
+    hooks = {event: [HookMatcher(matcher=None, hooks=[after_tool])] for event in ("PostToolUse", "PostToolUseFailure")}
     return ClaudeAgentOptions(
         tools=[],
         system_prompt={"type": "file", "path": prepared.system_prompt_file},
@@ -297,6 +314,8 @@ def options_for(
         },
         # A tool named Bash makes the CLI add its own git attribution reminder.
         settings=json.dumps({"includeGitInstructions": False}),
+        hooks=hooks,
+        max_buffer_size=2 * MAX_CONTENT_BYTES,
     )
 
 
@@ -335,25 +354,29 @@ class _Run:
     """A started run: the CLI, the SDK client driving it, and what the CLI has said so far."""
 
     def __init__(self, launcher: Launcher, prepared: Prepared, store: CheckpointSessionStore,
-                 client: ClaudeSDKClient, results: ToolResults, spec: RuntimeSpec) -> None:
+                 client: ClaudeSDKClient, results: ToolResults, spec: RuntimeSpec, after_tool: AfterTool) -> None:
         self.launcher = launcher
         self.prepared = prepared
         self.store = store
         self.client = client
         self.results = results
+        self.after_tool = after_tool
         self.model = spec.model
         self.result: ResultMessage | None = None
         self.rate_limits: list[RateLimitEvent] = []
         #: (error, text) of each assistant message the CLI marked as an error.
         self.assistant_errors: list[tuple[str, str]] = []
         self.drift: SessionDrift | None = None
+        #: The queries sent the CLI this run: the turn's own, then one for
+        #: each time steers waited as the last ended.
+        self.queries = 1
         self._events: asyncio.Queue[Any] = asyncio.Queue()
         self._held: dict[str, Any] | None = None
         self._streamed: set[str] = set()
         self._assistant: dict[str, list[str]] = {}
-        self._tool_results = Arrivals("tool result records")
         self._closing: asyncio.Future[None] | None = None
         self._finishing: asyncio.Future[None] | None = None
+        self._init_seen = False
         self._pump = asyncio.create_task(self._read())
 
     @classmethod
@@ -372,9 +395,10 @@ class _Run:
         client: ClaudeSDKClient | None = None
         try:
             store, results = CheckpointSessionStore(), ToolResults()
+            after_tool = AfterTool(results, send=lambda text: client.query(text))
             options = options_for(
                 spec, pin=pin, server=build_tool_server(pin["tools"], results), store=store,
-                session_id=session_id, prepared=prepared,
+                session_id=session_id, prepared=prepared, after_tool=after_tool,
             )
             if prompt is None:
                 options.env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"] = "1"
@@ -388,7 +412,17 @@ class _Run:
                     await client.disconnect()
             await launcher.release(prepared)
             raise
-        return cls(launcher, prepared, store, client, results, spec)
+        return cls(launcher, prepared, store, client, results, spec, after_tool)
+
+    async def again(self, prompt: Prompt) -> None:
+        """Send the turn's next query on the same CLI, once the last one ended
+        done. What the CLI said of the last one's end goes with it."""
+        self.queries += 1
+        self.result, self._finishing = None, None
+        self.rate_limits, self.assistant_errors = [], []
+        self.results.reopen()
+        await self.client.query(prompt if isinstance(prompt, str) else _user_message(prompt))
+        self._pump = asyncio.create_task(self._read())
 
     async def _read(self) -> None:
         """Read what the CLI says until the turn's result.
@@ -400,8 +434,9 @@ class _Run:
         anything is streamed.
         """
         try:
-            async for m in _received(self.client):
+            async for m in _received(self.client, init_seen=self._init_seen):
                 if isinstance(m, SystemMessage) and m.subtype == "init":
+                    self._init_seen = True
                     if m.data.get("model") != self.model:
                         logger.warning("[ClaudeCode] the CLI would run %s in place of %s", m.data.get("model"), self.model)
                         raise ClaudeTurnFailed("model_unavailable", self.model)
@@ -421,7 +456,6 @@ class _Run:
                 elif isinstance(m, UserMessage):
                     blocks = [b for b in (m.content if isinstance(m.content, list) else []) if isinstance(b, ToolResultBlock)]
                     self.results.answered(blocks)
-                    await self._tool_results.add(dict.fromkeys((b.tool_use_id for b in blocks), m.uuid))
                 elif isinstance(m, ResultMessage):
                     self.result = m
                     break
@@ -494,7 +528,37 @@ class _Run:
         return list(uuids)
 
     async def tool_result_records(self, tool_use_ids: Sequence[str]) -> list[str]:
-        return await self._unless_crashed(self._tool_results.wait(tool_use_ids, SETTLE_TIMEOUT_S))
+        """The records of a batch's results. The CLI writes each once the
+        hook returns, so a wait that ran out while the hook took in what
+        waits is given the window again from there."""
+        wait = partial(self.store.results.wait, tool_use_ids, SETTLE_TIMEOUT_S)
+        try:
+            return await self._unless_crashed(wait())
+        except SessionDrift:
+            if not self.after_tool.took:
+                raise
+            await self.after_tool.taken()
+            return await self._unless_crashed(wait())
+
+    async def cut_off(self, calls: Sequence[ToolCall]) -> tuple[list[ToolMessage], list[str]]:
+        """The results the CLI recorded, resuming, for calls a run before it
+        cut off, as ToolMessages, and their records. It records them as it
+        loads the session, without a word on its stream. A call it recorded
+        none for (it started the session over) is answered as a langalpha
+        turn answers one (``PatchToolCallsMiddleware``), with no record."""
+        ids = [c["id"] for c in calls]
+        with contextlib.suppress(SessionDrift):
+            await self._unless_crashed(self.store.results.wait(ids, SETTLE_TIMEOUT_S))
+        answers, uuids = [], []
+        for c in calls:
+            if (recorded := self.store.result_blocks.get(c["id"])) is None:
+                given = ToolResultBlock(tool_use_id=c["id"], content=_unrecorded(c), is_error=True)
+            else:
+                uuid, block = recorded
+                uuids.append(uuid)
+                given = ToolResultBlock(tool_use_id=c["id"], content=block.get("content"), is_error=block.get("is_error"))
+            answers.append(_as_given(ToolMessage(content="", tool_call_id=c["id"], name=c["name"]), given))
+        return answers, uuids
 
     async def settle(self, uuids: Sequence[str]) -> None:
         """Wait for the records behind a step's messages to reach the store, or fail the turn."""
@@ -535,6 +599,21 @@ class _Run:
         await asyncio.shield(self._closing)
 
     async def _close(self) -> None:
+        """A query still going is interrupted and drained first: a call failed
+        while the CLI still runs is a result it would hand Claude, starting
+        another request on the user's plan, as is a steer the hook would
+        hand it, so the hook takes nothing more. Both are bounded: a CLI on a
+        computer that stopped answering never acknowledges the interrupt."""
+        self.after_tool.close()
+        if not self._pump.done():
+
+            async def drain() -> None:
+                with contextlib.suppress(Exception):
+                    await self.client.interrupt()
+                await asyncio.shield(self._pump)
+
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(drain(), DRAIN_TIMEOUT_S)
         self.results.fail_all("The turn ended before this call ran.")
         with contextlib.suppress(Exception):
             await self.client.disconnect()
@@ -551,16 +630,19 @@ class ClaudeTurn:
     ``identity`` is who the turn runs for (their user id): Claude Code is told one
     device per identity. ``thread_key`` names the thread's working directory,
     which is part of the prompt Claude caches, so it is the same on every turn.
-    The launcher picks the token the run signs in with.
+    The launcher picks the token the run signs in with. ``steering`` takes in
+    what is sent into the thread while the turn runs (``TurnSteering``).
     """
 
     def __init__(self, spec: RuntimeSpec, launcher: Launcher, *, identity: str, thread_key: str,
-                 baseline: Baseline | None = None) -> None:
+                 baseline: Baseline | None = None, steering: SteeringMiddleware | None = None,
+                 alert_senders: frozenset[str] = frozenset()) -> None:
         self.spec = spec
         self.launcher = launcher
         self.identity = identity
         self.thread_key = thread_key
         self._baseline = baseline
+        self.steering = TurnSteering(steering, alert_senders)
         #: The session this run writes records to, and what its next write
         #: owes it: the pin and baseline this run launched with that it does
         #: not hold yet.
@@ -587,6 +669,10 @@ class ClaudeTurn:
             )
         return self._run
 
+    @property
+    def started(self) -> bool:
+        return self._run is not None
+
     async def run(self, state: ClaudeCodeState) -> _Run:
         if self._run is None:
             pin, prompt = self.opening(state)
@@ -594,6 +680,24 @@ class ClaudeTurn:
                 self.spec, pin, self.launcher, self.thread_key, self.identity, state.get("claude_session"), prompt
             )
         return self._run
+
+    async def again(self, state: ClaudeCodeState, config: RunnableConfig, run: _Run) -> list[HumanMessage]:
+        """What a turn whose query ended sends the CLI next: what waited as
+        it ended, after the trigger a langalpha turn re-enters its agent
+        with, when a langalpha turn would re-enter for it (a steer, or a
+        notice of ``alert_senders``). Empty once the turn has sent its last
+        query, or when nothing that would waits, which ends it."""
+        if run.queries >= TURN_QUERIES or not (senders := await self.steering.waiting(config)):
+            return []
+        if (message := await self.steering.take(config)) is None:
+            return []
+        trigger = HumanMessage(
+            content=reentry_trigger(senders), name="orchestrator", additional_kwargs={"lc_source": ORCHESTRATOR_SOURCE}
+        )
+        sent = ensure_message_ids([trigger, message])
+        await run.again(turn_prompt({**state, "messages": [*state["messages"], *sent]}))
+        self.steering.delivered(config, message)
+        return sent
 
     def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:
         """What the run starts Claude on: the session's own pin, else this
@@ -718,15 +822,35 @@ def build_claude_code_graph(
     A ``model`` step commits one assistant message and goes to ``tools`` when it
     made calls, else back to ``model``: the CLI can go on without a tool call
     (after an output-limit stop it continues the reply), so only the query's
-    end, seen by a ``model`` step with no message left, ends the turn.
+    end, seen by a ``model`` step with no message left, ends the turn, unless
+    steers waited then, which the step sends the CLI as the turn's next query.
+
+    The run's first step answers the calls a run before it cut off (a stop, a
+    worker that died mid-tool) as the CLI did when it resumed, so the thread's
+    messages say what Claude was told.
     """
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:
         turn = _turn(config)
+        opening = not turn.started
         run = await turn.run(state)
+        if opening:
+            turn.steering.opened(state, config)
+            if cut := _cut_off(state["messages"]):
+                at, calls = cut
+                answers, uuids = await run.cut_off(calls)
+                patched = [*state["messages"][: at + 1], *answers, *state["messages"][at + 1 :]]
+                return Command(
+                    update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched],
+                            **(turn.commit(run.store.drain(through=uuids)) if uuids else {})},
+                    goto="model",
+                )
+        await turn.steering.read(state["messages"])
         message = await run.next_message()
         if message is None:
             await run.finish()
+            if sent := await turn.again(state, config, run):
+                return Command(update={"messages": sent, **turn.commit(run.store.drain())}, goto="model")
             return Command(update=turn.commit(run.store.drain()), goto=END)
         relay = ClaudeStreamRelay(model_name=turn.spec.model, metadata=dict(turn.spec.billing), cache=False).feed(message.events())
         ai: AIMessage = await relay.ainvoke([], config)
@@ -753,6 +877,7 @@ def build_claude_code_graph(
         turn = _turn(config)
         run = turn.current
         calls = state["messages"][-1].tool_calls
+        run.after_tool.open([c["id"] for c in calls], partial(turn.steering.take, config))
 
         async def call(c: ToolCall) -> list[_Update]:
             match await run.results.due(c["id"]):
@@ -774,11 +899,15 @@ def build_claude_code_graph(
             raise failed.exceptions[0] from None
         uuids = await run.tool_result_records([c["id"] for c in calls])
         await run.settle(uuids)
+        steered: list[HumanMessage] = []
+        if (message := await run.after_tool.taken()) is not None:
+            turn.steering.delivered(config, message)
+            steered.append(message)
         session = turn.commit(run.store.drain(through=uuids))
         updates = [_given_instead(u, run.results, c) for c, t in zip(calls, tasks, strict=True) for u in t.result()]
         if all(isinstance(u, dict) for u in updates):
-            return {"messages": [m for u in updates for m in u["messages"]], **session}
-        return [*updates, Command(update=session)]
+            return {"messages": [*(m for u in updates for m in u["messages"]), *steered], **session}
+        return [*updates, Command(update={"messages": steered, **session})]
 
     g = StateGraph(ClaudeCodeState)
     for name, node in entry:
@@ -792,8 +921,27 @@ def build_claude_code_graph(
     return g.compile(checkpointer=checkpointer)
 
 
+def _cut_off(messages: Sequence[BaseMessage]) -> tuple[int, list[ToolCall]] | None:
+    """Where the thread's last assistant message is, and its calls no result
+    answers, when the thread went on past it without them."""
+    at = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], AIMessage)), None)
+    if at is None or at == len(messages) - 1:
+        return None
+    answered = {m.tool_call_id for m in messages[at + 1 :] if isinstance(m, ToolMessage)}
+    calls = [c for c in messages[at].tool_calls if c["id"] not in answered]
+    return (at, calls) if calls else None
+
+
 def _as_given(message: ToolMessage, block: ToolResultBlock) -> ToolMessage:
     return message.model_copy(update={"content": block.content or "", "status": "error" if block.is_error else "success"})
+
+
+def _unrecorded(call: ToolCall) -> str:
+    """What ``PatchToolCallsMiddleware`` answers a call no result was recorded for."""
+    return (
+        f"Tool call {call['name'] or 'unknown'} with id {call['id']} did not complete - no result was recorded. "
+        "It may have been cancelled or interrupted."
+    )
 
 
 def _given_instead(update: _Update, results: ToolResults, call: ToolCall) -> _Update:

@@ -185,12 +185,26 @@ class CheckpointSessionStore:
         #: (session id, record), in the order the CLI wrote them.
         self._pending: list[tuple[str, dict[str, Any]]] = []
         self.arrived = Arrivals("session records")
+        #: The record of each tool result, by tool use id, including the ones
+        #: the CLI writes without saying so on its stream (a cut-off call's).
+        self.results = Arrivals("tool result records")
+        #: Each result's (record, block), by tool use id.
+        self.result_blocks: dict[str, tuple[str, dict[str, Any]]] = {}
 
     async def append(self, key: dict[str, Any], entries: list[dict[str, Any]]) -> None:
         if key.get("subpath"):
             raise SessionDrift(f"the CLI wrote a {key['subpath']} transcript, which a turn never keeps")
-        self._pending.extend((key["session_id"], e) for e in copy.deepcopy(entries))
+        entries = copy.deepcopy(entries)
+        self._pending.extend((key["session_id"], e) for e in entries)
         await self.arrived.add({e["uuid"]: e["uuid"] for e in entries if e.get("uuid")})
+        results = {}
+        for e in entries:
+            content = (e.get("message") or {}).get("content") if e.get("type") == "user" and e.get("uuid") else None
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    self.result_blocks[block["tool_use_id"]] = (e["uuid"], block)
+                    results[block["tool_use_id"]] = e["uuid"]
+        await self.results.add(results)
 
     async def load(self, key: dict[str, Any]) -> None:
         return None

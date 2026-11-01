@@ -95,6 +95,9 @@ class _Call:
     result: asyncio.Future[CallToolResult]
     #: The result the CLI gave Claude for the call.
     given: ToolResultBlock | None = None
+    #: The step's result as Anthropic blocks, where it holds one MCP cannot
+    #: carry (a PDF), for the PostToolUse hook to hand the CLI instead.
+    blocks: list[dict[str, Any]] | None = None
 
 
 class ToolResults:
@@ -123,9 +126,23 @@ class ToolResults:
         return call
 
     def resolve(self, message: ToolMessage) -> None:
-        result = self._call(message.tool_call_id).result
-        if not result.done():
-            result.set_result(to_call_result(message))
+        call = self._call(message.tool_call_id)
+        if call.result.done():
+            return
+        content = anthropic_content(message)
+        if isinstance(content, list) and any(b.get("type") == "document" for b in content):
+            call.blocks = content
+        call.result.set_result(to_call_result(message))
+
+    def blocks(self, tool_use_id: str) -> list[dict[str, Any]] | None:
+        """The result to hand the CLI in place of its MCP form, where that form lost a block."""
+        call = self._calls.get(tool_use_id)
+        return call.blocks if call is not None else None
+
+    def refused(self, tool_use_id: str) -> bool:
+        """Whether the CLI answered the call itself without asking for it."""
+        call = self._calls.get(tool_use_id)
+        return call is not None and call.due.done() and isinstance(call.due.result(), Answered)
 
     def fail_all(self, reason: str) -> None:
         self._closed = reason
@@ -156,6 +173,10 @@ class ToolResults:
             if not call.due.done():
                 call.due.set_result(Ended())
 
+    def reopen(self) -> None:
+        """The turn sent the CLI another query: its calls are new ones."""
+        self._query_ended = False
+
     def given_instead(self, tool_use_id: str, name: str) -> ToolResultBlock | None:
         """The CLI's answer to a call it ran through us, where Claude was given
         other text than the step's result: a PostToolUse hook's replacement,
@@ -171,6 +192,8 @@ class ToolResults:
             return None
         block, ours = call.given, call.result.result().content
         given = [{"type": "text", "text": block.content}] if isinstance(block.content, str) else list(block.content or [])
+        if call.blocks is not None and given == call.blocks:
+            return None
         if ours == [TextContent(type="text", text="")] and given == [{"type": "text", "text": f"({name} completed with no output)"}]:
             return None
         expected: list[Callable[[dict[str, Any]], bool]] = []
@@ -216,7 +239,9 @@ def to_call_result(message: ToolMessage) -> CallToolResult:
     """The result as MCP content, from the blocks a langalpha turn would send Claude.
 
     An image reaches Claude as an image. MCP has no document content, so a PDF
-    goes as a resource, which the CLI saves and names to Claude in its own words.
+    goes as a resource, which the CLI would save and name to Claude in its own
+    words; the runtime's PostToolUse hook hands the CLI the document block in
+    its place (``ToolResults.blocks``).
     """
     content = anthropic_content(message)
     blocks: list[Any] = []
