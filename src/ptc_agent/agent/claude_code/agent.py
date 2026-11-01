@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec
+from ptc_agent.agent.claude_code.compaction import CompactionRules
 from ptc_agent.agent.claude_code.launcher import Launcher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY, Baseline, ClaudeTurn, build_claude_code_graph
 from ptc_agent.agent.middleware.steering import SteeringMiddleware
@@ -58,7 +59,7 @@ class ClaudeCodeGraph:
 def claude_code_graph(
     agent: Any, *, system_prompt: str, target: ClaudeCodeTarget, user_id: str | None,
     thread_id: str | None, checkpointer: Any, launcher: Launcher, entry: Sequence[Any] = (),
-    baseline: Baseline | None = None, steering: SteeringMiddleware | None = None,
+    compaction: CompactionRules, baseline: Baseline | None = None, steering: SteeringMiddleware | None = None,
     alert_senders: frozenset[str] = frozenset(),
 ) -> ClaudeCodeGraph:
     """The turn graph for ``agent``, the compiled agent ``create_agent`` built.
@@ -70,7 +71,8 @@ def claude_code_graph(
     ``alert_senders`` as a langalpha turn does. The user is who
     Claude Code is told the device belongs to and the thread names its
     working directory, so a turn without either is refused. ``launcher`` is
-    where the turn's CLI runs.
+    where the turn's CLI runs, and ``compaction`` when Claude's session
+    compacts and moves to this build's prompt and tools.
     """
     if not (user_id and thread_id):
         raise RuntimeError("a Claude Code turn runs for a user, on a thread")
@@ -83,8 +85,8 @@ def claude_code_graph(
         billing={k: v for k, v in (target.metadata or {}).items() if isinstance(v, str)},
         effort=target.effort,
     )
-    turn = ClaudeTurn(spec, launcher, identity=user_id, thread_key=thread_id, baseline=baseline, steering=steering,
-                      alert_senders=alert_senders)
+    turn = ClaudeTurn(spec, launcher, identity=user_id, thread_key=thread_id, baseline=baseline, compaction=compaction,
+                      steering=steering, alert_senders=alert_senders)
     hooks = [(name, nodes[name].runnable) for m in entry if (name := f"{m.name}.before_agent") in nodes]
     graph = build_claude_code_graph(tool_node, entry=hooks, checkpointer=checkpointer).with_config(
         {"recursion_limit": agent.config["recursion_limit"], "configurable": {TURN_KEY: turn}}

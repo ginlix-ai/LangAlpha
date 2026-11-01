@@ -27,6 +27,8 @@ from typing_extensions import NotRequired
 from langgraph.channels import DeltaChannel
 
 SESSION_SNAPSHOT_FREQUENCY = 250
+#: How long a step waits for the CLI's records behind the messages it commits.
+SETTLE_TIMEOUT_S = 10.0
 
 
 class SessionDrift(RuntimeError):
@@ -53,31 +55,40 @@ class SessionPin(TypedDict):
     Claude's thinking is bound to the prefix in front of it, so every turn of
     a session is launched from these rather than from what the current build
     would send: a deploy that changes the prompt or a tool reaches a session
-    only where its prefix is rewritten anyway.
+    only where its prefix is rewritten anyway. The build's prompt sources and
+    ``prompt_version`` are kept beside them, to tell a deploy's change from
+    a change of per-turn inputs (``compaction.py``).
     """
 
     system_prompt: str
     tools: list[ToolDefinition]
+    source_digest: NotRequired[str]
+    prompt_version: NotRequired[int]
 
 
 class SessionRecords(TypedDict, total=False):
     """The channel's value: Claude's session id, its transcript in write order,
-    the prompt and tools it runs on, and the baseline epoch it was handed."""
+    the prompt and tools it runs on, the baseline epoch it was handed, and
+    whether the CLI compacted it on a pin the build of that run did not send,
+    which leaves it due the move that compaction was for (``repin_due``)."""
 
     session_id: str
     entries: list[dict[str, Any]]
     pinned: SessionPin
     baseline: str
+    repin_due: bool
 
 
 class SessionWrite(TypedDict):
     """One write to the channel: records the CLI appended, in its order, and
-    the pin or baseline epoch the session holds from this write on."""
+    the pin or baseline epoch the session holds from this write on, and
+    whether a pin it writes is one the session is due to move from."""
 
     session_id: str
     entries: list[dict[str, Any]]
     pinned: NotRequired[SessionPin | None]
     baseline: NotRequired[str]
+    repin_due: NotRequired[bool]
 
 
 def compacted(entry: Mapping[str, Any]) -> bool:
@@ -102,18 +113,21 @@ def session_records_reducer(
     voids the baseline. The pin holds: the CLI records the prompt and tools
     of the launch that compacted on its next request and replays that record
     from then on, whatever a later launch passes, so the session goes on
-    running on the pin it was launched with.
+    running on the pin it was launched with. A write that names a pin says
+    whether the session is due to move from it, so a new pin clears it.
     """
     state = state or {}
     session_id = state.get("session_id")
     entries = list(state.get("entries") or [])
-    pinned, baseline = state.get("pinned"), state.get("baseline")
+    pinned, baseline, due = state.get("pinned"), state.get("baseline"), state.get("repin_due", False)
     seen = {e["uuid"] for e in entries if e.get("uuid")}
     for w in (w for item in writes for w in ([item] if isinstance(item, dict) else item)):
         if session_id and w["session_id"] != session_id:
-            entries, seen, pinned, baseline = [], set(), None, None
+            entries, seen, pinned, baseline, due = [], set(), None, None, False
         session_id = w["session_id"]
         pinned, baseline = w.get("pinned", pinned), w.get("baseline", baseline)
+        if "pinned" in w:
+            due = w.get("repin_due", False)
         for entry in w["entries"]:
             uid = entry.get("uuid")
             if uid in seen:
@@ -130,6 +144,8 @@ def session_records_reducer(
         out["pinned"] = pinned
     if baseline:
         out["baseline"] = baseline
+    if due:
+        out["repin_due"] = True
     return out
 
 
