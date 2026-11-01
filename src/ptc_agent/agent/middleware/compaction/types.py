@@ -126,6 +126,9 @@ class CompactionState(UnsentThinkingState):
     _cached_input_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _cached_output_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     _last_model_response_at: Annotated[NotRequired[float], PrivateStateAttr]
+    #: What the newest answer leaves for a read between turns (see
+    #: ``rebuild.answer_reading``).
+    _last_answer: Annotated[NotRequired[dict[str, Any]], PrivateStateAttr]
     #: Set when a run starts and cleared by its first model call, which
     #: alone may take a turn that ended on tool results as a turn start (see
     #: ``utils.turn_start_cut``). Main agent only.
