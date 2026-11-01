@@ -128,7 +128,7 @@ def test_a_session_the_cli_compacted_forgets_the_baseline_it_was_handed():
     assert records["baseline"] == "e1"
     compacted = [{"session_id": "s", "entries": [{"uuid": "b", "type": "system", "subtype": "compact_boundary"}]}]
     after = session_records_reducer(records, [compacted])
-    assert "baseline" not in after and "pinned" not in after
+    assert "baseline" not in after and after["pinned"] == held["pinned"]
 
 
 def test_a_session_the_cli_starts_over_holds_only_what_the_run_handed_it():
@@ -290,7 +290,7 @@ async def test_a_stop_flush_keeps_claudes_session_as_it_was():
     assert (await graph.aget_state(config)).values["claude_session"]["entries"] == [{"type": "custom-title"}]
 
 
-def test_a_session_keeps_its_pin_adopts_one_once_and_drops_it_when_compacted():
+def test_a_session_keeps_its_pin_through_a_compaction_and_adopts_one_once():
     from ptc_agent.agent.claude_code.session import session_records_reducer
 
     def turn():
@@ -314,7 +314,7 @@ def test_a_session_keeps_its_pin_adopts_one_once_and_drops_it_when_compacted():
     assert state["pinned"]["system_prompt"] == "now"
 
     boundary = [{"session_id": "s", "entries": [{"uuid": "b", "subtype": "compact_boundary"}]}]
-    assert "pinned" not in session_records_reducer(state, [adopting.commit(boundary)["claude_session"]])
+    assert session_records_reducer(state, [adopting.commit(boundary)["claude_session"]])["pinned"] == state["pinned"]
     assert "pinned" not in session_records_reducer(state, [[{"session_id": "s2", "entries": [{"uuid": "c"}]}]])
 
 

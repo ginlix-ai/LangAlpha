@@ -219,6 +219,48 @@ async def test_a_session_keeps_the_prompt_and_tools_it_started_on_across_a_deplo
     assert deployed.system_prompt in fresh[0] and fresh[1] == ["Bash", "Grep"]
 
 
+#: The CLI's own compaction set to fire once a turn's context passes about
+#: 4,800 tokens: 6% of the smallest window it accepts, less its output reserve.
+COMPACTS_EARLY = {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "6"}
+
+
+async def test_a_session_keeps_its_prompt_and_tools_past_a_compaction_the_cli_made_mid_turn():
+    """The CLI compacts between a tool result and the next request, re-records
+    the prompt and tools the turn launched with, and replays that record on
+    every later launch. So the turn after a deploy still sends the bytes the
+    compacted turn's thinking was made under."""
+    @tool("Bash")
+    async def long_output(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 1000
+
+    @tool("Grep")
+    async def grep(pattern: str) -> str:
+        """Search files."""
+        return ""
+
+    started = dataclasses.replace(SPEC, tools=[long_output])
+    deployed = dataclasses.replace(started, system_prompt="You are the redeployed test agent. Reply tersely.", tools=[long_output, grep])
+    graph = build_claude_code_graph(ToolNode([long_output, grep]), checkpointer=InMemorySaver())
+
+    def sent(request):
+        return json.dumps(request["system"][2:]), [t["name"] for t in request["tools"]]
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(started, LocalLauncher(env=env, token=TOKEN), graph, "t-mid", [HumanMessage("FACT: the code word is heron")])
+        compacting = await run_turn(started, LocalLauncher(env={**env, **COMPACTS_EARLY}, token=TOKEN), graph, "t-mid",
+                                    [HumanMessage("RUN_TOOL please")])
+        last = api.model_requests[-1]
+        n = len(api.model_requests)
+        values = await run_turn(deployed, LocalLauncher(env=env, token=TOKEN), graph, "t-mid", [HumanMessage("RECALL it")])
+        after = api.model_requests[n]
+    assert any(e.get("subtype") == "compact_boundary" for e in compacting["claude_session"]["entries"])
+    assert any(b.get("type") == "thinking" for m in last["messages"] if isinstance(m["content"], list) for b in m["content"])
+    assert sent(after) == sent(last) and started.system_prompt in sent(after)[0]
+    assert values["claude_session"]["pinned"]["system_prompt"] == started.system_prompt
+
+
 async def test_a_refused_request_fails_the_turn_and_commits_no_reply():
     graph = new_graph()
     async with FakeMessagesAPI() as api:
