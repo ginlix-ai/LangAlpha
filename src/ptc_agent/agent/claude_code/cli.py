@@ -93,7 +93,13 @@ def options_for(
             "CLAUDE_CONFIG_DIR": prepared.config_dir,
             "ENABLE_TOOL_SEARCH": "false",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+            "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # The 1h cache whatever the login: an API key or an account in
+            # overage would otherwise get 5m, and a thread's gaps (a reply
+            # read, a background command, a wakeup) often pass five minutes.
+            "CLAUDE_CODE_PROMPT_CACHE_TTL": "1h",
             "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0",
             "MCP_TOOL_TIMEOUT": "3600000",
             "MAX_MCP_OUTPUT_TOKENS": "200000",
