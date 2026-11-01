@@ -59,9 +59,10 @@ defaults:
   # tool; the agent render and the subagent compiler pass the real value.
   todo_enabled: false
 
-  # Scratchpad (opt-in feature). Gates every scratchpad mention in the system
+  # Scratchpad (opt-out feature). Gates every scratchpad mention in the system
   # prompt, which names only the folders' pattern; this thread's own folder
   # rides the runtime-context baseline, so the prompt is the same across threads.
+  # The agent render passes the real value, which needs a thread to name it.
   scratchpad_enabled: false
 
   # Tool-tier gates for tool_guide. The main agent binds all three, so the
