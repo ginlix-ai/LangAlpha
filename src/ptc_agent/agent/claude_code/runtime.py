@@ -53,7 +53,14 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
-from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules, compact, report_usage, same_pin
+from ptc_agent.agent.claude_code.compaction import (
+    NO_RULES,
+    CompactionRules,
+    SessionCompaction,
+    compact,
+    report_usage,
+    same_pin,
+)
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, TurnSteering
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
@@ -542,19 +549,31 @@ class ClaudeTurn:
             logger.info("[ClaudeCode] re-pin=waits reason=%s", reason)
             return []
         try:
-            held = await self._compact(records)
+            held = await self._compact(state)
         except Exception:  # noqa: BLE001 - a session that did not move runs the turn on its own pin
             logger.warning("[ClaudeCode] the session's compaction failed; the turn runs on its pin", exc_info=True)
             return []
         logger.info("[ClaudeCode] re-pin=%s reason=%s", "yes" if held else "no_compaction", reason)
         return held
 
-    async def _compact(self, records: SessionRecords) -> list[SessionWrite]:
+    async def compact_between_turns(self, state: ClaudeCodeState) -> SessionCompaction | None:
+        """A manual compaction, which moves the session to this build's pin
+        as a turn start due one does. None when the thread has no session yet
+        or the CLI found nothing to summarize."""
+        records = state.get("claude_session") or {}
+        if not records.get("session_id"):
+            return None
+        writes = await self._compact(state)
+        return SessionCompaction(records.get("entries") or [], writes) if writes else None
+
+    async def _compact(self, state: ClaudeCodeState) -> list[SessionWrite]:
         """The CLI compacting the session under the pin it runs on, its
         records carrying this build's pin, which the session runs on from
         then on: the CLI records a launch's prompt and tools after a compaction."""
+        records = state.get("claude_session") or {}
         writes = await compact(self.spec, records.get("pinned") or self.current_pin(), self.launcher,
-                               thread_key=self.thread_key, identity=self.identity, records=records)
+                               thread_key=self.thread_key, identity=self.identity, records=records,
+                               transcript_note=await self.compaction.transcript_note(self.thread_key, state))
         return _pinned_after(writes, self.current_pin())
 
     def opening(self, state: ClaudeCodeState) -> tuple[SessionPin, Prompt | None]:

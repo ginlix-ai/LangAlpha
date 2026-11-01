@@ -22,6 +22,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
+from ptc_agent.agent.claude_code.cli import COMPACT_INSTRUCTIONS
 from ptc_agent.agent.claude_code.compaction import CompactionRules
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import (
@@ -381,6 +382,58 @@ async def test_a_compaction_whose_summary_is_refused_fails_in_its_own_words_and_
                           identity="test-user", records=session)
     assert failed.value.kind == "auth_failed" and "401" in str(failed.value)
     assert saved.refusals == [TOKEN]
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5"])
+async def test_only_haikus_summary_request_ends_on_its_last_answer_and_carries_our_instructions(model):
+    """Every other model's is the CLI's own, which ends on the last prompt
+    with its own request after it. The answer a Haiku launch is handed is in
+    neither that request nor anything later turns send."""
+    given = spec(model)
+    graph = new_graph()
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        await run_turn(given, launcher, graph, f"t-stock-{model}", [HumanMessage("FACT: the code word is heron")])
+        before = await run_turn(given, launcher, graph, f"t-stock-{model}", [HumanMessage("say hi")])
+        n = len(api.model_requests)
+        compaction = await ClaudeTurn(given, launcher, identity="test-user", thread_key=f"t-stock-{model}").compact_between_turns(before)
+        (summary,) = api.model_requests[n:]
+        await graph.aupdate_state({"configurable": {"thread_id": f"t-stock-{model}"}}, compaction.update())
+        after = await run_turn(given, launcher, graph, f"t-stock-{model}", [HumanMessage("RECALL it")])
+        nxt = api.model_requests[-1]
+    haiku = model.startswith("claude-haiku-")
+    assert "Noted." not in json.dumps(summary["messages"]) + json.dumps(nxt["messages"]) + json.dumps(after["claude_session"])
+    last, prompt = (json.dumps(m) for m in summary["messages"][-2:])
+    assert (COMPACT_INSTRUCTIONS in prompt) is haiku
+    assert ("say hi" in prompt) is not haiku and ("ECHO say hi" in last) is haiku
+
+
+async def test_a_compaction_between_turns_moves_the_session_to_this_builds_pin_and_the_next_turn_runs_on_it():
+    @tool("Grep")
+    async def grep(pattern: str) -> str:
+        """Search files."""
+        return ""
+
+    deployed = dataclasses.replace(SPEC, system_prompt="You are the redeployed test agent. Reply tersely.", tools=[*SPEC.tools, grep])
+    graph = build_claude_code_graph(ToolNode([*SPEC.tools, grep]), checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t-manual"}}
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        await run_turn(SPEC, launcher, graph, "t-manual", [HumanMessage("FACT: the code word is heron")])
+        before = (await run_turn(SPEC, launcher, graph, "t-manual", [HumanMessage("RUN_TOOL please")]))
+        n = len(api.model_requests)
+        compaction = await ClaudeTurn(deployed, launcher, identity="test-user", thread_key="t-manual").compact_between_turns(before)
+        (summary,) = api.model_requests[n:]
+        await graph.aupdate_state(config, compaction.update())
+        after = await run_turn(deployed, launcher, graph, "t-manual", [HumanMessage("RECALL it")])
+        nxt = api.model_requests[-1]
+    assert SPEC.system_prompt in json.dumps(summary["system"])
+    assert compaction.summary_text and compaction.original_count >= 4 and compaction.new_count >= 1
+    assert after["messages"][:len(before["messages"])] == before["messages"]
+    assert after["messages"][-1].text.startswith("I remember")
+    assert deployed.system_prompt in json.dumps(nxt["system"]) and [t["name"] for t in nxt["tools"]] == ["Bash", "Grep"]
+    assert after["claude_session"]["pinned"]["system_prompt"] == deployed.system_prompt
+    assert sum(e.get("subtype") == "compact_boundary" for e in after["claude_session"]["entries"]) == 1
 
 
 async def test_a_refused_request_fails_the_turn_and_commits_no_reply():

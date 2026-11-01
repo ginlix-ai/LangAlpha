@@ -5,8 +5,9 @@ The CLI compacts a session on its own once the context reaches the thread's
 threshold, given the window ``cli.options_for`` sets from it. A session runs
 on the pin it started on, and the CLI replays its record of that pin until it
 compacts, whatever a later launch passes. So the build's prompt and tools
-reach a session only through a compaction (``compact``): at a turn start the
-CLI compacts under the old pin, and the next launch runs on the new one.
+reach a session only through a compaction (``compact``): at a turn start, or
+on a manual /compact, the CLI compacts under the old pin, and the next launch
+runs on the new one.
 
 Whether a turn start does that follows the main agent's turn-start rebuild
 (``middleware/compaction/rebuild.py``): a session at or over the thread's
@@ -41,7 +42,7 @@ from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 from langgraph.constants import TAG_NOSTREAM
 
-from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, is_haiku, launch, received, turn_failure
+from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, is_haiku, launch, pointed, received, turn_failure
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay
 from ptc_agent.agent.claude_code.session import (
@@ -216,7 +217,7 @@ NO_RULES = CompactionRules(floor_tokens=0)
 
 
 async def compact(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, thread_key: str, identity: str,
-                  records: SessionRecords) -> list[SessionWrite]:
+                  records: SessionRecords, transcript_note: str = "") -> list[SessionWrite]:
     """Have the CLI compact the session on the pin it runs on, in a launch of
     its own that takes no turn, and return the records it wrote; none when
     there was nothing to summarize. A launch or a summary request that fails
@@ -230,18 +231,19 @@ async def compact(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, thr
     budget = get_compaction_timeout()
     try:
         async with asyncio.timeout(budget):
-            return await _compacted(spec, pin, launcher, thread_key=thread_key, identity=identity, records=records)
+            return await _compacted(spec, pin, launcher, thread_key=thread_key, identity=identity, records=records,
+                                    transcript_note=transcript_note)
     except TimeoutError:
         raise ClaudeTurnFailed("api_error", f"the compaction did not finish within {budget:g}s") from None
 
 
 async def _compacted(spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, *, thread_key: str, identity: str,
-                     records: SessionRecords) -> list[SessionWrite]:
+                     records: SessionRecords, transcript_note: str) -> list[SessionWrite]:
     store = CheckpointSessionStore()
     prepared, client, _ = await launch(
         spec, pin, launcher, thread_key=thread_key, identity=identity,
         records=noted(records) if is_haiku(spec.model) else records, store=store,
-        results=ToolResults(), query="/compact", compaction=True,
+        results=ToolResults(), query="/compact", compaction=True, transcript_note=transcript_note,
     )
     try:
         boundary, result, failed = None, None, None
@@ -332,6 +334,47 @@ async def _metered(spec: RuntimeSpec, result: ResultMessage) -> None:
             await relay.feed(events()).ainvoke([], {"tags": [TAG_NOSTREAM]})
         except Exception:
             logger.warning("[ClaudeCode] the compaction's usage was not reported", exc_info=True)
+
+
+def _messages(entries: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The conversation messages a session's records hold since its last
+    compaction, by the uuid of each record, one key per message: the CLI
+    records an answer as one record per content block."""
+    return {
+        e["uuid"]: (e.get("message") or {}).get("id") or e["uuid"]
+        for e in _since_compaction(entries)
+        if e.get("type") in ("user", "assistant") and e.get("uuid") and not e.get("isMeta")
+    }
+
+
+@dataclass(frozen=True)
+class SessionCompaction:
+    """What a compaction between turns wrote, read off the session's records
+    before it (``entries``) and the records it wrote."""
+
+    entries: Sequence[Mapping[str, Any]]
+    writes: list[SessionWrite]
+
+    @property
+    def summary_text(self) -> str:
+        summary = next((e for w in self.writes for e in w["entries"] if e.get("isCompactSummary")), {})
+        content = (summary.get("message") or {}).get("content")
+        text = content if isinstance(content, str) else "".join(b.get("text", "") for b in content or [] if isinstance(b, dict))
+        return pointed(text, "")
+
+    @property
+    def original_count(self) -> int:
+        return len(set(_messages(self.entries).values()))
+
+    @property
+    def new_count(self) -> int:
+        """The summary and the messages the CLI kept after it."""
+        boundary = next((e for w in self.writes for e in w["entries"] if e.get("subtype") == "compact_boundary"), {})
+        kept = set(((boundary.get("compactMetadata") or {}).get("preservedMessages") or {}).get("uuids") or [])
+        return 1 + len({key for uuid, key in _messages(self.entries).items() if uuid in kept})
+
+    def update(self) -> dict[str, Any]:
+        return {"claude_session": self.writes}
 
 
 def report_usage(ai: AIMessage, threshold: int) -> None:

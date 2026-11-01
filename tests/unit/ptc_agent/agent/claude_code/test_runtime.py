@@ -392,6 +392,24 @@ async def _stop_at_layout(self, thread_key, session_id, entries, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_a_compaction_launch_points_the_summaries_it_resumes_at_the_threads_transcript(monkeypatch):
+    prepared = []
+
+    async def keep(self, thread_key, session_id, entries, **kwargs):
+        prepared.append(entries)
+        raise OSError("stop at the layout")
+
+    monkeypatch.setattr(LocalLauncher, "prepare", keep)
+    rules = CompactionRules(0, backend=_backend(routes_serve=True), workspace_id="w-1")
+    turn = ClaudeTurn(RuntimeSpec(system_prompt="s", model="m", tools=[bash], billing={}), _NoTransport(), identity="u",
+                      thread_key="t-note", compaction=rules)
+    with pytest.raises(OSError, match="stop at the layout"):
+        await turn._compact({"messages": [HumanMessage("hi")], "claude_session": _summarized(_CLI_SUMMARY)})
+    (entries,) = prepared
+    assert transcript_note(TranscriptTarget("t-note")) in _summary_text(entries) and _DEAD not in _summary_text(entries)
+
+
+@pytest.mark.asyncio
 async def test_a_turn_that_fails_to_start_leaves_nothing_on_the_machine(monkeypatch):
     prepared = []
     real = LocalLauncher.prepare
@@ -647,8 +665,8 @@ async def test_a_turn_whose_last_reply_is_another_models_does_not_compact_claude
                       identity="u", thread_key="t", compaction=Due(0))
     compacted = []
 
-    async def compact(records):
-        compacted.append(records)
+    async def compact(state):
+        compacted.append(state["claude_session"])
         return []
 
     turn._compact = compact

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from ptc_agent.agent.claude_code import compaction
-from ptc_agent.agent.claude_code.compaction import CompactionRules
+from ptc_agent.agent.claude_code.compaction import CompactionRules, SessionCompaction
 
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=UTC).timestamp()
 CURRENT = {"system_prompt": "new", "tools": [], "source_digest": "build-2", "prompt_version": 3}
@@ -92,3 +92,24 @@ def test_with_compaction_off_no_change_moves_a_session(monkeypatch):
     for stale in (records(minutes_ago=1, tokens=1_000, prompt_version=2), records(minutes_ago=61), records(minutes_ago=1, tokens=500_000)):
         assert rules.repin_plan(stale, CURRENT, NOW) == (False, "off")
 
+
+_CLI_SUMMARY = (
+    "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\nthe work\n\n"
+    "If you need specific details from before compaction (like exact code snippets, error messages, or content you "
+    "generated), read the full transcript at: /tmp/claude-cfg-k2/projects/-tmp-t/s.jsonl\n\nNote: the earliest part of the "
+    "conversation was too large to include and is NOT covered by this summary (the full transcript mentioned above still "
+    "has it). Say so.\nContinue the conversation from where it left off."
+)
+
+
+@pytest.mark.parametrize("blocks", [False, True])
+def test_the_summary_a_user_is_shown_keeps_the_clis_words_but_not_its_transcript_path(blocks):
+    """The path is to a file in the compaction launch's own config dir, gone once that launch ends."""
+    content = [{"type": "text", "text": _CLI_SUMMARY}] if blocks else _CLI_SUMMARY
+    summary = {"uuid": "sum", "type": "user", "isCompactSummary": True, "message": {"role": "user", "content": content}}
+    shown = SessionCompaction([], [{"session_id": "s", "entries": [summary]}])
+    assert shown.summary_text == (
+        "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\nthe work"
+        "\n\nNote: the earliest part of the conversation was too large to include and is NOT covered by this summary. "
+        "Say so.\nContinue the conversation from where it left off."
+    )
