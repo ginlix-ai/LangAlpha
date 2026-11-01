@@ -1,0 +1,35 @@
+{
+  "name": "langalpha",
+  "version": "0.1.0-rc.0",
+  "description": "Command-line client for LangAlpha: threads, workspaces, computers and automations",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ginlix-ai/LangAlpha.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/ginlix-ai/LangAlpha/tree/main/cli#readme",
+  "type": "module",
+  "bin": {
+    "la": "dist/la.mjs",
+    "langalpha": "dist/la.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "packageManager": "pnpm@12.6.0"
+}
