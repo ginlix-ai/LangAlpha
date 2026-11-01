@@ -108,17 +108,21 @@ def with_transcript(entries: list[dict[str, Any]], note: str) -> list[dict[str, 
     return [_pointed(e, note) if e.get("isCompactSummary") else e for e in entries]
 
 
-def _pointed(entry: dict[str, Any], note: str) -> dict[str, Any]:
-    def point(text: str) -> str:
-        text = _CLI_TRANSCRIPT.sub(lambda _: note, text)
-        return text if note else text.replace(_CLI_TRANSCRIPT_ASIDE, "")
+def pointed(text: str, note: str) -> str:
+    """A compaction summary's ``text`` ending on ``note`` in place of the
+    CLI's pointer at its own transcript; with no note, on neither, and without
+    the aside that sends the reader to it."""
+    text = _CLI_TRANSCRIPT.sub(lambda _: note, text)
+    return text if note else text.replace(_CLI_TRANSCRIPT_ASIDE, "")
 
+
+def _pointed(entry: dict[str, Any], note: str) -> dict[str, Any]:
     message = entry.get("message") or {}
     content = message.get("content")
     if isinstance(content, str):
-        content = point(content)
+        content = pointed(content, note)
     elif isinstance(content, list):
-        content = [{**b, "text": point(b["text"])} if isinstance(b, dict) and isinstance(b.get("text"), str) else b
+        content = [{**b, "text": pointed(b["text"], note)} if isinstance(b, dict) and isinstance(b.get("text"), str) else b
                    for b in content]
     else:
         return entry
