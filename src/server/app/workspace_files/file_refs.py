@@ -18,9 +18,9 @@ from pydantic import BaseModel, Field, StringConstraints
 
 from src.server.services.workspace_file_containment import workspace_relative_path
 
+from src.server.services.served_paths import is_always_hidden_path, is_hidden_path
+
 from ._shared import (
-    _is_always_hidden_path,
-    _is_hidden_path,
     _is_system_path,
 )
 
@@ -105,11 +105,11 @@ def name_glob(name: str) -> str:
 
 def visible_paths(paths: list[str], candidates: list[str]) -> list[str]:
     """Drop paths the file panel never shows, unless the reference points into one."""
-    wants_hidden = any(_is_hidden_path(c) for c in candidates)
+    wants_hidden = any(is_hidden_path(c) for c in candidates)
     return [
         p
         for p in paths
-        if not _is_always_hidden_path(p) and (wants_hidden or not _is_hidden_path(p))
+        if not is_always_hidden_path(p) and (wants_hidden or not is_hidden_path(p))
     ]
 
 

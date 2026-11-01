@@ -1,16 +1,15 @@
-"""The owner's side of share links: mint, review the file list, share, stop.
+"""The owner's side of share links: mint, list, stop.
 
-A top-level module rather than a file under ``workspace_files``: the manifest
-reads files through that package and judges them with ``share_access``, which
-``workspace_files`` cannot import back without a cycle.
+A file is shared by publishing its artifact (``app/artifacts``), which cuts
+the version visitors see; these routes find a file's or an app's link and
+stop one, and never share.
 
 Endpoints, all owner-only:
-- POST  /api/v1/workspaces/{id}/file-grant                 - a path grant for the owner's viewer
-- POST  /api/v1/workspaces/{id}/share-links                - get or create an item's link
-- GET   /api/v1/workspaces/{id}/share-links                - the shared links here
-- GET   /api/v1/workspaces/{id}/share-links/{code}/files   - the current file list
-- PATCH /api/v1/workspaces/{id}/share-links/{code}         - share with a reviewed list, or stop
-- GET   /api/v1/share-links/{code}                         - one of the owner's links, any workspace
+- POST  /api/v1/workspaces/{id}/file-grant          - a path grant for the owner's viewer
+- POST  /api/v1/workspaces/{id}/share-links         - get or create an item's link (file or app)
+- GET   /api/v1/workspaces/{id}/share-links         - the shared links here
+- PATCH /api/v1/workspaces/{id}/share-links/{code}  - stop sharing
+- GET   /api/v1/share-links/{code}                  - one of the owner's links, any workspace
 """
 
 from __future__ import annotations
@@ -21,34 +20,23 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from src.server.app.share_access import ShareScope, shared_path_visible
-from src.server.app.workspace_files._shared import owner_work_dir
+from src.server.app.artifacts.records import artifact_path
+from src.server.database import artifacts as artifacts_db
 from src.server.database.share_codes import share_path
 from src.server.database.share_links import (
-    KIND_FILE,
     KIND_APP,
+    KIND_FILE,
     ShareLink,
     ensure_app_link,
-    ensure_file_link,
+    file_link,
     get_link,
     list_shared,
     set_private,
-    set_shared,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
+from src.server.services.artifacts.events import publish_artifact_change
 from src.server.services.file_grants import grant_prefix, mint_file_grant, seconds_left
-from src.server.services.workspace_file_containment import contained_relative_path
-from src.server.services.workspace_files import (
-    owned_workspace_on_computer,
-    previous_dir_names_of,
-)
-from src.server.app.share_manifest import (
-    ManifestEntry,
-    ManifestEntryMissing,
-    ManifestTooLarge,
-    build_manifest,
-    manifest_drift,
-)
+from src.server.services.workspace_files import owned_workspace_on_computer
 from src.server.utils.api import CurrentUserId
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Share Links"])
@@ -63,7 +51,6 @@ class ShareLinkCreate(BaseModel):
 
 class ShareLinkUpdate(BaseModel):
     shared: bool
-    files: list[str] | None = None
 
 
 class ShareLinkResponse(BaseModel):
@@ -73,6 +60,8 @@ class ShareLinkResponse(BaseModel):
     kind: str
     path: str | None
     port: int | None
+    #: A file's artifact, so an ``/a/`` link in a reply opens it.
+    artifact_id: str | None
     title: str | None
     shared: bool
     shared_at: datetime | None
@@ -93,17 +82,13 @@ def _to_model(link: ShareLink) -> ShareLinkResponse:
         kind=link.kind,
         path=link.path,
         port=link.port,
+        artifact_id=link.artifact_id,
         title=link.display_title,
         shared=link.shared,
         shared_at=link.shared_at,
         shared_files=list(link.files) if link.shared and link.files else None,
         created_at=link.created_at,
     )
-
-
-async def _owned_workspace(workspace_id: str, user_id: str) -> tuple[dict[str, Any], str]:
-    workspace = await owned_workspace_on_computer(workspace_id, user_id)
-    return workspace, owner_work_dir(workspace)
 
 
 async def _owned_link(workspace: dict[str, Any], code: str) -> ShareLink:
@@ -113,28 +98,12 @@ async def _owned_link(workspace: dict[str, Any], code: str) -> ShareLink:
     return link
 
 
-async def _current_files(
-    workspace: dict[str, Any], link: ShareLink, user_id: str, work_dir: str
-) -> list[ManifestEntry]:
-    """The manifest as an HTTP answer: the caps are a 422 the dialog explains."""
-    try:
-        return await build_manifest(
-            workspace, link.path or "", user_id=user_id, work_dir=work_dir
-        )
-    except ManifestEntryMissing:
-        raise HTTPException(status_code=404, detail="File not found") from None
-    except ManifestTooLarge as e:
-        raise HTTPException(
-            status_code=422, detail={"code": e.code, "limit": e.limit}
-        ) from None
-
-
 @router.post("/{workspace_id}/file-grant", response_model=FileGrantResponse)
 async def mint_workspace_file_grant(
     workspace_id: str, x_user_id: CurrentUserId
 ) -> FileGrantResponse:
     """A path grant for the owner's own viewers; see ``services/file_grants``."""
-    workspace, _ = await _owned_workspace(workspace_id, x_user_id)
+    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
     grant = await mint_file_grant(str(workspace["workspace_id"]))
     return FileGrantResponse(
         prefix=grant_prefix(grant), expires_in=seconds_left(grant.expires_at)
@@ -145,21 +114,19 @@ async def mint_workspace_file_grant(
 async def get_or_create_share_link(
     workspace_id: str, body: ShareLinkCreate, x_user_id: CurrentUserId
 ) -> ShareLinkResponse:
-    """The item's one link, private on first sight. Cheap: no file list here."""
-    workspace, work_dir = await _owned_workspace(workspace_id, x_user_id)
-    ws_id = str(workspace["workspace_id"])
+    """The item's one link, private on first sight. A file's is its artifact
+    record, so this is also how a file gets one before a comment or a publish."""
+    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
 
     if body.kind == KIND_APP:
         if body.port is None:
             raise HTTPException(status_code=422, detail="A port is required")
-        return _to_model(await ensure_app_link(ws_id, body.port))
+        return _to_model(
+            await ensure_app_link(str(workspace["workspace_id"]), body.port)
+        )
 
-    path = contained_relative_path(
-        body.path or "", work_dir, previous_dir_names_of(workspace)
-    )
-    if path is None or not shared_path_visible(ShareScope(ws_id, ""), path):
-        raise HTTPException(status_code=400, detail="This file cannot be shared")
-    return _to_model(await ensure_file_link(ws_id, path))
+    ws_id, path = artifact_path(workspace, body.path or "")
+    return _to_model(file_link(await artifacts_db.ensure_artifact(ws_id, path)))
 
 
 @router.get("/{workspace_id}/share-links")
@@ -167,63 +134,40 @@ async def list_share_links(
     workspace_id: str, x_user_id: CurrentUserId
 ) -> dict[str, list[ShareLinkResponse]]:
     """Only shared links: a private one is found through its item."""
-    workspace, _ = await _owned_workspace(workspace_id, x_user_id)
+    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
     links = await list_shared(str(workspace["workspace_id"]))
     return {"links": [_to_model(link) for link in links]}
-
-
-@router.get("/{workspace_id}/share-links/{code}/files")
-async def share_link_files(
-    workspace_id: str, code: str, x_user_id: CurrentUserId
-) -> dict[str, Any]:
-    """The current file list, and how it differs from the list that is shared."""
-    workspace, work_dir = await _owned_workspace(workspace_id, x_user_id)
-    link = await _owned_link(workspace, code)
-    if link.kind != KIND_FILE:
-        raise HTTPException(status_code=400, detail="An app link has no file list")
-    entries = await _current_files(workspace, link, x_user_id, work_dir)
-    stored = list(link.files or ()) if link.shared else None
-    return {
-        "files": [e.as_dict() for e in entries],
-        "total_size": sum(e.size for e in entries),
-        "drift": manifest_drift(entries, stored),
-    }
 
 
 @router.patch("/{workspace_id}/share-links/{code}", response_model=ShareLinkResponse)
 async def update_share_link(
     workspace_id: str, code: str, body: ShareLinkUpdate, x_user_id: CurrentUserId
 ) -> ShareLinkResponse:
-    """Share with the list the owner reviewed, or make the link private again.
-
-    The list is recomputed and must equal what the owner saw: a file added
-    between the dialog opening and the switch flipping is a 409 carrying the
-    new list, never a silent widening of the share. A Stop that lands while
-    the list is being built is a 409 too, never undone by this write.
+    """Stop sharing. A file is shared by publishing its artifact, which cuts
+    the version visitors see, so asking to share one here is a 409 naming the
+    artifact to publish; an app link is never shared.
     """
-    workspace, work_dir = await _owned_workspace(workspace_id, x_user_id)
+    workspace = await owned_workspace_on_computer(workspace_id, x_user_id)
     link = await _owned_link(workspace, code)
 
-    if not body.shared:
-        return _to_model(await set_private(code) or link)
+    if link.kind == KIND_FILE:
+        if body.shared:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "publish_required", "artifact_id": link.artifact_id},
+            )
+        try:
+            artifact = await artifacts_db.unshare(
+                user_id=x_user_id, artifact_id=link.artifact_id or ""
+            )
+        except artifacts_db.ArtifactNotFound:
+            raise HTTPException(status_code=404, detail="Share link not found") from None
+        await publish_artifact_change(x_user_id, artifact)
+        return _to_model(file_link(artifact))
 
-    if link.kind != KIND_FILE:
+    if body.shared:
         raise HTTPException(status_code=400, detail="An app link cannot be shared")
-    if not body.files:
-        raise HTTPException(
-            status_code=422, detail="The reviewed file list is required to share"
-        )
-    entries = await _current_files(workspace, link, x_user_id, work_dir)
-    current = [e.path for e in entries]
-    if set(current) != set(body.files):
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "files_changed", "files": [e.as_dict() for e in entries]},
-        )
-    shared = await set_shared(code, current, expected_revision=link.revision)
-    if shared is None:
-        raise HTTPException(status_code=409, detail={"code": "link_changed"})
-    return _to_model(shared)
+    return _to_model(await set_private(code) or link)
 
 
 @owner_router.get("/{code}", response_model=ShareLinkResponse)

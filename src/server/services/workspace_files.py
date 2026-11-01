@@ -178,6 +178,37 @@ def owner_layout(workspace: dict[str, Any], *, manager: Any = None) -> Workspace
         ) from None
 
 
+def owner_work_dir(workspace: dict[str, Any], *, manager: Any = None) -> str:
+    return owner_layout(workspace, manager=manager).workspace
+
+
+def to_client_path(
+    sandbox: Any, absolute_path: str, work_dir: str | None = None
+) -> str:
+    """Convert an absolute sandbox path into a virtual client path.
+
+    The CLI and web UX prefer paths like "work/task/foo.txt" (no leading slash),
+    while still preserving true absolute /tmp paths. *work_dir* is the workspace
+    folder the route serves: a client path is relative to that folder, not to
+    the computer root the sandbox handle folds against.
+    """
+
+    if work_dir and absolute_path.startswith(f"{work_dir.rstrip('/')}/"):
+        return absolute_path[len(work_dir.rstrip("/")) + 1:]
+
+    virtual_path = sandbox.virtualize_path(absolute_path)
+
+    # Keep /tmp paths absolute.
+    if virtual_path.startswith("/tmp/"):
+        return virtual_path
+
+    # Strip the leading slash for working-directory paths.
+    if virtual_path.startswith("/"):
+        return virtual_path[1:]
+
+    return virtual_path
+
+
 def previous_dir_names_of(workspace: Mapping[str, Any] | None) -> tuple[str, ...]:
     """The folders a rename moved this workspace out of, for folding old spellings.
 
