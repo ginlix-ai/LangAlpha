@@ -14,6 +14,7 @@ from langgraph.graph import START, MessagesState, StateGraph
 from ptc_agent.agent.claude_code.agent import ClaudeCodeGraph, claude_code_graph
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import TURN_KEY
+from ptc_agent.agent.claude_code.tools_bridge import tool_specs
 from src.llms.llm import create_llm
 
 
@@ -212,6 +213,19 @@ def test_a_claude_code_turn_takes_reports_and_steers_in_but_no_task_resume():
     a wakeup or an alert still reaches it while it runs."""
     graph = _built()
     assert graph.turn.steering._steering.kinds == ("report", "steer")
+
+
+#: The CLI cuts an MCP tool's description past this many characters and adds
+#: "… [truncated]" (its default ``CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH``).
+CLI_DESCRIPTION_CAP = 4096
+
+
+@pytest.mark.parametrize("role", ["analyst", "chief_of_staff"])
+def test_every_tool_description_reaches_claude_whole(role):
+    """A description past the CLI's cap would read differently than on any other turn."""
+    specs = tool_specs(_built(role=role).turn.spec.tools)
+    assert len(specs) > 20
+    assert {s["name"]: len(s["description"]) for s in specs if len(s["description"]) > CLI_DESCRIPTION_CAP} == {}
 
 
 def test_the_turn_runs_where_the_callers_launcher_puts_it_for_the_turns_sandbox():
