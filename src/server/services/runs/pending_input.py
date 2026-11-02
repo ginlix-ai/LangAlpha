@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 
+from src.server.contracts.status import is_user_stop
 from src.server.contracts.turn_kinds import WAKE_QUERY_TYPE
 from src.server.models.chat import ChatMessage, ChatRequest, ReportSource
 from src.server.models.workflow import RetryRequest
@@ -137,6 +138,23 @@ def read_pending_input(run: Optional[Mapping[str, Any]]) -> Optional[PendingInpu
         replay=pending.get("replay") is True,
         resend=pending.get("resend") is True,
         context=pending.get("context") is True,
+    )
+
+
+def can_retry(run: Mapping[str, Any]) -> bool:
+    """Whether ``/retry`` may run this attempt again.
+
+    A failed run, or one a disconnect cancelled before the graph took its
+    input: nothing ran, and the client whose connection died during setup
+    still wants its answer. One the user stopped stays stopped.
+    """
+    status = run.get("status")
+    if status == "error":
+        return True
+    return (
+        status == "cancelled"
+        and read_pending_input(run) is not None
+        and not is_user_stop(run)
     )
 
 

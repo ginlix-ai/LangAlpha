@@ -492,6 +492,7 @@ async def test_a_refused_retransmit_reconnects_to_its_first_copy(
         (name, data["code"], data.get("run_id"), data.get("steered", "absent"))
         for name, data in frames
     ] == [("error", "duplicate_request", "r-first", "absent")]
+    assert frames[0][1]["retryable"] is False
     coordinator.finalize_run.assert_not_awaited()
 
 
