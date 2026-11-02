@@ -59,7 +59,7 @@
 }
 .surface-chip:hover { color: var(--color-text-primary); }
 .surface-chip.is-on { background: var(--color-bg-elevated); color: var(--color-text-primary); }
-.surface-chip .surface-count { font-size: 0.65625rem; }
+.surface-chip .surface-count { font-size: 0.6875rem; }
 
 /* The grid: as many ~340px columns as fit. The negative margin lets a cell's
    hover fill reach past the column edge while its content lines up with the
@@ -321,7 +321,7 @@
 
 .surface-command {
   font-family: var(--font-mono);
-  font-size: 0.65625rem;
+  font-size: 0.6875rem;
   color: var(--color-text-quaternary);
 }
 .surface-tag {

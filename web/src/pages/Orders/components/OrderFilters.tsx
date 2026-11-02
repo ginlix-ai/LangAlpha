@@ -31,7 +31,7 @@ function Select({
     <div className="flex flex-col gap-1 min-w-32">
       <label
         htmlFor={id}
-        className="text-[0.625rem] font-medium uppercase tracking-[0.14em]"
+        className="text-[0.6875rem] font-medium uppercase tracking-[0.14em]"
         style={{ color: 'var(--color-text-tertiary)' }}
       >
         {label}
