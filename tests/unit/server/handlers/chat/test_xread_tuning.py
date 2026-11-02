@@ -47,6 +47,10 @@ class TestBlockGeometry:
         with patch(f"{_TUNING}.get_redis_socket_timeout", return_value=5):
             assert xread_tuning.xread_block_ms() == 4_000
 
+    def test_long_socket_timeout_keeps_the_keepalive_inside_the_clients_beat(self):
+        with patch(f"{_TUNING}.get_redis_socket_timeout", return_value=60):
+            assert xread_tuning.xread_block_ms() == 10_000
+
     def test_low_socket_timeout_floors_instead_of_going_negative(self):
         for socket_timeout in (0, 1, None):
             with patch(
