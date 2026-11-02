@@ -550,7 +550,9 @@ function ChatInput({
       return;
     }
     const shownBefore = textarea.clientHeight;
-    textarea.style.maxHeight = Math.max(textarea.offsetHeight + room, MIN_TEXTAREA_HEIGHT_OVER_KEYBOARD) + 'px';
+    // Not `offsetHeight`: rounded, the limit never settles and the observer below
+    // refits it every frame.
+    textarea.style.maxHeight = Math.max(textarea.getBoundingClientRect().height + room, MIN_TEXTAREA_HEIGHT_OVER_KEYBOARD) + 'px';
     // The box gives up its foot, and a caret at the end of the text is there.
     if (textarea.clientHeight < shownBefore && textarea.selectionEnd === textarea.value.length) {
       textarea.scrollTop = textarea.scrollHeight;
@@ -558,8 +560,25 @@ function ChatInput({
     if ((roomAboveKeyboard(box) ?? 0) < 0) box.scrollIntoView({ block: 'nearest' });
   }, []);
 
-  useEffect(fitToKeyboard, [message, attachedFiles.length, mentionedFiles.length, slashCommands.length, widgetSnapshots.length, fitToKeyboard]);
-  useEffect(() => onKeyboardFit(fitToKeyboard), [fitToKeyboard]);
+  useEffect(fitToKeyboard, [message, fitToKeyboard]);
+  useEffect(() => {
+    if (!chatContainer) return;
+    // Whatever else sizes the box: a pill, an attachment leaving, a deck folding,
+    // with or without motion. A frame later, since changing the box inside its
+    // own callback is a ResizeObserver loop error.
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(fitToKeyboard);
+    });
+    observer.observe(chatContainer);
+    const stopListening = onKeyboardFit(fitToKeyboard);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      stopListening();
+    };
+  }, [chatContainer, fitToKeyboard]);
 
   // Large text pastes condense into a pill (snippet-mention mechanics) instead
   // of flooding the draft. File pastes keep priority — handlePaste prevents
@@ -835,11 +854,6 @@ function ChatInput({
       <div
         ref={attachChatContainer}
         className={cn('chat-input-container owns-its-edge scroll-mb-2 flex flex-col items-stretch relative z-10 rounded-[22px] cursor-text border border-(--color-border-input) bg-(--color-bg-card)', isListening && 'recording')}
-        // The context deck and the composer's own deck fold by animating their
-        // height, so the box has its new size only once that ends.
-        onTransitionEnd={(event) => {
-          if (event.propertyName === 'height') fitToKeyboard();
-        }}
         onClick={(event) => {
           // A press on a control in the box is that control's, and the deck
           // above the text is its own surface: focusing the text there would
