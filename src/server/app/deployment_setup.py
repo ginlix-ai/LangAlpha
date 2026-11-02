@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from src.server.auth import owner_requests
 from src.server.database.encryption import encryption_configured
 from src.server.models.setup_settings import (
     SaveKeysRequest,
@@ -22,7 +23,15 @@ from src.server.services.setup_settings.catalog import key_names
 from src.server.services.setup_settings.key_test import try_key
 
 
-router = APIRouter(prefix="/api/v1/setup", tags=["Setup"])
+def _owner_only(request: Request) -> None:
+    """These routes have no caller to check, being the deployment's own, and a
+    container on the machine must not set the keys every computer gets."""
+    owner_requests.refuse_unless_owner(request.scope)
+
+
+router = APIRouter(
+    prefix="/api/v1/setup", tags=["Setup"], dependencies=[Depends(_owner_only)]
+)
 
 
 def _can_encrypt() -> None:

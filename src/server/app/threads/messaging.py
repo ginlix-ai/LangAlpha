@@ -287,12 +287,15 @@ async def send_thread_message(
 def _is_service_request(raw_request: Request | None) -> bool:
     """Whether the server sent ``raw_request`` itself: it carries the service
     token, or oss mode has no token configured to check, which trusts the
-    self-dispatch."""
+    self-dispatch, from anything the owner fallback would answer
+    (``owner_requests``)."""
     from src.config.settings import HOST_MODE
+    from src.server.auth.owner_requests import is_owner
 
     token = _get_service_token()
     sent = raw_request.headers.get("X-Service-Token", "") if raw_request else ""
-    return service_token_matches(sent, token) or (HOST_MODE == "oss" and not token)
+    trusted = HOST_MODE == "oss" and not token and (raw_request is None or is_owner(raw_request.scope))
+    return service_token_matches(sent, token) or trusted
 
 
 # Fields only the server's own requests set. A user's copy would post a system

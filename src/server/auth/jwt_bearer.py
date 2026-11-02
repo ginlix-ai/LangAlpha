@@ -19,10 +19,11 @@ from dataclasses import dataclass
 
 import jwt
 from jwt import PyJWK, PyJWKClient
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.config.settings import HOST_MODE, LOCAL_DEV_USER_ID, SUPABASE_URL
+from src.server.auth import owner_requests
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,7 @@ async def _decode_token(token: str) -> AuthInfo:
 
 
 async def verify_jwt_token(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> str:
     """FastAPI dependency — extracts Bearer token via HTTPBearer and verifies it.
@@ -198,6 +200,7 @@ async def verify_jwt_token(
     static local-dev user ID without requiring a token.
     """
     if HOST_MODE == "oss":
+        owner_requests.refuse_unless_owner(request.scope)
         return LOCAL_DEV_USER_ID
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing Bearer token")
@@ -205,6 +208,7 @@ async def verify_jwt_token(
 
 
 async def get_current_auth_info(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> AuthInfo:
     """FastAPI dependency — returns both ``user_id`` and ``auth_provider``.
@@ -212,6 +216,7 @@ async def get_current_auth_info(
     Used by the auth-sync endpoint to persist the provider on first login.
     """
     if HOST_MODE == "oss":
+        owner_requests.refuse_unless_owner(request.scope)
         return AuthInfo(user_id=LOCAL_DEV_USER_ID)
     if credentials is None:
         raise HTTPException(status_code=401, detail="Missing Bearer token")

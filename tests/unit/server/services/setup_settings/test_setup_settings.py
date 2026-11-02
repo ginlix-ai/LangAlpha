@@ -3,6 +3,7 @@ that a removal takes away only what it set."""
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +14,7 @@ from fastapi.testclient import TestClient
 from ptc_agent.config import core
 from ptc_agent.config.core import KindsInReach, kind_availability
 from ptc_agent.config.utils import create_sandbox_config
-from src.server.app import deployment_setup
+from src.server.app import deployment_setup, web_dist
 from src.server.services.setup_settings import apply, environment, step
 from src.server.services.setup_settings.catalog import key_names, key_specs
 
@@ -28,12 +29,13 @@ MANAGED = (
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch):
-    for name in (*MANAGED, "LANGALPHA_DOCKER_COMPUTERS", "LANGALPHA_LOCAL_COMPUTER"):
+    for name in (*MANAGED, "LANGALPHA_DOCKER_COMPUTERS", "LANGALPHA_LOCAL_COMPUTER", "LANGALPHA_OWNER_SECRET"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(environment, "_at_start", None)
     yield
+    # Not delenv: it would record what the test exported for undo to put back.
     for name in MANAGED:
-        monkeypatch.delenv(name, raising=False)
+        os.environ.pop(name, None)
 
 
 def _daemon(up: bool):
@@ -289,10 +291,12 @@ class TestOfferedProviders:
     def test_a_saved_choice_stands_beside_what_would_work(self, monkeypatch):
         monkeypatch.setenv("E2B_API_KEY", "k")
         monkeypatch.setenv("LANGALPHA_LOCAL_COMPUTER", "1")
+        monkeypatch.setenv("LANGALPHA_OWNER_SECRET", "s3cret")
         assert self._offered("local") == ("local", "e2b", "docker")
 
     def test_local_is_offered_only_as_the_choice(self, monkeypatch):
         monkeypatch.setenv("LANGALPHA_LOCAL_COMPUTER", "1")
+        monkeypatch.setenv("LANGALPHA_OWNER_SECRET", "s3cret")
         assert self._offered("docker") == ("docker",)
 
 
@@ -346,6 +350,22 @@ class TestRefresh:
         assert "TAVILY_API_KEY" in rebuild.await_args_list[1].args[2]
 
 
+    async def test_boot_drops_the_config_read_before_the_saved_keys(self):
+        """Reading the rows loads the config to look for platform secrets, so
+        its ``${VAR}`` expansions predate the export."""
+        from ptc_agent.config import file_utils
+
+        file_utils._config_cache["stale-test-entry"] = {}
+        rows = {"TAVILY_API_KEY": "t"}
+        with (
+            patch.object(apply, "read_deployment_settings", AsyncMock(return_value=rows)),
+            patch.object(apply, "_platform_secrets_declared", return_value=False),
+        ):
+            await apply.load_at_boot()
+        assert file_utils._config_cache == {}
+        assert environment.os.environ["TAVILY_API_KEY"] == "t"
+
+
 class TestSelfHostedOnly:
     def test_the_server_mounts_it_only_when_self_hosted(self):
         from src.server.app.setup import app
@@ -378,9 +398,82 @@ class TestSelfHostedOnly:
         assert response.status_code == 503
         assert "BYOK_ENCRYPTION_KEY" in response.json()["detail"]
 
+    def test_only_the_app_reaches_it(self, monkeypatch):
+        from src.server.auth import owner_requests
+
+        monkeypatch.setenv(owner_requests.OWNER_SECRET_ENV, "s3cret")
+        app = FastAPI()
+        app.include_router(deployment_setup.router)
+        save = AsyncMock()
+        with patch.object(step, "save_keys", save):
+            response = TestClient(app).put("/api/v1/setup/keys", json={"keys": {"FMP_API_KEY": "x"}})
+        assert response.status_code == 401
+        save.assert_not_awaited()
+        with patch.object(step, "read_status", AsyncMock(return_value={"completed": False})):
+            answered = TestClient(app).get(
+                "/api/v1/setup/status", headers={"X-LangAlpha-Owner": "s3cret"}
+            )
+        assert answered.json() == {"completed": False}
+
     def test_the_status_route_answers(self):
         app = FastAPI()
         app.include_router(deployment_setup.router)
         with patch.object(step, "read_status", AsyncMock(return_value={"completed": False})):
             response = TestClient(app).get("/api/v1/setup/status")
         assert response.json() == {"completed": False}
+
+
+class TestWebDist:
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        (tmp_path / "assets").mkdir()
+        (tmp_path / "index.html").write_text("shell")
+        (tmp_path / "assets" / "app-abc.js").write_text("code")
+        (tmp_path / "frame-host.html").write_text("frame")
+        monkeypatch.setenv("LANGALPHA_WEB_DIST", str(tmp_path))
+        app = FastAPI()
+
+        @app.get("/api/v1/real/")
+        async def real():
+            return {"real": True}
+
+        web_dist.serve_web_dist(app)
+        return TestClient(app, follow_redirects=False)
+
+    def test_a_client_route_gets_the_app_uncached(self, client):
+        response = client.get("/chat/abc")
+        assert response.text == "shell"
+        assert response.headers["cache-control"] == "no-cache"
+
+    def test_a_file_is_served_as_itself(self, client):
+        assert client.get("/frame-host.html").text == "frame"
+        assert client.get("/assets/app-abc.js").text == "code"
+
+    @pytest.mark.parametrize("path", ["/version.json", "/assets/gone.js", "/api/v1/nope", "/ws/x"])
+    def test_a_miss_here_is_a_404_and_not_the_app(self, client, path):
+        assert client.get(path).status_code == 404
+
+    def test_a_route_is_never_shadowed(self, client):
+        assert client.get("/api/v1/real/").json() == {"real": True}
+        # The router's own trailing-slash redirect still runs first.
+        assert client.get("/api/v1/real").status_code == 307
+
+    def test_a_path_cannot_leave_the_directory(self, tmp_path):
+        (tmp_path / "web").mkdir()
+        (tmp_path / "secret").write_text("secret")
+        assert web_dist._file_under((tmp_path / "web").resolve(), "../secret") is None
+
+    def test_nothing_changes_when_unset(self, monkeypatch):
+        monkeypatch.delenv("LANGALPHA_WEB_DIST", raising=False)
+        app = FastAPI()
+        before = app.router.default
+        web_dist.serve_web_dist(app)
+        assert app.router.default is before
+
+    def test_every_route_of_the_server_is_kept_from_the_web_app(self):
+        """A route under a root the fallback does not know would answer its own
+        misses with the web app's page instead of a 404."""
+        from src.server.app.setup import app
+
+        roots = {getattr(r, "path", "").strip("/").split("/", 1)[0] for r in app.routes}
+        assert roots - {""} <= web_dist._BACKEND_ROOTS

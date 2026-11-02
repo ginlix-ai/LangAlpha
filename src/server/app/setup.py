@@ -1482,6 +1482,25 @@ app.add_middleware(
     ],
 )
 
+
+def _install_loopback_guard() -> None:
+    """Ahead of CORS, whose configured list may allow every origin."""
+    from ptc_agent.core.sandbox.providers.local import local_computer_allowed
+
+    if not local_computer_allowed():
+        return
+    from src.config.env import PUBLIC_APP_URL, SERVER_BASE_URL
+    from src.server.app.loopback_guard import LoopbackOriginGuard
+
+    app.add_middleware(
+        LoopbackOriginGuard,
+        app_origins=(SERVER_BASE_URL, PUBLIC_APP_URL),
+        opaque_origin_routes=_URL_CREDENTIAL_ROUTES,
+    )
+
+
+_install_loopback_guard()
+
 # Previews of private sandboxes, picked out by Host before any middleware
 # above sees the request. Installed last, around the stack the tracing wraps.
 install_preview_proxy(app)
@@ -1612,6 +1631,7 @@ from src.server.app.marketplace import router as marketplace_router
 from src.server.app.user_vault import router as user_vault_router
 from src.server.app.mcp_servers import router as mcp_servers_router
 from src.server.app.search import router as search_router
+from src.server.app.web_dist import serve_web_dist
 
 # Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
 from src.config.settings import GINLIX_DATA_ENABLED
@@ -1815,3 +1835,6 @@ app.include_router(
 app.include_router(
     market_data_ws_router
 )  # /ws/v1/market-data/* - Real-time WS proxy (or just status endpoint when disabled)
+
+# Last, and only ever reached by a request no route above matched.
+serve_web_dist(app)
