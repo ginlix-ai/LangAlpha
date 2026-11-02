@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { useLocale } from '@/hooks/useLocale';
@@ -46,6 +46,12 @@ const WINDOW_DAYS: Record<NonNullable<EarningsConfig['window']>, number> = {
   '2w': 14,
   '1m': 31,
 };
+
+// A two-week calendar for every ticker runs past a thousand rows in earnings
+// season, all fetched at once and each with its own attach button. The rows go in
+// a step at a time as the list nears its end, and the step's button is there for
+// whoever is not scrolling. The attach exporters still read the whole list.
+const ROW_STEP = 50;
 
 function toDate(dateStr: string): Date {
   return new Date(dateStr + 'T00:00:00');
@@ -185,6 +191,39 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
     return buckets;
   }, [upcoming, now]);
 
+  const [rowLimit, setRowLimit] = useState(ROW_STEP);
+  const hasMoreRows = upcoming.length > rowLimit;
+  const moreRef = useRef<HTMLButtonElement | null>(null);
+  const rowsRef = useRef<HTMLTableSectionElement | null>(null);
+  const focusRowRef = useRef<number | null>(null);
+  // The button leaves with the last step, and tabbing onto it can start a step by
+  // scrolling it into view, so focus on it goes on to the first row the step adds.
+  const addRows = useCallback((shown: number) => {
+    if (document.activeElement === moreRef.current) focusRowRef.current = shown;
+    setRowLimit(shown + ROW_STEP);
+  }, []);
+  useEffect(() => {
+    const row = focusRowRef.current;
+    if (row === null) return;
+    focusRowRef.current = null;
+    rowsRef.current?.rows[row]?.querySelector('button')?.focus();
+  }, [rowLimit]);
+  // A new observer per step reports where the button now lies, so rows that did
+  // not push it out of view ask for the next step only once they have laid out.
+  // Against the viewport: what scrolls is the card's body or this list, whichever
+  // the fit grid leaves in charge, and either one clips the button out of view.
+  useEffect(() => {
+    const el = moreRef.current;
+    if (!el) return undefined;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) addRows(rowLimit);
+      },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [addRows, rowLimit, hasMoreRows]);
+
   useWidgetContextExport(instance.id, {
     full: () => {
       const sections: string[] = [];
@@ -278,8 +317,8 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
             </div>
           ) : (
             <table className="term-table dash-table">
-              <tbody>
-                {upcoming.map((item, i) => (
+              <tbody ref={rowsRef}>
+                {upcoming.slice(0, rowLimit).map((item, i) => (
                   <EarningsRow
                     key={`${item.symbol}-${item.date}-${i}`}
                     item={item}
@@ -291,6 +330,13 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
             </table>
           )}
         </SwapCell>
+        {hasMoreRows && (
+          <div className="flex justify-center pt-2 pb-3.5">
+            <button ref={moreRef} type="button" className="term-more tap-target widget-drag-cancel" onClick={() => addRows(rowLimit)}>
+              {t('nav.showMore')}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
