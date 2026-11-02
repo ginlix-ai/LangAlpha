@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from ptc_agent.agent.middleware.runtime_context import TurnContext
 from ptc_agent.agent.roles import AgentRole
 from ptc_agent.core.project_context import ProjectContext
-from src.llms.claude_code import ClaudeCodeTarget, claude_replied_last, is_claude_code_model
+from src.llms.claude_code import ClaudeCodeTarget, ClaudeTurnFailed, claude_replied_last, is_claude_code_model
 from src.server.contracts.run_times import run_settled_at
 from src.server.handlers.cancellation import cancellation_as_http
 from src.server.services.history.projector import context_window_record
@@ -69,6 +69,15 @@ class ThreadAgent:
                 thread_id=self.thread_id,
                 store=setup.store,
             )
+
+    async def compact_claude_code(self):
+        """The CLI's own compaction of the thread's Claude Code session
+        (``ClaudeTurn.compact_between_turns``), with the project bound as a
+        run binds it; None when there is nothing to compact."""
+        from ptc_agent.core.project_context import project_bound
+
+        with project_bound(self.project):
+            return await self.graph.turn.compact_between_turns(self.state.values)
 
     async def write(self, values: dict, verb: str) -> None:
         await _update_graph_state(self.graph, self.state, values, self.thread_id, verb)
@@ -431,7 +440,7 @@ async def _record_usage(
 
 
 def _refuse_claude_code(on_claude_code: bool) -> None:
-    """Refuse a summary or an offload on a Claude Code thread. Claude Code manages its own
+    """Refuse an offload on a Claude Code thread, or a summary its own model does not make. Claude Code manages its own
     session, and the thread's messages are only the record replay and
     transcripts read, so rewriting them changes nothing Claude sees, while a
     write through the ordinary graph drops what the runtime keeps beside them.
@@ -446,6 +455,89 @@ def _refuse_claude_code(on_claude_code: bool) -> None:
         )
 
 
+def _claude_code_failure(e: ClaudeTurnFailed, model: str) -> HTTPException:
+    """A compaction the CLI failed, answered as a turn that failed the same
+    way is: in admission's words for what admission refuses, else with the
+    status its answer carried."""
+    from src.server.services.llm.claude_code import claude_code_refusal
+    from src.server.services.runs.stream_errors import classify_stream_exception
+    from src.server.utils.error_sanitization import sanitize_error_text
+
+    refusal = claude_code_refusal(e, model)
+    if refusal is not None:
+        return HTTPException(status_code=400, detail=refusal)
+    failure = classify_stream_exception(e)
+    status = failure["status_code"] or (502 if failure["kind"] == "upstream" else 500)
+    return HTTPException(status_code=status, detail=f"Failed to trigger compaction: {sanitize_error_text(str(e))}")
+
+
+async def _compaction_config(thread_id: str, user_id: str | None) -> tuple[Any, AgentRole]:
+    """The config and role a manual compaction runs on, resolved as the
+    thread's next turn would be. A summary changes no answer, so it runs on
+    the default rather than wait on a reconnect, except that only Claude Code
+    compacts a Claude Code session: a thread holding one of its models falls
+    back neither to the default nor to the base config."""
+    agent_cfg = setup.agent_config
+    if not (user_id and agent_cfg is not None):
+        return agent_cfg, "analyst"
+    meta, route = await thread_route(thread_id, user_id)
+    on_claude_code = is_claude_code_model(meta.get("llm_model"))
+    try:
+        from src.server.services.llm import thread_model
+
+        agent_cfg = await thread_model.resolve_turn_config(
+            user_id,
+            thread_id,
+            named=None,
+            held=meta.get("llm_model"),
+            fall_back=not on_claude_code,
+            resolve=await _resolver(user_id, thread_id, meta, route),
+        )
+    except HTTPException:
+        # 402 insufficient credits, 403 revoked key, etc. are intentional
+        # user-facing signals — don't silently downgrade to platform config.
+        raise
+    except Exception as e:
+        if on_claude_code:
+            raise
+        logger.warning(
+            f"[compact] resolve_llm_config failed for user {user_id}: {e}; "
+            "falling back to base agent_config"
+        )
+        agent_cfg = setup.agent_config
+    return agent_cfg, route.role
+
+
+async def _installed(
+    agent: ThreadAgent,
+    update: dict,
+    *,
+    original_count: int,
+    new_count: int,
+    summary_text: str,
+    source: str,
+    **marker: Any,
+) -> dict:
+    """Write a compaction's ``update`` with the marker replay shows for it,
+    and the response the client reads. Action "summarize" is the wire
+    protocol's; ``marker`` names the summary replay reads the "View summary"
+    panel from, when the thread's messages hold one."""
+    props = {
+        "action": "summarize",
+        "signal": "complete",
+        "original_message_count": original_count,
+        "new_message_count": new_count,
+        "summary_length": len(summary_text),
+        "source": source,
+    }
+    await agent.write({**update, "ui": [context_window_record(props, **marker)]}, "compact")
+    logger.info(
+        f"Manual compaction completed for thread {agent.thread_id}: "
+        f"{original_count} -> {new_count} messages"
+    )
+    return {"success": True, "thread_id": agent.thread_id, **props, "summary_text": summary_text}
+
+
 @cancellation_as_http("compact")
 async def trigger_compaction(
     thread_id: str,
@@ -457,10 +549,13 @@ async def trigger_compaction(
     Sent as the agent's own model call (``ask_between_turns``), built and
     resolved as the thread's next turn would be, so a provider that compacts
     the conversation itself does here as it does mid-turn, from its cache, and
-    the summary runs on the model and credential the thread's turns do.
+    the summary runs on the model and credential the thread's turns do. A
+    Claude Code thread's session is compacted by the CLI itself, and its
+    messages, the record replay reads, stay as they are.
     """
     try:
         from ptc_agent.agent.middleware.compaction import Compact, NoCompaction
+        from ptc_agent.agent.middleware.compaction.compact import NOTHING_TO_COMPACT
 
         # The mutation fence FIRST — before any graph state reads or writes:
         # exclusive T(thread) refuses while a fenced run or tail writer is
@@ -472,46 +567,27 @@ async def trigger_compaction(
             _hold_thread_mutation(thread_id, "compact") as mutation,
             AsyncExitStack() as held,
         ):
-            agent_cfg = setup.agent_config
-            role: AgentRole = "analyst"
-            if user_id and agent_cfg is not None:
-                meta, route = await thread_route(thread_id, user_id)
-                role = route.role
-                # Read off the thread too, so a resolve that falls back to
-                # the base config below cannot run a Claude Code thread's.
-                _refuse_claude_code(is_claude_code_model(meta.get("llm_model")))
-                try:
-                    from src.server.services.llm import thread_model
-
-                    agent_cfg = await thread_model.resolve_turn_config(
-                        user_id,
-                        thread_id,
-                        named=None,
-                        held=meta.get("llm_model"),
-                        # A summary changes no answer, so it runs on the
-                        # default rather than waiting on a reconnect.
-                        fall_back=True,
-                        resolve=await _resolver(user_id, thread_id, meta, route),
-                    )
-                except HTTPException:
-                    # 402 insufficient credits, 403 revoked key, etc. are intentional
-                    # user-facing signals — don't silently downgrade to platform config.
-                    raise
-                except Exception as e:
-                    logger.warning(
-                        f"[compact] resolve_llm_config failed for user {user_id}: {e}; "
-                        "falling back to base agent_config"
-                    )
-                    agent_cfg = setup.agent_config
-
-            # A thread following a Claude Code default holds no model of its own.
-            _refuse_claude_code(isinstance(getattr(agent_cfg, "llm_client", None), ClaudeCodeTarget))
-
+            agent_cfg, role = await _compaction_config(thread_id, user_id)
             agent = await _thread_agent(
                 thread_id, "compact", config=agent_cfg,
                 checkpointer=mutation.saver, user_id=user_id, held=held, role=role,
             )
             await held.enter_async_context(_recorded(agent, user_id, "compact"))
+            # Only Claude Code compacts a thread Claude last replied on, and it
+            # compacts no other: its session would not be the one the thread runs on.
+            on_claude_code = isinstance(getattr(agent_cfg, "llm_client", None), ClaudeCodeTarget)
+            _refuse_claude_code(on_claude_code != claude_replied_last(agent.messages))
+            if on_claude_code:
+                try:
+                    session = await agent.compact_claude_code()
+                except ClaudeTurnFailed as e:
+                    raise _claude_code_failure(e, agent_cfg.llm_client.model) from e
+                if session is None:
+                    raise HTTPException(status_code=400, detail=NOTHING_TO_COMPACT)
+                return await _installed(
+                    agent, session.update(), original_count=session.original_count,
+                    new_count=session.new_count, summary_text=session.summary_text, source="provider",
+                )
             try:
                 try:
                     compaction = await agent.ask(Compact())
@@ -522,45 +598,16 @@ async def trigger_compaction(
 
             # The view that was compacted, as automatic compaction counts it,
             # not every message the checkpoint has kept since the thread began.
-            original_count = compaction.original_count
-            new_message_count = len(compaction.messages)
-            summary_text = compaction.summary.text
-            summary_length = len(summary_text)
-            summary_source = compaction.summary.source
-
-            # The marker rides the write that installs the summary. Action
-            # "summarize" is the wire protocol's. Replay reads the text for
-            # the "View summary" panel from the summary the marker names.
-            marker = context_window_record(
-                {
-                    "action": "summarize",
-                    "signal": "complete",
-                    "original_message_count": original_count,
-                    "new_message_count": new_message_count,
-                    "summary_length": summary_length,
-                    "source": summary_source,
-                },
+            return await _installed(
+                agent,
+                compaction.update(agent.state.values),
+                original_count=compaction.original_count,
+                new_count=len(compaction.messages),
+                summary_text=compaction.summary.text,
+                source=compaction.summary.source,
                 summary_message_id=compaction.event["summary_message"].id,
                 replaced=await _summary_since_the_turn(thread_id, agent.state),
             )
-            await agent.write(
-                {**compaction.update(agent.state.values), "ui": [marker]}, "compact"
-            )
-
-            logger.info(
-                f"Manual compaction completed for thread {thread_id}: "
-                f"{original_count} -> {new_message_count} messages"
-            )
-
-            return {
-                "success": True,
-                "thread_id": thread_id,
-                "original_message_count": original_count,
-                "new_message_count": new_message_count,
-                "summary_length": summary_length,
-                "summary_text": summary_text,
-                "source": summary_source,
-            }
 
     except HTTPException:
         raise

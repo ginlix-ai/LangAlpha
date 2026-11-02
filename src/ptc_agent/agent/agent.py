@@ -1205,6 +1205,7 @@ class PTCAgent:
         )
         if claude_code:
             from ptc_agent.agent.claude_code.agent import claude_code_graph
+            from ptc_agent.agent.claude_code.compaction import CompactionRules
 
             if claude_code_launcher is None:
                 raise RuntimeError("a Claude Code turn needs a claude_code_launcher")
@@ -1217,6 +1218,8 @@ class PTCAgent:
                 baseline=context.baseline.frozen_block,
                 steering=steering,
                 alert_senders=alert_senders,
+                compaction=CompactionRules.of(self.config.compaction, turn_context, backend=backend,
+                                              workspace_id=workspace_id_for_memory),
             )
 
         return BackgroundSubagentOrchestrator(

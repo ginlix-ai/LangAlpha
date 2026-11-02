@@ -1344,57 +1344,200 @@ async def test_the_session_is_acquired_with_the_workspace_id_as_a_str(base_confi
     assert received == [str(workspace_id)]
     assert isinstance(received[0], str)
 
-@pytest.mark.asyncio
-async def test_a_claude_code_thread_is_not_compacted(base_config):
-    """Claude Code compacts its own session, so a thread on one of its models
-    is refused before any agent is built or asked, even when resolving the
-    thread's model fails and the compaction would fall back to the default."""
-    from src.server.handlers.thread_maintenance import trigger_compaction
+def _claude_code_compaction():
+    """What the CLI compacting a session of two answers, one in two records,
+    writes: a summary, keeping the last tool result and answer."""
+    from ptc_agent.agent.claude_code.compaction import SessionCompaction
 
-    ask = _asked()
-    with (
-        patch("src.server.app.setup.agent_config", base_config),
-        patch(f"{HANDLER}._thread_agent", new=_stub_thread_agent()),
-        patch(ASK, new=ask),
-        patch(
-            THREAD_META,
-            new_callable=AsyncMock,
-            return_value={"llm_model": "claude-sonnet-5-5-code", "msg_type": "ptc", "workspace_id": "ws-1"},
-        ),
-        patch(f"{THREAD_MODEL}.resolve_turn_config", new_callable=AsyncMock, side_effect=RuntimeError("db blip")),
-        pytest.raises(HTTPException) as refused,
-    ):
-        await trigger_compaction("thread-1", user_id="user-1")
-    assert refused.value.status_code == 400
-    assert refused.value.detail["type"] == "claude_code_compacts_itself"
-    ask.assert_not_awaited()
+    entries = [
+        {"type": "user", "uuid": "u1"},
+        {"type": "assistant", "uuid": "a1", "message": {"id": "m1"}},
+        {"type": "assistant", "uuid": "a2", "message": {"id": "m1"}},
+        {"type": "user", "uuid": "u2"},
+        {"type": "user", "uuid": "u3", "isMeta": True},
+        {"type": "assistant", "uuid": "a3", "message": {"id": "m2"}},
+    ]
+    boundary = {"type": "system", "subtype": "compact_boundary", "uuid": "b",
+                "compactMetadata": {"preservedMessages": {"uuids": ["u2", "a3"]}}}
+    summary = {"type": "user", "uuid": "s", "isCompactSummary": True, "message": {"content": "the summary"}}
+    return SessionCompaction(entries, [{"session_id": "sess", "entries": [boundary, summary]}])
 
 
-@pytest.mark.asyncio
-async def test_a_thread_following_a_claude_code_default_is_not_compacted(base_config):
-    """A thread holding no model runs the account default, which may be a
-    Claude Code row: the resolved turn is refused too."""
+def _claude_code_config(base_config):
     from src.llms.llm import create_llm
+
+    config = base_config.model_copy(deep=True)
+    config.llm_client = create_llm("claude-sonnet-5-5-code")
+    return config
+
+
+async def _compact_claude_code_thread(base_config, held_model, *, compaction=None, resolve=None, claude_replied=True):
+    """Compact a thread holding ``held_model`` that resolves to a Claude
+    Code row; the stub agent, the ask, the resolve and the outcome."""
     from src.server.handlers.thread_maintenance import trigger_compaction
 
-    async def _claude_code(*args, **kwargs):
-        config = base_config.model_copy(deep=True)
-        config.llm_client = create_llm("claude-sonnet-5-5-code")
-        return config
+    from langchain_core.messages import AIMessage, HumanMessage
 
+    stub = _stub_thread_agent()
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"} if claude_replied else {})]
+    stub.graph.turn.compact_between_turns = (
+        AsyncMock(side_effect=compaction) if isinstance(compaction, BaseException) or callable(compaction)
+        else AsyncMock(return_value=compaction)
+    )
+    ask = _asked()
+    resolve = resolve or AsyncMock(return_value=_claude_code_config(base_config))
+    with (
+        patch("src.server.app.setup.agent_config", base_config),
+        patch(f"{HANDLER}._thread_agent", new=stub),
+        patch(ASK, new=ask),
+        patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": held_model, "msg_type": "ptc", "workspace_id": "ws-1"}),
+        patch(f"{HANDLER}._resolver", new_callable=AsyncMock),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new=resolve),
+    ):
+        try:
+            outcome = await trigger_compaction("thread-1", user_id="user-1")
+        except HTTPException as e:
+            outcome = e
+    return stub, ask, resolve, outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held_model", ["claude-sonnet-5-5-code", None])
+async def test_a_claude_code_thread_is_compacted_by_claude_code(base_config, held_model):
+    """The CLI compacts its own session, which the write installs beside the
+    thread's messages, and the marker shows the compact in replay. A thread
+    holding no model runs the account default, which may be a Claude Code row."""
+    stub, ask, resolve, outcome = await _compact_claude_code_thread(
+        base_config, held_model, compaction=_claude_code_compaction()
+    )
+    ask.assert_not_awaited()
+    assert resolve.await_args.kwargs["fall_back"] is (held_model is None)
+    assert {k: outcome[k] for k in ("original_message_count", "new_message_count", "summary_text", "source")} == {
+        "original_message_count": 4, "new_message_count": 3, "summary_text": "the summary", "source": "provider",
+    }
+    written = stub.graph.aupdate_state.await_args.args[1]
+    assert written["claude_session"] == _claude_code_compaction().writes
+    assert [r["props"]["original_message_count"] for r in written["ui"]] == [4]
+    assert "messages" not in written
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_compactions_summary_request_lands_in_the_usage_records(base_config, usage_rows):
+    """On the compact's row, as an API thread's summary calls do."""
+    from claude_agent_sdk import ResultMessage
+
+    from ptc_agent.agent.claude_code import compaction as compaction_module
+    from ptc_agent.agent.claude_code.cli import RuntimeSpec
+
+    async def compacted(state):
+        result = ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=0,
+                               session_id="s", model_usage={"claude-test": {"inputTokens": 200, "outputTokens": 300,
+                                                                            "cacheReadInputTokens": 1000,
+                                                                            "cacheCreationInputTokens": 0}})
+        spec = RuntimeSpec(system_prompt="s", model="claude-test", tools=[], billing={"billing_type": "oauth"})
+        await compaction_module._metered(spec, result)
+        return _claude_code_compaction()
+
+    with patch("src.server.database.api_keys.is_byok_active", new=AsyncMock(return_value=False)):
+        _, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", compaction=compacted)
+    assert outcome["summary_text"] == "the summary"
+    (row,) = usage_rows
+    assert (row["status"], row["is_byok"], row["token_usage"]["between_turns"]) == ("completed", True, "compact")
+    tokens = row["token_usage"]["by_model"]["claude-test"]
+    assert (tokens["input_tokens"], tokens["cached_tokens"], tokens["output_tokens"]) == (1200, 1000, 300)
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_session_with_nothing_to_summarize_is_left_as_it_is(base_config):
+    from ptc_agent.agent.middleware.compaction.compact import NOTHING_TO_COMPACT
+
+    stub, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code")
+    assert outcome.status_code == 400 and outcome.detail == NOTHING_TO_COMPACT
+    stub.graph.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_claude_code_thread_whose_model_does_not_resolve_is_not_compacted_by_another(base_config):
+    """Only Claude Code compacts a Claude Code session: a failed resolve does
+    not fall back to the base config, whose model would rewrite the record."""
+    resolve = AsyncMock(side_effect=RuntimeError("db blip"))
+    stub, ask, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", resolve=resolve)
+    assert outcome.status_code == 500
+    ask.assert_not_awaited()
+    stub.graph.turn.compact_between_turns.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kind", "status"), [("plan_exhausted", 429), ("api_error", 502), ("startup_failed", 502)])
+async def test_a_compaction_the_cli_fails_answers_with_the_status_its_failure_carried(base_config, kind, status):
+    """Not "nothing to compact", and not this server's own failure: the
+    status a turn that failed the same way streams."""
+    from src.llms.claude_code import ClaudeTurnFailed
+
+    failure = ClaudeTurnFailed(kind, "API Error: 429 rate limited")
+    _, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", compaction=failure)
+    assert isinstance(outcome, HTTPException)
+    assert outcome.status_code == status and outcome.detail == f"Failed to trigger compaction: {failure}"
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_failure_is_answered_without_the_credentials_its_text_carried(base_config):
+    from src.llms.claude_code import ClaudeTurnFailed
+
+    failure = ClaudeTurnFailed("api_error", "the provider said Authorization: Bearer abcdefgh12345 for sk-abcdefgh12345")
+    _, _, _, outcome = await _compact_claude_code_thread(base_config, "claude-sonnet-5-5-code", compaction=failure)
+    assert outcome.status_code == 502 and outcome.detail.startswith("Failed to trigger compaction: api_error: the provider said")
+    assert "abcdefgh12345" not in outcome.detail and "[REDACTED]" in outcome.detail
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_whose_login_anthropic_refused_is_refused_as_admission_refuses_the_turn(base_config):
+    from src.llms.claude_code import ClaudeTurnFailed
+
+    _, _, _, outcome = await _compact_claude_code_thread(
+        base_config, "claude-sonnet-5-5-code", compaction=ClaudeTurnFailed("auth_failed", "401 invalid token")
+    )
+    assert outcome.status_code == 400
+    assert {k: outcome.detail[k] for k in ("type", "reason")} == {"type": "claude_code_off", "reason": "signed_out"}
+
+
+@pytest.mark.asyncio
+async def test_a_thread_another_model_last_replied_on_is_not_compacted_by_claude_code(base_config):
+    """A held model that cannot run falls back to the account default, which
+    may be Claude Code: its session, if any, is not the one the thread runs on."""
+    stub, ask, _, outcome = await _compact_claude_code_thread(
+        base_config, "an-api-model", compaction=_claude_code_compaction(), claude_replied=False
+    )
+    assert outcome.detail["type"] == "claude_code_compacts_itself"
+    ask.assert_not_awaited()
+    stub.graph.turn.compact_between_turns.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_thread_claude_code_last_replied_on_is_not_summarized_by_another_model(base_config):
+    """A thread following a Claude Code default holds no model of its own: a
+    failed resolve falls back to the base config, whose summary would be
+    written through a graph that drops Claude's session."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.server.handlers.thread_maintenance import trigger_compaction
+
+    stub = _stub_thread_agent()
+    stub.messages[:] = [HumanMessage("hi"), AIMessage("hello", response_metadata={"claude_message_id": "msg_1"})]
     ask = _asked()
     with (
         patch("src.server.app.setup.agent_config", base_config),
-        patch(f"{HANDLER}._thread_agent", new=_stub_thread_agent()),
+        patch(f"{HANDLER}._thread_agent", new=stub),
         patch(ASK, new=ask),
         patch(THREAD_META, new_callable=AsyncMock, return_value={"llm_model": None, "msg_type": "ptc", "workspace_id": "ws-1"}),
         patch(f"{HANDLER}._resolver", new_callable=AsyncMock),
-        patch(f"{THREAD_MODEL}.resolve_turn_config", new=_claude_code),
+        patch(f"{THREAD_MODEL}.resolve_turn_config", new=AsyncMock(side_effect=RuntimeError("db blip"))),
         pytest.raises(HTTPException) as refused,
     ):
         await trigger_compaction("thread-1", user_id="user-1")
     assert refused.value.detail["type"] == "claude_code_compacts_itself"
     ask.assert_not_awaited()
+    stub.graph.aupdate_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio
