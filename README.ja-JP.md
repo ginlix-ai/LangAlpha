@@ -174,17 +174,20 @@ Robinhood はローカルアプリに戻るサインインしか受け付けな�
 
 **ホスト版（beta）。** [LangAlpha.ai](https://langalpha.ai) に登録すると、無料で始めるか、いずれかのプランを試用できます。市場データ、クラウド sandbox、証券口座の接続、チャネルはすべて設定済みです。beta 期間中はプランや機能が変わる可能性があります。
 
-**セルフホスト。** 必要なのは Docker だけです。
+**デスクトップアプリでセルフホスト。** macOS または Linux 向けの[オープンソース版デスクトップアプリ](https://github.com/ginlix-ai/langalpha/releases)をインストールし、**Run on this computer** を選びます。サーバーとデータベースが同梱されているので、ほかに動かすものはありません。Windows では、自分で動かしているサーバーに接続します。
+
+**ソースからセルフホスト。** コードを変更する場合やサーバーで動かす場合に必要なのは Docker だけです。
 
 ```bash
 git clone https://github.com/ginlix-ai/langalpha.git && cd langalpha
-make config   # wizard: model, data sources, sandbox, web search
 make up       # Postgres, Redis, backend and web app
 ```
 
 [http://localhost:5173](http://localhost:5173) を開いてください。API はポート 8000 で待ち受けており、インタラクティブなドキュメントは `/docs` にあります。手順は[セルフホストのクイックスタート](https://docs.langalpha.ai/get-started/self-hosting-quickstart/)（英語）を参照してください。
 
 **ドキュメント**。[LangAlpha とは](https://docs.langalpha.ai/get-started/what-is-langalpha/)でプロダクトの全体像を、[CLI リファレンス](https://docs.langalpha.ai/cli/overview/)でターミナルとスクリプトから使う `langalpha`（短縮形 `la`）を紹介しています。ドキュメントは英語です。
+
+どちらの場合も、初回起動時に agent を動かす場所、インストールするもの、追加するキー（モデルプロバイダー、任意で市場データと Web 検索）を尋ねます。これらは後から **Settings** で変更できます。ターミナルで設定したい場合は `make config` も引き続き使えます。
 
 **セルフホストとの違い。** agent、workspace、automation、skill、統制された注文は同じように動きます。それ以外は次のように異なります。
 

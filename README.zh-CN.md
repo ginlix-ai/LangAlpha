@@ -174,17 +174,20 @@ Robinhood 需要通过桌面应用连接，因为 Robinhood 只接受回跳到�
 
 **托管版（beta）**。在 [LangAlpha.ai](https://langalpha.ai) 注册，可以免费开始，也可以试用我们的某个套餐。行情数据、云端沙箱、券商连接和渠道都已为你配置好。beta 期间，套餐和功能可能调整。
 
-**自托管**。只需要 Docker：
+**用桌面端自托管**。安装适用于 macOS 或 Linux 的[开源版桌面端](https://github.com/ginlix-ai/langalpha/releases)，选择**在这台电脑上运行**。它自带服务端和数据库，不需要另外运行任何东西。Windows 上的桌面端需要连接你自己运行的服务端。
+
+**从源码自托管**。如果想改代码或部署到服务器，只需要 Docker：
 
 ```bash
 git clone https://github.com/ginlix-ai/langalpha.git && cd langalpha
-make config   # wizard: model, data sources, sandbox, web search
 make up       # Postgres, Redis, backend and web app
 ```
 
 打开 [http://localhost:5173](http://localhost:5173)。API 监听 8000 端口，交互式文档位于 `/docs`。分步说明见[自托管快速开始](https://docs.langalpha.ai/get-started/self-hosting-quickstart/)（英文）。
 
 **阅读文档**。[LangAlpha 是什么](https://docs.langalpha.ai/get-started/what-is-langalpha/)介绍产品全貌，[CLI 参考](https://docs.langalpha.ai/cli/overview/)说明在终端和脚本里使用的 `langalpha`（简写 `la`）。文档目前为英文。
+
+两种方式首次运行时都会询问：Agent 在哪里运行、安装哪些组件、添加哪些密钥（模型提供商，以及可选的行情数据和网络搜索）。这些之后都可以在**设置**里修改。如果想在终端里配置，`make config` 仍然可用。
 
 **自托管有哪些不同**。Agent、工作区、自动化、技能和受控订单的运行方式完全相同，其余部分有差异：
 
