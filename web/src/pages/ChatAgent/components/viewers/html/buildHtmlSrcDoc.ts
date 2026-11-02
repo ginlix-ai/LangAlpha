@@ -153,8 +153,8 @@ export function resolveThemeVars(from: Element = document.documentElement): stri
  * What each variant asks of the document, so the template carries no branches.
  *
  * A widget is authored for the chat column, so neither variant stretches to fill
- * a wider box and the inline one never scrolls at all. Fullscreen still caps at
- * that column width, but it no longer clips what overflows it. `html` here
+ * a wider box and the inline one never scrolls vertically. Fullscreen still caps
+ * at that column width, but it no longer clips what overflows it. `html` here
  * carries no overflow of its own, so the body's value propagates to the
  * viewport, and `overflow-x: hidden` there put a widget wider than the cap out
  * of reach entirely rather than merely making it untidy. A widget that does not
@@ -164,8 +164,12 @@ export function resolveThemeVars(from: Element = document.documentElement): stri
 const VARIANTS: Record<HtmlSrcDocVariant, { bodyOverflow: string; layout: string }> = {
   'widget-inline': {
     // Seamless in the chat flow: the host sizes the iframe from the widget's
-    // own reported height, so the document never scrolls itself.
-    bodyOverflow: 'overflow: hidden;',
+    // own reported height, so the document never scrolls down. It can scroll
+    // across: a widget wider than the column would otherwise be out of reach, and
+    // the height it reports counts what that scrollbar takes from the viewport,
+    // unless it is sized in vh and already fills the frame: each report would grow
+    // the frame, and the widget with it, without end.
+    bodyOverflow: 'overflow-x: auto; overflow-y: hidden;',
     layout: SEAMLESS_OVERRIDE,
   },
   'widget-fullscreen': {
@@ -260,7 +264,7 @@ export function buildHtmlSrcDoc(
   // a listener could miss. A frame that needs another theme after load (the
   // fullscreen dialog, the print copy) gets it as a push, which does fire.
   return `<!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; connect-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://esm.sh;">
 <style>
 :root {
   ${themeCSS}
@@ -279,6 +283,7 @@ window.sendPrompt = function(text) {
   function reportHeight() {
     if (!document.body) return;
     var h = document.body.scrollHeight;
+    if (h !== window.innerHeight) h += window.innerHeight - document.documentElement.clientHeight;
     if (h > 0 && Math.abs(h - lastH) > 2) {
       lastH = h;
       parent.postMessage({ type: 'widget:resize', height: h }, '*');

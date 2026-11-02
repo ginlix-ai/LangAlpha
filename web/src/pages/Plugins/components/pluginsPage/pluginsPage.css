@@ -246,7 +246,7 @@
 }
 .pp-doc-bar svg { color: var(--color-text-quaternary); flex-shrink: 0; }
 .pp-doc-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pp-doc-lines { font-family: var(--font-mono); font-size: 0.65625rem; color: var(--color-text-quaternary); }
+.pp-doc-lines { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--color-text-quaternary); }
 .pp-seg {
   margin-left: auto;
   display: inline-flex;

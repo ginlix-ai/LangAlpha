@@ -58,8 +58,8 @@ function DashboardPage() {
     setResetConfirmOpen(false);
     setSettingsFor(null);
   }
-  const mainRef = useRef<HTMLElement>(null);
-  useScrollMemory(mainRef, 'page:dashboard');
+  const pageRef = useRef<HTMLDivElement>(null);
+  useScrollMemory(pageRef, 'page:dashboard');
 
   const ctx = useDashboardContext();
   const {
@@ -69,7 +69,7 @@ function DashboardPage() {
   } = ctx;
 
   const handleScrollToTop = useCallback(() => {
-    mainRef.current?.scrollTo({ top: 0, behavior: scrollMotion() });
+    pageRef.current?.scrollTo({ top: 0, behavior: scrollMotion() });
   }, []);
 
   useEffect(() => {
@@ -137,7 +137,7 @@ function DashboardPage() {
   const hasAgentWidget = prefs.widgets.some((w) => w.type === 'agent.conversation');
   const showFloatingChat = !hasAgentWidget && !editMode;
 
-  // Reserve a bottom gutter inside <main>'s scroll area when a floating overlay
+  // Reserve a bottom gutter inside the page's scroll area when a floating overlay
   // is visible (edit-mode toolbar or floating chat card). Sitting inside the
   // scroll area means widgets end above the overlay without exposing a seam of
   // outer-container bg at the viewport bottom.
@@ -148,11 +148,13 @@ function DashboardPage() {
 
   return (
     <div className="dashboard-container min-h-full">
-      <main
-        ref={mainRef}
+      {/* A scroller, not a landmark: the app shell's <main> holds every route. */}
+      <div
+        ref={pageRef}
         className="flex-1 flex flex-col min-h-0 overflow-y-auto overflow-x-hidden"
         style={{ paddingBottom: bottomGutter }}
       >
+        <h1 className="sr-only">{t('sidebar.dashboard')}</h1>
         <DashboardHeader
           onScrollToTop={handleScrollToTop}
           edit={canEdit ? { editMode, onEditModeChange: setEditMode } : undefined}
@@ -181,7 +183,7 @@ function DashboardPage() {
         </div>
 
         {showFloatingChat && <ChatInputCard />}
-      </main>
+      </div>
 
       {/* Floating edit-mode toolbar */}
       {editMode && (

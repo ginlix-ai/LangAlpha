@@ -284,6 +284,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             <Search size={10} aria-hidden="true" />
             <input
               type="text"
+              aria-label={t('dashboard.widgets.newsFeed.tickerPlaceholder')}
               placeholder={t('dashboard.widgets.newsFeed.tickerPlaceholder')}
               value={tickerFilter}
               onChange={(e) => setTickerFilter(e.target.value)}

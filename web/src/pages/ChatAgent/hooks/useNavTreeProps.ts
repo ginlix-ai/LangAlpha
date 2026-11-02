@@ -74,9 +74,14 @@ export function useNavTreeProps({
     [openNewThread, findWorkspace],
   );
 
+  const currentThreadIdRef = useRef(currentThreadId);
+  currentThreadIdRef.current = currentThreadId;
+
   // Route-state contract: the workspace name/status ride along so ChatAgent
   // skips the workspace refetch.
   const onNavigateThread = useCallback((wsId: string, threadId: string, { replace = false } = {}) => {
+    // A second history entry for the thread on screen would make Back look dead.
+    if (threadId === currentThreadIdRef.current) return;
     const ws = findWorkspace(wsId);
     navigate(`/chat/t/${threadId}`, {
       replace,
@@ -102,8 +107,6 @@ export function useNavTreeProps({
   // pending stays on it.
   const workspaceThreadsRef = useRef(workspaceThreads);
   workspaceThreadsRef.current = workspaceThreads;
-  const currentThreadIdRef = useRef(currentThreadId);
-  currentThreadIdRef.current = currentThreadId;
   const removeThread = useCallback(async (
     wsId: string,
     threadId: string,

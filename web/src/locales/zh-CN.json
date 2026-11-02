@@ -616,6 +616,7 @@
   },
   "dashboard": {
     "title": "LangAlpha",
+    "searchLabel": "按代码或公司名称搜索股票",
     "searchPlaceholder": "搜索股票代码或公司名称...",
     "searching": "搜索中...",
     "noResults": "未找到结果",
@@ -2031,6 +2032,7 @@
     },
     "backToWorkflow": "返回工作流",
     "backToMain": "返回主对话",
+    "scrollToTop": "滚动到对话顶部",
     "reconnecting": "重新连接中…",
     "offlineHistoryLoad": "网络已断开，无法刷新此对话。恢复连接后会自动同步。",
     "jumpToLatest": {
@@ -2061,6 +2063,7 @@
       "captureChart": "截取图表",
       "chartAlt": "图表",
       "send": "发送消息",
+      "messageLabel": "发给 Agent 的消息",
       "dropFiles": "拖放文件以上传",
       "uploading": "上传中"
     },
@@ -2131,6 +2134,10 @@
     "collapseResult": "收起",
     "resultMoreItems": "另有 {{n}} 项",
     "imageLoadFailed": "{{name}} 无法加载",
+    "taskDone": "已完成",
+    "taskOpen": "未完成",
+    "scrollableTable": "表格,可左右滑动",
+    "diagram": "图表",
     "actions": {
       "copyMessage": "复制消息",
       "copied": "已复制！",
@@ -4133,6 +4140,7 @@
     "proxyUnverifiedBody": "该地址不是 {{provider}} 的官方 API，也不是我们认可的云平台（AWS Bedrock、Azure、Google Vertex AI），很可能是代理，我们无法对其测试。代理若未透传提示词缓存，长对话会更慢、费用更高；若把请求转给其他模型，或丢掉思考、推理强度设置，实际生效的就不是你所选的模型或设置；若代理本身不稳定，请求失败也会更多。"
   },
   "marketView": {
+    "pageHeading": "{{symbol}} 行情",
     "companyOverview": "公司概览",
     "quote": {
       "live": "实时",

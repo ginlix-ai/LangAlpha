@@ -39,7 +39,7 @@ export function TradingLevelName({
         <span>{t(info.labelKey)}</span>
       </span>
       {level === DEFAULT_TRADING_LEVEL && (
-        <span className="rounded-full border border-(--color-border-muted) px-1.5 text-[0.625rem] font-medium leading-4 text-(--color-text-tertiary)">
+        <span className="rounded-full border border-(--color-border-muted) px-1.5 text-[0.6875rem] font-medium leading-4 text-(--color-text-tertiary)">
           {t('settings.tradingPermission.defaultTag')}
         </span>
       )}

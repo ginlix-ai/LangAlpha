@@ -79,6 +79,44 @@ function renderPanel({ agents }: RenderOpts) {
   );
 }
 
+describe('NavigationPanel: the current thread row', () => {
+  function renderCurrent(agents: Parameters<typeof toSidebarAgentRow>[0][]) {
+    const onNavigateThread = vi.fn();
+    render(
+      <NavigationPanel
+        workspaces={[{ workspace_id: WS_ID, name: 'Test workspace', is_home: false }]}
+        workspaceThreads={{
+          [WS_ID]: { threads: [{ thread_id: THREAD_ID, title: 'Test thread' }], loading: false },
+        }}
+        currentWorkspaceId={WS_ID}
+        currentThreadId={THREAD_ID}
+        agents={agents.map(toSidebarAgentRow)}
+        activeAgentId={null}
+        expandWorkspace={vi.fn()}
+        onSelectAgent={vi.fn()}
+        onRemoveAgent={vi.fn()}
+        onNavigateThread={onNavigateThread}
+      />,
+    );
+    return onNavigateThread;
+  }
+
+  it('is a pick with no agents to show, which the mobile drawer closes on', async () => {
+    const onNavigateThread = renderCurrent([{ id: 'main', name: 'Lead Agent', isMainAgent: true }]);
+    await userEvent.click(screen.getByText('Test thread'));
+    expect(onNavigateThread).toHaveBeenCalledWith(WS_ID, THREAD_ID);
+  });
+
+  it('toggles its agents when it has them, and is not a pick', async () => {
+    const onNavigateThread = renderCurrent([
+      { id: 'main', name: 'Lead Agent', isMainAgent: true },
+      { id: 'sub-1', name: 'Worker', isMainAgent: false },
+    ]);
+    await userEvent.click(screen.getByText('Test thread'));
+    expect(onNavigateThread).not.toHaveBeenCalled();
+  });
+});
+
 describe('NavigationPanel — subagent description fallback', () => {
   it('renders the trimmed description in place of the displayId / Worker name', () => {
     renderPanel({

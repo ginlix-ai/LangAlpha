@@ -12,8 +12,6 @@ import type { NavWorkspace } from '../../hooks/useNavigationData';
 
 interface MobileNavDrawerProps {
   visible: boolean;
-  /** False when the drawer was already open on arrival, so it appears in place. */
-  slideIn: boolean;
   onMinimize: () => void;
   isActive: boolean;
   workspaceId: string;
@@ -28,7 +26,7 @@ interface MobileNavDrawerProps {
  * queries, store subscriptions) then runs nowhere on desktop, where it was
  * once parked but still ran with every streamed token.
  */
-export function MobileNavDrawer({ visible, slideIn, onMinimize, isActive, workspaceId, threadId, agents, workspaceName }: MobileNavDrawerProps) {
+export function MobileNavDrawer({ visible, onMinimize, isActive, workspaceId, threadId, agents, workspaceName }: MobileNavDrawerProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const workspaceLabel = useWorkspaceLabel();
@@ -56,6 +54,22 @@ export function MobileNavDrawer({ visible, slideIn, onMinimize, isActive, worksp
     onNewThread: handleNewThread,
     fallbackWorkspaceName: workspaceName,
   });
+
+  // Every pick shows something the drawer is covering, so it leaves with the
+  // pick. Closed here as well as on activation because a pick can stay in this
+  // view: the thread already open, or one of its subagents.
+  const { onNavigateThread, onNewThread, onSelectAgent } = navTreeProps;
+  const picks = useMemo(() => {
+    const closing = <Args extends unknown[]>(pick: (...args: Args) => void) => (...args: Args): void => {
+      pick(...args);
+      onMinimize();
+    };
+    return {
+      onNavigateThread: closing(onNavigateThread),
+      onNewThread: closing(onNewThread),
+      onSelectAgent: closing(onSelectAgent),
+    };
+  }, [onNavigateThread, onNewThread, onSelectAgent, onMinimize]);
 
   // NavigationPanel is memoized, and this node is one of its props: built
   // inline it would be new on every render, and the whole tree with it.
@@ -118,7 +132,7 @@ export function MobileNavDrawer({ visible, slideIn, onMinimize, isActive, worksp
         <AnimatePresence>
           {visible && (
             <motion.div
-              initial={slideIn ? { x: '-100%', opacity: 0 } : false}
+              initial={{ x: '-100%', opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: '-100%', opacity: 0, transition: TWEEN.exit }}
               transition={TWEEN.enter}
@@ -134,6 +148,7 @@ export function MobileNavDrawer({ visible, slideIn, onMinimize, isActive, worksp
                 headerActions={headerActions}
                 isActive={isActive}
                 {...navTreeProps}
+                {...picks}
               />
             </motion.div>
           )}

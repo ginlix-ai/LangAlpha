@@ -13,6 +13,7 @@ import { useAllModels } from '@/hooks/useAllModels';
 import { useProviderCatalog } from '@/hooks/useProviderCatalog';
 import { useLapsedSignIn } from '@/hooks/useLapsedSignIn';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { onScreenKeyboardUp } from '@/lib/visualViewport';
 import { useFavoriteModels } from '@/hooks/useFavoriteModels';
 import { useSeededModel } from '@/hooks/useSeededModel';
 import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
@@ -188,6 +189,13 @@ export interface ChatInputProps {
 }
 
 /* --- MAIN COMPONENT --- */
+
+function settleAfterSend(field: HTMLTextAreaElement | null): void {
+  if (!field) return;
+  field.style.height = 'auto';
+  // The answer lands where the on-screen keyboard is.
+  if (onScreenKeyboardUp()) field.blur();
+}
 
 function ChatInput({
   onSend,
@@ -584,9 +592,7 @@ function ChatInput({
         ContextBus.clear();
       }
       setDeckFanned(false);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
+      settleAfterSend(textareaRef.current);
       return;
     }
 
@@ -633,9 +639,7 @@ function ChatInput({
       ContextBus.clear();
     }
     setDeckFanned(false);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
+    settleAfterSend(textareaRef.current);
   }, [hasContent, disabled, message, effectiveMarketWatch, draftSubagents, attachedFiles, setAttachedFiles, onSend, onAction,
     mentionedFiles, resetMentions, slashCommands, resetSlash,
     pillModel, sentEffort, resolvedFastMode, ownOverrides, widgetSnapshots, t]);
@@ -678,7 +682,7 @@ function ChatInput({
         }
         return;
       }
-      if (!e.shiftKey) {
+      if (!e.shiftKey && !onScreenKeyboardUp()) {
         e.preventDefault();
         handleSend();
       }
@@ -895,6 +899,9 @@ function ChatInput({
                   stopListening();
                 }
               }}
+              // Named apart from the placeholder, which says what state the
+              // thread is in and is empty while listening.
+              aria-label={t("chat.composer.messageLabel")}
               placeholder={isListening ? "" : (placeholder ?? t("chat.placeholderDefault"))}
               className={`font-content w-full bg-transparent border-0 text-(--color-text-primary) ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-(--color-text-tertiary) resize-none overflow-y-auto leading-relaxed block transition-opacity ${isListening ? 'opacity-20' : 'opacity-100'}`}
               rows={minRows}

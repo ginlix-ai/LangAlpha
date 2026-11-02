@@ -19,6 +19,10 @@
     background-color var(--motion-quick) var(--ease-out),
     color var(--motion-quick) var(--ease-out);
   padding: 0;
+  /* A row's paperclip has another a row away, so its hit area stays within a
+     row's pitch: any taller and a tap fires the paperclip of the row beside it.
+     In a table the cell's clip holds it to the row anyway. */
+  --tap-target-h: 32px;
 }
 
 /* Show on hover within the row's `.row-attach-host` ancestor. List widgets

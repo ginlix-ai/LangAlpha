@@ -11,7 +11,6 @@ import ConfirmDialog from '../../Dashboard/components/ConfirmDialog';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
 import { grouped2 } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
-import { EXT_COLOR_PRE, EXT_COLOR_POST } from '../utils/chartConstants';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import './MarketSidebarPanel.css';
 
@@ -128,7 +127,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
           <span className={`market-sidebar-row-change ${changeClass(row.isPositive, row[changeField] as number | null | undefined)}`}>
             {formatChange(row[changeField] as number | null | undefined)}
             {extType && extPct != null && (
-              <span className="market-sidebar-row-ext" style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: extType === 'pre' ? EXT_COLOR_PRE : EXT_COLOR_POST }}>
+              <span className="market-sidebar-row-ext" style={{ display: 'inline-flex', alignItems: 'center', gap: 2, color: extType === 'pre' ? 'var(--color-ext-pre)' : 'var(--color-ext-post)' }}>
                 {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
                 {formatPrice(row.price)} {extPct >= 0 ? '+' : ''}{extPct.toFixed(2)}%
               </span>

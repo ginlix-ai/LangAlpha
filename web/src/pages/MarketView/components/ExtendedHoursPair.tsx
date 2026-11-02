@@ -9,7 +9,6 @@ import React from 'react';
 import { Sunrise, Sunset } from 'lucide-react';
 import { fixed2, signedFixed2 } from '@/lib/format';
 import { useLocale } from '@/hooks/useLocale';
-import { EXT_COLOR_PRE, EXT_COLOR_POST } from '../utils/chartConstants';
 import type { StockQuoteModel } from '../hooks/useStockQuoteModel';
 
 interface ExtendedHoursPairProps {
@@ -22,7 +21,7 @@ interface ExtendedHoursPairProps {
 export function ExtendedHoursPair({ ext, iconSize, className, style }: ExtendedHoursPairProps): React.ReactElement {
   const locale = useLocale();
   return (
-    <span className={className} style={{ ...style, color: ext.type === 'pre' ? EXT_COLOR_PRE : EXT_COLOR_POST }}>
+    <span className={className} style={{ ...style, color: ext.type === 'pre' ? 'var(--color-ext-pre)' : 'var(--color-ext-post)' }}>
       {ext.type === 'pre' ? <Sunrise size={iconSize} /> : <Sunset size={iconSize} />}
       {fixed2(ext.price, locale)}
       {ext.change != null && <span>{signedFixed2(ext.change, locale)}</span>}

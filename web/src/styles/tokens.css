@@ -83,7 +83,10 @@ html {
 
   --sidebar-width: 64px;
   --sidebar-rail-width: 64px;
-  --bottom-tab-height: 78px;
+  --bottom-tab-bar: 78px;
+  /* What is fixed to the screen's bottom measures off this, which is the keyboard
+     while one is up (App.css). */
+  --bottom-tab-height: var(--bottom-tab-bar);
   /* Space above a page's first row. Every route's title or header row starts
      this far down, so the first row sits at one depth when moving between pages
      (centre of a 28px title row: --page-top + 14px). */
@@ -165,7 +168,7 @@ html {
   --color-text-primary: #E6E6E4;
   --color-text-secondary: #9B9FA6;
   --color-text-tertiary: rgba(230, 230, 228, 0.62);
-  --color-text-quaternary: rgba(230, 230, 228, 0.36);
+  --color-text-quaternary: rgba(230, 230, 228, 0.55);
   --color-text-muted: #B9BDC2;
   /* Ink, not white — the dark accent is a light ember, so white on it lands
      under 3:1. Anything painted on --color-accent-primary must use this. */
@@ -211,6 +214,9 @@ html {
   --color-warning-soft: rgba(216, 176, 76, 0.12);
   --color-info: #6E9EF7;
   --color-info-soft: rgba(110, 158, 247, 0.12);
+  /* An extended-hours price as text: the hue of its chart line, held to 4.5:1. */
+  --color-ext-pre: #FBBF24;
+  --color-ext-post: #60A5FA;
   --color-success: #3FB950;
   --color-success-soft: rgba(63, 185, 80, 0.12);
   --color-accent-light: #F2B67C;
@@ -382,11 +388,13 @@ html {
   --color-term-text-secondary: #5B6370;
   --color-term-text-tertiary: #8A919C;
 
+  /* Every step is read as text, so each holds 4.5:1 on white and all but the
+     last on the warm canvas too (styles/__tests__/textContrast.test.ts). */
   --color-text-primary: #1F1F1E;
-  --color-text-secondary: #73726E;
-  --color-text-tertiary: #A3A29E;
-  --color-text-quaternary: #B4B3AF;
-  --color-text-muted: #8C8B87;
+  --color-text-secondary: #5F5E5A;
+  --color-text-tertiary: #716F6B;
+  --color-text-quaternary: #767571;
+  --color-text-muted: #6B6A66;
   /* Ink, matching dark — white on the amber is under 3:1 in either theme. */
   --color-text-on-accent: #241505;
   --color-icon-muted: #8C8B87;
@@ -423,6 +431,8 @@ html {
   --color-warning-soft: rgba(180, 83, 9, 0.08);
   --color-info: #4477D4;
   --color-info-soft: rgba(68, 119, 212, 0.08);
+  --color-ext-pre: #B45309;
+  --color-ext-post: #2563EB;
   --color-success: #1A7F37;
   --color-success-soft: rgba(26, 127, 55, 0.08);
   --color-accent-light: #E09A57;
