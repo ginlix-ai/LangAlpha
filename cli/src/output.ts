@@ -14,7 +14,7 @@ export function print(json: boolean, value: unknown, human: () => string): void 
   process.stdout.write(json ? `${JSON.stringify(value)}\n` : `${printable(human())}\n`);
 }
 
-/** A plain aligned table; long cells are kept whole, since ids get copied. */
+/** A plain aligned table; a cell wider than CELL_MAX is cut short. */
 export function table(rows: Record<string, unknown>[], columns: string[]): string {
   if (rows.length === 0) return "(none)";
   const cells = rows.map((r) => columns.map((c) => cell(r[c])));
