@@ -16,6 +16,7 @@ from src.server.database import pool
 from src.server.database.conversation import _sql, errors
 from src.server.database.share_codes import mint_share_code
 from src.server.utils.pg_sanitize import normalize_uuid
+from src.server.utils.thread_stamp import stamped_title
 
 logger = logging.getLogger(__name__)
 
@@ -480,8 +481,7 @@ async def ensure_thread_exists(
         # Step 3: Create thread if it doesn't exist
         created = False
         if not thread_exists:
-            # Use initial query as thread title (truncate to 255 chars)
-            title = initial_query[:255] if initial_query else None
+            title = stamped_title(initial_query) if initial_query else None
             await create_thread(
                 conversation_thread_id=conversation_thread_id,
                 workspace_id=workspace_id,

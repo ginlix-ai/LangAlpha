@@ -505,12 +505,13 @@ async def ensure_thread(
     # Web create-first threads pre-exist → created=False → no double generation.
     if created and initial_query:
         from src.server.services.thread_title import schedule_title_generation
+        from src.server.utils.thread_stamp import stamped_title
 
         schedule_title_generation(
             thread_id=thread_id,
             user_id=user_id,
             first_query=initial_query,
-            expected_title=initial_query[:255],
+            expected_title=stamped_title(initial_query),
             timezone=request.timezone,
         )
 
