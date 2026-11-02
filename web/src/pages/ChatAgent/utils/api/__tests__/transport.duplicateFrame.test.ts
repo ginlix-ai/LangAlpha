@@ -1,4 +1,3 @@
-// @vitest-environment node
 /**
  * A retransmit that raced past the route's duplicate check is refused inside
  * the stream. The send paths reach their caller with the route's own 409 for
