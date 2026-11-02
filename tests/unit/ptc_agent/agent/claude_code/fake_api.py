@@ -19,6 +19,8 @@ CA, trusted through ``NODE_EXTRA_CA_CERTS`` in the CLI's environment only.
   the command as its input; answer once the turn holds their results.
 - ``RECALL``: answer with every earlier ``FACT:`` line the CLI sent.
 - ``FAIL_AUTH`` / ``FAIL_LIMIT``: refuse with 401 / 429.
+- ``overloaded_after_compaction``: answer that many requests that resume
+  from a compaction's summary with 529.
 - ``MAX_TOKENS``: answer ``part one`` and stop at the output limit, so the CLI
   continues the reply in a request of its own.
 - Anything else: ``ECHO <text>``.
@@ -137,10 +139,12 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
 class FakeMessagesAPI:
     """The server and the request bodies it was sent."""
 
-    def __init__(self, *, first_party: bool = False, refused: frozenset[str] = frozenset()) -> None:
+    def __init__(self, *, first_party: bool = False, refused: frozenset[str] = frozenset(),
+                 overloaded_after_compaction: int = 0) -> None:
         self.first_party = first_party
         #: Credentials answered with a 401, as Anthropic answers a revoked token.
         self.refused = refused
+        self.overloaded_after_compaction = overloaded_after_compaction
         self.requests: list[dict[str, Any]] = []
         #: The credential each request carried: its bearer token, else its API key.
         self.credentials: list[str | None] = []
@@ -208,6 +212,10 @@ class FakeMessagesAPI:
         if credential in self.refused:
             return web.json_response({"type": "error", "error": {"type": "authentication_error", "message": "invalid token"}}, status=401)
         prompt = " ".join(t for blocks in _user_blocks(body)[-1:] for t in _texts(blocks))
+        opening = " ".join(t for blocks in _user_blocks(body)[:1] for t in _texts(blocks))
+        if self.overloaded_after_compaction and opening.startswith("This session is being continued"):
+            self.overloaded_after_compaction -= 1
+            return web.json_response({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}, status=529)
         for word, (status, kind) in {"FAIL_AUTH": (401, "authentication_error"), "FAIL_LIMIT": (429, "rate_limit_error")}.items():
             if word in prompt:
                 return web.json_response({"type": "error", "error": {"type": kind, "message": word}}, status=status)

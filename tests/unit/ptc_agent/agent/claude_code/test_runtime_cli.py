@@ -22,6 +22,8 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 
+from ptc_agent.agent.claude_code.cli import COMPACT_INSTRUCTIONS
+from ptc_agent.agent.claude_code.compaction import CompactionRules
 from ptc_agent.agent.claude_code.launcher import LocalLauncher
 from ptc_agent.agent.claude_code.runtime import (
     TURN_KEY,
@@ -38,7 +40,7 @@ from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 from .conftest import TEST_KEY
 from .fake_api import TOKEN, FakeMessagesAPI
-from .harness import new_graph, run_turn, spec
+from .harness import bash, new_graph, run_turn, spec
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.asyncio]
 
@@ -217,6 +219,414 @@ async def test_a_session_keeps_the_prompt_and_tools_it_started_on_across_a_deplo
     assert SPEC.system_prompt in first[0] and second == first
     assert values["claude_session"]["pinned"]["system_prompt"] == SPEC.system_prompt
     assert deployed.system_prompt in fresh[0] and fresh[1] == ["Bash", "Grep"]
+
+
+#: The CLI's own compaction set to fire once a turn's context passes about
+#: 4,800 tokens: 6% of the smallest window it accepts, less its output reserve.
+COMPACTS_EARLY = {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "6"}
+
+
+async def test_a_session_keeps_its_prompt_and_tools_past_a_compaction_the_cli_made_mid_turn():
+    """The CLI compacts between a tool result and the next request, re-records
+    the prompt and tools the turn launched with, and replays that record on
+    every later launch. So the turn after a deploy still sends the bytes the
+    compacted turn's thinking was made under."""
+    @tool("Bash")
+    async def long_output(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 1000
+
+    @tool("Grep")
+    async def grep(pattern: str) -> str:
+        """Search files."""
+        return ""
+
+    started = dataclasses.replace(SPEC, tools=[long_output])
+    deployed = dataclasses.replace(started, system_prompt="You are the redeployed test agent. Reply tersely.", tools=[long_output, grep])
+    graph = build_claude_code_graph(ToolNode([long_output, grep]), checkpointer=InMemorySaver())
+
+    def sent(request):
+        return json.dumps(request["system"][2:]), [t["name"] for t in request["tools"]]
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(started, LocalLauncher(env=env, token=TOKEN), graph, "t-mid", [HumanMessage("FACT: the code word is heron")])
+        compacting = await run_turn(started, LocalLauncher(env={**env, **COMPACTS_EARLY}, token=TOKEN), graph, "t-mid",
+                                    [HumanMessage("RUN_TOOL please")])
+        last = api.model_requests[-1]
+        n = len(api.model_requests)
+        values = await run_turn(deployed, LocalLauncher(env=env, token=TOKEN), graph, "t-mid", [HumanMessage("RECALL it")])
+        after = api.model_requests[n]
+    assert any(e.get("subtype") == "compact_boundary" for e in compacting["claude_session"]["entries"])
+    assert any(b.get("type") == "thinking" for m in last["messages"] if isinstance(m["content"], list) for b in m["content"])
+    assert sent(after) == sent(last) and started.system_prompt in sent(after)[0]
+    assert values["claude_session"]["pinned"]["system_prompt"] == started.system_prompt
+
+
+async def test_a_session_the_cli_compacted_on_an_old_pin_moves_at_the_next_turn_start():
+    """Its context is small after that compaction, so no size or cache rule
+    would move it for a whole context more, on a prompt the build no longer
+    sends."""
+    @tool("Bash")
+    async def long_output(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 1000
+
+    started = dataclasses.replace(SPEC, tools=[long_output])
+    deployed = dataclasses.replace(started, system_prompt="You are the redeployed test agent. Reply tersely.")
+    graph = build_claude_code_graph(ToolNode([long_output]), checkpointer=InMemorySaver())
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(started, LocalLauncher(env=env, token=TOKEN), graph, "t-due", [HumanMessage("FACT: the code word is heron")])
+        compacted = await run_turn(deployed, LocalLauncher(env={**env, **COMPACTS_EARLY}, token=TOKEN), graph, "t-due",
+                                   [HumanMessage("RUN_TOOL please")])
+        n = len(api.model_requests)
+        moved = await run_turn(deployed, LocalLauncher(env=env, token=TOKEN), graph, "t-due", [HumanMessage("RECALL it")])
+        summary, after = api.model_requests[n:]
+    session = compacted["claude_session"]
+    assert any(e.get("subtype") == "compact_boundary" for e in session["entries"]) and session["repin_due"]
+    assert session["pinned"]["system_prompt"] == started.system_prompt in json.dumps(summary["system"])
+    assert deployed.system_prompt in json.dumps(after["system"])
+    assert moved["claude_session"]["pinned"]["system_prompt"] == deployed.system_prompt and "repin_due" not in moved["claude_session"]
+
+
+async def test_a_compaction_the_cli_makes_mid_turn_is_signalled_ahead_of_the_reply_after_it():
+    """Live, the compacting indicator and the notice come before the reply
+    after the compaction streams; replay reads the notice off the result it
+    followed."""
+    from ptc_agent.agent.middleware.compaction.utils import compaction_summary
+
+    @tool("Bash")
+    async def long_output(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 1000
+
+    given = dataclasses.replace(SPEC, tools=[long_output])
+    graph = build_claude_code_graph(ToolNode([long_output]), checkpointer=InMemorySaver())
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(given, LocalLauncher(env=env, token=TOKEN), graph, "t-notice", [HumanMessage("FACT: the code word is heron")])
+        turn_ = ClaudeTurn(given, LocalLauncher(env={**env, **COMPACTS_EARLY}, token=TOKEN), identity="test-user",
+                           thread_key="t-notice", compaction=CompactionRules(0, threshold=100_000))
+        config = {"configurable": {"thread_id": "t-notice", TURN_KEY: turn_}}
+        try:
+            events = [e async for e in graph.astream({"messages": [HumanMessage("RUN_TOOL please")]}, config, stream_mode="custom")]
+        finally:
+            await turn_.close()
+        values = (await graph.aget_state(config)).values
+    boundary = next(e["uuid"] for e in values["claude_session"]["entries"] if e.get("subtype") == "compact_boundary")
+    signals = [(e["action"], e["signal"]) for e in events if e.get("type") == "context_window"]
+    assert signals == [("token_usage", "complete"), ("summarize", "start"), ("summarize", "complete"), ("token_usage", "complete")]
+    notice = next(e for e in events if e.get("action") == "summarize" and e["signal"] == "complete")
+    assert notice["summary_text"] and notice["original_message_count"] >= 2
+    stamped = [compaction_summary(m) for m in values["messages"]]
+    assert stamped[-2] == {"summary_message_id": boundary, **{k: notice[k] for k in notice if k not in ("type", "action", "signal")}}
+    assert isinstance(values["messages"][-2], ToolMessage) and stamped.count(None) == len(stamped) - 1
+
+
+async def test_a_compaction_the_cli_makes_mid_turn_is_saved_before_the_request_after_it():
+    """That request can fail or be stopped; the retry resumes the session
+    compacted instead of making and billing the compaction again, and the
+    history shows it after the result it followed."""
+    from ptc_agent.agent.middleware.compaction.utils import compaction_summary
+    from src.server.services.history.projector import messages_to_history_events
+
+    @tool("Bash")
+    async def long_output(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 1000
+
+    given = dataclasses.replace(SPEC, tools=[long_output])
+    graph = build_claude_code_graph(ToolNode([long_output]), checkpointer=InMemorySaver())
+    async with FakeMessagesAPI(first_party=True, overloaded_after_compaction=1) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(given, LocalLauncher(env=env, token=TOKEN), graph, "t-saved", [HumanMessage("FACT: the code word is heron")])
+        with pytest.raises(ClaudeTurnFailed):
+            await run_turn(given, LocalLauncher(env={**env, **COMPACTS_EARLY}, token=TOKEN), graph, "t-saved",
+                           [HumanMessage("RUN_TOOL please")])
+        failed = (await graph.aget_state({"configurable": {"thread_id": "t-saved"}})).values
+        n = len(api.model_requests)
+        values = await run_turn(given, LocalLauncher(env=env, token=TOKEN), graph, "t-saved", [HumanMessage("RECALL it")])
+        resumed = api.model_requests[n:]
+    boundaries = [e["uuid"] for e in failed["claude_session"]["entries"] if e.get("subtype") == "compact_boundary"]
+    assert len(boundaries) == 1
+    assert isinstance(failed["messages"][-1], ToolMessage) and compaction_summary(failed["messages"][-1])["summary_message_id"] == boundaries[0]
+    assert [e.kind for e in messages_to_history_events(failed["messages"])][-1] == "context-window"
+    assert len(resumed) == 1 and json.dumps(resumed[0]["messages"][0]).count("This session is being continued") == 1
+    assert sum(e.get("subtype") == "compact_boundary" for e in values["claude_session"]["entries"]) == 1
+
+
+async def test_a_compaction_saved_mid_turn_leaves_the_reply_after_it_to_the_step_that_commits_it(monkeypatch):
+    """The CLI can have written the reply's records by the time the
+    compaction's step runs; a stop between the two steps would otherwise
+    leave a session holding a reply the thread never saw."""
+    real = ClaudeTurn.compacting
+
+    def after_boundary(entries, boundary):
+        ids = [e.get("uuid") for e in entries]
+        return entries[ids.index(boundary):] if boundary in ids else []
+
+    async def compacting(self, state, stage):
+        await real(self, state, stage)
+        if stage.boundary is None:
+            return
+        async with asyncio.timeout(30):
+            while not any(e.get("type") == "assistant" for e in after_boundary(self.current.store.pending(), stage.boundary)):
+                await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(ClaudeTurn, "compacting", compacting)
+
+    @tool("Bash")
+    async def long_output(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 1000
+
+    given = dataclasses.replace(SPEC, tools=[long_output])
+    graph = build_claude_code_graph(ToolNode([long_output]), checkpointer=InMemorySaver())
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await run_turn(given, LocalLauncher(env=env, token=TOKEN), graph, "t-bound", [HumanMessage("FACT: the code word is heron")])
+        values = await run_turn(given, LocalLauncher(env={**env, **COMPACTS_EARLY}, token=TOKEN), graph, "t-bound",
+                                [HumanMessage("RUN_TOOL please")])
+        history = [s async for s in graph.aget_state_history({"configurable": {"thread_id": "t-bound"}})]
+    saved = next(s.values for s in history if isinstance(s.values["messages"][-1], ToolMessage)
+                 and any(e.get("subtype") == "compact_boundary" for e in s.values["claude_session"]["entries"]))
+    entries = saved["claude_session"]["entries"]
+    after = after_boundary(entries, next(e["uuid"] for e in entries if e.get("subtype") == "compact_boundary"))
+    assert any(e.get("isCompactSummary") for e in after)
+    assert any((e.get("attachment") or {}).get("type") == "prompt_snapshot" for e in after)
+    assert not any(e.get("type") == "assistant" for e in after)
+    final = values["claude_session"]["entries"]
+    reply = values["messages"][-1]
+    assert isinstance(reply, AIMessage) and reply.response_metadata["claude_message_id"] in {
+        (e.get("message") or {}).get("id") for e in final if e.get("type") == "assistant"}
+    assert len({e["uuid"] for e in final if e.get("uuid")}) == len([e for e in final if e.get("uuid")])
+
+
+@pytest.mark.parametrize(("threshold", "compacts"), [(67_000, True), (0, False)])
+async def test_the_cli_compacts_before_a_request_only_at_the_threshold_it_was_given(threshold, compacts):
+    """On its default window the CLI never compacts before a request, so a
+    turn's context would grow until a request was refused as too long. The
+    turn before gives the summary something to summarize."""
+    @tool("Bash")
+    async def large(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 30_000
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        given = dataclasses.replace(SPEC, tools=[large])
+        rules = CompactionRules(0, threshold=threshold)
+        graph = build_claude_code_graph(ToolNode([large]), checkpointer=InMemorySaver())
+        await run_turn(given, launcher, graph, f"t-window-{threshold}", [HumanMessage("FACT: the code word is heron")], compaction=rules)
+        values = await run_turn(given, launcher, graph, f"t-window-{threshold}", [HumanMessage("RUN_TOOL please")], compaction=rules)
+    boundaries = [e for e in values["claude_session"]["entries"] if e.get("subtype") == "compact_boundary"]
+    assert bool(boundaries) is compacts
+    assert isinstance(values["messages"][-1], AIMessage)
+
+
+async def test_each_reply_carries_and_streams_the_threshold_the_cli_compacts_at():
+    """The live ring reads the event and replay reads the stamp, so both show
+    the thread's threshold rather than a default."""
+    from ptc_agent.agent.middleware.compaction.utils import context_threshold
+
+    graph = new_graph()
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"})
+        turn_ = ClaudeTurn(SPEC, launcher, identity="test-user", thread_key="t-usage", compaction=CompactionRules(0, threshold=500_000))
+        config = {"configurable": {"thread_id": "t-usage", TURN_KEY: turn_}}
+        try:
+            events = [e async for e in graph.astream({"messages": [HumanMessage("RUN_TOOL please")]}, config, stream_mode="custom")]
+        finally:
+            await turn_.close()
+        replies = [m for m in (await graph.aget_state(config)).values["messages"] if isinstance(m, AIMessage)]
+    usage = [e for e in events if isinstance(e, dict) and e.get("action") == "token_usage"]
+    assert len(replies) == 2 and [context_threshold(m) for m in replies] == [500_000, 500_000]
+    assert [(e["threshold"], e["total_tokens"]) for e in usage] == [
+        (500_000, m.usage_metadata["input_tokens"] + m.usage_metadata["output_tokens"]) for m in replies
+    ]
+
+
+async def test_a_turn_start_compaction_shows_one_divider_on_reload_whether_or_not_its_launch_fails(monkeypatch):
+    """It rides the prompt it followed, saved with the compaction, so a turn
+    whose launch then fails shows it too, and the retry shows no second."""
+    from ptc_agent.agent.claude_code import runtime
+    from src.server.services.history.projector import messages_to_history_events
+
+    class Due(CompactionRules):
+        def repin_plan(self, records, current, now, pending=0):
+            return (True, "due") if records["pinned"]["system_prompt"] != current["system_prompt"] else None
+
+    fails = [0]
+    real_start = runtime._Run.start.__func__
+
+    async def start(cls, *args, **kwargs):
+        if fails[0]:
+            fails[0] -= 1
+            raise ClaudeTurnFailed("api_error", "the launch failed")
+        return await real_start(cls, *args, **kwargs)
+
+    monkeypatch.setattr(runtime._Run, "start", classmethod(start))
+    graph = build_claude_code_graph(ToolNode(SPEC.tools), checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t-divider"}}
+
+    async def turn_on(spec_, text):
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        turn_ = ClaudeTurn(spec_, launcher, identity="test-user", thread_key="t-divider", compaction=Due(1))
+        try:
+            await graph.ainvoke({"messages": [HumanMessage(text)]}, {"configurable": {**config["configurable"], TURN_KEY: turn_}})
+        finally:
+            await turn_.close()
+
+    async def dividers():
+        messages = (await graph.aget_state(config)).values["messages"]
+        return sum(e.kind == "context-window" and e.data.get("action") == "summarize" for e in messages_to_history_events(messages))
+
+    deployed = dataclasses.replace(SPEC, system_prompt="You are the redeployed test agent. Reply tersely.")
+    again = dataclasses.replace(SPEC, system_prompt="You are the twice redeployed test agent.")
+    shown = []
+    async with FakeMessagesAPI(first_party=True) as api:
+        await turn_on(SPEC, "FACT: the code word is heron")
+        await turn_on(SPEC, "say hi")
+        fails[0] = 1
+        with pytest.raises(ClaudeTurnFailed, match="the launch failed"):
+            await turn_on(deployed, "RECALL it")
+        shown.append(await dividers())
+        await turn_on(deployed, "RECALL it")
+        shown.append(await dividers())
+        await turn_on(again, "say hi")
+        shown.append(await dividers())
+    assert shown == [1, 1, 2]
+
+
+async def test_a_session_due_a_new_pin_compacts_under_its_old_one_and_runs_the_turn_on_the_new_one():
+    """The summary request is the session's own prefix with its thinking; the
+    turn's requests then carry this build's prompt and tools and no thinking
+    from before the summary, and the thinking they make goes out again on the
+    next turn under the prefix it was made on."""
+    @tool("Grep")
+    async def grep(pattern: str) -> str:
+        """Search files."""
+        return ""
+
+    class Due(CompactionRules):
+        def repin_plan(self, records, current, now, pending=0):
+            return (True, "due") if records["pinned"]["system_prompt"] != current["system_prompt"] else None
+
+    deployed = dataclasses.replace(SPEC, system_prompt="You are the redeployed test agent. Reply tersely.", tools=[*SPEC.tools, grep])
+    graph = build_claude_code_graph(ToolNode([*SPEC.tools, grep]), checkpointer=InMemorySaver())
+
+    def thinking(request):
+        return [b["signature"] for m in request["messages"] if isinstance(m["content"], list) for b in m["content"] if b.get("type") == "thinking"]
+
+    def made(values):
+        return {b["signature"] for m in values["messages"] if isinstance(m, AIMessage)
+                for b in m.content if isinstance(b, dict) and b.get("type") == "thinking"}
+
+    async def turn_on(spec_, text):
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        turn_ = ClaudeTurn(spec_, launcher, identity="test-user", thread_key="t-repin", compaction=Due(1),
+                           baseline=lambda _s: ("epoch-1", "The thread's baseline."))
+        config = {"configurable": {"thread_id": "t-repin", TURN_KEY: turn_}}
+        try:
+            await graph.ainvoke({"messages": [HumanMessage(text)]}, config)
+        finally:
+            await turn_.close()
+        return (await graph.aget_state(config)).values
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        await turn_on(SPEC, "FACT: the code word is heron")
+        prior = made(await turn_on(SPEC, "RUN_TOOL please"))
+        before = api.model_requests[-1]
+        n = len(api.model_requests)
+        moved = await turn_on(deployed, "RECALL it")
+        summary, after = api.model_requests[n:]
+        again = await turn_on(deployed, "say hi")
+        later = api.model_requests[-1]
+    assert SPEC.system_prompt in json.dumps(summary["system"]) and summary["tools"] == before["tools"]
+    assert thinking(summary) and set(thinking(summary)) <= set(thinking(before)) | prior
+    assert deployed.system_prompt in json.dumps(after["system"]) and [t["name"] for t in after["tools"]] == ["Bash", "Grep"]
+    assert not set(thinking(after)) & prior
+    assert moved["messages"][-1].text.startswith("I remember")
+    assert moved["claude_session"]["pinned"]["system_prompt"] == deployed.system_prompt
+    assert sum(e.get("subtype") == "compact_boundary" for e in moved["claude_session"]["entries"]) == 1
+    assert moved["claude_session"]["baseline"] == "epoch-1"
+    assert "The thread's baseline." not in json.dumps(later["messages"][-1])
+    assert later["system"][2:] == after["system"][2:] and later["tools"] == after["tools"]
+    assert made(moved) - prior and made(moved) - prior <= set(thinking(later))
+    assert again["claude_session"]["pinned"] == moved["claude_session"]["pinned"]
+
+
+async def test_a_compaction_whose_summary_is_refused_fails_in_its_own_words_and_reports_the_token():
+    """The CLI ends such a launch as a success, saying so only in its status."""
+    from ptc_agent.agent.claude_code.compaction import compact
+
+    graph = new_graph()
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        launcher = LocalLauncher(env=env, token=TOKEN)
+        await run_turn(SPEC, launcher, graph, "t-compact-refused", [HumanMessage("FACT: the code word is heron")])
+        session = (await run_turn(SPEC, launcher, graph, "t-compact-refused", [HumanMessage("RUN_TOOL please")]))["claude_session"]
+        api.refused = frozenset({TOKEN})
+        saved = _SavedToken(TOKEN)
+        with pytest.raises(ClaudeTurnFailed) as failed:
+            await compact(SPEC, session["pinned"], LocalLauncher(env=env, saved=saved), thread_key="t-compact-refused",
+                          identity="test-user", records=session)
+    assert failed.value.kind == "auth_failed" and "401" in str(failed.value)
+    assert saved.refusals == [TOKEN]
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5"])
+async def test_only_haikus_summary_request_ends_on_its_last_answer_and_carries_our_instructions(model):
+    """Every other model's is the CLI's own, which ends on the last prompt
+    with its own request after it. The answer a Haiku launch is handed is in
+    neither that request nor anything later turns send."""
+    given = spec(model)
+    graph = new_graph()
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        await run_turn(given, launcher, graph, f"t-stock-{model}", [HumanMessage("FACT: the code word is heron")])
+        before = await run_turn(given, launcher, graph, f"t-stock-{model}", [HumanMessage("say hi")])
+        n = len(api.model_requests)
+        compaction = await ClaudeTurn(given, launcher, identity="test-user", thread_key=f"t-stock-{model}").compact_between_turns(before)
+        (summary,) = api.model_requests[n:]
+        await graph.aupdate_state({"configurable": {"thread_id": f"t-stock-{model}"}}, compaction.update())
+        after = await run_turn(given, launcher, graph, f"t-stock-{model}", [HumanMessage("RECALL it")])
+        nxt = api.model_requests[-1]
+    haiku = model.startswith("claude-haiku-")
+    assert "Noted." not in json.dumps(summary["messages"]) + json.dumps(nxt["messages"]) + json.dumps(after["claude_session"])
+    last, prompt = (json.dumps(m) for m in summary["messages"][-2:])
+    assert (COMPACT_INSTRUCTIONS in prompt) is haiku
+    assert ("say hi" in prompt) is not haiku and ("ECHO say hi" in last) is haiku
+
+
+async def test_a_compaction_between_turns_moves_the_session_to_this_builds_pin_and_the_next_turn_runs_on_it():
+    @tool("Grep")
+    async def grep(pattern: str) -> str:
+        """Search files."""
+        return ""
+
+    deployed = dataclasses.replace(SPEC, system_prompt="You are the redeployed test agent. Reply tersely.", tools=[*SPEC.tools, grep])
+    graph = build_claude_code_graph(ToolNode([*SPEC.tools, grep]), checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t-manual"}}
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        await run_turn(SPEC, launcher, graph, "t-manual", [HumanMessage("FACT: the code word is heron")])
+        before = (await run_turn(SPEC, launcher, graph, "t-manual", [HumanMessage("RUN_TOOL please")]))
+        n = len(api.model_requests)
+        compaction = await ClaudeTurn(deployed, launcher, identity="test-user", thread_key="t-manual").compact_between_turns(before)
+        (summary,) = api.model_requests[n:]
+        await graph.aupdate_state(config, compaction.update())
+        after = await run_turn(deployed, launcher, graph, "t-manual", [HumanMessage("RECALL it")])
+        nxt = api.model_requests[-1]
+    assert SPEC.system_prompt in json.dumps(summary["system"])
+    assert compaction.summary_text and compaction.original_count >= 4 and compaction.new_count >= 1
+    assert after["messages"][:len(before["messages"])] == before["messages"]
+    assert after["messages"][-1].text.startswith("I remember")
+    assert deployed.system_prompt in json.dumps(nxt["system"]) and [t["name"] for t in nxt["tools"]] == ["Bash", "Grep"]
+    assert after["claude_session"]["pinned"]["system_prompt"] == deployed.system_prompt
+    assert sum(e.get("subtype") == "compact_boundary" for e in after["claude_session"]["entries"]) == 1
 
 
 async def test_a_refused_request_fails_the_turn_and_commits_no_reply():
@@ -675,6 +1085,58 @@ async def test_the_steers_a_turn_opened_with_are_shown_and_closed_once_claude_ha
     assert inbox.confirmed == ["job-0"]
 
 
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5"])
+async def test_a_steer_that_takes_a_session_on_an_old_pin_to_the_threshold_moves_it_before_the_cli_gets_it(model):
+    """The turn starts under the threshold on the old pin, and its next query
+    would take it there, where the CLI would compact on that pin and run the
+    rest of the turn on it. The turn compacts it as a turn start does and
+    launches the query on this build's pin, without showing its opening
+    steers again."""
+    from ptc_agent.agent.middleware.compaction.utils import compaction_summary
+
+    started = spec(model)
+    deployed = dataclasses.replace(started, system_prompt="You are the redeployed test agent. Reply tersely.")
+    graph = build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver())
+    rules = CompactionRules(0, threshold=4_000)
+    inbox = _Inbox()
+
+    async def turn_on(spec_, text, env, ahead=()):
+        steering = SteeringMiddleware(report_inbox=inbox, kinds=("steer",))
+        claude = ClaudeTurn(spec_, LocalLauncher(env=env, token=TOKEN), identity="test-user", thread_key="t-mid-move",
+                            compaction=rules, steering=steering)
+        config = {"configurable": {"thread_id": "t-mid-move", TURN_KEY: claude, "steer_input_message_id": f"input-{text}"},
+                  "metadata": {"run_id": f"run-{len(ahead) + 1}"}}
+        try:
+            with mock.patch("ptc_agent.agent.claude_code.mid_turn.build_message_checker", inbox.checker):
+                sent = [*ahead, HumanMessage(text, id=f"input-{text}")]
+                events = [e async for e in graph.astream({"messages": sent}, config, stream_mode="custom")]
+            queries = claude.current.queries
+        finally:
+            await claude.close()
+        return (await graph.aget_state(config)).values, events, queries
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await turn_on(started, "FACT: the code word is heron", env)
+        n = len(api.model_requests)
+        inbox.send("Use the other file.")
+        ahead = steers_ahead_message(await inbox.take("t", "run-2"), "run-2")
+        inbox.send("FACT: the filler. " + "lorem ipsum dolor sit amet " * 300)
+        values, events, queries = await turn_on(deployed, "say hi", {**env, **COMPACTS_EARLY}, [ahead])
+        first, summary, after = api.model_requests[n:]
+    assert started.system_prompt in json.dumps(first["system"]) and started.system_prompt in json.dumps(summary["system"])
+    assert deployed.system_prompt in json.dumps(after["system"])
+    assert "FACT: the filler." in json.dumps(after["messages"])
+    session = values["claude_session"]
+    assert session["pinned"]["system_prompt"] == deployed.system_prompt and not session.get("repin_due")
+    assert sum(e.get("subtype") == "compact_boundary" for e in session["entries"]) == 1
+    steer = values["messages"][-2]
+    assert steer.content.startswith("The user sent a new message while you were working:") and compaction_summary(steer)
+    assert [e.get("signal") for e in events if e.get("type") == "context_window" and e.get("action") == "summarize"] == ["start", "complete"]
+    assert [e["type"] for e in events if e["type"] == "steering_delivered"] == ["steering_delivered"] * 2
+    assert queries == 2
+
+
 async def test_a_call_a_stop_cut_off_is_answered_as_claude_was_told_when_the_thread_goes_on():
     started = asyncio.Event()
 
@@ -725,3 +1187,26 @@ async def test_a_pdf_a_call_returns_reaches_claude_as_a_document_and_is_kept_as_
     result = values["messages"][2]
     assert result.content == returned
     assert sent[result.tool_call_id][0] == returned
+
+
+
+async def test_a_turn_leaves_the_rules_it_ran_under_for_the_composers_reading_between_turns(monkeypatch):
+    """The status reads them with the session the turn left, by the turn
+    start's own rules, once the cache has expired."""
+    from unittest.mock import AsyncMock
+
+    from ptc_agent.agent.claude_code.compaction import RULES_KEY
+    from src.server.services import thread_status
+
+    rules = CompactionRules(0, threshold=100_000, cold_tokens=100)
+    graph = new_graph()
+    async with FakeMessagesAPI() as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        values = await run_turn(SPEC, launcher, graph, "t-rules", [HumanMessage("hello")], compaction=rules)
+    assert {k: values[RULES_KEY][k] for k in ("threshold", "cold_tokens", "floor_tokens")} == {
+        "threshold": 100_000, "cold_tokens": 100, "floor_tokens": 0}
+    monkeypatch.setattr(thread_status, "get_checkpointer", lambda: graph.checkpointer)
+    monkeypatch.setattr(thread_status, "turn_base_checkpoint_id", AsyncMock(return_value=None))
+    told = await thread_status.read_next_summary("t-rules", latest={})
+    assert told["reason"] == "cold" and told["at"] > told["now"]
+
