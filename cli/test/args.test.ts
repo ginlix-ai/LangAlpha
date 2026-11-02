@@ -53,6 +53,19 @@ describe("a command's spec", () => {
     expect(run("threads", "send", "t1", "--detach", "what", "moved").op("message")).toBe("what moved");
   });
 
+  it("refuses --wait with --detach before any command runs", () => {
+    for (const argv of [
+      ["threads", "new", "hi", "-w", "home", "--wait", "--detach"],
+      ["threads", "retry", "t1", "-m", "m", "--detach", "--wait"],
+      ["threads", "approve", "t1", "--wait", "--detach"],
+      ["threads", "reject", "t1", "--wait", "--detach"],
+      ["threads", "send", "t1", "--wait", "--detach", "hi"],
+    ]) {
+      expect(() => run(...argv)).toThrow(/Pass --wait or --detach, not both/);
+    }
+    expect(run("threads", "send", "t1", "--wait", "hi").has("wait")).toBe(true);
+  });
+
   it("takes global options before the command words", () => {
     expect(run("--server", "http://x", "threads", "show", "t1").str("server")).toBe("http://x");
   });

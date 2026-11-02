@@ -1,5 +1,5 @@
 import type { Ctx } from "./commands/command.js";
-import { CliError, Exit, usage } from "./errors.js";
+import { CliError, Exit } from "./errors.js";
 import { type Api, p, type RequestOptions } from "./http.js";
 import { print, printable } from "./output.js";
 import { frames, type SseFrame } from "./sse.js";
@@ -53,7 +53,6 @@ export interface TurnRequest {
  *  returns once the server names the run. */
 export async function turn(ctx: Ctx, req: TurnRequest): Promise<number> {
   const { args, json } = ctx;
-  if (args.has("wait") && args.has("detach")) throw usage("Pass --wait or --detach, not both");
   const mode = args.has("detach") ? "detach" : args.has("wait") ? "wait" : "stream";
   const result: TurnResult = { thread_id: req.thread, status: "completed", text: "" };
   let printed = false;

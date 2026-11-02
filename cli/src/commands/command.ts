@@ -87,6 +87,7 @@ export function bind(command: Command, parsed: Parsed): Args {
     if (!value) throw usage(`Missing <${name}>`);
     operands.set(name, value);
   });
+  if (parsed.values.has("wait") && parsed.values.has("detach")) throw usage("Pass --wait or --detach, not both");
   const extra = parsed.operands[specs.length];
   if (extra !== undefined && !specs.at(-1)?.endsWith("...")) throw usage(`Unexpected argument "${extra}"`);
   for (const [name, flag] of Object.entries(command.flags ?? {})) {
