@@ -835,6 +835,11 @@ function ChatInput({
       <div
         ref={attachChatContainer}
         className={cn('chat-input-container owns-its-edge scroll-mb-2 flex flex-col items-stretch relative z-10 rounded-[22px] cursor-text border border-(--color-border-input) bg-(--color-bg-card)', isListening && 'recording')}
+        // The context deck and the composer's own deck fold by animating their
+        // height, so the box has its new size only once that ends.
+        onTransitionEnd={(event) => {
+          if (event.propertyName === 'height') fitToKeyboard();
+        }}
         onClick={(event) => {
           // A press on a control in the box is that control's, and the deck
           // above the text is its own surface: focusing the text there would
