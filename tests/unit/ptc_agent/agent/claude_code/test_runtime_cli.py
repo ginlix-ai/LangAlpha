@@ -39,7 +39,7 @@ from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 from .conftest import TEST_KEY
 from .fake_api import TOKEN, FakeMessagesAPI
-from .harness import new_graph, run_turn, spec
+from .harness import bash, new_graph, run_turn, spec
 
 pytestmark = [pytest.mark.enable_socket, pytest.mark.asyncio]
 
@@ -290,6 +290,28 @@ async def test_a_session_the_cli_compacted_on_an_old_pin_moves_at_the_next_turn_
     assert moved["claude_session"]["pinned"]["system_prompt"] == deployed.system_prompt and "repin_due" not in moved["claude_session"]
 
 
+@pytest.mark.parametrize(("threshold", "compacts"), [(67_000, True), (0, False)])
+async def test_the_cli_compacts_before_a_request_only_at_the_threshold_it_was_given(threshold, compacts):
+    """On its default window the CLI never compacts before a request, so a
+    turn's context would grow until a request was refused as too long. The
+    turn before gives the summary something to summarize."""
+    @tool("Bash")
+    async def large(command: str) -> str:
+        """Run a shell command."""
+        return "result line\n" * 30_000
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        launcher = LocalLauncher(env={**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}, token=TOKEN)
+        given = dataclasses.replace(SPEC, tools=[large])
+        rules = CompactionRules(0, threshold=threshold)
+        graph = build_claude_code_graph(ToolNode([large]), checkpointer=InMemorySaver())
+        await run_turn(given, launcher, graph, f"t-window-{threshold}", [HumanMessage("FACT: the code word is heron")], compaction=rules)
+        values = await run_turn(given, launcher, graph, f"t-window-{threshold}", [HumanMessage("RUN_TOOL please")], compaction=rules)
+    boundaries = [e for e in values["claude_session"]["entries"] if e.get("subtype") == "compact_boundary"]
+    assert bool(boundaries) is compacts
+    assert isinstance(values["messages"][-1], AIMessage)
+
+
 async def test_a_session_due_a_new_pin_compacts_under_its_old_one_and_runs_the_turn_on_the_new_one():
     """The summary request is the session's own prefix with its thinking; the
     turn's requests then carry this build's prompt and tools and no thinking
@@ -301,7 +323,7 @@ async def test_a_session_due_a_new_pin_compacts_under_its_old_one_and_runs_the_t
         return ""
 
     class Due(CompactionRules):
-        def repin_plan(self, records, current, now):
+        def repin_plan(self, records, current, now, pending=0):
             return (True, "due") if records["pinned"]["system_prompt"] != current["system_prompt"] else None
 
     deployed = dataclasses.replace(SPEC, system_prompt="You are the redeployed test agent. Reply tersely.", tools=[*SPEC.tools, grep])
@@ -821,6 +843,58 @@ async def test_the_steers_a_turn_opened_with_are_shown_and_closed_once_claude_ha
             await claude.close()
     assert [e["type"] for e in events] == ["steering_delivered"]
     assert inbox.confirmed == ["job-0"]
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-sonnet-5-5"])
+async def test_a_steer_that_takes_a_session_on_an_old_pin_to_the_threshold_moves_it_before_the_cli_gets_it(model):
+    """The turn starts under the threshold on the old pin, and its next query
+    would take it there, where the CLI would compact on that pin and run the
+    rest of the turn on it. The turn compacts it as a turn start does and
+    launches the query on this build's pin, without showing its opening
+    steers again."""
+    from ptc_agent.agent.middleware.compaction.utils import compaction_summary
+
+    started = spec(model)
+    deployed = dataclasses.replace(started, system_prompt="You are the redeployed test agent. Reply tersely.")
+    graph = build_claude_code_graph(ToolNode([bash]), checkpointer=InMemorySaver())
+    rules = CompactionRules(0, threshold=4_000)
+    inbox = _Inbox()
+
+    async def turn_on(spec_, text, env, ahead=()):
+        steering = SteeringMiddleware(report_inbox=inbox, kinds=("steer",))
+        claude = ClaudeTurn(spec_, LocalLauncher(env=env, token=TOKEN), identity="test-user", thread_key="t-mid-move",
+                            compaction=rules, steering=steering)
+        config = {"configurable": {"thread_id": "t-mid-move", TURN_KEY: claude, "steer_input_message_id": f"input-{text}"},
+                  "metadata": {"run_id": f"run-{len(ahead) + 1}"}}
+        try:
+            with mock.patch("ptc_agent.agent.claude_code.mid_turn.build_message_checker", inbox.checker):
+                sent = [*ahead, HumanMessage(text, id=f"input-{text}")]
+                events = [e async for e in graph.astream({"messages": sent}, config, stream_mode="custom")]
+            queries = claude.current.queries
+        finally:
+            await claude.close()
+        return (await graph.aget_state(config)).values, events, queries
+
+    async with FakeMessagesAPI(first_party=True) as api:
+        env = {**api.cli_env(), "CLAUDE_CODE_MAX_RETRIES": "0"}
+        await turn_on(started, "FACT: the code word is heron", env)
+        n = len(api.model_requests)
+        inbox.send("Use the other file.")
+        ahead = steers_ahead_message(await inbox.take("t", "run-2"), "run-2")
+        inbox.send("FACT: the filler. " + "lorem ipsum dolor sit amet " * 300)
+        values, events, queries = await turn_on(deployed, "say hi", {**env, **COMPACTS_EARLY}, [ahead])
+        first, summary, after = api.model_requests[n:]
+    assert started.system_prompt in json.dumps(first["system"]) and started.system_prompt in json.dumps(summary["system"])
+    assert deployed.system_prompt in json.dumps(after["system"])
+    assert "FACT: the filler." in json.dumps(after["messages"])
+    session = values["claude_session"]
+    assert session["pinned"]["system_prompt"] == deployed.system_prompt and not session.get("repin_due")
+    assert sum(e.get("subtype") == "compact_boundary" for e in session["entries"]) == 1
+    steer = values["messages"][-2]
+    assert steer.content.startswith("The user sent a new message while you were working:") and compaction_summary(steer)
+    assert [e.get("signal") for e in events if e.get("type") == "context_window" and e.get("action") == "summarize"] == ["start", "complete"]
+    assert [e["type"] for e in events if e["type"] == "steering_delivered"] == ["steering_delivered"] * 2
+    assert queries == 2
 
 
 async def test_a_call_a_stop_cut_off_is_answered_as_claude_was_told_when_the_thread_goes_on():

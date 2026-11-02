@@ -53,7 +53,7 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 from ptc_agent.agent.claude_code.cli import RuntimeSpec, connected, launch, received, turn_failure
-from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules, compact, same_pin
+from ptc_agent.agent.claude_code.compaction import NO_RULES, CompactionRules, compact, prompt_tokens, same_pin
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.mid_turn import AfterTool, TurnSteering
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay, anthropic_content
@@ -221,14 +221,15 @@ class _Run:
 
     @classmethod
     async def start(cls, spec: RuntimeSpec, pin: SessionPin, launcher: Launcher, thread_key: str,
-                    identity: str, records: SessionRecords | None, prompt: Prompt | None) -> _Run:
+                    identity: str, records: SessionRecords | None, prompt: Prompt | None, *, compact_at: int = 0,
+                    auto_compact: bool = True, transcript_note: str = "") -> _Run:
         """Start the CLI on the turn (``cli.launch``); with no prompt it carries
         on from the tool results that end its session."""
         store, results = CheckpointSessionStore(), ToolResults()
         query = prompt if prompt is None or isinstance(prompt, str) else _user_message(prompt)
         prepared, client, after_tool = await launch(
             spec, pin, launcher, thread_key=thread_key, identity=identity, records=records, store=store,
-            results=results, query=query,
+            results=results, query=query, compact_at=compact_at, auto_compact=auto_compact, transcript_note=transcript_note,
         )
         return cls(launcher, prepared, store, client, results, spec, after_tool)
 
@@ -473,6 +474,9 @@ class ClaudeTurn:
         #: over instead of resuming.
         self._fresh: dict[str, Any] = {}
         self._run: _Run | None = None
+        #: The queries the turn sent on a run it ended to move its session to
+        #: this build's pin ahead of the next; none while it has not.
+        self._sent_before = 0
 
     @property
     def current(self) -> _Run:
@@ -498,8 +502,11 @@ class ClaudeTurn:
         if self._run is None:
             pin, prompt = self.opening(state)
             self._run = await _Run.start(
-                self.spec, pin, self.launcher, self.thread_key, self.identity, state.get("claude_session"), prompt
+                self.spec, pin, self.launcher, self.thread_key, self.identity, state.get("claude_session"), prompt,
+                compact_at=self.compaction.threshold, auto_compact=self.compaction.enabled,
+                transcript_note=await self.compaction.transcript_note(self.thread_key, state),
             )
+            self._run.queries += self._sent_before
         return self._run
 
     async def again(self, state: ClaudeCodeState, config: RunnableConfig, run: _Run) -> list[HumanMessage]:
@@ -507,7 +514,11 @@ class ClaudeTurn:
         it ended, after the trigger a langalpha turn re-enters its agent
         with, when a langalpha turn would re-enter for it (a steer, or a
         notice of ``alert_senders``). Empty once the turn has sent its last
-        query, or when nothing that would waits, which ends it."""
+        query, or when nothing that would waits, which ends it. A query that
+        would take a session on another pin to the threshold, where the CLI
+        would compact it on that pin, ends the run instead: the next step
+        then compacts and moves it as a turn start does, and launches the
+        query on this build's pin (``CompactionRules.moves_mid_turn``)."""
         if run.queries >= TURN_QUERIES or not (senders := await self.steering.waiting(config)):
             return []
         if (message := await self.steering.take(config)) is None:
@@ -516,7 +527,12 @@ class ClaudeTurn:
             content=reentry_trigger(senders), name="orchestrator", additional_kwargs={"lc_source": ORCHESTRATOR_SOURCE}
         )
         sent = ensure_message_ids([trigger, message])
-        await run.again(turn_prompt({**state, "messages": [*state["messages"], *sent]}))
+        prompt = turn_prompt({**state, "messages": [*state["messages"], *sent]})
+        if self.compaction.moves_mid_turn(state.get("claude_session") or {}, self.current_pin(), prompt_tokens(prompt)):
+            await run.close()
+            self._run, self._sent_before = None, run.queries
+        else:
+            await run.again(prompt)
         self.steering.delivered(config, message)
         return sent
 
@@ -531,7 +547,8 @@ class ClaudeTurn:
             return []
         if another_model_replied_last(messages):
             return []
-        plan = self.compaction.repin_plan(records, self.current_pin(), time.time())
+        asked = turn_prompt(state, baseline=self._baseline_due(state)[1])
+        plan = self.compaction.repin_plan(records, self.current_pin(), time.time(), pending=prompt_tokens(asked))
         if plan is None:
             return []
         moves, reason = plan
@@ -706,7 +723,9 @@ def build_claude_code_graph(
     A turn start due a new pin compacts in a ``model`` step of its own, ahead
     of the launch, so a launch that fails after it leaves the compaction
     saved: the next turn neither makes nor bills it again. The session then
-    holds this build's pin, so the next step finds nothing to move.
+    holds this build's pin, so the next step finds nothing to move. A query the
+    turn's run sends next is moved the same way, in the step after the run
+    that ended for it (``ClaudeTurn.again``).
     """
 
     async def model(state: ClaudeCodeState, config: RunnableConfig) -> Command:

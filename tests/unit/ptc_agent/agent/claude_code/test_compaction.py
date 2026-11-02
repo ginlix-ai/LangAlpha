@@ -63,6 +63,7 @@ def test_a_compaction_newer_than_any_request_reads_as_a_five_minute_write():
     compacted = {**(r := records(minutes_ago=7)), "entries": [*r["entries"], boundary]}
     assert compaction.cache_ttl(compacted["entries"]) == 300
     assert compaction.cache_ttl([*compacted["entries"], *records(minutes_ago=1)["entries"]]) == 3600
+    assert CompactionRules(150_000).repin_plan(compacted, CURRENT, NOW, pending=150_000) == (True, "deploy_cold")
 
 
 def test_a_change_of_per_turn_inputs_or_no_change_never_moves_it():
@@ -78,6 +79,16 @@ def test_a_session_the_cli_compacted_on_an_old_pin_moves_whatever_its_size_or_ca
     small = records(minutes_ago=1, tokens=1_000, source_digest="build-2")
     assert CompactionRules(150_000).repin_plan({**small, "repin_due": True}, CURRENT, NOW) == (True, "compacted")
     assert CompactionRules(150_000).repin_plan(small, CURRENT, NOW) == (False, "inputs_only")
+
+
+def test_a_session_at_its_threshold_moves_on_any_change_since_the_cli_compacts_it_anyway(monkeypatch):
+    inputs_only = records(minutes_ago=1, tokens=300_000, source_digest="build-2")
+    assert CompactionRules(150_000, threshold=300_000).repin_plan(inputs_only, CURRENT, NOW) == (True, "threshold")
+    assert CompactionRules(150_000, threshold=300_001).repin_plan(inputs_only, CURRENT, NOW) == (False, "inputs_only")
+    same = records(minutes_ago=1, tokens=300_000, system_prompt="new", source_digest=None, prompt_version=None)
+    assert CompactionRules(150_000, threshold=300_000).repin_plan(same, CURRENT, NOW) is None
+    monkeypatch.setattr(compaction.release, "prompt_version", lambda: 2)
+    assert CompactionRules(150_000, threshold=300_000).repin_plan(records(minutes_ago=1, tokens=300_000), CURRENT, NOW) == (True, "threshold")
 
 
 def test_a_pin_from_before_pins_kept_their_build_counts_as_a_deploys():
@@ -101,6 +112,59 @@ def test_the_context_counts_only_requests_since_the_last_compaction():
     assert compaction.context_tokens([*before["entries"], boundary]) == 0
     assert compaction.context_tokens([boundary, *before["entries"]]) == 300_000
 
+
+
+@pytest.mark.parametrize(("threshold", "compacts"), [(990_000, 967_000), (500_000, 500_000), (20_000, 67_000)])
+def test_a_session_moves_at_the_context_the_cli_compacts_at(threshold, compacts):
+    """Not at a threshold past the CLI's window bounds: the CLI would
+    compact the session under its old pin first."""
+    from ptc_agent.config.agent import CompactionConfig
+
+    rules = CompactionRules.of(CompactionConfig(token_threshold=threshold), None)
+    inputs_only = {"source_digest": "build-2"}
+    assert rules.repin_plan(records(minutes_ago=1, tokens=compacts, **inputs_only), CURRENT, NOW) == (True, "threshold")
+    assert rules.repin_plan(records(minutes_ago=1, tokens=compacts - 1, **inputs_only), CURRENT, NOW) == (False, "inputs_only")
+
+
+def test_a_session_moves_when_the_turns_prompt_takes_it_to_the_threshold():
+    """The turn's first request sends the prompt beside the context the last
+    one measured, and past the threshold the CLI compacts on the old pin."""
+    inputs_only = records(minutes_ago=1, tokens=290_000, source_digest="build-2")
+    rules = CompactionRules(150_000, threshold=300_000)
+    assert rules.repin_plan(inputs_only, CURRENT, NOW, pending=10_000) == (True, "threshold")
+    assert rules.repin_plan(inputs_only, CURRENT, NOW, pending=9_999) == (False, "inputs_only")
+
+
+def test_a_query_mid_turn_moves_a_session_on_another_pin_only_where_the_cli_would_compact_it():
+    """Only the threshold: the cache is warm mid-turn, and a compaction the
+    CLI made earlier in the turn left a context the next turn start moves."""
+    rules = CompactionRules(150_000, threshold=300_000)
+    inputs_only = records(minutes_ago=1, tokens=290_000, source_digest="build-2")
+    assert rules.moves_mid_turn(inputs_only, CURRENT, 10_000)
+    assert not rules.moves_mid_turn(inputs_only, CURRENT, 9_999)
+    assert not rules.moves_mid_turn({**records(minutes_ago=1, tokens=1_000), "repin_due": True}, CURRENT, 0)
+    same = records(minutes_ago=1, tokens=300_000, system_prompt="new", source_digest=None, prompt_version=None)
+    assert not rules.moves_mid_turn(same, CURRENT, 0)
+    off = CompactionRules(150_000, threshold=300_000, enabled=False)
+    assert not off.moves_mid_turn(inputs_only, CURRENT, 10_000)
+
+
+def test_a_deploys_change_moves_a_cold_session_once_the_turns_prompt_takes_it_over_the_floor():
+    """The first request writes the whole context again, prompt included,
+    and that write would keep the old pin's cache warm."""
+    cold = records(minutes_ago=61, tokens=140_000)
+    rules = CompactionRules(150_000, threshold=500_000)
+    assert rules.repin_plan(cold, CURRENT, NOW, pending=100_000) == (True, "deploy_cold")
+    assert rules.repin_plan(cold, CURRENT, NOW, pending=9_999) == (False, "under_floor")
+
+
+def test_a_turns_prompt_is_counted_offline_by_its_size(monkeypatch):
+    """tiktoken fetches its encoding over the network on first use, which a turn start must not wait on."""
+    from ptc_agent.agent.middleware.compaction import utils
+
+    monkeypatch.setattr(utils, "_get_tiktoken_encoder", lambda: pytest.fail("the turn start loaded tiktoken"))
+    assert compaction.prompt_tokens("ab" * 1_000) == 1_000
+    assert compaction.prompt_tokens([{"type": "text", "text": "中文"}, {"type": "text", "text": "ok"}]) == 4
 
 
 def test_with_compaction_off_no_change_moves_a_session(monkeypatch):

@@ -1,20 +1,23 @@
 """How a Claude Code session compacts: when the CLI does it, and the launch
 that has it compact between requests of ours.
 
-A session runs on the pin it started on, and the CLI replays its record of
-that pin until it compacts, whatever a later launch passes. So the build's
-prompt and tools reach a session only through a compaction (``compact``): at
-a turn start the CLI compacts under the old pin, and the next launch runs on
-the new one.
+The CLI compacts a session on its own once the context reaches the thread's
+threshold, given the window ``cli.options_for`` sets from it. A session runs
+on the pin it started on, and the CLI replays its record of that pin until it
+compacts, whatever a later launch passes. So the build's prompt and tools
+reach a session only through a compaction (``compact``): at a turn start the
+CLI compacts under the old pin, and the next launch runs on the new one.
 
 Whether a turn start does that follows the main agent's turn-start rebuild
-(``middleware/compaction/rebuild.py``): a session the CLI compacted on an old
-pin (``repin_due``) moves whatever its size or cache, since that compaction
-was the one the move was due; a pin below the build's ``rebuild_before``
-moves whatever its size or cache, a deploy's change moves once the session
-holds at least ``floor_tokens`` and its prompt cache has expired, so the
-turn's first request would write the whole context again anyway, and a
-change of per-turn inputs alone, or a rollback, never does.
+(``middleware/compaction/rebuild.py``): a session whose context reaches the
+thread's threshold with the turn's prompt moves on any change, since the CLI
+compacts it in the turn anyway, and so does one the CLI compacted on an old
+pin (``repin_due``), since that compaction was the one the move was due;
+under it, a pin below the build's ``rebuild_before`` moves whatever its size
+or cache, a deploy's change moves once the context the turn sends is at
+least ``floor_tokens`` and its prompt cache has expired, so the turn's first
+request would write the whole context again anyway, and a change of per-turn
+inputs alone, or a rollback, never does.
 """
 
 from __future__ import annotations
@@ -36,9 +39,10 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
 )
+from langchain_core.messages import HumanMessage
 from langgraph.constants import TAG_NOSTREAM
 
-from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, is_haiku, launch, received, turn_failure
+from ptc_agent.agent.claude_code.cli import RuntimeSpec, compaction_failure, compacts_at, is_haiku, launch, received, turn_failure
 from ptc_agent.agent.claude_code.launcher import Launcher, Prepared
 from ptc_agent.agent.claude_code.relay import ClaudeStreamRelay
 from ptc_agent.agent.claude_code.session import (
@@ -50,12 +54,16 @@ from ptc_agent.agent.claude_code.session import (
     compacted,
 )
 from ptc_agent.agent.claude_code.tools_bridge import ToolResults
+from ptc_agent.agent.middleware.compaction.utils import attachment_tokens
 from ptc_agent.agent.prompts import release
+from ptc_agent.agent.transcript import Window
+from ptc_agent.agent.transcript.pointer import aexport_transcript, transcript_note, transcript_target
 from src.config.settings import get_compaction_timeout
 from src.llms.cache_markers import ttl_seconds
 from src.llms.claude_code import ClaudeTurnFailed
 
 if TYPE_CHECKING:
+    from ptc_agent.agent.backends.sandbox import SandboxBackend
     from ptc_agent.agent.middleware.runtime_context import TurnContext
     from ptc_agent.config.agent import CompactionConfig
 
@@ -67,6 +75,23 @@ DEFAULT_TTL = ttl_seconds("1h")
 #: The answer a Haiku session's compaction launch is handed after its last
 #: one (``noted``).
 NOTED = "Noted."
+
+
+#: The bytes of text a Claude token holds, taken low so a prompt's count errs
+#: high: 2.5 to 2.8 in English, Chinese and Japanese prose and in code, 2.1 in
+#: JSON, and 1.7 to 1.9 in number tables and hex ids, where it errs up to a
+#: sixth low (``count_tokens_claude``, which is fitted to Claude's own count).
+_PROMPT_BYTES_PER_TOKEN = 2
+
+
+def prompt_tokens(prompt: str | list[dict[str, Any]]) -> int:
+    """What a turn's prompt adds to the session's context before a request
+    has measured it: its text by its size, and its attachments as the model
+    is charged for them. Not by tiktoken, which fetches its encoding over the
+    network on first use, and the turn start would wait on that."""
+    blocks = [{"type": "text", "text": prompt}] if isinstance(prompt, str) else prompt
+    text = sum(len(b["text"].encode()) for b in blocks if b.get("type") == "text")
+    return text // _PROMPT_BYTES_PER_TOKEN + attachment_tokens([HumanMessage(blocks)])
 
 
 def same_pin(a: SessionPin, b: SessionPin) -> bool:
@@ -125,10 +150,15 @@ class CompactionRules:
     Attributes:
         floor_tokens: The least context a deploy's change moves the session
             at; 0 never moves one.
+        threshold: The context the CLI is launched to compact at: the
+            thread's threshold, as near as the CLI's window bounds allow
+            (``compacts_at``); 0 leaves the CLI's own default.
         settled_at: When the thread's previous run settled, by the run
             ledger, a naive one read as UTC; None when it has none. A run
             that was cancelled or failed still used the cache, and left no
             record saying when.
+        backend: The sandbox whose file tools a summary sends the agent to
+            the thread's transcript with, in ``workspace_id``'s folder.
         enabled: False when the main agent's compaction is off, which then
             makes no turn-start rebuild either, so no session moves.
         sent_at: When the server received the turn's send (epoch seconds),
@@ -139,21 +169,52 @@ class CompactionRules:
     """
 
     floor_tokens: int
+    threshold: int = 0
     settled_at: datetime | None = None
+    backend: SandboxBackend | None = None
+    workspace_id: str | None = None
     enabled: bool = True
     sent_at: float | None = None
 
     @classmethod
-    def of(cls, settings: CompactionConfig, turn: TurnContext | None) -> CompactionRules:
-        """The main agent's rules for a turn: its compaction config, and when
-        the thread's previous run settled and the turn was sent."""
-        return cls(settings.rebuild_floor_tokens, settled_at=turn.previous_run_settled_at if turn else None,
-                   enabled=settings.enabled, sent_at=turn.sent_at if turn else None)
+    def of(cls, settings: CompactionConfig, turn: TurnContext | None, *, backend: SandboxBackend | None = None,
+           workspace_id: str | None = None) -> CompactionRules:
+        """The main agent's rules for a turn: its compaction config, when the
+        thread's previous run settled and the turn was sent, and where its
+        transcripts are read."""
+        return cls(
+            settings.rebuild_floor_tokens,
+            threshold=compacts_at(settings.token_threshold) if settings.enabled else 0,
+            settled_at=turn.previous_run_settled_at if turn else None,
+            backend=backend,
+            workspace_id=workspace_id,
+            enabled=settings.enabled,
+            sent_at=turn.sent_at if turn else None,
+        )
 
-    def repin_plan(self, records: SessionRecords, current: SessionPin, now: float) -> tuple[bool, str] | None:
+    async def transcript_note(self, thread_id: str, state: Mapping[str, Any]) -> str:
+        """What the compaction summaries in the thread's session records end
+        on: the pointer an API thread's summary ends on, once the transcript
+        of the thread's messages is saved where the file tools reach it, as
+        the compaction middleware saves it before it points; else nothing."""
+        entries = (state.get("claude_session") or {}).get("entries") or []
+        if not any(e.get("isCompactSummary") for e in entries):
+            return ""
+        exported = await aexport_transcript(
+            self.backend, transcript_target(self.backend, thread_id), state["messages"],
+            workspace_id=self.workspace_id, window=Window.of(state),
+        )
+        return transcript_note(exported) if exported else ""
+
+    def repin_plan(self, records: SessionRecords, current: SessionPin, now: float,
+                   pending: int = 0) -> tuple[bool, str] | None:
         """Whether the session moves to ``current`` at this turn start and why,
-        by the turn-start rebuild's reasons; None when it already runs on
-        ``current``.
+        by the turn-start rebuild's reasons and ``threshold`` for one the CLI
+        would compact anyway; None when it already runs on ``current``.
+        ``pending`` is what the turn's prompt adds to the context, which no
+        request has measured yet; the threshold and the floor read the
+        context with it, as the main agent's read the context its turn's
+        first call sends.
 
         The cache counts as cold once its ttl has passed since the later of
         the session's newest record and the previous run's settling, both
@@ -169,7 +230,9 @@ class CompactionRules:
         if records.get("repin_due"):
             return True, "compacted"
         entries = records.get("entries") or []
-        tokens = context_tokens(entries)
+        tokens = context_tokens(entries) + pending
+        if self.threshold and tokens >= self.threshold:
+            return True, "threshold"
         pinned = kept.get("prompt_version") or 0
         if release.prompt_version() < pinned:
             return False, "rollback"
@@ -186,6 +249,15 @@ class CompactionRules:
         if judged - max(_last_activity(entries), settled) <= cache_ttl(entries):
             return False, "warm"
         return True, "deploy_cold"
+
+    def moves_mid_turn(self, records: SessionRecords, current: SessionPin, pending: int) -> bool:
+        """Whether a turn's next query, which adds ``pending`` to a session on
+        another pin, reaches the threshold, where the CLI would compact it on
+        the pin it runs on: the turn then compacts it first and moves it, as
+        a turn start would."""
+        kept = records.get("pinned")
+        tokens = context_tokens(records.get("entries") or []) + pending
+        return bool(kept and self.enabled and self.threshold and not same_pin(kept, current) and tokens >= self.threshold)
 
 
 #: The rules of a turn that compacts by none of the main agent's settings.
