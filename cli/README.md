@@ -31,7 +31,8 @@ node dist/la.mjs --help
    so commands run side by side spend the rotating refresh token once and share
    what it bought, and a refresh never writes back a sign-in removed or
    replaced meanwhile.
-5. None, which a self-hosted server in oss mode takes.
+5. None, which a self-hosted server in oss mode takes. Which server that is
+   follows [Choosing the server](#choosing-the-server).
 
 `langalpha login` asks the server (`GET /api/v1/auth/cli`) how to sign in. It opens
 the browser (authorization code with PKCE, answered on a `127.0.0.1` port)
@@ -39,7 +40,31 @@ when the server names an issuer, whose metadata must name that issuer too,
 asking it for the API scopes the server lists where it reads them from the
 token, and otherwise reads a personal access token (`la_pat_...`) from stdin;
 `--with-token` forces the latter, for CI.
-`--server URL` (or `LANGALPHA_URL`) picks the server.
+
+## Choosing the server
+
+`langalpha` talks to the first server it finds:
+
+1. `--server URL`
+2. `LANGALPHA_URL`
+3. The server of your last `langalpha login`
+4. This build's default: the hosted service for the package from npm, so
+   `npm install -g langalpha` then `langalpha login` signs a hosted user in
+   with no setup, and a local server (`http://localhost:8000`) for a build
+   from source (`pnpm build` in this folder), which is what a self-hosted
+   install wants.
+
+Where `LANGALPHA_TOKEN_FILE` is set, the `base_url` in that file is the
+server instead of a saved sign-in or the default; `--server` or
+`LANGALPHA_URL` must then have the same origin, or the command is refused.
+
+If `langalpha login` cannot reach the default and no sign-in is saved, it
+says to pass `--server URL` or set `LANGALPHA_URL`. To sign in to a
+self-hosted server from the npm package, run
+`langalpha login --server http://localhost:8000` once; later commands use it.
+A token passed with `--token` or `LANGALPHA_TOKEN` goes to the same server,
+so with the npm package set `LANGALPHA_URL` beside it to reach a self-hosted
+server.
 
 ## Commands
 
@@ -127,7 +152,16 @@ from this folder, so a release only reaches people's own machines.
 3. The workflow refuses a tag that doesn't match `package.json`, then
    typechecks, tests, builds and checks what the package would ship
    (`scripts/check-package.mjs`, which the test workflow runs too).
-4. A maintainer approves the `npm` environment's deployment, and the exact
+4. The build sets the hosted service as the default server from the
+   repository variable `LANGALPHA_CLI_DEFAULT_SERVER` (`build.mjs` reads it as
+   an environment variable and defines `__LA_DEFAULT_SERVER__`); the workflow
+   fails when the variable is unset or not an https URL, so a release never
+   points at localhost. It then asks that server for the sign-in `login`
+   asks for (`scripts/check-default-server.mjs`): the release fails unless it
+   names an https issuer and a client and the issuer publishes settings for
+   itself with https endpoints, so the hosted service has to serve the CLI routes before a release.
+   A build without it, as from source, defaults to a local server.
+5. A maintainer approves the `npm` environment's deployment, and the exact
    tarball that was checked is published: a prerelease (`0.2.0-rc.1`) under
    `next`, anything else under `latest`.
 

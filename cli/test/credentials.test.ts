@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { auth } from "../src/commands/auth.js";
 import { resolveCredential } from "../src/credentials.js";
+import { Api } from "../src/http.js";
 import { forgetLogin, type OAuthLogin, readStore, saveLogin, selectServer } from "../src/store.js";
 
 let dir: string;
@@ -62,6 +64,69 @@ describe("resolveCredential", () => {
     const named = resolveCredential({ server: "http://box:8000", env: { LANGALPHA_TOKEN_FILE: nameless } });
     expect(named.baseUrl).toBe("http://box:8000");
     expect(await named.token()).toBe("lac1.file");
+  });
+});
+
+describe("the default server", () => {
+  const HOSTED = "https://hosted.example.test";
+
+  it("is a local server in a build from source", () => {
+    const cred = resolveCredential({ env: {} });
+    expect(cred.baseUrl).toBe("http://localhost:8000");
+    expect(cred.fromDefault).toBe(true);
+    vi.stubGlobal("__LA_DEFAULT_SERVER__", "");
+    expect(resolveCredential({ env: {} }).baseUrl).toBe("http://localhost:8000");
+  });
+
+  it("is the one the build defines, trailing slash dropped", () => {
+    vi.stubGlobal("__LA_DEFAULT_SERVER__", `${HOSTED}/`);
+    const cred = resolveCredential({ env: {} });
+    expect(cred.baseUrl).toBe(HOSTED);
+    expect(cred.fromDefault).toBe(true);
+    expect(resolveCredential({ token: "flag", env: {} })).toMatchObject({ baseUrl: HOSTED, fromDefault: true });
+  });
+
+  it("yields to --server, then LANGALPHA_URL, then a saved sign-in", async () => {
+    vi.stubGlobal("__LA_DEFAULT_SERVER__", HOSTED);
+    await saveLogin("http://saved.test", { kind: "pat", token: "la_pat_saved" }, { select: true });
+    const env = { LANGALPHA_URL: "http://env.test" };
+    const flag = resolveCredential({ server: "http://flag.test", env });
+    expect(flag.baseUrl).toBe("http://flag.test");
+    expect(flag.fromDefault).toBe(false);
+    const fromEnv = resolveCredential({ env });
+    expect(fromEnv.baseUrl).toBe("http://env.test");
+    expect(fromEnv.fromDefault).toBe(false);
+    const saved = resolveCredential({ env: {} });
+    expect(saved.baseUrl).toBe("http://saved.test");
+    expect(saved.fromDefault).toBeFalsy();
+    expect(await saved.token()).toBe("la_pat_saved");
+    expect(resolveCredential({ env: { LANGALPHA_URL: "" } }).baseUrl).toBe("http://saved.test");
+  });
+
+  it("is used again once the sign-in is forgotten", async () => {
+    vi.stubGlobal("__LA_DEFAULT_SERVER__", HOSTED);
+    await saveLogin("http://saved.test", { kind: "pat", token: "la_pat_saved" }, { select: true });
+    await forgetLogin("http://saved.test");
+    expect(resolveCredential({ env: {} }).baseUrl).toBe(HOSTED);
+  });
+});
+
+describe("login against an unreachable server", () => {
+  const login = auth.find((c) => c.words[0] === "login")!;
+  const run = (baseUrl: string, fromDefault: boolean) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("fetch failed", { cause: new Error("ECONNREFUSED") }))));
+    const credential = { baseUrl, fromDefault, token: async () => undefined, renew: async () => false };
+    return login.run({ api: new Api(credential), args: { has: () => false } as never, json: false });
+  };
+
+  it("says how to name a server when nothing did", async () => {
+    await expect(run("https://default.example.test", true)).rejects.toThrow(
+      /Cannot reach https:\/\/default.example.test \(ECONNREFUSED\)\nTo use another server, pass --server URL or set LANGALPHA_URL\.$/,
+    );
+  });
+
+  it("leaves the error alone when the user named the server", async () => {
+    await expect(run("https://named.example.test", false)).rejects.toThrow(/^Cannot reach https:\/\/named.example.test \(ECONNREFUSED\)$/);
   });
 });
 

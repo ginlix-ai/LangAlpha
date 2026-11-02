@@ -15,7 +15,12 @@ export const auth: Command[] = [
     },
     async run({ api, args, json }) {
       const baseUrl = api.baseUrl;
-      const cli = await discover(api);
+      const cli = await discover(api).catch((e: unknown) => {
+        if (api.credential.fromDefault && e instanceof CliError && e.reason === "unreachable") {
+          throw new CliError(`${e.message}\nTo use another server, pass --server URL or set LANGALPHA_URL.`, e.code, { reason: e.reason });
+        }
+        throw e;
+      });
       if (!cli.auth_required) {
         await selectServer(baseUrl);
         print(json, { server: baseUrl, signed_in: true }, () => `${baseUrl} needs no sign-in.`);

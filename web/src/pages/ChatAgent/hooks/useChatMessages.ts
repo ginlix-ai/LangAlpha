@@ -812,18 +812,17 @@ export function useChatMessages(
     }
   }, [workspaceId, threadId]);
 
-  // iOS Safari freezes a backgrounded tab and tears down its SSE socket; the
-  // frozen reader.read() may not reject promptly on return, hanging the turn.
-  // On foreground, if a main stream is genuinely active and reconnectable,
-  // abort the (likely dead) reader and flag it so the stream's result handler
+  // A page restored from the back/forward cache comes back with a reader whose
+  // socket is gone. On foreground, if a main stream is genuinely active and
+  // reconnectable, abort that reader and flag it so the stream's result handler
   // runs the existing reconnect rather than treating the abort as a user stop.
   //
   // CRITICAL: only act when the tab was ACTUALLY suspended (`pagehide`/`freeze`),
   // not on a bare `visibilitychange`. A desktop alt-tab fires visibility events
   // but keeps the socket alive — aborting there would needlessly tear down a
-  // healthy stream and flash "Reconnecting…" on every refocus. The lifecycle
-  // suspend events fire only when the OS froze the tab (the case the socket
-  // dies), so gating on tabSuspendedRef keeps non-suspended users unaffected.
+  // healthy stream and flash "Reconnecting…" on every refocus. An app switch on
+  // iOS fires neither event, freeze the JS as it may, and is the stream's own
+  // silence to notice (lib/streamSilence).
   useEffect(() => {
     const onSuspend = () => { tabSuspendedRef.current = true; };
     const onForeground = () => {
@@ -846,7 +845,7 @@ export function useChatMessages(
       backgroundReconnectRef.current = true;
       mainStreamAbortRef.current.abort();
     };
-    // Suspend signals: pagehide (iOS app-background / bfcache) + freeze (Chromium
+    // Suspend signals: pagehide (leaving for the bfcache) + freeze (Chromium
     // background-tab freeze). Both fire only on a real suspend, never on a tab-switch.
     window.addEventListener('pagehide', onSuspend);
     document.addEventListener('freeze', onSuspend);

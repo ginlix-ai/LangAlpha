@@ -6,6 +6,7 @@
 import { api } from '@/api/client';
 import { getAuthHeaders } from '@/lib/authToken';
 import { holdReload } from '@/lib/reloadHolds';
+import { RUN_STREAM_BEAT_MS, watchStreamSilence, type StreamSilenceWatch } from '@/lib/streamSilence';
 
 export const baseURL = api.defaults.baseURL;
 
@@ -61,12 +62,32 @@ export function parseThreadIdFromContentLocation(
   }
 }
 
+export interface StreamResult {
+  disconnected: boolean;
+  aborted: boolean;
+  contentLocation: string | null;
+  /** The page came back to find the stream quiet, which says nothing against the link. */
+  silentOnReturn?: boolean;
+}
+
+export interface KeptAlive {
+  beatMs: number;
+  /**
+   * Not until the run's first frame. A send's setup (a computer starting can
+   * take minutes) sends no keepalives, and a disconnect then cancels the turn,
+   * so going quiet proves nothing there and cutting the stream would end it.
+   */
+  fromRunStart?: boolean;
+}
+
 export async function streamFetch(
   url: string,
   opts: RequestInit,
   onEvent: (event: Record<string, unknown>) => void,
   onHeaders?: (contentLocation: string | null) => void,
-): Promise<{ disconnected: boolean; aborted: boolean; contentLocation: string | null }> {
+  // For a stream whose server keeps it alive; a replay just ends.
+  keptAlive?: KeptAlive,
+): Promise<StreamResult> {
   let res: Response;
   try {
     res = await fetch(`${baseURL}${url}`, opts);
@@ -143,9 +164,24 @@ export async function streamFetch(
   const decoder = new TextDecoder();
   let buffer = '';
   let ev: { id?: string; event?: string } = {};
+  let silent = false;
+  let silentOnReturn = false;
+  let silence: StreamSilenceWatch | null = null;
+  const watchSilence = () => {
+    if (!keptAlive || silence) return;
+    silence = watchStreamSilence(keptAlive.beatMs, (onReturn) => {
+      silent = true;
+      silentOnReturn = onReturn;
+      void reader.cancel().catch(() => undefined);
+    });
+  };
+  if (!keptAlive?.fromRunStart) watchSilence();
   const processLine = (line: string) => {
-    if (line.startsWith('id: ')) ev.id = line.slice(4).trim();
-    else if (line.startsWith('event: ')) ev.event = line.slice(7).trim();
+    if (line.startsWith('id: ')) {
+      ev.id = line.slice(4).trim();
+      // Setup's frames are all numbered 0; the run's start from 1.
+      if (ev.id !== '0') watchSilence();
+    } else if (line.startsWith('event: ')) ev.event = line.slice(7).trim();
     else if (line.startsWith('data: ')) {
       try {
         const d = JSON.parse(line.slice(6));
@@ -165,6 +201,7 @@ export async function streamFetch(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      (silence as StreamSilenceWatch | null)?.heard();
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -193,7 +230,10 @@ export async function streamFetch(
     } else {
       throw error;
     }
+  } finally {
+    (silence as StreamSilenceWatch | null)?.stop();
   }
+  if (silent) return { disconnected: true, aborted, contentLocation, silentOnReturn };
   return { disconnected, aborted, contentLocation };
 }
 
@@ -211,7 +251,7 @@ export async function postSSEStream(
     onRunIdResolved?: ((runId: string, threadId: string | null) => void) | null;
     signal?: AbortSignal | null;
   },
-): Promise<{ disconnected: boolean; aborted: boolean; contentLocation: string | null }> {
+): Promise<StreamResult> {
   const { onRunIdResolved, signal } = opts;
   // A send holds the stale-build reload until the server has the message, a
   // token refresh before it included; from its headers on, the turn runs there
@@ -249,6 +289,7 @@ export async function postSSEStream(
         const runId = parseRunIdFromContentLocation(contentLocation);
         if (runId && onRunIdResolved) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
       },
+      { beatMs: RUN_STREAM_BEAT_MS, fromRunStart: true },
     );
     if (duplicate && !result.aborted) throw duplicateRequestError(duplicate);
     return result;

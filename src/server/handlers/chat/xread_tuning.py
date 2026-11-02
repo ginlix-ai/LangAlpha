@@ -26,6 +26,9 @@ XREAD_COUNT = 100
 
 _XREAD_BLOCK_MARGIN_MS = 1_000
 _XREAD_BLOCK_FLOOR_MS = 500
+# Each idle round ends in a keepalive, and clients take a run stream that misses
+# three 15 s beats for dead, so this holds however long socket_timeout is.
+_XREAD_BLOCK_CEILING_MS = 10_000
 
 
 def xread_block_ms() -> int:
@@ -48,7 +51,10 @@ def xread_block_ms() -> int:
     """
     socket_seconds = get_redis_socket_timeout() or 5
     socket_ms = max(1, socket_seconds) * 1_000
-    return max(_XREAD_BLOCK_FLOOR_MS, socket_ms - _XREAD_BLOCK_MARGIN_MS)
+    return max(
+        _XREAD_BLOCK_FLOOR_MS,
+        min(_XREAD_BLOCK_CEILING_MS, socket_ms - _XREAD_BLOCK_MARGIN_MS),
+    )
 
 
 # Headroom over BLOCK + the connect path, for scheduling jitter only.

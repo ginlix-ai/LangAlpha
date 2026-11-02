@@ -6,6 +6,7 @@ import { api } from '@/api/client';
 import type { ArtifactCommentSendFields, CommentSend, WorkflowRunStatus } from '@/types/api';
 import type { CancelOutcome, HeldSteer } from '../cancelOutcome';
 import { bearerTokenOf, refreshAccessToken } from '@/lib/authToken';
+import { PING_STREAM_BEAT_MS, RUN_STREAM_BEAT_MS, watchStreamSilence } from '@/lib/streamSilence';
 import { baseURL, getAuthHeaders, streamFetch, postSSEStream } from './transport';
 
 /**
@@ -663,7 +664,9 @@ export async function reconnectToWorkflowStream(
   return await streamFetch(
     `/api/v1/threads/${threadId}/messages/stream${queryParam}`,
     { method: 'GET', headers: { ...authHeaders }, ...(signal ? { signal } : {}) },
-    onEvent
+    onEvent,
+    undefined,
+    { beatMs: RUN_STREAM_BEAT_MS },
   );
 }
 
@@ -721,14 +724,31 @@ export async function openThreadMuxStream(
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) onLine(line);
+  let silent = false;
+  let silentOnReturn = false;
+  const silence = watchStreamSilence(PING_STREAM_BEAT_MS, (onReturn) => {
+    silent = true;
+    silentOnReturn = onReturn;
+    void reader.cancel().catch(() => undefined);
+  });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      silence.heard();
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) onLine(line);
+    }
+  } finally {
+    silence.stop();
   }
+  // The caller's retry resumes from its cursors, as after any other drop. Coming
+  // back to a dead socket says nothing against the link, so it ends the read as a
+  // close does, or each app switch would lengthen the wait after the next.
+  if (silentOnReturn) return;
+  if (silent) throw new Error('mux stream went silent');
   if (buffer) onLine(buffer);
 }
 

@@ -22,6 +22,7 @@
  */
 import type { QueryClient } from '@tanstack/react-query';
 import { isCacheOnlyMeta, queryKeys } from '@/lib/queryKeys';
+import { PING_STREAM_BEAT_MS } from '@/lib/streamSilence';
 import { ALL, refreshArtifactComments, refreshArtifactRecord, refreshArtifactThreads, refreshEveryArtifact } from '@/lib/artifactCache';
 import { threadFieldMutationKey } from '@/lib/threadFieldMutations';
 import { patchThreadTitle } from '@/lib/threadListCache';
@@ -487,6 +488,8 @@ async function runLoop(gen: number): Promise<void> {
             signal: controller.signal,
           },
           onFeedEvent,
+          undefined,
+          { beatMs: PING_STREAM_BEAT_MS },
         );
       } catch {
         // Non-2xx (auth churn, backend restart) → backoff below.
