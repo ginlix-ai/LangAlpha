@@ -196,9 +196,6 @@ html {
      ring-ring and a hand-written box-shadow can never drift apart. */
   --color-focus-ring: hsl(var(--ring));
 
-  --color-slash-icon: rgb(233, 149, 74);
-  --color-slash-pill-bg: rgba(233, 149, 74, 0.1);
-  --color-slash-pill-border: rgba(233, 149, 74, 0.28);
 
   --color-profit: #3FB950;
   --color-profit-soft: rgba(63, 185, 80, 0.16);
@@ -413,9 +410,6 @@ html {
   --color-accent-overlay: rgba(208, 125, 51, 0.65);
   --color-accent-gradient: linear-gradient(90deg, #F8F2EA 0%, #F8F2EA 100%);
 
-  --color-slash-icon: rgb(208, 125, 51);
-  --color-slash-pill-bg: rgba(208, 125, 51, 0.12);
-  --color-slash-pill-border: rgba(208, 125, 51, 0.35);
 
   --color-profit: #1A7F37;
   --color-profit-soft: rgba(26, 127, 55, 0.08);

@@ -1,7 +1,8 @@
 import React from 'react';
 import { CheckSquare, ChevronDown, ChevronRight, Folder, ScrollText, Square } from 'lucide-react';
 import type { MemoEntry } from '../../utils/api';
-import type { ContextMenuData, ContextPayload, TreeNode } from './types';
+import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { ContextMenuData, TreeNode } from './types';
 import { fileGlyph } from './fileMeta';
 import { collectTreeFiles } from './fileTree';
 

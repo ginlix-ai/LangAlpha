@@ -319,35 +319,6 @@
   }
 
   /* ====== Selection Tooltip ("Add to context") ====== */
-  .file-panel-selection-tooltip {
-    position: absolute;
-    z-index: 60;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    border-radius: 8px;
-    background: var(--color-bg-elevated);
-    border: 1px solid var(--color-border-muted);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-    backdrop-filter: blur(12px);
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--color-text-primary);
-    white-space: nowrap;
-    transition: background var(--motion-quick) var(--ease-out), border-color var(--motion-quick) var(--ease-out);
-    user-select: none;
-  }
-  /* The hover tint is translucent and the chip sits over the text it was
-     raised for, so it layers over the opaque fill rather than replacing it. */
-  .file-panel-selection-tooltip:hover {
-    background-image: linear-gradient(var(--color-bg-hover), var(--color-bg-hover));
-    border-color: var(--color-border-elevated);
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-  }
-
   /* ====== Right-click Context Menu ====== */
   .file-panel-context-menu {
     position: fixed;

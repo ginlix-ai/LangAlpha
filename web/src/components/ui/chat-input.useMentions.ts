@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type RefObject, type SetStateAction } from 'react';
-import { findTriggerIndex } from './chat-input.helpers';
-import type { MentionedFile } from './chat-input.types';
+import { flushSync } from 'react-dom';
+import { findTriggerIndex, sameMention } from './chat-input.helpers';
+import type { ChipContext, FileMention, MentionedFile } from './chat-input.types';
 
 /**
  * The `@file` mention machine: trigger detection, filtering, selection, pill
@@ -59,9 +60,10 @@ export function useMentions({
     setQuery('');
   }, []);
 
-  /** Drop pills whose `@path` text no longer appears in the draft. */
+  /** Drop pills whose `@path` text no longer appears in the draft. A quote stays,
+   *  unread, for an undo that brings its token back. */
   const pruneRemoved = useCallback((val: string) => {
-    setMentionedFiles((prev) => prev.filter((f) => f.snippet || val.includes(`@${f.path}`)));
+    setMentionedFiles((prev) => prev.filter((f) => f.kind !== 'file' || val.includes(`@${f.path}`)));
   }, []);
 
   /** Open/refresh the menu when the cursor sits inside an `@…` token. */
@@ -79,36 +81,28 @@ export function useMentions({
     const cursorPos = textareaRef.current?.selectionStart ?? message.length;
     const before = message.slice(0, mentionStart);
     const after = message.slice(cursorPos);
-    setMessage(before + '@' + filePath + ' ' + after);
+    // Committed before the caret moves: a timer waits behind keystrokes already
+    // queued, and would drag the caret back into what they typed.
+    flushSync(() => setMessage(before + '@' + filePath + ' ' + after));
 
     setMentionedFiles((prev) => {
-      if (prev.some((f) => f.path === filePath)) return prev;
-      return [...prev, { path: filePath }];
+      if (prev.some((f) => f.kind === 'file' && f.path === filePath)) return prev;
+      return [...prev, { kind: 'file', path: filePath }];
     });
     close();
 
-    setTimeout(() => {
-      if (textareaRef.current) {
-        const newCursorPos = before.length + 1 + filePath.length + 1;
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
-      }
-    }, 0);
+    const newCursorPos = before.length + 1 + filePath.length + 1;
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(newCursorPos, newCursorPos);
   }, [mentionStart, message, setMessage, textareaRef, close]);
 
-  const removeMention = useCallback((path: string, label?: string, snippet?: string) => {
-    setMentionedFiles((prev) => prev.filter((f) => {
-      if (snippet) return !(f.snippet === snippet && f.path === path);
-      if (label) return !(f.path === path && f.label === label);
-      return !(f.path === path && !f.label);
-    }));
-    // Also remove @path text from the textarea. Pathless pills (chat-selection
-    // and paste snippets) have no token in the draft — an empty path would
-    // match any standalone "@" and trim the message.
-    if (path) {
-      setMessage((prev) => prev.replace(new RegExp(`(^|\\s)@${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`), '$1$2').trim());
-    }
-  }, [setMessage]);
+  const addMention = useCallback((mention: FileMention | ChipContext) => {
+    setMentionedFiles((prev) => (prev.some((f) => sameMention(f, mention)) ? prev : [...prev, mention]));
+  }, []);
+
+  const removeMention = useCallback((chip: ChipContext) => {
+    setMentionedFiles((prev) => prev.filter((f) => f !== chip));
+  }, []);
 
   /** Returns true when the menu consumed the key. */
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -155,6 +149,7 @@ export function useMentions({
     listRef,
     filtered,
     selectFile,
+    addMention,
     removeMention,
     pruneRemoved,
     detectTrigger,

@@ -2,7 +2,8 @@ import React, { Suspense, useCallback, useMemo } from 'react';
 import { ExternalLink, TextSelect } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ChartToolButton } from '@/pages/MarketView/components/ChartToolButton';
-import type { ChartTabSpec, ContextPayload } from './types';
+import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { ChartTabSpec } from './types';
 import type { FileTab, FileTabsApi } from './useFileTabs';
 import './ChartTab.css';
 
@@ -41,9 +42,10 @@ export function ChartTab({ tab, tabs, workspaceId, onAddContext, onOpenInMarketV
   // what the user is looking at, not a copy of the data behind it.
   const addToContext = useCallback(() => {
     onAddContext?.({
+      kind: 'chip',
+      source: 'chart',
       label: `${symbol} · ${timeframe}`,
       snippet: t('filePanel.chartContextHint', { symbol, timeframe }),
-      source: 'chart',
     });
   }, [onAddContext, symbol, timeframe, t]);
 

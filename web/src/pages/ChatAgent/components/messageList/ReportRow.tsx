@@ -53,6 +53,7 @@ export function ReportRow({
     <div
       data-message-id={id}
       data-message-role="user"
+      data-report
       tabIndex={-1}
       className={cn('group/report outline-hidden', analyst && 'flex justify-end')}
       // Inline, to win over the list's sibling spacing.

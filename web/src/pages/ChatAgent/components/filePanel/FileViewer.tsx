@@ -8,7 +8,8 @@ import ImageLightbox from '../ImageLightbox';
 import DocumentErrorBoundary from '../viewers/DocumentErrorBoundary';
 import { stripLineNumbers } from '../toolDisplayConfig';
 import type { OpenFileHandler } from '../../utils/fileLocation';
-import type { ContextPayload, EditorTextSelectData } from './types';
+import type { ContextPayload } from '@/components/ui/chat-input.types';
+import type { EditorTextSelectData } from './types';
 import { EXT_TO_LANG, LARGE_TOOL_RESULTS_PREFIX, getFileExtension } from './fileMeta';
 import { imageMime, type FileBody } from './fileBody';
 import { FileErrorDisplay, type FileError } from './fileErrors';
@@ -73,7 +74,6 @@ export interface FileViewerProps {
   onEditorTextSelect?: (data: EditorTextSelectData | null) => void;
 
   onAddContext?: ((ctx: ContextPayload) => void) | null;
-  onContentMouseUp?: () => void;
   /** Left out, a link to another workspace file renders as plain text. */
   onViewerLink?: OpenFileHandler;
   /** The serve prefix a share was handed; omitted, the owner's grant serves HTML. */
@@ -219,7 +219,7 @@ export function FileViewer(props: FileViewerProps): React.ReactElement {
   if (isEditing) return editor;
 
   return (
-    <div className="p-4" onMouseUp={props.onContentMouseUp}>
+    <div className="p-4">
       {body?.mime === 'image' && imageUrl ? (
         <>
           <img src={imageUrl} alt={fileName} className="max-w-full rounded cursor-pointer" onClick={() => setLightboxOpen(true)} />

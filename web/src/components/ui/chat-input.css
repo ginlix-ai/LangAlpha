@@ -1,97 +1,129 @@
-/* ====== ChatInput — mention pills ====== */
+/* ====== ChatInput — tokens in the draft ====== */
 
-.mention-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 6px;
+/* A `/skill` or `@file` where it was typed. The tint is drawn on a copy of the
+   draft under the textarea, with the same text in the same place: a textarea
+   can hold no markup, and the words stay the textarea's own, so a tint a pixel
+   out is the worst that a mismatch can do. Its outline is a shadow rather than
+   padding, which would move the text out from over the words it marks. The
+   layer sits over the textarea, letting everything through but a quote's token,
+   which the pointer has to reach for its hover card.
+
+   A textarea can't color one word or hold an icon, so a draft with a quote in it
+   hands its words to the layer, and the textarea keeps the caret, the selection
+   and all the input. `text-fill-color` is what hides them: the caret follows
+   `color`. */
+.draft-token-layer {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
-/* The row stays mounted so its last pill can fade out; once that has gone it
-   takes no room, and no gap in the column. */
-.mention-pills:empty {
-  display: none;
-}
-
-.mention-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 4px;
+.draft-token {
+  border-radius: 3px;
   background-color: var(--color-accent-soft);
-  color: var(--color-text-primary);
-  font-size: 0.75rem;
-  font-family: var(--font-mono);
-  line-height: 1.4;
-  max-width: 200px;
+  box-shadow: 0 0 0 2px var(--color-accent-soft);
 }
 
-.mention-pill span {
+.draft-token-layer[data-shows-text] {
+  color: var(--color-text-primary);
+}
+
+.draft-token-layer[data-shows-text] + textarea {
+  -webkit-text-fill-color: transparent;
+}
+
+.draft-token-quote {
+  position: relative;
+  color: var(--color-accent-primary);
+  cursor: text;
+  pointer-events: auto;
+}
+
+/* Over the room the token's own text leaves at its start. */
+.draft-token-quote > svg {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 1em;
+  height: 1em;
+  transform: translateY(-50%);
+}
+
+/* ====== A chip: a paste, a chart or a sheet range in the composer, and any of
+   them or a quote once sent ====== */
+
+.composer-quote-chip {
+  position: relative;
+  display: inline-flex;
+  /* The chip's baseline is its text's, not the bottom of its icon, so it reads
+     on one line with the words beside it. */
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  /* Two side by side still leave the draft room to start on their line. */
+  max-width: min(288px, 100%);
+  /* One text line of the draft beside it, so the two share a baseline. */
+  min-height: 1.625em;
+  color: var(--color-accent-primary);
+  font-size: 0.875rem;
+  line-height: 1.625;
+}
+
+.composer-quote-chip > svg {
+  align-self: center;
+}
+
+/* A length of its own: a width that shrinks to fit, like a sent message's, reads
+   past a percentage to the whole of the text, and leaves what is clipped as blank
+   beside the chip. */
+.composer-quote-chip > span {
+  max-width: 268px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mention-pill-remove {
-  display: inline-flex;
+/* Over the end of the text, on the composer's own fill, so that showing it
+   moves nothing in a line the caret shares. */
+.composer-quote-remove {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  display: none;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: none;
-  border: none;
+  background-color: var(--color-bg-card);
   color: var(--color-text-tertiary);
-  cursor: pointer;
-  padding: 0;
-  flex-shrink: 0;
-  transition: color var(--motion-quick) var(--ease-out), background-color var(--motion-quick) var(--ease-out);
+  transform: translateY(-50%);
 }
 
-.mention-pill-remove:hover {
+.composer-quote-remove:hover {
   color: var(--color-text-primary);
-  background-color: var(--color-border-muted);
 }
 
-/* ====== Snippet pill variant ====== */
-
-.mention-pill-snippet {
-  border: 1px dashed var(--color-accent-overlay);
-  background-color: var(--color-accent-soft);
+.composer-quote-chip:hover .composer-quote-remove,
+.composer-quote-chip:focus-within .composer-quote-remove {
+  display: inline-flex;
 }
 
-/* ====== Slash command pill variant ====== */
+/* No hover to reveal it with on a touch screen. */
+@media (hover: none) {
+  .composer-quote-chip {
+    padding-right: 18px;
+  }
 
-.mention-pill-slash {
-  border: 1px solid var(--color-slash-pill-border);
-  background-color: var(--color-slash-pill-bg);
-}
-
-.mention-pill-slash .mention-pill-icon {
-  color: var(--color-slash-icon);
-}
-
-.slash-cmd-icon {
-  color: var(--color-slash-icon);
-}
-
-/* ====== Slash command autocomplete description ====== */
-
-.mention-autocomplete-item .slash-cmd-name {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  white-space: nowrap;
-}
-
-.mention-autocomplete-item .slash-cmd-desc {
-  font-size: 0.6875rem;
-  color: var(--color-text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-left: auto;
+  .composer-quote-remove {
+    display: inline-flex;
+  }
 }
 
 /* ====== Autocomplete dropdown ====== */
@@ -101,20 +133,20 @@
   left: 0;
   right: 0;
   bottom: 100%;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  padding: 4px;
   background-color: var(--color-bg-elevated);
   border: 1px solid var(--color-border-muted);
-  border-radius: 8px;
-  max-height: 240px;
+  border-radius: 12px;
+  max-height: 264px;
   overflow-y: auto;
   z-index: 100;
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
   /* It opens above the composer, so it grows out of the composer's edge. */
   transform-origin: bottom center;
 }
 
 .mention-autocomplete-empty {
-  padding: 12px 14px;
+  padding: 8px 10px;
   font-size: 0.8125rem;
   color: var(--color-text-tertiary);
 }
@@ -123,31 +155,50 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 6px 10px;
+  border-radius: 8px;
   cursor: pointer;
+  font-size: 0.8125rem;
   transition: background-color var(--motion-quick) var(--ease-out);
 }
 
-.mention-autocomplete-item:hover,
-.mention-autocomplete-item.active {
-  background-color: var(--color-accent-soft);
+/* A column of its own, so every description starts at one x. */
+.mention-autocomplete-item .slash-cmd-name {
+  flex: 0 0 11rem;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-autocomplete-item .slash-cmd-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mention-autocomplete-item .file-name {
-  font-size: 0.8125rem;
-  color: var(--color-text-primary);
+  min-width: 0;
   overflow: hidden;
+  color: var(--color-text-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .mention-autocomplete-item .file-path {
-  font-size: 0.6875rem;
-  color: var(--color-text-tertiary);
+  min-width: 0;
   overflow: hidden;
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-left: auto;
 }
 
 /* ====== Model selector trigger (Radix data-state) ====== */

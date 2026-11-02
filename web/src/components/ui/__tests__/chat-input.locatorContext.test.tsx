@@ -9,6 +9,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ChatInput, { type ChatInputHandle } from '../chat-input';
+import type { ChipContext } from '../chat-input.types';
 
 vi.mock('@/pages/ChatAgent/utils/api', () => ({
   getSkills: vi.fn().mockResolvedValue([]),
@@ -36,7 +37,9 @@ function renderInput(onSend = vi.fn()) {
   return { ref, textarea: screen.getByRole('textbox') as HTMLTextAreaElement };
 }
 
-const RANGE = {
+const RANGE: ChipContext = {
+  kind: 'chip',
+  source: 'range',
   path: 'models/dcf.xlsx',
   locator: 'Model!B4:D9',
   label: 'dcf.xlsx#Model!B4:D9',
@@ -78,17 +81,14 @@ describe('ChatInput — locator context', () => {
     const onSend = vi.fn();
     const { ref, textarea } = renderInput(onSend);
     act(() => ref.current!.addContext({
-      path: 'work/model.py',
+      kind: 'quote',
       snippet: 'def npv(rate, flows):',
-      label: 'model.py:L40-42',
-      lineStart: 40,
-      lineEnd: 42,
-      lineCount: 3,
+      from: { kind: 'file', path: 'work/model.py', label: 'model.py:L40-42', lineStart: 40, lineEnd: 42, lineCount: 3 },
     }));
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
     const sent = onSend.mock.calls[0][0].message as string;
-    expect(sent).toContain('<summary>@work/model.py (lines 40-42, 3 lines)</summary>');
+    expect(sent).toContain('<quote source="@work/model.py (lines 40-42, 3 lines)">');
     expect(sent).not.toContain('#');
   });
 
