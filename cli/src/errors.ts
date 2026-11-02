@@ -39,9 +39,19 @@ export function usage(message: string): CliError {
   return new CliError(message, Exit.usage);
 }
 
+/** Why a connection failed. Node's fetch to a refused ``localhost`` throws an
+ *  AggregateError with no message, so its code, or failing that its inner
+ *  errors' messages, say what happened. */
+function reasons(e: unknown): string[] {
+  if (!(e instanceof Error)) return [String(e)];
+  const own = e.message || (e as { code?: unknown }).code;
+  if (own) return [String(own)];
+  return e instanceof AggregateError ? [...new Set(e.errors.flatMap(reasons))] : [];
+}
+
 export function unreachable(where: string, e: unknown): CliError {
-  const cause = e instanceof Error && e.cause instanceof Error ? e.cause.message : String(e);
-  return new CliError(`Cannot reach ${where} (${cause})`, Exit.error);
+  const why = (e instanceof Error && e.cause instanceof Error ? reasons(e.cause).join("; ") : "") || String(e);
+  return new CliError(`Cannot reach ${where} (${why})`, Exit.error);
 }
 
 export function exitFor(status: number): number {
