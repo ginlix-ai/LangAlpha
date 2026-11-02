@@ -43,6 +43,7 @@ function SheetPanel({
       />
       {/* Sheet */}
       <motion.div
+        data-sheet
         initial={{ y: '100%' }}
         animate={{ y: 0 }}
         // Arrives on the drag spring, the one a released swipe settles on;

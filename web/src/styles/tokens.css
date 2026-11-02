@@ -83,7 +83,10 @@ html {
 
   --sidebar-width: 64px;
   --sidebar-rail-width: 64px;
-  --bottom-tab-height: 78px;
+  --bottom-tab-bar: 78px;
+  /* What is fixed to the screen's bottom measures off this, which is the keyboard
+     while one is up (App.css). */
+  --bottom-tab-height: var(--bottom-tab-bar);
   /* Space above a page's first row. Every route's title or header row starts
      this far down, so the first row sits at one depth when moving between pages
      (centre of a 28px title row: --page-top + 14px). */

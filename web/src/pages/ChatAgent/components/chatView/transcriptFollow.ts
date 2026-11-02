@@ -1,5 +1,5 @@
 import { useCallback, useEffectEvent, useLayoutEffect, useRef } from 'react';
-import { NEAR_BOTTOM_PX, createSettleWindow, isNearBottom } from '../../utils/scrollHelpers';
+import { AT_BOTTOM_PX, NEAR_BOTTOM_PX, createSettleWindow, isNearBottom } from '../../utils/scrollHelpers';
 import { anchorTop, findMessageElement, revealTop, type AnchorPart } from '../../utils/scrollDom';
 import { INTENT_EVENTS, RELEASE_EVENTS, createStreamFollow, movesView, towardStart, type StreamFollow, type StreamFollowControls } from './streamFollow';
 
@@ -36,6 +36,45 @@ export function blockSize(e: ResizeObserverEntry): number {
   return e.borderBoxSize?.[0]?.blockSize ?? e.contentRect.height;
 }
 
+interface ViewResizeHold {
+  settle?: (engine: StreamFollow) => void;
+  ready?: () => boolean;
+}
+
+/**
+ * Holds the view through a change in the scroller's own height (an on-screen
+ * keyboard, a banner, a resized window), which moves the end with nothing
+ * scrolled and no transcript growth to observe. A reader at the very end stays
+ * there; anyone else keeps what is at the top of their view. `settle` runs first,
+ * for what is measured from the view's height, and `ready` says whether an
+ * automatic move may touch the view yet.
+ */
+export function holdThroughViewResize(
+  c: HTMLElement,
+  follow: TranscriptFollow,
+  { settle, ready }: ViewResizeHold = {},
+): () => void {
+  let viewHeight = c.clientHeight;
+  const ro = new ResizeObserver(() => {
+    const before = viewHeight;
+    const height = c.clientHeight;
+    // A hidden view measures 0 and keeps the height it last showed.
+    if (height === 0 || height === before) return;
+    viewHeight = height;
+    const engine = follow.engine;
+    if (!engine) return;
+    engine.resized();
+    // By the taller of the two heights: a view that grew has already been clamped,
+    // and asked before `settle`, whose floor can move the end away from it.
+    const atEnd = isNearBottom({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: Math.max(before, height) }, AT_BOTTOM_PX);
+    settle?.(engine);
+    if (follow.reapply(0) || engine.landing || ready?.() === false) return;
+    if (atEnd) engine.jump(Math.max(0, c.scrollHeight - height));
+  });
+  ro.observe(c);
+  return () => ro.disconnect();
+}
+
 /**
  * The follow both chat surfaces share, over one scroll engine
  * (createStreamFollow) at a time: whether the reader rides the end, a place
@@ -52,8 +91,8 @@ export interface TranscriptFollow {
   readonly following: { current: boolean };
   /** The attached scroller's engine. */
   readonly engine: StreamFollow | null;
-  /** Follows scroller `c` until the returned detach. */
-  attach(c: HTMLElement): () => void;
+  /** Follows scroller `c`, and holds it through a resize, until the returned detach. */
+  attach(c: HTMLElement, hold?: ViewResizeHold): () => void;
   /** Whether a turn is running, on each change. Its growth is news while it
    *  runs, and for one settle window after it ends: the commit that ends it
    *  adds the reply's actions, then the typewriter types out what it still
@@ -130,17 +169,19 @@ export function createTranscriptFollow({
     get engine() {
       return engine;
     },
-    attach(el) {
+    attach(el, hold) {
       engine?.stop();
       const own = createStreamFollow(el, following);
       c = el;
       engine = own;
+      const releaseView = holdThroughViewResize(el, follow, hold);
       // Wherever the pointer or touch lifts: a scrollbar drag ends off the
       // scroller too, and a window that loses focus mid-drag hears no lift.
       const release = () => own.pressed(false);
       for (const type of RELEASE_EVENTS) window.addEventListener(type, release, { capture: true, passive: true });
       window.addEventListener('blur', release);
       return () => {
+        releaseView();
         own.stop();
         for (const type of RELEASE_EVENTS) window.removeEventListener(type, release, { capture: true });
         window.removeEventListener('blur', release);

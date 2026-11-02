@@ -32,7 +32,7 @@ function LangAlphaFab({ onClick }: LangAlphaFabProps) {
     const update = () => {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-      const tabHeight = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--bottom-tab-height') || '78', 10);
+      const tabHeight = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--bottom-tab-bar') || '78', 10);
 
       setBounds({
         top: -(vh * 0.4),  // can go up to ~40% from default position

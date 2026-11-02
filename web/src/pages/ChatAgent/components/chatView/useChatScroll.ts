@@ -359,7 +359,14 @@ export function useChatScroll({
     if (!c) return;
     const follow = getFollow();
     const turnPin = getTurnPin();
-    const detach = follow.attach(c);
+    // The pinned turn's floor is measured from the view's height, so a keyboard
+    // closing on a send would otherwise leave the bottom short of the pin.
+    const detach = follow.attach(c, {
+      settle: (own) => {
+        if (turnPin.active) turnPin.settle(c, own);
+      },
+      ready: entryRestoreSettled,
+    });
     const engine = follow.engine;
     if (!engine) return detach;
     const saved = takeTabPlace('main');

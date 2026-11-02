@@ -10,6 +10,18 @@
   overflow: hidden;
 }
 
+/* Set by lib/visualViewport.ts while an on-screen keyboard is up. What is fixed
+   to the bottom of the screen measures off the tab bar, and fixed means the
+   layout viewport, which runs on behind the keyboard: the keyboard stands in
+   for the bar, so those composers land on top of it. */
+html[data-keyboard-open] {
+  --bottom-tab-height: var(--keyboard-overlap);
+}
+
+html[data-keyboard-open] .app-layout {
+  height: var(--keyboard-viewport-height);
+}
+
 .app-main {
   width: 100%;
   height: 100%;
@@ -65,6 +77,10 @@ html.desktop-mac .app-main .chrome-drag-strip {
     padding-bottom: var(--bottom-tab-height);
   }
   .app-main--no-tab {
+    padding-bottom: 0;
+  }
+  /* The tab bar steps aside for the keyboard, and the column ends at its top. */
+  html[data-keyboard-open] .app-main {
     padding-bottom: 0;
   }
 
