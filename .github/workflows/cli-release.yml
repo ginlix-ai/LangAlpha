@@ -1,0 +1,84 @@
+name: CLI release
+
+# Publishes langalpha to npm from a tag naming its version, `cli-v<version>`,
+# kept apart from the app's CalVer `v*` tags: the CLI has versions of its own,
+# and computers never install it from npm (the backend image builds it from
+# source), so a release here is for people's own machines only.
+#
+# npm trusts this workflow by name (trusted publishing), so no npm token is
+# held anywhere. The `npm` environment requires a maintainer's approval before
+# the publish job runs; npmjs.com must name this file and that environment.
+on:
+  push:
+    tags: ["cli-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dist_tag: ${{ steps.version.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag names the package's version
+        id: version
+        run: |
+          VERSION=$(node -p 'require("./package.json").version')
+          if [ "${GITHUB_REF_NAME}" != "cli-v${VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not name cli/package.json's version ${VERSION}"
+            exit 1
+          fi
+          # A prerelease never becomes what `npm i langalpha` installs.
+          case "$VERSION" in *-*) TAG=next ;; *) TAG=latest ;; esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: cli/package.json
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+      - run: node scripts/check-package.mjs
+      # The bytes that were checked are the bytes published: the publish job
+      # installs and builds nothing.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/package"
+          npm pack --pack-destination "$RUNNER_TEMP/package"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: ${{ runner.temp }}/package/*.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+      # No registry-url: with it, setup-node writes an `_authToken` line that
+      # keeps npm from trying trusted publishing. npm's default registry is
+      # the public one anyway.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Trusted publishing needs npm 11.5.1 or later, whichever npm this Node
+      # shipped with.
+      - run: npm install -g npm@11
+      - name: Publish ${{ needs.check.outputs.version }} under ${{ needs.check.outputs.dist_tag }}
+        run: npm publish ./langalpha-${{ needs.check.outputs.version }}.tgz --tag ${{ needs.check.outputs.dist_tag }} --access public
