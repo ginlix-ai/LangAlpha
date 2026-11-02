@@ -1667,6 +1667,7 @@ class SessionLifecycleMixin:
         workspace_id: str | None = None,
         unchanged_since: datetime | None = None,
         reason: str | None = None,
+        back_up: bool = True,
     ) -> Dict[str, Any]:
         """Stop the machine, which takes every project on it down with it.
 
@@ -1675,7 +1676,9 @@ class SessionLifecycleMixin:
         only names the project that asked, for the mirror and the logs.
         unchanged_since is the idle sweep's read of the row: a machine opened
         after that read has been stamped, and is no longer the idle one the
-        sweep judged. reason is why, for the usage run the stop ends."""
+        sweep judged. reason is why, for the usage run the stop ends.
+        back_up=False skips the owner's file backup, for a stop that has to
+        finish quickly and leaves the files where they already are."""
         async with self._observed_lock(computer_id, "computer.stop"):
             # Stopping one project removes every sibling's sandbox; gate across
             # the machine.
@@ -1708,6 +1711,7 @@ class SessionLifecycleMixin:
                     binding,
                     workspace_id=workspace_id,
                     durable_sandbox_id=durable_sandbox_id,
+                    back_up=back_up,
                 )
 
     async def _finish_claimed_stop(
@@ -1716,6 +1720,7 @@ class SessionLifecycleMixin:
         *,
         workspace_id: str | None,
         durable_sandbox_id: str | None,
+        back_up: bool = True,
     ) -> Dict[str, Any]:
         computer_id = binding.computer_id
         try:
@@ -1731,7 +1736,7 @@ class SessionLifecycleMixin:
 
             # A machine its owner chose not to back up keeps its last backup.
             backup_ms = None
-            if binding.files_backup:
+            if binding.files_backup and back_up:
                 backup_started = time.monotonic()
                 folder_count = await self._backup_machine_files_to_db(
                     computer_id,

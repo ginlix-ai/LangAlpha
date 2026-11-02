@@ -260,7 +260,7 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "BYOK_ENCRYPTION_KEY is set to the default value from the repository. "
             "User API keys are encrypted with a publicly known key. "
-            "Run `make config` or set a unique BYOK_ENCRYPTION_KEY."
+            "Set a unique BYOK_ENCRYPTION_KEY (openssl rand -hex 32)."
         )
 
     # Initialize and open conversation database pool
@@ -365,12 +365,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Pre-built workflow warmup failed: {e}")
 
+    # Keys and the sandbox choice saved in the setup step read like any other
+    # environment value, so they have to be there before config is loaded.
+    from src.server.services import setup_settings
+
+    config_reading = await setup_settings.boot()
+
     # Initialize PTC Agent configuration and session service
     try:
         from ptc_agent.config import load_from_files, ConfigContext
 
         logger.info("Loading PTC Agent configuration...")
-        agent_config = await load_from_files(context=ConfigContext.SDK)
+        agent_config = await load_from_files(
+            context=ConfigContext.SDK,
+            autodetect=config_reading.autodetect,
+            in_reach=config_reading.in_reach,
+        )
 
         from src.config.env import PUBLIC_APP_URL, SERVER_BASE_URL
 
@@ -585,6 +595,8 @@ async def lifespan(app: FastAPI):
         from src.server.services.claude_code.hosted import check_sandbox_tiers
 
         check_sandbox_tiers(agent_config.sandbox)
+
+    setup_settings.start()
 
     # Multi-worker hard gate (top level — must not be swallowed by the PTC
     # init catch-all): without the fence, two workers could both write one
@@ -962,6 +974,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error shutting down WorkspaceFileGCService: {e}")
 
+    # 0.1b. Stop following the saved setup settings
+    try:
+        from src.server.services import setup_settings
+
+        await setup_settings.stop()
+    except Exception as e:
+        logger.warning(f"Error stopping the setup settings follower: {e}")
+
     # 0.2. Shutdown NewsRefreshService
     try:
         from src.server.services.news_refresh_service import NewsRefreshService
@@ -1088,6 +1108,15 @@ async def lifespan(app: FastAPI):
         await manager.shutdown()  # Uses shutdown_timeout from config.yaml
     except Exception as e:
         logger.error(f"Error during LocalRunExecutor shutdown: {e}")
+
+    # 6a. In the desktop app, its computer goes with its server: after the runs
+    # on it have settled, while the pools are still open.
+    try:
+        from src.server.services.desktop_app import stop_this_computer
+
+        await stop_this_computer()
+    except Exception as e:
+        logger.warning(f"Error stopping this computer: {e}")
 
     # 6b. Stop the hook-outbox drainer AFTER BTM shutdown so jobs enqueued by
     # those final finalizes still execute; anything unclaimed survives
@@ -1603,6 +1632,16 @@ else:
         return {"enabled": False}
 
     logger.info("ginlix-data WS proxy disabled (GINLIX_DATA_URL not set)")
+
+# The setup step exists only where the owner sets the server up in the app.
+from src.server.services.setup_settings import self_hosted
+
+if self_hosted():
+    from src.server.app.deployment_setup import router as deployment_setup_router
+
+    app.include_router(
+        deployment_setup_router
+    )  # /api/v1/setup/* - Self-hosted setup step: vendor keys, where agent code runs
 
 # Include all routers
 app.include_router(threads_router)  # /api/v1/threads/* - Thread CRUD, messages, control

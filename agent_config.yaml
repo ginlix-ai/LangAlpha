@@ -24,8 +24,9 @@ sandbox:
   #   kept) and start resumes it in about a second. Each resource tier has its own
   #   template, built from the same image recipe as the Daytona snapshot.
   # - docker: Local Docker containers using Dockerfile.sandbox. Useful for development.
-  # Override at runtime with SANDBOX_PROVIDER env var.
-  provider: "daytona"
+  # Left unset it auto-detects from the keys: DAYTONA_API_KEY, else E2B_API_KEY, else docker.
+  # SANDBOX_PROVIDER overrides whatever is set here.
+  # provider: "daytona"
   # Other providers a user may pick when creating a computer; `provider` stays
   # the default. Each needs its credentials, and a computer keeps its provider.
   # "ssh" is offered only this way: it lets users add their own Linux or macOS machine.

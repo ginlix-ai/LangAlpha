@@ -13,6 +13,7 @@ import logging
 import os
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Self
 
@@ -624,8 +625,9 @@ class LocalConfig(ResourceTieredConfig):
     size is its own, so the kind has one tier and the tier is never shown.
     """
 
-    # The machine never stops on idle, so the server's idle reaper stops a quiet
-    # one by this interval. Stopping only ends this computer's own processes.
+    # How long a quiet computer keeps each worker's session for it. As on any
+    # machine of its owner's, the server never stops it for being quiet: only
+    # the server's own state for it goes.
     auto_stop_interval: int = Field(default=3600, ge=60)
     # The first start installs the Python runtime on the owner's own network.
     bootstrap_timeout: int = Field(default=1800, ge=60)
@@ -697,9 +699,12 @@ class SandboxConfig(BaseModel):
     provider: Literal["daytona", "docker", "e2b", "local", "memory"] = "daytona"
     # Kinds a new computer may be created on besides ``provider``, which stays
     # the default. Only this list offers a kind: holding its credentials does
-    # not, since one environment often carries keys for several providers.
-    # ``ssh`` is only ever offered: a computer on it needs a machine its owner
-    # names, so it cannot be the default.
+    # not, since one environment often carries keys for several providers. A
+    # self-hosted owner who chose where code runs in the app has said which
+    # keys are meant, so there the list also holds what can run now
+    # (``KindsInReach``, applied by ``create_sandbox_config``). ``ssh`` is only
+    # ever offered: a computer on it needs a machine its owner names, so it
+    # cannot be the default.
     offered_providers: tuple[Literal["daytona", "docker", "e2b", "local", "ssh"], ...] = ()
     daytona: DaytonaConfig = Field(default_factory=DaytonaConfig)
     e2b: E2BConfig = Field(default_factory=E2BConfig)
@@ -712,16 +717,17 @@ class SandboxConfig(BaseModel):
         """The kinds a new computer may be created on, the default first.
 
         Deduplicated because ``SANDBOX_PROVIDER`` can move the deployment onto
-        a kind the config also offers. ``local`` runs agent code as the server's
-        own user, so no config offers it where the build has not turned it on.
+        a kind the config also offers. A kind the build does not offer is left
+        out whatever the config says: ``local`` runs agent code as the server's
+        own user, and a build that turned Docker off knows its containers could
+        not reach this server.
         """
-        kinds = dict.fromkeys((self.provider, *self.offered_providers))
-        if "local" in kinds:
-            from ptc_agent.core.sandbox.providers.local import local_computer_allowed
-
-            if not local_computer_allowed():
-                del kinds["local"]
-        return tuple(kinds)
+        refused = kind_refusals()
+        return tuple(
+            kind
+            for kind in dict.fromkeys((self.provider, *self.offered_providers))
+            if refused.get(kind) != KIND_NOT_OFFERED
+        )
 
     def settings_for(
         self, kind: str
@@ -759,17 +765,118 @@ class SandboxConfig(BaseModel):
         return self
 
 
-def detect_provider_kind(daytona_api_key: str = "") -> str:
+def detect_provider_kind(
+    daytona_api_key: str = "", environ: Mapping[str, str] | None = None
+) -> str:
     """The provider a deployment that names none runs on, read from its keys.
 
     Daytona wins when both keys are set, and a deployment with neither runs
-    sandboxes on the local Docker daemon.
+    sandboxes on the local Docker daemon. That holds where the build turned
+    Docker off too: it is then the fallback a self-hosted owner is asked to
+    replace, and ``creatable_providers`` never creates a computer on it.
     """
-    if daytona_api_key or os.getenv("DAYTONA_API_KEY"):
+    environ = os.environ if environ is None else environ
+    if daytona_api_key or environ.get("DAYTONA_API_KEY"):
         return "daytona"
-    if os.getenv("E2B_API_KEY"):
+    if environ.get("E2B_API_KEY"):
         return "e2b"
     return "docker"
+
+
+#: Why a kind cannot run a computer now, as ``kind_availability`` answers.
+KIND_NOT_OFFERED = "not_offered"
+KIND_NO_KEY = "no_key"
+KIND_DAEMON_UNREACHABLE = "daemon_unreachable"
+
+#: The kinds reached with an API key, by the variable that holds it.
+KEYED_KINDS: dict[str, str] = {
+    "daytona": DaytonaConfig.ENV_FIELDS["api_key"],
+    "e2b": E2BConfig.ENV_FIELDS["api_key"],
+}
+
+
+def kind_refusals(environ: Mapping[str, str] | None = None) -> dict[str, str | None]:
+    """What stands in a kind's way however long one waits: the build's gates
+    and the API keys. None where nothing does.
+
+    ``kind_availability`` adds the one fact that changes by the moment, whether
+    the Docker daemon answers; callers that cannot wait on it read this alone.
+    A kind not listed (``ssh``) has nothing to refuse it here.
+    """
+    from ptc_agent.core.sandbox.providers.local import local_computer_allowed
+
+    environ = os.environ if environ is None else environ
+    # A build sets LANGALPHA_DOCKER_COMPUTERS=0 where it knows a container
+    # could not reach this server: one listening on loopback, on a system where
+    # containers have only the bridge.
+    refusals: dict[str, str | None] = {
+        "local": None if local_computer_allowed() else KIND_NOT_OFFERED,
+        "docker": (
+            KIND_NOT_OFFERED if environ.get("LANGALPHA_DOCKER_COMPUTERS") == "0" else None
+        ),
+    }
+    for kind, key in KEYED_KINDS.items():
+        refusals[kind] = None if environ.get(key) else KIND_NO_KEY
+    return refusals
+
+
+async def docker_reachable(timeout: float = 1.5) -> bool:
+    """A real ping of the daemon, the same socket lookup the provider uses."""
+    import asyncio
+
+    try:
+        import aiodocker
+    except ImportError:
+        return False
+    client = None
+    try:
+        async with asyncio.timeout(timeout):
+            client = aiodocker.Docker()
+            await client.version()
+        return True
+    except Exception as exc:  # noqa: BLE001 - every failure means the same thing here
+        logger.debug("Docker daemon not reachable: %s", type(exc).__name__)
+        return False
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def kind_availability(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Whether each kind could run a computer now: None, or why not.
+
+    The daemon is asked once, and only where the build offers Docker.
+    """
+    availability = kind_refusals(environ)
+    if availability["docker"] is None and not await docker_reachable():
+        availability["docker"] = KIND_DAEMON_UNREACHABLE
+    return availability
+
+
+@dataclass(frozen=True)
+class KindsInReach:
+    """Where a self-hosted owner said code runs, in the app, and what each
+    kind could do at that moment. Its presence means the owner chose."""
+
+    chosen: str
+    availability: Mapping[str, str | None]
+
+    def offered(self) -> tuple[str, ...]:
+        """The choice beside every other kind that would work now. ``local`` only
+        as the choice: it runs the agent with no isolation, and choosing it in
+        the app is where that is said."""
+        kinds = (self.chosen, *KEYED_KINDS, "docker")
+        return tuple(
+            kind
+            for kind in dict.fromkeys(kinds)
+            if self.availability.get(kind, KIND_NOT_OFFERED) is None
+            and (kind != "local" or kind == self.chosen)
+        )
 
 
 def validate_sandbox_api_keys(sandbox: SandboxConfig) -> None:

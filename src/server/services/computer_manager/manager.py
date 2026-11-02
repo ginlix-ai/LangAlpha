@@ -138,6 +138,22 @@ class ComputerManager(
     def current(cls) -> Optional["ComputerManager"]:
         return ComputerManager._instance
 
+    async def drop_cached_providers(self) -> None:
+        """Close the providers cached for this worker's life, whose clients hold
+        the key they were built with; the next use builds them from the config.
+
+        Close before dropping: a classifier is a provider, cached precisely to
+        avoid opening an SDK HTTP client per failed teardown, so clearing the
+        dict alone leaks every client it was holding open.
+        """
+        classifiers = list(self._error_classifiers.values())
+        self._error_classifiers.clear()
+        for classifier in classifiers:
+            try:
+                await classifier.close()
+            except Exception as e:
+                logger.debug(f"Error classifier close failed: {e}")
+
     @classmethod
     def reset_instance(cls) -> None:
         ComputerManager._instance = None
@@ -172,15 +188,7 @@ class ComputerManager(
             task.cancel()
         self._mcp_discovery_tasks.clear()
 
-        # Close before dropping: a classifier is a provider, cached precisely
-        # to avoid opening an SDK HTTP client per failed teardown, so clearing
-        # the dict alone leaks every client it was holding open.
-        for classifier in self._error_classifiers.values():
-            try:
-                await classifier.close()
-            except Exception as e:
-                logger.debug(f"Error classifier close failed at shutdown: {e}")
-        self._error_classifiers.clear()
+        await self.drop_cached_providers()
 
         # Shutdown must leave machines running: this drops what this worker
         # knows about them, one record at a time, and nothing else.

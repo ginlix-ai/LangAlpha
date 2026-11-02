@@ -27,6 +27,7 @@ from ptc_agent.config.core import (
     PlatformSecretDefinition,
     SandboxConfig,
     SecurityConfig,
+    validate_sandbox_api_keys,
 )
 from ptc_agent.config.utils import create_sandbox_config
 
@@ -198,7 +199,11 @@ class TestCreateSandboxConfigNewFormat:
         assert cfg.docker.image == "my-image:latest"
         assert cfg.docker.memory_limit == "8g"
 
-    def test_sandbox_key_defaults_to_daytona_provider(self):
+    def test_a_daytona_section_does_not_choose_daytona(self, monkeypatch):
+        """The default config ships these settings for whoever picks Daytona,
+        so a deployment with no key still comes up, on docker."""
+        for var in ("SANDBOX_PROVIDER", "DAYTONA_API_KEY", "E2B_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
         config_data = {
             "sandbox": {
                 "daytona": {
@@ -211,7 +216,7 @@ class TestCreateSandboxConfigNewFormat:
             }
         }
         cfg = create_sandbox_config(config_data)
-        assert cfg.provider == "daytona"
+        assert cfg.provider == "docker"
 
     def test_an_ssh_section_naming_a_computers_target_is_refused(self):
         """Each computer's settings lie over the section, so a tunnel set
@@ -337,6 +342,40 @@ class TestE2BConfig:
         monkeypatch.setenv("SANDBOX_PROVIDER", "e2b")
         cfg = create_sandbox_config({"sandbox": {"provider": "docker"}})
         assert cfg.provider == "e2b"
+
+    # A hosted server loads its config without reading the provider from keys.
+    HOSTED = {"autodetect": False}
+
+    def test_a_hosted_server_with_no_key_refuses_rather_than_moves(self):
+        cfg = create_sandbox_config({"sandbox": {}}, **self.HOSTED)
+        assert cfg.provider == "daytona"
+        with pytest.raises(ValueError, match="DAYTONA_API_KEY"):
+            validate_sandbox_api_keys(cfg)
+
+    def test_a_hosted_server_with_only_an_e2b_key_stays_on_daytona(self, monkeypatch):
+        monkeypatch.setenv("E2B_API_KEY", "e2b-key")
+        cfg = create_sandbox_config({"sandbox": {}}, **self.HOSTED)
+        assert cfg.provider == "daytona"
+        with pytest.raises(ValueError, match="DAYTONA_API_KEY"):
+            validate_sandbox_api_keys(cfg)
+
+    def test_a_hosted_server_with_a_daytona_key_runs_on_it(self, monkeypatch):
+        monkeypatch.setenv("DAYTONA_API_KEY", "daytona-key")
+        cfg = create_sandbox_config({"sandbox": {}}, **self.HOSTED)
+        assert cfg.provider == "daytona"
+        validate_sandbox_api_keys(cfg)
+
+    def test_a_hosted_server_keeps_what_it_names(self, monkeypatch):
+        sandbox = {"sandbox": {"provider": "docker"}}
+        assert create_sandbox_config(sandbox, **self.HOSTED).provider == "docker"
+        monkeypatch.setenv("SANDBOX_PROVIDER", "docker")
+        sandbox = {"sandbox": {"provider": "e2b"}}
+        assert create_sandbox_config(sandbox, **self.HOSTED).provider == "docker"
+
+    def test_the_library_reads_the_keys_whatever_the_server_mode(self, monkeypatch):
+        monkeypatch.setenv("HOST_MODE", "platform")
+        monkeypatch.setenv("E2B_API_KEY", "e2b-key")
+        assert create_sandbox_config({"sandbox": {}}).provider == "e2b"
 
     def test_validate_api_keys_requires_key_for_e2b(self):
         cfg = CoreConfig(

@@ -1269,8 +1269,10 @@ class MachineLifecycleMixin:
             return computer
         return await get_computer(computer_id)
 
-    async def stop_computer(self, computer_id: str) -> Optional[Dict[str, Any]]:
-        return await self._stop_machine(computer_id)
+    async def stop_computer(
+        self, computer_id: str, *, back_up: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        return await self._stop_machine(computer_id, back_up=back_up)
 
     async def archive_computer(self, computer_id: str) -> Optional[Dict[str, Any]]:
         return await self._archive_machine(computer_id)
